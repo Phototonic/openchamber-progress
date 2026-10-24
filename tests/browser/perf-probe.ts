@@ -6,7 +6,9 @@
 //   guest frames (auto-attached, paused at start): an injected document-start script reports renders
 //               (#root replacements), visible state transitions with the plan ids shown, timers/listeners.
 // Usage: node --experimental-strip-types tests/browser/perf-probe.ts <cdp port> <scenario.json> <out.json>
-// Scenario: { sessions: {NAME: "sidebar title"}, steps: Step[], expect?: {...} } — see runStep().
+// Scenario: { sessions: {NAME: "sidebar title"}, steps: Step[], seed?: { root, sessions } } — see runStep().
+// Long runs: the output file is rewritten at every metrics step, so an interrupted run keeps its events.
+import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 type Msg = { id?: number; method?: string; params?: any; result?: any; error?: { message: string }; sessionId?: string };
@@ -14,13 +16,14 @@ type Ev = { t: number; src: 'host' | 'frame' | 'net' | 'step'; kind: string; [k:
 
 const [portArg, scenarioFile, outFile] = process.argv.slice(2);
 if (!outFile) throw new Error('usage: perf-probe.ts <cdp port> <scenario.json> <out.json>');
-const scenario = JSON.parse(readFileSync(scenarioFile, 'utf8')) as { sessions: Record<string, string>; steps: Step[] };
+const scenario = JSON.parse(readFileSync(scenarioFile, 'utf8')) as { sessions: Record<string, string>; steps: Step[]; seed?: { root: string; sessions: string } };
 type Step =
   | { open: string; settle?: number }            // click a sidebar session by scenario name, then wait
   | { idle: number; label: string }              // observe without input
   | { rail: 'open' | 'close' }                   // right rail toggle via the host's right-bar Agent progress button
   | { page: 'open'; settle?: number }            // fullscreen page via the host's left-bar Agent progress entry
   | { metrics: string }                          // host page metrics after forced GC
+  | { seed: string }                             // controlled report update: seed-real.ts <seed.root> <seed.sessions> <script>
   | { repeat: number; steps: Step[]; label: string };
 
 const list = (await (await fetch(`http://127.0.0.1:${portArg}/json/list`)).json()) as { type: string; url: string; webSocketDebuggerUrl: string }[];
@@ -76,7 +79,8 @@ const FRAME_SCRIPT = `(() => {
     emit({ kind: 'render', n: renders, ...c, changed: sig !== last });
     last = sig;
   }).observe(document, { subtree: true, childList: true });
-  window.__perfState = () => ({ inst, surface, renders, timers: timers.size, intervals: intervals.size, listeners, visibility: document.visibilityState });
+  const counts = () => { const r = document.querySelector('[data-testid=progress-root]'); return r ? [...new Set((r.textContent.match(/\\d+\\/\\d+\\s*done/g) || []).map((x) => x.replace(/\\s*done/, '')))] : []; };
+  window.__perfState = () => ({ inst, surface, renders, timers: timers.size, intervals: intervals.size, listeners, visibility: document.visibilityState, counts: counts() });
   emit({ kind: 'boot' });
   addEventListener('pagehide', () => emit({ kind: 'pagehide', renders, timers: timers.size, intervals: intervals.size, listeners }));
 })();`;
@@ -107,7 +111,7 @@ const HOST_SCRIPT = `(() => {
   };
   new MutationObserver(scan).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'srcdoc'] });
   scan();
-  window.__hostFrames = () => [...seen.keys()].map((f) => ({ frame: idOf(f), surface: surfaceOf(f), visible: !!f.offsetParent }));
+  window.__hostFrames = () => [...seen.keys()].map((f) => ({ frame: idOf(f), surface: surfaceOf(f), visible: !!f.offsetParent && !f.closest('[inert]') }));
   return 'installed';
 })()`;
 
@@ -178,8 +182,22 @@ async function metrics(label: string) {
   const m = Object.fromEntries((await send('Performance.getMetrics')).metrics.map((x: { name: string; value: number }) => [x.name, x.value]));
   const frames = await evalHost('window.__hostFrames ? window.__hostFrames() : []');
   const states = [] as unknown[];
-  for (const [sid, url] of sessionsFrames) if (/\/ui\/|srcdoc/.test(url)) states.push(await send('Runtime.evaluate', { expression: 'window.__perfState ? window.__perfState() : null', returnByValue: true }, sid).then((r) => r.result.value).catch(() => null));
+  // Frames attached before their first navigation report an empty URL, so every iframe target is asked;
+  // only documents carrying the injected probe answer.
+  for (const [sid, url] of sessionsFrames) if (/\/ui\/|srcdoc/.test(url) || url === '') states.push(await send('Runtime.evaluate', { expression: 'window.__perfState ? window.__perfState() : null', returnByValue: true }, sid).then((r) => r.result.value).catch(() => null));
   events.push({ src: 'step', kind: 'metrics', t: now(), label, heapMB: +(m.JSHeapUsedSize / 1048576).toFixed(2), nodes: m.Nodes, listeners: m.JSEventListeners, documents: m.Documents, frames: m.Frames, taskSec: +m.TaskDuration.toFixed(3), scriptSec: +m.ScriptDuration.toFixed(3), hostFrames: frames, guestStates: states.filter(Boolean) });
+  writeOut();
+}
+async function seed(script: string) {
+  if (!scenario.seed) throw new Error('seed step needs scenario.seed { root, sessions }');
+  const t0 = now();
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', new URL('./seed-real.ts', import.meta.url).pathname, scenario.seed.root, scenario.seed.sessions, script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { out += d; });
+  const code = await new Promise<number | null>((r) => child.on('exit', r));
+  const replies = out.trim().split('\n').map((l) => { try { return JSON.parse(l).reply; } catch { return l.slice(0, 120); } });
+  events.push({ src: 'step', kind: 'report-update', t: now(), script: script.split('/').pop(), ok: code === 0 && replies.every((r) => r && typeof r === 'object' && !('error' in r)), ms: now() - t0, replies });
 }
 async function runStep(step: Step, label = '') {
   if ('open' in step) {
@@ -191,7 +209,8 @@ async function runStep(step: Step, label = '') {
     await sleep(step.idle);
     events.push({ src: 'step', kind: 'idle-end', t: now(), label: step.label });
   } else if ('rail' in step) {
-    const open = await evalHost(`!![...document.querySelectorAll('iframe')].find(f=>/\\/ui\\/panel\\//.test(f.getAttribute('src')||'')&&f.offsetParent)`);
+    // A closed rail can stay mounted (transparent and inert), so "open" means laid out and not inert.
+    const open = await evalHost(`!![...document.querySelectorAll('iframe')].find(f=>/\\/ui\\/panel\\//.test(f.getAttribute('src')||'')&&f.offsetParent&&!f.closest('[inert]'))`);
     if ((step.rail === 'open') !== open) {
       const xy = await barButton('right');
       if (!xy) throw new Error('no right-bar Agent progress button');
@@ -206,14 +225,15 @@ async function runStep(step: Step, label = '') {
     await click(xy[0], xy[1]);
     await sleep(step.settle ?? 3000);
   } else if ('metrics' in step) await metrics(step.metrics);
+  else if ('seed' in step) await seed(step.seed);
   else if ('repeat' in step) for (let i = 0; i < step.repeat; i++) for (const s of step.steps) await runStep(s, `${step.label}#${i}`);
 }
 
 const started = now();
+function writeOut() { writeFileSync(outFile, JSON.stringify({ port: portArg, hostInstall, startedAt: started, durationMs: now() - started, maxInflight, events })); }
 await sleep(500);
 for (const s of scenario.steps) await runStep(s);
 await sleep(300);
 ws.close();
-const out = { port: portArg, hostInstall, startedAt: started, durationMs: now() - started, maxInflight, events };
-writeFileSync(outFile, JSON.stringify(out));
-console.log(JSON.stringify({ events: events.length, durationMs: out.durationMs, maxInflight }));
+writeOut();
+console.log(JSON.stringify({ events: events.length, durationMs: now() - started, maxInflight }));

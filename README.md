@@ -12,6 +12,8 @@ Accepted source updates include correctly scoped recent-session memory with quie
 
 The Linux-only setup suggestions and capture support do not extend to other platforms. Bounded isolated tests did not reproduce the previously reported long-uptime real-host sluggishness. Validation on a real instance over hours remains a release blocker. Building this candidate does not change an existing installation; evaluate it through a manual install when ready.
 
+Longer isolated endurance checks kept requests, frames and companion connections bounded without navigation-latency drift in the tested windows. A small host-page heap increase during session switching remains unexplained; these checks do not establish that the hours-long issue is fixed.
+
 ## Install for evaluation
 
 When the candidate is ready for evaluation:
