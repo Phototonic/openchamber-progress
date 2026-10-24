@@ -1,0 +1,38 @@
+{
+  "name": "openchamber-agent-progress-probe",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": { "openchamber": ">=2.5.1" },
+    "contributes": {
+      "panel": { "id": "agent-progress-probe", "name": "Agent progress", "icon": "checkbox-circle", "entry": "ui/panel/index.html" },
+      "statusSection": { "entry": "ui/status/index.html", "title": "Agent progress", "height": 160 },
+      "page": { "entry": "ui/page/index.html", "title": "Agent progress" },
+      "attach": false,
+      "capabilities": ["sessions"],
+      "service": { "entry": "build/service/main.js", "runtime": "host", "permissions": {} }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:backend": "node --experimental-strip-types --test tests/backend/*.test.ts",
+    "build:backend": "bun scripts/build.ts",
+    "build": "bun run build:backend",
+    "package": "node --experimental-strip-types scripts/package.ts",
+    "verify:package": "node --experimental-strip-types scripts/verify-package.ts",
+    "bundle:guest": "openchamber-guest-bundle",
+    "prepare:probe": "bun scripts/prepare-probe.ts",
+    "setup": "node build/setup/main.js",
+    "check": "bun run typecheck && bun run test:backend && bun run build:backend && bun run package && bun run verify:package"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "2.5.1",
+    "@opencode/plugin": "2.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}

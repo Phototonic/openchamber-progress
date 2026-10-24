@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["shared/**/*.ts", "plugin/**/*.ts", "service/**/*.ts", "setup/**/*.ts", "tests/backend/**/*.ts", "tests/fixtures/**/*.ts", "scripts/cli-probe.ts", "scripts/backend-evidence.ts", "scripts/package*.ts", "scripts/verify*package.ts"]
+}

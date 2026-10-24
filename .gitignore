@@ -1,0 +1,25 @@
+# Local-only evidence gathering — never committed (owner decision, 2026-10-24)
+evidence/
+
+# Local project instructions — never committed (owner decision, 2026-10-24)
+AGENTS.md
+
+# Installed dependencies and generated build output
+node_modules/
+build/
+
+# Local planning state
+.slim/
+
+# Runtime databases, SQLite sidecars, and logs
+*.sqlite
+*.sqlite3
+*.db
+*-journal
+*-wal
+*-shm
+*.log
+
+# Local environment and secrets (keep a safe example file trackable)
+.env*
+!.env.example

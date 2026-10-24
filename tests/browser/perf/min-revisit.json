@@ -1,0 +1,2 @@
+{"sessions":{"A1":"Perf A1 plan","A2":"Perf A2 plan","A3":"Perf A3 empty"},
+ "steps":[{"rail":"close"},{"open":"A3","settle":2500},{"open":"A1","settle":2500},{"open":"A2","settle":2500},{"open":"A1","settle":2500}]}

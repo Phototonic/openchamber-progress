@@ -1,0 +1,70 @@
+import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared/progress.ts';
+import { Store, storageError } from '../shared/store.ts';
+import { SetupError, type Action } from '../setup/lifecycle.ts';
+import type { SetupController } from './setup-controller.ts';
+
+/** Only fixed read/control routes. No store, token, path or SQL from request bodies. */
+export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
+  if (!token) throw new ProgressError('binding');
+  const expected = Buffer.from(`Bearer ${token}`);
+  const server = http.createServer(async (req,res) => {
+    function answer(status: number, body: unknown) {
+      let text = JSON.stringify(body);
+      if (Buffer.byteLength(text) > LIMITS.responseBytes) { status=413;text=JSON.stringify({error:'response-too-large'}); }
+      res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}); res.end(text);
+    }
+    const supplied = Buffer.from(req.headers.authorization ?? '');
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
+    try {
+      const url = new URL(req.url ?? '/','http://127.0.0.1');
+      if (url.origin !== 'http://127.0.0.1') return answer(404,{error:'not-found'});
+      if(url.pathname==='/v1/setup'||url.pathname.startsWith('/v1/setup/')) {
+        if(url.search)return answer(404,{error:'not-found'});
+        if(!setup)return answer(503,{error:'setup-unavailable'});
+        if(url.pathname==='/v1/setup') {
+          if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
+          if(req.headers['content-length']&&req.headers['content-length']!=='0'||req.headers['transfer-encoding'])return answer(400,{error:'body-not-allowed'});
+          return answer(200,setup.status(true));
+        }
+        const action=url.pathname.slice('/v1/setup/'.length);
+        if(!['inspect','install','update','disable','enable','remove-capture'].includes(action))return answer(404,{error:'not-found'});
+        if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
+        let size=0;const chunks:Buffer[]=[];
+        for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
+        let body:unknown;try{const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));body=text?JSON.parse(text):{};}catch{throw new ProgressError('invalid');}
+        return answer(200,setup.run(action as Action,body));
+      }
+      if (req.headers['content-length'] && req.headers['content-length'] !== '0' || req.headers['transfer-encoding']) return answer(400,{error:'body-not-allowed'});
+      const active=setup?setup.current():{store,error:unavailableCode};const currentStore=active.store;
+      if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
+        if (req.method !== 'POST') return answer(405,{error:'method-not-allowed'});
+        if (url.search) return answer(404,{error:'not-found'});
+        if(!currentStore)return answer(503,{error:active.error??'storage'});
+        if(setup&&url.pathname.endsWith('/enable')){setup.run('enable',{confirmed:true});return answer(200,{ok:true,captureEnabled:true});}
+        currentStore.setEnabled(url.pathname.endsWith('/enable')); return answer(200,{ok:true,captureEnabled:url.pathname.endsWith('/enable')});
+      }
+      if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
+      const routes: Record<string,string[]> = { '/health':[], '/v1/plans':['cursor','limit','source','session','directory'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
+      const allowed = routes[url.pathname];
+      if (!allowed || [...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) return answer(404,{error:'not-found'});
+      const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
+      const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
+      if(url.pathname==='/health'&&!currentStore&&setup&&'configured' in active&&!active.configured&&active.error==='binding')return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      if(!currentStore)return answer(503,{error:active.error??'storage'});
+      if (url.pathname === '/health') return answer(200,{ok:true,ready:true,sqlite:true,protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      if (url.pathname === '/v1/plans') return answer(200,currentStore.list({cursor:number('cursor',0),limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory')}));
+      const source = text('source',true)!; const plan = text('plan',true)!;
+      if (url.pathname === '/v1/plan') return answer(200,currentStore.detail(source,plan,number('cursor',0)));
+      if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
+      return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
+    } catch (e) {
+      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
+      const error = e instanceof ProgressError ? e : storageError(e);
+      return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
+    }
+  });
+  server.requestTimeout=5000;server.headersTimeout=5000;
+  return server;
+}
