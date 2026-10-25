@@ -65,7 +65,9 @@ It runs root/UI typechecks, portable backend tests, browser-model and automation
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
-The [workflow](.github/workflows/ci.yml) declares `main`/`dev` push and PR-target filters. **Initial rollout is main-only:** `dev` does not yet contain the workflow and required inputs, so dev-target PR CI is not established. Activating it needs a separately authorized synchronization and an observed dev push or dev-target PR run; the branch filter alone is not proof that a check runs.
+The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. Both branches contain the workflow and required inputs, and a `dev` push run has passed. PR-target coverage is configured; a PR-triggered run has not yet been observed.
+
+Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
 
 ### Built files are intentional
 
@@ -104,7 +106,7 @@ Maintainers must complete the supported native-host Git/folder/ZIP and companion
 
 A **higher numeric `major.minor.patch` package version reaching `main`** makes the included workflow eligible to validate that exact revision and automatically publish a matching `v<version>` tag and release assets: extension/companion ZIPs and checksum inventories. It uses only native GitHub-generated release notes: **What's Changed**, applicable **New Contributors** mentions, and **Full Changelog**. It does not promise a list of every direct commit or custom contributor enumeration.
 
-The automation does not bump versions, commit to `main`, or publish to npm. Same-version pushes—including the current 0.2.5 launch setup—skip publication without creating a tag or release; an empty release history does not bootstrap one. This publication policy is separate from OpenChamber's official-main version notice and the explicitly confirmed companion update/reload flow.
+The automation does not bump versions, commit to `main`, or publish to npm. Same-version pushes—including the earlier 0.2.5 launch setup—skip publication without creating a tag or release; an empty release history does not bootstrap one. Version 0.2.6 starts the versioned release sequence; publication requires the exact main revision to pass the workflow. This publication policy is separate from OpenChamber's official-main version notice and the explicitly confirmed companion update/reload flow.
 
 ## Before opening a PR
 

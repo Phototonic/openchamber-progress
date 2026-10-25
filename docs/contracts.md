@@ -1,6 +1,6 @@
 # Frozen production contract v2 — T3 / Designer handoff
 
-Private PR candidate **0.2.5** (unreleased) is independent of protocol/schema **2**. Setup's version
+Current package version **0.2.6** is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases. Local QA under
 evidence/ and project instructions AGENTS.md are never committed or shipped.
@@ -67,7 +67,7 @@ Older services may return404; missing/malformed optional replies mean unavailabl
 
 ```ts
 interface ExtensionUpdateRead {
-  installedVersion: string; // this extension's RELEASE, currently0.2.5
+  installedVersion: string; // this extension's RELEASE, currently0.2.6
   repository: 'Phototonic/openchamber-progress';
   ref: 'main';
   state: 'available' | 'not-newer' | 'unknown';

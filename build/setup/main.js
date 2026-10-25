@@ -840,7 +840,7 @@ function lifecycle(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "0.2.5";
+var RELEASE = "0.2.6";
 
 // setup/cli.ts
 try {

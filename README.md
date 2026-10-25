@@ -34,7 +34,7 @@ Progress comes from **deliberate reports**, not passive observation or inferred 
 3. **Inspect**, review the resolved targets and full-user host-service privilege, then explicitly confirm companion installation.
 4. Follow the activation notice and reload/restart OpenCode **when safe**. Opening a new session alone is not a reliable reload. Begin work with an agent that can use `agent_progress_report`.
 
-The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. There is no tagged GitHub Release for the current **0.2.5** version.
+The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Current package version is **0.2.6**. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
 
 ## Before you enable capture
 
@@ -53,9 +53,9 @@ The public Git distribution uses **`main`** and includes built runtime files: **
 
 Companion updates preserve the configured store and history. See [setup and lifecycle details](docs/setup.md#bundled-companion-detection-u1-backend-u2-ui-follow-up).
 
-### Future releases
+### Automated releases
 
-Maintainer-approved **higher package versions reaching `main`** are configured to run checks and automatically publish matching `v<version>` tags and ZIP assets. Release notes use GitHub's native **What's Changed**, applicable **New Contributors**, and **Full Changelog** sections—not a custom all-commits list. Same-version docs/CI pushes, including this 0.2.5 automation setup, do **not** create a tag or release. OpenChamber's update notice still checks the `main` manifest, not GitHub Releases.
+Maintainer-approved **higher package versions reaching `main`** are configured to run checks and automatically publish matching `v<version>` tags and ZIP assets. Release notes use GitHub's native **What's Changed**, applicable **New Contributors**, and **Full Changelog** sections—not a custom all-commits list. Same-version docs/CI pushes, including the earlier 0.2.5 automation setup, do **not** create a tag or release. OpenChamber's update notice still checks the `main` manifest, not GitHub Releases.
 
 ## Go deeper
 

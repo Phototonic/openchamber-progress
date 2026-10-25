@@ -6,6 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {verifyPackageContents} from '../../scripts/verify-package.ts';
+import {RELEASE} from '../../shared/release.ts';
 
 const repository=fileURLToPath(new URL('../../',import.meta.url));
 const notices=['LICENSE','THIRD_PARTY_NOTICES.md','licenses/Apache-2.0.txt'];
@@ -14,10 +15,10 @@ function put(root:string,name:string,value:string|Buffer) {
 }
 function fixture(kind:'extension'|'companion') {
   const root=mkdtempSync('/tmp/opencode/package-notices-');
-  const source=path.join(root,'source');const artifact=path.join(source,`build/artifacts/agent-progress-${kind}-0.2.5`);
+  const source=path.join(root,'source');const artifact=path.join(source,`build/artifacts/agent-progress-${kind}-${RELEASE}`);
   const entries=['package.json','docs/setup.md',...notices,'build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js',...(kind==='extension'?['build/service/main.js',...['panel','status','page'].flatMap(view=>[`ui/${view}/index.html`,`ui/${view}/main.js`])]:[])];
   for(const entry of entries) {
-    const content=notices.includes(entry)?readFileSync(path.join(repository,entry)):entry==='package.json'?JSON.stringify({version:'0.2.5',license:'MIT'}):'synthetic package fixture\n';
+    const content=notices.includes(entry)?readFileSync(path.join(repository,entry)):entry==='package.json'?JSON.stringify({version:RELEASE,license:'MIT'}):'synthetic package fixture\n';
     put(source,entry,content);put(artifact,entry,content);
   }
   function zip() {
@@ -88,7 +89,7 @@ for(const kind of ['extension','companion'] as const) {
   });
   test(`${kind}: project metadata cannot silently drop or replace MIT`,()=>{
     const f=fixture(kind);try{
-      put(f.artifact,'package.json',JSON.stringify({version:'0.2.5',license:'UNLICENSED'}));
+      put(f.artifact,'package.json',JSON.stringify({version:RELEASE,license:'UNLICENSED'}));
       assert.throws(()=>verifyPackageContents(f.artifact,kind,f.source),/packaged project license metadata/);
     }finally{f.cleanup();}
   });

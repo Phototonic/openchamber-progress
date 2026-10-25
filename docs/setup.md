@@ -1,7 +1,8 @@
 # Safe global companion setup (production v2)
 
-Package versions use the 0.x line; protocol/schema remain 2. Current main is 0.2.5;
-its launch automation setup does not create a tag or GitHub Release. Historical
+Package versions use the 0.x line; protocol/schema remain 2. Current package version
+is 0.2.6. Tagged releases are published after main promotion and successful
+workflow checks. Historical
 package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
 original labels. `evidence/` and `AGENTS.md` are local-only, never committed or
 included in either package. Local evidence references below are not shipped files.
@@ -36,7 +37,7 @@ report receipt. Hidden/restricted tools are never enabled or bypassed.
 
 The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
 with default branch `main`. Anonymous access to its main manifest is established;
-the current manifest version is 0.2.5. The root `private: true` is an npm publishing
+the package manifest version is 0.2.6. The root `private: true` is an npm publishing
 guard, not a statement about GitHub visibility.
 OpenChamber clones the selected/default ref and inspects its existing runtime
 entries; it does not install dependencies or compile TypeScript. The root manifest
@@ -54,7 +55,8 @@ exception, not a routine runtime promotion or permission for partial builds:
    is not proof it has been committed. No partial runtime build on main.
 2. Select a higher semver for the future promotion, with root manifest, RELEASE,
    compiled service/companion and companion metadata agreeing. The completed
-   baseline promotion selected 0.2.5; archived 0.2.4 artifacts stay unchanged.
+   baseline promotion selected 0.2.5; version 0.2.6 starts the automated-release
+   sequence. Archived 0.2.4 artifacts stay unchanged.
    Git validation derives disposable higher versions from the candidate.
 3. Inspect the candidate Git tree's ordinary runtime files and match their hashes
    to the accepted artifact projection. No consumer prepare/build/dependency fetch.
@@ -74,8 +76,8 @@ exception, not a routine runtime promotion or permission for partial builds:
    diagnosis. Fixture success never authorizes a real installation or restart.
 
 Portable CI requires a fresh disposable checkout and refuses nonempty artifact
-directories without deleting archives. Its external-runtime exclusions and the
-main-only initial rollout/dev activation gap are documented in
+directories without deleting archives. Its external-runtime exclusions and current
+main/dev push and PR-target coverage are documented in
 [CONTRIBUTING.md](../CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only).
 OpenChamber update awareness remains based on the main manifest, not GitHub Releases;
 companion updates and activation still require explicit review/confirmation/reload.
@@ -328,39 +330,40 @@ agent-progress-probe to preserve Work Status openSurface; labels are Agent progr
 T5 assembles these built backend entries with Designer's already-owned guests;
 this document does not claim an installable extension ZIP was produced in T3.
 
-## V1 installable artifacts (0.2.5; historical validation notes)
+## V1 installable artifacts (0.2.6)
 
-V1 is the product scope; the current main version is **0.2.5**,
-agreeing across extension and companion payloads. The 0.2.5 promotion-metadata patch
+V1 is the product scope; the current package version is **0.2.6**,
+agreeing across extension and companion payloads. This version-only release adds
+no runtime behavior to 0.2.5. The 0.2.5 promotion-metadata patch
 adds no feature behavior to0.2.4. It retains accepted cached-revisit/
 spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
 suggestions, preserved separator normalization and failed-setup Store cleanup.
 The smaller-import experiment was not promoted; no persistent-service Store reuse
-or payload-audit cache was added. This patch distinguishes the candidate from
-installed/archived0.2.2; it has no tagged GitHub Release and is not a complete performance cure.
+or payload-audit cache was added. This patch distinguishes the distribution from
+installed/archived0.2.2; it is not a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
-UX; updates remain user-confirmed and activation remains separate. This candidate
-does not authorize installing0.2.5 into the real host; historical real0.2.3 update
+UX; updates remain user-confirmed and activation remains separate. Release publication
+does not authorize installing0.2.6 into the real host; historical real0.2.3 update
 evidence and its pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. The artifacts described here are
-locally assembled and unsigned; no hosted release or signature verification is claimed.
+unsigned; checksum inventories verify content integrity, not publisher signatures.
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.5/` and `.zip`: host manifest, the three Designer
+- `agent-progress-extension-0.2.6/` and `.zip`: host manifest, the three Designer
   HTML/main.js guests copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.2.5/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-0.2.6/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.2.5.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-0.2.6.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
   Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts remain local QA history; select the0.2.5 pair explicitly.
+   older0.x artifacts remain local QA history; select the0.2.6 pair explicitly.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.
