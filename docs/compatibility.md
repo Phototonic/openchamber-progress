@@ -43,6 +43,57 @@ build), `node_modules/.bin/tsc -p ui/tsconfig.json --noEmit`, and
 also verified all3 `ui/*/main.js` SHA256 hashes against the screenshot bundle
 hashes in `evidence/compatibility/ui-runtime.json`.
 
+## Agnostic activation (private0.2.4 package validation)
+
+The credential-free2.1.4 native probe in
+`tests/backend/progress-activation-runtime.test.ts` uses a separate test observer
+and deterministic local AISDK package inside a fresh Linux network namespace.
+It asserts **production** guidance and one-shot hints in actual outgoing scripted
+requests, not merely observer callback snapshots. Real `write` create/replacement,
+`edit`, a write error, effective report-tool hiding for a restricted child and an
+authenticated source-free report receipt/Store write are exercised. Installed
+adapter tests exercise production hooks with a fake host and real Store. Scripted
+choices prove plumbing, never LLM compliance or universal activation. A1's accepted
+observer-only/baseline-package evidence remains archived separately. The private
+P1 join also passed this native test against the final packaged companion entry
+and matching sibling guidance, without rebuilding the accepted guest bundles.
+This validates those bytes in isolation, not a real-user install or public release.
+
+Pinned file metadata is `write`/`edit` with `input.path` (not legacy `filePath`),
+`status: "completed"` and structured `result.output`; errors are a separate
+`status: "error"` branch. These single-file tools expose no separate successful
+partial outcome. Shell writes, opaque `patch`/`apply_patch`/`functions.patch`,
+unknown tools and arbitrary/non-Markdown document names are **not detected** by
+the conventional-path hint; source-free deliberate reports still work. This
+coordinator's frequent opaque patch writes can therefore receive no file hint.
+The primary context still receives recurring generic guidance when eligible.
+No patch-body or content parsing is implied. Local diagnostic evidence and the
+exact bounded coverage are in `evidence/activation/{native-host.md,coverage.md}`.
+
+Run the production activation and native tests with Node24.19.0 and existing Bun;
+the native probe requires the independent 2.1.4 binary plus working rootless
+`unshare -Urn` and `ip`. It fails rather than falling back to an online provider.
+`ACTIVATION_COMPANION_ENTRY=build/companion/index.js` selects those verbatim
+companion bytes and sibling guidance, with the observer separately loaded. Use
+that argument against the selected activation package; unchanged old bundles do
+not contain activation and cannot pass the production-guidance assertions. The
+Designer browser helper was also exercised against the packaged payload with real
+Store writes/awaited disposal, but its hook stubs prove no native/browser behavior.
+
+```sh
+node --experimental-strip-types --test tests/backend/progress-activation.test.ts tests/backend/plugin-setup.test.ts tests/backend/production-contract.test.ts
+node --experimental-strip-types --test tests/backend/progress-activation-runtime.test.ts tests/backend/plugin-failure-runtime.test.ts
+```
+
+### Future interoperability, not a required integration
+
+A cooperating vendor could deliberately report source-optional plans using the
+existing report operations and authenticated host tool context, then separately
+define what accepted handoff means. Worker completion/Ready alone is not accepted
+handoff. Any missing typed lifecycle event needs demonstrated demand and separate
+review; RPC-supplied session IDs are not authority. No Slim dependency, adapter,
+new declaration gate or external repository change is implemented or required.
+
 ## Independent CLI, not the managed wrapper
 
 Owner explicitly approved an independent temporary CLI download. The PATH
@@ -124,7 +175,7 @@ session IDs are never navigable. See `ui-probe.md` for screenshots/interactions.
 
 ## Isolated OpenChamber launch: Designer's tested desktop route
 
-Available `/home/phototonic/.local/bin/openchamber` is the installed OpenChamber2.5.1
+The available installed OpenChamber executable was the OpenChamber2.5.1
 AppImage (SHA256 in `ui-runtime.json`), not a web CLI. Designer extracted that exact
 AppImage to a temporary directory and verified isolation before installation.
 The earlier T1 direct-binary DISPLAY candidate was not the tested route. OpenCode
@@ -133,7 +184,9 @@ installation/build/modification or managed bundled-CLI invocation was used.
 
 Executed commands below are sourced from `evidence/compatibility/ui-probe.md`
 Commands/Isolation; they are historical reproduction instructions, not a request
-to relaunch or overwrite profiles. H used fresh0700 directories. X is the
+to relaunch or overwrite profiles. For reproduction, set `OPENCHAMBER_APPIMAGE`
+to the absolute path of that installed AppImage; its original personal path is
+omitted here. H used fresh0700 directories. X is the
 temporary extraction directory. APPDIR is required (its omission caused the first
 attempt to exit127); no APPIMAGE variable was passed, preventing replacement of
 the installed AppImage. Startup output was discarded to avoid printing secrets.
@@ -142,7 +195,7 @@ the installed AppImage. Startup output was discarded to avoid printing secrets.
 X=/tmp/opencode/agent-progress-t2-appimage
 H=/tmp/opencode/agent-progress-probe-t2-host
 # Extraction was executed with X as the working directory:
-# /home/phototonic/.local/bin/openchamber --appimage-extract
+# "$OPENCHAMBER_APPIMAGE" --appimage-extract
 env -i PATH=/usr/bin:/bin SHELL=/bin/sh LANG=en_US.UTF-8 APPDIR=$X/squashfs-root \
   HOME=$H/home XDG_CONFIG_HOME=$H/config XDG_DATA_HOME=$H/data XDG_STATE_HOME=$H/state \
   XDG_CACHE_HOME=$H/cache XDG_RUNTIME_DIR=$H/runtime WAYLAND_DISPLAY=/run/user/1000/wayland-1 \

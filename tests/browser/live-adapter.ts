@@ -100,7 +100,7 @@ try {
   log = [];
   const docAfter = await readDocument(host, plan);
   check('3b.next-read-is-current-capture', docAfter.ok && !docAfter.body.historical && docAfter.body.text === revisedText && (docAfter.body.captureId ?? 0) > (docBefore.ok ? docBefore.body.captureId ?? 0 : 0), docAfter.ok ? { captureId: docAfter.body.captureId, historical: docAfter.body.historical } : docAfter.failure);
-  tool.dispose();
+  await tool.dispose();
 } catch (error) {
   failures.push(`harness: ${error instanceof Error ? error.message : String(error)}`);
 } finally {

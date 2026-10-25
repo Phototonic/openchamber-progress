@@ -1,6 +1,6 @@
 # Frozen production contract v2 — T3 / Designer handoff
 
-Private testing candidate **0.2.4** (unreleased) is independent of protocol/schema **2**. Setup's version
+Private PR candidate **0.2.5** (unreleased) is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases. Local QA under
 evidence/ and project instructions AGENTS.md are never committed or shipped.
@@ -9,6 +9,18 @@ Canonical DTO: `shared/progress.ts` (protocolVersion=2, schemaVersion=2).
 Announced before shared changes. Only Heavy Fixer owns shared files; consumers
 must switch sequentially. The old `shared/contract.ts` ProbeRead is historical
 fixture code, never a production fallback. UI implementation is Designer-owned.
+
+## Advisory activation does not change the protocol
+
+The companion can add one owned section to an eligible outgoing primary context
+and one conditional possible-plan-file hint. Neither is a report receipt, plan,
+assignment, review/acceptance, capture, or completion event. Existing explicit
+`agent_progress_report` operations, source-optional inputs, transactional control,
+authorization and outputs remain unchanged. Hidden/restricted tools are never
+enabled by guidance; a child still needs explicit assignment and permitted relay.
+Unknown tools, shell/opaque patches and arbitrary/non-Markdown paths are not
+inferred as plan documents. Structured plans need no file. There is no new
+service/RPC field, durable hint state, prompt configuration or global gate.
 
 ## Fixed authenticated read API
 
@@ -45,6 +57,88 @@ filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified by Designer against the CURRENT host.
 
 ## DTO meanings
+
+### Official-main version awareness (U1, U2 consumer contract)
+
+`GET /v1/extension-update` requires the same service bearer, no query/body, and
+works before companion/store lookup. Wrong method405, query404, body400, auth401.
+Upstream failure is an HTTP200 metadata reply, not a progress/setup failure.
+Older services may return404; missing/malformed optional replies mean unavailable.
+
+```ts
+interface ExtensionUpdateRead {
+  installedVersion: string; // this extension's RELEASE, currently0.2.5
+  repository: 'Phototonic/openchamber-progress';
+  ref: 'main';
+  state: 'available' | 'not-newer' | 'unknown';
+  checkedAt: string | null; // most recent SUCCESSFUL validation/revalidation
+  stale: boolean;
+  candidateVersion?: string; // validated official-main manifest semver only
+  diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' |
+    'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
+  nextCheckAt: string; // finite server ISO time; next eligible check, not a timer promise
+}
+```
+
+`available` means only that the named official main advertises a higher semver.
+`not-newer` means that official manifest is equal/older, not that a custom selected
+source, companion or loaded instance is current. Same-version changed bytes do not
+produce availability. `unknown` has no validated candidate, checkedAt=null and
+stale=false. After failure, a known candidate/state and original checkedAt remain,
+with stale=true and a fixed failure diagnostic. Do not render retained stale
+knowledge as a fresh successful check. No upstream body, message or URL is returned.
+
+This does not inspect actual installation provenance or audit remote runtime files.
+The host alone installs updates. Use fixed UI link
+`https://github.com/Phototonic/openchamber-progress/tree/main`; never derive a link
+from network metadata. Copy names **“Official main version X available”**, explains
+Settings → Extensions and the custom branch/tag/fork/ZIP limitation. Never claim
+the advertised candidate is installed, bundled, loaded or installable merely from
+this metadata check. Preserve SetupRead.update and its explicit companion button.
+
+Ask on visible-frame readiness and coarse nextCheckAt eligibility, not each progress
+poll/task/render/session switch. Hidden/disposed frames initiate no request; retire
+late replies on host/service generation changes. A service restart starts a new
+in-memory cache. Cache successful knowledge for1h, failures for at least5min (longer
+provider deadlines honored); multiple frames share one service in-flight request.
+
+### Optional reported-working timing (T1, M2 consumer contract)
+
+Only service `GET /v1/plan` adds the following response-only field. Older services
+may omit it; absence is valid and means no elapsed claim. Stored items, tool input,
+tool read output, schema and protocol remain unchanged at2.
+
+```ts
+interface PlanTiming {
+  readAt: string; // server ISO timestamp for this reply, never a cached timestamp
+  items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }>;
+}
+// PlanRead gains: timing?: PlanTiming
+```
+
+The object belongs to the enclosing storeId/sourceId/plan.id/plan.revision. Entries
+cover proven currently working tasks across the whole plan, not only this item
+page. Never merge pages/timing across revisions; restart on revision change.
+Missing item entries mean unknown/unavailable or ineligible, never elapsed zero.
+Groups, nonworking tasks and closed plans have no entries. An empty object does
+not assert that no work occurred. Timing derivation does not use contributions or
+the latest report age as a substitute for an interval boundary.
+
+`exact`: `since` is the first reported-working snapshot after creation or the most
+recent inactive/absent/non-task/nonworking boundary. Repeated working, assignment,
+relay, links, unrelated changes and redundant active reopen are neutral.
+`lower-bound`: `since` is only the earliest verified working snapshot within the
+bounded scan. Say “Observed in progress by …; start unknown” and “at least …”, not
+“Reported in progress at …”. An exact entry may use that latter absolute label.
+This is reported progress, not CPU/token/model time or proof of continued activity.
+
+Anchor elapsed to `readAt - since` when receiving the response, then advance with
+a local monotonic receipt-time anchor. Preserve that anchor during cached revisits
+and repaints. Do not subtract server timestamps from browser wall time. New replies
+provide fresh server anchors; network transit makes the display approximate.
+Reject invalid/future times rather than inventing zero. Missing, contradictory or
+invalid history produces no start claim; a valid capped suffix yields only a lower
+bound. Closed→reopen, blocked→working and remove→re-add reset the interval.
 
 Envelope includes persistent random storeId, source descriptors, captureEnabled,
 recorded-only coverage and diagnostic codes. `sourceBinding:{sourceId,verified}`

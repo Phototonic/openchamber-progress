@@ -9,6 +9,7 @@ import { parseRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, ty
 import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
 import { activationFingerprint } from '../shared/activation.ts';
+import { registerActivation } from './activation.ts';
 
 export default Plugin.define({ id:'agent-progress', async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL('./progress-binding.json',import.meta.url));
@@ -16,6 +17,7 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
   const dataRoot = path.join(process.env.XDG_DATA_HOME || path.join(homedir(),'.local/share'),'opencode');
   need(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && realpathSync(configRoot) === b.source.configRoot && realpathSync(dataRoot) === b.source.dataRoot,'binding');
   const store = new Store(b.database);
+  let deactivate: (() => Promise<void>) | undefined;
   try {
   verifyStore(store,b);store.bindReads(b.source.id,b.source.verified);
   async function identity(sessionID: Parameters<typeof ctx.session.get>[0]['sessionID'], agent: string): Promise<Actor> {
@@ -56,18 +58,21 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
       },
     });
   });
+  const control = store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
+  deactivate = await registerActivation(ctx,b.source,()=>control.get()?.enabled===1);
   await ctx.rpc.register(ProgressStatus,{inspect:async()=>{const tool=(await ctx.tool.list()).find(t=>t.id==='agent_progress_report');return{protocolVersion:2,version:b.version,storeId:b.storeId,sourceId:b.source.id,captureEnabled:store.list({limit:1}).captureEnabled,toolAvailable:!!tool,codemodeDisabled:tool?.options?.codemode===false};}});
   store.observeLoaded(b.source.id,b.installId,activationFingerprint(b,readFileSync(fileURLToPath(import.meta.url)),readFileSync(new URL('./SKILL.md',import.meta.url))));
-  return () => store.close();
+  return async () => { try { await deactivate?.(); } finally { store.close(); } };
   } catch(error) {
     // No disposer is returned when setup rejects. Never strand the opened store,
     // and do not let a secondary close failure replace the setup diagnostic.
+    await deactivate?.();
     try { store.close(); } catch { /* preserve the original setup failure */ }
     throw error;
   }
 } });
 
-const GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. Report at meaningful start/change/delegation/finish boundaries, not on a timer. Activity/idle/age never means completion.
+const GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;

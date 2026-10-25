@@ -2,7 +2,7 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import type {
-  ContributionView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
+  ContributionView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
 } from './model.ts';
 
 export const SUPPORTED_PROTOCOL = 2;
@@ -25,7 +25,7 @@ const LIFECYCLES: Record<string, Lifecycle> = { active: 'active', finished: 'com
 const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', 'missing', 'moved', 'oversized', 'non-text', 'unavailable', 'changed-during-read'];
 
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
-export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', setup: '/v1/setup' } as const;
+export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
 export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 
@@ -143,6 +143,28 @@ export function parsePlansPage(body: string) {
   return { envelope: parseEnvelope(v), ...page(v, parseSummary, 'Plan list') };
 }
 
+export interface TimingView { items: Record<string, { kind: 'exact' | 'lower-bound'; since: string; elapsedAtRead: number }> }
+
+/**
+ * Optional reported-working timing of a detail reply. It is a claim, so doubt reads as no claim:
+ * an absent or unreadable object gives null (no elapsed labels), and an unreadable entry, or one
+ * that starts after the reply's own read time, is dropped (that task's start is unknown).
+ * Durations use only the service's clock: readAt - since.
+ */
+export function parseTiming(v: unknown): TimingView | null {
+  if (!isRec(v) || !isStr(v.readAt) || !isRec(v.items)) return null;
+  const readAt = Date.parse(v.readAt);
+  if (Number.isNaN(readAt)) return null;
+  const items: TimingView['items'] = {};
+  for (const [id, e] of Object.entries(v.items)) {
+    if (!isRec(e) || !isStr(e.since) || (e.kind !== 'exact' && e.kind !== 'lower-bound')) continue;
+    const since = Date.parse(e.since);
+    if (Number.isNaN(since) || since > readAt) continue;
+    items[id] = { kind: e.kind, since: e.since, elapsedAtRead: readAt - since };
+  }
+  return { items };
+}
+
 /** GET /v1/plan: one detail page. */
 export function parsePlanPage(body: string) {
   const v: unknown = JSON.parse(body);
@@ -157,6 +179,7 @@ export function parsePlanPage(body: string) {
       check(isRec(l) && isStr(l.sessionId) && Array.isArray(l.itemIds), `Plan ${plan.id} has an unreadable assignment link.`);
       return { sessionId: l.sessionId, itemIds: l.itemIds.filter(isStr) };
     }),
+    timing: parseTiming(v.timing),
   };
 }
 
@@ -210,6 +233,35 @@ export function parseSetup(body: string): SetupView {
     action: optStr(v.action),
     ...(s ? { suggestions: { configRoot: hint(s.configRoot), dataRoot: hint(s.dataRoot), storeRoot: hint(s.storeRoot) } } : {}),
     ...(update ? { update } : {}),
+  };
+}
+
+const STRICT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const DIAGNOSTICS: readonly OfficialMainView['diagnostic'][] = ['ok', 'unavailable', 'rate-limited', 'invalid-manifest', 'invalid-response', 'redirect', 'too-large', 'timeout', 'shutdown'];
+const isTime = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v));
+
+/**
+ * GET /v1/extension-update. Every field must match the frozen meaning, including the fixed
+ * official repository and branch, and the states must agree with each other (an availability
+ * names a candidate; unknown has neither candidate nor last success). Anything else throws; the
+ * caller treats that as unknown, never as "up to date".
+ */
+export function parseExtensionUpdate(body: string): OfficialMainView {
+  const v: unknown = JSON.parse(body);
+  check(isRec(v), 'Update reply is not an object.');
+  const semver = (x: unknown): x is string => isStr(x) && x.length <= 64 && STRICT_SEMVER.test(x);
+  check(semver(v.installedVersion) && v.repository === 'Phototonic/openchamber-progress' && v.ref === 'main', 'Update reply names another extension or source.');
+  check(v.state === 'available' || v.state === 'not-newer' || v.state === 'unknown', 'Update reply has an unknown state.');
+  check((v.checkedAt === null || isTime(v.checkedAt)) && typeof v.stale === 'boolean' && isTime(v.nextCheckAt), 'Update reply has unreadable times.');
+  check(v.candidateVersion === undefined || semver(v.candidateVersion), 'Update reply has an unreadable version.');
+  check(DIAGNOSTICS.includes(v.diagnostic as OfficialMainView['diagnostic']), 'Update reply has an unknown diagnostic.');
+  if (v.state === 'available') check(v.candidateVersion !== undefined && v.checkedAt !== null, 'Update reply announces no version.');
+  if (v.state === 'not-newer') check(v.checkedAt !== null, 'Update reply has no successful check.');
+  if (v.state === 'unknown') check(v.candidateVersion === undefined && v.checkedAt === null && v.stale === false, 'Update reply contradicts itself.');
+  return {
+    installedVersion: v.installedVersion, state: v.state, checkedAt: v.checkedAt as string | null, stale: v.stale,
+    ...(v.candidateVersion !== undefined ? { candidateVersion: v.candidateVersion as string } : {}),
+    diagnostic: v.diagnostic as OfficialMainView['diagnostic'], nextCheckAt: v.nextCheckAt as string,
   };
 }
 

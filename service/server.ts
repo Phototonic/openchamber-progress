@@ -4,9 +4,11 @@ import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared
 import { Store, storageError } from '../shared/store.ts';
 import { SetupError, type Action } from '../setup/lifecycle.ts';
 import type { SetupController } from './setup-controller.ts';
+import { taskTiming } from './task-timing.ts';
+import { ExtensionUpdates } from './extension-updates.ts';
 
 /** Only fixed read/control routes. No store, token, path or SQL from request bodies. */
-export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
+export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController, updates = new ExtensionUpdates()) {
   if (!token) throw new ProgressError('binding');
   const expected = Buffer.from(`Bearer ${token}`);
   const server = http.createServer(async (req,res) => {
@@ -20,6 +22,12 @@ export function createProgressServer(store: Store | undefined, token: string, un
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       if (url.origin !== 'http://127.0.0.1') return answer(404,{error:'not-found'});
+      if(url.pathname==='/v1/extension-update') {
+        if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
+        if(url.search)return answer(404,{error:'not-found'});
+        if(req.headers['content-length']&&req.headers['content-length']!=='0'||req.headers['transfer-encoding'])return answer(400,{error:'body-not-allowed'});
+        return answer(200,await updates.check());
+      }
       if(url.pathname==='/v1/setup'||url.pathname.startsWith('/v1/setup/')) {
         if(url.search)return answer(404,{error:'not-found'});
         if(!setup)return answer(503,{error:'setup-unavailable'});
@@ -56,7 +64,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (url.pathname === '/health') return answer(200,{ok:true,ready:true,sqlite:true,protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       if (url.pathname === '/v1/plans') return answer(200,currentStore.list({cursor:number('cursor',0),limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory')}));
       const source = text('source',true)!; const plan = text('plan',true)!;
-      if (url.pathname === '/v1/plan') return answer(200,currentStore.detail(source,plan,number('cursor',0)));
+      if (url.pathname === '/v1/plan') {
+        const detail=currentStore.detail(source,plan,number('cursor',0));
+        return answer(200,{...detail,timing:taskTiming(currentStore,detail)});
+      }
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
     } catch (e) {
@@ -66,5 +77,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
   });
   server.requestTimeout=5000;server.headersTimeout=5000;
+  const close=server.close.bind(server);
+  server.close=(callback?)=>{updates.close();return close(callback);};
+  server.on('close',()=>updates.close());
   return server;
 }

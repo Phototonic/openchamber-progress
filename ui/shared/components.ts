@@ -1,10 +1,10 @@
 // DOM building blocks shared by the three surfaces. Every string lands through textContent.
 import { mountBadge, mountBanner, mountButton, mountEmpty, mountSpinner, type Tone } from '@openchamber/sdk/ui';
 import type { Loadable } from './app.ts';
-import { absoluteTime, baseName, clockTime, relativeAge } from './format.ts';
+import { absoluteTime, baseName, clockTime, elapsedText, relativeAge } from './format.ts';
 import { canOpen, coverageFor, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import {
-  blockedWork, currentWork, DOCUMENT_STATE_TEXT, itemTree, LIFECYCLE_LABEL, participants, STATUS_LABEL, subtreeCounts, summarize, summaryText,
+  blockedWork, currentWork, DOCUMENT_STATE_TEXT, elapsedAt, itemTree, LIFECYCLE_LABEL, participants, showsLiveness, STATUS_LABEL, subtreeCounts, summarize, summaryText,
   type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type PlanDetail, type PlanSummary, type PlanView, type StoreRead,
 } from './model.ts';
 import { placeOf } from './scope.ts';
@@ -13,11 +13,15 @@ import type { ReadFailure } from './source.ts';
 export interface Env {
   locale: string;
   now: number;
+  /** Monotonic time of this paint (performance.now), for elapsed labels. */
+  mono: number;
   live: LiveSnapshot;
   /** The service's verified source binding, or null. Navigation requires a match. */
   boundSource: string | null;
   /** Recorded sources the store does not mark verified; their plans show an unverified identity. */
   unverifiedSources: ReadonlySet<string>;
+  /** The last read succeeded and capture is on; together with an active plan this gates motion. */
+  view: { fresh: boolean; captureEnabled: boolean };
   openSession?: (sessionId: string) => void;
 }
 
@@ -39,12 +43,56 @@ export function age(iso: string, env: Env, prefix = '') {
   return t;
 }
 
-/** Re-labels every age in place without repainting the view. */
-export function refreshAges(root: ParentNode, locale: string, now = Date.now()) {
+const elapsedLabelText = (kind: string | undefined, ms: number) => {
+  const text = elapsedText(ms);
+  return text === null ? 'time unknown' : kind === 'lower-bound' ? `at least ${text}` : text;
+};
+
+/**
+ * How long a working task has been reported in progress, for the Now callout and Work Status.
+ * Only for a working task of an active plan whose reply carried timing; a missing entry says the
+ * start is unknown instead of showing zero. Ticks in place (refreshLabels).
+ */
+export function elapsedLabel(plan: PlanView, item: ItemView, detail: PlanDetail, env: Env) {
+  if (plan.lifecycle !== 'active' || item.kind !== 'task' || item.status !== 'working' || !detail.timing) return null;
+  const a = detail.timing[item.id];
+  const t = testid(el('time', 'ap-elapsed'), `elapsed-${item.id}`);
+  if (!a) {
+    t.dataset.kind = 'unknown';
+    t.textContent = 'time unknown';
+    t.title = 'The progress service could not tell when this task was reported in progress.';
+    return t;
+  }
+  t.dateTime = a.since;
+  t.dataset.kind = a.kind;
+  t.dataset.elapsed = String(a.elapsedAtRead);
+  t.dataset.received = String(a.receivedAt);
+  const at = absoluteTime(a.since, env.locale);
+  t.title = a.kind === 'exact' ? `Reported in progress at ${at}` : `Observed in progress by ${at}; start unknown`;
+  t.textContent = elapsedLabelText(a.kind, elapsedAt(a, env.mono));
+  return t;
+}
+
+/**
+ * Re-labels every age and elapsed time in place without repainting the view; text changes only
+ * when the label differs. Elapsed time comes from each label's anchor, not from counted ticks.
+ */
+export function refreshLabels(root: ParentNode, locale: string, now = Date.now(), mono = performance.now()) {
   for (const t of root.querySelectorAll<HTMLTimeElement>('time[data-age]')) {
     const text = `${t.dataset.age ?? ''}${relativeAge(t.dateTime, now, locale)}`;
     if (t.textContent !== text) t.textContent = text;
   }
+  for (const t of root.querySelectorAll<HTMLTimeElement>('time[data-elapsed]')) {
+    const text = elapsedLabelText(t.dataset.kind, Number(t.dataset.elapsed) + Math.max(0, mono - Number(t.dataset.received)));
+    if (t.textContent !== text) t.textContent = text;
+  }
+}
+
+/** Blue in-progress status text; `data-text` feeds its decorative pulse overlay (style.ts). */
+function workingText(text: string) {
+  const t = el('span', 'ap-working-text', text);
+  t.dataset.text = text;
+  return t;
 }
 
 export function glyph(status: ItemView['status']) {
@@ -81,7 +129,12 @@ export function progressBlock(s: PlanSummary, compact = false) {
   counts.dataset.total = String(s.total);
   counts.dataset.remaining = String(s.remaining);
   counts.dataset.skipped = String(s.skipped);
-  if (compact) counts.append(el('span', '', `${summaryText(s)}${s.blocked ? ` · ${s.blocked} blocked` : ''}`));
+  if (compact) {
+    const line = el('span', '', summaryText(s));
+    if (s.working) line.append(' · ', workingText(`${s.working} in progress`));
+    if (s.blocked) line.append(` · ${s.blocked} blocked`);
+    counts.append(line);
+  }
   else if (s.total === 0) counts.append(el('span', '', summaryText(s)));
   else counts.append(el('strong', '', `${s.done}/${s.total}`), el('span', '', `done · ${s.remaining} remaining${s.skipped ? ` · ${s.skipped} skipped` : ''}`));
   wrap.append(counts);
@@ -105,7 +158,7 @@ export function progressBlock(s: PlanSummary, compact = false) {
         if (!n) continue;
         const item = el('span');
         item.dataset.k = k;
-        item.append(el('i'), document.createTextNode(`${n} ${label}`));
+        item.append(el('i'), k === 'working' ? workingText(`${n} ${label}`) : document.createTextNode(`${n} ${label}`));
         legend.append(item);
       }
       wrap.append(legend);
@@ -157,6 +210,8 @@ function currentWorkBlock(plan: PlanView, detail: PlanDetail, env: Env) {
   for (const item of [...working, ...blocked].slice(0, 4)) {
     const row = el('div', 'ap-now-item');
     row.append(glyph(item.status), el('strong', '', item.title));
+    const elapsed = elapsedLabel(plan, item, detail, env);
+    if (elapsed) row.append(elapsed);
     const who = assigneeOf(item, detail);
     if (who && who !== plan.ownerSessionId) row.append(sessionChip(who, env, plan.directory).node);
     box.append(row);
@@ -311,7 +366,9 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   root.dataset.source = plan.sourceId;
   root.dataset.revision = String(plan.revision);
   const ready = hooks.detail?.state === 'ready' && hooks.detail.value.revision === plan.revision ? hooks.detail.value : null;
-  root.append(planHeader(plan, env, options.heading), progressBlock(summarize(plan, ready)));
+  const summary = summarize(plan, ready);
+  if (showsLiveness(plan.lifecycle, summary, env.view)) root.dataset.motion = 'on';
+  root.append(planHeader(plan, env, options.heading), progressBlock(summary));
   if (ready) {
     const now = currentWorkBlock(plan, ready, env);
     if (now) root.append(now);

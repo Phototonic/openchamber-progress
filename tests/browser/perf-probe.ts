@@ -64,7 +64,7 @@ const FRAME_SCRIPT = `(() => {
     const r = document.querySelector('[data-testid=progress-root]');
     if (!r) return { s: 'none', plans: [] };
     const q = (sel) => !!r.querySelector(sel);
-    const plans = [...r.querySelectorAll('[data-testid]')].map((n) => n.dataset.testid).filter((x) => /^plan-(row-)?P/.test(x)).map((x) => x.replace(/^plan-(row-)?/, ''));
+    const plans = [...r.querySelectorAll('[data-testid]')].map((n) => n.dataset.testid).filter((x) => /^plan-/.test(x) && !/^plan-(list|detail|selector)$/.test(x)).map((x) => x.replace(/^plan-(row-)?/, ''));
     const state = r.getAttribute('aria-busy') === 'true' || q('[data-testid=state-loading]') ? 'loading'
       : q('[data-testid^=state-]') ? [...r.querySelectorAll('[data-testid^=state-]')].map((n) => n.dataset.testid).join('+')
       : q('[data-testid=setup-panel],[data-testid=setup-needed]') ? 'setup'

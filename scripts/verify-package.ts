@@ -59,6 +59,7 @@ try {
   }
   run(['--check',path.join(extension,'build/service/main.js')]);
   console.log(JSON.stringify({manifestParser:true,guestEntries:3,guestBytesUnchanged:true,version,protocolVersion:VERSION,schemaVersion:VERSION,selfContainedSyntax:true}));
+  console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
 
   // Exact packaged service, before any companion install. No source controller or DTO mocks.
   const fresh=`${root}/fresh-setup`;for(const dir of ['home/.config/opencode','home/.local/share/opencode','selector'])mkdirSync(`${fresh}/${dir}`,{recursive:true,mode:0o700});

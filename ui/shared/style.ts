@@ -37,11 +37,29 @@ button{font:inherit}
 .ap-legend [data-k="working"] i{background:var(--oc-info)}
 .ap-legend [data-k="blocked"] i{background:var(--oc-warning)}
 
+/* Reported in-progress work: readable blue status text. Motion only under [data-motion="on"]
+   (active plan, working tasks, fresh read, capture on), on one shared 2.4 s phase (app.ts alignMotion).
+   Decorative only: the bar width, counts and text never change with it.
+   Text pulse: the text keeps the host's readable info-text colour; an identical overlay fades in
+   towards the foreground, so every phase has at least the token's own contrast. */
+.ap-working-text{color:var(--oc-info-text,var(--oc-info))}
+[data-motion="on"] .ap-working-text{position:relative;display:inline-block;white-space:nowrap}
+[data-motion="on"] .ap-working-text::after{content:attr(data-text) / "";position:absolute;inset:0;color:color-mix(in srgb,var(--oc-info-text,var(--oc-info)) 55%,var(--oc-fg));opacity:0;animation:ap-text-pulse 2.4s ease-in-out infinite}
+[data-motion="on"] .ap-seg [data-k="working"]{position:relative;overflow:hidden}
+[data-motion="on"] .ap-seg [data-k="working"]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--oc-bg) 55%,transparent),transparent);transform:translateX(-100%);animation:ap-sheen 2.4s ease-in-out infinite}
+[data-motion="on"] .ap-now .ap-glyph[data-status="working"]::after,[data-motion="on"] [data-testid="current-work"] .ap-glyph[data-status="working"]::after{animation:ap-dot-pulse 2.4s ease-in-out infinite}
+@keyframes ap-text-pulse{0%,100%{opacity:0}50%{opacity:.9}}
+@keyframes ap-sheen{0%{transform:translateX(-100%)}65%,100%{transform:translateX(100%)}}
+@keyframes ap-dot-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.7)}}
+[data-ap-hidden] *,[data-ap-hidden] *::before,[data-ap-hidden] *::after{animation:none!important}
+
 /* Current work callout */
 .ap-now{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 .ap-now-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
 .ap-now-item{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .ap-now-item strong{font-weight:500}
+.ap-elapsed{color:var(--oc-info-text,var(--oc-info));font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ap-elapsed[data-kind="unknown"]{color:var(--oc-muted)}
 
 /* Section heading */
 .ap-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
@@ -89,6 +107,9 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-link{background:none;border:0;padding:0;color:var(--oc-primary-text,var(--oc-primary));cursor:pointer;font-size:11.5px}
 .ap-link:hover{text-decoration:underline}
 
+/* Official-main notice */
+.ap-official{display:flex;flex-direction:column;gap:4px}
+
 /* Plan selector */
 .ap-picker .oc-sdk-select{width:100%}
 
@@ -130,7 +151,9 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
 
 /* Status section */
-.ap[data-surface="status"]{padding:4px 12px 10px;gap:8px}
+/* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
+html[data-oc-surface="status"]{scrollbar-gutter:auto}
+.ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
 .ap-status-plan{display:flex;flex-direction:column;gap:6px}
 .ap-status-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .ap-status-row{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -147,5 +170,5 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-detail{min-width:0;padding:16px;border-radius:var(--oc-radius,12px);background:color-mix(in srgb,var(--oc-fg) 3%,transparent)}
 .ap-detail-tabs{margin-bottom:4px}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
-@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;

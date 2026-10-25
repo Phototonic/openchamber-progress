@@ -44,4 +44,4 @@ for (const step of script) {
   useClock(0);
   console.log(JSON.stringify({ step: n++, as: step.as, op: step.input.op, plan: step.input.plan, ...(step.clockOffsetMinutes ? { clockOffsetMinutes: step.clockOffsetMinutes } : {}), reply }));
 }
-tool.dispose();
+await tool.dispose();

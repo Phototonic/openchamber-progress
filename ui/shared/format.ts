@@ -13,6 +13,22 @@ export function relativeAge(iso: string, now: number, locale: string): string {
   return rtf.format(Math.round(seconds / 60), 'minute');
 }
 
+/**
+ * Whole-minute duration of a reported-working interval: "<1 min", "12 min", "3 h 5 min",
+ * "2 days 4 h". No seconds: the start is when work was reported, not when it began. Null when
+ * the value cannot be a duration.
+ */
+export function elapsedText(ms: number): string | null {
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '<1 min';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'day' : 'days'}${hours % 24 ? ` ${hours % 24} h` : ''}`;
+}
+
 export function absoluteTime(iso: string, locale: string): string {
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return iso;

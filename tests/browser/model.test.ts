@@ -2,13 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { GuestRequest } from '@openchamber/sdk';
 import { countItems } from '../../shared/progress.ts';
-import { parseHealth, parsePlanPage, parsePlansPage, parseSetup, setupBody } from '../../ui/shared/adapter.ts';
-import { relativeAge } from '../../ui/shared/format.ts';
+import { parseExtensionUpdate, parseHealth, parsePlanPage, parsePlansPage, parseSetup, parseTiming, setupBody } from '../../ui/shared/adapter.ts';
+import { elapsedText, relativeAge } from '../../ui/shared/format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, LiveWorkspace, type LiveSession, type LiveSnapshot } from '../../ui/shared/live.ts';
-import { currentWork, itemTree, participants, summarize, summaryText, type PlanDetail } from '../../ui/shared/model.ts';
+import { currentWork, elapsedAt, itemTree, participants, showsLiveness, summarize, summaryText, type PlanDetail } from '../../ui/shared/model.ts';
 import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
-import { classify, readDetail, readDocument, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
+import { CSS } from '../../ui/shared/style.ts';
+import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
+import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
+import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
 import { applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
   DOCUMENT_TEXT, envelope, HEALTH, HEALTH_UNCONFIGURED, NOW, OTHER_SRC, P1, P1_ITEMS, P2, P3, planPage, plansPage, RELAY, S, setupRead, SRC, summary, X1,
@@ -477,4 +480,206 @@ test('live workspace stays within its cap, restarts cleanly and releases late-re
   (resolveLate as (() => void) | null)?.();
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(names(), []);
+});
+
+test('reported-progress motion: only an active plan with working tasks, in a fresh read with capture on', () => {
+  const fresh = { fresh: true, captureEnabled: true };
+  const s = summarize(plan('P1'), detailOf());
+  assert.ok(s.working > 0);
+  assert.equal(showsLiveness('active', s, fresh), true);
+  // Nothing working, closed plans (even with tasks still marked working), stale/failed reads and
+  // capture off all stay static. Report age and live session state are not inputs.
+  assert.equal(showsLiveness('active', { working: 0 }, fresh), false);
+  for (const lifecycle of ['completed', 'cancelled', 'failed'] as const) assert.equal(showsLiveness(lifecycle, s, fresh), false);
+  assert.equal(showsLiveness('active', s, { fresh: false, captureEnabled: true }), false);
+  assert.equal(showsLiveness('active', s, { fresh: true, captureEnabled: false }), false);
+});
+
+test('motion CSS: gated, compositor-only keyframes, stopped by reduced motion (pseudo-elements too) and while hidden', () => {
+  const rules = CSS.split('}').map((r) => r.trim());
+  // Every animated rule outside keyframes sits under the motion gate.
+  for (const r of rules.filter((x) => /(^|[;{])animation:ap-/.test(x))) assert.match(r, /^\[data-motion="on"\]/, r);
+  // Keyframes move only transform/opacity: no width, colour or background animation.
+  const frames = CSS.match(/@keyframes ap-[\w-]+\{(?:[^{}]*\{[^{}]*\})+\}/g) ?? [];
+  assert.equal(frames.length, 3);
+  for (const f of frames) for (const [, prop] of f.matchAll(/[{;]([a-z-]+):/g)) assert.ok(['opacity', 'transform'].includes(prop), `${prop} in ${f}`);
+  assert.match(CSS, /@media\(prefers-reduced-motion:reduce\)\{\*,\*::before,\*::after\{animation:none!important/);
+  assert.match(CSS, /\[data-ap-hidden\] \*,\[data-ap-hidden\] \*::before,\[data-ap-hidden\] \*::after\{animation:none!important\}/);
+  // Readable text token for the status text, with the base colour only as an older-host fallback.
+  assert.match(CSS, /\.ap-working-text\{color:var\(--oc-info-text,var\(--oc-info\)\)\}/);
+});
+
+test('elapsed text: whole minutes, hours and days; never seconds; nothing for an impossible value', () => {
+  const m = 60_000, h = 60 * m, d = 24 * h;
+  const cases: [number, string | null][] = [
+    [0, '<1 min'], [59_999, '<1 min'], [m, '1 min'], [59 * m + 59_999, '59 min'], [h, '1 h'], [h + 5 * m, '1 h 5 min'],
+    [23 * h + 59 * m, '23 h 59 min'], [d, '1 day'], [2 * d + 4 * h + 30 * m, '2 days 4 h'], [-1, null], [Number.NaN, null],
+  ];
+  for (const [ms, text] of cases) assert.equal(elapsedText(ms), text, String(ms));
+});
+
+test('timing parse: optional claim — absent or unreadable gives none; bad or future entries mean unknown start', () => {
+  const readAt = '2026-10-25T12:00:00.000Z';
+  const t = parseTiming({ readAt, items: {
+    A: { since: '2026-10-25T09:00:00.000Z', kind: 'exact' },
+    B: { since: '2026-10-25T11:59:30.000Z', kind: 'lower-bound' },
+    C: { since: '2026-10-25T12:00:05.000Z', kind: 'exact' }, // after the reply's own read time
+    D: { since: 'not a time', kind: 'exact' },
+    E: { since: '2026-10-25T10:00:00.000Z', kind: 'started' },
+  } });
+  assert.deepEqual(t, { items: { A: { kind: 'exact', since: '2026-10-25T09:00:00.000Z', elapsedAtRead: 3 * 3_600_000 }, B: { kind: 'lower-bound', since: '2026-10-25T11:59:30.000Z', elapsedAtRead: 30_000 } } });
+  for (const bad of [undefined, null, 'x', { readAt }, { readAt: 'nope', items: {} }, { items: {} }]) assert.equal(parseTiming(bad), null);
+  // An older service: the detail reply stays valid and carries no timing.
+  assert.equal(parsePlanPage(JSON.stringify(planPage(P1, P1_ITEMS, [RELAY]))).timing, null);
+});
+
+test('elapsed anchor: service clock at the reply plus monotonic time since receipt, whatever the browser clock says', async () => {
+  const readAt = '2026-10-25T12:00:00.000Z';
+  const body = { ...planPage(P1, P1_ITEMS, [RELAY]), timing: { readAt, items: { I3: { since: '2026-10-25T11:00:00.000Z', kind: 'exact' } } } };
+  const realNow = Date.now;
+  try {
+    Date.now = () => Date.parse('2031-01-01T00:00:00Z'); // browser wall clock far ahead of the service
+    const res = await readDetail(fakeHost(() => ({ status: 200, body })), plan('P1'), () => 5_000);
+    assert.ok(res.ok && res.detail.timing);
+    const a = res.ok ? res.detail.timing!.I3 : null;
+    assert.deepEqual(a, { kind: 'exact', since: '2026-10-25T11:00:00.000Z', elapsedAtRead: 3_600_000, receivedAt: 5_000 });
+    assert.equal(elapsedText(elapsedAt(a!, 5_000)), '1 h');
+    assert.equal(elapsedText(elapsedAt(a!, 5_000 + 30 * 60_000)), '1 h 30 min');
+    assert.equal(elapsedAt(a!, 4_000), 3_600_000); // a monotonic reading before receipt never shortens it
+  } finally { Date.now = realNow; }
+  // Older service: no timing at all (no labels), not an empty claim.
+  const old = await readDetail(fakeHost(() => ({ status: 200, body: planPage(P1, P1_ITEMS, [RELAY]) })), plan('P1'), () => 0);
+  assert.equal(old.ok && old.detail.timing, undefined);
+});
+
+test('elapsed anchor follows the revision the detail was read at: a restart takes the new reply and its receipt time', async () => {
+  let rev = 4;
+  let firstCalls = 0;
+  let clock = 100;
+  const items = Array.from({ length: 21 }, (_, i) => ({ id: `T${i}`, title: `Task ${i}`, kind: 'task' as const, status: i === 0 ? 'working' as const : 'pending' as const }));
+  const timing = (since: string) => ({ readAt: '2026-10-25T12:00:00.000Z', items: { T0: { since, kind: 'exact' } } });
+  const host = fakeHost((r) => {
+    if (!r.query?.cursor) {
+      firstCalls++;
+      return { status: 200, body: { ...planPage({ ...P1, revision: rev }, items.slice(0, 20), [], { items: '1', contributions: null }), timing: timing(rev === 4 ? '2026-10-25T11:00:00.000Z' : '2026-10-25T11:50:00.000Z') } };
+    }
+    const body = planPage({ ...P1, revision: firstCalls === 1 ? 5 : rev }, items.slice(20), [], { items: null, contributions: null });
+    if (firstCalls === 1) rev = 5; // T0 was blocked and reopened: a new interval at revision 5
+    return { status: 200, body };
+  });
+  const res = await readDetail(host, plan('P1'), () => clock++);
+  assert.ok(res.ok);
+  assert.deepEqual(res.ok && [res.detail.revision, res.detail.timing!.T0.elapsedAtRead, res.detail.timing!.T0.receivedAt], [5, 10 * 60_000, 101]);
+});
+
+const OFFICIAL = { installedVersion: '0.2.4', repository: 'Phototonic/openchamber-progress', ref: 'main', state: 'available', checkedAt: '2026-10-25T10:00:00.000Z', stale: false, candidateVersion: '0.2.5', diagnostic: 'ok', nextCheckAt: '2026-10-25T11:00:00.000Z' };
+
+test('official-main reply: frozen fields and consistent states only; anything else is unknown, never up to date', async () => {
+  const parse = (x: object) => parseExtensionUpdate(JSON.stringify(x));
+  const { repository: _r, ref: _f, ...view } = OFFICIAL; // validated, then fixed: the view keeps no source identity of its own
+  assert.deepEqual(parse(OFFICIAL), view);
+  assert.equal(parse({ ...OFFICIAL, state: 'not-newer', candidateVersion: undefined }).state, 'not-newer');
+  assert.deepEqual(parse({ ...OFFICIAL, state: 'unknown', checkedAt: null, candidateVersion: undefined, diagnostic: 'unavailable' }).state, 'unknown');
+  // A failed recheck keeps the known candidate as stale knowledge with its original success time.
+  assert.deepEqual([parse({ ...OFFICIAL, stale: true, diagnostic: 'timeout' }).stale, parse({ ...OFFICIAL, stale: true, diagnostic: 'timeout' }).checkedAt], [true, OFFICIAL.checkedAt]);
+  for (const bad of [
+    { ...OFFICIAL, repository: 'someone/fork' }, { ...OFFICIAL, ref: 'dev' }, { ...OFFICIAL, candidateVersion: undefined }, { ...OFFICIAL, checkedAt: null },
+    { ...OFFICIAL, state: 'unknown' }, { ...OFFICIAL, state: 'newer' }, { ...OFFICIAL, candidateVersion: 'v0.2.5' }, { ...OFFICIAL, candidateVersion: '<b>1.0.0</b>' },
+    { ...OFFICIAL, diagnostic: 'something' }, { ...OFFICIAL, nextCheckAt: 'soon' }, { ...OFFICIAL, stale: 'no' }, { ...OFFICIAL, installedVersion: 1 },
+  ]) assert.throws(() => parse(bad), JSON.stringify(bad));
+  // Through the service proxy: an older service (404), a malformed body or a failure is null (unknown).
+  assert.equal((await readExtensionUpdate(fakeHost(() => ({ status: 200, body: OFFICIAL }))))?.candidateVersion, '0.2.5');
+  for (const reply of [{ status: 404, body: { error: 'not-found' } }, { status: 200, body: 'not json' }, { status: 200, body: { ...OFFICIAL, ref: 'dev' } }, { status: 503, body: { error: 'busy' } }]) {
+    assert.equal(await readExtensionUpdate(fakeHost(() => reply)), null);
+  }
+  const host = fakeHost(() => ({ status: 200, body: OFFICIAL }));
+  await readExtensionUpdate(host);
+  assert.deepEqual(host.calls, [{ method: 'GET', path: '/v1/extension-update' }]); // no query, no body: nothing to choose a source
+});
+
+test('official-main notice: an availability only, dismissed per version; fixed link and copy, stale qualified', () => {
+  const v = parseExtensionUpdate(JSON.stringify(OFFICIAL));
+  const n = officialMainNotice(v, null)!;
+  assert.deepEqual([n.candidate, n.installed], ['0.2.5', '0.2.4']);
+  assert.equal(officialMainNotice(v, '0.2.5'), null);
+  assert.ok(officialMainNotice({ ...v, candidateVersion: '0.2.6' }, '0.2.5')); // a newer version is announced again
+  assert.equal(officialMainNotice({ ...v, state: 'not-newer' }, null), null);
+  assert.equal(officialMainNotice({ ...v, state: 'unknown', candidateVersion: undefined, checkedAt: null }, null), null);
+  assert.equal(officialMainNotice(null, null), null);
+  const text = officialMainText(n, 'en', Date.parse('2026-10-25T10:30:00Z'));
+  assert.equal(text.title, 'Official main version 0.2.5 available · This extension 0.2.4');
+  assert.equal(text.body, OFFICIAL_MAIN_HOWTO);
+  assert.match(OFFICIAL_MAIN_HOWTO, /Settings → Extensions/);
+  assert.match(OFFICIAL_MAIN_HOWTO, /can’t tell which source/);
+  const stale = officialMainText({ ...n, stale: true, diagnostic: 'rate-limited' }, 'en', Date.parse('2026-10-25T12:00:00Z'));
+  assert.match(stale.body, /^This may be out of date: the latest check was rate-limited; last confirmed 2 hours ago\. /);
+  assert.equal(OFFICIAL_MAIN_URL, 'https://github.com/Phototonic/openchamber-progress/tree/main');
+});
+
+test('compact official-main line qualifies stale knowledge and still opens progress', (t) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    createElement: (tag: string) => {
+      assert.equal(tag, 'button');
+      return Object.assign(new EventTarget(), { dataset: {}, className: '', textContent: '', type: '', title: '' });
+    },
+  } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document'); });
+  const v = parseExtensionUpdate(JSON.stringify(OFFICIAL));
+  const hooks = { officialMain: v, officialMainDismissed: null as string | null, dismissOfficialMain: () => {}, openOfficialMain: () => {}, env: { locale: 'en' } };
+  let opened = 0;
+  const open = () => { opened++; };
+  const fresh = officialMainLine(hooks, open)!;
+  assert.equal(fresh.textContent, 'Official main 0.2.5 available');
+  assert.doesNotMatch(fresh.title, /out of date/);
+  for (const checkedAt of [v.checkedAt, null]) {
+    const stale = officialMainLine({ ...hooks, officialMain: { ...v, stale: true, diagnostic: 'timeout', checkedAt } }, open)!;
+    assert.match(stale.textContent!, /Official main 0\.2\.5 available.*check out of date/);
+    assert.match(stale.title, /may be out of date/);
+    stale.dispatchEvent(new Event('click'));
+  }
+  assert.equal(opened, 2);
+  assert.equal(officialMainLine({ ...hooks, officialMainDismissed: v.candidateVersion! }, open), null);
+  assert.equal(officialMainLine({ ...hooks, officialMain: null }, open), null);
+});
+
+test('official-main dismissal made while a check is held stays; reloads and newer versions behave', async () => {
+  const v = parseExtensionUpdate(JSON.stringify(OFFICIAL));
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const heldHost: ServiceHost = { serviceRequest: async () => { await held; return { status: 200, body: JSON.stringify(OFFICIAL) }; } };
+  const state = new OfficialMainState();
+  state.apply(0, v, null); // 0.2.5 already shown
+  assert.ok(officialMainNotice(state.value, state.dismissed));
+  const pending = state.check(heldHost, { get: async () => null }); // reads storage before the dismissal lands
+  state.dismiss('0.2.5'); // the user dismisses while the reply is held
+  release();
+  const done = await pending;
+  // Pre-fix composition (the reply's stored read overwrote the local choice) would show it again:
+  assert.ok(officialMainNotice(done.next, null));
+  done.apply();
+  assert.equal(officialMainNotice(state.value, state.dismissed), null);
+  assert.equal(state.dismissed, '0.2.5');
+  // A later check that reads nothing stored yet does not clear it either.
+  (await state.check({ serviceRequest: async () => ({ status: 200, body: JSON.stringify(OFFICIAL) }) }, { get: async () => undefined })).apply();
+  assert.equal(officialMainNotice(state.value, state.dismissed), null);
+  // A reloaded frame takes the stored dismissal; a newer candidate is announced again.
+  const fresh = new OfficialMainState();
+  (await fresh.check({ serviceRequest: async () => ({ status: 200, body: JSON.stringify(OFFICIAL) }) }, { get: async () => '0.2.5' })).apply();
+  assert.equal(officialMainNotice(fresh.value, fresh.dismissed), null);
+  (await fresh.check({ serviceRequest: async () => ({ status: 200, body: JSON.stringify({ ...OFFICIAL, candidateVersion: '0.2.6' }) }) }, { get: async () => '0.2.5' })).apply();
+  assert.equal(officialMainNotice(fresh.value, fresh.dismissed)?.candidate, '0.2.6');
+  // A newer local dismissal wins over an older stored one read by a check in flight.
+  let releaseB!: () => void;
+  const heldB = new Promise<void>((r) => { releaseB = r; });
+  const pendingB = fresh.check({ serviceRequest: async () => { await heldB; return { status: 200, body: JSON.stringify({ ...OFFICIAL, candidateVersion: '0.2.6' }) }; } }, { get: async () => '0.2.5' });
+  fresh.dismiss('0.2.6');
+  releaseB();
+  (await pendingB).apply();
+  assert.equal(officialMainNotice(fresh.value, fresh.dismissed), null);
+});
+
+test('elapsed labels are blue (readable info text); an unknown start stays muted', () => {
+  assert.match(CSS, /\.ap-elapsed\{color:var\(--oc-info-text,var\(--oc-info\)\);/);
+  assert.match(CSS, /\.ap-elapsed\[data-kind="unknown"\]\{color:var\(--oc-muted\)\}/);
 });

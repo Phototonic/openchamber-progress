@@ -4,13 +4,22 @@ OpenChamber Agent Progress is an OpenChamber extension with an OpenCode companio
 
 Reports and captured documents are stored in a local SQLite database. Capture and the host service are designed for the same machine and account; a web or relay client can view the connected host's data, but this does not make capture work across separate hosts or containers. The extension and companion are written in TypeScript.
 
+When the companion is loaded, capture is enabled and the report tool is available,
+it proactively supplies concise planning/progress guidance in outgoing contexts.
+Successful native `write`/`edit` operations on conventional Markdown plan paths
+can also produce one conditional next-context hint. No Slim integration, manual
+skill load, special agent name or prompt/config edit is required. Structured or
+non-Markdown plans can report items without a source file. Reporting is still
+deliberate and best effort, not guaranteed: shell/opaque patch writes and unknown
+file/tool shapes get no file hint, and guidance alone does not record progress.
+
 ## Status
 
-This is an unreleased **private testing candidate**, not a public release. Source and package checks pass; extended real-host evaluation is still required.
+This is an unreleased **private testing candidate**, not a public release. The owner reports no performance issues in real use of the latest 0.2.4 candidate and has requested a dev-to-main PR. The PR prepares matching 0.2.5 metadata and built backend entries so host Git update detection can recognize a higher version.
 
 Accepted source updates include correctly scoped recent-session memory with quiet revalidation and no repaint when data is unchanged; bounded refresh when switching to the latest session; and deterministic SQLite cleanup after companion setup fails. Setup now offers read-only, host-side, editable config/data/store suggestions. The suggested store is `<data folder>/openchamber-progress`; suggestions are not confirmation of the effective OpenCode roots. Inspect is read-only, and setup changes are made only after reviewing the resolved targets and explicitly confirming.
 
-The Linux-only setup suggestions and capture support do not extend to other platforms. Bounded isolated tests did not reproduce the previously reported long-uptime real-host sluggishness. Validation on a real instance over hours remains a release blocker. Building this candidate does not change an existing installation; evaluate it through a manual install when ready.
+The Linux-only setup suggestions and capture support do not extend to other platforms. The owner's real-use report lifts the previous performance hold for PR preparation; it does not establish the cause or prove a leak fixed. Building this candidate does not change an existing installation; any real installation still requires separate approval.
 
 Longer isolated endurance checks kept requests, frames and companion connections bounded without navigation-latency drift in the tested windows. A small host-page heap increase during session switching remains unexplained; these checks do not establish that the hours-long issue is fixed.
 
@@ -29,7 +38,21 @@ Installing a new extension package preserves the configured companion folders, s
 
 Updating companion files is separate from loading them. Follow the reload notice and restart OpenCode when safe; merely opening a new session is not a reliable activation step, and OpenCode is never restarted automatically. Setup's selected companion version is authoritative; root-folder utility metadata can retain its initial version and is not the selected version. This flow remains protocol/schema 2.
 
-Known limits: unseen sessions and rebuilt frames still start cold, and real-host long-uptime performance is unresolved. There is no supported automatic extension-uninstall hook; remove capture explicitly first if it should stop, and history is retained.
+Visible progress views quietly check the official repository's **main package version**,
+not GitHub Releases or the actual installed source. “Official main version X available”
+is informational: OpenChamber Settings → Extensions remains the installer, and custom
+branches/tags/forks or ZIPs may need an explicit separate choice. Nothing silently
+switches sources or installs. Inaccessible private metadata is unknown; previously
+validated information may remain explicitly stale. The companion's **Review update**
+and confirmation flow remains separate from this official-main notice.
+
+Working tasks have restrained blue status motion and whole-minute elapsed labels
+for their continuous **reported-working** interval. These are not CPU/model time,
+an ETA or proof of continued execution. Incomplete history is labelled “at least”;
+unknown history supplies no invented start. Reduced-motion keeps truthful labels
+without decorative movement; hidden frames pause visual work.
+
+Known limits: unseen sessions and rebuilt frames still start cold; the earlier long-uptime slowdown's cause remains unproven despite the owner's current no-issues report. There is no supported automatic extension-uninstall hook; remove capture explicitly first if it should stop, and history is retained.
 
 See [Safe global companion setup](docs/setup.md) for the full lifecycle, [Frozen contracts](docs/contracts.md) for API and reporting behavior, and [Progress views](docs/ui.md) for view behavior. Setup suggestions and capture are currently Linux-only; web and relay clients use the connected host and do not broaden that platform support.
 
@@ -59,3 +82,41 @@ node --test tests/browser/*.test.ts
 ### Build artifact
 
 `bun run check` builds and verifies the package. The extension ZIP is written to `build/artifacts/agent-progress-extension-<package-version>.zip`, where the version comes from the root `package.json`. The package is a built artifact; consumers do not need to install dependencies or compile TypeScript.
+
+### Built Git distribution and ready-main gate
+
+The intended standard Git source is `https://github.com/Phototonic/openchamber-progress.git`.
+OpenChamber follows its default branch unless a `#branch-or-tag` is selected. The
+repository is currently private; this is a preparation target, not a claim of public
+reachability or permission to install it now. A Git consumer performs no build or
+dependency installation. The candidate tree must include the existing guest bundles
+and these ordinary built backend files at their manifest paths:
+
+```
+build/service/main.js
+build/companion/index.js
+build/companion/package.json
+build/companion/SKILL.md
+build/setup/main.js
+```
+
+Only these generated backend entries are eligible for tracking; artifacts, bindings,
+databases, dependencies, evidence and local instructions remain ignored. Backend
+build tooling does not rebuild guest bundles. Parent acceptance/staging is required
+before claiming those entries are actually committed to a candidate Git tree.
+
+Work stays on `dev`; production `main` changes only under a separate ready-version
+approval. Before promotion: accept the complete stable guest/backend projection,
+choose a higher matching package/RELEASE/companion version, verify exact built-tree
+and package-entry digests, pass the supported host Git install/check/explicit-update
+gate plus folder/ZIP/companion lifecycle gates, and promote that same accepted tree.
+Dev-only commits, changed bytes at the same semver, tags and GitHub Releases do not
+advance the default-main version. Pins remain selected; no silent ref switching.
+
+Before advertising public installation, separately establish public readability and
+that the canonical default branch is `main`; those checks do not block PR creation.
+The owner reports no issues on 0.2.4 and has lifted the previous performance hold
+for this PR preparation, not established a causal diagnosis or a new agent-run soak.
+The private PR candidate is 0.2.5. This preparation does not authorize a main
+merge/push, visibility change, tag, GitHub Release or real installation.
+See [distribution gates](docs/setup.md#git-distribution-validation-and-main-promotion).
