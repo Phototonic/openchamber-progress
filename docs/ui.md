@@ -194,7 +194,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **Dismiss** hides that candidate version only, kept in host storage (`official-main-dismissed`); a newer candidate shows again. Dismissing sends no service request. A dismissal made while a check is in flight wins over the stored value that check read (`OfficialMainState`, `official.ts`).
 - **Placement.**
   - Rail and page: after the companion update notice and the reload note, and also in the not-set-up state, since the check doesn't depend on companion setup or the store.
-  - Work Status: a compact "Official main 0.2.5 available" line that opens the rail.
+  - Work Status: a compact "Official main 0.2.5 available" line that opens the rail; retained stale knowledge adds "check out of date" visibly and qualifies the tooltip.
   - The companion notice, its review and the reload note are unchanged and independent.
 - **When it checks.**
   - Each visible frame asks once at host readiness, then when due: the reply's `nextCheckAt`, bounded to 5–60 min, so a skewed browser clock stays within the bounds.
@@ -267,7 +267,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 
 ## QA harness (`tests/browser`)
 
-- **`model.test.ts`** (37 tests) covers:
+- **`model.test.ts`** (38 tests) covers:
   - v2 list mapping and count rules; participants
   - scope, navigation gating (verified source + coverage) and live labels
   - page filters and age text
@@ -278,7 +278,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - companion update: comparison parsing (valid, absent, malformed, contradictory), notice kinds (upgrade, rebuild, downgrade; nothing for current or unknown; independent of a pending reload), and review versions from inspect plus the snapshot (stale or missing makes no claim)
   - refresh orchestration: same-scope coalescing, latest-switch-wins with bounded overlap, stop on dispose; recent-scope memory bounds and keying; subscription cap, restart and late release
   - elapsed time: whole-minute text boundaries, optional timing parsing (absent, unreadable, bad or future entries), service-clock + monotonic anchoring regardless of browser clock, and the anchor following a revision restart
-  - official main: strict reply parsing (fixed source, consistent states, older service 404 → unknown), notice rules (availability only, version-specific dismiss, stale qualifier, fixed link and copy), and a dismissal made while a check is held staying dismissed (`OfficialMainState`)
+  - official main: strict reply parsing (fixed source, consistent states, older service 404 → unknown), notice rules (availability only, version-specific dismiss, stale qualifier, fixed link and copy), compact-line stale text/tooltip with its rail action preserved, and a dismissal made while a check is held staying dismissed (`OfficialMainState`)
   - blue elapsed labels (muted for an unknown start)
   - reported-progress motion: the gate (closed, stale/failed, capture off, nothing working); CSS contract (motion only under `data-motion`, `transform`/`opacity`-only keyframes, reduced motion and hidden also stopping pseudo-elements, readable text token)
 - **`fixtures.ts`:** v2 wire fixtures (P1/P2/P3 plus an other-source plan, setup replies).

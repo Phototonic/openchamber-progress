@@ -10,7 +10,7 @@ import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
 import { CSS } from '../../ui/shared/style.ts';
 import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
-import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
+import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
 import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
 import { applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
@@ -614,6 +614,33 @@ test('official-main notice: an availability only, dismissed per version; fixed l
   const stale = officialMainText({ ...n, stale: true, diagnostic: 'rate-limited' }, 'en', Date.parse('2026-10-25T12:00:00Z'));
   assert.match(stale.body, /^This may be out of date: the latest check was rate-limited; last confirmed 2 hours ago\. /);
   assert.equal(OFFICIAL_MAIN_URL, 'https://github.com/Phototonic/openchamber-progress/tree/main');
+});
+
+test('compact official-main line qualifies stale knowledge and still opens progress', (t) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    createElement: (tag: string) => {
+      assert.equal(tag, 'button');
+      return Object.assign(new EventTarget(), { dataset: {}, className: '', textContent: '', type: '', title: '' });
+    },
+  } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document'); });
+  const v = parseExtensionUpdate(JSON.stringify(OFFICIAL));
+  const hooks = { officialMain: v, officialMainDismissed: null as string | null, dismissOfficialMain: () => {}, openOfficialMain: () => {}, env: { locale: 'en' } };
+  let opened = 0;
+  const open = () => { opened++; };
+  const fresh = officialMainLine(hooks, open)!;
+  assert.equal(fresh.textContent, 'Official main 0.2.5 available');
+  assert.doesNotMatch(fresh.title, /out of date/);
+  for (const checkedAt of [v.checkedAt, null]) {
+    const stale = officialMainLine({ ...hooks, officialMain: { ...v, stale: true, diagnostic: 'timeout', checkedAt } }, open)!;
+    assert.match(stale.textContent!, /Official main 0\.2\.5 available.*check out of date/);
+    assert.match(stale.title, /may be out of date/);
+    stale.dispatchEvent(new Event('click'));
+  }
+  assert.equal(opened, 2);
+  assert.equal(officialMainLine({ ...hooks, officialMainDismissed: v.candidateVersion! }, open), null);
+  assert.equal(officialMainLine({ ...hooks, officialMain: null }, open), null);
 });
 
 test('official-main dismissal made while a check is held stays; reloads and newer versions behave', async () => {

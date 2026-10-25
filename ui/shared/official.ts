@@ -77,9 +77,9 @@ export function officialMainBlock(vc: Hooks) {
 export function officialMainLine(vc: Hooks, openRail: () => void) {
   const n = officialMainNotice(vc.officialMain, vc.officialMainDismissed);
   if (!n) return null;
-  const b = testid(el('button', 'ap-link', `Official main ${n.candidate} available`), 'extension-update-line');
+  const b = testid(el('button', 'ap-link', `Official main ${n.candidate} available${n.stale ? ' · check out of date' : ''}`), 'extension-update-line');
   b.type = 'button';
-  b.title = `This extension is ${n.installed}. Open progress for how to update.`;
+  b.title = `${n.stale ? 'This may be out of date. ' : ''}This extension is ${n.installed}. Open progress for how to update.`;
   b.addEventListener('click', openRail);
   return b;
 }

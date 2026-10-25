@@ -175,7 +175,7 @@ session IDs are never navigable. See `ui-probe.md` for screenshots/interactions.
 
 ## Isolated OpenChamber launch: Designer's tested desktop route
 
-Available `/home/phototonic/.local/bin/openchamber` is the installed OpenChamber2.5.1
+The available installed OpenChamber executable was the OpenChamber2.5.1
 AppImage (SHA256 in `ui-runtime.json`), not a web CLI. Designer extracted that exact
 AppImage to a temporary directory and verified isolation before installation.
 The earlier T1 direct-binary DISPLAY candidate was not the tested route. OpenCode
@@ -184,7 +184,9 @@ installation/build/modification or managed bundled-CLI invocation was used.
 
 Executed commands below are sourced from `evidence/compatibility/ui-probe.md`
 Commands/Isolation; they are historical reproduction instructions, not a request
-to relaunch or overwrite profiles. H used fresh0700 directories. X is the
+to relaunch or overwrite profiles. For reproduction, set `OPENCHAMBER_APPIMAGE`
+to the absolute path of that installed AppImage; its original personal path is
+omitted here. H used fresh0700 directories. X is the
 temporary extraction directory. APPDIR is required (its omission caused the first
 attempt to exit127); no APPIMAGE variable was passed, preventing replacement of
 the installed AppImage. Startup output was discarded to avoid printing secrets.
@@ -193,7 +195,7 @@ the installed AppImage. Startup output was discarded to avoid printing secrets.
 X=/tmp/opencode/agent-progress-t2-appimage
 H=/tmp/opencode/agent-progress-probe-t2-host
 # Extraction was executed with X as the working directory:
-# /home/phototonic/.local/bin/openchamber --appimage-extract
+# "$OPENCHAMBER_APPIMAGE" --appimage-extract
 env -i PATH=/usr/bin:/bin SHELL=/bin/sh LANG=en_US.UTF-8 APPDIR=$X/squashfs-root \
   HOME=$H/home XDG_CONFIG_HOME=$H/config XDG_DATA_HOME=$H/data XDG_STATE_HOME=$H/state \
   XDG_CACHE_HOME=$H/cache XDG_RUNTIME_DIR=$H/runtime WAYLAND_DISPLAY=/run/user/1000/wayland-1 \

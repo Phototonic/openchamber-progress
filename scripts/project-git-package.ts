@@ -10,7 +10,7 @@ const runtime=new Set(['build/service/main.js','build/companion/index.js','build
 const excluded=new Set(['.git','node_modules','evidence','.slim','.codegraph','AGENTS.md']);
 const listed=spawnSync('git',['ls-files','--cached','--others','--exclude-standard','-z'],{env:{...process.env,GIT_OPTIONAL_LOCKS:'0'},encoding:'utf8'});assert.equal(listed.status,0,'read-only Git source listing');
 const files=[...new Set(listed.stdout.split('\0').filter(Boolean))].filter(file=>{
-  if(file.split('/').some(p=>excluded.has(p)))return false;
+  if(file==='docs/tracking.md'||file.split('/').some(p=>excluded.has(p)))return false;
   if(file.startsWith('build/'))return runtime.has(file);
   return !/(?:^|\/)(?:progress-binding|auth|credentials)\.json$|\.(?:sqlite3?|db|log)$|-(?:wal|shm|journal)$|(?:^|\/)\.env(?!\.example$)/.test(file);
 }).sort();

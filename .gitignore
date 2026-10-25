@@ -4,6 +4,9 @@ evidence/
 # Local project instructions — never committed (owner decision, 2026-10-24)
 AGENTS.md
 
+# Internal work tracking — retained locally, never published
+/docs/tracking.md
+
 # Installed dependencies and generated build output
 node_modules/
 
