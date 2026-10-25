@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, chmodSync, readdirSync,lstatSync,readlinkSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
@@ -11,6 +12,29 @@ import { Store, digest } from '../shared/store.ts';
 import { RELEASE } from '../shared/release.ts';
 import { lifecycle } from '../setup/lifecycle.ts';
 
+/** Also run before reassembly: rebuilding must not hide a damaged input package. */
+export function verifyPackageContents(artifact:string, kind:'extension'|'companion', sourceRoot=process.cwd()):string[] {
+  const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
+  const notices=['LICENSE','THIRD_PARTY_NOTICES.md','licenses/Apache-2.0.txt'];
+  const expected=['package.json','docs/setup.md',...notices,...builds,...(kind==='extension'?['build/service/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])]:[])].sort();
+  assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'package contains only declared payload; no evidence/instructions/auth/runtime DB');
+  assert.equal(JSON.parse(readFileSync(path.join(sourceRoot,'package.json'),'utf8')).license,'MIT','project license metadata');
+  assert.equal(JSON.parse(readFileSync(path.join(artifact,'package.json'),'utf8')).license,'MIT','packaged project license metadata');
+  for(const entry of expected.filter(entry=>entry!=='package.json')) {
+    assert.equal(digest(readFileSync(path.join(artifact,entry))),digest(readFileSync(path.join(sourceRoot,entry))),`package/source bytes: ${entry}`);
+  }
+  const archive=spawnSync('unzip',['-Z','-1',`${artifact}.zip`],{encoding:'utf8'});assert.equal(archive.status,0,'ZIP inventory failed');
+  assert.deepEqual(archive.stdout.trim().split('\n').filter(name=>!name.endsWith('/')).sort(),expected,'ZIP entry allowlist matches folder');
+  for(const notice of notices) {
+    const zipped=spawnSync('unzip',['-p',`${artifact}.zip`,notice],{maxBuffer:1024*1024});
+    assert.equal(zipped.status,0,`ZIP notice missing: ${notice}`);
+    assert.equal(digest(zipped.stdout),digest(readFileSync(path.join(sourceRoot,notice))),`ZIP/source notice bytes: ${notice}`);
+  }
+  return expected;
+}
+function files(root:string):string[]{return readdirSync(root).sort().flatMap(name=>{const file=path.join(root,name);const stat=lstatSync(file);assert.equal(stat.isSymbolicLink(),false,'no packaged symlinks');return stat.isDirectory()?files(file):[file];});}
+
+async function verifyPackage() {
 const version=JSON.parse(readFileSync('package.json','utf8')).version;
 const base=path.resolve('build/artifacts');
 const extension=path.join(base,`agent-progress-extension-${version}`);
@@ -23,7 +47,6 @@ function run(args:string[],options:{env?:NodeJS.ProcessEnv;cwd?:string}={}) {
   const result=spawnSync(process.execPath,args,{encoding:'utf8',env:clean,...options,timeout:15000});
   assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout.trim();
 }
-function files(root:string):string[]{return readdirSync(root).sort().flatMap(name=>{const file=path.join(root,name);const stat=lstatSync(file);assert.equal(stat.isSymbolicLink(),false,'no packaged symlinks');return stat.isDirectory()?files(file):[file];});}
 function snapshot(root:string):unknown {
   const result:Record<string,unknown>={};
   function visit(file:string){const st=lstatSync(file,{bigint:true});result[path.relative(root,file)]={mode:String(st.mode),uid:String(st.uid),size:String(st.size),mtimeNs:String(st.mtimeNs),...(st.isFile()?{hash:digest(readFileSync(file))}:{}),...(st.isSymbolicLink()?{link:readlinkSync(file)}:{})};if(st.isDirectory())for(const name of readdirSync(file).sort())visit(path.join(file,name));}
@@ -31,6 +54,8 @@ function snapshot(root:string):unknown {
 }
 try {
   assert.equal(version,RELEASE);
+  verifyPackageContents(extension,'extension');
+  verifyPackageContents(companion,'companion');
   const entriesFile=path.join(base,`entries-${version}.sha256`);const entries=readFileSync(entriesFile,'utf8');
   run(['--experimental-strip-types',path.resolve('scripts/package.ts')]);
   assert.equal(readFileSync(entriesFile,'utf8'),entries,'entry inventories must match across assembly; ZIP timestamps are not canonical');
@@ -45,11 +70,7 @@ try {
     const js=readFileSync(path.join(extension,`ui/${surface}/main.js`),'utf8');assert.doesNotMatch(js,/^\s*(?:import\s|export\s)/m);
   }
   for(const artifact of [extension,companion]) {
-    const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
-    const expected=['package.json','docs/setup.md',...builds,...(artifact===extension?['build/service/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])]:[])].sort();
-    assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'package contains only declared payload; no evidence/instructions/auth/runtime DB');
-    const archive=spawnSync('unzip',['-Z','-1',`${artifact}.zip`],{encoding:'utf8'});assert.equal(archive.status,0);
-    assert.deepEqual(archive.stdout.trim().split('\n').filter(name=>!name.endsWith('/')).sort(),expected,'ZIP entry allowlist matches folder');
+    const expected=verifyPackageContents(artifact,artifact===extension?'extension':'companion');
     const extracted=path.join(root,path.basename(artifact));mkdirSync(extracted);
     assert.equal(spawnSync('unzip',['-q',`${artifact}.zip`,'-d',extracted],{stdio:'pipe'}).status,0);
     for(const entry of expected)assert.equal(digest(readFileSync(path.join(extracted,entry))),digest(readFileSync(path.join(artifact,entry))),`ZIP/folder bytes: ${entry}`);
@@ -173,3 +194,6 @@ try {
   if(service&&service.exitCode===null&&!service.signalCode){const exit=once(service,'exit');service.kill('SIGTERM');const timer=setTimeout(()=>service?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}
   rmSync(root,{recursive:true,force:true});
 }
+}
+
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href) await verifyPackage();

@@ -10,6 +10,7 @@ import { RELEASE } from '../shared/release.ts';
 
 const source=JSON.parse(readFileSync('package.json','utf8'));
 assert.equal(source.version,RELEASE);
+assert.equal(source.license,'MIT');
 assert.match(source.version,/^\d+\.\d+\.\d+$/);
 assert.equal(VERSION,2); // Contract version is independent of package semver.
 const version:string=source.version;
@@ -19,16 +20,16 @@ const extension=`agent-progress-extension-${version}`;
 const companion=`agent-progress-companion-${version}`;
 const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
 const guests=['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`]);
-const manifest={name:source.name,version,type:'module',openchamber:source.openchamber};
+const manifest={name:source.name,version,license:source.license,type:'module',openchamber:source.openchamber};
 assert.equal(parseManifestJson(JSON.stringify(manifest)).ok,true);
 assert.equal(source.openchamber.contributes.panel.id,'agent-progress-probe');
 for(const [name,files,metadata] of [
   [extension,[...builds,'build/service/main.js',...guests],manifest],
-  [companion,builds,{name:'openchamber-agent-progress-companion-installer',version,private:true,type:'module',scripts:{setup:'node build/setup/main.js'}}],
+  [companion,builds,{name:'openchamber-agent-progress-companion-installer',version,license:source.license,private:true,type:'module',scripts:{setup:'node build/setup/main.js'}}],
 ] as const) {
   const root=path.join(output,name);rmSync(root,{recursive:true,force:true});mkdirSync(root,{mode:0o700});
   writeFileSync(path.join(root,'package.json'),JSON.stringify(metadata,null,2)+'\n');
-  for(const file of [...files,'docs/setup.md']) {
+  for(const file of [...files,'docs/setup.md','LICENSE','THIRD_PARTY_NOTICES.md','licenses/Apache-2.0.txt']) {
     assert.equal(lstatSync(file).isFile(),true);assert.equal(lstatSync(file).isSymbolicLink(),false);
     mkdirSync(path.dirname(path.join(root,file)),{recursive:true});copyFileSync(file,path.join(root,file));
   }
