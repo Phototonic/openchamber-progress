@@ -5,8 +5,9 @@ package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep th
 original labels. `evidence/` and `AGENTS.md` are local-only, never committed or
 included in either package. Local evidence references below are not shipped files.
 
-**No real-user installation was performed by this project.** Lifecycle validation used
-disposable roots. A later real installation requires explicit user approval.
+Initial lifecycle validation used disposable roots, with no real-user installation
+in that validation boundary. Any real installation, update or reload requires
+separate explicit user approval; fixture validation never grants that approval.
 OpenChamber service permission runs code with full user privileges; the UI must
 show that disclosure plus target paths/version and the separate lifecycle BEFORE
 installing. Uninstalling/closing the extension does NOT disable global capture.
@@ -34,7 +35,7 @@ the existing canonical-path, symlink, ownership, collision and privacy checks.
 Relative paths, dot/traversal spellings and symlink aliases remain rejected.
 Resolved targets in replies/descriptors use canonical spellings without redundant
 terminal separators.
-This is not in the archived0.2.2 artifacts; the0.2.3 private testing candidate below
+This is not in the archived0.2.2 artifacts; the0.2.4 private testing candidate below
 includes it. The existing0775-store refusal remains intentional.
 
 Supply and explicitly review canonical **effective** global config/data roots;
@@ -83,7 +84,7 @@ contents, searches recursively or spawns a CLI: even `opencode debug paths` can
 mkdir during initialization and is not automatically safe read-only discovery.
 Opening or inspecting writes nothing to setup targets. The service's existing
 private selector-state bootstrap is a separate product write outside that promise.
-The0.2.3 private testing candidate joins this service with the accepted T8 UI;
+The0.2.4 private testing candidate joins this service with the accepted upgrade UX;
 source-level observation still does not establish effective OpenCode scope.
 
 ### What storeRoot contains
@@ -125,6 +126,30 @@ also be managed through the fixed setup HTTP routes in docs/contracts.md. No
 request may supply executable payloads, URLs, commands, SQL or binding-file paths.
 
 ## Ownership, activation and interruption
+
+### Bundled companion detection (U1 backend; U2 UI follow-up)
+
+Existing setup status reads automatically compare a verified selected immutable
+release against the bundled update candidate. `update.state` is `current` only
+when the binding-derived release identity and plugin/guidance bytes match, not
+merely when version labels match. Different bytes are `available` for an equal or
+higher bundled version, or `newer-installed` when the installed version is higher.
+The latter is a possible downgrade warning, not an upgrade recommendation.
+Unconfigured/removed/unverified/modified/unavailable states omit comparison rather
+than claiming success. No automatic update, new route or polling loop is added.
+Updates still require inspection/review and explicit confirmation on existing roots.
+
+Status `version` comes from the selected immutable release. `update.rootVersion`
+is diagnostic metadata from the verified initial root package, whose loader,
+guidance and removal utility intentionally remain unchanged across updates. A
+0.2.2 root with a selected 0.2.3 release is valid; it does not mean the selected
+payload is still 0.2.2 or that the removal utility was upgraded. This preserves
+the existing root layout and standalone utility policy.
+
+Being current on disk does not establish activation: a separate reload-required
+note can remain until a matching loaded observation. No loaded version is invented
+and last-observed availability is not a live census. Progress refreshes do not
+audit payloads; comparison runs only on existing setup reads.
 
 Owned package is configRoot/plugins/agent-progress. An ownership manifest pins
 install identity, root-file hashes and immutable release hashes. Foreign folders,
@@ -214,35 +239,38 @@ agent-progress-probe to preserve Work Status openSurface; labels are Agent progr
 T5 assembles these built backend entries with Designer's already-owned guests;
 this document does not claim an installable extension ZIP was produced in T3.
 
-## V1 installable artifacts (unreleased0.2.3 private testing candidate)
+## V1 installable artifacts (unreleased0.2.4 private testing candidate)
 
-V1 is the product scope; its private testing candidate version is **0.2.3**,
+V1 is the product scope; its private testing candidate version is **0.2.4**,
 agreeing across extension and companion payloads. It joins accepted cached-revisit/
 spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
 suggestions, preserved separator normalization and failed-setup Store cleanup.
 The smaller-import experiment was not promoted; no persistent-service Store reuse
 or payload-audit cache was added. This patch distinguishes the candidate from
 installed/archived0.2.2; it is not a public release or a complete performance cure.
-Protocol/schema remain2.
+It also joins automatic advisory companion comparison and explicit review/update
+UX; updates remain user-confirmed and activation remains separate. This candidate
+does not authorize installing0.2.4 into the real host; historical real0.2.3 update
+evidence and its pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. Artifacts are local and unsigned;
 no publication or signature verification claim is made.
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.3/` and `.zip`: host manifest, the three Designer
+- `agent-progress-extension-0.2.4/` and `.zip`: host manifest, the three Designer
   HTML/main.js guests copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.2.3/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-0.2.4/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.2.3.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-0.2.4.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
   Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts may remain as local QA history; select the0.2.3 pair explicitly.
+   older0.x artifacts may remain as local QA history; select the0.2.4 pair explicitly.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.

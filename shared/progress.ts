@@ -31,6 +31,11 @@ export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions:
 export interface DocumentRead { document: DocumentRef; text: string | null; nextCursor: string | null }
 export interface Suggestion { value: string; state: 'resolved' | 'candidate' }
 export interface SetupSuggestions { configRoot: Suggestion | null; dataRoot: Suggestion | null; storeRoot: Suggestion | null }
+export interface CompanionUpdateRead {
+  state: 'current' | 'available' | 'newer-installed';
+  candidateVersion: string;
+  rootVersion: string | null;
+}
 export interface SetupRead {
   configured: boolean; verified: boolean; installed: boolean; captureEnabled: boolean | null;
   targets: { configRoot: string; dataRoot: string; storeRoot: string } | null;
@@ -39,6 +44,7 @@ export interface SetupRead {
   recovery?: { stagedPackages: number; stagedActivations: number; stagedReleases: number };
   action?: string;
   suggestions?: SetupSuggestions;
+  update?: CompanionUpdateRead;
 }
 export interface Receipt { plan: string; rev: number; structuralRev: number; changed?: string[]; staged?: number }
 export type Reply = Receipt | { error: Code; rev?: number };

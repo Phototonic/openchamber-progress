@@ -9,6 +9,7 @@ import { parseManifestJson } from '@openchamber/sdk/schemas';
 import { VERSION } from '../shared/progress.ts';
 import { Store, digest } from '../shared/store.ts';
 import { RELEASE } from '../shared/release.ts';
+import { lifecycle } from '../setup/lifecycle.ts';
 
 const version=JSON.parse(readFileSync('package.json','utf8')).version;
 const base=path.resolve('build/artifacts');
@@ -49,6 +50,9 @@ try {
     assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'package contains only declared payload; no evidence/instructions/auth/runtime DB');
     const archive=spawnSync('unzip',['-Z','-1',`${artifact}.zip`],{encoding:'utf8'});assert.equal(archive.status,0);
     assert.deepEqual(archive.stdout.trim().split('\n').filter(name=>!name.endsWith('/')).sort(),expected,'ZIP entry allowlist matches folder');
+    const extracted=path.join(root,path.basename(artifact));mkdirSync(extracted);
+    assert.equal(spawnSync('unzip',['-q',`${artifact}.zip`,'-d',extracted],{stdio:'pipe'}).status,0);
+    for(const entry of expected)assert.equal(digest(readFileSync(path.join(extracted,entry))),digest(readFileSync(path.join(artifact,entry))),`ZIP/folder bytes: ${entry}`);
     assert.equal(JSON.parse(readFileSync(path.join(artifact,'package.json'),'utf8')).version,version);
     assert.equal(JSON.parse(readFileSync(path.join(artifact,'build/companion/package.json'),'utf8')).version,version);
     for(const entry of ['build/companion/index.js','build/setup/main.js'])run(['--check',path.join(artifact,entry)]);
@@ -65,7 +69,7 @@ try {
   let freshSpawnError=false;service.once('error',()=>{freshSpawnError=true;});const freshUrl=`http://127.0.0.1:${freshPort}`;const freshHeaders={authorization:'Bearer fresh-fixture-only'};
   const freshDeadline=Date.now()+5000;let suggestions:any;
   while(Date.now()<freshDeadline){assert.equal(freshSpawnError,false);assert.equal(service.exitCode,null);try{const response=await fetch(`${freshUrl}/v1/setup`,{headers:freshHeaders,signal:AbortSignal.timeout(500)});if(response.ok){suggestions=await response.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
-  assert.equal(suggestions?.configured,false);assert.equal(suggestions.verified,false);assert.equal(suggestions.targets,null);assert.equal(Object.hasOwn(suggestions,'sourceBinding'),false);
+  assert.equal(suggestions?.configured,false);assert.equal(suggestions.verified,false);assert.equal(suggestions.targets,null);assert.equal(Object.hasOwn(suggestions,'sourceBinding'),false);assert.equal(Object.hasOwn(suggestions,'update'),false);
   const suggestedConfig=`${fresh}/home/.config/opencode`,suggestedData=`${fresh}/home/.local/share/opencode`,suggestedStore=`${suggestedData}/openchamber-progress`;
   assert.deepEqual(suggestions.suggestions,{configRoot:{value:suggestedConfig,state:'resolved'},dataRoot:{value:suggestedData,state:'resolved'},storeRoot:{value:suggestedStore,state:'resolved'}});
   const inspected=await fetch(`${freshUrl}/v1/setup/inspect`,{method:'POST',headers:{...freshHeaders,'content-type':'application/json'},body:JSON.stringify({configRoot:suggestedConfig+'//',dataRoot:suggestedData+'/',storeRoot:suggestedStore+'/',confirmed:false})});assert.equal(inspected.status,200);
@@ -73,6 +77,37 @@ try {
   assert.deepEqual(snapshot(`${fresh}/home`),freshBefore,'packaged GET/inspect must preserve setup targets byte/mtime');assert.equal(existsSync(suggestedStore),false);assert.equal(existsSync(`${fresh}/selector/binding.json`),false);
   const freshExit=once(service,'exit');service.kill('SIGTERM');await freshExit;service=undefined;
   console.log(JSON.stringify({packagedSetupSuggestions:true,packagedInspectReadOnly:true,targetBytesAndMtimesPreserved:true,foreignFilesPreserved:true,suggestionsAreNotIdentity:true}));
+
+  // Production lifecycle installs an older fixture; only the exact packaged HTTP
+  // service performs the candidate update. No synthetic Store/activation writes.
+  const older=`${root}/older`;for(const dir of ['config/opencode','data/opencode','selector'])mkdirSync(`${older}/${dir}`,{recursive:true,mode:0o700});
+  const targets={configRoot:`${older}/config/opencode`,dataRoot:`${older}/data/opencode`,storeRoot:`${older}/store`,confirmed:true};
+  const oldVersion='0.2.2';
+  lifecycle('install',targets,{plugin:readFileSync(`${companion}/build/companion/index.js`,'utf8'),guidance:readFileSync(`${companion}/build/companion/SKILL.md`,'utf8'),removal:readFileSync(`${companion}/build/setup/main.js`,'utf8'),version:oldVersion});
+  const oldPackage=`${targets.configRoot}/plugins/agent-progress`,oldRootBytes=readFileSync(`${oldPackage}/package.json`);
+  const selector=`${older}/selector/binding.json`;cpSync(`${oldPackage}/progress-binding.json`,selector);
+  service=spawn(process.execPath,[path.join(extension,'build/service/main.js')],{env:{...clean,AGENT_PROGRESS_BINDING:selector,OPENCHAMBER_SERVICE_PORT:String(freshPort),OPENCHAMBER_SERVICE_TOKEN:'fresh-fixture-only'},stdio:'ignore'});
+  const request=(route:string,body?:unknown)=>fetch(`${freshUrl}${route}`,{method:body===undefined?'GET':'POST',headers:{...freshHeaders,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(2000)});
+  const olderDeadline=Date.now()+5000;let olderState:any;
+  while(Date.now()<olderDeadline){assert.equal(service.exitCode,null);try{const response=await request('/v1/setup');if(response.ok){olderState=await response.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
+  assert.equal(olderState?.version,oldVersion);assert.deepEqual(olderState.update,{state:'available',candidateVersion:version,rootVersion:oldVersion});
+  const refusedUnconfirmed=await request('/v1/setup/update',{confirmed:false});assert.equal(refusedUnconfirmed.status,400);
+  const confirmed=await request('/v1/setup/update',{confirmed:true});assert.equal(confirmed.status,200);
+  const selected=await confirmed.json();assert.equal(selected.version,version);assert.equal(selected.activation,'reload-required');assert.deepEqual(selected.update,{state:'current',candidateVersion:version,rootVersion:oldVersion});
+  assert.deepEqual(readFileSync(`${oldPackage}/package.json`),oldRootBytes);
+  run(['--experimental-strip-types',path.resolve('tests/fixtures/activation.ts'),`${oldPackage}/index.js`],{env:{...clean,XDG_CONFIG_HOME:`${older}/config`,XDG_DATA_HOME:`${older}/data`}});
+  const observed=await(await request('/v1/setup')).json();assert.equal(observed.activation,'control-applies-to-loaded-instances');assert.deepEqual(observed.update,selected.update);
+  const ownershipFile=`${oldPackage}/.ownership.json`,ownershipBytes=readFileSync(ownershipFile),owned=JSON.parse(ownershipBytes.toString());
+  const selectedPlugin=`${targets.storeRoot}/payloads/${owned.active}/index.js`,selectedBytes=readFileSync(selectedPlugin);
+  const historyFile=`${targets.storeRoot}/installation-history.jsonl`,historyBytes=readFileSync(historyFile);
+  for(const [file,bad]of [[selectedPlugin,'modified owned payload'],[ownershipFile,'corrupt ownership']] as const){
+    writeFileSync(file,bad);const uncertain=await(await request('/v1/setup')).json();assert.equal(Object.hasOwn(uncertain,'update'),false);
+    assert.equal((await request('/v1/setup/update',{confirmed:true})).status,409);assert.deepEqual(readFileSync(historyFile),historyBytes);
+    writeFileSync(file,file===selectedPlugin?selectedBytes:ownershipBytes);
+  }
+  assert.equal((await(await request('/v1/setup')).json()).update.state,'current');
+  const olderExit=once(service,'exit');service.kill('SIGTERM');await olderExit;service=undefined;
+  console.log(JSON.stringify({packagedUpgradeHTTP:['older-available','confirmation-required','confirmed-current-reload-pending','loaded-observation-clears'],rootMetadataRetained:true,modifiedAndCorruptRefused:true,historyPreserved:true,activationFixture:true}));
 
   // Execute the companion extracted from its transport, not a source-tree import.
   const unpacked=`${root}/unpacked`;mkdirSync(unpacked);
@@ -121,7 +156,7 @@ try {
   const plans=await(await fetch(`${url}/v1/plans`,{headers})).json();assert.equal(plans.data[0].id,'packaged');assert.equal(plans.schemaVersion,VERSION);assert.equal(plans.storeId,binding.storeId);
   chmodSync(db,0o000);
   const unavailable=await fetch(`${url}/health`,{headers});assert.equal(unavailable.status,503);assert.deepEqual(await unavailable.json(),{error:'storage'});
-  const configuredFailure=await(await fetch(`${url}/v1/setup`,{headers})).json();assert.equal(configuredFailure.configured,true);assert.ok(configuredFailure.diagnostics.includes('storage'));
+   const configuredFailure=await(await fetch(`${url}/v1/setup`,{headers})).json();assert.equal(configuredFailure.configured,true);assert.ok(configuredFailure.diagnostics.includes('storage'));assert.equal(Object.hasOwn(configuredFailure,'update'),false);
   chmodSync(db,0o600);assert.equal((await(await fetch(`${url}/health`,{headers})).json()).ready,true);
   // The installed standalone removal entry must work after extension absence.
   const exit=once(service,'exit');service.kill('SIGTERM');await exit;service=undefined;rmSync(localExtension,{recursive:true});

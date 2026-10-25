@@ -9,7 +9,7 @@ import { currentWork, itemTree, participants, summarize, summaryText, type PlanD
 import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
 import { classify, readDetail, readDocument, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
-import { applySuggestions, captureOffNote, deriveStore, fieldHint, initialSetupUi, setupErrorText, setupPhase } from '../../ui/shared/setup.ts';
+import { applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
   DOCUMENT_TEXT, envelope, HEALTH, HEALTH_UNCONFIGURED, NOW, OTHER_SRC, P1, P1_ITEMS, P2, P3, planPage, plansPage, RELAY, S, setupRead, SRC, summary, X1,
 } from './fixtures.ts';
@@ -287,6 +287,76 @@ test('capture-off note: removed points to Install again, disabled to turning it 
     assert.equal(n.reason, 'unknown');
     assert.doesNotMatch(n.text, /Install again|Turn it back on/);
   }
+});
+
+test('setup update comparison: valid metadata maps; malformed, absent or uncertain replies make no claim', () => {
+  const read = (x: Record<string, unknown>) => parseSetup(JSON.stringify(setupRead({ version: '0.2.2', ...x })));
+  assert.deepEqual(read({ update: { state: 'available', candidateVersion: '0.2.3', rootVersion: '0.2.2' } }).update, { state: 'available', candidateVersion: '0.2.3', rootVersion: '0.2.2' });
+  assert.deepEqual(read({ update: { state: 'current', candidateVersion: '0.2.2', rootVersion: null } }).update, { state: 'current', candidateVersion: '0.2.2', rootVersion: null });
+  assert.equal(read({ update: { state: 'newer-installed', candidateVersion: '0.2.1', rootVersion: { v: 1 } } }).update?.rootVersion, null, 'odd root metadata is diagnostic only');
+  // Absent (older service, inspect reply) or malformed: no comparison, and the reply stays valid.
+  const none = [
+    read({}),
+    read({ update: { state: 'unknown', candidateVersion: '0.2.3', rootVersion: null } }),
+    read({ update: { state: 'available', candidateVersion: '', rootVersion: null } }),
+    read({ update: { state: 'available', candidateVersion: 3, rootVersion: null } }),
+    read({ update: { state: 'available', candidateVersion: '0.2.3 <b>', rootVersion: null } }),
+    read({ update: 'available' }),
+    // Contradictory replies: the comparison exists only for configured, verified, installed setups.
+    read({ installed: false, update: { state: 'available', candidateVersion: '0.2.3', rootVersion: null } }),
+    read({ verified: false, update: { state: 'available', candidateVersion: '0.2.3', rootVersion: null } }),
+    read({ version: null, update: { state: 'available', candidateVersion: '0.2.3', rootVersion: null } }),
+    read({ configured: false, targets: null, update: { state: 'available', candidateVersion: '0.2.3', rootVersion: null } }),
+  ];
+  for (const s of none) { assert.equal(s.update, undefined); assert.equal(updateNotice(s), null); }
+  assert.equal(none[0].version, '0.2.2');
+});
+
+test('update notice: upgrade, same-version rebuild and newer installed stay distinct; current and unknown show nothing', () => {
+  const read = (version: string, update: Record<string, unknown> | undefined, x: Record<string, unknown> = {}) => parseSetup(JSON.stringify(setupRead({ version, update, ...x })));
+  const up = updateNotice(read('0.2.2', { state: 'available', candidateVersion: '0.2.3', rootVersion: '0.2.2' }))!;
+  assert.equal(up.kind, 'upgrade');
+  assert.match(up.body, /Installed 0\.2\.2 → bundled 0\.2\.3/);
+  assert.equal(up.action, 'Review update');
+  const rebuild = updateNotice(read('0.2.3', { state: 'available', candidateVersion: '0.2.3', rootVersion: '0.2.2' }))!;
+  assert.equal(rebuild.kind, 'rebuild');
+  assert.doesNotMatch(`${rebuild.title} ${rebuild.body}`, /newer|→/i, 'a rebuild is a different build, never "newer"');
+  const back = updateNotice(read('0.2.4', { state: 'newer-installed', candidateVersion: '0.2.3', rootVersion: null }))!;
+  assert.equal(back.kind, 'downgrade');
+  assert.equal(back.tone, 'warning');
+  assert.match(back.body, /0\.2\.4.*0\.2\.3/);
+  assert.doesNotMatch(`${back.title} ${back.body} ${back.action}`, /update available|Review update|→/i, 'never a normal upgrade prompt');
+  assert.equal(updateNotice(read('0.2.3', { state: 'current', candidateVersion: '0.2.3', rootVersion: '0.2.2' })), null, 'current shows nothing');
+  assert.equal(updateNotice(read('0.2.3', undefined)), null, 'unknown shows nothing, not "up to date"');
+  // Independent of activation: an available update still shows while a reload is pending.
+  const both = read('0.2.2', { state: 'available', candidateVersion: '0.2.3', rootVersion: '0.2.2' }, { activation: 'reload-required' });
+  assert.equal(setupPhase(both), 'reload-required');
+  assert.equal(updateNotice(both)?.kind, 'upgrade');
+});
+
+test('update review: installed version from inspect, bundled version from the latest setup read; stale or missing makes no claim', () => {
+  const inspected = (version: string) => parseSetup(JSON.stringify(setupRead({ version, action: 'inspect' })));
+  // The comparison comes from a real setup read; inspect replies never carry one.
+  const snap = (state: string, candidateVersion: string, version: string) => bundledComparison(parseSetup(JSON.stringify(setupRead({ version, update: { state, candidateVersion, rootVersion: '0.2.2' } }))));
+  const review = (version: string, bundled: ReturnType<typeof snap>, action: 'install' | 'update' = 'update') => reviewVersions({ action, targets: null, result: inspected(version) }, bundled);
+  assert.equal(inspected('0.2.2').update, undefined);
+  // A refused action's re-read without a comparison (e.g. modified files) drops it from the open review.
+  assert.equal(bundledComparison(parseSetup(JSON.stringify(setupRead({ version: '0.2.2' })))), null);
+  const up = review('0.2.2', snap('available', '0.2.3', '0.2.2'));
+  assert.deepEqual(up.rows, [['Installed version', '0.2.2'], ['Bundled version', '0.2.3']]);
+  assert.equal(up.kind, 'upgrade');
+  assert.equal(review('0.2.3', snap('available', '0.2.3', '0.2.3')).kind, 'rebuild');
+  const back = review('0.2.4', snap('newer-installed', '0.2.3', '0.2.4'));
+  assert.equal(back.kind, 'downgrade');
+  assert.match(back.note!, /older/);
+  assert.equal(review('0.2.3', snap('current', '0.2.3', '0.2.3')).kind, 'same');
+  // Missing (older service, re-bind after a reinstall) or describing another installed version: no comparison.
+  for (const r of [review('0.2.2', null), review('0.2.3', snap('available', '0.2.3', '0.2.2'))]) {
+    assert.equal(r.kind, null);
+    assert.equal(r.rows.some(([k]) => k === 'Bundled version'), false);
+    assert.match(r.note!, /cannot say/);
+  }
+  assert.deepEqual(review('0.2.2', snap('available', '0.2.3', '0.2.2'), 'install'), { rows: [['Installed version', '0.2.2']], kind: null, note: null });
 });
 
 test('setup prefill copy: provenance is plain and never claims a verified setup', () => {

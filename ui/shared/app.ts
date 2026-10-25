@@ -281,6 +281,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       runSetup: async (action, targets, confirmed) => {
         const r = await setupCall(host, action, targets, confirmed);
         if (r.ok && action !== 'inspect') { setup = { state: 'ready', value: r.setup }; resetCaches(); retry(); }
+        // A refused action may mean the installation changed: re-read setup once, so the update
+        // notice reflects the service again rather than the read the action started from.
+        if (!r.ok && setup?.state === 'ready' && setup.value.configured) loadSetup();
         bump();
         return r;
       },

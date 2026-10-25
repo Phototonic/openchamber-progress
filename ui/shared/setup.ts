@@ -5,7 +5,7 @@ import { mountBanner, mountCheckbox, mountTextField } from '@openchamber/sdk/ui'
 import type { SetupAction } from './adapter.ts';
 import type { ViewContext } from './app.ts';
 import { button, el, partState, testid } from './components.ts';
-import type { SetupSuggestions, SetupTargets, SetupView } from './model.ts';
+import type { CompanionUpdateView, SetupSuggestions, SetupTargets, SetupView } from './model.ts';
 
 export type SetupPhase = 'unconfigured' | 'recovery' | 'reload-required' | 'removed' | 'disabled' | 'installed';
 
@@ -105,6 +105,12 @@ export function fieldHint(key: keyof SetupTargets, s: Pick<SetupUi, 'form' | 'ed
   return PLAIN_HELP[key];
 }
 
+/** The service's latest bundled-companion comparison, with the installed version it describes. */
+export interface BundledComparison { update: CompanionUpdateView; version: string }
+
+/** The comparison in a setup read, or null when it makes none (absent, not ready, no version). */
+export const bundledComparison = (s: SetupView | null | undefined): BundledComparison | null => (s?.update && s.version ? { update: s.update, version: s.version } : null);
+
 export interface SetupUi {
   form: SetupTargets;
   /** Fields the user has typed in (a cleared field counts); prefill never touches these. */
@@ -116,11 +122,132 @@ export interface SetupUi {
   busy: boolean;
   error: string | null;
   notice: string | null;
+  /** Where the last action started: the update notice in the reading order, or the setup surface. */
+  from: 'notice' | 'setup';
 }
 
-export const initialSetupUi = (): SetupUi => ({ form: { configRoot: '', dataRoot: '', storeRoot: '' }, edited: { configRoot: false, dataRoot: false, storeRoot: false }, review: null, confirm: null, ack: false, busy: false, error: null, notice: null });
+export const initialSetupUi = (): SetupUi => ({ form: { configRoot: '', dataRoot: '', storeRoot: '' }, edited: { configRoot: false, dataRoot: false, storeRoot: false }, review: null, confirm: null, ack: false, busy: false, error: null, notice: null, from: 'setup' });
 
 type Host<U> = ViewContext<U & { setup: SetupUi }>;
+
+export type UpdateKind = 'upgrade' | 'rebuild' | 'downgrade';
+export interface UpdateNotice { kind: UpdateKind; tone: 'info' | 'warning'; title: string; body: string; action: string }
+
+/**
+ * Plain-language notice when the bundled companion differs from the installed one. `current` and an
+ * absent comparison show nothing: absence is no claim either way. A same-version rebuild is never
+ * called newer, and a newer installed companion is a warning, never an upgrade prompt.
+ */
+export function updateNotice(s: SetupView | null | undefined): UpdateNotice | null {
+  const u = s?.update;
+  if (!s?.version || !u || u.state === 'current') return null;
+  if (u.state === 'newer-installed') {
+    return { kind: 'downgrade', tone: 'warning', title: 'Installed companion is newer than this extension', body: `Installed ${s.version} · bundled ${u.candidateVersion}. Nothing changes on its own. Choosing the bundled version would go back to an older companion; updating this extension is usually the better fix.`, action: 'Review' };
+  }
+  if (u.candidateVersion === s.version) {
+    return { kind: 'rebuild', tone: 'info', title: 'Different companion build available', body: `This extension bundles a different build of version ${s.version}. Nothing changes until you review and confirm.`, action: 'Review update' };
+  }
+  return { kind: 'upgrade', tone: 'info', title: 'Companion update available', body: `Installed ${s.version} → bundled ${u.candidateVersion}. Nothing changes until you review and confirm.`, action: 'Review update' };
+}
+
+/**
+ * Version facts for a review: the installed version from the inspect reply and, for an update, the
+ * bundled version from the frame's latest setup read (inspect replies carry no comparison). A
+ * comparison for another installed version is out of date, and a missing one makes no claim, so a
+ * refused action whose re-read drops the comparison also drops it from the open review.
+ */
+export function reviewVersions(review: NonNullable<SetupUi['review']>, snap: BundledComparison | null): { rows: [string, string][]; kind: UpdateKind | 'same' | null; note: string | null } {
+  const installed = review.result.version;
+  const rows: [string, string][] = installed ? [['Installed version', installed]] : [];
+  if (review.action !== 'update') return { rows, kind: null, note: null };
+  if (!snap || !installed || snap.version !== installed) {
+    return { rows, kind: null, note: 'The service has not compared the bundled companion with the installed one, so this review cannot say which version updating selects.' };
+  }
+  rows.push(['Bundled version', snap.update.candidateVersion]);
+  if (snap.update.state === 'current') return { rows, kind: 'same', note: 'The bundled companion has the same files as the installed one, so updating changes nothing.' };
+  const kind = updateNotice({ ...review.result, update: snap.update })!.kind;
+  const note = kind === 'rebuild' ? 'Same version number, different files: updating selects the bundled files.'
+    : kind === 'downgrade' ? 'The bundled companion is older than the installed one. Choosing it goes back to that version.' : null;
+  return { rows, kind, note };
+}
+
+const UPDATE_EFFECT = 'Updating keeps these folders, your plans and history, and switches only the companion files. Agents use the new files once OpenCode loads the companion again.';
+const SWITCH_EFFECT = 'Switching keeps these folders, your plans and history, and changes only the companion files. Agents use them once OpenCode loads the companion again.';
+const RELOAD_TEXT = 'OpenCode has not loaded the current companion files yet. Restart OpenCode when convenient so agents use them; sessions already running may keep earlier files until then. This view does not restart anything.';
+
+/** Shared setup state, actions and their bookkeeping for one place (`from`) in the frame. */
+function controls<U>(vc: Host<U>, from: SetupUi['from']) {
+  const set = (patch: Partial<SetupUi>) => vc.updateUi((u) => ({ setup: { ...u.setup, ...patch } }) as Partial<U & { setup: SetupUi }>);
+  const run = async (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, after: (r: SetupView) => Partial<SetupUi>) => {
+    set({ busy: true, error: null, notice: null, from });
+    const r = await vc.runSetup(action, targets, confirmed);
+    if (r.ok) set({ busy: false, ...after(r.setup) });
+    else set({ busy: false, error: r.code });
+  };
+  /** Update review over the configured folders. */
+  const reviewUpdate = () => {
+    void run('inspect', null, false, (res) => ({ review: { action: 'update', targets: null, result: res }, ack: false }));
+  };
+  return { set, run, reviewUpdate };
+}
+
+/** Setup feedback banners; `onDismiss` lets them be closed where no other control would clear them. */
+function banners(parent: ParentNode, s: SetupUi, onDismiss?: () => void) {
+  if (s.error) {
+    const slot = testid(el('div'), 'setup-error');
+    slot.dataset.code = s.error;
+    slot.setAttribute('role', 'alert');
+    mountBanner(slot, { tone: 'error', title: s.error === 'missing-folders' ? 'Folders needed' : 'Setup did not change anything', body: setupErrorText(s.error), ...(onDismiss ? { action: { label: 'Dismiss', onClick: onDismiss } } : {}) });
+    if (s.error === 'service-binding-unavailable' || s.error === 'service-binding-unavailable-capture-disabled') (slot.querySelector('.oc-sdk-banner-title') as HTMLElement | null)?.replaceChildren('Setup only partly finished');
+    parent.append(slot);
+  }
+  if (s.notice) {
+    const slot = testid(el('div'), 'setup-notice');
+    slot.setAttribute('role', 'status');
+    mountBanner(slot, { tone: 'success', title: s.notice, ...(onDismiss ? { action: { label: 'Dismiss', onClick: onDismiss } } : {}) });
+    parent.append(slot);
+  }
+}
+
+/** Review step: shown before any install/update confirmation. */
+function reviewCard<U>(vc: Host<U>, c: ReturnType<typeof controls<U>>) {
+  const s = vc.ui.setup;
+  const r = s.review!;
+  const versions = reviewVersions(r, bundledComparison(vc.setup?.state === 'ready' ? vc.setup.value : null));
+  const back = versions.kind === 'downgrade';
+  const card = testid(el('div', 'ap-setup-card'), 'setup-review');
+  card.dataset.action = r.action;
+  if (versions.kind) card.dataset.kind = versions.kind;
+  card.append(el('h3', 'ap-setup-title', r.action === 'install' ? 'Review before installing' : back ? 'Review before switching to the older companion' : 'Review before updating'));
+  const t = r.result.targets!;
+  card.append(facts([...targetRows(t), ...versions.rows]));
+  if (versions.note) card.append(testid(el('p', back ? 'ap-doc-warn' : 'ap-note', versions.note), 'setup-review-versions'));
+  if (r.result.installed && r.action === 'install') card.append(el('p', 'ap-doc-warn', 'A companion is already installed in these folders. Use update instead.'));
+  if (r.action === 'update') card.append(el('p', 'ap-note', back ? SWITCH_EFFECT : UPDATE_EFFECT));
+  for (const d of r.result.diagnostics.filter((x) => x !== 'targets-unverified')) card.append(el('p', 'ap-note', setupDiagnosticText(d)));
+  disclosure(card);
+  const ack = testid(el('div'), 'setup-ack');
+  const label = r.action === 'install' ? 'I reviewed these folders and want to install the companion'
+    : back ? 'I reviewed these folders and want to switch to the older bundled companion' : 'I reviewed these folders and want to update the companion';
+  mountCheckbox(ack, { label, checked: s.ack, onChange: (checked) => c.set({ ack: checked }) });
+  card.append(ack);
+  const row = el('div', 'ap-row');
+  button(row, 'setup-confirm', r.action === 'install' ? 'Install' : back ? 'Use bundled version' : 'Update', () => {
+    void c.run(r.action, r.targets, true, (res) => ({ review: null, ack: false, notice: res.activation === 'reload-required' ? null : 'Done.' }));
+  }, 'default', !s.ack || s.busy || (r.action === 'install' && r.result.installed));
+  button(row, 'setup-cancel', 'Cancel', () => c.set({ review: null, ack: false, error: null }), 'ghost', s.busy);
+  card.append(row);
+  return card;
+}
+
+/** The update notice as a kit banner; `onReview` adds its action (the reading-order notice). */
+function updateBanner(id: string, n: UpdateNotice, onReview?: () => void) {
+  const slot = testid(el('div'), id);
+  slot.dataset.kind = n.kind;
+  mountBanner(slot, { tone: n.tone, title: n.title, body: n.body, ...(onReview ? { action: { label: n.action, onClick: onReview } } : {}) });
+  slot.querySelector('.oc-sdk-banner-action button')?.setAttribute('data-testid', `${id}-review`);
+  return slot;
+}
 
 function facts(rows: [string, string][]) {
   const dl = el('dl', 'ap-facts ap-setup-facts');
@@ -144,7 +271,10 @@ function disclosure(parent: Element) {
 export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) {
   const wrap = testid(el('section', 'ap-setup'), 'setup-panel');
   const s = vc.ui.setup;
-  const set = (patch: Partial<SetupUi>) => vc.updateUi((u) => ({ setup: { ...u.setup, ...patch } }) as Partial<U & { setup: SetupUi }>);
+  const c = controls(vc, 'setup');
+  const { set, run } = c;
+  // Feedback and a review started from the update notice stay with the notice (reloadNote).
+  const mine = s.from !== 'notice';
   const state = vc.setup;
   if (!state) vc.requestSetup();
   // The service already says it is not set up: the form is usable at once; folder hints from the
@@ -158,48 +288,10 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
   const phase: SetupPhase = info ? setupPhase(info) : 'unconfigured';
   wrap.dataset.phase = phase;
 
-  const run = async (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, after: (r: SetupView) => Partial<SetupUi>) => {
-    set({ busy: true, error: null, notice: null });
-    const r = await vc.runSetup(action, targets, confirmed);
-    if (r.ok) set({ busy: false, ...after(r.setup) });
-    else set({ busy: false, error: r.code });
-  };
+  if (mine) banners(wrap, s);
 
-  if (s.error) {
-    const slot = testid(el('div'), 'setup-error');
-    slot.dataset.code = s.error;
-    slot.setAttribute('role', 'alert');
-    mountBanner(slot, { tone: 'error', title: s.error === 'missing-folders' ? 'Folders needed' : 'Setup did not change anything', body: setupErrorText(s.error) });
-    if (s.error === 'service-binding-unavailable' || s.error === 'service-binding-unavailable-capture-disabled') (slot.querySelector('.oc-sdk-banner-title') as HTMLElement | null)?.replaceChildren('Setup only partly finished');
-    wrap.append(slot);
-  }
-  if (s.notice) {
-    const slot = testid(el('div'), 'setup-notice');
-    slot.setAttribute('role', 'status');
-    mountBanner(slot, { tone: 'success', title: s.notice });
-    wrap.append(slot);
-  }
-
-  // Review step: shown before any install/update confirmation.
-  if (s.review) {
-    const r = s.review;
-    const card = testid(el('div', 'ap-setup-card'), 'setup-review');
-    card.append(el('h3', 'ap-setup-title', r.action === 'install' ? 'Review before installing' : 'Review before updating'));
-    const t = r.result.targets!;
-    card.append(facts([...targetRows(t), ...(r.result.version ? [['Installed version', r.result.version] as [string, string]] : [])]));
-    if (r.result.installed && r.action === 'install') card.append(el('p', 'ap-doc-warn', 'A companion is already installed in these folders. Use update instead.'));
-    for (const d of r.result.diagnostics.filter((x) => x !== 'targets-unverified')) card.append(el('p', 'ap-note', setupDiagnosticText(d)));
-    disclosure(card);
-    const ack = testid(el('div'), 'setup-ack');
-    mountCheckbox(ack, { label: r.action === 'install' ? 'I reviewed these folders and want to install the companion' : 'I reviewed these folders and want to update the companion', checked: s.ack, onChange: (checked) => set({ ack: checked }) });
-    card.append(ack);
-    const row = el('div', 'ap-row');
-    button(row, 'setup-confirm', r.action === 'install' ? 'Install' : 'Update', () => {
-      void run(r.action, r.targets, true, (res) => ({ review: null, ack: false, notice: res.activation === 'reload-required' ? null : 'Done.' }));
-    }, 'default', !s.ack || s.busy || (r.action === 'install' && r.result.installed));
-    button(row, 'setup-cancel', 'Cancel', () => set({ review: null, ack: false }), 'ghost', s.busy);
-    card.append(row);
-    wrap.append(card);
+  if (mine && s.review) {
+    wrap.append(reviewCard(vc, c));
     return wrap;
   }
 
@@ -289,21 +381,23 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
     installed: 'Capture is on', disabled: 'Capture is off', 'reload-required': 'Companion installed', removed: 'Capture removed', recovery: 'Setup was interrupted', unconfigured: '',
   }[phase];
   status.append(el('h3', 'ap-setup-title', headline));
-  if (phase === 'reload-required') status.append(testid(el('p', 'ap-doc-warn', 'Start a new OpenCode session or reload OpenCode to begin capturing. This view does not restart anything.'), 'setup-reload'));
+  // The comparison is independent of the setup phase: an update can be available while a reload is
+  // still pending, and the two notes stay distinct.
+  const update = updateNotice(info);
+  if (update) status.append(updateBanner('setup-update-notice', update));
+  if (phase === 'reload-required') status.append(testid(el('p', 'ap-doc-warn', RELOAD_TEXT), 'setup-reload'));
   if (phase === 'removed') status.append(el('p', 'ap-note', 'The companion files were removed and capture is off. Recorded plans and history are kept in the progress store.'));
   if (phase === 'recovery' && info.recovery) {
     status.append(testid(el('p', 'ap-doc-warn', `An interrupted setup left ${info.recovery.stagedPackages + info.recovery.stagedActivations + info.recovery.stagedReleases} staged item(s). Nothing was cleaned up automatically. Run the same update again to finish it, or check the folders.`), 'setup-recovery'));
   }
   if (!info.verified) status.append(el('p', 'ap-doc-warn', 'These folders are not a verified OpenCode setup, so sessions cannot be linked across agents.'));
-  if (info.targets) status.append(facts([...targetRows(info.targets), ...(info.version ? [['Version', info.version] as [string, string]] : [])]));
+  if (info.targets) status.append(facts([...targetRows(info.targets), ...versionRows(info)]));
   for (const d of info.diagnostics) status.append(el('p', 'ap-note', setupDiagnosticText(d)));
   const row = el('div', 'ap-row');
   if (info.installed && info.captureEnabled !== false) button(row, 'setup-disable', 'Turn off capture', () => set({ confirm: 'disable', error: null, notice: null }), 'outline', s.busy);
   if (info.installed && info.captureEnabled === false) button(row, 'setup-enable', 'Turn capture back on', () => set({ confirm: 'enable', error: null, notice: null }), 'outline', s.busy);
   if (info.installed) {
-    button(row, 'setup-update', 'Update companion', () => {
-      void run('inspect', null, false, (res) => ({ review: { action: 'update', targets: null, result: res }, ack: false }));
-    }, 'ghost', s.busy);
+    button(row, 'setup-update', update?.action ?? 'Update companion', c.reviewUpdate, update?.kind === 'upgrade' || update?.kind === 'rebuild' ? 'outline' : 'ghost', s.busy);
     button(row, 'setup-remove', 'Remove capture', () => set({ confirm: 'remove-capture', error: null, notice: null }), 'ghost', s.busy);
   } else if (info.targets) {
     const targets = info.targets;
@@ -329,9 +423,41 @@ export function captureOffNote(setup: ViewContext<unknown>['setup']): { reason: 
   return { reason: 'unknown', text: 'Capture is off, so no new progress is being recorded.' };
 }
 
-/** After install/update, until the service restarts: file installation is not activation proof. */
-export function reloadNote<U>(vc: ViewContext<U>) {
-  const s = vc.setup;
-  if (!s || s.state !== 'ready' || s.value.activation !== 'reload-required') return null;
-  return testid(el('p', 'ap-doc-warn', 'The companion was installed. Start a new OpenCode session or reload OpenCode so agents can report progress. This view does not restart anything.'), 'setup-reload');
+/**
+ * Version facts for the configured setup: the selected installed version, the bundled one when the
+ * service compared them, and the folder's utility from the install when it differs.
+ */
+function versionRows(info: SetupView): [string, string][] {
+  const rows: [string, string][] = [];
+  const u = info.update;
+  if (info.version) rows.push(['Installed version', info.version]);
+  if (u) rows.push(['Bundled version', u.state === 'current' ? `${u.candidateVersion} · same files as installed` : u.candidateVersion]);
+  if (u?.rootVersion && u.rootVersion !== info.version) rows.push(['Folder utility', `${u.rootVersion} · loader and remove script from when the companion was installed; updates keep it`]);
+  return rows;
+}
+
+/**
+ * Setup notes in the progress reading order (rail and page, above the plan): the companion update
+ * notice with its review, then the pending-reload note. They are independent: an update can be
+ * available while a reload is pending. The update notice clears only when the service reports the
+ * bundled files selected, the reload note only when it observes them loaded. File installation is
+ * never presented as activation, and nothing here restarts anything.
+ */
+export function reloadNote<U>(vc: Host<U>) {
+  const out = document.createDocumentFragment();
+  const s = vc.ui.setup;
+  const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
+  const c = controls(vc, 'notice');
+  const reviewing = s.from === 'notice' && !!s.review;
+  if (s.from === 'notice') banners(out, s, reviewing ? undefined : () => c.set({ error: null, notice: null }));
+  if (reviewing) {
+    const wrap = testid(el('section', 'ap-setup'), 'update-review-panel');
+    wrap.append(reviewCard(vc, c));
+    out.append(wrap);
+  } else {
+    const n = updateNotice(info);
+    if (n) out.append(updateBanner('update-notice', n, () => { if (!vc.ui.setup.busy) c.reviewUpdate(); }));
+  }
+  if (info?.activation === 'reload-required') out.append(testid(el('p', 'ap-doc-warn', RELOAD_TEXT), 'setup-reload'));
+  return out.childNodes.length ? out : null;
 }

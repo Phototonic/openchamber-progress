@@ -96,6 +96,13 @@ export interface SetupTargets { configRoot: string; dataRoot: string; storeRoot:
  */
 export interface SetupSuggestion { value: string; state: 'resolved' | 'candidate' }
 export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null>;
+/**
+ * Bundled companion compared with the selected installed one (configured, verified, installed only).
+ * `current`: same files, not just the same version label. `available`: different files, bundled
+ * version the same or higher. `newer-installed`: the installed version is higher. `rootVersion` is
+ * the folder's loader/remove utility from when the companion was installed; updates keep it. Absent: no claim.
+ */
+export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
   configured: boolean;
   verified: boolean;
@@ -110,6 +117,8 @@ export interface SetupView {
   action?: string;
   /** Unconfigured replies only; absent when the service has none (unsupported host, older service). */
   suggestions?: SetupSuggestions;
+  /** Absent when the service makes no comparison (older service, not installed, unverified, errors). */
+  update?: CompanionUpdateView;
 }
 
 export interface PlanSummary extends Counts { working: number; blocked: number; percent: number | null }

@@ -1,6 +1,6 @@
 # Production backend v2 (T3)
 
-Current unreleased private testing candidate: **0.2.3**. Here v2 means protocol/schema2,
+Current unreleased private testing candidate: **0.2.4**. Here v2 means protocol/schema2,
 not a release major. Owner-corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
 `evidence/` and `AGENTS.md` are local-only, never committed or packaged. Evidence
@@ -101,6 +101,33 @@ Routine status targets250-token requests/100-token receipts are character-based
 tuning estimates only; see evidence/backend/token-budget.md. No extra LLM calls.
 
 ## Verification and known limits
+
+### U1 companion comparison / frozen U2 seam
+
+`SetupRead.update?: CompanionUpdateRead` is additive on existing setup status
+reads and mutating action replies (see docs/contracts.md). SetupController uses
+its trusted `readonlyPayload` injection only with an available store and verified
+source. Lifecycle inspection first validates owned root/release bytes, then uses
+the same release derivation as install/update: existing binding with candidate
+version plus plugin/guidance hashes. No version-only “current” claim is made.
+Semver comparison distinguishes equal-version rebuilds, upgrades and explicitly
+newer-installed selections, including numeric components and prerelease ordering.
+
+Selected version remains manifest-authoritative. Verified root package version is
+diagnostic metadata and can lag because update retains the initial root files.
+Unknown/unconfigured/removed/unverified/modified/store-error states omit comparison.
+Activation remains independent, with no loaded-version fabrication or live census.
+No new cache, progress-poll audit, database migration, route or request body is
+introduced. Full fail-closed mutation revalidation is unchanged.
+
+Real HTTP regressions in tests/backend/service-lifecycle.test.ts cover current,
+upgrade, same-version changed bytes, newer-installed/downgrade, retained root bytes,
+post-update pending/matching observed activation, uncertainty/absence and modified
+update refusal with retained history. Local evidence: evidence/upgrade-ux/backend.txt.
+The real-service fixture includes companion and setup siblings, not just the
+read-only service. U1 is not package/release acceptance; the known hours-long
+host sluggishness blocker remains unresolved. No real-user operation is part of
+these fixture checks.
 
 ### T7 host-side setup suggestions / frozen T8 seam
 
@@ -256,3 +283,17 @@ revisit/spinner and bounded latest-switch refresh fixes have accepted Designer
 evidence; failed-setup connection cleanup has focused runtime regressions. None
 establishes the owner's hours-long real-host sluggishness cause. This is an
 unreleased private testing candidate, not a release-ready or complete-cure claim.
+
+## Companion upgrade UX /0.2.4 private candidate join
+
+Extension/companion metadata moves together to0.2.4; protocol/schema remain2.
+The accepted update-detection service and guest bytes are joined without rebuilding
+guests. The package gate additionally exercises older-fixture detection, explicit
+confirmed update, current selection with reload pending, and matching loaded
+observation through the exact packaged service over HTTP. Production lifecycle
+fixtures create owned state; no test Store rows are handwritten. Root utility
+metadata and history are retained; modified payloads and corrupt ownership refuse
+updates and make no comparison claim. Both ZIPs are extracted and every declared
+file is compared to its assembled folder. Local evidence:
+`evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
+no real0.2.4 install/reload or new performance claim is authorized or implied.

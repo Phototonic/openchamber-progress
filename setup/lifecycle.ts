@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, openSync, closeSync, fsyncSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { Store, canonical, digest } from '../shared/store.ts';
-import { VERSION } from '../shared/progress.ts';
+import { VERSION, type CompanionUpdateRead } from '../shared/progress.ts';
 import { type Binding, readBinding, verifyStore } from '../shared/binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 
@@ -33,6 +33,34 @@ function writeFiles(root:string, files:Record<string,string>) {
   fsyncDir(root);
 }
 function hashes(files:Record<string,string>){return Object.fromEntries(Object.entries(files).map(([name,body])=>[name,digest(body)]));}
+/** Shared by advisory inspection and the fully revalidated mutation path. */
+function releasePayload(binding:Binding,payload:Payload) {
+  const files={'index.js':payload.plugin,'SKILL.md':payload.guidance,'progress-binding.json':JSON.stringify({...binding,version:payload.version})};
+  const releaseHash=hashes(files);
+  return {files,releaseHash,release:digest(canonical(releaseHash))};
+}
+function versionParts(version:string) {
+  const match=/^(\d+)\.(\d+)\.(\d+)(?:-([a-z0-9.-]+))?$/i.exec(version);
+  return match?{core:match.slice(1,4).map(BigInt),pre:match[4]?.split('.')}:undefined;
+}
+function compareVersions(a:string,b:string):number|undefined {
+  const left=versionParts(a),right=versionParts(b);if(!left||!right)return undefined;
+  for(let i=0;i<3;i++)if(left.core[i]!==right.core[i])return left.core[i]! > right.core[i]! ? 1 : -1;
+  if(!left.pre||!right.pre)return left.pre? -1:right.pre?1:0;
+  for(let i=0;i<Math.max(left.pre.length,right.pre.length);i++){
+    const x=left.pre[i],y=right.pre[i];if(x===y)continue;if(x===undefined)return -1;if(y===undefined)return 1;
+    const xn=/^\d+$/.test(x),yn=/^\d+$/.test(y);
+    if(xn&&yn){if(BigInt(x)!==BigInt(y))return BigInt(x)>BigInt(y)?1:-1;continue;}
+    if(xn!==yn)return xn?-1:1;return x>y?1:-1;
+  }
+  return 0;
+}
+function updatePreview(o:ReturnType<typeof owned>,payload:Payload):CompanionUpdateRead|undefined {
+  const comparison=compareVersions(payload.version,o.manifest.releases[o.manifest.active]!.version);
+  if(comparison===undefined||!payload.plugin||!payload.guidance)return undefined;
+  const rootPackage=JSON.parse(readFileSync(path.join(o.root,'package.json'),'utf8'));
+  return {state:releasePayload(o.binding,payload).release===o.manifest.active?'current':comparison<0?'newer-installed':'available',candidateVersion:payload.version,rootVersion:typeof rootPackage.version==='string'?rootPackage.version:null};
+}
 function verifyFiles(root:string, expected:Record<string,string>, extras:string[]=[]){
   safe(root);need(lstatSync(root).isDirectory(),'collision');
   need(readdirSync(root).every(name=>Object.hasOwn(expected,name)||extras.includes(name)),'foreign-files');
@@ -78,7 +106,7 @@ export function lifecycle(action:Action,targets:Targets,payload?:Payload, testBo
     });
     const active=o?path.join(payloadRoot,o.manifest.active):undefined;
     const fingerprint=active?activationFingerprint(readBinding(path.join(active,'progress-binding.json')),readFileSync(path.join(active,'index.js')),readFileSync(path.join(active,'SKILL.md'))):null;
-    return {...info,fingerprint,version:o?o.manifest.releases[o.manifest.active].version:null,action,writes:false,diagnostics:[...(!targets.confirmed?['targets-unverified']:[]),...(o&&Object.keys(o.manifest.releases).length>1?['rollback-payloads-retained']:[]),...(unreferenced?['unreferenced-payloads-retained']:[]),...(info.recovery.stagedPackages||info.recovery.stagedActivations||info.recovery.stagedReleases?['staged-payloads-present']:[])]};
+    return {...info,fingerprint,version:o?o.manifest.releases[o.manifest.active].version:null,...(o&&targets.confirmed&&o.binding.source.verified&&payload?{update:updatePreview(o,payload)}:{}),action,writes:false,diagnostics:[...(!targets.confirmed?['targets-unverified']:[]),...(o&&Object.keys(o.manifest.releases).length>1?['rollback-payloads-retained']:[]),...(unreferenced?['unreferenced-payloads-retained']:[]),...(info.recovery.stagedPackages||info.recovery.stagedActivations||info.recovery.stagedReleases?['staged-payloads-present']:[])]};
   }
   need(targets.confirmed,'confirmation-required');
   if(action==='disable'||action==='enable'||action==='remove-capture'){
@@ -116,8 +144,7 @@ export function lifecycle(action:Action,targets:Targets,payload?:Payload, testBo
       binding={protocolVersion:VERSION,schemaVersion:VERSION,installId:randomUUID(),version:payload.version,database:store.file,storeId:store.list({limit:1}).storeId,source};
     }
   }finally{store.close();}
-  const files={'index.js':payload.plugin,'SKILL.md':payload.guidance,'progress-binding.json':JSON.stringify(binding)};
-  const releaseHash=hashes(files);const release=digest(canonical(releaseHash));
+  const {files,releaseHash,release}=releasePayload(binding,payload);
   const payloadRoot=path.join(targets.storeRoot,'payloads');safe(payloadRoot,true);mkdirSync(payloadRoot,{recursive:true,mode:0o700});
   const releaseRoot=path.join(payloadRoot,release);
   if(existsSync(releaseRoot))verifyFiles(releaseRoot,releaseHash);

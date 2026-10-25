@@ -23,6 +23,12 @@ When the candidate is ready for evaluation:
 
 The extension ZIP includes the companion payload and setup utility; this installation flow does not require a separate companion ZIP. Capture has a separate lifecycle from the extension: if you want it to stop, explicitly disable or remove the companion **before** uninstalling the extension. Uninstalling the extension alone does not stop capture. Removing the companion retains its database and history; cleanup is not automatic.
 
+### Updating an existing installation
+
+Installing a new extension package preserves the configured companion folders, store, and history, but may not update the separately installed companion. The rail/page and Setup show a notice when the bundled companion differs: a same-version rebuild is shown as a different build, while an installed version newer than the bundle gets a warning, never an automatic downgrade. **Review update** shows the installed and bundled versions and existing folders before acknowledgement and confirmation; it does not repeat first setup or silently apply future changes. See [companion update details](docs/setup.md#bundled-companion-detection-u1-backend-u2-ui-follow-up) and the [frozen comparison contract](docs/contracts.md#u1-frozen-additive-companion-comparison-u2-consumer-contract).
+
+Updating companion files is separate from loading them. Follow the reload notice and restart OpenCode when safe; merely opening a new session is not a reliable activation step, and OpenCode is never restarted automatically. Setup's selected companion version is authoritative; root-folder utility metadata can retain its initial version and is not the selected version. This flow remains protocol/schema 2.
+
 Known limits: unseen sessions and rebuilt frames still start cold, and real-host long-uptime performance is unresolved. There is no supported automatic extension-uninstall hook; remove capture explicitly first if it should stop, and history is retained.
 
 See [Safe global companion setup](docs/setup.md) for the full lifecycle, [Frozen contracts](docs/contracts.md) for API and reporting behavior, and [Progress views](docs/ui.md) for view behavior. Setup suggestions and capture are currently Linux-only; web and relay clients use the connected host and do not broaden that platform support.

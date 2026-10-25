@@ -194,6 +194,13 @@ export function parseSetup(body: string): SetupView {
   // and a configured reply's hints are ignored (configured targets take precedence).
   const hint = (x: unknown) => (isRec(x) && isStr(x.value) && x.value.length > 0 && x.value.length <= 4096 && (x.state === 'resolved' || x.state === 'candidate') ? { value: x.value, state: x.state } as const : null);
   const s = !v.configured && isRec(v.suggestions) ? v.suggestions : null;
+  // The bundled-companion comparison is a claim, so anything doubtful reads as no comparison: a
+  // malformed object, or one on a reply that is not configured, verified and installed with a version.
+  const u = isRec(v.update) ? v.update : null;
+  const semver = (x: unknown): x is string => isStr(x) && /^[0-9A-Za-z.+-]{1,64}$/.test(x);
+  const update = u && v.configured && v.verified === true && v.installed && optStr(v.version)
+    && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
+    ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,
@@ -202,6 +209,7 @@ export function parseSetup(body: string): SetupView {
     recovery: r ? { stagedPackages: Number(r.stagedPackages) || 0, stagedActivations: Number(r.stagedActivations) || 0, stagedReleases: Number(r.stagedReleases) || 0 } : null,
     action: optStr(v.action),
     ...(s ? { suggestions: { configRoot: hint(s.configRoot), dataRoot: hint(s.dataRoot), storeRoot: hint(s.storeRoot) } } : {}),
+    ...(update ? { update } : {}),
   };
 }
 

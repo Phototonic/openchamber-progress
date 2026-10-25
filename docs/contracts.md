@@ -1,6 +1,6 @@
 # Frozen production contract v2 — T3 / Designer handoff
 
-Private testing candidate **0.2.3** (unreleased) is independent of protocol/schema **2**. Setup's version
+Private testing candidate **0.2.4** (unreleased) is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases. Local QA under
 evidence/ and project instructions AGENTS.md are never committed or shipped.
@@ -94,6 +94,49 @@ coverage. Body text is fetched only on demand and rendered as untrusted plain te
 configured, verified, installed, captureEnabled(boolean|null), targets({configRoot,
 dataRoot,storeRoot}|null), version(string|null), activation, separateLifecycle=true,
 historyRetained=true, diagnostics[], optional recovery counts. No tokens.
+
+### U1 frozen additive companion comparison (U2 consumer contract)
+
+Existing setup reads and action replies produced by `status()` may add:
+
+```ts
+interface CompanionUpdateRead {
+  state: 'current' | 'available' | 'newer-installed';
+  candidateVersion: string;
+  rootVersion: string | null;
+}
+// SetupRead gains: update?: CompanionUpdateRead
+```
+
+`version` remains the verified manifest's selected immutable release version, never
+the root package version. `candidateVersion` is the bundled payload's release
+version. Comparison is present only for configured, verified, installed ownership
+with an available validated store and bundled payload. Unconfigured, removed,
+unverified, modified, store-error or unknown states omit it; absence (including
+older services) makes no claim, and must not be rendered as “up to date”.
+
+- `current`: the active selection equals the candidate identity derived by the
+  actual update path: existing binding with candidate version, plugin and guidance
+  bytes, file hashes and canonical release digest. Equal version labels alone do
+  not establish this.
+- `available`: identity differs and candidate semver is greater than or equal to
+  selected semver. Same-version rebuilds must not be described as “newer”.
+- `newer-installed`: identity differs and selected semver is greater. Warn about
+  a possible downgrade, not a normal upgrade; only explicit review/confirmation
+  can select the bundled payload. Detection never switches anything.
+
+`rootVersion` is the verified root package.json version (or null if unavailable),
+diagnostic metadata for the retained initial loader/removal utility. Update keeps
+root files unchanged; their version can intentionally lag the selected release.
+Do not claim the root utility was updated. No routes, request bodies, fixed error
+codes, protocol/schema2 or database schemas change. POST inspect retains its
+existing target-review shape; mutating action replies use the new status snapshot.
+
+Comparison and activation are independent: `current` may coexist with
+`reload-required`. Only the matching latest loaded observation clears activation,
+not candidate detection. Last observed does not mean every running session is
+current. Detection uses existing setup-read occasions, never progress polling;
+the full mutation ownership/store/descriptor checks are still performed afresh.
 
 ### T7 frozen additive setup suggestions (T8 consumer contract)
 

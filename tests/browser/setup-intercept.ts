@@ -2,13 +2,15 @@
 // - logs every guest service request: method + path (+ query keys), never bodies or tokens
 // - optionally holds GET /v1/setup replies (late folder hints) until the control file releases them
 // - optionally strips `suggestions` from setup replies (a service exposing no hints)
+// - optionally strips or replaces `update` in setup reads (an older service, or malformed metadata)
 // Usage: node --experimental-strip-types tests/browser/setup-intercept.ts <cdp port> <control.json> <log.jsonl> <seconds>
-//   control.json: { "holdSetup": boolean, "stripSuggestions": boolean } — re-read on every request.
+//   control.json: { "holdSetup": boolean, "stripSuggestions": boolean, "stripUpdate": boolean, "replaceUpdate": unknown }
+//   — re-read on every request.
 import { appendFileSync, readFileSync } from 'node:fs';
 
 const [portArg, controlFile, logFile, secondsArg] = process.argv.slice(2);
 if (!logFile) throw new Error('usage: setup-intercept.ts <cdp port> <control.json> <log.jsonl> <seconds>');
-const control = () => { try { return JSON.parse(readFileSync(controlFile, 'utf8')) as { holdSetup?: boolean; stripSuggestions?: boolean }; } catch { return {}; } };
+const control = () => { try { return JSON.parse(readFileSync(controlFile, 'utf8')) as { holdSetup?: boolean; stripSuggestions?: boolean; stripUpdate?: boolean; replaceUpdate?: unknown }; } catch { return {}; } };
 const list = (await (await fetch(`http://127.0.0.1:${portArg}/json/list`)).json()) as { type: string; url: string; webSocketDebuggerUrl: string }[];
 const page = list.find((t) => t.type === 'page' && t.url.startsWith('openchamber-ui://')) ?? list.find((t) => t.type === 'page');
 if (!page) throw new Error('no page target');
@@ -52,8 +54,13 @@ ws.onmessage = (event) => {
       const envelope = JSON.parse(text) as { status: number; body: string };
       const inner = JSON.parse(envelope.body);
       had = 'suggestions' in inner;
-      log({ stage: 'response', path: body.path, status: envelope.status, configured: inner.configured, suggestionStates: inner.suggestions ? Object.fromEntries(Object.entries(inner.suggestions).map(([k, v]: [string, any]) => [k, v ? v.state : null])) : 'absent' });
-      if (control().stripSuggestions && had) { delete inner.suggestions; out = JSON.stringify({ ...envelope, body: JSON.stringify(inner) }); log({ stage: 'stripped', path: body.path }); }
+      log({ stage: 'response', path: body.path, status: envelope.status, configured: inner.configured, suggestionStates: inner.suggestions ? Object.fromEntries(Object.entries(inner.suggestions).map(([k, v]: [string, any]) => [k, v ? v.state : null])) : 'absent', update: inner.update ? inner.update.state : 'absent', version: inner.version ?? null, activation: inner.activation });
+      const c = control();
+      let changed = false;
+      if (c.stripSuggestions && had) { delete inner.suggestions; changed = true; log({ stage: 'stripped', path: body.path }); }
+      if (c.stripUpdate && 'update' in inner) { delete inner.update; changed = true; log({ stage: 'stripped-update', path: body.path }); }
+      if (c.replaceUpdate !== undefined) { inner.update = c.replaceUpdate; changed = true; log({ stage: 'replaced-update', path: body.path }); }
+      if (changed) out = JSON.stringify({ ...envelope, body: JSON.stringify(inner) });
     } catch {}
     await send('Fetch.fulfillRequest', { requestId, responseCode: responseStatusCode, responseHeaders: m.params.responseHeaders ?? [], body: Buffer.from(out).toString('base64') });
   })().catch((e) => log({ stage: 'error', error: String(e).slice(0, 160) }));
