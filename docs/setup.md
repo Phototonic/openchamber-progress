@@ -13,6 +13,59 @@ show that disclosure plus target paths/version and the separate lifecycle BEFORE
 installing. Uninstalling/closing the extension does NOT disable global capture.
 Disable/remove capture explicitly. History is always retained; there is no purge.
 
+## Git distribution validation and main promotion
+
+The standard intended source is `https://github.com/Phototonic/openchamber-progress.git`.
+It is currently private; public/default-main reachability has not been established.
+OpenChamber clones the selected/default ref and inspects its existing runtime
+entries; it does not install dependencies or compile TypeScript. The root manifest
+is used as committed, not repaired into a ZIP manifest. Required generated backend
+files are `build/service/main.js`, `build/companion/{index.js,package.json,SKILL.md}`
+and `build/setup/main.js`, alongside the three existing guest HTML/JS entries.
+Other generated output, bindings, DBs, dependencies, evidence and AGENTS stay local.
+
+Develop/accept on `dev`; only a separately approved ready version may reach `main`:
+
+1. Accept final guest and backend inputs, with no overlapping writers during the
+   artifact join. Parent stages the exact required outputs; allowlisting a file is
+   not proof it has been committed. No source work or partial build on main.
+2. Select a higher semver for the future promotion, with root manifest, RELEASE,
+   compiled service/companion and companion metadata agreeing. This work leaves
+   actual0.2.4 unchanged.0.2.5/0.2.6 are disposable-fixture examples only.
+3. Inspect the candidate Git tree's ordinary runtime files and match their hashes
+   to the accepted artifact projection. No consumer prepare/build/dependency fetch.
+4. Pass actual supported host Git default-main install/check/explicit-update and
+   pinned tag/custom-branch tests, plus folder/ZIP and companion lifecycle gates.
+   A higher manifest without its service must fail inspection and preserve the old
+   installation. Metadata awareness is not a remote runtime-file audit.
+5. With separate owner approval, promote the exact accepted projection, not a new
+   reconstructed build. Before claiming public availability, separately verify the
+   canonical repository/manifest is public and its default branch is main; address
+   the existing hours-long real-host sluggishness release blocker. No visibility,
+   main push, tag, Release or real installation is authorized by fixture success.
+
+Focused Git gate (parent supplies an isolated supported host installer module):
+
+```sh
+AGENT_PROGRESS_HOST_MODULE=<isolated-host-install.js> \
+  node --experimental-strip-types scripts/verify-git-package.ts <candidate-Git-tree-projection>
+```
+
+Supply a source-tree projection without `.git`/dependencies/local data, retaining
+the actual root manifest and all intended tracked sources/runtime files. The driver
+creates and removes its own real Git main/dev/bare/ref repositories and isolated
+host registries. It maps only one synthetic HTTPS fixture URL to local real Git
+clone/fetch/show, while exercising host public-address/no-redirect policy. No real
+Git configuration or credentials are used. Its synthetic higher version is built
+only in that disposable tree using already-installed dependencies, never the
+production source version. A loopback official-main metadata fixture serves the
+same real Git main manifest. Service startup uses the installed clone without a
+consumer build. This proves installer/ref mechanics, not live GitHub reachability.
+
+The initial D1 mechanics check uses accepted baseline guest runtime bytes; final
+P1 repeats against stable accepted current guest/backend bytes and Designer's real
+three-frame evidence. Fixture results do not grant permission for a real update.
+
 ## Resolve, inspect, confirm
 
 ### Current0.2.2 input workaround / source-only fix

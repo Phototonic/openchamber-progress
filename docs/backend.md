@@ -102,6 +102,95 @@ tuning estimates only; see evidence/backend/token-budget.md. No extra LLM calls.
 
 ## Verification and known limits
 
+### U1 official-main metadata checker
+
+`service/extension-updates.ts` owns one in-memory checker/cache per service
+generation. `GET /v1/extension-update` runs behind existing bearer validation and
+before SetupController/store lookup, so unconfigured/failed capture is independent.
+It requests exactly GitHub Contents
+`https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main`
+with raw-file Accept, fixed User-Agent, omitted credentials and manual redirects.
+No auth/cookie/header forwarding, environment/feed override, guest URL/ref, private
+host API, installer, artifact download or GitHub Release lookup exists.
+
+The existing SDK parseManifestJson validates the manifest, followed by expected
+panel identity agent-progress-probe, declared panel/page/status/service and strict
+semver validation. SDK shorthand page/status declarations remain valid. Numeric
+components and prerelease identifiers use SemVer ordering; build metadata is
+neutral. Only a higher official-main version is available. This is a metadata
+advertisement, not verification of runtime artifacts or actual install provenance.
+The separate pre-main artifact/host gates must reject a manifest-only release.
+
+One shared in-flight request,5s full header/body deadline,64KiB accepted response,
+1h success TTL,5min failure cooldown with longer valid Retry-After/rate-reset
+deadlines. Conditional ETag requests use only bounded validated header text and
+matching cached manifest knowledge. A304 without that knowledge (or with a
+contradictory ETag) fails unknown/stale, never fabricates success. Failures retain
+validated candidate/state and last success with stale=true. All diagnostics are
+fixed strings; raw upstream bodies/errors are never returned or logged. No disk
+cache. Service close aborts owned outbound HTTP before waiting for request drain;
+timeout and shutdown clear the bounded timer. There is no background daemon or
+check when no frame asks. Internal constructor transport/clock/timeout seams are
+only test construction, not production HTTP/environment configuration.
+
+Frozen DTO/lifecycle meaning: docs/contracts.md. Focused QA-U:
+
+```sh
+bun run typecheck
+node --experimental-strip-types --test tests/backend/extension-updates.test.ts
+```
+
+Tests use real authenticated service HTTP plus real loopback metadata HTTP, with
+logical fixed-target assertions and no live GitHub/private authentication. They
+cover coalescing/cache/ETag/provider failure, validation/semver, bounded redirects/
+body/deadline/shutdown, store independence and unchanged fixture selection/config/
+DB bytes. Local evidence: evidence/release-checks-live-status/updates-http.txt.
+An ignored runnable loopback-only fixture with companion/setup siblings is handed
+to Designer for U2. No current installed companion or real setup roots are touched.
+Final stable-input package/Git-distribution joins remain P1/D1, not U1 acceptance.
+
+### T1 reported-working interval reader
+
+`service/task-timing.ts` derives optional detail timing from immutable v2 revision
+snapshots after `Store.detail()` completes its own transaction. One prepared reverse
+scan is pinned to that detail's source, plan and revision, in a separate compact
+read transaction on the existing Store DB. The current snapshot must agree with
+the detail lifecycle, report timestamp, working IDs and paged item kind/status.
+Later committed revisions cannot alter this derivation. No parallel connection,
+capture mutation, stored timing, schema migration, backfill or tool-output expansion
+is added. Authentication, source binding and the response-size ceiling are retained.
+
+Bounds: at most128 snapshots and8MiB of snapshot text accepted for parsing per
+detail read, serving all working tasks/pages in one scan. A valid truncated suffix
+is explicitly a lower bound; missing current/gapped/invalid/future/reversed history
+is unknown. A snapshot that crosses the byte budget is not parsed. Cost is linear
+in accepted snapshot bytes/items, not a separate history query per task. There is
+no history work on the plan-list polling route. No derived cache is justified:
+detail loads are revision-driven and this finite scan is adequate, while a cache
+would add replacement/identity invalidation and retention complexity. Every reply
+gets a fresh server readAt. No Store, DB handle, prepared statement or cached reply
+is retained across reads, preserving SetupController close/reopen/recovery.
+
+The frozen optional DTO and browser monotonic-clock/lower-bound rules are in
+docs/contracts.md. It describes continuous **reported** working, never live model
+execution. Legacy v2 snapshots need no timing field. Malformed optional history
+does not break an otherwise valid detail response or rewrite stored bytes.
+
+QA-T commands (Node24 available through the local version-manager bin directory):
+
+```sh
+bun run typecheck
+node --experimental-strip-types --test tests/backend/task-timing.test.ts tests/backend/production-service.test.ts tests/backend/production-storage.test.ts
+```
+
+These checks use actual Store writes, a controlled clock, authenticated HTTP,
+replay, neutral link/relay/structure changes, reset boundaries, cap/byte-budget and
+isolated corrupt snapshots, paging/concurrent commits, store/source isolation and
+closed-handle recovery. Evidence: evidence/release-checks-live-status/timing.txt.
+The ignored isolated service fixture for Designer includes copied companion/setup
+siblings. This is not final package/distribution or browser acceptance; P1 performs
+the final stable-input build and companion byte-identity join.
+
 ### U1 companion comparison / frozen U2 seam
 
 `SetupRead.update?: CompanionUpdateRead` is additive on existing setup status

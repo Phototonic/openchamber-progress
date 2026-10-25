@@ -27,8 +27,22 @@ export interface PlanSummary { id: string; sourceId: string; title: string; sess
 export interface PlanState extends Omit<PlanSummary, 'counts' | 'working'> { items: Item[]; links: { sessionId: string; itemIds: string[] }[] }
 export interface Envelope { protocolVersion: 2; schemaVersion: 2; storeId: string; sources: Source[]; sourceBinding: { sourceId: string | null; verified: boolean }; captureEnabled: boolean; coverage: 'recorded-only'; diagnostics: string[] }
 export interface Page<T> { data: T[]; nextCursor: string | null }
-export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links'] }
+/** Response-only reported-working history; absent item entries mean no proven interval. */
+export interface PlanTiming { readAt: string; items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }> }
+export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links']; timing?: PlanTiming }
 export interface DocumentRead { document: DocumentRef; text: string | null; nextCursor: string | null }
+/** Official-main metadata only; not actual installation provenance or bundle audit. */
+export interface ExtensionUpdateRead {
+  installedVersion: string;
+  repository: 'Phototonic/openchamber-progress';
+  ref: 'main';
+  state: 'available' | 'not-newer' | 'unknown';
+  checkedAt: string | null;
+  stale: boolean;
+  candidateVersion?: string;
+  diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' | 'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
+  nextCheckAt: string;
+}
 export interface Suggestion { value: string; state: 'resolved' | 'candidate' }
 export interface SetupSuggestions { configRoot: Suggestion | null; dataRoot: Suggestion | null; storeRoot: Suggestion | null }
 export interface CompanionUpdateRead {

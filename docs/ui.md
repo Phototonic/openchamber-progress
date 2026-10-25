@@ -20,14 +20,15 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 | Module | Role |
 | --- | --- |
-| `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan`, `/v1/document`, `/v1/history`, `/v1/setup`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
+| `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy. |
 | `source.ts` | Paged reads through the host proxy (rules under v2 mapping below). Classifies fixed error codes into plain states. |
 | `live.ts` | SDK workspace enrichment: one projects stream plus capped session streams. Coverage, live-state labels, navigation gating (`canOpen`), and `restart()` after a context change. |
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
 | `setup.ts` | Setup UI, phases, plain-language SetupError and diagnostic text. |
+| `official.ts` | Official-main version notice (rail and page) and the compact Work Status line. |
 | `app.ts` / `refresh.ts` | Frame lifecycle, caches and repaint rules (under Controller below). |
-| `components.ts`, `style.ts`, `format.ts` | DOM pieces, CSS from host tokens only, locale-aware time. |
+| `components.ts`, `style.ts`, `format.ts` | DOM pieces, CSS from host tokens only (including reported-progress motion), locale-aware time. |
 
 ## v2 mapping (frozen contract → UI)
 
@@ -145,6 +146,62 @@ Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `relo
 
 Live session state (Running, Retrying, Waiting for permission, Waiting for an answer, Idle, State unknown, Checking…, Live state unavailable, Not open in this window) is always separate from task status. Age is information only: nothing is inferred from it.
 
+## Reported in-progress motion
+
+Subtle motion marks work that agents **reported** as in progress. It never means a model is running right now, and session chips stay static.
+- **Status text.** "N in progress" is blue: in the legend (rail, page) and in Work Status's compact counts line. It uses the host's readable `--oc-info-text` (`--oc-info` only as a fallback for older hosts). Task titles and paragraphs are never tinted or pulsed.
+- **Gate.** Motion runs only when all of these hold (`showsLiveness`, `model.ts`): the plan is active, it has working tasks, the last read succeeded (no stale or failure banner) and capture is on. The plan element (`plan-<id>`) then carries `data-motion="on"`. Closed plans (even with tasks still marked working), stale or failed views, capture off and plans with nothing in progress stay static. Report age is not an input.
+- **What moves.** All three use one 2.4 s period:
+  - a light sheen sweeps across the blue working segment of the bar;
+  - the working dot pulses in the Now callout and in Work Status's current-work row (glyphs in the task list stay static);
+  - the status text pulses.
+  Keyframes animate only `transform` and `opacity`. Bar widths and counts never animate, so the motion can't look like progress.
+- **Contrast-safe text pulse.** The text keeps `--oc-info-text`. A same-glyph `::after` overlay (alt text `""`, so it isn't read twice) fades in towards a colour mixed with the foreground. Every phase therefore has at least the token's own contrast. Measured: 5.8–6.1:1 at rest in light, 6.4–6.9:1 in dark.
+- **One phase across repaints.** A repaint replaces the root. `alignMotion` (`app.ts`) starts the new root's animations at the document timeline's origin, and an `animationstart` listener does the same for animations the browser restarts by itself (for example, a frame shown again). This uses no timer, no rAF loop and no per-task registry.
+- **Stops.** Reduced motion removes every animation, including `::before`/`::after`. Status text and counts stay. A hidden or disposed frame sets `html[data-ap-hidden]`, which removes the animations; they resume on the shared phase when the frame is visible again.
+- No completion effects.
+
+## Elapsed time (reported in progress)
+
+From the optional `timing` of `GET /v1/plan` (`docs/contracts.md`, T1). It shows how long a task has been **reported** in progress, never CPU, token or model time, and never proof that work continued.
+- **Where.** Beside working tasks in the Now callout (rail, page) and Work Status's focus row. Nowhere else, so labels don't repeat in every row.
+- **Copy.**
+  - Whole minutes: "<1 min", "12 min", "3 h 5 min", "2 days 4 h"; never seconds.
+  - Labels with a known start (exact or lower bound) use the readable blue `--oc-info-text`, like the status text; "time unknown" stays muted. Task titles are not tinted, and the labels don't animate.
+  - Exact start: title "Reported in progress at …".
+  - Lower bound: "at least 1 h 35 min", title "Observed in progress by …; start unknown".
+- **Unknown.** A reply without `timing` (older service, or unreadable) shows no label at all. A working task without a usable entry shows "time unknown", never zero. This covers an unreadable entry and a start after the reply's own read time. Groups, other statuses and closed plans get no label.
+- **Clock.** `readDetail` anchors each entry when the reply arrives: `readAt − since` (service clock only) plus the local monotonic time since receipt. Browser wall time is never used, so clock skew or a clock jump doesn't move it.
+  - The anchor lives in the detail cache (plan key + revision), so repaints and cached revisits keep it.
+  - A new revision or a remount reads a new anchor; for an unchanged interval that is the same `since`.
+- **One ticker.** A single 30 s in-place label ticker per frame (`planLabels`, `app.ts`) updates ages and elapsed times.
+  - It changes text only when a label differs, and never repaints, schedules a render, or uses a per-task timer or a network request.
+  - It runs only while the frame is visible and shows such a label; it stops when hidden, on `pagehide`, and when no label remains.
+  - On return it recomputes from the anchors at once. This replaced the old always-on 30 s age interval.
+  - Reduced motion doesn't affect it: the times stay truthful text.
+- **Test ID.** `elapsed-<itemId>` (`data-kind` = `exact` | `lower-bound` | `unknown`).
+
+## Official-main notice
+
+From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the official repository's **main** branch advertises. It is not the source this extension was installed from, and not a bundled or installed version.
+- **Shown** when `state` is `available` and that candidate version isn't dismissed:
+  - title "Official main version 0.2.5 available · This extension 0.2.4";
+  - plain directions to check and update in OpenChamber Settings → Extensions for the standard official Git URL;
+  - a note that custom branches, tags, forks or ZIP installs may not follow main and the extension can't tell its source.
+- **Action.** **View official main** opens the fixed `OFFICIAL_MAIN_URL` (`config.ts`) through `host.openUrl`; no URL comes from a reply. There is no one-click update, no Settings navigation and no install.
+- **Stale.** A failed later check keeps the known candidate, qualified with "This may be out of date: the latest check … ; last confirmed …".
+- **Nothing shown** for `not-newer`, `unknown`, an older service (404) or a reply that fails strict parsing (fixed repository/branch, strict semver, consistent states). It is never shown as "up to date".
+- **Dismiss** hides that candidate version only, kept in host storage (`official-main-dismissed`); a newer candidate shows again. Dismissing sends no service request. A dismissal made while a check is in flight wins over the stored value that check read (`OfficialMainState`, `official.ts`).
+- **Placement.**
+  - Rail and page: after the companion update notice and the reload note, and also in the not-set-up state, since the check doesn't depend on companion setup or the store.
+  - Work Status: a compact "Official main 0.2.5 available" line that opens the rail.
+  - The companion notice, its review and the reload note are unchanged and independent.
+- **When it checks.**
+  - Each visible frame asks once at host readiness, then when due: the reply's `nextCheckAt`, bounded to 5–60 min, so a skewed browser clock stays within the bounds.
+  - One request per frame at a time. A hidden or disposed frame starts none and drops a retired reply.
+  - Never on the 3 s poll, a session switch or a render. The service caches (1 h) and backs off upstream.
+- **Test IDs.** `extension-update-notice` (`data-version`, `data-stale`), `extension-update-open`, `extension-update-dismiss`, `extension-update-line`.
+
 ## Controller
 
 - **Refresh (latest context wins).**
@@ -160,6 +217,7 @@ Live session state (Running, Retrying, Waiting for permission, Waiting for an an
   - The rail also remembers the chosen plan for up to 8 recent sessions, so a revisit paints its own selection at once (host storage stays the durable copy and is re-read).
   - **Limit:** a frame the host rebuilds (for example, the per-project rail open state swapping rail and Work Status on a project switch) starts cold.
 - **Polling.** 3 s; 8 s after a failure; paused while hidden; stopped on `pagehide`.
+- **Label ticker and official-main check.** See the two sections above: one 30 s text-only ticker while visible with labels; the official-main check at readiness and when due (5–60 min), never on the poll.
 - **Workspace subscriptions.**
   - Projects: 1 stream. Session streams are capped at rail 4, status 2 and page 16, all under 32.
   - Streams are released on change and on dispose, including late resolutions.
@@ -174,7 +232,8 @@ Live session state (Running, Retrying, Waiting for permission, Waiting for an an
 
 - **Root and plans:**
   - `progress-root` (`data-surface`)
-  - `plan-<planId>` (`data-lifecycle`, `data-source`, `data-revision`)
+  - `plan-<planId>` (`data-lifecycle`, `data-source`, `data-revision`; `data-motion="on"` while reported-progress motion runs)
+  - status text: `.ap-working-text` (legend and Work Status counts)
   - `counts`, with `data-done`, `data-total`, `data-remaining`, `data-skipped`
   - `other-source`, `unverified-source`
 - **Items:**
@@ -208,7 +267,7 @@ Live session state (Running, Retrying, Waiting for permission, Waiting for an an
 
 ## QA harness (`tests/browser`)
 
-- **`model.test.ts`** (27 tests) covers:
+- **`model.test.ts`** (37 tests) covers:
   - v2 list mapping and count rules; participants
   - scope, navigation gating (verified source + coverage) and live labels
   - page filters and age text
@@ -218,6 +277,10 @@ Live session state (Running, Retrying, Waiting for permission, Waiting for an an
   - fixed error codes; setup body, phases and plain-language codes; setup suggestions parsing, prefill precedence and provenance copy
   - companion update: comparison parsing (valid, absent, malformed, contradictory), notice kinds (upgrade, rebuild, downgrade; nothing for current or unknown; independent of a pending reload), and review versions from inspect plus the snapshot (stale or missing makes no claim)
   - refresh orchestration: same-scope coalescing, latest-switch-wins with bounded overlap, stop on dispose; recent-scope memory bounds and keying; subscription cap, restart and late release
+  - elapsed time: whole-minute text boundaries, optional timing parsing (absent, unreadable, bad or future entries), service-clock + monotonic anchoring regardless of browser clock, and the anchor following a revision restart
+  - official main: strict reply parsing (fixed source, consistent states, older service 404 → unknown), notice rules (availability only, version-specific dismiss, stale qualifier, fixed link and copy), and a dismissal made while a check is held staying dismissed (`OfficialMainState`)
+  - blue elapsed labels (muted for an unknown start)
+  - reported-progress motion: the gate (closed, stale/failed, capture off, nothing working); CSS contract (motion only under `data-motion`, `transform`/`opacity`-only keyframes, reduced motion and hidden also stopping pseudo-elements, readable text token)
 - **`fixtures.ts`:** v2 wire fixtures (P1/P2/P3 plus an other-source plan, setup replies).
 - **`seed-real.ts`:** seeds a real store through the production write path without a model.
   - Loads the **installed** companion (hash-checking loader → release payload) and calls its registered `agent_progress_report` tool.
@@ -228,8 +291,14 @@ Live session state (Running, Retrying, Waiting for permission, Waiting for an an
 - **`race-document.ts`:** the same re-capture race in a real frame. It holds the frame's pinned continuation request at the host page (CDP `Fetch`), runs real writes, releases it, and checks the historical note.
 - **`cdp.ts`:** drives the isolated desktop host over CDP: real frame clicks (`fclick`), bounded waits (`fwait`), keys, screenshots and console capture. Frames are chosen by URL part, or by `surface:<panel|status|page>` (matched on the view's own `data-surface` root). The relay runtime delivers guest documents as `srcdoc` frames with no URL, so it uses the latter, with click offsets taken from the frame's owner element.
 
-- **`setup-intercept.ts`:** QA9 interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It is controlled live through a JSON file.
-- **`perf-probe.ts` / `perf-analyze.ts`:** lifecycle and performance probe for an isolated host. It attributes every guest→host SDK message, frame mount, service call and visible render state to a frame instance while driving real session switches (`perf/*.json` scenarios). The analyzer exits 1 when a revisited scope shows loading, a switch needs more than one list round, another scope's plans appear, or idle data repaints. `perf-hostcost.ts` and `proc-cpu.sh` compare host navigation latency and CPU with the extension enabled and disabled.
+- **`setup-intercept.ts`:** QA9 interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It can also strip plan-detail `timing` or drop entries (an older service, an unknown start) and replace `/v1/extension-update` replies (404, malformed): labelled QA seams. It is controlled live through a JSON file.
+- **`motion-probe.ts`:** motion QA for an isolated host. It holds reduced-motion emulation for the whole command and reports, per guest frame:
+  - the gate and the running element and pseudo-element animations;
+  - status-text contrast at rest, at peak and as sampled (composited over the real backdrop);
+  - phase error against the document timeline, including across real repaints (`phase`);
+  - renderer `Performance` deltas, repaints, in-place text updates and service requests over a window (`perf`);
+  - `instrument <surface>` reloads that frame with a counter of its 30 s label-ticker timers.
+- **`perf-probe.ts` / `perf-analyze.ts`:** lifecycle and performance probe (it recognises any plan ID) for an isolated host. It attributes every guest→host SDK message, frame mount, service call and visible render state to a frame instance while driving real session switches (`perf/*.json` scenarios). The analyzer exits 1 when a revisited scope shows loading, a switch needs more than one list round, another scope's plans appear, or idle data repaints. `perf-hostcost.ts` and `proc-cpu.sh` compare host navigation latency and CPU with the extension enabled and disabled.
 
 The real-service run is recorded in `evidence/ui/qa.md`.
 

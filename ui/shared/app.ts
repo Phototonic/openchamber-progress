@@ -8,20 +8,45 @@
 // - selected-plan detail, document and history load on demand and are cached by revision/capture
 // - cache identity = frame (host generation) + storeId + source binding; a change resets UI state
 // - repaint only on change; focus, scroll and open disclosures survive a repaint
+// - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label
+// - official-main version check: at host readiness, then when due (coarse), visible frames only
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { SetupAction } from './adapter.ts';
-import { el, refreshAges, type Env } from './components.ts';
+import { el, refreshLabels, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
-import type { DocumentBody, HealthView, HistoryEntry, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import { OFFICIAL_MAIN_URL } from './config.ts';
+import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
+import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
 import { CSS } from './style.ts';
 
 export const REFRESH_MS = 3000;
 export const RETRY_MS = 8000;
 export const RECENT_SCOPES = 8;
-const AGE_TICK_MS = 30_000;
+/** Cadence of the one in-place label ticker (ages and whole-minute elapsed times). */
+const LABEL_TICK_MS = 30_000;
+/**
+ * Official-main check cadence for a visible frame: when the service says the next check is due,
+ * bounded to 5–60 min (a skewed browser clock only moves it within the bounds). The service
+ * caches, coalesces and backs off its single upstream request; this only asks it again.
+ */
+const MAIN_MIN_MS = 5 * 60_000;
+const MAIN_MAX_MS = 60 * 60_000;
+// A repaint replaces the root, which would restart each reported-progress animation. Starting them
+// at the document timeline's origin keeps one shared phase (they share one period, style.ts), so a
+// repaint or a return from hidden shows no jump. Views without motion skip the style read.
+function alignMotion(root: Element | null) {
+  if (!root?.querySelector('[data-motion="on"]')) return;
+  for (const a of root.getAnimations({ subtree: true })) a.startTime = 0;
+}
+// The browser also restarts animations without a repaint, e.g. when the host shows a hidden frame
+// again; those join the shared phase as they start.
+document.addEventListener('animationstart', (event) => {
+  if (!event.animationName.startsWith('ap-') || !(event.target instanceof Element)) return;
+  for (const a of event.target.getAnimations({ subtree: true })) if (a.startTime !== 0) a.startTime = 0;
+});
 
 export type Surface = 'panel' | 'status' | 'page';
 export type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | { state: 'error'; failure: ReadFailure };
@@ -54,6 +79,12 @@ export interface ViewContext<U> {
   runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
+  /** What official main advertises; null while unknown (not checked yet, older service, failure). */
+  officialMain: OfficialMainView | null;
+  /** Candidate version whose notice the user dismissed. */
+  officialMainDismissed: string | null;
+  dismissOfficialMain: (version: string) => void;
+  openOfficialMain: () => void;
 }
 
 export interface ViewSpec<U> {
@@ -104,6 +135,12 @@ export function startView<U>(spec: ViewSpec<U>) {
   let paintedUi = -1;
   let liveSig = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let labelTimer: ReturnType<typeof setTimeout> | null = null;
+  const official = new OfficialMainState();
+  let mainTimer: ReturnType<typeof setTimeout> | null = null;
+  let mainGeneration = 0;
+  let mainInFlight = false;
+  let mainDueAt = 0;
   let disposed = false;
   let renderQueued = false;
   const details = new Map<string, { revision: number; value: Loadable<PlanDetail> }>();
@@ -229,6 +266,53 @@ export function startView<U>(spec: ViewSpec<U>) {
     });
   }
 
+  /**
+   * Official-main version check. One request per frame at a time; a hidden or disposed frame
+   * starts none and drops the reply of a retired one (generation). Independent of setup, store
+   * and the progress poll.
+   */
+  function checkMain() {
+    if (disposed || mainInFlight || document.visibilityState === 'hidden') return;
+    mainInFlight = true;
+    const generation = ++mainGeneration;
+    void official.check(host, host.storage).then(({ next, apply }) => {
+      if (generation !== mainGeneration) return;
+      mainInFlight = false;
+      if (disposed) return;
+      if (apply()) bump();
+      const due = next ? Date.parse(next.nextCheckAt) - Date.now() : MAIN_MIN_MS;
+      mainDueAt = performance.now() + Math.min(MAIN_MAX_MS, Math.max(MAIN_MIN_MS, due));
+      planMain();
+    });
+  }
+  function planMain() {
+    if (mainTimer) clearTimeout(mainTimer);
+    mainTimer = null;
+    if (disposed || document.visibilityState === 'hidden' || mainInFlight) return;
+    mainTimer = setTimeout(checkMain, Math.max(0, mainDueAt - performance.now()));
+  }
+  /** Leaving view retires the in-flight check; its reply is ignored and a visible frame asks again when due. */
+  function retireMain() {
+    if (mainTimer) clearTimeout(mainTimer);
+    mainTimer = null;
+    if (mainInFlight) { mainGeneration++; mainInFlight = false; }
+  }
+
+  /**
+   * One text-only ticker per frame for age and elapsed labels. It runs only while the frame is
+   * visible and shows such a label, never repaints, and each tick recomputes from the labels'
+   * own anchors, so a pause loses nothing.
+   */
+  function planLabels() {
+    const wanted = !disposed && document.visibilityState !== 'hidden' && !!mount!.querySelector('time[data-age],time[data-elapsed]');
+    if (!wanted) { if (labelTimer) clearTimeout(labelTimer); labelTimer = null; return; }
+    labelTimer ??= setTimeout(() => {
+      labelTimer = null;
+      if (ctx) refreshLabels(mount!, ctx.locale);
+      planLabels();
+    }, LABEL_TICK_MS);
+  }
+
   function schedule() {
     if (renderQueued) return;
     renderQueued = true;
@@ -237,9 +321,10 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   function context(): ViewContext<U> {
     const env: Env = {
-      locale: ctx!.locale, now: Date.now(), live: live.snapshot,
+      locale: ctx!.locale, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
       unverifiedSources: new Set(read ? read.sources.filter((s) => !s.verified).map((s) => s.id) : []),
+      view: { fresh: !failure, captureEnabled: read?.captureEnabled ?? false },
       // Components offer this only for sessions the host currently lists and the verified bound source.
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: 'That session could not be opened here.' }).catch(() => {})); },
     };
@@ -289,6 +374,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       storage: host.storage,
       identity,
+      officialMain: official.value, officialMainDismissed: official.dismissed,
+      dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
+      openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
     };
   }
 
@@ -326,6 +414,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (v !== undefined && n.value !== v && !n.dataset.fixed) n.value = v;
     }
     mount!.replaceChildren(root);
+    alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
       const top = scrolls.get(n.dataset.scrollKey!);
       if (top) n.scrollTop = top;
@@ -339,6 +428,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     spec.afterPaint?.(root, vc);
+    planLabels();
   }
 
   const contextChanged = () => {
@@ -371,6 +461,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       requestedScope = scopeKey(currentScope());
       spec.onContext?.(context());
       gate.request();
+      checkMain();
     }
     schedule();
   });
@@ -386,16 +477,30 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (changed) contextChanged();
   });
 
+  // Motion stops while hidden or disposed (style.ts `[data-ap-hidden]`) and resumes on the shared phase.
+  const html = document.documentElement;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') retry();
-    else if (timer) { clearTimeout(timer); timer = null; }
+    if (document.visibilityState === 'visible') {
+      delete html.dataset.apHidden;
+      alignMotion(mount.firstElementChild);
+      if (ctx) refreshLabels(mount, ctx.locale);
+      planLabels();
+      if (ctx) planMain();
+      retry();
+    } else {
+      html.dataset.apHidden = '';
+      if (timer) { clearTimeout(timer); timer = null; }
+      planLabels();
+      retireMain();
+    }
   });
-  const ages = setInterval(() => { if (ctx) refreshAges(mount, ctx.locale); }, AGE_TICK_MS);
   window.addEventListener('pagehide', () => {
     disposed = true;
+    html.dataset.apHidden = '';
     gate.stop();
     if (timer) clearTimeout(timer);
-    clearInterval(ages);
+    planLabels();
+    retireMain();
     live.dispose();
     memory.clear();
   });

@@ -6,6 +6,7 @@ import { baseName } from '../shared/format.ts';
 import { sessionLabel } from '../shared/live.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
+import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 
 type Ui = { selected: string | null; setup: SetupUi };
@@ -39,9 +40,12 @@ startView<Ui>({
   paint(root, vc) {
     const { read, failure, env } = vc;
     root.append(el('h1', 'ap-sr', 'Agent progress'));
+    // The official-main notice does not depend on companion setup or the store.
+    const official = officialMainBlock(vc);
     if (!read) {
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) {
+        if (official) root.append(official);
         root.append(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Connect it to your OpenCode setup to start showing plans.', true));
         root.append(setupBlock(vc, { compact: true }));
       } else root.append(loadingBlock());
@@ -50,6 +54,7 @@ startView<Ui>({
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
+    if (official) root.append(official);
     if (!read.captureEnabled) root.append(testid(el('p', 'ap-doc-warn', 'Capture is off, so no new progress is being recorded.'), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     if (scope.kind === 'none') {

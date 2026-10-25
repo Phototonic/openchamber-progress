@@ -69,7 +69,23 @@ export interface PlanDetail {
   items: ItemView[];
   contributions: ContributionView[];
   links: { sessionId: string; itemIds: string[] }[];
+  /**
+   * Reported-working intervals by task ID, for this revision (docs/contracts.md). Absent: the
+   * service gave no timing (older service or unreadable), so no elapsed claim at all. A working
+   * task without an entry has an unknown start, never zero.
+   */
+  timing?: Record<string, ElapsedAnchor>;
 }
+
+/**
+ * One task's reported-working interval, anchored to the service clock: `readAt - since` at the
+ * reply, then advanced by the local monotonic clock from `receivedAt` (never browser wall time).
+ * `lower-bound`: the start is earlier than `since` and unknown.
+ */
+export interface ElapsedAnchor { kind: 'exact' | 'lower-bound'; since: string; elapsedAtRead: number; receivedAt: number }
+
+/** Milliseconds since the task was reported in progress, at monotonic time `mono`. */
+export const elapsedAt = (a: ElapsedAnchor, mono: number) => a.elapsedAtRead + Math.max(0, mono - a.receivedAt);
 
 export interface DocumentBody { key: string; captureId?: number; text: string | null; historical: boolean; ref: DocumentRefView }
 export interface HistoryEntry { revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string }
@@ -102,6 +118,22 @@ export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null
  * version the same or higher. `newer-installed`: the installed version is higher. `rootVersion` is
  * the folder's loader/remove utility from when the companion was installed; updates keep it. Absent: no claim.
  */
+/**
+ * What the official repository's main branch advertises (GET /v1/extension-update). `available`
+ * names only official main: not the source this extension was actually installed from, not a
+ * bundled or installed version. `checkedAt` is the last successful check; `stale` means a later
+ * check failed and this is older knowledge.
+ */
+export interface OfficialMainView {
+  installedVersion: string;
+  state: 'available' | 'not-newer' | 'unknown';
+  checkedAt: string | null;
+  stale: boolean;
+  candidateVersion?: string;
+  diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' | 'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
+  nextCheckAt: string;
+}
+
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
   configured: boolean;
@@ -139,6 +171,15 @@ export function summarize(plan: Pick<PlanView, 'counts' | 'working'> | null, det
 }
 
 export const subtreeCounts = (items: ItemView[]) => countItems(items);
+
+/**
+ * Whether a plan's reported in-progress work may move (bar sheen, status-text and dot pulse).
+ * Motion means "recorded as in progress" only: an active plan with working tasks, in a view whose
+ * last read succeeded with capture on. Stale, failed and capture-off views stay static. It never
+ * reads report age or live session state.
+ */
+export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'working'>, view: { fresh: boolean; captureEnabled: boolean }) =>
+  lifecycle === 'active' && s.working > 0 && view.fresh && view.captureEnabled;
 
 export function summaryText(s: Counts) {
   if (s.total === 0) return s.skipped ? `No tasks left to count · ${s.skipped} skipped` : 'No tasks reported';

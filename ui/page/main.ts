@@ -9,6 +9,7 @@ import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import {
   ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf, projectsFor, type Filters, type Option,
 } from '../shared/scope.ts';
+import { officialMainBlock } from '../shared/official.ts';
 import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 
 type Tab = 'progress' | 'document' | 'history';
@@ -32,15 +33,18 @@ startView<Ui>({
   paint(root, vc) {
     const { read, failure, env, ui } = vc;
     root.append(el('h1', 'ap-sr', 'Agent progress'));
+    // The official-main notice does not depend on companion setup or the store.
+    const official = officialMainBlock(vc);
     if (!read) {
       if (failure) root.append(failureBlock(failure, vc.retry));
-      else if (vc.health && !vc.health.ready) root.append(setupBlock(vc));
+      else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
       else root.append(loadingBlock());
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
+    if (official) root.append(official);
     if (!read.captureEnabled) {
       const note = captureOffNote(vc.setup);
       const p = testid(el('p', 'ap-doc-warn', note.text), 'capture-off');

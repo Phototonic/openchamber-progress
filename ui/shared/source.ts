@@ -1,10 +1,10 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import {
-  ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   type EnvelopeView, type SetupAction,
 } from './adapter.ts';
-import type { ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
@@ -97,10 +97,12 @@ export type DetailResult = { ok: true; plan: PlanView; detail: PlanDetail; resta
  * nextCursor is passed back verbatim; stop when both are null). If the plan revision
  * changes between pages, the read restarts rather than mixing revisions.
  */
-export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>): Promise<DetailResult> {
+export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now()): Promise<DetailResult> {
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
       const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+      // Timing covers the whole plan at this revision; anchor it when the reply arrives.
+      const receivedAt = mono();
       const items: ItemView[] = [...first.items.data];
       const contributions: ContributionView[] = [...first.contributions.data];
       let itemsNext = first.items.nextCursor;
@@ -117,7 +119,8 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
       }
       if (mixed) continue;
       if (itemsNext || contribNext) throw new ContractError('The plan has more pages than this view reads at once.');
-      return { ok: true, plan: first.plan, restarts, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links } };
+      const timing = first.timing && Object.fromEntries(Object.entries(first.timing.items).map(([id, t]) => [id, { ...t, receivedAt }]));
+      return { ok: true, plan: first.plan, restarts, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}) } };
     }
     throw new ContractError('The plan kept changing while it was read.');
   } catch (error) {
@@ -184,4 +187,12 @@ export async function setupCall(host: ServiceHost, action: SetupAction | null, t
     const failure = classify(error);
     return { ok: false, code: failure.code, failure };
   }
+}
+
+/**
+ * What official main advertises, or null when that is unknown: an older service without the route
+ * (404), a failed request or an unreadable reply. Never a progress or setup failure.
+ */
+export async function readExtensionUpdate(host: ServiceHost): Promise<OfficialMainView | null> {
+  try { return parseExtensionUpdate(await call(host, ROUTES.extensionUpdate)); } catch { return null; }
 }
