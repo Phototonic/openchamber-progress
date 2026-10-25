@@ -4,6 +4,15 @@ OpenChamber Agent Progress is an OpenChamber extension with an OpenCode companio
 
 Reports and captured documents are stored in a local SQLite database. Capture and the host service are designed for the same machine and account; a web or relay client can view the connected host's data, but this does not make capture work across separate hosts or containers. The extension and companion are written in TypeScript.
 
+When the companion is loaded, capture is enabled and the report tool is available,
+it proactively supplies concise planning/progress guidance in outgoing contexts.
+Successful native `write`/`edit` operations on conventional Markdown plan paths
+can also produce one conditional next-context hint. No Slim integration, manual
+skill load, special agent name or prompt/config edit is required. Structured or
+non-Markdown plans can report items without a source file. Reporting is still
+deliberate and best effort, not guaranteed: shell/opaque patch writes and unknown
+file/tool shapes get no file hint, and guidance alone does not record progress.
+
 ## Status
 
 This is an unreleased **private testing candidate**, not a public release. Source and package checks pass; extended real-host evaluation is still required.

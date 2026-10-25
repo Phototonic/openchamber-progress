@@ -12,10 +12,10 @@ const entry=path.join(process.env.XDG_CONFIG_HOME!,'opencode/plugins/agent-progr
 const binding=JSON.parse(readFileSync(path.join(path.dirname(entry),'progress-binding.json'),'utf8'));
 let tool:any;let skill:any;let rpc:any;
 const ctx={
-  session:{get:async({sessionID}:{sessionID:string})=>({id:sessionID,agent:sessionID==='M'?'build':'general',location:{directory:root},projectID:'fixture',parentID:sessionID==='C1'?'M':null})},
+  session:{hook:async()=>({dispose:async()=>{}}),get:async({sessionID}:{sessionID:string})=>({id:sessionID,agent:sessionID==='M'?'build':'general',location:{directory:root},projectID:'fixture',parentID:sessionID==='C1'?'M':null})},
   permission:{assert:async()=>{}},
   skill:{transform:async(fn:any)=>fn({add:(value:any)=>{skill=value;}})},
-  tool:{transform:async(fn:any)=>fn({namespace:()=>{},add:(value:any)=>{tool=value;}}),list:async()=>[{id:'agent_progress_report',options:tool.options}]},
+  tool:{hook:async()=>({dispose:async()=>{}}),transform:async(fn:any)=>fn({namespace:()=>{},add:(value:any)=>{tool=value;}}),list:async()=>[{id:'agent_progress_report',options:tool.options}]},
   rpc:{register:async(_definition:any,handlers:any)=>{rpc=handlers;}},
 };
 const plugin=(await import(pathToFileURL(entry).href)).default;

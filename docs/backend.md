@@ -18,6 +18,12 @@ openSurface target); companion/skill ID is agent-progress. T5 assembles packages
   skill. It gets actual caller IDs/agent from invocation context and refreshes
   authoritative session/location/project/parent metadata on each call. Ancestry
   lookup is bounded32, cycles/errors stay unknown. No activity/message scraping.
+- plugin/activation.ts adds advisory native primary-context/post-execute hooks.
+  Verified source/session, enabled capture and effective report-tool availability
+  are required for guidance. Conditional ownership copy needs only the current
+  authoritative session, not ancestry/plan scans. A bounded single-row enabled
+  query is sampled at hook boundaries, including after awaited lookup. Reporting
+  still performs its unchanged assignment/ancestry/capture checks.
 - shared/store.ts owns mutations, counts, assignment/lifecycle validation,
   immutable revision snapshots, operation receipts, source namespaces, captures
   and capture-enabled control. No await/file/network work inside transactions.
@@ -99,6 +105,18 @@ always says not-rechecked between reports, never stale/stuck from age alone.
 These defaults are implementation bounds, not new estimates/stuck thresholds.
 Routine status targets250-token requests/100-token receipts are character-based
 tuning estimates only; see evidence/backend/token-budget.md. No extra LLM calls.
+
+Activation keeps at most128 pending source/session flags and256 recent qualifying
+source/session/message/call IDs per loaded instance; host IDs are bounded512
+characters and lexical path metadata4096. Only native2.1.4 successful single-file
+`write`/`edit` operations on conventional plan paths qualify. No document paths,
+bodies/diffs, plan/receipt state or inferred progress are retained. A hint is
+conditional and consumed on its next eligible delivery, independent of receipts.
+Restart/cap eviction may lose a hint or permit an old replay; base guidance recurs.
+Observed disable drops pending hints and invalidates in-flight lookups, with no
+backfill on re-enable. Disposal clears local state before unregistering hooks and
+closing Store; setup failures roll back partial registrations and close Store.
+No timer, persistent reminder, new RPC or automatic progress/capture write exists.
 
 ## Verification and known limits
 

@@ -13,6 +13,24 @@ show that disclosure plus target paths/version and the separate lifecycle BEFORE
 installing. Uninstalling/closing the extension does NOT disable global capture.
 Disable/remove capture explicitly. History is always retained; there is no purge.
 
+## Proactive guidance after loading
+
+With verified companion/source identity, capture enabled and `agent_progress_report`
+available in the agent's effective tools, the loaded companion supplies recurring
+primary-context guidance without a manual skill load or prompt/config change.
+No Slim integration or particular agent name is required. Explicit reports remain
+authoritative; structured/conversation-only/non-Markdown plans need no source file.
+
+Successful native2.1.4 `write` (create/replacement) or `edit` on `.md`/`.markdown`
+under `plans`/`.plans`, or a `plan.md`/`plan.markdown` basename, may add one conditional
+hint at the next eligible context. README/TODO, arbitrary filenames, shell writes,
+opaque patches and unknown tools/shapes are not detected. Detection reads no file
+contents and does not capture, bind or infer readiness/completion. Generic guidance
+still offers an opportunity for uncovered/non-MD planning; compliance is not assured.
+Hints are bounded process-local state, coalesced and forgotten on delivery or
+disable/restart; recorded progress is retained. Neither guidance nor a hint is a
+report receipt. Hidden/restricted tools are never enabled or bypassed.
+
 ## Git distribution validation and main promotion
 
 The standard intended source is `https://github.com/Phototonic/openchamber-progress.git`.

@@ -7,6 +7,8 @@ import path from 'node:path';
 
 export type SessionRecord = { id: string; location: { directory: string }; parentID?: string | null; projectID?: string; agent?: string };
 type Tool = { execute: (value: unknown, caller: Record<string, unknown>) => Promise<{ content: string }> };
+/** The plugin's public cleanup may be asynchronous; callers must await it. */
+type Disposer = () => void | Promise<void>;
 
 let resolverRegistered = false;
 
@@ -31,11 +33,18 @@ export async function resolve(specifier, context, next) {
   const byId = new Map(Object.values(sessions).map((s) => [s.id, s]));
   let denied: string[] = [];
   let tool: Tool | undefined;
+  // Synthetic host scope only: the hook stubs register nothing and dispose nothing. The real
+  // hook contract is exercised by the activation plan's native/backend harnesses, not here.
+  const hook = async () => ({ dispose: async () => {} });
   const ctx = {
-    session: { get: async ({ sessionID }: { sessionID: string }) => { const s = byId.get(sessionID); if (!s) throw new Error('not-found'); return { ...s, parentID: s.parentID ?? undefined }; } },
+    session: {
+      get: async ({ sessionID }: { sessionID: string }) => { const s = byId.get(sessionID); if (!s) throw new Error('not-found'); return { ...s, parentID: s.parentID ?? undefined }; },
+      hook,
+    },
     skill: { transform: async (fn: (e: unknown) => void) => fn({ add() {} }) },
     tool: {
       transform: async (fn: (e: unknown) => void) => fn({ namespace() {}, add(def: Tool) { tool = def; } }),
+      hook,
       list: async () => (tool ? [{ id: 'agent_progress_report', options: { codemode: false } }] : []),
     },
     rpc: { register: async () => {} },
@@ -43,7 +52,7 @@ export async function resolve(specifier, context, next) {
     permission: { assert: async ({ resources }: { resources: string[] }) => { if (resources.some((r) => denied.includes(r))) throw Object.assign(new Error('denied'), { code: 'EPERM' }); } },
   };
   const loader = `${root}/config/opencode/plugins/agent-progress/index.js`;
-  const plugin = (await import(pathToFileURL(loader).href)).default as { setup: (c: typeof ctx) => Promise<() => void> };
+  const plugin = (await import(pathToFileURL(loader).href)).default as { setup: (c: typeof ctx) => Promise<Disposer> };
   const dispose = await plugin.setup(ctx);
   if (!tool) throw new Error('report tool not registered');
   const registered = tool;

@@ -19,7 +19,7 @@ function fixture(){
 }
 
 test('failed setup closes the opened store at verification and each later boundary',async t=>{
-  for(const stage of ['verify','bindReads','skill','tool','rpc','activation','close-error'])await t.test(stage,async t=>{
+  for(const stage of ['verify','bindReads','skill','tool','tool-hook','context-hook','rpc','activation','hook-dispose-error','close-error'])await t.test(stage,async t=>{
     const f=fixture();const sentinel=new Error('synthetic setup failure');const secondary=new Error('synthetic close failure');
     const opened=new Set<Store>();let closeCalls=0;const reached:string[]=[];
     const originalList=Store.prototype.list;const originalClose=Store.prototype.close;
@@ -28,14 +28,16 @@ test('failed setup closes the opened store at verification and each later bounda
     if(stage==='verify'){const b=JSON.parse(fs.readFileSync(f.binding,'utf8'));b.storeId='mismatched-fixture-store';fs.writeFileSync(f.binding,JSON.stringify(b));}
     if(stage==='bindReads')t.mock.method(Store.prototype,'bindReads',()=>{throw sentinel;});
     if(stage==='activation')t.mock.method(Store.prototype,'observeLoaded',()=>{throw sentinel;});
-    const ctx:any={skill:{transform:async()=>{reached.push('skill');if(stage==='skill')throw sentinel;}},tool:{transform:async()=>{reached.push('tool');if(stage==='tool'||stage==='close-error')throw sentinel;}},rpc:{register:async()=>{reached.push('rpc');if(stage==='rpc')throw sentinel;}}};
+    const hook=(name:string)=>async()=>{reached.push(name);if(stage===name)throw sentinel;return{dispose:async()=>{reached.push(`dispose-${name}`);if(stage==='hook-dispose-error')throw secondary;}};};
+    const ctx:any={session:{hook:hook('context-hook')},skill:{transform:async()=>{reached.push('skill');if(stage==='skill')throw sentinel;}},tool:{hook:hook('tool-hook'),transform:async()=>{reached.push('tool');if(stage==='tool'||stage==='close-error')throw sentinel;}},rpc:{register:async()=>{reached.push('rpc');if(stage==='rpc'||stage==='hook-dispose-error')throw sentinel;}}};
     try{
       assert.equal(f.fds(),0);
       await assert.rejects(()=>plugin.setup(ctx) as Promise<unknown>,e=>stage==='verify'?(e as any).code==='binding':e===sentinel,'original setup exception must be preserved');
       assert.equal(f.fds(),0,'failed setup leaked a real SQLite descriptor');
       assert.equal(closeCalls,1,'exactly one setup-failure close');
       if(stage==='tool')assert.deepEqual(reached,['skill','tool'],'failure follows partial successful registration');
-      if(stage==='rpc')assert.deepEqual(reached,['skill','tool','rpc']);
+      if(stage==='context-hook')assert.deepEqual(reached,['skill','tool','tool-hook','context-hook','dispose-tool-hook']);
+      if(stage==='rpc'||stage==='activation'||stage==='hook-dispose-error')assert.deepEqual(reached,['skill','tool','tool-hook','context-hook','rpc','dispose-tool-hook','dispose-context-hook']);
     }finally{for(const s of opened){try{originalClose.call(s);}catch{}}f.cleanup();}
   });
 });
@@ -43,9 +45,9 @@ test('failed setup closes the opened store at verification and each later bounda
 test('successful setup retains its store for reports and closes on successful disposal',async()=>{
   const f=fixture();let execute:any;let skill:any;let status:any;
   const ctx:any={
-    session:{get:async({sessionID}:{sessionID:string})=>({id:sessionID,location:{directory:`${f.root}/project`},agent:'synthetic',projectID:'project_fixture'})},
+    session:{hook:async()=>({dispose:async()=>{}}),get:async({sessionID}:{sessionID:string})=>({id:sessionID,location:{directory:`${f.root}/project`},agent:'synthetic',projectID:'project_fixture'})},
     skill:{transform:async(callback:any)=>callback({add:(value:any)=>{skill=value;}})},
-    tool:{transform:async(callback:any)=>callback({namespace:()=>{},add:(value:any)=>{execute=value.execute;}}),list:async()=>[{id:'agent_progress_report',options:{codemode:false}}]},
+    tool:{hook:async()=>({dispose:async()=>{}}),transform:async(callback:any)=>callback({namespace:()=>{},add:(value:any)=>{execute=value.execute;}}),list:async()=>[{id:'agent_progress_report',options:{codemode:false}}]},
     rpc:{register:async(_contract:any,handlers:any)=>{status=handlers.inspect;}},
   };
   try{

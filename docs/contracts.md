@@ -10,6 +10,18 @@ Announced before shared changes. Only Heavy Fixer owns shared files; consumers
 must switch sequentially. The old `shared/contract.ts` ProbeRead is historical
 fixture code, never a production fallback. UI implementation is Designer-owned.
 
+## Advisory activation does not change the protocol
+
+The companion can add one owned section to an eligible outgoing primary context
+and one conditional possible-plan-file hint. Neither is a report receipt, plan,
+assignment, review/acceptance, capture, or completion event. Existing explicit
+`agent_progress_report` operations, source-optional inputs, transactional control,
+authorization and outputs remain unchanged. Hidden/restricted tools are never
+enabled by guidance; a child still needs explicit assignment and permitted relay.
+Unknown tools, shell/opaque patches and arbitrary/non-Markdown paths are not
+inferred as plan documents. Structured plans need no file. There is no new
+service/RPC field, durable hint state, prompt configuration or global gate.
+
 ## Fixed authenticated read API
 
 Every route requires the host bearer, including `/health`; bind127.0.0.1 only.

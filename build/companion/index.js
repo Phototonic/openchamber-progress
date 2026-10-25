@@ -24226,7 +24226,7 @@ var Event17 = { Updated: Updated12, Resolved, Definitions: inventory(Updated12, 
 // plugin/index.ts
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 import { realpathSync as realpathSync4, readFileSync as readFileSync2 } from "node:fs";
 
 // shared/binding.ts
@@ -24850,13 +24850,160 @@ function activationFingerprint(binding, plugin, guidance) {
   return digest(canonical({ binding, plugin: digest(plugin), guidance: digest(guidance) }));
 }
 
+// plugin/activation.ts
+import path4 from "node:path";
+var REPORT_TOOL = "agent_progress_report";
+var ACTIVATION_GUIDANCE = `# Agent progress (companion)
+Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
+For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
+For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work.`;
+var ACTIVATION_HINT = "A possible plan document was written or revised. If this is your plan and you have not already reported the relevant structure/change, use the progress report tool; otherwise continue your workflow.";
+var record2 = (value3) => typeof value3 === "object" && value3 !== null;
+var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
+function possiblePath(value3) {
+  if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
+    return false;
+  const name = path4.basename(value3).toLowerCase();
+  if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
+    return false;
+  return /^plan\.(md|markdown)$/.test(name) || path4.normalize(value3).split(path4.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+}
+function planPath(value3, directory) {
+  const relative = path4.relative(directory, path4.resolve(directory, value3));
+  if (!relative || relative === ".." || relative.startsWith(`..${path4.sep}`) || path4.isAbsolute(relative))
+    return false;
+  const parts2 = relative.split(path4.sep);
+  return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
+}
+function successfulPath(event) {
+  if (event.tool !== "write" && event.tool !== "edit")
+    return;
+  if (event.status !== "completed" || !record2(event.input) || !possiblePath(event.input.path))
+    return;
+  const result3 = event.result;
+  const output = result3.output;
+  if (!record2(output) || output.partial === true || result3.metadata?.partial === true)
+    return;
+  if (event.tool === "write") {
+    if (output.operation === "write" && typeof output.existed === "boolean" && typeof output.target === "string" && typeof output.resource === "string")
+      return event.input.path;
+  } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
+    return event.input.path;
+}
+async function registerActivation(ctx, source, enabled) {
+  const pending = new Set;
+  const recent = new Set;
+  const owned = Symbol("agent-progress-section");
+  const registrations = [];
+  let disposed = false;
+  let disableEpoch = 0;
+  function control() {
+    if (enabled() === true)
+      return true;
+    pending.clear();
+    disableEpoch++;
+    return false;
+  }
+  function remember(set3, key2, cap) {
+    set3.add(key2);
+    if (set3.size > cap)
+      set3.delete(set3.values().next().value);
+  }
+  const key = (sessionID) => JSON.stringify([source.id, sessionID]);
+  async function session(sessionID) {
+    const value3 = await ctx.session.get({ sessionID });
+    return value3.id === sessionID && path4.isAbsolute(value3.location.directory) ? value3 : undefined;
+  }
+  async function dispose() {
+    disposed = true;
+    pending.clear();
+    recent.clear();
+    for (const registration of registrations.splice(0)) {
+      try {
+        await registration.dispose();
+      } catch {}
+    }
+  }
+  try {
+    registrations.push(await ctx.tool.hook("execute.after", async (event) => {
+      try {
+        if (disposed || !source.verified)
+          return;
+        const candidate = successfulPath(event);
+        if (!candidate || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
+          return;
+        const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
+        if (recent.has(call) || !control())
+          return;
+        const epoch = disableEpoch;
+        const caller = await session(event.sessionID);
+        if (disposed || epoch !== disableEpoch || !control() || !caller || !planPath(candidate, caller.location.directory) || recent.has(call))
+          return;
+        remember(recent, call, 256);
+        remember(pending, key(event.sessionID), 128);
+      } catch {}
+    }));
+    registrations.push(await ctx.session.hook("context", async (event) => {
+      const removeOwned = () => {
+        for (let i = event.system.length - 1;i >= 0; i--)
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
+            event.system.splice(i, 1);
+      };
+      try {
+        if (disposed) {
+          removeOwned();
+          return;
+        }
+        if (!boundedID(event.sessionID))
+          return;
+        const sessionKey = key(event.sessionID);
+        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !control()) {
+          pending.delete(sessionKey);
+          removeOwned();
+          return;
+        }
+        const epoch = disableEpoch;
+        const caller = await session(event.sessionID);
+        if (disposed || epoch !== disableEpoch) {
+          removeOwned();
+          return;
+        }
+        if (!caller || !control()) {
+          pending.delete(sessionKey);
+          removeOwned();
+          return;
+        }
+        if (event.system.some((part) => Object.prototype.hasOwnProperty.call(part, owned)))
+          return;
+        const section = { type: "text", text: ACTIVATION_GUIDANCE + (pending.has(sessionKey) ? `
+
+${ACTIVATION_HINT}` : "") };
+        Object.defineProperty(section, owned, { value: true });
+        event.system.push(section);
+        pending.delete(sessionKey);
+      } catch {
+        pending.delete(key(event.sessionID));
+        try {
+          removeOwned();
+        } catch {}
+      }
+    }));
+    return dispose;
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
+
 // plugin/index.ts
 var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL("./progress-binding.json", import.meta.url));
-  const configRoot = path4.join(process.env.XDG_CONFIG_HOME || path4.join(homedir(), ".config"), "opencode");
-  const dataRoot = path4.join(process.env.XDG_DATA_HOME || path4.join(homedir(), ".local/share"), "opencode");
+  const configRoot = path5.join(process.env.XDG_CONFIG_HOME || path5.join(homedir(), ".config"), "opencode");
+  const dataRoot = path5.join(process.env.XDG_DATA_HOME || path5.join(homedir(), ".local/share"), "opencode");
   requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && realpathSync4(configRoot) === b.source.configRoot && realpathSync4(dataRoot) === b.source.dataRoot, "binding");
   const store = new Store(b.database);
+  let deactivate;
   try {
     verifyStore(store, b);
     store.bindReads(b.source.id, b.source.verified);
@@ -24867,7 +25014,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       } catch {
         throw new ProgressError("binding");
       }
-      requireProgress(s.id === sessionID && path4.isAbsolute(s.location.directory), "binding");
+      requireProgress(s.id === sessionID && path5.isAbsolute(s.location.directory), "binding");
       const ancestry = [];
       let parent = s.parentID;
       const seen = new Set([s.id]);
@@ -24925,20 +25072,29 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         }
       });
     });
+    const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
+    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1);
     await ctx.rpc.register(ProgressStatus, { inspect: async () => {
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
       return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
     } });
     store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
-    return () => store.close();
+    return async () => {
+      try {
+        await deactivate?.();
+      } finally {
+        store.close();
+      }
+    };
   } catch (error) {
+    await deactivate?.();
     try {
       store.close();
     } catch {}
     throw error;
   }
 } });
-var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. Report at meaningful start/change/delegation/finish boundaries, not on a timer. Activity/idle/age never means completion.
+var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
