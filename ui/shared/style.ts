@@ -151,7 +151,9 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
 
 /* Status section */
-.ap[data-surface="status"]{padding:4px 12px 10px;gap:8px}
+/* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
+html[data-oc-surface="status"]{scrollbar-gutter:auto}
+.ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
 .ap-status-plan{display:flex;flex-direction:column;gap:6px}
 .ap-status-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .ap-status-row{display:flex;align-items:baseline;gap:8px;min-width:0}

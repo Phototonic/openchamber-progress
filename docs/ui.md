@@ -195,6 +195,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **Placement.**
   - Rail and page: after the companion update notice and the reload note, and also in the not-set-up state, since the check doesn't depend on companion setup or the store.
   - Work Status: a compact "Official main 0.2.5 available" line that opens the rail; retained stale knowledge adds "check out of date" visibly and qualifies the tooltip.
+  - Work Status uses the host sidebar's horizontal gutters and scrolling, without an extra guest inset or reserved scrollbar gutter; its vertical padding and the full rail/page spacing are unchanged.
   - The companion notice, its review and the reload note are unchanged and independent.
 - **When it checks.**
   - Each visible frame asks once at host readiness, then when due: the reply's `nextCheckAt`, bounded to 5–60 min, so a skewed browser clock stays within the bounds.
