@@ -1,6 +1,7 @@
 # Safe global companion setup (production v2)
 
-Release versions use the unreleased0.x line; protocol/schema remain2. Historical
+Package versions use the 0.x line; protocol/schema remain 2. Current main is 0.2.5;
+its launch automation setup does not create a tag or GitHub Release. Historical
 package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
 original labels. `evidence/` and `AGENTS.md` are local-only, never committed or
 included in either package. Local evidence references below are not shipped files.
@@ -33,8 +34,10 @@ report receipt. Hidden/restricted tools are never enabled or bypassed.
 
 ## Git distribution validation and main promotion
 
-The standard intended source is `https://github.com/Phototonic/openchamber-progress.git`.
-It is currently private; public/default-main reachability has not been established.
+The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
+with default branch `main`. Anonymous access to its main manifest is established;
+the current manifest version is 0.2.5. The root `private: true` is an npm publishing
+guard, not a statement about GitHub visibility.
 OpenChamber clones the selected/default ref and inspects its existing runtime
 entries; it does not install dependencies or compile TypeScript. The root manifest
 is used as committed, not repaired into a ZIP manifest. Required generated backend
@@ -42,14 +45,16 @@ files are `build/service/main.js`, `build/companion/{index.js,package.json,SKILL
 and `build/setup/main.js`, alongside the three existing guest HTML/JS entries.
 Other generated output, bindings, DBs, dependencies, evidence and AGENTS stay local.
 
-Develop/accept on `dev`; only a separately approved ready version may reach `main`:
+Develop/accept runtime changes on `dev`; only a separately approved ready version
+may reach `main`. The owner-authorized launch docs/licensing/CI setup is a narrow
+exception, not a routine runtime promotion or permission for partial builds:
 
 1. Accept final guest and backend inputs, with no overlapping writers during the
-   artifact join. Parent stages the exact required outputs; allowlisting a file is
-   not proof it has been committed. No source work or partial build on main.
+   artifact join. Maintainers stage the exact required outputs; allowlisting a file
+   is not proof it has been committed. No partial runtime build on main.
 2. Select a higher semver for the future promotion, with root manifest, RELEASE,
-   compiled service/companion and companion metadata agreeing. The authorized
-   dev-to-main PR preparation selects0.2.5; archived0.2.4 artifacts stay unchanged.
+   compiled service/companion and companion metadata agreeing. The completed
+   baseline promotion selected 0.2.5; archived 0.2.4 artifacts stay unchanged.
    Git validation derives disposable higher versions from the candidate.
 3. Inspect the candidate Git tree's ordinary runtime files and match their hashes
    to the accepted artifact projection. No consumer prepare/build/dependency fetch.
@@ -57,13 +62,23 @@ Develop/accept on `dev`; only a separately approved ready version may reach `mai
    pinned tag/custom-branch tests, plus folder/ZIP and companion lifecycle gates.
    A higher manifest without its service must fail inspection and preserve the old
    installation. Metadata awareness is not a remote runtime-file audit.
-5. With separate owner approval, promote the exact accepted projection, not a new
-   reconstructed build. Before claiming public availability, separately verify the
-   canonical repository/manifest is public and its default branch is main; address
-    the earlier performance concern separately from public reachability. The owner
-    reports no issues on0.2.4 and lifts the prior performance hold for PR preparation;
-    that is not a causal diagnosis or a new agent-run long soak. No visibility,
-   main push, tag, Release or real installation is authorized by fixture success.
+5. With maintainer approval and the native-host gates above complete, promote the
+   exact accepted projection, not a reconstructed build. A higher numeric package
+   version reaching main makes the included workflow eligible to run portable checks
+   and automatically publish a matching `v<version>` tag, extension/companion ZIPs
+   and checksum inventories for the exact tested SHA. Notes are native GitHub
+   What's Changed, applicable New Contributors mentions and Full Changelog only.
+   Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
+   bootstrap an empty release history. Automation never bumps versions or commits
+   to main. Portable CI is not native-host certification or a causal performance
+   diagnosis. Fixture success never authorizes a real installation or restart.
+
+Portable CI requires a fresh disposable checkout and refuses nonempty artifact
+directories without deleting archives. Its external-runtime exclusions and the
+main-only initial rollout/dev activation gap are documented in
+[CONTRIBUTING.md](../CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only).
+OpenChamber update awareness remains based on the main manifest, not GitHub Releases;
+companion updates and activation still require explicit review/confirmation/reload.
 
 Focused Git gate (parent supplies an isolated supported host installer module):
 
@@ -89,12 +104,12 @@ three-frame evidence. Fixture results do not grant permission for a real update.
 
 ## Resolve, inspect, confirm
 
-### Current0.2.2 input workaround / source-only fix
+### Historical0.2.2 input workaround / fix included in0.2.5
 
 The archived local0.2.2 utility rejected trailing directory separators in
 disposable reproductions, even on otherwise valid absolute owned folders. The
 owner's actual installed invocation was not traced, so this is not a proven cause
-of their UI symptom. Until the source fix is accepted and packaged, enter all
+of their UI symptom. For that archived utility, the workaround was to enter all
 three folder paths **without a trailing slash**. Removing
 slashes does not waive any other check: an existing progress-store folder must
 still be private0700. A775/755 store remains intentionally refused; setup never
@@ -104,12 +119,12 @@ not create it; confirmed install creates the missing private store directory.
 Do not point storeRoot at a SQLite filename or a shared/general Documents folder.
 No real folder permissions are changed by this source fix or its workaround.
 
-The preserved source-only fix strips only terminal directory separators, then applies
+The fix included in0.2.5 strips only terminal directory separators, then applies
 the existing canonical-path, symlink, ownership, collision and privacy checks.
 Relative paths, dot/traversal spellings and symlink aliases remain rejected.
 Resolved targets in replies/descriptors use canonical spellings without redundant
 terminal separators.
-This is not in the archived0.2.2 artifacts; the0.2.5 private PR candidate below
+This is not in the archived0.2.2 artifacts; the0.2.5 main distribution below
 includes it. The existing0775-store refusal remains intentional.
 
 Supply and explicitly review canonical **effective** global config/data roots;
@@ -158,7 +173,7 @@ contents, searches recursively or spawns a CLI: even `opencode debug paths` can
 mkdir during initialization and is not automatically safe read-only discovery.
 Opening or inspecting writes nothing to setup targets. The service's existing
 private selector-state bootstrap is a separate product write outside that promise.
-The private PR candidate joins this service with the accepted upgrade UX;
+The 0.2.5 distribution joins this service with the accepted upgrade UX;
 source-level observation still does not establish effective OpenCode scope.
 
 ### What storeRoot contains
@@ -313,23 +328,23 @@ agent-progress-probe to preserve Work Status openSurface; labels are Agent progr
 T5 assembles these built backend entries with Designer's already-owned guests;
 this document does not claim an installable extension ZIP was produced in T3.
 
-## V1 installable artifacts (unreleased0.2.5 private PR candidate)
+## V1 installable artifacts (0.2.5; historical validation notes)
 
-V1 is the product scope; its private PR candidate version is **0.2.5**,
-agreeing across extension and companion payloads. This promotion-metadata patch
+V1 is the product scope; the current main version is **0.2.5**,
+agreeing across extension and companion payloads. The 0.2.5 promotion-metadata patch
 adds no feature behavior to0.2.4. It retains accepted cached-revisit/
 spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
 suggestions, preserved separator normalization and failed-setup Store cleanup.
 The smaller-import experiment was not promoted; no persistent-service Store reuse
 or payload-audit cache was added. This patch distinguishes the candidate from
-installed/archived0.2.2; it is not a public release or a complete performance cure.
+installed/archived0.2.2; it has no tagged GitHub Release and is not a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
 UX; updates remain user-confirmed and activation remains separate. This candidate
 does not authorize installing0.2.5 into the real host; historical real0.2.3 update
 evidence and its pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
-Agent progress manifest labels are unchanged. Artifacts are local and unsigned;
-no publication or signature verification claim is made.
+Agent progress manifest labels are unchanged. The artifacts described here are
+locally assembled and unsigned; no hosted release or signature verification is claimed.
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 

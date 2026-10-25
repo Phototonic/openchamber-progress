@@ -1,122 +1,72 @@
 # OpenChamber Agent Progress
 
-OpenChamber Agent Progress is an OpenChamber extension with an OpenCode companion for tracking agent work through explicit structured reports. It provides three progress-first views: a session side panel, a compact Work Status view, and a fullscreen board across recorded projects, worktrees, and sessions. The companion can also capture a bound planning document for read-only reference.
+**See the plan. Follow the work. Know what was actually reported.**
 
-Reports and captured documents are stored in a local SQLite database. Capture and the host service are designed for the same machine and account; a web or relay client can view the connected host's data, but this does not make capture work across separate hosts or containers. The extension and companion are written in TypeScript.
+An [OpenChamber](https://github.com/openchamber/openchamber) extension with an OpenCode companion for explicit, structured agent progress. Keep your existing planning workflow and bring its checklist, current work, and contributions into one place.
 
-When the companion is loaded, capture is enabled and the report tool is available,
-it proactively supplies concise planning/progress guidance in outgoing contexts.
-Successful native `write`/`edit` operations on conventional Markdown plan paths
-can also produce one conditional next-context hint. No Slim integration, manual
-skill load, special agent name or prompt/config edit is required. Structured or
-non-Markdown plans can report items without a source file. Reporting is still
-deliberate and best effort, not guaranteed: shell/opaque patch writes and unknown
-file/tool shapes get no file hint, and guidance alone does not record progress.
+> **Early access · Linux capture · OpenChamber ≥ 2.5.1**
+>
+> OpenCode **2.1.4** is the tested capture version; broader compatibility is not established.
 
-## Status
+## Three ways to follow along
 
-This is an unreleased **private testing candidate**, not a public release. The owner reports no performance issues in real use of the latest 0.2.4 candidate and has requested a dev-to-main PR. The PR prepares matching 0.2.5 metadata and built backend entries so host Git update detection can recognize a higher version.
+| View | What you get |
+| --- | --- |
+| **Session panel** | The selected session's plan, task hierarchy, current work, and main/child contributions. |
+| **Work Status** | A compact progress summary alongside your work. |
+| **Fullscreen board** | Recorded plans across projects, worktrees, and sessions, with filters and detail. |
 
-Accepted source updates include correctly scoped recent-session memory with quiet revalidation and no repaint when data is unchanged; bounded refresh when switching to the latest session; and deterministic SQLite cleanup after companion setup fails. Setup now offers read-only, host-side, editable config/data/store suggestions. The suggested store is `<data folder>/openchamber-progress`; suggestions are not confirmation of the effective OpenCode roots. Inspect is read-only, and setup changes are made only after reviewing the resolved targets and explicitly confirming.
+- **Plans, not just activity:** done, remaining, blocked, and skipped work stay distinct from session activity.
+- **Your document stays yours:** optionally bind a plan document for read-only capture; the companion never edits it.
+- **Honest gaps:** report age, missing reports, incomplete coverage, and unavailable connections stay visible.
 
-The Linux-only setup suggestions and capture support do not extend to other platforms. The owner's real-use report lifts the previous performance hold for PR preparation; it does not establish the cause or prove a leak fixed. Building this candidate does not change an existing installation; any real installation still requires separate approval.
+Progress comes from **deliberate reports**, not passive observation or inferred completion. The loaded, enabled companion offers best-effort reporting guidance when its tool is available—no special agent name, manual skill load, or prompt edit is required. Guidance cannot guarantee participation or track every model or subagent.
 
-Longer isolated endurance checks kept requests, frames and companion connections bounded without navigation-latency drift in the tested windows. A small host-page heap increase during session switching remains unexplained; these checks do not establish that the hours-long issue is fixed.
+## Quick start
 
-## Install for evaluation
+1. In **OpenChamber → Settings → Extensions**, install from this Git URL:
 
-When the candidate is ready for evaluation:
+   ```text
+   https://github.com/Phototonic/openchamber-progress.git
+   ```
 
-1. Manually install its generated extension ZIP through OpenChamber Settings. This replaces any existing extension package; the separately installed companion is updated through its explicit setup flow.
-2. In setup, review and edit the suggested config, data, and store paths as needed. Inspect the resolved targets, then review the host-service privilege and separate capture lifecycle before explicitly confirming setup.
+2. Open **Agent progress → Setup**. Review or edit the suggested OpenCode config/data folders and dedicated progress-store folder. Suggestions are not proof of the effective OpenCode paths.
+3. **Inspect**, review the resolved targets and full-user host-service privilege, then explicitly confirm companion installation.
+4. Follow the activation notice and reload/restart OpenCode **when safe**. Opening a new session alone is not a reliable reload. Begin work with an agent that can use `agent_progress_report`.
 
-The extension ZIP includes the companion payload and setup utility; this installation flow does not require a separate companion ZIP. Capture has a separate lifecycle from the extension: if you want it to stop, explicitly disable or remove the companion **before** uninstalling the extension. Uninstalling the extension alone does not stop capture. Removing the companion retains its database and history; cleanup is not automatic.
+The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. There is no tagged GitHub Release for the current **0.2.5** version.
 
-### Updating an existing installation
+## Before you enable capture
 
-Installing a new extension package preserves the configured companion folders, store, and history, but may not update the separately installed companion. The rail/page and Setup show a notice when the bundled companion differs: a same-version rebuild is shown as a different build, while an installed version newer than the bundle gets a warning, never an automatic downgrade. **Review update** shows the installed and bundled versions and existing folders before acknowledgement and confirmation; it does not repeat first setup or silently apply future changes. See [companion update details](docs/setup.md#bundled-companion-detection-u1-backend-u2-ui-follow-up) and the [frozen comparison contract](docs/contracts.md#u1-frozen-additive-companion-comparison-u2-consumer-contract).
+> **Separate lifecycle:** disable or remove the companion **before uninstalling the extension** if capture must stop. Closing or uninstalling the extension alone does not stop capture. Removing the companion retains the database and history; there is no automatic purge.
 
-Updating companion files is separate from loading them. Follow the reload notice and restart OpenCode when safe; merely opening a new session is not a reliable activation step, and OpenCode is never restarted automatically. Setup's selected companion version is authoritative; root-folder utility metadata can retain its initial version and is not the selected version. This flow remains protocol/schema 2.
+- **One host and account.** Linux capture and the host service must share the same local filesystem and account. Web/relay viewers can see that host's data; they do not enable capture on a different host or isolated container.
+- **Private work stays in a host-local SQLite store.** It can contain plan text and source/project paths. Treat the store, diagnostics, and screenshots as sensitive.
+- **Not entirely offline.** Visible progress views check GitHub's public repository metadata for the official `main` version. This is informational, not an automatic install or source switch.
+- **Elapsed is reported time.** Working labels measure a continuous *reported-working* interval—not CPU/model time, an ETA, or proof that execution continues. Incomplete history is labelled “at least.”
 
-Visible progress views quietly check the official repository's **main package version**,
-not GitHub Releases or the actual installed source. “Official main version X available”
-is informational: OpenChamber Settings → Extensions remains the installer, and custom
-branches/tags/forks or ZIPs may need an explicit separate choice. Nothing silently
-switches sources or installs. Inaccessible private metadata is unknown; previously
-validated information may remain explicitly stale. The companion's **Review update**
-and confirmation flow remains separate from this official-main notice.
+## Updating
 
-Working tasks have restrained blue status motion and whole-minute elapsed labels
-for their continuous **reported-working** interval. These are not CPU/model time,
-an ETA or proof of continued execution. Incomplete history is labelled “at least”;
-unknown history supplies no invented start. Reduced-motion keeps truthful labels
-without decorative movement; hidden frames pause visual work.
+1. Review available extension updates in **Settings → Extensions**, then choose whether to install. The official-main version notice does not change a selected branch, tag, fork, or ZIP source.
+2. If the extension offers a different bundled companion, choose **Review update**. Inspect versions and existing folders, then explicitly confirm. A newer installed companion is a downgrade warning, not an automatic replacement.
+3. Follow the reload notice and restart OpenCode **when safe**. Installed files and loaded code are separate states; OpenCode is never restarted automatically.
 
-Known limits: unseen sessions and rebuilt frames still start cold; the earlier long-uptime slowdown's cause remains unproven despite the owner's current no-issues report. There is no supported automatic extension-uninstall hook; remove capture explicitly first if it should stop, and history is retained.
+Companion updates preserve the configured store and history. See [setup and lifecycle details](docs/setup.md#bundled-companion-detection-u1-backend-u2-ui-follow-up).
 
-See [Safe global companion setup](docs/setup.md) for the full lifecycle, [Frozen contracts](docs/contracts.md) for API and reporting behavior, and [Progress views](docs/ui.md) for view behavior. Setup suggestions and capture are currently Linux-only; web and relay clients use the connected host and do not broaden that platform support.
+### Future releases
 
-The extension manifest currently requires OpenChamber 2.5.1 or later.
+Maintainer-approved **higher package versions reaching `main`** are configured to run checks and automatically publish matching `v<version>` tags and ZIP assets. Release notes use GitHub's native **What's Changed**, applicable **New Contributors**, and **Full Changelog** sections—not a custom all-commits list. Same-version docs/CI pushes, including this 0.2.5 automation setup, do **not** create a tag or release. OpenChamber's update notice still checks the `main` manifest, not GitHub Releases.
 
-## Development
+## Go deeper
 
-### Prerequisites
+- [Setup, diagnostics, disable/removal, and distribution](docs/setup.md)
+- [Progress views and their limits](docs/ui.md)
+- [Reporting and API contracts](docs/contracts.md)
+- [Tested compatibility and bounded evidence](docs/compatibility.md)
+- [Contributing and development commands](CONTRIBUTING.md)
 
-- Node.js 24.19.0 or later for the documented setup/runtime checks.
-- Bun for dependency installation, TypeScript checks, and build/package tooling.
-- `zip` and `unzip` for package QA; these are not consumer runtime dependencies.
+The technical guides retain historical validation notes; early access does not imply complete platform/model coverage or the absence of long-running issues.
 
-Dependencies are pinned in `package.json` and `bun.lock`.
+## License
 
-### Checks
-
-```sh
-bun install
-bun run check
-bun run tsc --noEmit -p ui/tsconfig.json
-node --test tests/browser/*.test.ts
-```
-
-`bun run check` runs the root TypeScript check, backend tests, and backend build/package verification. It does not include the separate UI typecheck or browser tests shown above.
-
-### Build artifact
-
-`bun run check` builds and verifies the package. The extension ZIP is written to `build/artifacts/agent-progress-extension-<package-version>.zip`, where the version comes from the root `package.json`. The package is a built artifact; consumers do not need to install dependencies or compile TypeScript.
-
-### Built Git distribution and ready-main gate
-
-The intended standard Git source is `https://github.com/Phototonic/openchamber-progress.git`.
-OpenChamber follows its default branch unless a `#branch-or-tag` is selected. The
-repository is currently private; this is a preparation target, not a claim of public
-reachability or permission to install it now. A Git consumer performs no build or
-dependency installation. The candidate tree must include the existing guest bundles
-and these ordinary built backend files at their manifest paths:
-
-```
-build/service/main.js
-build/companion/index.js
-build/companion/package.json
-build/companion/SKILL.md
-build/setup/main.js
-```
-
-Only these generated backend entries are eligible for tracking; artifacts, bindings,
-databases, dependencies, evidence and local instructions remain ignored. Backend
-build tooling does not rebuild guest bundles. Parent acceptance/staging is required
-before claiming those entries are actually committed to a candidate Git tree.
-
-Work stays on `dev`; production `main` changes only under a separate ready-version
-approval. Before promotion: accept the complete stable guest/backend projection,
-choose a higher matching package/RELEASE/companion version, verify exact built-tree
-and package-entry digests, pass the supported host Git install/check/explicit-update
-gate plus folder/ZIP/companion lifecycle gates, and promote that same accepted tree.
-Dev-only commits, changed bytes at the same semver, tags and GitHub Releases do not
-advance the default-main version. Pins remain selected; no silent ref switching.
-
-Before advertising public installation, separately establish public readability and
-that the canonical default branch is `main`; those checks do not block PR creation.
-The owner reports no issues on 0.2.4 and has lifted the previous performance hold
-for this PR preparation, not established a causal diagnosis or a new agent-run soak.
-The private PR candidate is 0.2.5. This preparation does not authorize a main
-merge/push, visibility change, tag, GitHub Release or real installation.
-See [distribution gates](docs/setup.md#git-distribution-validation-and-main-promotion).
+Project code is available under the [MIT License](LICENSE). Bundled dependencies and adaptations retain their own terms: see the [third-party notices](THIRD_PARTY_NOTICES.md) for grants, credits, full-license references, and documented provenance/interpretation limits.
