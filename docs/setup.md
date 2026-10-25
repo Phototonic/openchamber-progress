@@ -48,8 +48,9 @@ Develop/accept on `dev`; only a separately approved ready version may reach `mai
    artifact join. Parent stages the exact required outputs; allowlisting a file is
    not proof it has been committed. No source work or partial build on main.
 2. Select a higher semver for the future promotion, with root manifest, RELEASE,
-   compiled service/companion and companion metadata agreeing. This work leaves
-   actual0.2.4 unchanged.0.2.5/0.2.6 are disposable-fixture examples only.
+   compiled service/companion and companion metadata agreeing. The authorized
+   dev-to-main PR preparation selects0.2.5; archived0.2.4 artifacts stay unchanged.
+   Git validation derives disposable higher versions from the candidate.
 3. Inspect the candidate Git tree's ordinary runtime files and match their hashes
    to the accepted artifact projection. No consumer prepare/build/dependency fetch.
 4. Pass actual supported host Git default-main install/check/explicit-update and
@@ -59,7 +60,9 @@ Develop/accept on `dev`; only a separately approved ready version may reach `mai
 5. With separate owner approval, promote the exact accepted projection, not a new
    reconstructed build. Before claiming public availability, separately verify the
    canonical repository/manifest is public and its default branch is main; address
-   the existing hours-long real-host sluggishness release blocker. No visibility,
+    the earlier performance concern separately from public reachability. The owner
+    reports no issues on0.2.4 and lifts the prior performance hold for PR preparation;
+    that is not a causal diagnosis or a new agent-run long soak. No visibility,
    main push, tag, Release or real installation is authorized by fixture success.
 
 Focused Git gate (parent supplies an isolated supported host installer module):
@@ -106,7 +109,7 @@ the existing canonical-path, symlink, ownership, collision and privacy checks.
 Relative paths, dot/traversal spellings and symlink aliases remain rejected.
 Resolved targets in replies/descriptors use canonical spellings without redundant
 terminal separators.
-This is not in the archived0.2.2 artifacts; the0.2.4 private testing candidate below
+This is not in the archived0.2.2 artifacts; the0.2.5 private PR candidate below
 includes it. The existing0775-store refusal remains intentional.
 
 Supply and explicitly review canonical **effective** global config/data roots;
@@ -155,7 +158,7 @@ contents, searches recursively or spawns a CLI: even `opencode debug paths` can
 mkdir during initialization and is not automatically safe read-only discovery.
 Opening or inspecting writes nothing to setup targets. The service's existing
 private selector-state bootstrap is a separate product write outside that promise.
-The0.2.4 private testing candidate joins this service with the accepted upgrade UX;
+The private PR candidate joins this service with the accepted upgrade UX;
 source-level observation still does not establish effective OpenCode scope.
 
 ### What storeRoot contains
@@ -310,10 +313,11 @@ agent-progress-probe to preserve Work Status openSurface; labels are Agent progr
 T5 assembles these built backend entries with Designer's already-owned guests;
 this document does not claim an installable extension ZIP was produced in T3.
 
-## V1 installable artifacts (unreleased0.2.4 private testing candidate)
+## V1 installable artifacts (unreleased0.2.5 private PR candidate)
 
-V1 is the product scope; its private testing candidate version is **0.2.4**,
-agreeing across extension and companion payloads. It joins accepted cached-revisit/
+V1 is the product scope; its private PR candidate version is **0.2.5**,
+agreeing across extension and companion payloads. This promotion-metadata patch
+adds no feature behavior to0.2.4. It retains accepted cached-revisit/
 spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
 suggestions, preserved separator normalization and failed-setup Store cleanup.
 The smaller-import experiment was not promoted; no persistent-service Store reuse
@@ -321,7 +325,7 @@ or payload-audit cache was added. This patch distinguishes the candidate from
 installed/archived0.2.2; it is not a public release or a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
 UX; updates remain user-confirmed and activation remains separate. This candidate
-does not authorize installing0.2.4 into the real host; historical real0.2.3 update
+does not authorize installing0.2.5 into the real host; historical real0.2.3 update
 evidence and its pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. Artifacts are local and unsigned;
@@ -329,19 +333,19 @@ no publication or signature verification claim is made.
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.4/` and `.zip`: host manifest, the three Designer
+- `agent-progress-extension-0.2.5/` and `.zip`: host manifest, the three Designer
   HTML/main.js guests copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.2.4/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-0.2.5/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.2.4.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-0.2.5.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
   Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts may remain as local QA history; select the0.2.4 pair explicitly.
+   older0.x artifacts remain local QA history; select the0.2.5 pair explicitly.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.
@@ -399,8 +403,10 @@ another full runtime/relay run. No retained fixture was changed by reassembly.
 
 The cached-revisit/spinner and bounded refresh issues, and failed-setup connection
 cleanup, have focused regression evidence. The owner's hours-long real-host
-sluggishness was **not established** by isolated diagnostics. The short low-load
-soak is not proof of an hours-long leak's absence. This candidate makes no
-release-ready/complete-cure claim; parent acceptance and private source checks
-remain separate. No real installation, auth transfer, model call or automatic
+sluggishness was **not established** by isolated diagnostics. The owner now reports
+no issues in real use of0.2.4 and requests a dev-to-main PR, lifting the previous
+performance hold for PR preparation. The short low-load soak is not proof of an
+hours-long leak's absence, and no new agent-run long soak or causal fix is claimed.
+Parent acceptance and public source checks remain separate. No real installation,
+auth transfer, model call or automatic
 restart is part of packaging validation.

@@ -5,6 +5,7 @@ import { fromPromise } from '@opencode/plugin/promise/adapter';
 import plugin from '../../plugin/index.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
+import { RELEASE } from '../../shared/release.ts';
 
 type Callback = (event: any) => Effect.Effect<void>;
 export async function activationFixture(run: (fixture: any) => Promise<void>, verified = true) {
@@ -13,7 +14,7 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
   let store: Store | undefined;
   try {
     for (const dir of ['config/opencode', 'data/opencode', 'project']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
-    lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: '// fixture payload', guidance: 'fixture', removal: '// fixture', version: '0.2.4' });
+    lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: '// fixture payload', guidance: 'fixture', removal: '// fixture', version: RELEASE });
     const bindingPath = `${root}/config/opencode/plugins/agent-progress/progress-binding.json`;
     const binding = JSON.parse(fs.readFileSync(bindingPath, 'utf8'));
     store = new Store(binding.database);

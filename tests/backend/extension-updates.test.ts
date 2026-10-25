@@ -9,9 +9,12 @@ import { ExtensionUpdates, OFFICIAL_MANIFEST, UPDATE_LIMITS, compareUpdateVersio
 import { SetupController } from '../../service/setup-controller.ts';
 import { productionFixture } from '../fixtures/production.ts';
 import type { ExtensionUpdateRead } from '../../shared/progress.ts';
+import { RELEASE } from '../../shared/release.ts';
 
 const manifest=JSON.parse(readFileSync(new URL('../../package.json',import.meta.url),'utf8'));
-const body=(version='0.2.5')=>JSON.stringify({...manifest,version});
+const [major,minor,patch]=RELEASE.split('.').map(Number);
+const futureVersion=`${major}.${minor}.${patch!+1}`;
+const body=(version=futureVersion)=>JSON.stringify({...manifest,version});
 const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>resolve=r);return{promise,resolve};};
 type Responder=(req:http.IncomingMessage,res:http.ServerResponse)=>void;
 
@@ -46,7 +49,7 @@ test('QA-U fixed authenticated route refuses guest controls before outbound/stor
     const status=await new Promise<number>((resolve,reject)=>{
       const req=http.request(`${h.base}/v1/extension-update`,{method:'GET',headers:{...h.headers,'content-length':'2'}},res=>{res.resume();resolve(res.statusCode!);});req.on('error',reject);req.end('{}');
     });assert.equal(status,400);assert.equal(h.outbound.length,0);
-    const result=await h.get();assert.equal(result.state,'available');assert.equal(result.installedVersion,'0.2.4');
+    const result=await h.get();assert.equal(result.state,'available');assert.equal(result.installedVersion,RELEASE);
     assert.equal(result.repository,'Phototonic/openchamber-progress');assert.equal(result.ref,'main');assert.equal(result.stale,false);assert.equal(result.diagnostic,'ok');
     const sent=h.outbound[0]!;assert.equal(sent.url,OFFICIAL_MANIFEST);
     assert.equal(sent.url,'https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main');
@@ -59,9 +62,9 @@ test('QA-U fixed authenticated route refuses guest controls before outbound/stor
 test('QA-U manifest validation and numeric/prerelease ordering through actual HTTP',{timeout:15000},async()=>{
   const h=await fixture({corrupt:true});
   try {
-    const cases:[string,string][]=[['0.2.5','available'],['0.2.4','not-newer'],['0.2.3','not-newer'],['0.10.0','available'],['0.2.4-rc.1','not-newer'],['0.2.5-beta.2','available'],['0.2.4+changed','not-newer']];
+    const cases:[string,string][]=[[futureVersion,'available'],[RELEASE,'not-newer'],['0.2.3','not-newer'],['0.10.0','available'],[`${RELEASE}-rc.1`,'not-newer'],[`${futureVersion}-beta.2`,'available'],[`${RELEASE}+changed`,'not-newer']];
     for(const [version,state] of cases){h.set((_req,res)=>res.end(body(version)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.state,state);assert.equal(r.candidateVersion,version);}
-    h.set((_req,res)=>res.end(JSON.stringify({...manifest,version:'0.2.4',description:'same version, other bytes'})));
+    h.set((_req,res)=>res.end(JSON.stringify({...manifest,version:RELEASE,description:'same version, other bytes'})));
     h.advance(UPDATE_LIMITS.successMs);assert.equal((await h.get()).state,'not-newer');
     for(const [a,b,expected] of [['0.10.0','0.9.0',1],['1.0.0-beta.10','1.0.0-beta.2',1],['1.0.0-1','1.0.0-a',-1],['1.0.0-rc','1.0.0',-1],['1.0.0-a','1.0.0-a.1',-1],['1.0.0+abc','1.0.0+def',0]] as const)assert.equal(compareUpdateVersions(a,b),expected);
     const invalid:unknown[]=[null,{}, {version:'0.2.5'}, {...manifest,version:'01.2.5'}, {...manifest,version:'0.2.5-01'}, {...manifest,version:'<script>'}, {...manifest,version:'0.2.5',openchamber:{...manifest.openchamber,apiVersion:999}}];
@@ -70,10 +73,10 @@ test('QA-U manifest validation and numeric/prerelease ordering through actual HT
     }
     const wrong=structuredClone(manifest);wrong.openchamber.contributes.panel.id='foreign-extension';invalid.push(wrong);
     const unsafe=structuredClone(manifest);unsafe.openchamber.contributes.service.entry='https://evil.invalid/run.js';invalid.push(unsafe);
-    for(const value of invalid){h.set((_req,res)=>res.end(JSON.stringify(value)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.diagnostic,'invalid-manifest');assert.equal(r.stale,true);assert.equal(r.candidateVersion,'0.2.4');}
+    for(const value of invalid){h.set((_req,res)=>res.end(JSON.stringify(value)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.diagnostic,'invalid-manifest');assert.equal(r.stale,true);assert.equal(r.candidateVersion,RELEASE);}
     h.set((_req,res)=>res.end('{not JSON'));h.advance(UPDATE_LIMITS.failureMs);assert.equal((await h.get()).diagnostic,'invalid-manifest');
     // This is deliberately metadata only: no fixture runtime entries exist at this origin.
-    h.set((_req,res)=>res.end(body('0.2.5')));h.advance(UPDATE_LIMITS.failureMs);const recovered=await h.get();assert.equal(recovered.state,'available');assert.equal(recovered.stale,false);assert.equal(recovered.diagnostic,'ok');
+    h.set((_req,res)=>res.end(body()));h.advance(UPDATE_LIMITS.failureMs);const recovered=await h.get();assert.equal(recovered.state,'available');assert.equal(recovered.stale,false);assert.equal(recovered.diagnostic,'ok');
     assert.equal((await fetch(`${h.base}/v1/plans`,{headers:h.headers})).status,503,'store failure remains independent');
   }finally{await h.close();}
 });
@@ -88,7 +91,7 @@ test('QA-U service-wide coalescing, TTL, conditional cache, stale retention and 
     assert.equal(Date.parse(first.nextCheckAt),h.now+UPDATE_LIMITS.successMs);
     await h.get();h.advance(UPDATE_LIMITS.successMs-1);await h.get();assert.equal(h.outbound.length,1);
     h.advance(1);h.set((req,res)=>{assert.equal(req.headers['if-none-match'],'"main-v1"');res.writeHead(304);res.end();});
-    const refreshed=await h.get();assert.equal(refreshed.diagnostic,'ok');assert.equal(refreshed.candidateVersion,'0.2.5');assert.notEqual(refreshed.checkedAt,first.checkedAt);
+    const refreshed=await h.get();assert.equal(refreshed.diagnostic,'ok');assert.equal(refreshed.candidateVersion,futureVersion);assert.notEqual(refreshed.checkedAt,first.checkedAt);
     h.advance(UPDATE_LIMITS.successMs);h.set((_req,res)=>{res.writeHead(304,{etag:'"foreign"'});res.end();});
     const mismatch=await h.get();assert.equal(mismatch.diagnostic,'invalid-response');assert.equal(mismatch.checkedAt,refreshed.checkedAt);assert.equal(mismatch.stale,true);
     h.advance(UPDATE_LIMITS.failureMs);

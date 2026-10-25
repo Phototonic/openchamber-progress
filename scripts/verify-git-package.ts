@@ -8,6 +8,10 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { RELEASE } from '../shared/release.ts';
+
+const [major,minor,patch]=RELEASE.split('.').map(Number);
+const futureVersion=`${major}.${minor}.${patch!+1}`,brokenVersion=`${major}.${minor}.${patch!+2}`,baselineTag=`v${RELEASE}`;
 
 const runtimeEntries=['build/service/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js'];
 const source='https://progress-fixture.example/Phototonic/openchamber-progress.git';
@@ -46,7 +50,7 @@ if(process.argv[2]!=='--worker'){
   };
   cpSync(candidate,work,{recursive:true});files(work);
   const originalManifest=readFileSync(`${work}/package.json`),manifest=JSON.parse(originalManifest.toString());
-  assert.equal(manifest.version,'0.2.4','fixture baseline is the unchanged private candidate');
+  assert.equal(manifest.version,RELEASE,'fixture baseline is the current private candidate');
   for(const entry of runtimeEntries)assert.equal(lstatSync(`${work}/${entry}`).isFile(),true,entry);
   assert.equal(JSON.parse(readFileSync(`${work}/build/companion/package.json`,'utf8')).version,manifest.version);
   const originalGuests=Object.fromEntries(['panel','status','page'].map(s=>[s,hash(`${work}/ui/${s}/main.js`)]));
@@ -57,13 +61,13 @@ if(process.argv[2]!=='--worker'){
     const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,0,`local data trackable: ${entry}`);
   }
   const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
-  const initial=commit('Built fixture main 0.2.4');
+  const initial=commit(`Built fixture main ${RELEASE}`);
   assert.deepEqual(git(['ls-files','build']).split('\n').sort(),[...runtimeEntries].sort());
   const inventory=files(work).map(file=>({path:path.relative(work,file),sha256:hash(file)}));
   assert.deepEqual(inventory.map(e=>e.path).sort(),git(['ls-files','-z']).split('\0').filter(Boolean).sort(),'projection contains exactly its intended tracked files');
   for(const entry of inventory)assert.equal(hash(`${candidate}/${entry.path}`),entry.sha256,'initial projection bytes unchanged');
   git(['init','--bare','--initial-branch=main',bare],root);git(['remote','add','origin',`file://${bare}`]);git(['push','origin','main']);
-  git(['tag','v0.2.4']);git(['branch','custom']);git(['push','origin','v0.2.4','custom']);
+  git(['tag',baselineTag]);git(['branch','custom']);git(['push','origin',baselineTag,'custom']);
 
   const lookup=async(host:string)=>{assert.equal(host,'progress-fixture.example');return[{address:'93.184.216.34',family:4}];};
   assert.equal(parseGitInstallUrl('https://127.0.0.1/a.git'),null);
@@ -103,7 +107,7 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
     for(const entry of runtimeEntries)assert.equal(hash(`${copy}/${entry}`),hash(`${candidate}/${entry}`));
     return{persist,copy,origin:store.gitOrigins[copy]};
   };
-  const normal=await install('default'),tag=await install('tag','v0.2.4'),custom=await install('custom','custom');
+  const normal=await install('default'),tag=await install('tag',baselineTag),custom=await install('custom','custom');
   const guest=async(installation:typeof normal)=>{invalidateGuestCatalog(installation.persist);const rows=await listInstalledGuests({persistPath:installation.persist});assert.equal(rows.length,1);return rows[0];};
   const check=async(installation:typeof normal)=>checkGuestUpdate({guest:await guest(installation),origin:installation.origin,gitBinary:wrapper,lookup});
   const serviceSmoke=async(copy:string,version:string)=>{
@@ -118,49 +122,49 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
       console.log(JSON.stringify({installedCloneServiceStarted:true,version,consumerBuild:false,dependencyInstall:false,prepareHook:false}));
     }finally{child.kill('SIGTERM');await exit;}
   };
-  await serviceSmoke(normal.copy,'0.2.4');
+  await serviceSmoke(normal.copy,RELEASE);
   await updateExtensionStore(normal.persist,(stored:any)=>({...stored,capabilityGrants:{...stored.capabilityGrants,'agent-progress-probe':['sessions','service']},capabilityScopes:{...stored.capabilityScopes,'agent-progress-probe':{service:{exec:[],sockets:[]}}},disabledGuests:{...stored.disabledGuests,'agent-progress-probe':true}}));
   const trust=await readExtensionStore(normal.persist);
   git(['switch','-c','dev']);
-  const future={...manifest,version:'0.2.5'};writeFileSync(`${work}/package.json`,JSON.stringify(future,null,2)+'\n');
-  const releaseFile=`${work}/shared/release.ts`,release=readFileSync(releaseFile,'utf8');assert.ok(release.includes("'0.2.4'"));writeFileSync(releaseFile,release.replace("'0.2.4'","'0.2.5'"));
+  const future={...manifest,version:futureVersion};writeFileSync(`${work}/package.json`,JSON.stringify(future,null,2)+'\n');
+  const releaseFile=`${work}/shared/release.ts`,release=readFileSync(releaseFile,'utf8');assert.ok(release.includes(`'${RELEASE}'`));writeFileSync(releaseFile,release.replace(`'${RELEASE}'`,`'${futureVersion}'`));
   const dependencies=fileURLToPath(new URL('../node_modules',import.meta.url));symlinkSync(dependencies,`${work}/node_modules`,'dir');
   try{const built=spawnSync('bun',['scripts/build.ts'],{cwd:work,env:process.env,encoding:'utf8',timeout:30_000});assert.equal(built.status,0,built.stdout+built.stderr);}finally{rmSync(`${work}/node_modules`);}
   for(const surface of ['panel','status','page'])assert.equal(hash(`${work}/ui/${surface}/main.js`),originalGuests[surface]);
-  const ready=commit('Synthetic built dev 0.2.5');git(['push','origin','dev']);
+  const ready=commit(`Synthetic built dev ${futureVersion}`);git(['push','origin','dev']);
   assert.equal((await check(normal)).available,false,'dev-only version is not a main update');
   assert.equal((await advertisedMain()).state,'not-newer','official-main reader ignores dev-only version');
   assert.equal((await check(tag)).available,false);assert.equal((await check(custom)).available,false);
-  assert.equal(JSON.parse(git(['show','main:package.json'])).version,'0.2.4');
-  assert.equal(JSON.parse(git(['show','dev:package.json'])).version,'0.2.5');
-  console.log(JSON.stringify({defaultMain:'0.2.4',devOnly:'0.2.5',defaultUpdate:false,tagUpdate:false,customUpdate:false,githubReleasesConsulted:false}));
+  assert.equal(JSON.parse(git(['show','main:package.json'])).version,RELEASE);
+  assert.equal(JSON.parse(git(['show','dev:package.json'])).version,futureVersion);
+  console.log(JSON.stringify({defaultMain:RELEASE,devOnly:futureVersion,defaultUpdate:false,tagUpdate:false,customUpdate:false,githubReleasesConsulted:false}));
   git(['switch','main']);git(['merge','--ff-only','dev']);git(['push','origin','main']);
   assert.equal(git(['rev-parse','main']),ready,'fixture main is the exact built dev projection');
   const advertised=JSON.parse(git(['show','main:package.json'])).version;
   const available=await check(normal);assert.equal(available.available,true);assert.equal(available.version,advertised);
   const official=await advertisedMain();assert.equal(official.state,'available');assert.equal(official.candidateVersion,advertised,'reader and Git main refer to the same manifest');
-  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,'0.2.4','checking never installs');
+  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,RELEASE,'checking never installs');
   const updated=await updateGuest({guest:await guest(normal),origin:normal.origin,persistPath:normal.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup});assert.equal(updated.ok,true,JSON.stringify(updated));
-  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,'0.2.5');assert.deepEqual(await readExtensionStore(normal.persist),trust,'origin/grants/scopes/paused/storage identity retained');
-  await serviceSmoke(normal.copy,'0.2.5');
-  for(const pinned of [tag,custom]){assert.equal((await check(pinned)).available,false);const result=await updateGuest({guest:await guest(pinned),origin:pinned.origin,persistPath:pinned.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup});assert.equal(result.ok,true);assert.equal(JSON.parse(readFileSync(`${pinned.copy}/package.json`,'utf8')).version,'0.2.4');}
-  console.log(JSON.stringify({mainAdvertisedVersion:advertised,explicitHostUpdate:true,installedVersion:'0.2.5',trustAndOriginPreserved:true,tagAndCustomStayed:'0.2.4'}));
+  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,futureVersion);assert.deepEqual(await readExtensionStore(normal.persist),trust,'origin/grants/scopes/paused/storage identity retained');
+  await serviceSmoke(normal.copy,futureVersion);
+  for(const pinned of [tag,custom]){assert.equal((await check(pinned)).available,false);const result=await updateGuest({guest:await guest(pinned),origin:pinned.origin,persistPath:pinned.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup});assert.equal(result.ok,true);assert.equal(JSON.parse(readFileSync(`${pinned.copy}/package.json`,'utf8')).version,RELEASE);}
+  console.log(JSON.stringify({mainAdvertisedVersion:advertised,explicitHostUpdate:true,installedVersion:futureVersion,trustAndOriginPreserved:true,tagAndCustomStayed:RELEASE}));
   const beforeFailure=files(normal.copy).map(file=>({path:path.relative(normal.copy,file),sha256:hash(file)}));
-  writeFileSync(`${work}/package.json`,JSON.stringify({...future,version:'0.2.6'},null,2)+'\n');rmSync(`${work}/build/service/main.js`);commit('Broken manifest-only fixture main');git(['push','origin','main']);
+  writeFileSync(`${work}/package.json`,JSON.stringify({...future,version:brokenVersion},null,2)+'\n');rmSync(`${work}/build/service/main.js`);commit('Broken manifest-only fixture main');git(['push','origin','main']);
   assert.equal((await check(normal)).available,true,'host metadata discovery is not a runtime audit');
-  const manifestOnly=await advertisedMain();assert.equal(manifestOnly.state,'available');assert.equal(manifestOnly.candidateVersion,'0.2.6','reader advertises metadata, not missing runtime files');
+  const manifestOnly=await advertisedMain();assert.equal(manifestOnly.state,'available');assert.equal(manifestOnly.candidateVersion,brokenVersion,'reader advertises metadata, not missing runtime files');
   const inspected=await inspectGuestPackage(work,{openchamberVersion:'2.5.1'});assert.equal(inspected.ok,false,'pre-main host inspection rejects missing service');
   const rejected=await updateGuest({guest:await guest(normal),origin:normal.origin,persistPath:normal.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup});assert.equal(rejected.ok,false);
   const brokenPersist=`${root}/broken/extensions.json`;mkdirSync(path.dirname(brokenPersist));
   assert.equal((await installGuestFromGitSource(source,brokenPersist,{openchamberVersion:'2.5.1',gitBinary:wrapper,lookup})).ok,false,'fresh install also rejects missing runtime');
   assert.deepEqual(files(normal.copy).map(file=>({path:path.relative(normal.copy,file),sha256:hash(file)})),beforeFailure,'failed update preserves installed ordinary files');
   assert.deepEqual(await readExtensionStore(normal.persist),trust);
-  await serviceSmoke(normal.copy,'0.2.5');
-  console.log(JSON.stringify({brokenAdvertisedVersion:'0.2.6',preMainGateRejected:true,hostUpdateRejected:true,previousInstalledBytesPreserved:true}));
+  await serviceSmoke(normal.copy,futureVersion);
+  console.log(JSON.stringify({brokenAdvertisedVersion:brokenVersion,preMainGateRejected:true,hostUpdateRejected:true,previousInstalledBytesPreserved:true}));
   git(['restore','--source',ready,'--','build/service/main.js']);
   const malformed=JSON.parse(readFileSync(`${work}/package.json`,'utf8'));malformed.openchamber.contributes.panel.id='foreign-extension';writeFileSync(`${work}/package.json`,JSON.stringify(malformed));commit('Foreign identity fixture');git(['push','origin','main']);
   assert.equal((await updateGuest({guest:await guest(normal),origin:normal.origin,persistPath:normal.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup})).ok,false);
-  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,'0.2.5');
+  assert.equal(JSON.parse(readFileSync(`${normal.copy}/package.json`,'utf8')).version,futureVersion);
   writeFileSync(`${work}/package.json`,'{invalid JSON');commit('Malformed fixture manifest');git(['push','origin','main']);
   assert.equal((await check(normal)).error,'invalid-manifest');
   assert.equal((await updateGuest({guest:await guest(normal),origin:normal.origin,persistPath:normal.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup})).ok,false);

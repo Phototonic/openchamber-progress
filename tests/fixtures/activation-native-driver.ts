@@ -8,6 +8,7 @@ import { OpenCode } from '@opencode/client';
 import { ProgressStatus } from '../../plugin/status.ts';
 import { Store } from '../../shared/store.ts';
 import { ACTIVATION_GUIDANCE, ACTIVATION_HINT } from '../../plugin/activation.ts';
+import { RELEASE } from '../../shared/release.ts';
 
 const root = process.argv[2];
 assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3], 'must run in independent network namespace');
@@ -38,6 +39,7 @@ try {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.equal(status?.toolAvailable, true, 'native plugin must load');
+  assert.equal(status.version, RELEASE, 'loaded companion matches the candidate release');
   assert.equal((await client.credential.list()).length, 0, 'fresh host has no credentials');
   const session = await client.session.create({ location, agent: 'build', title: 'Synthetic activation fixture', model: { providerID: 'activation-fixture', id: 'script' }, permissions: [{ action: 'edit', resource: '*', effect: 'allow' }] });
   await client.session.prompt({ sessionID: session.id, text: 'Make a two-step plan for a search feature.' });

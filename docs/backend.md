@@ -1,6 +1,6 @@
 # Production backend v2 (T3)
 
-Current unreleased private testing candidate: **0.2.4**. Here v2 means protocol/schema2,
+Current unreleased private PR candidate: **0.2.5**. Here v2 means protocol/schema2,
 not a release major. Owner-corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
 `evidence/` and `AGENTS.md` are local-only, never committed or packaged. Evidence
@@ -232,8 +232,9 @@ upgrade, same-version changed bytes, newer-installed/downgrade, retained root by
 post-update pending/matching observed activation, uncertainty/absence and modified
 update refusal with retained history. Local evidence: evidence/upgrade-ux/backend.txt.
 The real-service fixture includes companion and setup siblings, not just the
-read-only service. U1 is not package/release acceptance; the known hours-long
-host sluggishness blocker remains unresolved. No real-user operation is part of
+read-only service. U1 is not package/release acceptance. The owner now reports no
+issues on0.2.4 and lifts the prior performance hold for PR preparation, without
+establishing the earlier slowdown's cause. No real-user operation is part of
 these fixture checks.
 
 ### T7 host-side setup suggestions / frozen T8 seam

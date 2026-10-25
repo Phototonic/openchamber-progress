@@ -10,14 +10,17 @@ import {createHash} from 'node:crypto';
 import {mock} from 'node:test';
 import {Store} from '../shared/store.ts';
 import {readBinding} from '../shared/binding.ts';
+import {RELEASE} from '../shared/release.ts';
 
 const extension=path.resolve(process.argv[2]!);assert.ok(process.argv[2]);
 const manifest=JSON.parse(readFileSync(`${extension}/package.json`,'utf8'));
-assert.equal(manifest.version,'0.2.4');
+assert.equal(manifest.version,RELEASE);
+const [major,minor,patch]=RELEASE.split('.').map(Number);
+const futureVersion=`${major}.${minor}.${patch!+1}`;
 const root=mkdtempSync('/tmp/opencode/agent-progress-live-package-');
 for(const dir of ['home','config/opencode','data/opencode','state','selector'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
 const entry=`${extension}/build/service/main.js`,hash=()=>createHash('sha256').update(readFileSync(entry)).digest('hex'),originalHash=hash();
-let now=Date.now(),status=404,outbound=0;const release=()=>JSON.stringify({...manifest,version:'0.2.5'});
+let now=Date.now(),status=404,outbound=0;const release=()=>JSON.stringify({...manifest,version:futureVersion});
 const metadata=http.createServer((req,res)=>{
   assert.equal(req.url,'/manifest');assert.equal(req.method,'GET');assert.equal(req.headers.accept,'application/vnd.github.raw+json');assert.equal(req.headers.authorization,undefined);assert.equal(req.headers.cookie,undefined);
   outbound++;res.writeHead(status,{'content-type':'application/json'});res.end(status===200?release():'inaccessible fixture metadata');
@@ -47,10 +50,10 @@ try{
   phase='unconfigured unknown';const unknown=await json('/v1/extension-update');assert.equal(unknown.state,'unknown');assert.equal(unknown.checkedAt,null);assert.equal(unknown.candidateVersion,undefined);assert.equal(unknown.diagnostic,'unavailable');
   status=200;advance(300000);
   phase='available/coalesced cache';const replies=await Promise.all(Array.from({length:6},()=>json('/v1/extension-update'))),available=replies[0];
-  assert.equal(available.installedVersion,'0.2.4');assert.equal(available.repository,'Phototonic/openchamber-progress');assert.equal(available.ref,'main');assert.equal(available.state,'available');assert.equal(available.candidateVersion,'0.2.5');assert.equal(available.stale,false);assert.equal(outbound,2,'one retry shared across concurrent frames');
+  assert.equal(available.installedVersion,RELEASE);assert.equal(available.repository,'Phototonic/openchamber-progress');assert.equal(available.ref,'main');assert.equal(available.state,'available');assert.equal(available.candidateVersion,futureVersion);assert.equal(available.stale,false);assert.equal(outbound,2,'one retry shared across concurrent frames');
   await json('/v1/extension-update');assert.equal(outbound,2,'packaged cache prevents progress-cadence outbound work');
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
-  phase='fixture companion install';const installed=await request('/v1/setup/install',targets);assert.equal(installed.status,200);assert.equal((await installed.json()).version,'0.2.4');
+  phase='fixture companion install';const installed=await request('/v1/setup/install',targets);assert.equal(installed.status,200);assert.equal((await installed.json()).version,RELEASE);
   const b=readBinding(selector),store=new Store(b.database),actor={sourceId:b.source.id,sessionId:'packaged-timing',agent:'build',directory:'/fixture/native-package',parentId:null,ancestry:[],verifiedSource:true};
   const past=Date.now()-4*3600000;let exact:string;
   mock.timers.enable({apis:['Date'],now:past});
@@ -73,7 +76,7 @@ try{
   chmodSync(b.database,0o000);
   phase='configured store fault / retained stale';
   try{
-    assert.equal((await request('/v1/plans')).status,503);status=503;advance(3600000);const stale=await json('/v1/extension-update');assert.equal(stale.state,'available');assert.equal(stale.stale,true);assert.equal(stale.checkedAt,available.checkedAt);assert.equal(stale.diagnostic,'unavailable');assert.equal(stale.candidateVersion,'0.2.5');
+    assert.equal((await request('/v1/plans')).status,503);status=503;advance(3600000);const stale=await json('/v1/extension-update');assert.equal(stale.state,'available');assert.equal(stale.stale,true);assert.equal(stale.checkedAt,available.checkedAt);assert.equal(stale.diagnostic,'unavailable');assert.equal(stale.candidateVersion,futureVersion);
   }finally{chmodSync(b.database,0o600);}
   assert.equal((await detail('exact')).timing.items.I1.kind,'exact');
   assert.equal(hash(),originalHash,'native production entry was never rewritten');

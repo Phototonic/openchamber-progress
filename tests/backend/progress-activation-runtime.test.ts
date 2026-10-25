@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { lifecycle } from '../../setup/lifecycle.ts';
+import { RELEASE } from '../../shared/release.ts';
 
 test('A2 production guidance/hints reach native2.1.4 outgoing requests and real tools without external transport', { timeout: 45000 }, async () => {
   const root = fs.mkdtempSync('/tmp/opencode/agent-progress-activation-');
@@ -24,7 +25,7 @@ test('A2 production guidance/hints reach native2.1.4 outgoing requests and real 
     }
     const payload = fs.readFileSync(`${root}/compiled/plugin.js`, 'utf8');
     const guidance = fs.readFileSync(process.env.ACTIVATION_COMPANION_ENTRY ? path.join(path.dirname(original),'SKILL.md') : 'plugin/SKILL.md', 'utf8');
-    lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: payload, guidance, removal: '// fixture only', version: '0.2.4' });
+    lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: payload, guidance, removal: '// fixture only', version: RELEASE });
     const ownership = JSON.parse(fs.readFileSync(`${root}/config/opencode/plugins/agent-progress/.ownership.json`, 'utf8'));
     assert.equal(fs.readFileSync(`${root}/store/payloads/${ownership.active}/index.js`, 'utf8'), payload, 'selected companion bytes unchanged by observer');
     console.log('selected-companion-sha256', createHash('sha256').update(payload).digest('hex'), process.env.ACTIVATION_COMPANION_ENTRY ? 'verbatim-entry' : 'source-built');
