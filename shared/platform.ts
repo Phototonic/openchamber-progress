@@ -5,7 +5,8 @@ import path from 'node:path';
 export const windows = process.platform === 'win32';
 export class PlatformError extends Error {
   readonly code: string;
-  constructor(code: string) { super(code); this.code = code; }
+  readonly reason?: 'timeout'|'spawn'|'exit';
+  constructor(code: string, reason?: 'timeout'|'spawn'|'exit') { super(code); this.code = code; this.reason = reason; }
 }
 type Security = { owned: boolean; private: boolean; reparse: boolean; unsafeParent: boolean };
 const cache = new Map<string, { snapshot: string; result: Security }>();
@@ -120,10 +121,13 @@ function query(paths: string[], create: string[] = []): Security[] {
   for (const key of ['SystemRoot','SYSTEMROOT','WINDIR','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','LOCALAPPDATA']) {
     if (process.env[key]) env[key] = process.env[key];
   }
+  // An absent PSModulePath is reconstructed from user/all-user module folders.
+  // Only the built-in utility module is needed; never discover caller modules.
+  env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
   const child = spawnSync(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
     ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
     { input: JSON.stringify({ paths, create }), encoding:'utf8', env, windowsHide:true, shell:false, timeout:10000, maxBuffer:1024*1024 });
-  if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable');
+  if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable',child.error?(child.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'timeout':'spawn':'exit');
   let results: Security[];
   try { results = JSON.parse(child.stdout.replace(/^\uFEFF/,'')); } catch { throw new PlatformError('windows-security-unavailable'); }
   if (!Array.isArray(results) || results.length !== paths.length || results.some(r => !r || ['owned','private','reparse','unsafeParent'].some(k => typeof r[k as keyof Security] !== 'boolean'))) throw new PlatformError('windows-security-unavailable');

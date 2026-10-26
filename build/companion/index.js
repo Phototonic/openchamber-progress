@@ -24242,9 +24242,11 @@ var windows = process.platform === "win32";
 
 class PlatformError2 extends Error {
   code;
-  constructor(code) {
+  reason;
+  constructor(code, reason) {
     super(code);
     this.code = code;
+    this.reason = reason;
   }
 }
 var cache2 = new Map;
@@ -24374,9 +24376,10 @@ function query(paths, create2 = []) {
     if (process.env[key])
       env[key] = process.env[key];
   }
+  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
   const child = spawnSync(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input: JSON.stringify({ paths, create: create2 }), encoding: "utf8", env, windowsHide: true, shell: false, timeout: 1e4, maxBuffer: 1024 * 1024 });
   if (child.error || child.status !== 0)
-    throw new PlatformError2("windows-security-unavailable");
+    throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results2;
   try {
     results2 = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));

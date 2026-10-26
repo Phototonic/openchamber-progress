@@ -71,10 +71,13 @@ try {
   return r.status===0&&r.stdout==='ok';
 }
 
-test('Windows atomically private Unicode directories, inherited files, ACL refusals and cache invalidation',native,()=>{
+test('Windows atomically private Unicode directories, inherited files, ACL refusals and cache invalidation',native,t=>{
   const f=fixture();try{
     privateDirectory(f.targets.storeRoot);const inherited=path.join(f.targets.storeRoot,'private 文書.txt');fs.writeFileSync(inherited,'synthetic');
     assert.equal(platformSecurityScope(()=>privatePaths([f.targets.storeRoot,inherited])),true);
+    const realSpawn=childProcess.spawnSync;let observedModulePath:string|undefined;
+    const spy=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{observedModulePath=(args[2] as {env?:NodeJS.ProcessEnv})?.env?.PSModulePath;return(realSpawn as any)(...args);})as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    try{assert.equal(privatePaths([inherited]),true);assert.equal(observedModulePath,path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','Modules'));}finally{spy.mock.restore();syncBuiltinESMExports();}
     assert.equal(isOwned(f.targets.storeRoot),true);
     platformSecurityScope(()=>{
       assert.equal(privatePaths([inherited]),true);assert.equal(changeAcl(inherited,'public'),true);
