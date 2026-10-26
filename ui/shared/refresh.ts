@@ -55,4 +55,7 @@ export class RecentMemory<T> {
     while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value!);
   }
   clear() { this.entries.clear(); }
+  deleteWhere(matches: (value: T, key: string) => boolean) {
+    for (const [key, value] of this.entries) if (matches(value, key)) this.entries.delete(key);
+  }
 }

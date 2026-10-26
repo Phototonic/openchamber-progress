@@ -2,7 +2,7 @@
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
-  type EnvelopeView, type SetupAction,
+  cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
 } from './adapter.ts';
 import type { ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
@@ -54,7 +54,7 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
   return result.body;
 }
 
-export interface ListScope { session?: string | null; directory?: string | null }
+export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
 export type ListResult =
   | { ok: true; health: HealthView; read: StoreRead }
@@ -70,7 +70,9 @@ export async function readList(host: ServiceHost, scope: ListScope, maxPages = M
   try {
     const health = parseHealth(await call(host, ROUTES.health));
     if (!health.ready) return { ok: true, health, read: null };
-    const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null };
+    // An older service cannot establish an empty archive; never send it the new query.
+    if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };
+    const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null, archived: health.planCleanup ? scope.archived ?? 'exclude' : null };
     const first = parsePlansPage(await call(host, ROUTES.plans, query(base)));
     const plans = [...first.data];
     let cursor = first.nextCursor;
@@ -80,7 +82,7 @@ export async function readList(host: ServiceHost, scope: ListScope, maxPages = M
       // Offset paging may see newer revisions; keep the newest copy of each plan.
       for (const p of next.data) {
         const at = plans.findIndex((x) => x.key === p.key);
-        if (at < 0) plans.push(p); else if (plans[at].revision < p.revision) plans[at] = p;
+        if (at < 0) plans.push(p); else if (plans[at].revision < p.revision || (plans[at].cleanup?.revision ?? 0) < (p.cleanup?.revision ?? 0)) plans[at] = p;
       }
       cursor = next.nextCursor;
     }
@@ -88,6 +90,14 @@ export async function readList(host: ServiceHost, scope: ListScope, maxPages = M
   } catch (error) {
     return { ok: false, failure: classify(error) };
   }
+}
+
+export async function cleanupCall(host: ServiceHost, action: CleanupAction, request: CleanupRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {
+  try {
+    const body = await call(host, `${ROUTES.plan}/${action}`, undefined, 'POST', cleanupBody(request, action));
+    parseCleanupReceipt(body, request, action);
+    return { ok: true };
+  } catch (error) { return { ok: false, failure: classify(error) }; }
 }
 
 export type DetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number } | { ok: false; failure: ReadFailure };

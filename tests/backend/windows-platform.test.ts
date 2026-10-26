@@ -342,6 +342,63 @@ test('Windows directory filters match separator and drive spellings without file
   }finally{store?.close();f.clean();}
 });
 
+test('Windows cleanup snapshots inherit verified private ACLs; archive/restore/delete preserve source and directory matching',native,async()=>{
+  const f=fixture();let store:Store|undefined;
+  try{
+    privateDirectory(f.targets.storeRoot);store=new Store(path.join(f.targets.storeRoot,'progress.sqlite'),{create:true});
+    const source={id:'cleanup-source',configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,verified:true};store.registerSource(source);
+    const directory=path.join(f.root,'ProjectCase');
+    const actor:Actor={sourceId:source.id,sessionId:'cleanup-session',agent:'build',directory,parentId:null,ancestry:[],verifiedSource:true};
+    const file=path.join(f.root,'cleanup 文書.md'),text='# Synthetic finished plan\n';fs.writeFileSync(file,text);
+    const capture=await captureDocument(file,f.root,async()=>{});assert.equal(capture.state,'captured');
+    store.apply({op:'start',plan:'P-done',oid:'start',rev:0,title:'Synthetic finished plan',source:file,items:[{id:'a',title:'Example',kind:'task',status:'done'}]},actor,capture);
+    store.apply({op:'finish',plan:'P-done',oid:'finish',rev:1,outcome:'finished'},actor,capture);
+    store.apply({op:'start',plan:'P-active',oid:'active',rev:0,title:'Synthetic active plan',items:[{id:'a',title:'Example',kind:'task',status:'working'}]},actor);
+    const detail=store.detail(source.id,'P-done'),history=store.history(source.id,'P-done').data;
+    const request={storeId:detail.storeId,source:source.id,plan:'P-done',rev:2,cleanupRev:0,oid:'archive'};
+    const variant=directory.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toLowerCase());
+    const before=store.db.prepare('SELECT * FROM revisions ORDER BY source,plan,revision').all();
+    store.setEnabled(false);store.cleanup('archive',request);assert.equal(store.list().captureEnabled,false);
+    assert.deepEqual(store.db.prepare('SELECT * FROM revisions ORDER BY source,plan,revision').all(),before);
+    assert.deepEqual(store.list({directory:variant}).data.map(p=>p.id),['P-active']);
+    assert.deepEqual(store.list({directory:variant,session:actor.sessionId,archived:'only'}).data.map(p=>p.id),['P-done']);
+    assert.equal(store.list({directory:path.join(f.root,'projectCase'),archived:'only'}).data.length,0,'archive filtering must not case-fold directory names');
+    assert.deepEqual(store.history(source.id,'P-done').data,history);assert.equal(store.document(source.id,'P-done',0,detail.plan.document.captureId).text,text);
+    const backups=fs.readdirSync(f.targets.storeRoot).filter(name=>name.startsWith('cleanup-backup-'));assert.equal(backups.length,1);
+    const backup=path.join(f.targets.storeRoot,backups[0]!);assert.equal(privatePaths([f.targets.storeRoot,backup]),true);assert.equal(fs.lstatSync(backup).nlink,1);
+    const snapshot=new Store(backup,{readOnly:true});try{assert.equal(snapshot.get(source.id,'P-done')!.lifecycle,'finished');assert.equal(snapshot.detail(source.id,'P-done').plan.cleanup,undefined);assert.equal(snapshot.db.prepare('PRAGMA integrity_check').get()!.integrity_check,'ok');}finally{snapshot.close();}
+    store.cleanup('restore',{...request,cleanupRev:1,oid:'restore'});assert.equal(store.get(source.id,'P-done')!.lifecycle,'finished');assert.deepEqual(store.history(source.id,'P-done').data,history);
+    const deletion={...request,cleanupRev:2,oid:'delete',confirmed:true};const receipt=store.cleanup('delete',deletion);
+    assert.deepEqual(store.cleanup('delete',deletion),receipt);assert.equal(store.get(source.id,'P-done'),undefined);
+    assert.throws(()=>store!.document(source.id,'P-done',0,detail.plan.document.captureId),/not-found/);
+    assert.equal(store.get(source.id,'P-active')!.lifecycle,'active');assert.equal(fs.readFileSync(file,'utf8'),text);
+    assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(),[]);
+    store.close();store=new Store(path.join(f.targets.storeRoot,'progress.sqlite'));assert.deepEqual(store.cleanup('delete',deletion),receipt);
+    store.setEnabled(true);assert.throws(()=>store!.apply({op:'start',plan:'P-done',oid:'resurrect',rev:0,title:'No',items:[]},actor),/not-found/);
+  }finally{store?.close();f.clean();}
+});
+
+test('Windows first cleanup refuses changed public ACLs and hard-linked state without snapshot or mutation',native,()=>{
+  for(const kind of ['parent-public','database-public','database-hardlink'] as const){
+    const f=fixture();let store:Store|undefined;
+    try{
+      privateDirectory(f.targets.storeRoot);const database=path.join(f.targets.storeRoot,'progress.sqlite');store=new Store(database,{create:true});
+      const source={id:'cleanup-source',configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,verified:true};store.registerSource(source);
+      const actor:Actor={sourceId:source.id,sessionId:'cleanup-session',agent:'build',directory:f.root,parentId:null,ancestry:[],verifiedSource:true};
+      store.apply({op:'start',plan:'P-done',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Example',kind:'task',status:'done'}]},actor);
+      store.apply({op:'finish',plan:'P-done',oid:'finish',rev:1,outcome:'finished'},actor);
+      const request={storeId:store.list().storeId,source:source.id,plan:'P-done',rev:2,cleanupRev:0,oid:'archive'};
+      const before=store.db.prepare('SELECT * FROM plans').all();
+      if(kind==='database-hardlink')fs.linkSync(database,path.join(f.root,'database-alias.sqlite'));
+      else assert.equal(changeAcl(kind==='parent-public'?f.targets.storeRoot:database,'public'),true);
+      assert.throws(()=>store!.cleanup('archive',request),e=>['binding','storage'].includes((e as {code:string}).code));
+      assert.deepEqual(store.db.prepare('SELECT * FROM plans').all(),before);
+      assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE name='cleanup_state'").get(),undefined);
+      assert.equal(fs.readdirSync(f.targets.storeRoot).some(name=>name.startsWith('cleanup-backup-')),false);
+    }finally{store?.close();f.clean();}
+  }
+});
+
 test('Windows retained-source lookup skips unavailable history but keeps selected targets and security failures strict',native,t=>{
   const f=fixture();let store:Store|undefined;
   try{

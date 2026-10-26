@@ -13,7 +13,14 @@ separate explicit user approval; fixture validation never grants that approval.
 OpenChamber service permission runs code with full user privileges; the UI must
 show that disclosure plus target paths/version and the separate lifecycle BEFORE
 installing. Uninstalling/closing the extension does NOT disable global capture.
-Disable/remove capture explicitly. History is always retained; there is no purge.
+Disable/remove capture explicitly. Setup/removal retain history; there is no
+automatic purge. Separately, the progress views can explicitly archive/restore a
+finished plan or confirm permanent deletion of its stored progress. Original plan
+files remain untouched. First cleanup creates a private recovery snapshot in the
+store folder; deletion does not securely erase backups, journals or free pages.
+Keep cleanup guards/tombstones during application rollback; never automatically
+restore that snapshot or reset schema2 to undo cleanup. Older readers may show
+archived records; older writers remain fenced. See `docs/contracts.md`.
 
 ## Proactive guidance after loading
 

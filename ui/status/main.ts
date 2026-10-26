@@ -32,6 +32,7 @@ startView<Ui>({
   surface: 'status',
   maxSessionSubscriptions: 2,
   initialUi: () => ({ selection: new StatusSelection(RECENT_SCOPES) }),
+  forgetPlans: (keys, ui) => { ui.selection.forget(keys); return {}; },
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
   onContext: (vc) => { enter(vc); },
   wantProjects: (vc) => {
@@ -70,7 +71,7 @@ startView<Ui>({
     if (!plan) return;
     const rest = scope.plans.filter((p) => p.key !== plan.key);
     if (scope.plans.length > 1) {
-      const holder = testid(el('div', 'ap-picker'), 'status-plan-selector');
+      const holder = testid(el('div', 'ap-picker ap-status-picker'), 'status-plan-selector');
       mountSelect(holder, {
         label: 'Featured plan',
         value: selected ?? 'automatic',
@@ -84,11 +85,16 @@ startView<Ui>({
           return { selection: ui.selection };
         }),
       });
+      // The compact value may truncate; keep its full text available on hover too.
+      holder.querySelector('button')?.setAttribute('title', selected ? plan.title : 'Automatic');
       root.append(holder);
     }
     const d = vc.detail(plan);
     const detail = d?.state === 'ready' && d.value.revision === plan.revision ? d.value : null;
     const box = testid(el('section', 'ap-status-plan'), `plan-${plan.id}`);
+    box.dataset.source = plan.sourceId;
+    box.dataset.lifecycle = plan.lifecycle;
+    box.dataset.revision = String(plan.revision);
     const summary = summarize(plan, detail);
     if (showsLiveness(plan.lifecycle, summary, env.view)) box.dataset.motion = 'on';
     const head = el('div', 'ap-status-row');
@@ -122,6 +128,7 @@ startView<Ui>({
       for (const p of rest.slice(0, 2)) {
         const s = summarize(p);
         const li = testid(el('li', 'ap-status-row'), `plan-${p.id}`);
+        li.dataset.source = p.sourceId;
         li.append(el('span', 'ap-grow', p.title), el('span', 'ap-muted ap-small', p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : 'No tasks') : LIFECYCLE_LABEL[p.lifecycle]));
         more.append(li);
       }
