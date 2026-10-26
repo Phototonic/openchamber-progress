@@ -4,9 +4,10 @@
 
 An [OpenChamber](https://github.com/openchamber/openchamber) extension with an OpenCode companion for explicit, structured agent progress. Keep your existing planning workflow and bring its checklist, current work, and contributions into one place.
 
-> **Early access · Linux capture · OpenChamber ≥ 2.5.1**
+> **Early access · Linux and native Windows capture · OpenChamber ≥ 2.5.1**
 >
 > OpenCode **2.1.4** is the tested capture version; broader compatibility is not established.
+> Native Windows uses the operating system's built-in PowerShell for private-file checks; no extra executable, compiler, or package installation is required. See the [Windows support boundary](docs/setup.md#native-windows).
 
 ## Three ways to follow along
 
@@ -40,7 +41,7 @@ The public Git distribution uses **`main`** and includes built runtime files: **
 
 > **Separate lifecycle:** disable or remove the companion **before uninstalling the extension** if capture must stop. Closing or uninstalling the extension alone does not stop capture. Removing the companion retains the database and history; there is no automatic purge.
 
-- **One host and account.** Linux capture and the host service must share the same local filesystem and account. Web/relay viewers can see that host's data; they do not enable capture on a different host or isolated container.
+- **One host and account.** Capture and the host service must share the same local filesystem and account. Web/relay viewers can see that host's data; they do not enable capture on a different host or isolated container.
 - **Private work stays in a host-local SQLite store.** It can contain plan text and source/project paths. Treat the store, diagnostics, and screenshots as sensitive.
 - **Not entirely offline.** Visible progress views check GitHub's public repository metadata for the official `main` version. This is informational, not an automatic install or source switch.
 - **Elapsed is reported time.** Working labels measure a continuous *reported-working* interval—not CPU/model time, an ETA, or proof that execution continues. Incomplete history is labelled “at least.”
