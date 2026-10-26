@@ -82,7 +82,7 @@ Older services may return404; missing/malformed optional replies mean unavailabl
 
 ```ts
 interface ExtensionUpdateRead {
-  installedVersion: string; // this extension's RELEASE, currently0.2.7
+  installedVersion: string; // this extension's RELEASE
   repository: 'Phototonic/openchamber-progress';
   ref: 'main';
   state: 'available' | 'not-newer' | 'unknown';
