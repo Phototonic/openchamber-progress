@@ -10,6 +10,21 @@ Announced before shared changes. Only Heavy Fixer owns shared files; consumers
 must switch sequentially. The old `shared/contract.ts` ProbeRead is historical
 fixture code, never a production fallback. UI implementation is Designer-owned.
 
+## Tool invocation validation help (additive v2)
+
+The flat tool input schema remains provider-compatible; operation-specific
+requirements are enforced by `parseRequest` and described directly in the tool.
+Every mutation requires `oid` and expected `rev`. New `start` also requires title
+and complete items, using `rev:0`; read accepts only op, one concrete plan ID and
+optional page, never a wildcard or mutation fields. No defaults are inferred.
+
+Tool replies retain `error` and optional conflict `rev`. Only `error: "invalid"`
+may additionally carry optional `hint`, bounded constant recovery text (at most
+256 characters), with no submitted values, unknown field names, paths or exception
+messages echoed. Consumers must continue to branch on `error`, not hint wording;
+older/generic errors may omit it. Service HTTP errors remain code-only. This adds
+no protocol/schema version, persisted field, read behavior or permission change.
+
 ## Advisory activation does not change the protocol
 
 The companion can add one owned section to an eligible outgoing primary context
@@ -322,7 +337,8 @@ process/location. No HTTP acknowledgement route or DTO/code-string change exists
 `agent_progress_report`, namespace agent_progress, codemode:false; guidance id
 agent-progress. Input Request / REPORT_SCHEMA in shared/progress.ts. Mutations
 require plan, oid and rev (start rev0). Receipt `{plan,rev,structuralRev,changed?}`;
-errors `{error,rev?}`. Read without page returns compact plan/revision/lifecycle/
+errors `{error,rev?,hint?}` (safe optional hint only for invalid tool requests).
+Read without page returns compact plan/revision/lifecycle/
 counts/documentState/detailPageSize; explicit page returns paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
 

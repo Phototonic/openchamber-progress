@@ -6,7 +6,23 @@ batch changes, never timer heartbeats. Read current state after compaction or
 revision conflict. Original plan documents stay authoritative and are never
 rewritten by capture.
 
-Use `agent_progress_report`; inline guidance documents its operations. Routine
+Use `agent_progress_report`. Every mutation requires a fresh `oid` and expected
+`rev`; reuse an `oid` only for an identical retry. A new `start` requires `plan`,
+`title`, the complete `items` structure and `rev:0`. Minimal valid start (replace
+synthetic IDs/title/items with the real plan):
+
+```json
+{"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
+```
+
+Read accepts only `op: "read"`, one concrete `plan` identifier and optional `page`;
+no wildcard, `oid` or `rev`. Read the current revision before updating an existing
+plan. An `invalid` reply may include a safe `hint` explaining what to correct;
+it is not evidence of a host outage. Empty/all-skipped plans cannot finish
+successfully. Denied document access still commits valid checklist changes with
+diagnostics; `source` is optional and never a reason to manufacture a file.
+
+Inline guidance documents the other operations. Routine
 requests use `op=change`, `plan`, fresh `oid`, expected `rev`, and changed items.
 For large structures stage numbered chunks and explicitly commit all chunks;
 staging is not completion. Pass plan/item IDs in child assignments and explicitly

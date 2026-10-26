@@ -14,10 +14,13 @@ var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPage
 class ProgressError extends Error {
   code;
   revision;
-  constructor(code, revision) {
+  hint;
+  constructor(code, revision, hint) {
     super(code);
     this.code = code;
     this.revision = revision;
+    if (code === "invalid")
+      this.hint = hint;
   }
 }
 function requireProgress(value, code = "invalid", revision) {
@@ -34,7 +37,7 @@ function identifier(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value);
 }
 function parseRequest(value) {
-  requireProgress(value && typeof value === "object" && !Array.isArray(value));
+  validRequest(value && typeof value === "object" && !Array.isArray(value), "request");
   const r = value;
   const fields = {
     start: ["title", "items", "source"],
@@ -47,30 +50,34 @@ function parseRequest(value) {
     bind: ["source", "confirm"],
     finish: ["outcome"]
   };
-  requireProgress(Object.hasOwn(fields, r.op) && identifier(r.plan));
+  validRequest(Object.hasOwn(fields, r.op), "op");
+  validRequest(identifier(r.plan), "plan");
   const allowed = ["op", "plan", ...r.op === "read" ? [] : ["oid", "rev"], ...fields[r.op]];
-  requireProgress(Object.keys(r).every((k) => allowed.includes(k)) && Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
-  if (r.op !== "read")
-    requireProgress(identifier(r.oid) && Number.isSafeInteger(r.rev) && r.rev >= 0);
+  validRequest(Object.keys(r).every((k) => allowed.includes(k)), "fields");
+  requireProgress(Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
+  if (r.op !== "read") {
+    validRequest(identifier(r.oid), "oid");
+    validRequest(Number.isSafeInteger(r.rev) && r.rev >= 0, "rev");
+  }
   if (r.page !== undefined)
     requireProgress(Number.isSafeInteger(r.page) && r.page >= 0);
   if (r.title !== undefined)
-    requireProgress(typeof r.title === "string" && r.title.trim().length > 0 && r.title.length <= 256);
+    validRequest(typeof r.title === "string" && r.title.trim().length > 0 && r.title.length <= 256, "title");
   if (r.source !== undefined)
-    requireProgress(typeof r.source === "string" && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes("\x00"));
+    validRequest(typeof r.source === "string" && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes("\x00"), "source");
   for (const f of ["confirm", "reopen"])
     if (r[f] !== undefined)
       requireProgress(typeof r[f] === "boolean");
   if (r.items !== undefined) {
-    requireProgress(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems);
+    validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, "items");
     for (const i of r.items) {
-      requireProgress(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind));
+      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
       if (i.status !== undefined)
-        requireProgress(["pending", "working", "blocked", "done", "skipped"].includes(i.status));
+        validRequest(["pending", "working", "blocked", "done", "skipped"].includes(i.status), "items");
       if (i.parentId !== undefined)
-        requireProgress(identifier(i.parentId));
+        validRequest(identifier(i.parentId), "items");
       if (i.dependencies !== undefined)
-        requireProgress(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier));
+        validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier), "items");
     }
   }
   if (r.changes !== undefined)
@@ -89,7 +96,7 @@ function parseRequest(value) {
     requireProgress(Number.isInteger(r.chunks) && r.chunks > 0 && r.chunks <= LIMITS.chunks);
   if (r.outcome !== undefined)
     requireProgress(["finished", "cancelled", "failed"].includes(r.outcome));
-  requireProgress(r.op !== "start" || !!r.title && !!r.items);
+  validRequest(r.op !== "start" || !!r.title && !!r.items, "start");
   requireProgress(r.op !== "change" || !!r.changes);
   requireProgress(r.op !== "revise" || !!r.items || !!r.title);
   requireProgress(r.op !== "stage" || !!r.upload && r.chunk !== undefined && !!r.items);
@@ -98,6 +105,22 @@ function parseRequest(value) {
   requireProgress(r.op !== "bind" || !!r.source);
   requireProgress(r.op !== "finish" || !!r.outcome);
   return JSON.parse(JSON.stringify(r));
+}
+var VALIDATION_HINTS = {
+  request: "Send one request object.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
+  plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
+  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.",
+  oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
+  rev: "Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.",
+  title: "Use a nonempty title of at most 256 characters.",
+  source: "Optional source must be a nonempty path string of at most 4096 characters without NUL.",
+  items: "Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.",
+  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure."
+};
+function validRequest(value, hint) {
+  if (!value)
+    throw new ProgressError("invalid", undefined, VALIDATION_HINTS[hint]);
 }
 
 // shared/binding.ts

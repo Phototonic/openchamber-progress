@@ -4,9 +4,10 @@ export const LIMITS = { requestBytes: 16_384, documentBytes: 262_144, pageSize: 
 export type Status = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'finished' | 'cancelled' | 'failed';
 export type Code = 'invalid' | 'not-found' | 'conflict' | 'operation-reused' | 'assignment' | 'source-unverified' | 'closed' | 'unfinished' | 'disabled' | 'busy' | 'storage' | 'corrupt' | 'schema' | 'binding' | 'stage-incomplete';
+export type ValidationHint = typeof VALIDATION_HINTS[keyof typeof VALIDATION_HINTS];
 export class ProgressError extends Error {
-  readonly code: Code; readonly revision?: number;
-  constructor(code: Code, revision?: number) { super(code); this.code = code; this.revision = revision; }
+  readonly code: Code; readonly revision?: number; readonly hint?: ValidationHint;
+  constructor(code: Code, revision?: number, hint?: ValidationHint) { super(code); this.code = code; this.revision = revision; if(code === 'invalid') this.hint = hint; }
 }
 export function requireProgress(value: unknown, code: Code = 'invalid', revision?: number): asserts value { if (!value) throw new ProgressError(code, revision); }
 export interface Item { id: string; title: string; kind: 'task' | 'group'; status: Status; parentId?: string; dependencies?: string[]; assigneeSessionId?: string; reporterSessionId?: string }
@@ -61,7 +62,7 @@ export interface SetupRead {
   update?: CompanionUpdateRead;
 }
 export interface Receipt { plan: string; rev: number; structuralRev: number; changed?: string[]; staged?: number }
-export type Reply = Receipt | { error: Code; rev?: number };
+export type Reply = Receipt | { error: Code; rev?: number; hint?: ValidationHint };
 export interface Request {
   op: 'start' | 'read' | 'change' | 'revise' | 'stage' | 'commit' | 'link' | 'bind' | 'finish';
   plan: string; oid?: string; rev?: number; title?: string; items?: ItemInput[];
@@ -71,27 +72,32 @@ export interface Request {
 }
 export function identifier(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value); }
 export function parseRequest(value: unknown): Request {
-  requireProgress(value && typeof value === 'object' && !Array.isArray(value));
+  validRequest(value && typeof value === 'object' && !Array.isArray(value), 'request');
   const r = value as Request;
   const fields: Record<Request['op'], string[]> = {
     start: ['title','items','source'], read: ['page'], change: ['changes','attributed'], revise: ['title','items','reopen'],
     stage: ['upload','chunk','items','reopen'], commit: ['upload','chunks','title','reopen'], link: ['child','assign'], bind: ['source','confirm'], finish: ['outcome'],
   };
-  requireProgress(Object.hasOwn(fields, r.op) && identifier(r.plan));
+  validRequest(Object.hasOwn(fields, r.op), 'op');
+  validRequest(identifier(r.plan), 'plan');
   const allowed = ['op','plan', ...(r.op === 'read' ? [] : ['oid','rev']), ...fields[r.op]];
-  requireProgress(Object.keys(r).every(k => allowed.includes(k)) && Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
-  if (r.op !== 'read') requireProgress(identifier(r.oid) && Number.isSafeInteger(r.rev) && r.rev! >= 0);
+  validRequest(Object.keys(r).every(k => allowed.includes(k)), 'fields');
+  requireProgress(Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
+  if (r.op !== 'read') {
+    validRequest(identifier(r.oid), 'oid');
+    validRequest(Number.isSafeInteger(r.rev) && r.rev! >= 0, 'rev');
+  }
   if (r.page !== undefined) requireProgress(Number.isSafeInteger(r.page) && r.page >= 0);
-  if (r.title !== undefined) requireProgress(typeof r.title === 'string' && r.title.trim().length > 0 && r.title.length <= 256);
-  if (r.source !== undefined) requireProgress(typeof r.source === 'string' && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes('\0'));
+  if (r.title !== undefined) validRequest(typeof r.title === 'string' && r.title.trim().length > 0 && r.title.length <= 256, 'title');
+  if (r.source !== undefined) validRequest(typeof r.source === 'string' && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes('\0'), 'source');
   for (const f of ['confirm','reopen'] as const) if (r[f] !== undefined) requireProgress(typeof r[f] === 'boolean');
   if (r.items !== undefined) {
-    requireProgress(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems);
+    validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, 'items');
     for (const i of r.items) {
-      requireProgress(i && Object.keys(i).every(k => ['id','title','kind','status','parentId','dependencies'].includes(k)) && identifier(i.id) && typeof i.title === 'string' && i.title.trim().length > 0 && i.title.length <= 512 && ['task','group'].includes(i.kind));
-      if (i.status !== undefined) requireProgress(['pending','working','blocked','done','skipped'].includes(i.status));
-      if (i.parentId !== undefined) requireProgress(identifier(i.parentId));
-      if (i.dependencies !== undefined) requireProgress(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier));
+      validRequest(i && Object.keys(i).every(k => ['id','title','kind','status','parentId','dependencies'].includes(k)) && identifier(i.id) && typeof i.title === 'string' && i.title.trim().length > 0 && i.title.length <= 512 && ['task','group'].includes(i.kind), 'items');
+      if (i.status !== undefined) validRequest(['pending','working','blocked','done','skipped'].includes(i.status), 'items');
+      if (i.parentId !== undefined) validRequest(identifier(i.parentId), 'items');
+      if (i.dependencies !== undefined) validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier), 'items');
     }
   }
   if (r.changes !== undefined) requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every(c => c && Object.keys(c).every(k => ['id','status'].includes(k)) && identifier(c.id) && ['pending','working','blocked','done','skipped'].includes(c.status)));
@@ -102,7 +108,7 @@ export function parseRequest(value: unknown): Request {
   if (r.chunk !== undefined) requireProgress(Number.isInteger(r.chunk) && r.chunk >= 0 && r.chunk < LIMITS.chunks);
   if (r.chunks !== undefined) requireProgress(Number.isInteger(r.chunks) && r.chunks > 0 && r.chunks <= LIMITS.chunks);
   if (r.outcome !== undefined) requireProgress(['finished','cancelled','failed'].includes(r.outcome));
-  requireProgress(r.op !== 'start' || (!!r.title && !!r.items));
+  validRequest(r.op !== 'start' || (!!r.title && !!r.items), 'start');
   requireProgress(r.op !== 'change' || !!r.changes);
   requireProgress(r.op !== 'revise' || !!r.items || !!r.title);
   requireProgress(r.op !== 'stage' || (!!r.upload && r.chunk !== undefined && !!r.items));
@@ -114,10 +120,25 @@ export function parseRequest(value: unknown): Request {
 }
 export const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['op','plan'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'] },
-    plan: { type: 'string' }, oid: { type: 'string', description: 'Unique mutation ID; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0 },
-    title: { type: 'string' }, items: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } } }, required: ['id','title','kind'], additionalProperties: false } },
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional page.' },
+    plan: { type: 'string', description: 'One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev.' },
+    title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } } }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] } }, required: ['id','status'], additionalProperties: false } },
     child: { type: 'string' }, assign: { type: 'array', items: { type: 'string' } }, attributed: { type: 'string' }, source: { type: 'string' }, confirm: { type: 'boolean' }, outcome: { enum: ['finished','cancelled','failed'] }, reopen: { type: 'boolean' }, upload: { type: 'string' }, chunk: { type: 'integer' }, chunks: { type: 'integer' }, page: { type: 'integer' },
   },
 } as const;
+
+/** Tool-only recovery text. Constant allowlist: never interpolate rejected input. */
+const VALIDATION_HINTS = {
+  request: 'Send one request object.',
+  op: 'Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.',
+  plan: 'Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.',
+  fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.',
+  oid: 'Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.',
+  rev: 'Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.',
+  title: 'Use a nonempty title of at most 256 characters.',
+  source: 'Optional source must be a nonempty path string of at most 4096 characters without NUL.',
+  items: 'Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.',
+  start: 'Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure.',
+} as const;
+function validRequest(value: unknown, hint: keyof typeof VALIDATION_HINTS): asserts value { if (!value) throw new ProgressError('invalid', undefined, VALIDATION_HINTS[hint]); }

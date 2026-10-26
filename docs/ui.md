@@ -76,8 +76,11 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 - Unconfigured service: the setup flow in compact form. After install, a reload notice.
 
 **Work Status (`ui/status`).** Compact, scoped to the section's own session or directory.
+- **Automatic** features the most recently reported active plan with explicitly working task IDs (stable plan-key tie-break). Without one, it keeps the existing scoped ordering: owned-first, then active/recent within each ownership group, including the existing finished/cancelled fallback. Live Running/Idle labels never determine selection or completion.
+- With multiple scoped plans, **Featured plan** offers Automatic and every available plan. A manual choice, including a pending or finished plan, stays through refreshes and newer reports. Removed choices revert to Automatic. Choices are frame-local, retained for up to eight recent session/directory contexts, and cleared when the store/source binding or host account changes; reopening the frame starts Automatic. No asynchronous preference restore or server writes.
 - Shows: counts and bar; first working (else blocked) task from the primary plan's detail; age and live state; up to two other plans.
-- "Open progress" calls `openSurface` to open the rail. Unconfigured shows "Set up", which opens the rail's setup flow.
+- Detail loading and the first live project subscription follow the featured plan, including a selection beyond the first three list entries; the two-session-stream/32-total-subscription limits remain unchanged.
+- "Open progress" calls `openSurface` to open the rail, whose selection remains independent. The compact picker does not synchronize other panes. Unconfigured shows "Set up", which opens the rail's setup flow.
 - `setHeight` follows content. The frame never writes a badge.
 
 **Fullscreen page (`ui/page`).**

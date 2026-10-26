@@ -1,4 +1,5 @@
-import { startView, type ViewContext } from '../shared/app.ts';
+import { mountSelect } from '@openchamber/sdk/ui';
+import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, testid } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
 import { baseName, clockTime } from '../shared/format.ts';
@@ -6,8 +7,13 @@ import { coverageFor, liveLabel } from '../shared/live.ts';
 import { blockedWork, currentWork, LIFECYCLE_LABEL, showsLiveness, summarize } from '../shared/model.ts';
 import { officialMainLine } from '../shared/official.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
+import { StatusSelection } from './selection.ts';
 
-type Ui = Record<string, never>;
+type Ui = { selection: StatusSelection };
+
+const enter = (vc: ViewContext<Ui>) => vc.ui.selection.enter(
+  JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]), vc.session?.id ?? null, vc.directory,
+);
 
 const openRail = (vc: ViewContext<Ui>) => {
   void vc.host.openSurface(PANEL_SURFACE_ID).catch(() => vc.host.toast({ kind: 'error', message: 'Progress details could not open here.' }).catch(() => {}));
@@ -15,8 +21,9 @@ const openRail = (vc: ViewContext<Ui>) => {
 
 const primary = (vc: ViewContext<Ui>) => {
   if (!vc.read) return null;
+  enter(vc);
   const scope = contextScope(vc.read.plans, vc.session?.id, vc.directory);
-  return scope.kind === 'none' ? null : scope.plans[0] ?? null;
+  return vc.ui.selection.resolve(scope).plan;
 };
 
 // Work Status section: compact, scoped to the section's own session/directory context.
@@ -24,9 +31,17 @@ const primary = (vc: ViewContext<Ui>) => {
 startView<Ui>({
   surface: 'status',
   maxSessionSubscriptions: 2,
-  initialUi: () => ({}),
+  initialUi: () => ({ selection: new StatusSelection(RECENT_SCOPES) }),
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
-  wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans.slice(0, 3), live, directory) : []),
+  onContext: (vc) => { enter(vc); },
+  wantProjects: (vc) => {
+    const p = primary(vc);
+    // Featured plan first, even if it is the fourth/older choice. LiveWorkspace keeps the two-stream cap.
+    return vc.read ? [...new Set([
+      ...projectsFor(p ? [p] : [], vc.live),
+      ...projectsFor(vc.read.plans.slice(0, 3), vc.live, vc.directory),
+    ])] : [];
+  },
   wantDetails: (vc) => { const p = primary(vc); return p ? [p] : []; },
   paint(root, vc) {
     const { read, failure, env } = vc;
@@ -40,6 +55,8 @@ startView<Ui>({
       return;
     }
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
+    const generation = enter(vc);
+    const { plan, selected } = vc.ui.selection.resolve(scope);
     if (scope.kind === 'none') {
       root.append(withOfficial(emptyBlock('unscoped-state', 'No project open', 'Open a project or session to see agent progress.', true)));
       return;
@@ -50,7 +67,25 @@ startView<Ui>({
         : emptyBlock('empty-state', `No plans recorded in ${baseName(scope.directory)}`, 'Progress appears here when an agent reports a plan.', true)));
       return;
     }
-    const [plan, ...rest] = scope.plans;
+    if (!plan) return;
+    const rest = scope.plans.filter((p) => p.key !== plan.key);
+    if (scope.plans.length > 1) {
+      const holder = testid(el('div', 'ap-picker'), 'status-plan-selector');
+      mountSelect(holder, {
+        label: 'Featured plan',
+        value: selected ?? 'automatic',
+        options: [
+          { id: 'automatic', label: 'Automatic', hint: 'Prefer reported working tasks' },
+          ...scope.plans.map((p) => ({ id: p.key, label: p.title, hint: p.lifecycle === 'active' ? `${p.working.length} working` : LIFECYCLE_LABEL[p.lifecycle] })),
+        ],
+        onChange: (key) => vc.updateUi((ui) => {
+          // A picker from a retired store/context cannot restore its old choice.
+          if (ui.selection !== vc.ui.selection || !ui.selection.choose(generation, key === 'automatic' ? null : key)) return {};
+          return { selection: ui.selection };
+        }),
+      });
+      root.append(holder);
+    }
     const d = vc.detail(plan);
     const detail = d?.state === 'ready' && d.value.revision === plan.revision ? d.value : null;
     const box = testid(el('section', 'ap-status-plan'), `plan-${plan.id}`);

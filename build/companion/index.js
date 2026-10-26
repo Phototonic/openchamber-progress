@@ -24240,10 +24240,13 @@ var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPage
 class ProgressError extends Error {
   code;
   revision;
-  constructor(code, revision) {
+  hint;
+  constructor(code, revision, hint) {
     super(code);
     this.code = code;
     this.revision = revision;
+    if (code === "invalid")
+      this.hint = hint;
   }
 }
 function requireProgress(value3, code = "invalid", revision) {
@@ -24260,7 +24263,7 @@ function identifier2(value3) {
   return typeof value3 === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value3);
 }
 function parseRequest(value3) {
-  requireProgress(value3 && typeof value3 === "object" && !Array.isArray(value3));
+  validRequest(value3 && typeof value3 === "object" && !Array.isArray(value3), "request");
   const r = value3;
   const fields = {
     start: ["title", "items", "source"],
@@ -24273,30 +24276,34 @@ function parseRequest(value3) {
     bind: ["source", "confirm"],
     finish: ["outcome"]
   };
-  requireProgress(Object.hasOwn(fields, r.op) && identifier2(r.plan));
+  validRequest(Object.hasOwn(fields, r.op), "op");
+  validRequest(identifier2(r.plan), "plan");
   const allowed = ["op", "plan", ...r.op === "read" ? [] : ["oid", "rev"], ...fields[r.op]];
-  requireProgress(Object.keys(r).every((k) => allowed.includes(k)) && Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
-  if (r.op !== "read")
-    requireProgress(identifier2(r.oid) && Number.isSafeInteger(r.rev) && r.rev >= 0);
+  validRequest(Object.keys(r).every((k) => allowed.includes(k)), "fields");
+  requireProgress(Buffer.byteLength(JSON.stringify(r)) <= LIMITS.requestBytes);
+  if (r.op !== "read") {
+    validRequest(identifier2(r.oid), "oid");
+    validRequest(Number.isSafeInteger(r.rev) && r.rev >= 0, "rev");
+  }
   if (r.page !== undefined)
     requireProgress(Number.isSafeInteger(r.page) && r.page >= 0);
   if (r.title !== undefined)
-    requireProgress(typeof r.title === "string" && r.title.trim().length > 0 && r.title.length <= 256);
+    validRequest(typeof r.title === "string" && r.title.trim().length > 0 && r.title.length <= 256, "title");
   if (r.source !== undefined)
-    requireProgress(typeof r.source === "string" && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes("\x00"));
+    validRequest(typeof r.source === "string" && r.source.length > 0 && r.source.length <= 4096 && !r.source.includes("\x00"), "source");
   for (const f of ["confirm", "reopen"])
     if (r[f] !== undefined)
       requireProgress(typeof r[f] === "boolean");
   if (r.items !== undefined) {
-    requireProgress(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems);
+    validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, "items");
     for (const i of r.items) {
-      requireProgress(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind));
+      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
       if (i.status !== undefined)
-        requireProgress(["pending", "working", "blocked", "done", "skipped"].includes(i.status));
+        validRequest(["pending", "working", "blocked", "done", "skipped"].includes(i.status), "items");
       if (i.parentId !== undefined)
-        requireProgress(identifier2(i.parentId));
+        validRequest(identifier2(i.parentId), "items");
       if (i.dependencies !== undefined)
-        requireProgress(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier2));
+        validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier2), "items");
     }
   }
   if (r.changes !== undefined)
@@ -24315,7 +24322,7 @@ function parseRequest(value3) {
     requireProgress(Number.isInteger(r.chunks) && r.chunks > 0 && r.chunks <= LIMITS.chunks);
   if (r.outcome !== undefined)
     requireProgress(["finished", "cancelled", "failed"].includes(r.outcome));
-  requireProgress(r.op !== "start" || !!r.title && !!r.items);
+  validRequest(r.op !== "start" || !!r.title && !!r.items, "start");
   requireProgress(r.op !== "change" || !!r.changes);
   requireProgress(r.op !== "revise" || !!r.items || !!r.title);
   requireProgress(r.op !== "stage" || !!r.upload && r.chunk !== undefined && !!r.items);
@@ -24330,12 +24337,12 @@ var REPORT_SCHEMA = {
   additionalProperties: false,
   required: ["op", "plan"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"] },
-    plan: { type: "string" },
-    oid: { type: "string", description: "Unique mutation ID; reuse only to retry identical input." },
-    rev: { type: "integer", minimum: 0 },
-    title: { type: "string" },
-    items: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } } }, required: ["id", "title", "kind"], additionalProperties: false } },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional page." },
+    plan: { type: "string", description: "One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
+    oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
+    rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
+    title: { type: "string", description: "Required for start: nonempty plan title, at most 256 characters." },
+    items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } } }, required: ["id", "title", "kind"], additionalProperties: false } },
     changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] } }, required: ["id", "status"], additionalProperties: false } },
     child: { type: "string" },
     assign: { type: "array", items: { type: "string" } },
@@ -24350,6 +24357,22 @@ var REPORT_SCHEMA = {
     page: { type: "integer" }
   }
 };
+var VALIDATION_HINTS = {
+  request: "Send one request object.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
+  plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
+  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.",
+  oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
+  rev: "Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.",
+  title: "Use a nonempty title of at most 256 characters.",
+  source: "Optional source must be a nonempty path string of at most 4096 characters without NUL.",
+  items: "Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.",
+  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure."
+};
+function validRequest(value3, hint) {
+  if (!value3)
+    throw new ProgressError("invalid", undefined, VALIDATION_HINTS[hint]);
+}
 
 // shared/binding.ts
 function readBinding(file) {
@@ -25040,7 +25063,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       editor.namespace({ name: "agent_progress", description: "Deliberate plan progress; never inferred from activity." });
       editor.add({
         name: "report",
-        description: "Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. Read agent-progress guidance for chunked commits.",
+        description: `Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,
         input: REPORT_SCHEMA,
         options: { namespace: "agent_progress", codemode: false },
         execute: async (value3, caller) => {
@@ -25067,7 +25090,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
             return { content: JSON.stringify(receipt) };
           } catch (e) {
             const error = e instanceof ProgressError ? e : storageError(e);
-            return { content: JSON.stringify({ error: error.code, ...error.revision !== undefined ? { rev: error.revision } : {} }) };
+            return { content: JSON.stringify({ error: error.code, ...error.revision !== undefined ? { rev: error.revision } : {}, ...error.code === "invalid" && error.hint ? { hint: error.hint } : {} }) };
           }
         }
       });
@@ -25094,7 +25117,13 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     throw error;
   }
 } });
+var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
+\`\`\`json
+{"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
+\`\`\`
+Read uses only op=read, one concrete plan identifier and optional page; no wildcard, oid or rev. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
+${START_HELP}
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
