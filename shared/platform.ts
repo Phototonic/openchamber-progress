@@ -23,6 +23,13 @@ export function beginPlatformSecurityScope():()=>void {
   return ()=>{if (!--scope) {cache.clear();reparseCache.clear();}};
 }
 
+/** Windows PowerShell can expand inherited module paths during startup. */
+export const windowsPowerShellBootstrap = String.raw`
+$env:PSModulePath = $PSHOME + '\Modules'
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+`;
+
 /** Shared pure descriptor policy, also exercised by public .NET fixtures. */
 export const windowsDaclValidationScript = String.raw`
 function Test-OrdinaryDacl($binary) {
@@ -44,6 +51,7 @@ const securityScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -121,8 +129,8 @@ function query(paths: string[], create: string[] = []): Security[] {
   for (const key of ['SystemRoot','SYSTEMROOT','WINDIR','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','LOCALAPPDATA']) {
     if (process.env[key]) env[key] = process.env[key];
   }
-  // An absent PSModulePath is reconstructed from user/all-user module folders.
-  // Only the built-in utility module is needed; never discover caller modules.
+  // Pin startup hints too; the trusted script resets the effective path and
+  // imports only the built-in utility module by its absolute system path.
   env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
   const child = spawnSync(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
     ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],

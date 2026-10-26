@@ -6,7 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import childProcess, { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { privateDirectory, privatePaths, isOwned, windowsPath, platformSecurityScope, windowsSecurity, sameWindowsDirectory, windowsDaclValidationScript } from '../../shared/platform.ts';
+import { privateDirectory, privatePaths, isOwned, windowsPath, platformSecurityScope, windowsSecurity, sameWindowsDirectory, windowsDaclValidationScript, windowsPowerShellBootstrap } from '../../shared/platform.ts';
 import { lifecycle, inspect, normalizeTargets, type Payload } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
@@ -99,6 +99,18 @@ test('Windows unsupported callback ACEs preserve owner observation but refuse pr
       assert.equal(isOwned(parent),true);assert.throws(()=>windowsPath(child),/unsafe-parent/);
     });
   }finally{f.clean();}
+});
+
+test('Windows PowerShell uses only the explicit built-in JSON module after startup expansion',native,()=>{
+  const script=String.raw`
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+${windowsPowerShellBootstrap}
+$module=(Get-Command ConvertFrom-Json).Module.Path
+[Console]::Out.Write((ConvertTo-Json -Compress -InputObject @{path=($env:PSModulePath -eq $PSHOME+'\Modules');builtin=$module.StartsWith($PSHOME+'\Modules\Microsoft.PowerShell.Utility\',[StringComparison]::OrdinalIgnoreCase);autoload=($PSModuleAutoLoadingPreference -eq 'None')}))
+`;
+  const result=spawnSync(path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{env:{SystemRoot:process.env.SystemRoot,PSModulePath:path.join(fixtureParent,'caller-modules')},encoding:'utf8',windowsHide:true,timeout:10000,maxBuffer:65536});
+  assert.equal(result.status,0);assert.deepEqual(JSON.parse(result.stdout),{path:true,builtin:true,autoload:true});
 });
 
 test('Windows raw descriptor policy rejects null, callback, object and audit ACE forms using public .NET descriptors',native,()=>{

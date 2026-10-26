@@ -47,6 +47,11 @@ function beginPlatformSecurityScope() {
     }
   };
 }
+var windowsPowerShellBootstrap = String.raw`
+$env:PSModulePath = $PSHOME + '\Modules'
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+`;
 var windowsDaclValidationScript = String.raw`
 function Test-OrdinaryDacl($binary) {
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
@@ -66,6 +71,7 @@ var securityScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json

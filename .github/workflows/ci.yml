@@ -50,13 +50,6 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Initialize built-in Windows PowerShell
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $null = [Security.Principal.WindowsIdentity]::GetCurrent().User
-          $null = [Security.AccessControl.DirectorySecurity]::new()
-          $null = '{"warm":true}' | ConvertFrom-Json | ConvertTo-Json
       - run: node --experimental-strip-types --test tests/backend/windows-platform.test.ts
   publish:
     needs: [portable, windows-native]
