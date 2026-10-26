@@ -114,6 +114,16 @@ function removableSelectors(o:ReturnType<typeof owned>) {
   });
 }
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}
+/** Retained sources are candidates, not currently selected target assertions. */
+function matchesRetainedSource(source:Binding['source'],targets:Targets) {
+  if(!windows)return source.configRoot===targets.configRoot&&source.dataRoot===targets.dataRoot;
+  try{return sameWindowsDirectory(source.configRoot,targets.configRoot)&&sameWindowsDirectory(source.dataRoot,targets.dataRoot);}
+  catch(e){
+    if(e instanceof PlatformError){if(['path-unverified','symlink-escape','unsafe-parent'].includes(e.code))return false;throw e;}
+    if(['ENOENT','ENOTDIR','EACCES','EPERM','ELOOP','ENAMETOOLONG'].includes((e as NodeJS.ErrnoException)?.code??''))return false;
+    throw e;
+  }
+}
 export type Action='inspect'|'dry-run'|'install'|'update'|'disable'|'enable'|'remove-capture';
 export function lifecycle(action:Action,targets:Targets,payload?:Payload, testBoundary?:(name:'release-staged'|'before-activation'|'after-activation')=>void) {
   try{return platformSecurityScope(()=>lifecycleInner(action,targets,payload,testBoundary));}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
@@ -166,7 +176,7 @@ function lifecycleInner(action:Action,targets:Targets,payload?:Payload, testBoun
     if(old){binding={...old.binding,version:payload.version};verifyStore(store,binding);}
     else{
       // Reinstallation reuses the durable same-scope namespace, never process IDs.
-      const source=store.list({limit:1}).sources.find(s=>windows?sameWindowsDirectory(s.configRoot,targets.configRoot)&&sameWindowsDirectory(s.dataRoot,targets.dataRoot):s.configRoot===targets.configRoot&&s.dataRoot===targets.dataRoot)??{id:randomUUID(),configRoot:targets.configRoot,dataRoot:targets.dataRoot,verified:true};
+      const source=store.list({limit:1}).sources.find(s=>matchesRetainedSource(s,targets))??{id:randomUUID(),configRoot:targets.configRoot,dataRoot:targets.dataRoot,verified:true};
       store.registerSource(source);
       binding={protocolVersion:VERSION,schemaVersion:VERSION,installId:randomUUID(),version:payload.version,database:store.file,storeId:store.list({limit:1}).storeId,source};
     }

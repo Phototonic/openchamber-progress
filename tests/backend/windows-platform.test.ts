@@ -341,3 +341,40 @@ test('Windows directory filters match separator and drive spellings without file
     }finally{stat.mock.restore();real.mock.restore();spawn.mock.restore();syncBuiltinESMExports();}
   }finally{store?.close();f.clean();}
 });
+
+test('Windows retained-source lookup skips unavailable history but keeps selected targets and security failures strict',native,t=>{
+  const f=fixture();let store:Store|undefined;
+  try{
+    const historicalRoot=path.join(f.root,'historical-a'),retiredRoot=path.join(f.root,'retired-a');
+    const a={...f.targets,configRoot:path.join(historicalRoot,'config'),dataRoot:path.join(historicalRoot,'data')};
+    const b={...f.targets,configRoot:path.join(f.root,'config-b'),dataRoot:path.join(f.root,'data-b')};
+    for(const dir of [a.configRoot,a.dataRoot,b.configRoot,b.dataRoot])privateDirectory(dir,true);
+    privateDirectory(f.targets.storeRoot);const database=path.join(f.targets.storeRoot,'progress.sqlite');
+    // This valid synthetic source sorts before every subsequently generated UUID.
+    const historical={id:'00000000-0000-0000-0000-000000000000',configRoot:a.configRoot,dataRoot:a.dataRoot,verified:true};
+    store=new Store(database,{create:true});store.registerSource(historical);store.close();store=undefined;
+    lifecycle('install',a,payload);const first=readBinding(path.join(a.configRoot,'plugins','agent-progress','progress-binding.json'));
+    assert.equal(first.source.id,historical.id);
+    const actor=(sourceId:string,sessionId:string):Actor=>({sourceId,sessionId,agent:'synthetic',directory:f.root,parentId:null,ancestry:[],verifiedSource:true});
+    store=new Store(database);store.apply({op:'start',plan:'history-a',oid:'start-a',rev:0,title:'Synthetic A',items:[{id:'a',title:'Task',kind:'task'}]},actor(historical.id,'session-a'));store.close();store=undefined;
+    lifecycle('remove-capture',a);fs.renameSync(historicalRoot,retiredRoot);
+    lifecycle('install',b,payload);const bindingFile=path.join(b.configRoot,'plugins','agent-progress','progress-binding.json'),second=readBinding(bindingFile);
+    assert.notEqual(second.source.id,historical.id);assert.equal(second.storeId,first.storeId);lifecycle('enable',b);
+    store=new Store(database);store.apply({op:'start',plan:'history-b',oid:'start-b',rev:0,title:'Synthetic B',items:[{id:'b',title:'Task',kind:'task'}]},actor(second.source.id,'session-b'));store.apply({op:'change',plan:'history-b',oid:'change-b',rev:1,changes:[{id:'b',status:'working'}]},actor(second.source.id,'session-b'));
+    assert.equal(store.list().sources[0]!.id,historical.id,'unavailable A must precede B during lookup');store.close();store=undefined;
+    lifecycle('remove-capture',b);lifecycle('install',b,payload);assert.equal(readBinding(bindingFile).source.id,second.source.id,'B reuses its namespace after the missing earlier source');
+    lifecycle('remove-capture',b);fs.renameSync(retiredRoot,historicalRoot);assert.equal(changeAcl(historicalRoot,'modify-parent'),true);
+    const realSpawn=childProcess.spawnSync;let historicalSecurityProbe=false;
+    const blocked=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{
+      const input=(args[2] as {input?:unknown})?.input;
+      if(typeof input==='string'&&(JSON.parse(input) as {paths?:string[]}).paths?.includes(a.configRoot)){historicalSecurityProbe=true;return{pid:0,output:[],stdout:'',stderr:'',status:1,signal:null};}
+      return(realSpawn as any)(...args);
+    })as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    try{assert.throws(()=>lifecycle('install',b,payload),/windows-security-unavailable/);assert.equal(historicalSecurityProbe,true);assert.equal(fs.existsSync(bindingFile),false);}finally{blocked.mock.restore();syncBuiltinESMExports();}
+    lifecycle('install',b,payload);assert.equal(readBinding(bindingFile).source.id,second.source.id,'unsafe historical A is also a nonmatch');
+    const historyFile=path.join(f.targets.storeRoot,'installation-history.jsonl'),historyBefore=fs.readFileSync(historyFile),bindingBefore=fs.readFileSync(bindingFile);
+    assert.throws(()=>lifecycle('install',{...b,configRoot:path.join(f.root,'missing-selected')},payload),/path-unverified/);
+    assert.throws(()=>lifecycle('install',a,payload),/unsafe-parent/);assert.deepEqual(fs.readFileSync(historyFile),historyBefore);assert.deepEqual(fs.readFileSync(bindingFile),bindingBefore);
+    store=new Store(database);assert.equal(store.list().sources.length,2);assert.equal(store.get(second.source.id,'history-b')!.revision,2);assert.equal(store.history(second.source.id,'history-b').data.length,2);assert.equal(store.history(historical.id,'history-a').data.length,1);
+  }finally{store?.close();f.clean();}
+});

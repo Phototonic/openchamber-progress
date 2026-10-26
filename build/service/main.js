@@ -1145,6 +1145,22 @@ function history(targets, event) {
 `, { mode: 384 });
   syncFile(file);
 }
+function matchesRetainedSource(source, targets) {
+  if (!windows)
+    return source.configRoot === targets.configRoot && source.dataRoot === targets.dataRoot;
+  try {
+    return sameWindowsDirectory(source.configRoot, targets.configRoot) && sameWindowsDirectory(source.dataRoot, targets.dataRoot);
+  } catch (e) {
+    if (e instanceof PlatformError) {
+      if (["path-unverified", "symlink-escape", "unsafe-parent"].includes(e.code))
+        return false;
+      throw e;
+    }
+    if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"].includes(e?.code ?? ""))
+      return false;
+    throw e;
+  }
+}
 function lifecycle(action, targets, payload, testBoundary) {
   try {
     return platformSecurityScope(() => lifecycleInner(action, targets, payload, testBoundary));
@@ -1219,7 +1235,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
       binding = { ...old.binding, version: payload.version };
       verifyStore(store, binding);
     } else {
-      const source = store.list({ limit: 1 }).sources.find((s) => windows ? sameWindowsDirectory(s.configRoot, targets.configRoot) && sameWindowsDirectory(s.dataRoot, targets.dataRoot) : s.configRoot === targets.configRoot && s.dataRoot === targets.dataRoot) ?? { id: randomUUID2(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
+      const source = store.list({ limit: 1 }).sources.find((s) => matchesRetainedSource(s, targets)) ?? { id: randomUUID2(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
       store.registerSource(source);
       binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID2(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
     }
