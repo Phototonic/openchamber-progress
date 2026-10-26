@@ -176,12 +176,16 @@ test('artifact provenance and checksum coverage reject modification',()=>{
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 test('workflow keeps PR read-only, exact same-run artifact join and version serialization',()=>{
-  const text=readFileSync('.github/workflows/ci.yml','utf8');
+  const text=readFileSync('.github/workflows/ci.yml','utf8').replaceAll('\r\n','\n');
   assert(!text.includes('pull_request_target'));assert(!text.includes('secrets.'));
-  assert.match(text,/permissions:\n  contents: read/);assert.match(text,/publish:\n    needs: portable/);
+  assert.match(text,/permissions:\n  contents: read/);assert.match(text,/publish:\n(?:    name: [^\n]+\n)?    needs: \[portable, windows-native\]/);
+  assert.match(text,/windows-native:\n(?:    name: [^\n]+\n)?    runs-on: windows-2025/);
+  assert.match(text,/--experimental-strip-types --test tests\/backend\/windows-platform\.test\.ts/);
+  assert.match(text,/New-LocalUser -Name \$name -Password \$password/);
+  assert.match(text,/-Credential \$credential -LoadUserProfile -WindowStyle Hidden/);
   assert.match(text,/group: publish-v\$\{\{ needs.portable.outputs.version \}\}/);
   assert.match(text,/cancel-in-progress: false/);assert(!/^concurrency:/m.test(text));
-  assert.equal((text.match(/persist-credentials: false/g)??[]).length,2);
+  assert.equal((text.match(/persist-credentials: false/g)??[]).length,3);
   assert.equal((text.match(/name: tested-release-\$\{\{ github.sha \}\}/g)??[]).length,2);
   assert.match(text,/ref: \$\{\{ github.sha \}\}/);
   assert.match(text,/needs.portable.outputs.eligible == 'true'/);

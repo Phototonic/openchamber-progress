@@ -5,6 +5,7 @@ import { baseName } from './format.ts';
 import { coverageFor, planProject, projectFor, sessionLabel, type LiveSnapshot } from './live.ts';
 import { orderPlans, type PlanView } from './model.ts';
 import type { ListScope } from './source.ts';
+import { directoryKey } from './path.ts';
 
 export type Scope =
   | { kind: 'session'; sessionId: string; plans: PlanView[]; owned: number }
@@ -39,16 +40,16 @@ export function placeOf(plan: PlanView, live: LiveSnapshot): Place {
   const project = planProject(plan.ownerSessionId, plan.directory, live);
   if (!project) {
     const label = plan.directory ? baseName(plan.directory) : 'Unknown location';
-    return { projectKey: `d:${plan.directory}`, projectLabel: label, worktreeKey: `d:${plan.directory}`, worktreeLabel: label };
+    return { projectKey: `d:${directoryKey(plan.directory)}`, projectLabel: label, worktreeKey: `d:${directoryKey(plan.directory)}`, worktreeLabel: label };
   }
   // The plan's recorded directory decides the worktree; live sessions only supply its name.
-  const dir = (plan.directory || (cov.kind === 'live' ? cov.session.directory : '')).replace(/\/+$/, '');
-  if (!dir || dir === project.directory.replace(/\/+$/, '')) return { projectKey: `p:${project.id}`, projectLabel: project.name, worktreeKey: `root:${project.id}`, worktreeLabel: 'Main checkout' };
+  const dir = directoryKey(plan.directory || (cov.kind === 'live' ? cov.session.directory : ''));
+  if (!dir || dir === directoryKey(project.directory)) return { projectKey: `p:${project.id}`, projectLabel: project.name, worktreeKey: `root:${project.id}`, worktreeLabel: 'Main checkout' };
   const trees = live.worktrees.get(project.id);
-  const tree = trees?.state === 'ready' ? trees.records.find((w) => w.status === 'ready' && w.directory.replace(/\/+$/, '') === dir) : undefined;
+  const tree = trees?.state === 'ready' ? trees.records.find((w) => w.status === 'ready' && directoryKey(w.directory) === dir) : undefined;
   let named: string | undefined = tree ? tree.name || tree.branch : undefined;
   for (const entry of live.sessions.values()) {
-    const wt = entry.records.find((r) => r.worktree && r.worktree.directory.replace(/\/+$/, '') === dir)?.worktree;
+    const wt = entry.records.find((r) => r.worktree && directoryKey(r.worktree.directory) === dir)?.worktree;
     if (wt) { named = wt.name || wt.branch; break; }
   }
   return { projectKey: `p:${project.id}`, projectLabel: project.name, worktreeKey: `w:${dir}`, worktreeLabel: named ?? baseName(dir) };

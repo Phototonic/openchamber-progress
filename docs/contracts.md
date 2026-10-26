@@ -261,7 +261,7 @@ interface SetupSuggestions {
 // SetupRead gains: suggestions?: SetupSuggestions
 ```
 
-This object is present only when unconfigured on Linux; omit it once configured
+This object is present only when unconfigured on Linux or supported Windows; omit it once configured
 or on unsupported platforms. `null` means unknown for that field; old services
 omitting the entire object remain valid. `resolved` means the service observed an
 owned directory without a symlink alias. It does **not** identify effective
@@ -269,13 +269,14 @@ OpenCode scope or verify source identity. `candidate` is a host-derived default,
 including missing/inaccessible/foreign/non-directory/aliased candidates, not an
 accepted target. Inspect remains authoritative for validation.
 
-Host-side inputs are only HOME/XDG_CONFIG_HOME/XDG_DATA_HOME. Absolute canonical
-XDG bases take precedence; otherwise use HOME/.config and HOME/.local/share,
-appending opencode. Missing HOME with no corresponding XDG hint yields null; an
-invalid relative/traversing override also yields null, never a cwd-based guess.
-No OS-home fallback, browser/project/binary inference, search, config/auth content
-read or CLI launch. Filtered-out OpenCode overrides cannot be ruled out, even
-when a candidate directory is observed. Current support remains Linux-only.
+Host-side inputs are HOME/XDG_CONFIG_HOME/XDG_DATA_HOME and, on Windows when HOME
+is absent, the host runtime's homedir result. Absolute canonical XDG bases take
+precedence; otherwise append opencode to the home-relative .config and
+.local/share directories. Missing Linux HOME with no corresponding XDG hint
+yields null; an invalid relative/traversing override also yields null, never a
+cwd-based guess. No browser/project/binary inference, search, config/auth content
+read or CLI launch. Windows does not substitute APPDATA for OpenCode's roots.
+Filtered-out OpenCode overrides cannot be ruled out even when a candidate is observed.
 
 storeRoot is `<dataRoot.value>/openchamber-progress` and inherits dataRoot.state.
 That is derivation provenance, **not** a claim that the child exists or has0700;

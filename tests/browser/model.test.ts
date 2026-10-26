@@ -12,7 +12,7 @@ import { CSS } from '../../ui/shared/style.ts';
 import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
 import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
 import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
-import { applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
+import { absoluteSetupPath, applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
   DOCUMENT_TEXT, envelope, HEALTH, HEALTH_UNCONFIGURED, NOW, OTHER_SRC, P1, P1_ITEMS, P2, P3, planPage, plansPage, RELAY, S, setupRead, SRC, summary, X1,
 } from './fixtures.ts';
@@ -230,6 +230,36 @@ test('setup suggestions: parsed per field, malformed reads as unknown, configure
   assert.equal(parseSetup(JSON.stringify(base)).suggestions, undefined, 'older/unsupported service: no hints at all');
   const configured = parseSetup(JSON.stringify({ ...base, configured: true, targets: { configRoot: '/c', dataRoot: '/d', storeRoot: '/s' }, suggestions: hinted.suggestions }));
   assert.equal(configured.suggestions, undefined, 'configured targets take precedence over hints');
+});
+
+test('setup paths: POSIX and drive-qualified Windows folders reach service inspection unchanged', () => {
+  for (const value of ['/config/opencode', '/', 'C:\\config\\opencode', 'C:/config/opencode', 'd:\\', 'D:/']) {
+    assert.equal(absoluteSetupPath(value), true, value);
+  }
+  for (const value of ['', 'config/opencode', 'C:opencode', '\\config\\opencode', '\\\\server\\share', '1:/opencode']) {
+    assert.equal(absoluteSetupPath(value), false, value);
+  }
+  assert.equal(deriveStore(' C:\\data\\opencode\\ '), 'C:\\data\\opencode\\openchamber-progress');
+  assert.equal(deriveStore('C:/data/opencode///'), 'C:/data/opencode/openchamber-progress');
+  assert.equal(deriveStore('C:\\'), 'C:\\openchamber-progress');
+  assert.equal(deriveStore('D:/'), 'D:/openchamber-progress');
+  assert.equal(deriveStore('/'), '/openchamber-progress');
+  assert.equal(deriveStore('/data/opencode\\'), '/data/opencode\\/openchamber-progress', 'a backslash stays part of a POSIX folder name');
+  const targets = { configRoot: 'C:\\config\\opencode', dataRoot: 'C:/data/opencode', storeRoot: 'C:\\private\\progress' };
+  assert.deepEqual(JSON.parse(setupBody(targets, false)), targets, 'inspection receives the typed roots without client-side resolution');
+  const state = initialSetupUi();
+  state.form.configRoot = targets.configRoot; state.edited.configRoot = true;
+  state.form.dataRoot = ''; state.edited.dataRoot = true;
+  state.form.storeRoot = targets.storeRoot; state.edited.storeRoot = true;
+  applySuggestions(state, {
+    configRoot: { value: 'C:\\usual\\config\\opencode', state: 'candidate' },
+    dataRoot: { value: 'C:\\usual\\data\\opencode', state: 'candidate' },
+    storeRoot: { value: 'C:\\usual\\data\\opencode\\openchamber-progress', state: 'candidate' },
+  });
+  assert.deepEqual(state.form, { ...targets, dataRoot: '' }, 'late Windows hints preserve custom folders and a deliberate clear');
+  assert.doesNotMatch(setupErrorText('store-permissions'), /700/);
+  assert.match(setupErrorText('windows-security-unavailable'), /Windows PowerShell/);
+  assert.doesNotMatch(setupErrorText('private-permissions'), /private-permissions/);
 });
 
 test('setup prefill: untouched fields only; edits, clears and a manual store survive late hints and refreshes', () => {

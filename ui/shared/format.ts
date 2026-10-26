@@ -1,4 +1,5 @@
 // Locale-aware time text. Age is shown as information only: no overdue or stuck inference.
+import { directoryKey } from './path.ts';
 
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3_600], ['minute', 60]];
 
@@ -46,4 +47,4 @@ export function formatCount(n: number, locale: string) {
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** Last path segment, for compact location labels. */
-export const baseName = (dir: string) => dir.replace(/\/+$/, '').split('/').pop() || dir;
+export const baseName = (dir: string) => directoryKey(dir).split('/').pop() || dir;

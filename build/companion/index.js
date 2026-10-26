@@ -24224,14 +24224,278 @@ var Resolved = durable({
 });
 var Event17 = { Updated: Updated12, Resolved, Definitions: inventory(Updated12, Resolved) };
 // plugin/index.ts
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { homedir } from "node:os";
-import path5 from "node:path";
-import { realpathSync as realpathSync4, readFileSync as readFileSync2 } from "node:fs";
+import path6 from "node:path";
+import { realpathSync as realpathSync5, readFileSync as readFileSync2 } from "node:fs";
 
 // shared/binding.ts
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync as lstatSync2, readFileSync, realpathSync as realpathSync2 } from "node:fs";
+import path2 from "node:path";
+import { fileURLToPath } from "node:url";
+
+// shared/platform.ts
+import { spawnSync } from "node:child_process";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
+var windows = process.platform === "win32";
+
+class PlatformError2 extends Error {
+  code;
+  reason;
+  constructor(code, reason) {
+    super(code);
+    this.code = code;
+    this.reason = reason;
+  }
+}
+var cache2 = new Map;
+var reparseCache = new Map;
+var scope3 = 0;
+function platformSecurityScope(run3) {
+  const finish = beginPlatformSecurityScope();
+  try {
+    return run3();
+  } finally {
+    finish();
+  }
+}
+function beginPlatformSecurityScope() {
+  if (!scope3) {
+    cache2.clear();
+    reparseCache.clear();
+  }
+  scope3++;
+  return () => {
+    if (!--scope3) {
+      cache2.clear();
+      reparseCache.clear();
+    }
+  };
+}
+var windowsPowerShellBootstrap = String.raw`
+$env:PSModulePath = $PSHOME + '\Modules'
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+`;
+var windowsDaclValidationScript = String.raw`
+function Test-OrdinaryDacl($binary) {
+  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
+  if ($null -eq $raw.DiscretionaryAcl) { return $false }
+  foreach ($ace in $raw.DiscretionaryAcl) {
+    if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed, [Security.AccessControl.AceQualifier]::AccessDenied) -or ([int]$ace.AceFlags -band 224)) { return $false }
+  }
+  return $true
+}
+function Test-TrustedAncestorOwner($owner, $currentUser) {
+  # Owners can rewrite a DACL even without an explicit write ACE. The service
+  # SID below is Windows Modules Installer (TrustedInstaller), ancestor-only.
+  return $owner -in @($currentUser, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+}
+`;
+var securityScript = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${windowsPowerShellBootstrap}
+${windowsDaclValidationScript}
+try {
+  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
+  if ($request.create) {
+    foreach ($target in $request.create) {
+      if (-not [IO.Directory]::Exists($target)) {
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetOwner($user)
+        $security.SetAccessRuleProtection($true, $false)
+        foreach ($value in $allowed) {
+          $sid = [Security.Principal.SecurityIdentifier]::new($value)
+          $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+          $security.AddAccessRule($rule)
+        }
+        [void][IO.Directory]::CreateDirectory($target, $security)
+      }
+    }
+  }
+  $results = @()
+  foreach ($target in $request.paths) {
+    $owned = $false; $private = $false; $reparse = $true; $unsafeParent = $true
+    try {
+      $attributes = [IO.File]::GetAttributes($target)
+      $reparse = [bool]($attributes -band [IO.FileAttributes]::ReparsePoint)
+      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($target) }
+      else { $acl = [IO.File]::GetAccessControl($target) }
+      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+      $owned = $owner -eq $user.Value
+      $ordinary = Test-OrdinaryDacl ($acl.GetSecurityDescriptorBinaryForm())
+      $private = $ordinary -and $owned -and $acl.AreAccessRulesCanonical -and -not $reparse
+      $unsafeParent = -not $ordinary -or -not (Test-TrustedAncestorOwner $owner $user.Value)
+      $granted = $false
+      $full = [Security.AccessControl.FileSystemRights]::FullControl
+      $replace = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000
+      if ($ordinary) { foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin $allowed) { $private = $false }
+        if (($attributes -band [IO.FileAttributes]::Directory) -and $rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $replace)) { $unsafeParent = $true }
+        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq $user.Value -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $full) -eq $full) { $granted = $true }
+      } }
+      $private = $private -and $granted
+    } catch { $private = $false; $unsafeParent = $true }
+    $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
+  }
+  [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
+} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+`;
+function snapshot2(file) {
+  const s = lstatSync(file, { bigint: true });
+  return [s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(":");
+}
+function objectIdentity(file) {
+  const s = lstatSync(file, { bigint: true });
+  return [s.dev, s.ino, s.mode, s.birthtimeNs].join(":");
+}
+function reparsePaths(paths, parents) {
+  const fresh = new Map;
+  const pending = paths.filter((p) => !scope3 || reparseCache.get(p)?.identity !== objectIdentity(p));
+  const before = pending.map(objectIdentity), stats = pending.map(snapshot2), results2 = pending.length ? query(pending) : [];
+  pending.forEach((p, i) => {
+    const after = objectIdentity(p);
+    if (after !== before[i])
+      throw new PlatformError2("path-unverified");
+    const result3 = { identity: after, reparse: results2[i].reparse, unsafeParent: results2[i].unsafeParent };
+    fresh.set(p, result3);
+    if (reparseCache.size < 1024 || reparseCache.has(p))
+      reparseCache.set(p, result3);
+    if (snapshot2(p) === stats[i] && (cache2.size < 1024 || cache2.has(p)))
+      cache2.set(p, { snapshot: stats[i], result: results2[i] });
+  });
+  if (paths.some((p) => parents.has(p) && (fresh.get(p) ?? reparseCache.get(p)).unsafeParent))
+    throw new PlatformError2("unsafe-parent");
+  return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
+}
+function query(paths, create2 = []) {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
+    throw new PlatformError2("windows-security-unavailable");
+  const env = {};
+  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA"]) {
+    if (process.env[key])
+      env[key] = process.env[key];
+  }
+  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  const child = spawnSync(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input: JSON.stringify({ paths, create: create2 }), encoding: "utf8", env, windowsHide: true, shell: false, timeout: 1e4, maxBuffer: 1024 * 1024 });
+  if (child.error || child.status !== 0)
+    throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
+  let results2;
+  try {
+    results2 = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+  } catch {
+    throw new PlatformError2("windows-security-unavailable");
+  }
+  if (!Array.isArray(results2) || results2.length !== paths.length || results2.some((r) => !r || ["owned", "private", "reparse", "unsafeParent"].some((k) => typeof r[k] !== "boolean")))
+    throw new PlatformError2("windows-security-unavailable");
+  return results2;
+}
+function windowsSecurity(paths) {
+  const pending = new Map;
+  const fresh = new Map;
+  for (const file of paths) {
+    const stat = snapshot2(file);
+    if (!scope3 || cache2.get(file)?.snapshot !== stat)
+      pending.set(file, stat);
+  }
+  const files = [...pending.keys()];
+  if (files.length) {
+    const results2 = query(files);
+    files.forEach((file, i) => {
+      const after = snapshot2(file), before = pending.get(file);
+      if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
+        throw new PlatformError2("path-unverified");
+      fresh.set(file, results2[i]);
+      if (reparseCache.size < 1024 || reparseCache.has(file))
+        reparseCache.set(file, { identity: objectIdentity(file), reparse: results2[i].reparse, unsafeParent: results2[i].unsafeParent });
+      if (after === before) {
+        if (cache2.size < 1024 || cache2.has(file))
+          cache2.set(file, { snapshot: before, result: results2[i] });
+      } else
+        cache2.delete(file);
+    });
+  }
+  return paths.map((file) => fresh.get(file) ?? cache2.get(file).result);
+}
+function windowsPath(value3, allowMissing = false) {
+  return windowsPaths([value3], allowMissing)[0];
+}
+function windowsPaths(values2, allowMissing = false) {
+  return platformSecurityScope(() => windowsPathsInner(values2, allowMissing));
+}
+function windowsDocumentPath(value3, allowMissing = false) {
+  return platformSecurityScope(() => windowsPathsInner([value3], allowMissing, false)[0]);
+}
+function windowsPathsInner(values2, allowMissing = false, privateState = true) {
+  const ancestors = new Set, parents = new Set;
+  const resolved = values2.map((value3) => {
+    if (value3.includes("\x00") || value3.length > 4096 || !/^[a-z]:[\\/]/i.test(value3))
+      throw new PlatformError2("path-unverified");
+    const normalized = value3.replaceAll("/", "\\");
+    const parts2 = normalized.slice(3).split("\\").filter(Boolean);
+    if (parts2.some((p) => p === "." || p === ".." || /[<>:"|?*\x00-\x1f]/.test(p) || /[. ]$/.test(p) || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(p)))
+      throw new PlatformError2("path-unverified");
+    const clean = normalized.slice(0, 3) + parts2.join("\\");
+    let current = clean;
+    const tail = [];
+    while (!existsSync(current)) {
+      if (lstatSync(current, { throwIfNoEntry: false }))
+        throw new PlatformError2("symlink-escape");
+      if (!allowMissing)
+        throw new PlatformError2("path-unverified");
+      tail.unshift(path.basename(current));
+      const parent = path.dirname(current);
+      if (parent === current)
+        throw new PlatformError2("path-unverified");
+      current = parent;
+    }
+    for (let p = current;; p = path.dirname(p)) {
+      const stat = lstatSync(p);
+      if (stat.isSymbolicLink())
+        throw new PlatformError2("symlink-escape");
+      ancestors.add(p);
+      if (path.dirname(p) === p)
+        break;
+    }
+    for (let p = tail.length ? current : path.dirname(current);; p = path.dirname(p)) {
+      parents.add(p);
+      if (path.dirname(p) === p)
+        break;
+    }
+    return path.join(realpathSync.native(current), ...tail);
+  });
+  if (reparsePaths([...ancestors], privateState ? parents : new Set))
+    throw new PlatformError2("symlink-escape");
+  return resolved;
+}
+function isOwned(file) {
+  return windows ? windowsSecurity([file])[0].owned : lstatSync(file).uid === process.getuid?.();
+}
+function sameWindowsDirectory(left, right) {
+  return sameWindowsObject(left, right, true);
+}
+function sameWindowsObject(left, right, directory = false) {
+  return platformSecurityScope(() => {
+    const [a, b] = windowsPaths([left, right]);
+    const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
+    return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
+  });
+}
+function privatePaths(files) {
+  return windows ? files.every((file) => {
+    const s = lstatSync(file);
+    return !s.isFile() || s.nlink === 1;
+  }) && windowsSecurity(files).every((s) => s.private) : files.every((file) => {
+    const s = lstatSync(file);
+    return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
+  });
+}
 
 // shared/progress.ts
 var VERSION = 2;
@@ -24376,15 +24640,23 @@ function validRequest(value3, hint) {
 
 // shared/binding.ts
 function readBinding(file) {
-  const p = file instanceof URL ? file : path.resolve(file);
-  const stat = lstatSync(p);
-  requireProgress(!stat.isSymbolicLink() && stat.isFile() && stat.uid === process.getuid?.() && (stat.mode & 511) === 384, "binding");
+  return platformSecurityScope(() => readBindingInner(file));
+}
+function readBindingInner(file) {
+  const p = file instanceof URL ? file : path2.resolve(file);
+  const stat = lstatSync2(p);
+  requireProgress(!stat.isSymbolicLink() && stat.isFile() && (windows ? sameWindowsObject(windowsPath(file instanceof URL ? fileURLToPath(file) : file), realpathSync2.native(p)) && privatePaths([realpathSync2.native(p)]) : stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
   const b = JSON.parse(readFileSync(p, "utf8"));
   requireProgress(b.protocolVersion === VERSION && b.schemaVersion === VERSION, "schema");
-  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path.isAbsolute(b.database) && path.basename(b.database) === "progress.sqlite", "binding");
+  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path2.isAbsolute(b.database) && path2.basename(b.database) === "progress.sqlite", "binding");
   requireProgress(b.source && typeof b.source.id === "string" && typeof b.source.verified === "boolean", "binding");
-  for (const root of [path.dirname(b.database), b.source.configRoot, b.source.dataRoot])
-    requireProgress(path.isAbsolute(root) && realpathSync(root) === root, "binding");
+  const roots = [path2.dirname(b.database), b.source.configRoot, b.source.dataRoot];
+  if (windows) {
+    const resolved = windowsPaths(roots);
+    requireProgress(resolved.every((v, i) => sameWindowsDirectory(v, roots[i]) && isOwned(v)), "binding");
+  } else
+    for (const root of roots)
+      requireProgress(path2.isAbsolute(root) && realpathSync2(root) === root, "binding");
   return b;
 }
 function verifyStore(store, b) {
@@ -24395,8 +24667,8 @@ function verifyStore(store, b) {
 // shared/store.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, lstatSync as lstatSync2, openSync, readSync, closeSync, realpathSync as realpathSync2, chmodSync } from "node:fs";
-import path2 from "node:path";
+import { existsSync as existsSync2, lstatSync as lstatSync3, openSync as openSync2, readSync, closeSync as closeSync2, realpathSync as realpathSync3, chmodSync } from "node:fs";
+import path3 from "node:path";
 function canonical(value3) {
   if (Array.isArray(value3))
     return `[${value3.map(canonical).join(",")}]`;
@@ -24406,6 +24678,15 @@ function canonical(value3) {
 }
 function digest(value3) {
   return createHash("sha256").update(value3).digest("hex");
+}
+function directoryFilter(value3) {
+  return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
+}
+function directoryExpression(expression) {
+  if (!windows)
+    return expression;
+  const separators = `replace(${expression},char(92),'/')`;
+  return `(CASE WHEN substr(${expression},1,1) GLOB '[A-Za-z]' AND substr(${expression},2,1)=':' THEN upper(substr(${expression},1,1))||substr(${separators},2) ELSE ${separators} END)`;
 }
 function storageError(e) {
   if (e instanceof ProgressError)
@@ -24435,27 +24716,40 @@ class Store {
   readBinding = { sourceId: null, verified: false };
   constructor(file, options2 = {}) {
     this.file = file;
+    const finish = beginPlatformSecurityScope();
     try {
-      requireProgress(path2.isAbsolute(file), "binding");
-      const parent = lstatSync2(path2.dirname(file));
-      requireProgress(parent.isDirectory() && parent.uid === process.getuid?.() && !parent.isSymbolicLink() && realpathSync2(path2.dirname(file)) === path2.dirname(file) && (parent.mode & 511) === 448, "binding");
-      const existed = existsSync(file);
+      if (windows) {
+        file = windowsPath(file, true);
+        this.file = file;
+      }
+      requireProgress(path3.isAbsolute(file), "binding");
+      const parent = lstatSync3(path3.dirname(file));
+      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? sameWindowsDirectory(windowsPath(path3.dirname(file)), path3.dirname(file)) : parent.uid === process.getuid?.() && realpathSync3(path3.dirname(file)) === path3.dirname(file) && (parent.mode & 511) === 448), "binding");
+      const existed = existsSync2(file);
       requireProgress(existed || options2.create && !options2.readOnly, "not-found");
+      if (windows) {
+        const secured = [path3.dirname(file), file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync2);
+        requireProgress(windowsPaths(secured).every((v, i) => sameWindowsObject(v, secured[i])) && privatePaths(secured), "binding");
+      }
       if (existed) {
-        const stat = lstatSync2(file);
-        requireProgress(stat.isFile() && stat.uid === process.getuid?.() && !stat.isSymbolicLink() && (stat.mode & 511) === 384, "binding");
-        const fd = openSync(file, "r");
+        const stat = lstatSync3(file);
+        requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
+        const fd = openSync2(file, "r");
         const head3 = Buffer.alloc(16);
         try {
           readSync(fd, head3, 0, 16, 0);
         } finally {
-          closeSync(fd);
+          closeSync2(fd);
         }
         requireProgress(head3.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync(file, { readOnly: options2.readOnly ?? false });
-      if (!existed)
-        chmodSync(file, 384);
+      if (!existed) {
+        if (windows)
+          requireProgress(privatePaths([file]), "binding");
+        else
+          chmodSync(file, 384);
+      }
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options2.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
       const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
       if (!existed) {
@@ -24474,7 +24768,11 @@ class Store {
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
     } catch (e) {
       this.db?.close();
+      if (e instanceof PlatformError2)
+        throw e;
       throw storageError(e);
+    } finally {
+      finish();
     }
   }
   close() {
@@ -24559,8 +24857,9 @@ class Store {
       const limit = options2.limit ?? LIMITS.pageSize;
       const cursor = options2.cursor ?? 0;
       requireProgress(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
-      const where = ["(? IS NULL OR source=?)", `(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`, `(? IS NULL OR json_extract(snapshot,'$.directory')=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND json_extract(s.actor,'$.directory')=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(" AND ");
-      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options2.source ?? null, options2.source ?? null, options2.session ?? null, options2.session ?? null, options2.session ?? null, options2.session ?? null, options2.directory ?? null, options2.directory ?? null, options2.directory ?? null, limit + 1, cursor);
+      const where = ["(? IS NULL OR source=?)", `(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`, `(? IS NULL OR ${directoryExpression("json_extract(snapshot,'$.directory')")}=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND ${directoryExpression("json_extract(s.actor,'$.directory')")}=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(" AND ");
+      const directory = directoryFilter(options2.directory) ?? null;
+      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options2.source ?? null, options2.source ?? null, options2.session ?? null, options2.session ?? null, options2.session ?? null, options2.session ?? null, directory, directory, directory, limit + 1, cursor);
       const data = rows.slice(0, limit).map((r) => this.summary(JSON.parse(String(r.snapshot))));
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor + limit) : null };
     });
@@ -24724,7 +25023,7 @@ class Store {
         p.lifecycle = r.outcome;
       }
       if (r.op === "bind" || r.op === "start" && r.source) {
-        requireProgress(capture && path2.isAbsolute(capture.path), "invalid");
+        requireProgress(capture && path3.isAbsolute(capture.path), "invalid");
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
@@ -24749,9 +25048,9 @@ class Store {
         } else
           p.document.checklistSynchronized = false;
       }
-      const snapshot2 = JSON.stringify(p);
-      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);
-      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot2, JSON.stringify(actor));
+      const snapshot3 = JSON.stringify(p);
+      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot3);
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot3, JSON.stringify(actor));
       this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
       if (child)
         this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, child.sessionId, JSON.stringify(child));
@@ -24802,10 +25101,12 @@ function validateItems(items) {
 }
 
 // plugin/document.ts
-import { constants, realpathSync as realpathSync3, openSync as openSync2, closeSync as closeSync2, fstatSync, lstatSync as lstatSync3, readSync as readSync2 } from "node:fs";
-import path3 from "node:path";
+import { constants, realpathSync as realpathSync4, openSync as openSync3, closeSync as closeSync3, fstatSync, lstatSync as lstatSync4, readSync as readSync2 } from "node:fs";
+import path4 from "node:path";
 async function captureDocument(reference, directory, authorize, previous) {
-  const requested = path3.resolve(directory, reference);
+  if (process.platform === "win32")
+    return captureWindowsDocument(reference, directory, authorize, previous);
+  const requested = path4.resolve(directory, reference);
   const checkedAt = new Date().toISOString();
   const result3 = (state, canonicalPath) => ({ state, path: requested, checkedAt, ...canonicalPath ? { canonicalPath } : {} });
   if (process.platform !== "linux")
@@ -24813,21 +25114,21 @@ async function captureDocument(reference, directory, authorize, previous) {
   let fd;
   try {
     await authorize(requested);
-    const canonicalPath = realpathSync3(requested);
+    const canonicalPath = realpathSync4(requested);
     await authorize(canonicalPath);
     if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
       return result3("moved", canonicalPath);
-    fd = openSync2(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync3(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let actual;
     try {
-      actual = realpathSync3(`/proc/self/fd/${fd}`);
+      actual = realpathSync4(`/proc/self/fd/${fd}`);
     } catch {
       return result3("unavailable");
     }
-    if (actual !== canonicalPath || realpathSync3(requested) !== canonicalPath)
+    if (actual !== canonicalPath || realpathSync4(requested) !== canonicalPath)
       return result3("changed-during-read");
     const before = fstatSync(fd, { bigint: true });
-    const current = lstatSync3(canonicalPath, { bigint: true });
+    const current = lstatSync4(canonicalPath, { bigint: true });
     if (!before.isFile())
       return result3("non-text", canonicalPath);
     if (before.dev !== current.dev || before.ino !== current.ino)
@@ -24845,8 +25146,8 @@ async function captureDocument(reference, directory, authorize, previous) {
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
     const after = fstatSync(fd, { bigint: true });
-    const still = lstatSync3(canonicalPath, { bigint: true });
-    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || after.ino !== still.ino || after.dev !== still.dev || realpathSync3(requested) !== canonicalPath)
+    const still = lstatSync4(canonicalPath, { bigint: true });
+    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || after.ino !== still.ino || after.dev !== still.dev || realpathSync4(requested) !== canonicalPath)
       return result3("changed-during-read");
     let text;
     try {
@@ -24862,7 +25163,86 @@ async function captureDocument(reference, directory, authorize, previous) {
     return result3(code === "ENOENT" || code === "ENOTDIR" ? "missing" : code === "ELOOP" ? "changed-during-read" : "denied");
   } finally {
     if (fd !== undefined)
-      closeSync2(fd);
+      closeSync3(fd);
+  }
+}
+function sameFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+function unchanged(a, b) {
+  return sameFile(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+function ancestors(file) {
+  const result3 = new Map;
+  for (let p = path4.dirname(file);; p = path4.dirname(p)) {
+    const stat = lstatSync4(p, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("unsupported-path");
+    result3.set(p, stat);
+    if (path4.dirname(p) === p)
+      break;
+  }
+  return result3;
+}
+async function captureWindowsDocument(reference, directory, authorize, previous) {
+  const requested = path4.resolve(directory, reference);
+  const checkedAt = new Date().toISOString();
+  const result3 = (state, canonicalPath) => ({ state, path: requested, checkedAt, ...canonicalPath ? { canonicalPath } : {} });
+  let fd;
+  try {
+    await authorize(requested);
+    const raw = path4.isAbsolute(reference) ? reference : directory + "\\" + reference;
+    const canonicalPath = platformSecurityScope(() => windowsDocumentPath(raw, true));
+    await authorize(canonicalPath);
+    if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
+      return result3("moved", canonicalPath);
+    const bound = lstatSync4(canonicalPath, { bigint: true });
+    if (platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+      return result3("changed-during-read");
+    if (!bound.isFile() || bound.isSymbolicLink())
+      return result3("non-text", canonicalPath);
+    const parents = ancestors(canonicalPath);
+    if (bound.size > BigInt(LIMITS.documentBytes))
+      return result3("oversized", canonicalPath);
+    fd = openSync3(canonicalPath, constants.O_RDONLY);
+    const before = fstatSync(fd, { bigint: true });
+    const current = lstatSync4(canonicalPath, { bigint: true });
+    if (!before.isFile() || before.ino === 0n || !unchanged(bound, before) || !unchanged(before, current) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+      return result3("changed-during-read");
+    for (const [p, stat] of parents)
+      if (!sameFile(stat, lstatSync4(p, { bigint: true })))
+        return result3("changed-during-read");
+    const bytes2 = Buffer.alloc(LIMITS.documentBytes + 1);
+    let offset = 0;
+    while (offset < bytes2.length) {
+      const n = readSync2(fd, bytes2, offset, bytes2.length - offset, null);
+      if (!n)
+        break;
+      offset += n;
+    }
+    if (offset > LIMITS.documentBytes)
+      return result3("oversized", canonicalPath);
+    const after = fstatSync(fd, { bigint: true }), still = lstatSync4(canonicalPath, { bigint: true });
+    if (!still.isFile() || still.isSymbolicLink() || !unchanged(before, after) || !unchanged(after, still) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
+      return result3("changed-during-read");
+    for (const [p, stat] of parents)
+      if (!sameFile(stat, lstatSync4(p, { bigint: true })))
+        return result3("changed-during-read");
+    let text;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes2.subarray(0, offset));
+    } catch {
+      return result3("non-text", canonicalPath);
+    }
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text))
+      return result3("non-text", canonicalPath);
+    return { ...result3("captured", canonicalPath), text, hash: digest(bytes2.subarray(0, offset)) };
+  } catch (e) {
+    const code = e.code;
+    return result3(code === "ENOENT" || code === "ENOTDIR" ? "missing" : code === "ELOOP" || code === "symlink-escape" ? "changed-during-read" : "denied");
+  } finally {
+    if (fd !== undefined)
+      closeSync3(fd);
   }
 }
 // plugin/status.ts
@@ -24874,7 +25254,7 @@ function activationFingerprint(binding, plugin, guidance) {
 }
 
 // plugin/activation.ts
-import path4 from "node:path";
+import path5 from "node:path";
 var REPORT_TOOL = "agent_progress_report";
 var ACTIVATION_GUIDANCE = `# Agent progress (companion)
 Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
@@ -24887,16 +25267,16 @@ var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && v
 function possiblePath(value3) {
   if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
     return false;
-  const name = path4.basename(value3).toLowerCase();
+  const name = path5.basename(value3).toLowerCase();
   if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
     return false;
-  return /^plan\.(md|markdown)$/.test(name) || path4.normalize(value3).split(path4.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+  return /^plan\.(md|markdown)$/.test(name) || path5.normalize(value3).split(path5.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function planPath(value3, directory) {
-  const relative = path4.relative(directory, path4.resolve(directory, value3));
-  if (!relative || relative === ".." || relative.startsWith(`..${path4.sep}`) || path4.isAbsolute(relative))
+  const relative = path5.relative(directory, path5.resolve(directory, value3));
+  if (!relative || relative === ".." || relative.startsWith(`..${path5.sep}`) || path5.isAbsolute(relative))
     return false;
-  const parts2 = relative.split(path4.sep);
+  const parts2 = relative.split(path5.sep);
   return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function successfulPath(event) {
@@ -24936,7 +25316,7 @@ async function registerActivation(ctx, source, enabled) {
   const key = (sessionID) => JSON.stringify([source.id, sessionID]);
   async function session(sessionID) {
     const value3 = await ctx.session.get({ sessionID });
-    return value3.id === sessionID && path4.isAbsolute(value3.location.directory) ? value3 : undefined;
+    return value3.id === sessionID && path5.isAbsolute(value3.location.directory) ? value3 : undefined;
   }
   async function dispose() {
     disposed = true;
@@ -25022,9 +25402,12 @@ ${ACTIVATION_HINT}` : "") };
 // plugin/index.ts
 var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL("./progress-binding.json", import.meta.url));
-  const configRoot = path5.join(process.env.XDG_CONFIG_HOME || path5.join(homedir(), ".config"), "opencode");
-  const dataRoot = path5.join(process.env.XDG_DATA_HOME || path5.join(homedir(), ".local/share"), "opencode");
-  requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && realpathSync4(configRoot) === b.source.configRoot && realpathSync4(dataRoot) === b.source.dataRoot, "binding");
+  const configRoot = path6.join(process.env.XDG_CONFIG_HOME || path6.join(homedir(), ".config"), "opencode");
+  const dataRoot = path6.join(process.env.XDG_DATA_HOME || path6.join(homedir(), ".local/share"), "opencode");
+  requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows ? platformSecurityScope(() => {
+    windowsPaths([configRoot, dataRoot, b.source.configRoot, b.source.dataRoot]);
+    return sameWindowsDirectory(configRoot, b.source.configRoot) && sameWindowsDirectory(dataRoot, b.source.dataRoot);
+  }) : realpathSync5(configRoot) === b.source.configRoot && realpathSync5(dataRoot) === b.source.dataRoot), "binding");
   const store = new Store(b.database);
   let deactivate;
   try {
@@ -25037,7 +25420,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       } catch {
         throw new ProgressError("binding");
       }
-      requireProgress(s.id === sessionID && path5.isAbsolute(s.location.directory), "binding");
+      requireProgress(s.id === sessionID && path6.isAbsolute(s.location.directory), "binding");
       const ancestry = [];
       let parent = s.parentID;
       const seen = new Set([s.id]);
@@ -25058,7 +25441,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       }
       return { sourceId: b.source.id, sessionId: s.id, agent: agent === "unknown" ? s.agent ?? "unknown" : agent, directory: s.location.directory, projectId: s.projectID, parentId: s.parentID ?? null, ancestry: known ? ancestry : null, verifiedSource: b.source.verified };
     }
-    await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
+    await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "agent_progress", description: "Deliberate plan progress; never inferred from activity." });
       editor.add({
@@ -25101,7 +25484,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
       return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
     } });
-    store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
+    store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath2(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
     return async () => {
       try {
         await deactivate?.();

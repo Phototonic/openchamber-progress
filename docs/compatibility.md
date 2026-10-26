@@ -1,5 +1,52 @@
 # T1/T2 compatibility commands and evidence
 
+## Native Windows verification
+
+The native implementation adds no separate binary or compilation requirement for
+users. It uses the existing bundled JavaScript, ordinary Windows file identity
+checks, and Windows PowerShell 5.1/public .NET APIs for ownership and private ACLs.
+The [setup guide](setup.md#native-windows) defines its local-account, path and
+durability boundary. Historical Linux observations below remain scoped to their
+original configurations.
+
+Measured Windows environment: Windows 11 Pro x64, build 26300.9711, local NTFS,
+normal account token; OpenChamber 2.5.2 / Electron 44.9.3 / Node 24.22.0, with
+bundled OpenCode 2.1.4 / Bun 1.4.4 / Node compatibility 26.3.0 / SQLite 3.53.4.
+Standalone development Node 24.19.0 uses SQLite 3.53.3 and is supplementary evidence.
+
+The native OpenCode run uses a credential-free scripted provider and the real
+registered tool/guidance/runtime: start/read/change/finish, fresh document capture,
+direct child and attributed relay, denied capture with valid structured commit,
+cross-runtime SQLite busy handling, disable/enable of loaded code, and fresh
+recapture all passed. No external model/provider requests were made. Scripted
+execution proves the integration, not universal model compliance.
+
+The Windows filesystem suite covers private creation/inheritance and refusal,
+Unicode/case/separators/junctions, ACL mutation/cache invalidation, unsafe storage
+parents, ordinary source reads, SQLite side files, binding, selector persistence,
+interrupted activation/removal, hard-linked state refusal, and missing PowerShell.
+Local runs explicitly skip two unavailable fixtures: the account cannot assign
+a foreign owner, and Windows/.NET refused a persisted canonical callback
+ACE fixture. Public .NET in-memory descriptors separately verify foreign-owner
+policy and rejection of null, callback, object and audit DACL forms. Persisting
+those unavailable fixtures is not claimed as tested.
+
+Actual OpenChamber host startup opened the shared SQLite store under its bundled
+Node runtime. Panel, Work Status and full page showed matching reported counts,
+correct project/session scope, captured literal document text and explicit denied
+capture. Native setup checks covered edited and cleared fields surviving late
+hints, invalid-folder refusal, and valid Windows roots reaching review without
+confirming an installation. A labelled transport seam verified retained counts
+and automatic recovery; it is not evidence of a real network outage.
+
+The assembled extension folder and ZIP both installed into an isolated native
+host. The ZIP's actual spawned service matched the rebuilt entry bytes and
+reported ready/SQLite available under bundled Node 24.22.0. The companion ZIP
+also passed read-only inspection, installation, standalone disable/enable and
+standalone removal using packaged Electron's Node mode; synthetic plan data and
+installation history remained available afterwards. These checks used fresh
+synthetic directories, without changing a live profile or installing dependencies.
+
 See `evidence/compatibility/probe.md` for the final per-claim record:
 **T1/T2 live compatibility PASSED WITH LIMITATIONS for the bounded scope.**
 This is not an installable production product. T3 implementation remains

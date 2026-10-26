@@ -10,12 +10,13 @@ import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { registerActivation } from './activation.ts';
+import { windows, windowsPaths, sameWindowsDirectory, platformSecurityScope } from '../shared/platform.ts';
 
 export default Plugin.define({ id:'agent-progress', async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL('./progress-binding.json',import.meta.url));
   const configRoot = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(),'.config'),'opencode');
   const dataRoot = path.join(process.env.XDG_DATA_HOME || path.join(homedir(),'.local/share'),'opencode');
-  need(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && realpathSync(configRoot) === b.source.configRoot && realpathSync(dataRoot) === b.source.dataRoot,'binding');
+  need(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows?platformSecurityScope(()=>{windowsPaths([configRoot,dataRoot,b.source.configRoot,b.source.dataRoot]);return sameWindowsDirectory(configRoot,b.source.configRoot)&&sameWindowsDirectory(dataRoot,b.source.dataRoot);}):realpathSync(configRoot) === b.source.configRoot && realpathSync(dataRoot) === b.source.dataRoot),'binding');
   const store = new Store(b.database);
   let deactivate: (() => Promise<void>) | undefined;
   try {

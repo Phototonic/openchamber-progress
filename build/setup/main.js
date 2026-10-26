@@ -1,11 +1,314 @@
 // setup/cli.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import path4 from "node:path";
-import { fileURLToPath } from "node:url";
+import path5 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // shared/binding.ts
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync as lstatSync2, readFileSync, realpathSync as realpathSync2 } from "node:fs";
+import path2 from "node:path";
+import { fileURLToPath } from "node:url";
+
+// shared/platform.ts
+import { spawnSync } from "node:child_process";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
+var windows = process.platform === "win32";
+
+class PlatformError extends Error {
+  code;
+  reason;
+  constructor(code, reason) {
+    super(code);
+    this.code = code;
+    this.reason = reason;
+  }
+}
+var cache = new Map;
+var reparseCache = new Map;
+var scope = 0;
+function platformSecurityScope(run) {
+  const finish = beginPlatformSecurityScope();
+  try {
+    return run();
+  } finally {
+    finish();
+  }
+}
+function beginPlatformSecurityScope() {
+  if (!scope) {
+    cache.clear();
+    reparseCache.clear();
+  }
+  scope++;
+  return () => {
+    if (!--scope) {
+      cache.clear();
+      reparseCache.clear();
+    }
+  };
+}
+var windowsPowerShellBootstrap = String.raw`
+$env:PSModulePath = $PSHOME + '\Modules'
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+`;
+var windowsDaclValidationScript = String.raw`
+function Test-OrdinaryDacl($binary) {
+  $raw = [Security.AccessControl.RawSecurityDescriptor]::new($binary, 0)
+  if ($null -eq $raw.DiscretionaryAcl) { return $false }
+  foreach ($ace in $raw.DiscretionaryAcl) {
+    if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or $ace.AceQualifier -notin @([Security.AccessControl.AceQualifier]::AccessAllowed, [Security.AccessControl.AceQualifier]::AccessDenied) -or ([int]$ace.AceFlags -band 224)) { return $false }
+  }
+  return $true
+}
+function Test-TrustedAncestorOwner($owner, $currentUser) {
+  # Owners can rewrite a DACL even without an explicit write ACE. The service
+  # SID below is Windows Modules Installer (TrustedInstaller), ancestor-only.
+  return $owner -in @($currentUser, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+}
+`;
+var securityScript = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+${windowsPowerShellBootstrap}
+${windowsDaclValidationScript}
+try {
+  $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
+  if ($request.create) {
+    foreach ($target in $request.create) {
+      if (-not [IO.Directory]::Exists($target)) {
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetOwner($user)
+        $security.SetAccessRuleProtection($true, $false)
+        foreach ($value in $allowed) {
+          $sid = [Security.Principal.SecurityIdentifier]::new($value)
+          $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+          $security.AddAccessRule($rule)
+        }
+        [void][IO.Directory]::CreateDirectory($target, $security)
+      }
+    }
+  }
+  $results = @()
+  foreach ($target in $request.paths) {
+    $owned = $false; $private = $false; $reparse = $true; $unsafeParent = $true
+    try {
+      $attributes = [IO.File]::GetAttributes($target)
+      $reparse = [bool]($attributes -band [IO.FileAttributes]::ReparsePoint)
+      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($target) }
+      else { $acl = [IO.File]::GetAccessControl($target) }
+      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+      $owned = $owner -eq $user.Value
+      $ordinary = Test-OrdinaryDacl ($acl.GetSecurityDescriptorBinaryForm())
+      $private = $ordinary -and $owned -and $acl.AreAccessRulesCanonical -and -not $reparse
+      $unsafeParent = -not $ordinary -or -not (Test-TrustedAncestorOwner $owner $user.Value)
+      $granted = $false
+      $full = [Security.AccessControl.FileSystemRights]::FullControl
+      $replace = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000
+      if ($ordinary) { foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin $allowed) { $private = $false }
+        if (($attributes -band [IO.FileAttributes]::Directory) -and $rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $replace)) { $unsafeParent = $true }
+        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq $user.Value -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ($rule.FileSystemRights -band $full) -eq $full) { $granted = $true }
+      } }
+      $private = $private -and $granted
+    } catch { $private = $false; $unsafeParent = $true }
+    $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
+  }
+  [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
+} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+`;
+function snapshot(file) {
+  const s = lstatSync(file, { bigint: true });
+  return [s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(":");
+}
+function objectIdentity(file) {
+  const s = lstatSync(file, { bigint: true });
+  return [s.dev, s.ino, s.mode, s.birthtimeNs].join(":");
+}
+function reparsePaths(paths, parents) {
+  const fresh = new Map;
+  const pending = paths.filter((p) => !scope || reparseCache.get(p)?.identity !== objectIdentity(p));
+  const before = pending.map(objectIdentity), stats = pending.map(snapshot), results = pending.length ? query(pending) : [];
+  pending.forEach((p, i) => {
+    const after = objectIdentity(p);
+    if (after !== before[i])
+      throw new PlatformError("path-unverified");
+    const result = { identity: after, reparse: results[i].reparse, unsafeParent: results[i].unsafeParent };
+    fresh.set(p, result);
+    if (reparseCache.size < 1024 || reparseCache.has(p))
+      reparseCache.set(p, result);
+    if (snapshot(p) === stats[i] && (cache.size < 1024 || cache.has(p)))
+      cache.set(p, { snapshot: stats[i], result: results[i] });
+  });
+  if (paths.some((p) => parents.has(p) && (fresh.get(p) ?? reparseCache.get(p)).unsafeParent))
+    throw new PlatformError("unsafe-parent");
+  return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
+}
+function query(paths, create = []) {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
+    throw new PlatformError("windows-security-unavailable");
+  const env = {};
+  for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA"]) {
+    if (process.env[key])
+      env[key] = process.env[key];
+  }
+  env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  const child = spawnSync(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input: JSON.stringify({ paths, create }), encoding: "utf8", env, windowsHide: true, shell: false, timeout: 1e4, maxBuffer: 1024 * 1024 });
+  if (child.error || child.status !== 0)
+    throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
+  let results;
+  try {
+    results = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+  } catch {
+    throw new PlatformError("windows-security-unavailable");
+  }
+  if (!Array.isArray(results) || results.length !== paths.length || results.some((r) => !r || ["owned", "private", "reparse", "unsafeParent"].some((k) => typeof r[k] !== "boolean")))
+    throw new PlatformError("windows-security-unavailable");
+  return results;
+}
+function windowsSecurity(paths) {
+  const pending = new Map;
+  const fresh = new Map;
+  for (const file of paths) {
+    const stat = snapshot(file);
+    if (!scope || cache.get(file)?.snapshot !== stat)
+      pending.set(file, stat);
+  }
+  const files = [...pending.keys()];
+  if (files.length) {
+    const results = query(files);
+    files.forEach((file, i) => {
+      const after = snapshot(file), before = pending.get(file);
+      if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
+        throw new PlatformError("path-unverified");
+      fresh.set(file, results[i]);
+      if (reparseCache.size < 1024 || reparseCache.has(file))
+        reparseCache.set(file, { identity: objectIdentity(file), reparse: results[i].reparse, unsafeParent: results[i].unsafeParent });
+      if (after === before) {
+        if (cache.size < 1024 || cache.has(file))
+          cache.set(file, { snapshot: before, result: results[i] });
+      } else
+        cache.delete(file);
+    });
+  }
+  return paths.map((file) => fresh.get(file) ?? cache.get(file).result);
+}
+function windowsPath(value, allowMissing = false) {
+  return windowsPaths([value], allowMissing)[0];
+}
+function windowsPaths(values, allowMissing = false) {
+  return platformSecurityScope(() => windowsPathsInner(values, allowMissing));
+}
+function windowsPathsInner(values, allowMissing = false, privateState = true) {
+  const ancestors = new Set, parents = new Set;
+  const resolved = values.map((value) => {
+    if (value.includes("\x00") || value.length > 4096 || !/^[a-z]:[\\/]/i.test(value))
+      throw new PlatformError("path-unverified");
+    const normalized = value.replaceAll("/", "\\");
+    const parts = normalized.slice(3).split("\\").filter(Boolean);
+    if (parts.some((p) => p === "." || p === ".." || /[<>:"|?*\x00-\x1f]/.test(p) || /[. ]$/.test(p) || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(p)))
+      throw new PlatformError("path-unverified");
+    const clean = normalized.slice(0, 3) + parts.join("\\");
+    let current = clean;
+    const tail = [];
+    while (!existsSync(current)) {
+      if (lstatSync(current, { throwIfNoEntry: false }))
+        throw new PlatformError("symlink-escape");
+      if (!allowMissing)
+        throw new PlatformError("path-unverified");
+      tail.unshift(path.basename(current));
+      const parent = path.dirname(current);
+      if (parent === current)
+        throw new PlatformError("path-unverified");
+      current = parent;
+    }
+    for (let p = current;; p = path.dirname(p)) {
+      const stat = lstatSync(p);
+      if (stat.isSymbolicLink())
+        throw new PlatformError("symlink-escape");
+      ancestors.add(p);
+      if (path.dirname(p) === p)
+        break;
+    }
+    for (let p = tail.length ? current : path.dirname(current);; p = path.dirname(p)) {
+      parents.add(p);
+      if (path.dirname(p) === p)
+        break;
+    }
+    return path.join(realpathSync.native(current), ...tail);
+  });
+  if (reparsePaths([...ancestors], privateState ? parents : new Set))
+    throw new PlatformError("symlink-escape");
+  return resolved;
+}
+function isOwned(file) {
+  return windows ? windowsSecurity([file])[0].owned : lstatSync(file).uid === process.getuid?.();
+}
+function sameWindowsDirectory(left, right) {
+  return sameWindowsObject(left, right, true);
+}
+function sameWindowsObject(left, right, directory = false) {
+  return platformSecurityScope(() => {
+    const [a, b] = windowsPaths([left, right]);
+    const first = lstatSync(a, { bigint: true }), second = lstatSync(b, { bigint: true });
+    return (!directory || first.isDirectory() && second.isDirectory()) && first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
+  });
+}
+function privatePaths(files) {
+  return windows ? files.every((file) => {
+    const s = lstatSync(file);
+    return !s.isFile() || s.nlink === 1;
+  }) && windowsSecurity(files).every((s) => s.private) : files.every((file) => {
+    const s = lstatSync(file);
+    return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
+  });
+}
+function privateDirectory(file, recursive = false) {
+  if (!windows) {
+    mkdirSync(file, { recursive, mode: 448 });
+    return;
+  }
+  platformSecurityScope(() => {
+    const target = windowsPath(file, true);
+    const missing = [];
+    let parent = target;
+    while (!existsSync(parent)) {
+      missing.unshift(parent);
+      parent = path.dirname(parent);
+    }
+    if (!recursive && missing.length > 1)
+      throw new PlatformError("path-unverified");
+    if (missing.length) {
+      const results = query(missing, missing);
+      if (results.some((r) => !r.private))
+        throw new PlatformError("private-permissions");
+      missing.forEach((p) => cache.delete(p));
+    } else if (!lstatSync(target).isDirectory() || !privatePaths([target]))
+      throw new PlatformError("private-permissions");
+  });
+}
+function syncFile(file) {
+  const fd = openSync(file, windows ? "r+" : "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+function syncDirectory(dir) {
+  if (windows)
+    return;
+  const fd = openSync(dir, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 // shared/progress.ts
 var VERSION = 2;
@@ -125,15 +428,23 @@ function validRequest(value, hint) {
 
 // shared/binding.ts
 function readBinding(file) {
-  const p = file instanceof URL ? file : path.resolve(file);
-  const stat = lstatSync(p);
-  requireProgress(!stat.isSymbolicLink() && stat.isFile() && stat.uid === process.getuid?.() && (stat.mode & 511) === 384, "binding");
+  return platformSecurityScope(() => readBindingInner(file));
+}
+function readBindingInner(file) {
+  const p = file instanceof URL ? file : path2.resolve(file);
+  const stat = lstatSync2(p);
+  requireProgress(!stat.isSymbolicLink() && stat.isFile() && (windows ? sameWindowsObject(windowsPath(file instanceof URL ? fileURLToPath(file) : file), realpathSync2.native(p)) && privatePaths([realpathSync2.native(p)]) : stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
   const b = JSON.parse(readFileSync(p, "utf8"));
   requireProgress(b.protocolVersion === VERSION && b.schemaVersion === VERSION, "schema");
-  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path.isAbsolute(b.database) && path.basename(b.database) === "progress.sqlite", "binding");
+  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path2.isAbsolute(b.database) && path2.basename(b.database) === "progress.sqlite", "binding");
   requireProgress(b.source && typeof b.source.id === "string" && typeof b.source.verified === "boolean", "binding");
-  for (const root of [path.dirname(b.database), b.source.configRoot, b.source.dataRoot])
-    requireProgress(path.isAbsolute(root) && realpathSync(root) === root, "binding");
+  const roots = [path2.dirname(b.database), b.source.configRoot, b.source.dataRoot];
+  if (windows) {
+    const resolved = windowsPaths(roots);
+    requireProgress(resolved.every((v, i) => sameWindowsDirectory(v, roots[i]) && isOwned(v)), "binding");
+  } else
+    for (const root of roots)
+      requireProgress(path2.isAbsolute(root) && realpathSync2(root) === root, "binding");
   return b;
 }
 function verifyStore(store, b) {
@@ -143,14 +454,14 @@ function verifyStore(store, b) {
 
 // setup/lifecycle.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync2, lstatSync as lstatSync3, realpathSync as realpathSync3, mkdirSync, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, openSync as openSync2, closeSync as closeSync2, fsyncSync, appendFileSync } from "node:fs";
-import path3 from "node:path";
+import { existsSync as existsSync3, lstatSync as lstatSync4, realpathSync as realpathSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync } from "node:fs";
+import path4 from "node:path";
 
 // shared/store.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, lstatSync as lstatSync2, openSync, readSync, closeSync, realpathSync as realpathSync2, chmodSync } from "node:fs";
-import path2 from "node:path";
+import { existsSync as existsSync2, lstatSync as lstatSync3, openSync as openSync2, readSync, closeSync as closeSync2, realpathSync as realpathSync3, chmodSync } from "node:fs";
+import path3 from "node:path";
 function canonical(value) {
   if (Array.isArray(value))
     return `[${value.map(canonical).join(",")}]`;
@@ -160,6 +471,15 @@ function canonical(value) {
 }
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+function directoryFilter(value) {
+  return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
+}
+function directoryExpression(expression) {
+  if (!windows)
+    return expression;
+  const separators = `replace(${expression},char(92),'/')`;
+  return `(CASE WHEN substr(${expression},1,1) GLOB '[A-Za-z]' AND substr(${expression},2,1)=':' THEN upper(substr(${expression},1,1))||substr(${separators},2) ELSE ${separators} END)`;
 }
 function storageError(e) {
   if (e instanceof ProgressError)
@@ -189,27 +509,40 @@ class Store {
   readBinding = { sourceId: null, verified: false };
   constructor(file, options = {}) {
     this.file = file;
+    const finish = beginPlatformSecurityScope();
     try {
-      requireProgress(path2.isAbsolute(file), "binding");
-      const parent = lstatSync2(path2.dirname(file));
-      requireProgress(parent.isDirectory() && parent.uid === process.getuid?.() && !parent.isSymbolicLink() && realpathSync2(path2.dirname(file)) === path2.dirname(file) && (parent.mode & 511) === 448, "binding");
-      const existed = existsSync(file);
+      if (windows) {
+        file = windowsPath(file, true);
+        this.file = file;
+      }
+      requireProgress(path3.isAbsolute(file), "binding");
+      const parent = lstatSync3(path3.dirname(file));
+      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? sameWindowsDirectory(windowsPath(path3.dirname(file)), path3.dirname(file)) : parent.uid === process.getuid?.() && realpathSync3(path3.dirname(file)) === path3.dirname(file) && (parent.mode & 511) === 448), "binding");
+      const existed = existsSync2(file);
       requireProgress(existed || options.create && !options.readOnly, "not-found");
+      if (windows) {
+        const secured = [path3.dirname(file), file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync2);
+        requireProgress(windowsPaths(secured).every((v, i) => sameWindowsObject(v, secured[i])) && privatePaths(secured), "binding");
+      }
       if (existed) {
-        const stat = lstatSync2(file);
-        requireProgress(stat.isFile() && stat.uid === process.getuid?.() && !stat.isSymbolicLink() && (stat.mode & 511) === 384, "binding");
-        const fd = openSync(file, "r");
+        const stat = lstatSync3(file);
+        requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
+        const fd = openSync2(file, "r");
         const head = Buffer.alloc(16);
         try {
           readSync(fd, head, 0, 16, 0);
         } finally {
-          closeSync(fd);
+          closeSync2(fd);
         }
         requireProgress(head.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync(file, { readOnly: options.readOnly ?? false });
-      if (!existed)
-        chmodSync(file, 384);
+      if (!existed) {
+        if (windows)
+          requireProgress(privatePaths([file]), "binding");
+        else
+          chmodSync(file, 384);
+      }
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
       const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
       if (!existed) {
@@ -228,7 +561,11 @@ class Store {
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
     } catch (e) {
       this.db?.close();
+      if (e instanceof PlatformError)
+        throw e;
       throw storageError(e);
+    } finally {
+      finish();
     }
   }
   close() {
@@ -313,8 +650,9 @@ class Store {
       const limit = options.limit ?? LIMITS.pageSize;
       const cursor = options.cursor ?? 0;
       requireProgress(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
-      const where = ["(? IS NULL OR source=?)", `(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`, `(? IS NULL OR json_extract(snapshot,'$.directory')=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND json_extract(s.actor,'$.directory')=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(" AND ");
-      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null, options.source ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.directory ?? null, options.directory ?? null, options.directory ?? null, limit + 1, cursor);
+      const where = ["(? IS NULL OR source=?)", `(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`, `(? IS NULL OR ${directoryExpression("json_extract(snapshot,'$.directory')")}=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND ${directoryExpression("json_extract(s.actor,'$.directory')")}=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(" AND ");
+      const directory = directoryFilter(options.directory) ?? null;
+      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null, options.source ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.session ?? null, directory, directory, directory, limit + 1, cursor);
       const data = rows.slice(0, limit).map((r) => this.summary(JSON.parse(String(r.snapshot))));
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor + limit) : null };
     });
@@ -478,7 +816,7 @@ class Store {
         p.lifecycle = r.outcome;
       }
       if (r.op === "bind" || r.op === "start" && r.source) {
-        requireProgress(capture && path2.isAbsolute(capture.path), "invalid");
+        requireProgress(capture && path3.isAbsolute(capture.path), "invalid");
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
@@ -503,9 +841,9 @@ class Store {
         } else
           p.document.checklistSynchronized = false;
       }
-      const snapshot = JSON.stringify(p);
-      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot);
-      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot, JSON.stringify(actor));
+      const snapshot2 = JSON.stringify(p);
+      this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);
+      this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot2, JSON.stringify(actor));
       this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
       if (child)
         this.db.prepare("INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET actor=excluded.actor").run(actor.sourceId, child.sessionId, JSON.stringify(child));
@@ -562,9 +900,18 @@ function activationFingerprint(binding, plugin, guidance) {
 
 // setup/lifecycle.ts
 function normalizeTargets(targets) {
+  if (windows)
+    try {
+      return platformSecurityScope(() => {
+        const [configRoot, dataRoot, storeRoot] = windowsPaths([targets.configRoot, targets.dataRoot, targets.storeRoot, path4.join(targets.configRoot, "plugins", "agent-progress"), path4.join(targets.storeRoot, "payloads")], true);
+        return { ...targets, configRoot, dataRoot, storeRoot };
+      });
+    } catch (e) {
+      throw e instanceof PlatformError ? new SetupError(e.code) : e;
+    }
   const trim = (value) => {
-    const root = path3.parse(value).root;
-    while (value.length > root.length && value.endsWith(path3.sep))
+    const root = path4.parse(value).root;
+    while (value.length > root.length && value.endsWith(path4.sep))
       value = value.slice(0, -1);
     return value;
   };
@@ -583,47 +930,47 @@ function need(v, code) {
     throw new SetupError(code);
 }
 function safe(p, allowMissing = false) {
-  need(path3.isAbsolute(p) && path3.resolve(p) === p, "path-unverified");
+  if (windows) {
+    try {
+      windowsPath(p, allowMissing);
+      return;
+    } catch (e) {
+      throw e instanceof PlatformError ? new SetupError(e.code) : e;
+    }
+  }
+  need(path4.isAbsolute(p) && path4.resolve(p) === p, "path-unverified");
   let current = p;
-  while (!existsSync2(current)) {
+  while (!existsSync3(current)) {
     need(allowMissing, "path-unverified");
-    const parent = path3.dirname(current);
+    const parent = path4.dirname(current);
     need(parent !== current, "path-unverified");
     current = parent;
   }
-  need(realpathSync3(current) === current && !lstatSync3(current).isSymbolicLink(), "symlink-escape");
+  need(realpathSync4(current) === current && !lstatSync4(current).isSymbolicLink(), "symlink-escape");
 }
 function fsyncDir(dir) {
-  const fd = openSync2(dir, "r");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync2(fd);
-  }
+  syncDirectory(dir);
 }
 function atomic(file, content, stagingRoot) {
-  const tmp = path3.join(stagingRoot, `.agent-progress-activation-${randomUUID2()}`);
-  writeFileSync(tmp, content, { mode: 384, flag: "wx" });
-  const fd = openSync2(tmp, "r");
+  if (windows)
+    stagingRoot = path4.dirname(file);
+  const tmp = path4.join(stagingRoot, `.agent-progress-activation-${randomUUID2()}`);
   try {
-    fsyncSync(fd);
+    writeFileSync(tmp, content, { mode: 384, flag: "wx" });
+    syncFile(tmp);
+    renameSync(tmp, file);
+    fsyncDir(path4.dirname(file));
   } finally {
-    closeSync2(fd);
+    if (existsSync3(tmp))
+      rmSync(tmp);
   }
-  renameSync(tmp, file);
-  fsyncDir(path3.dirname(file));
 }
 function writeFiles(root, files) {
-  mkdirSync(root, { mode: 448 });
+  privateDirectory(root);
   for (const [name, body] of Object.entries(files)) {
     need(/^[A-Za-z0-9_.-]+$/.test(name), "payload-invalid");
-    writeFileSync(path3.join(root, name), body, { mode: 384, flag: "wx" });
-    const fd = openSync2(path3.join(root, name), "r");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync2(fd);
-    }
+    writeFileSync(path4.join(root, name), body, { mode: 384, flag: "wx" });
+    syncFile(path4.join(root, name));
   }
   fsyncDir(root);
 }
@@ -672,54 +1019,74 @@ function updatePreview(o, payload) {
   const comparison = compareVersions(payload.version, o.manifest.releases[o.manifest.active].version);
   if (comparison === undefined || !payload.plugin || !payload.guidance)
     return;
-  const rootPackage = JSON.parse(readFileSync2(path3.join(o.root, "package.json"), "utf8"));
+  const rootPackage = JSON.parse(readFileSync2(path4.join(o.root, "package.json"), "utf8"));
   return { state: releasePayload(o.binding, payload).release === o.manifest.active ? "current" : comparison < 0 ? "newer-installed" : "available", candidateVersion: payload.version, rootVersion: typeof rootPackage.version === "string" ? rootPackage.version : null };
 }
 function verifyFiles(root, expected, extras = []) {
-  safe(root);
-  need(lstatSync3(root).isDirectory(), "collision");
+  if (!windows)
+    safe(root);
+  need(lstatSync4(root).isDirectory(), "collision");
   need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
+  const files = Object.keys(expected).map((name) => path4.join(root, name));
+  if (windows) {
+    const extraFiles = extras.map((name) => path4.join(root, name)).filter(existsSync3), all = [root, ...files, ...extraFiles];
+    need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync4(p).isFile()), "modified-owned-files");
+  }
   for (const [name, hash] of Object.entries(expected)) {
-    const file = path3.join(root, name);
-    need(existsSync2(file), "modified-owned-files");
-    safe(file);
-    const st = lstatSync3(file);
-    need(st.isFile() && st.uid === process.getuid?.() && (st.mode & 511) === 384 && digest(readFileSync2(file)) === hash, "modified-owned-files");
+    const file = path4.join(root, name);
+    need(existsSync3(file), "modified-owned-files");
+    if (!windows)
+      safe(file);
+    const st = lstatSync4(file);
+    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash, "modified-owned-files");
   }
 }
 function inspect(targets) {
+  return platformSecurityScope(() => inspectInner(targets));
+}
+function inspectInner(targets) {
   targets = normalizeTargets(targets);
   safe(targets.configRoot);
   safe(targets.dataRoot);
   safe(targets.storeRoot, true);
   for (const root of [targets.configRoot, targets.dataRoot])
-    need(lstatSync3(root).isDirectory() && lstatSync3(root).uid === process.getuid?.(), "path-unverified");
-  const packageRoot = path3.join(targets.configRoot, "plugins", "agent-progress");
+    need(lstatSync4(root).isDirectory() && isOwned(root), "path-unverified");
+  const packageRoot = path4.join(targets.configRoot, "plugins", "agent-progress");
   safe(packageRoot, true);
-  if (existsSync2(targets.storeRoot))
-    need(lstatSync3(targets.storeRoot).isDirectory() && (lstatSync3(targets.storeRoot).mode & 511) === 448, "store-permissions");
-  const payloadRoot = path3.join(targets.storeRoot, "payloads");
+  if (existsSync3(targets.storeRoot))
+    need(lstatSync4(targets.storeRoot).isDirectory() && (windows ? privatePaths([targets.storeRoot]) : (lstatSync4(targets.storeRoot).mode & 511) === 448), "store-permissions");
+  const payloadRoot = path4.join(targets.storeRoot, "payloads");
   safe(payloadRoot, true);
+  if (windows && existsSync3(payloadRoot))
+    need(privatePaths([payloadRoot]), "store-permissions");
+  if (windows) {
+    const historyFile = path4.join(targets.storeRoot, "installation-history.jsonl");
+    safe(historyFile, true);
+    if (existsSync3(historyFile))
+      need(lstatSync4(historyFile).isFile() && privatePaths([historyFile]), "store-permissions");
+  }
   return {
     targets,
     packageRoot,
     verified: targets.confirmed,
-    installed: existsSync2(packageRoot),
+    installed: existsSync3(packageRoot),
     version: null,
     fingerprint: null,
     diagnostics: [],
     activation: "unknown",
     separateLifecycle: true,
     historyRetained: true,
-    recovery: { stagedPackages: readdirSync(targets.configRoot).filter((n) => n.startsWith(".agent-progress-stage-")).length, stagedActivations: readdirSync(targets.configRoot).filter((n) => n.startsWith(".agent-progress-activation-")).length, stagedReleases: existsSync2(payloadRoot) ? readdirSync(payloadRoot).filter((n) => n.startsWith(".staged-")).length : 0 }
+    recovery: { stagedPackages: readdirSync(windows && existsSync3(path4.dirname(packageRoot)) ? path4.dirname(packageRoot) : targets.configRoot).filter((n) => n.startsWith(".agent-progress-stage-")).length, stagedActivations: readdirSync(windows && existsSync3(packageRoot) ? packageRoot : targets.configRoot).filter((n) => n.startsWith(".agent-progress-activation-")).length, stagedReleases: existsSync3(payloadRoot) ? readdirSync(payloadRoot).filter((n) => n.startsWith(".staged-")).length : 0 }
   };
 }
 function owned(targets) {
   const info = inspect(targets);
   need(info.installed, "not-installed");
-  const manifestFile = path3.join(info.packageRoot, ".ownership.json");
-  need(existsSync2(manifestFile), "collision");
+  const manifestFile = path4.join(info.packageRoot, ".ownership.json");
+  need(existsSync3(manifestFile), "collision");
   safe(manifestFile);
+  if (windows)
+    need(privatePaths([info.packageRoot, manifestFile]), "ownership-invalid");
   let m;
   try {
     m = JSON.parse(readFileSync2(manifestFile, "utf8"));
@@ -728,66 +1095,103 @@ function owned(targets) {
   }
   need(m.product === "openchamber-agent-progress" && typeof m.installId === "string" && /^[a-f0-9]{64}$/.test(m.active) && m.releases?.[m.active], "collision");
   need(Object.keys(m.files).sort().join(",") === "SKILL.md,index.js,package.json,progress-binding.json,remove.js", "ownership-invalid");
-  verifyFiles(info.packageRoot, m.files, [".ownership.json"]);
-  const b = readBinding(path3.join(info.packageRoot, "progress-binding.json"));
-  need(b.installId === m.installId && b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot && path3.dirname(b.database) === targets.storeRoot, "ownership-invalid");
+  const staged = windows ? readdirSync(info.packageRoot).filter((n) => /^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)) : [];
+  verifyFiles(info.packageRoot, m.files, [".ownership.json", ...staged]);
+  const b = readBinding(path4.join(info.packageRoot, "progress-binding.json"));
+  need(b.installId === m.installId && (windows ? sameWindowsDirectory(b.source.configRoot, targets.configRoot) && sameWindowsDirectory(b.source.dataRoot, targets.dataRoot) && sameWindowsDirectory(path4.dirname(b.database), targets.storeRoot) : b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot && path4.dirname(b.database) === targets.storeRoot), "ownership-invalid");
   for (const [id, release] of Object.entries(m.releases)) {
     need(/^[a-f0-9]{64}$/.test(id) && Object.keys(release.files).sort().join(",") === "SKILL.md,index.js,progress-binding.json", "ownership-invalid");
-    verifyFiles(path3.join(targets.storeRoot, "payloads", id), release.files);
+    verifyFiles(path4.join(targets.storeRoot, "payloads", id), release.files);
   }
-  return { root: info.packageRoot, manifest: m, binding: b };
+  return { root: info.packageRoot, manifest: m, binding: b, staged };
+}
+function removableSelectors(o) {
+  return o.staged.map((name) => {
+    const file = path4.join(o.root, name);
+    let m;
+    try {
+      m = JSON.parse(readFileSync2(file, "utf8"));
+    } catch {
+      throw new SetupError("staged-activation-retained");
+    }
+    need(m.product === o.manifest.product && m.installId === o.manifest.installId && canonical(m.files) === canonical(o.manifest.files) && /^[a-f0-9]{64}$/.test(m.active) && m.releases?.[m.active] && Object.entries(o.manifest.releases).every(([id, r]) => canonical(m.releases[id]) === canonical(r)), "staged-activation-retained");
+    return file;
+  });
 }
 function history(targets, event) {
-  const file = path3.join(targets.storeRoot, "installation-history.jsonl");
+  const file = path4.join(targets.storeRoot, "installation-history.jsonl");
   safe(file, true);
+  if (windows && existsSync3(file))
+    need(privatePaths([file]), "store-permissions");
   appendFileSync(file, JSON.stringify(event) + `
 `, { mode: 384 });
-  const fd = openSync2(file, "r");
+  syncFile(file);
+}
+function matchesRetainedSource(source, targets) {
+  if (!windows)
+    return source.configRoot === targets.configRoot && source.dataRoot === targets.dataRoot;
   try {
-    fsyncSync(fd);
-  } finally {
-    closeSync2(fd);
+    return sameWindowsDirectory(source.configRoot, targets.configRoot) && sameWindowsDirectory(source.dataRoot, targets.dataRoot);
+  } catch (e) {
+    if (e instanceof PlatformError) {
+      if (["path-unverified", "symlink-escape", "unsafe-parent"].includes(e.code))
+        return false;
+      throw e;
+    }
+    if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"].includes(e?.code ?? ""))
+      return false;
+    throw e;
   }
 }
 function lifecycle(action, targets, payload, testBoundary) {
+  try {
+    return platformSecurityScope(() => lifecycleInner(action, targets, payload, testBoundary));
+  } catch (e) {
+    throw e instanceof PlatformError ? new SetupError(e.code) : e;
+  }
+}
+function lifecycleInner(action, targets, payload, testBoundary) {
   const info = inspect(targets);
   targets = info.targets;
   if (action === "inspect" || action === "dry-run") {
     const o = info.installed ? owned(targets) : undefined;
-    const payloadRoot2 = path3.join(targets.storeRoot, "payloads");
-    const unreferenced = existsSync2(payloadRoot2) && readdirSync(payloadRoot2).some((id) => {
+    const payloadRoot2 = path4.join(targets.storeRoot, "payloads");
+    const unreferenced = existsSync3(payloadRoot2) && readdirSync(payloadRoot2).some((id) => {
       if (!/^[a-f0-9]{64}$/.test(id) || o?.manifest.releases[id])
         return false;
       try {
-        safe(path3.join(payloadRoot2, id));
-        const b = readBinding(path3.join(payloadRoot2, id, "progress-binding.json"));
+        safe(path4.join(payloadRoot2, id));
+        const b = readBinding(path4.join(payloadRoot2, id, "progress-binding.json"));
         return b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot;
       } catch {
         return !!o;
       }
     });
-    const active = o ? path3.join(payloadRoot2, o.manifest.active) : undefined;
-    const fingerprint = active ? activationFingerprint(readBinding(path3.join(active, "progress-binding.json")), readFileSync2(path3.join(active, "index.js")), readFileSync2(path3.join(active, "SKILL.md"))) : null;
+    const active = o ? path4.join(payloadRoot2, o.manifest.active) : undefined;
+    const fingerprint = active ? activationFingerprint(readBinding(path4.join(active, "progress-binding.json")), readFileSync2(path4.join(active, "index.js")), readFileSync2(path4.join(active, "SKILL.md"))) : null;
     return { ...info, fingerprint, version: o ? o.manifest.releases[o.manifest.active].version : null, ...o && targets.confirmed && o.binding.source.verified && payload ? { update: updatePreview(o, payload) } : {}, action, writes: false, diagnostics: [...!targets.confirmed ? ["targets-unverified"] : [], ...o && Object.keys(o.manifest.releases).length > 1 ? ["rollback-payloads-retained"] : [], ...unreferenced ? ["unreferenced-payloads-retained"] : [], ...info.recovery.stagedPackages || info.recovery.stagedActivations || info.recovery.stagedReleases ? ["staged-payloads-present"] : []] };
   }
   need(targets.confirmed, "confirmation-required");
   if (action === "disable" || action === "enable" || action === "remove-capture") {
-    const file = path3.join(targets.storeRoot, "progress.sqlite");
-    need(existsSync2(file), "not-installed");
+    const file = path4.join(targets.storeRoot, "progress.sqlite");
+    need(existsSync3(file), "not-installed");
     const store2 = new Store(file);
     try {
       if (action === "remove-capture") {
-        const controlBinding = readBinding(path3.join(info.packageRoot, "progress-binding.json"));
-        need(controlBinding.database === file && controlBinding.source.configRoot === targets.configRoot && controlBinding.source.dataRoot === targets.dataRoot, "ownership-invalid");
+        const controlBinding = readBinding(path4.join(info.packageRoot, "progress-binding.json"));
+        need(windows ? sameWindowsObject(controlBinding.database, file) && sameWindowsDirectory(controlBinding.source.configRoot, targets.configRoot) && sameWindowsDirectory(controlBinding.source.dataRoot, targets.dataRoot) : controlBinding.database === file && controlBinding.source.configRoot === targets.configRoot && controlBinding.source.dataRoot === targets.dataRoot, "ownership-invalid");
         verifyStore(store2, controlBinding);
         store2.setEnabled(false);
         const o = owned(targets);
         verifyStore(store2, o.binding);
+        const selectors = removableSelectors(o);
+        for (const file2 of selectors)
+          rmSync(file2);
         for (const name of Object.keys(o.manifest.files))
-          rmSync(path3.join(o.root, name));
-        rmSync(path3.join(o.root, ".ownership.json"));
+          rmSync(path4.join(o.root, name));
+        rmSync(path4.join(o.root, ".ownership.json"));
         rmdirSync(o.root);
-        fsyncDir(path3.dirname(o.root));
+        fsyncDir(path4.dirname(o.root));
         history(targets, { action, at: new Date().toISOString(), installId: o.manifest.installId });
       } else {
         const o = owned(targets);
@@ -804,16 +1208,16 @@ function lifecycle(action, targets, payload, testBoundary) {
   need(payload && typeof payload.plugin === "string" && payload.plugin.length > 0 && payload.guidance.length > 0 && payload.removal.length > 0 && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version), "payload-invalid");
   need(action === "update" ? info.installed : !info.installed, action === "update" ? "not-installed" : "collision");
   const old = info.installed ? owned(targets) : undefined;
-  if (!existsSync2(targets.storeRoot))
-    mkdirSync(targets.storeRoot, { recursive: true, mode: 448 });
-  const store = new Store(path3.join(targets.storeRoot, "progress.sqlite"), { create: true });
+  if (!existsSync3(targets.storeRoot))
+    privateDirectory(targets.storeRoot, true);
+  const store = new Store(path4.join(targets.storeRoot, "progress.sqlite"), { create: true });
   let binding;
   try {
     if (old) {
       binding = { ...old.binding, version: payload.version };
       verifyStore(store, binding);
     } else {
-      const source = store.list({ limit: 1 }).sources.find((s) => s.configRoot === targets.configRoot && s.dataRoot === targets.dataRoot) ?? { id: randomUUID2(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
+      const source = store.list({ limit: 1 }).sources.find((s) => matchesRetainedSource(s, targets)) ?? { id: randomUUID2(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
       store.registerSource(source);
       binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID2(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
     }
@@ -821,14 +1225,14 @@ function lifecycle(action, targets, payload, testBoundary) {
     store.close();
   }
   const { files, releaseHash, release } = releasePayload(binding, payload);
-  const payloadRoot = path3.join(targets.storeRoot, "payloads");
+  const payloadRoot = path4.join(targets.storeRoot, "payloads");
   safe(payloadRoot, true);
-  mkdirSync(payloadRoot, { recursive: true, mode: 448 });
-  const releaseRoot = path3.join(payloadRoot, release);
-  if (existsSync2(releaseRoot))
+  privateDirectory(payloadRoot, true);
+  const releaseRoot = path4.join(payloadRoot, release);
+  if (existsSync3(releaseRoot))
     verifyFiles(releaseRoot, releaseHash);
   else {
-    const stage = path3.join(payloadRoot, `.staged-${randomUUID2()}`);
+    const stage = path4.join(payloadRoot, `.staged-${randomUUID2()}`);
     writeFiles(stage, files);
     testBoundary?.("release-staged");
     renameSync(stage, releaseRoot);
@@ -838,16 +1242,19 @@ function lifecycle(action, targets, payload, testBoundary) {
   if (old) {
     manifest = { ...old.manifest, active: release, releases: { ...old.manifest.releases, [release]: { version: payload.version, files: releaseHash } } };
   } else {
-    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';export default{id:'agent-progress',async setup(ctx){const m=JSON.parse(readFileSync(new URL('./.ownership.json',import.meta.url),'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${JSON.stringify(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${JSON.stringify(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||realpathSync(file)!==file||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${JSON.stringify(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${JSON.stringify(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
-    const stage = path3.join(targets.configRoot, `.agent-progress-stage-${randomUUID2()}`);
+    const plugins = path4.dirname(info.packageRoot);
+    safe(plugins, true);
+    if (windows && !existsSync3(plugins))
+      privateDirectory(plugins, true);
+    const stage = path4.join(windows ? plugins : targets.configRoot, `.agent-progress-stage-${randomUUID2()}`);
     writeFiles(stage, { ...rootFiles, ".ownership.json": JSON.stringify(manifest) });
     testBoundary?.("before-activation");
-    const plugins = path3.dirname(info.packageRoot);
-    safe(plugins, true);
-    mkdirSync(plugins, { recursive: true, mode: 448 });
-    need(!existsSync2(info.packageRoot), "collision");
+    if (!windows)
+      mkdirSync2(plugins, { recursive: true, mode: 448 });
+    need(!existsSync3(info.packageRoot), "collision");
     renameSync(stage, info.packageRoot);
     fsyncDir(plugins);
   }
@@ -855,7 +1262,7 @@ function lifecycle(action, targets, payload, testBoundary) {
     testBoundary?.("before-activation");
     const current = owned(targets);
     need(canonical(current.manifest) === canonical(old.manifest), "installation-changed");
-    atomic(path3.join(old.root, ".ownership.json"), JSON.stringify(manifest), targets.configRoot);
+    atomic(path4.join(old.root, ".ownership.json"), JSON.stringify(manifest), targets.configRoot);
   }
   testBoundary?.("after-activation");
   history(targets, { action, at: new Date().toISOString(), installId: binding.installId, active: release, version: payload.version });
@@ -884,15 +1291,15 @@ try {
     targets = { configRoot: flags.get("config-root"), dataRoot: flags.get("data-root"), storeRoot: flags.get("store-root"), confirmed: flags.get("confirm") === "true" };
   } else {
     const b = readBinding(new URL("./progress-binding.json", import.meta.url));
-    targets = { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path4.dirname(b.database), confirmed: true };
+    targets = { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path5.dirname(b.database), confirmed: true };
   }
   let payload;
   if (action === "install" || action === "update") {
-    const dir = path4.dirname(fileURLToPath(import.meta.url));
-    payload = { plugin: readFileSync3(path4.join(dir, "../companion/index.js"), "utf8"), guidance: readFileSync3(path4.join(dir, "../companion/SKILL.md"), "utf8"), removal: readFileSync3(fileURLToPath(import.meta.url), "utf8"), version: RELEASE };
+    const dir = path5.dirname(fileURLToPath2(import.meta.url));
+    payload = { plugin: readFileSync3(path5.join(dir, "../companion/index.js"), "utf8"), guidance: readFileSync3(path5.join(dir, "../companion/SKILL.md"), "utf8"), removal: readFileSync3(fileURLToPath2(import.meta.url), "utf8"), version: RELEASE };
   }
   console.log(JSON.stringify(lifecycle(action, targets, payload)));
 } catch (e) {
-  console.log(JSON.stringify({ error: e instanceof SetupError ? e.code : "setup-unavailable" }));
+  console.log(JSON.stringify({ error: e instanceof SetupError || e instanceof PlatformError ? e.code : "setup-unavailable" }));
   process.exitCode = 1;
 }

@@ -133,8 +133,9 @@ Supply and explicitly review canonical **effective** global config/data roots;
 the optional suggestions below do not establish those roots. Do not infer verified
 identity from project paths, the service environment, PID or account label. Global
 config and OpenCode data directories must already exist, belong to this account,
-and not contain symlink aliases. Progress store is its own explicit local0700
-directory outside repositories; it is not OpenCode's auth DB. No config JSON,
+and not contain symlink aliases. Progress store is its own explicit private local
+directory outside repositories (0700 on Linux; private account ACLs on Windows);
+it is not OpenCode's auth DB. No config JSON,
 agent instructions or project files are edited by setup.
 
 The stable runtime tested here resolves XDG config/data plus opencode; the
@@ -146,8 +147,8 @@ deliberate recovery outside this V1 tool, not an automatic reset/downgrade.
 
 ### Best-effort setup suggestions (source T7; UI follows in T8)
 
-On an unconfigured Linux service, `GET /v1/setup` adds optional `suggestions` for
-configRoot/dataRoot/storeRoot. Other hosts omit it; configured targets always win.
+On an unconfigured Linux or supported Windows service, `GET /v1/setup` adds optional `suggestions` for
+configRoot/dataRoot/storeRoot. Unsupported hosts omit it; configured targets always win.
 Each field is `{value,state:'resolved'|'candidate'}` or null (unknown).
 
 - `resolved`: an owned candidate directory was observed without a symlink alias,
@@ -307,8 +308,9 @@ Normal host isolation inherits its own HOME/XDG state scope. Separate concurrent
 host bindings need separate state scopes; conflicting descriptor changes refuse
 rather than silently overwriting another service's selection.
 
-The dedicated0700 service-state directory has a0600 product ownership marker;
-the descriptor is0600, atomically replaced and synced. Foreign/modified state,
+The dedicated service-state directory and ownership marker are private (0700/0600
+on Linux, account ACLs on Windows); the descriptor is atomically replaced after
+flushing its file contents. Foreign/modified state,
 descriptor collisions and symlink aliases fail closed. A missing descriptor is
 an explicit unconfigured state; it never authorizes source-root guessing.
 Service GET /v1/setup and POST inspect
@@ -377,7 +379,7 @@ installation separately. No binding descriptor/private store is shipped.
 Alternatively, extract the companion ZIP to a dedicated directory, change into
 that directory and run the inspect/dry-run/install commands above (`node
 build/setup/main.js ...`). Use Node24.19.0 or the already-proved supported host
-runtime with built-in SQLite. The capture boundary is Linux-only in this release.
+runtime with built-in SQLite. Native Windows has the additional boundary below.
 Do not assume other platforms or custom runtime channels were verified.
 
 For update, keep the newly extracted packaged build/companion and build/setup
@@ -431,3 +433,54 @@ hours-long leak's absence, and no new agent-run long soak or causal fix is claim
 Parent acceptance and public source checks remain separate. No real installation,
 auth transfer, model call or automatic
 restart is part of packaging validation.
+
+## Native Windows
+
+The native path uses the existing TypeScript/JavaScript payloads and built-in
+Windows PowerShell 5.1/.NET APIs. There is no additional executable, native addon,
+compiler, PowerShell module or consumer dependency install. The service and
+companion invoke a fixed noninteractive, profile-free script with UTF-8 JSON
+through stdin; folder text is never executable command text. Missing or blocked
+PowerShell produces an explicit setup/privacy error.
+
+Use one account and local NTFS storage. Config/data roots must be owned by that
+account. The dedicated store, payload and service-state roots must have private
+ACLs allowing only that account, SYSTEM and Administrators. New owned roots get
+their ACL at creation and children inherit it; permissive/foreign existing roots
+and parents that unrelated accounts can replace are refused. Setup does not take
+ownership, elevate, repair unrelated ACLs or change existing parent permissions.
+Choose a dedicated private local folder rather than a shared/public temporary
+location. Database journals and side files stay under the secured store root.
+Hard-linked owned state files are refused. Ancestors must also have a trusted
+owner (current user, SYSTEM, Administrators or Windows TrustedInstaller), since
+owners can change permissions even without an explicit write rule; product state
+itself still requires the current user as owner.
+
+Ordinary drive-qualified paths accept either separator and trailing directory
+separators, including spaces and Unicode. Actual file/directory identities handle
+Node/Bun spelling differences; directory names are not blindly lowercased.
+Traversal, junction/reparse escapes, UNC/network roots, device namespaces,
+alternate data streams and reserved-name aliases are refused. Long-path and
+other-filesystem compatibility is not established. Suggestions follow the tested
+OpenCode home/XDG formulas; APPDATA is not assumed to be OpenCode's configuration.
+
+Fresh document capture checks requested and canonical read permissions before
+bytes, compares the opened file to its pre-open identity, reads the same bounded
+descriptor, then checks file/ancestor identity and mutation metadata again.
+Ordinary source documents do not need the private-store ACL policy. Capture
+failure retains prior text and does not discard valid structured progress.
+This Windows implementation assumes trusted same-account processes; it does not
+claim Linux's final-opened-path proof against a coordinated hostile filesystem race.
+
+Windows flushes written files using writable descriptors, stages on the destination
+volume and atomically selects owned payloads. Previous releases and committed
+history remain available after process interruption; incomplete activation staging
+refuses unsafe removal before the runnable selection is deleted. Windows does not
+use POSIX directory fsync and does not claim identical namespace persistence through
+sudden power loss. Linux's file ownership, modes, safe reader and directory syncing
+remain unchanged. Installed, selected and loaded code remain distinct states;
+reload/update and companion disable/removal still require explicit actions.
+
+The measured native configuration is Windows 11 Pro x64/NTFS, OpenCode 2.1.4 and
+OpenChamber 2.5.2. This is not an all-Windows/all-architecture certification. See
+the compatibility guide for the observed runtimes and bounded verification.
