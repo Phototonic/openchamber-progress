@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readBinding } from '../shared/binding.ts';
 import { lifecycle, SetupError, type Action, type Targets, type Payload } from './lifecycle.ts';
 import { RELEASE } from '../shared/release.ts';
+import { PlatformError } from '../shared/platform.ts';
 
 try {
   const action=process.argv[2] as Action;
@@ -19,4 +20,4 @@ try {
     payload={plugin:readFileSync(path.join(dir,'../companion/index.js'),'utf8'),guidance:readFileSync(path.join(dir,'../companion/SKILL.md'),'utf8'),removal:readFileSync(fileURLToPath(import.meta.url),'utf8'),version:RELEASE};
   }
   console.log(JSON.stringify(lifecycle(action,targets,payload)));
-}catch(e){console.log(JSON.stringify({error:e instanceof SetupError?e.code:'setup-unavailable'}));process.exitCode=1;}
+}catch(e){console.log(JSON.stringify({error:e instanceof SetupError||e instanceof PlatformError?e.code:'setup-unavailable'}));process.exitCode=1;}

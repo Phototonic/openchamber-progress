@@ -1,7 +1,7 @@
 # Safe global companion setup (production v2)
 
 Package versions use the 0.x line; protocol/schema remain 2. Current package version
-is 0.2.7. Tagged releases are published after main promotion and successful
+is 0.2.8. Tagged releases are published after main promotion and successful
 workflow checks. Historical
 package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
 original labels. `evidence/` and `AGENTS.md` are local-only, never committed or
@@ -44,7 +44,7 @@ report receipt. Hidden/restricted tools are never enabled or bypassed.
 
 The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
 with default branch `main`. Anonymous access to its main manifest is established;
-the package manifest version is 0.2.7. The root `private: true` is an npm publishing
+the package manifest version is 0.2.8. The root `private: true` is an npm publishing
 guard, not a statement about GitHub visibility.
 OpenChamber clones the selected/default ref and inspects its existing runtime
 entries; it does not install dependencies or compile TypeScript. The root manifest
@@ -140,8 +140,9 @@ Supply and explicitly review canonical **effective** global config/data roots;
 the optional suggestions below do not establish those roots. Do not infer verified
 identity from project paths, the service environment, PID or account label. Global
 config and OpenCode data directories must already exist, belong to this account,
-and not contain symlink aliases. Progress store is its own explicit local0700
-directory outside repositories; it is not OpenCode's auth DB. No config JSON,
+and not contain symlink aliases. Progress store is its own explicit private local
+directory outside repositories (0700 on Linux; private account ACLs on Windows);
+it is not OpenCode's auth DB. No config JSON,
 agent instructions or project files are edited by setup.
 
 The stable runtime tested here resolves XDG config/data plus opencode; the
@@ -153,8 +154,8 @@ deliberate recovery outside this V1 tool, not an automatic reset/downgrade.
 
 ### Best-effort setup suggestions (source T7; UI follows in T8)
 
-On an unconfigured Linux service, `GET /v1/setup` adds optional `suggestions` for
-configRoot/dataRoot/storeRoot. Other hosts omit it; configured targets always win.
+On an unconfigured Linux or supported Windows service, `GET /v1/setup` adds optional `suggestions` for
+configRoot/dataRoot/storeRoot. Unsupported hosts omit it; configured targets always win.
 Each field is `{value,state:'resolved'|'candidate'}` or null (unknown).
 
 - `resolved`: an owned candidate directory was observed without a symlink alias,
@@ -314,8 +315,9 @@ Normal host isolation inherits its own HOME/XDG state scope. Separate concurrent
 host bindings need separate state scopes; conflicting descriptor changes refuse
 rather than silently overwriting another service's selection.
 
-The dedicated0700 service-state directory has a0600 product ownership marker;
-the descriptor is0600, atomically replaced and synced. Foreign/modified state,
+The dedicated service-state directory and ownership marker are private (0700/0600
+on Linux, account ACLs on Windows); the descriptor is atomically replaced after
+flushing its file contents. Foreign/modified state,
 descriptor collisions and symlink aliases fail closed. A missing descriptor is
 an explicit unconfigured state; it never authorizes source-root guessing.
 Service GET /v1/setup and POST inspect
@@ -337,13 +339,16 @@ agent-progress-probe to preserve Work Status openSurface; labels are Agent progr
 T5 assembles these built backend entries with Designer's already-owned guests;
 this document does not claim an installable extension ZIP was produced in T3.
 
-## V1 installable artifacts (0.2.7)
+## V1 installable artifacts (0.2.8)
 
-V1 is the product scope; the current package version is **0.2.7**,
-agreeing across extension and companion payloads. Version 0.2.7 corrects external
+V1 is the product scope; the current package version is **0.2.8**,
+agreeing across extension and companion payloads. Version 0.2.8 adds native
+Windows setup, storage and document capture, preserves retained-source
+reinstallation, and includes clearer progress invocation and working-plan selection.
+See the native Windows boundary below. Version 0.2.7 corrected external
 worktree project grouping, filtering and session discovery using bounded workspace
-membership; unknown ownership retains a directory fallback. Backend behavior is
-unchanged from 0.2.6. The 0.2.6 version-only release added no runtime behavior to
+membership; unknown ownership retains a directory fallback. That release's backend
+behavior was unchanged from 0.2.6. The 0.2.6 version-only release added no runtime behavior to
 0.2.5. The 0.2.5 promotion-metadata patch
 adds no feature behavior to0.2.4. It retains accepted cached-revisit/
 spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
@@ -353,7 +358,7 @@ or payload-audit cache was added. This patch distinguishes the distribution from
 installed/archived0.2.2; it is not a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
 UX; updates remain user-confirmed and activation remains separate. Release publication
-does not authorize installing0.2.7 into the real host; historical real0.2.3 update
+does not authorize installing0.2.8 into the real host; historical real0.2.3 update
 evidence and its pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. The artifacts described here are
@@ -361,19 +366,19 @@ unsigned; checksum inventories verify content integrity, not publisher signature
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.7/` and `.zip`: host manifest, the three Designer
+- `agent-progress-extension-0.2.8/` and `.zip`: host manifest, the three Designer
   HTML/main.js guests copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.2.7/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-0.2.8/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.2.7.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-0.2.8.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
   Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts remain local QA history; select the0.2.7 pair explicitly.
+   older0.x artifacts remain local QA history; select the0.2.8 pair explicitly.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.
@@ -384,7 +389,7 @@ installation separately. No binding descriptor/private store is shipped.
 Alternatively, extract the companion ZIP to a dedicated directory, change into
 that directory and run the inspect/dry-run/install commands above (`node
 build/setup/main.js ...`). Use Node24.19.0 or the already-proved supported host
-runtime with built-in SQLite. The capture boundary is Linux-only in this release.
+runtime with built-in SQLite. Native Windows has the additional boundary below.
 Do not assume other platforms or custom runtime channels were verified.
 
 For update, keep the newly extracted packaged build/companion and build/setup
@@ -438,3 +443,54 @@ hours-long leak's absence, and no new agent-run long soak or causal fix is claim
 Parent acceptance and public source checks remain separate. No real installation,
 auth transfer, model call or automatic
 restart is part of packaging validation.
+
+## Native Windows
+
+The native path uses the existing TypeScript/JavaScript payloads and built-in
+Windows PowerShell 5.1/.NET APIs. There is no additional executable, native addon,
+compiler, PowerShell module or consumer dependency install. The service and
+companion invoke a fixed noninteractive, profile-free script with UTF-8 JSON
+through stdin; folder text is never executable command text. Missing or blocked
+PowerShell produces an explicit setup/privacy error.
+
+Use one account and local NTFS storage. Config/data roots must be owned by that
+account. The dedicated store, payload and service-state roots must have private
+ACLs allowing only that account, SYSTEM and Administrators. New owned roots get
+their ACL at creation and children inherit it; permissive/foreign existing roots
+and parents that unrelated accounts can replace are refused. Setup does not take
+ownership, elevate, repair unrelated ACLs or change existing parent permissions.
+Choose a dedicated private local folder rather than a shared/public temporary
+location. Database journals and side files stay under the secured store root.
+Hard-linked owned state files are refused. Ancestors must also have a trusted
+owner (current user, SYSTEM, Administrators or Windows TrustedInstaller), since
+owners can change permissions even without an explicit write rule; product state
+itself still requires the current user as owner.
+
+Ordinary drive-qualified paths accept either separator and trailing directory
+separators, including spaces and Unicode. Actual file/directory identities handle
+Node/Bun spelling differences; directory names are not blindly lowercased.
+Traversal, junction/reparse escapes, UNC/network roots, device namespaces,
+alternate data streams and reserved-name aliases are refused. Long-path and
+other-filesystem compatibility is not established. Suggestions follow the tested
+OpenCode home/XDG formulas; APPDATA is not assumed to be OpenCode's configuration.
+
+Fresh document capture checks requested and canonical read permissions before
+bytes, compares the opened file to its pre-open identity, reads the same bounded
+descriptor, then checks file/ancestor identity and mutation metadata again.
+Ordinary source documents do not need the private-store ACL policy. Capture
+failure retains prior text and does not discard valid structured progress.
+This Windows implementation assumes trusted same-account processes; it does not
+claim Linux's final-opened-path proof against a coordinated hostile filesystem race.
+
+Windows flushes written files using writable descriptors, stages on the destination
+volume and atomically selects owned payloads. Previous releases and committed
+history remain available after process interruption; incomplete activation staging
+refuses unsafe removal before the runnable selection is deleted. Windows does not
+use POSIX directory fsync and does not claim identical namespace persistence through
+sudden power loss. Linux's file ownership, modes, safe reader and directory syncing
+remain unchanged. Installed, selected and loaded code remain distinct states;
+reload/update and companion disable/removal still require explicit actions.
+
+The measured native configuration is Windows 11 Pro x64/NTFS, OpenCode 2.1.4 and
+OpenChamber 2.5.2. This is not an all-Windows/all-architecture certification. See
+the compatibility guide for the observed runtimes and bounded verification.

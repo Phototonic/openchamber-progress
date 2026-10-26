@@ -2,6 +2,7 @@
 // SDK lists are incomplete in-memory coverage, so every lookup says whether it is covered.
 import type { HostClient } from '@openchamber/sdk';
 import { directoryWithin } from './model.ts';
+import { directoryKey } from './path.ts';
 
 // Mirrors of the SDK workspace types (not re-exported from the package entry).
 export type LoadState = 'loading' | 'ready' | 'error';
@@ -37,9 +38,9 @@ export type Coverage =
  * containment (notably Home) cannot establish ownership of an unknown checkout. */
 export function projectFor(directory: string, snap: LiveSnapshot): LiveProject | undefined {
   if (!directory) return undefined;
-  const dir = directory.replace(/\/+$/, '');
+  const dir = directoryKey(directory);
   const matches = snap.projects.filter((p) => {
-    if (dir === p.directory.replace(/\/+$/, '')) return true;
+    if (dir === directoryKey(p.directory)) return true;
     const trees = snap.worktrees.get(p.id);
     return trees?.state === 'ready' && trees.records.some((w) => w.status === 'ready' && directoryWithin(dir, w.directory));
   });
@@ -51,7 +52,7 @@ export function findSession(id: string, snap: LiveSnapshot): LiveSession | undef
   for (const entry of snap.sessions.values()) {
     if (entry.state !== 'ready') continue;
     const hit = entry.records.find((r) => r.id === id);
-    if (hit && found && (hit.projectId !== found.projectId || hit.directory !== found.directory)) return undefined;
+    if (hit && found && (hit.projectId !== found.projectId || directoryKey(hit.directory) !== directoryKey(found.directory))) return undefined;
     if (hit) found = hit;
   }
   return found;
@@ -174,7 +175,7 @@ export class LiveWorkspace {
       sub.release = this.host.onProjects((s) => {
         if (this.projectsSub !== sub) return;
         // A reused path ID with a changed root is a different discovery scope.
-        for (const p of this.snap.projects) if (!s.projects.some((n) => n.id === p.id && n.directory === p.directory) || s.state !== 'ready') this.drop(p.id);
+        for (const p of this.snap.projects) if (!s.projects.some((n) => n.id === p.id && directoryKey(n.directory) === directoryKey(p.directory)) || s.state !== 'ready') this.drop(p.id);
         this.snap = { ...this.snap, projectsState: s.state, projects: s.state === 'ready' ? s.projects : [] };
         this.queue(); this.onChange();
       }).catch(() => {

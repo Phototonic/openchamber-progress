@@ -1,6 +1,6 @@
 # Production backend v2 (T3)
 
-Current package version: **0.2.7**. Here v2 means protocol/schema2,
+Current package version: **0.2.8** (inherited from the integrated base). Here v2 means protocol/schema2,
 not a release major. Owner-corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
 `evidence/` and `AGENTS.md` are local-only, never committed or packaged. Evidence
@@ -39,7 +39,7 @@ openSurface target); companion/skill ID is agent-progress. T5 assembles packages
 Caller permission evidence: pinned2.1.4 SDK permission/tool types and official
 V2.1.2 permission.assert docs (Context7), plus file/permission regression tests.
 The SDK supplies authorization, not an atomic file reader; the opened-target
-checks are our enforcement boundary. Strict capture is Linux-only in V1; other
+checks are our enforcement boundary. Strict capture supports Linux and native Windows; other
 platforms return unavailable before reading. No cross-host/container/NFS support
 is claimed. Actual plugin/runtime tests use independent OpenCode2.1.4, no models.
 
@@ -80,6 +80,13 @@ read-only preflight precedes a private verified `VACUUM INTO` snapshot outside t
 write transaction. Under `BEGIN IMMEDIATE`, eligibility, store/key, progress revision
 and cleanup generation are checked again before DDL/action commit. Backup/init
 failure never auto-restores or resets data; a race can leave a private recovery file.
+Snapshot privacy reuses `shared/platform.ts`: POSIX owner/mode checks, or Windows
+native object/ancestor checks and private DACLs. An exclusively created Windows
+backup inherits the verified private parent ACL and is checked before copying any
+content and after snapshot completion; existing ACLs are never repaired. Changed
+public ACLs and hard-linked Windows source state refuse without activating cleanup.
+Archived directory filters retain the base's Windows separator/drive spelling
+equivalence without folding directory-name case or probing presentation paths.
 
 Archive/restore write only separate cleanup metadata; archive freezes progress.
 Delete removes the key's contributions/revisions/captures/chunks/receipts/plan in
@@ -99,6 +106,7 @@ Focused safety/API checks:
 ```sh
 node --experimental-strip-types --test tests/backend/plan-cleanup.test.ts tests/backend/production-storage.test.ts tests/backend/production-contract.test.ts
 node --experimental-strip-types --test tests/backend/plan-cleanup-service.test.ts tests/backend/production-service.test.ts tests/backend/service-recovery.test.ts tests/backend/task-timing.test.ts
+node --experimental-strip-types --test tests/backend/windows-platform.test.ts
 ```
 
 The test-only legacy driver extracts **unmodified** Store/progress source from

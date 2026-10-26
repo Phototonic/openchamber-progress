@@ -4,7 +4,7 @@ Thanks for helping improve Agent Progress! Use GitHub issues for bugs and propos
 
 ## Report a problem safely
 
-Include the extension, OpenChamber, and OpenCode versions; the affected view or setup step; expected versus observed behavior; and a small, sanitized reproduction. State whether capture and the host service share one Linux machine/account.
+Include the extension, OpenChamber, and OpenCode versions; the affected view or setup step; expected versus observed behavior; and a small, sanitized reproduction. State the host OS and whether capture and the host service share one machine/account.
 
 **Before posting, inspect every attachment and example.** Do not publish credentials, tokens, raw logs, private filesystem paths, customer/project content, internal tracker data, or personal configuration/prompts. Use synthetic names and paths. Crop/redact screenshots and share only the minimal sanitized diagnostic excerpt needed. For a suspected security issue, do not post exploit details or sensitive data publicly; ask the maintainer for a private reporting route first.
 
@@ -18,7 +18,9 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 
 ## Local development
 
-Use Linux for capture development. The portable CI toolchain is **Node.js 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. OpenCode 2.1.4 and OpenChamber 2.5.1 are the tested integration versions, not proof of every newer runtime. Package checks also need system `zip` and `unzip`.
+Use **Node.js 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. Linux integration uses OpenCode 2.1.4 and OpenChamber 2.5.1; native Windows validation uses OpenCode 2.1.4 and OpenChamber 2.5.2. These are tested configurations, not proof of every newer runtime. Linux package checks also need system `zip` and `unzip`.
+
+For native Windows development, use the built-in Windows PowerShell 5.1 and local NTFS storage. No native helper or compiler is part of the runtime. After the frozen dependency install, run `node --experimental-strip-types --test tests/backend/windows-platform.test.ts`, the root/UI typechecks, and the relevant browser tests. The Windows suite creates and cleans isolated private fixtures under a fresh drive-root folder; it does not use a live profile or model. Foreign-owner and persisted callback-ACE fixtures explicitly skip if the account/OS cannot create them; pure descriptor policy still runs. The existing Linux isolation/auth/performance helpers are not Windows tests. ZIP production can remain on Linux; Windows consumers install the built outputs without compiling.
 
 From the repository root:
 
@@ -65,7 +67,7 @@ It runs root/UI typechecks, portable backend tests, browser-model and automation
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
-The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. Both branches contain the workflow and required inputs, and a `dev` push run has passed. PR-target coverage is configured; a PR-triggered run has not yet been observed.
+The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. It retains the Linux portable checks and adds a targeted Windows native-filesystem suite. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
 

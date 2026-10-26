@@ -1,5 +1,6 @@
 // View model shared by all three surfaces. The wire format lives only in adapter.ts.
 import { countItems } from '../../shared/progress.ts';
+import { directoryKey } from './path.ts';
 
 export type ItemStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'completed' | 'cancelled' | 'failed';
@@ -230,9 +231,9 @@ export function participants(plan: PlanView, detail: PlanDetail | null): Partici
 }
 
 const within = (dir: string, root: string) => {
-  const a = dir.replace(/\/+$/, '');
-  const b = root.replace(/\/+$/, '');
-  return a === b || a.startsWith(`${b}/`);
+  const a = directoryKey(dir);
+  const b = directoryKey(root);
+  return Boolean(a && b) && (a === b || a.startsWith(b.endsWith('/') ? b : `${b}/`));
 };
 export { within as directoryWithin };
 

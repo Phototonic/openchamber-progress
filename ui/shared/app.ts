@@ -22,6 +22,7 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
 import { CSS } from './style.ts';
+import { directoryKey } from './path.ts';
 
 export const REFRESH_MS = 3000;
 export const RETRY_MS = 8000;
@@ -121,7 +122,7 @@ const focusKey = (root: HTMLElement) => {
   return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active) };
 };
 
-const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : s.directory ?? ''}|a:${s.archived ?? 'exclude'}` : 'none');
+const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : directoryKey(s.directory ?? '')}|a:${s.archived ?? 'exclude'}` : 'none');
 
 export function startView<U>(spec: ViewSpec<U>) {
   const host = connectHost();

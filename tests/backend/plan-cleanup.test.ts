@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { readdirSync, readFileSync, lstatSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../../shared/store.ts';
+import { RELEASE } from '../../shared/release.ts';
 import { cleanupFixture, documentText } from '../fixtures/cleanup.ts';
 
 const code=(expected:string)=>(e:any)=>e.code===expected;
@@ -170,6 +171,6 @@ test('future cleanup format refuses without repair, snapshot/reset or version ch
     assert.throws(()=>f.store.cleanup('restore',f.body('P-done',1,'restore')),code('schema'));
     assert.deepEqual(f.store.db.prepare('SELECT * FROM plans').all(),before);assert.deepEqual(readdirSync(`${f.root}/store`),files);
     assert.equal(f.store.db.prepare('PRAGMA user_version').get()!.user_version,2);
-    assert.equal(JSON.parse(readFileSync('package.json','utf8')).version,'0.2.7');
+    assert.equal(JSON.parse(readFileSync('package.json','utf8')).version,RELEASE);
   }finally{f.cleanup();}
 });

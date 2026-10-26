@@ -27,7 +27,9 @@ const ERROR_TEXT: Record<string, string> = {
   collision: 'Something else already exists where the companion would be installed. Setup will not overwrite it.',
   'foreign-files': 'The install folder contains files setup did not create. Nothing was changed.',
   'modified-owned-files': 'Installed companion files were changed outside setup. They were left untouched.',
-  'store-permissions': 'The progress store folder must be private to you (permissions 700).',
+  'store-permissions': 'The progress store folder must be owned by you and private to your account.',
+  'private-permissions': 'A folder used for progress must be owned by you and private to your account.',
+  'windows-security-unavailable': 'Windows could not check folder ownership and privacy using its built-in PowerShell. Check that Windows PowerShell is available, then try again.',
   'not-installed': 'The companion is not installed in these folders.',
   'ownership-invalid': 'The installation does not match the folders this extension is set up for. Nothing was changed.',
   'payload-invalid': 'The companion packaged with this extension is incomplete. Reinstall the extension.',
@@ -64,10 +66,15 @@ export const PRIVILEGE_TEXT = 'The progress service runs on this computer with y
 export const LIFECYCLE_TEXT = 'Capture is separate from this extension: it keeps running if you close, pause or uninstall the extension. Remove capture here before uninstalling this extension; uninstalling the extension alone leaves capture installed (the companion’s remove utility also works afterwards). Recorded history is always kept.';
 
 const STORE_SUFFIX = 'openchamber-progress';
+/** A form-level absolute-path check; the service owns canonicalization and safety checks. */
+export const absoluteSetupPath = (value: string) => value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value);
 /** The store folder suggested for a data folder: `<data>/openchamber-progress` (a folder of its own). */
 export const deriveStore = (dataRoot: string) => {
   const d = dataRoot.trim();
-  return d ? `${d.replace(/\/+$/, '')}/${STORE_SUFFIX}` : '';
+  if (!d) return '';
+  const windows = /^[A-Za-z]:[\\/]/.test(d);
+  const separator = windows && d.includes('\\') ? '\\' : '/';
+  return `${d.replace(windows ? /[\\/]+$/ : /\/+$/, '')}${separator}${STORE_SUFFIX}`;
 };
 
 /**
@@ -87,8 +94,8 @@ export function applySuggestions(s: Pick<SetupUi, 'form' | 'edited'>, hints: Set
 }
 
 const PLAIN_HELP: Record<keyof SetupTargets, string> = {
-  configRoot: 'Absolute path, usually …/.config/opencode',
-  dataRoot: 'Absolute path, usually …/.local/share/opencode',
+  configRoot: 'Absolute path to your OpenCode global config folder',
+  dataRoot: 'Absolute path to your OpenCode data folder',
   storeRoot: 'A private folder outside your projects; created if missing',
 };
 
@@ -365,7 +372,7 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
     button(row, 'setup-inspect', 'Check these folders', () => {
       const f = vc.ui.setup.form;
       const targets = { configRoot: f.configRoot.trim(), dataRoot: f.dataRoot.trim(), storeRoot: f.storeRoot.trim() };
-      if (!Object.values(targets).every((v) => v.startsWith('/'))) { set({ error: 'missing-folders' }); return; }
+      if (!Object.values(targets).every(absoluteSetupPath)) { set({ error: 'missing-folders' }); return; }
       // Folders that already hold the companion (e.g. this extension was reinstalled and lost its
       // binding) are re-bound by updating; installing over them is refused.
       void run('inspect', targets, false, (res) => ({ review: { action: res.installed ? 'update' : 'install', targets, result: res }, ack: false }));

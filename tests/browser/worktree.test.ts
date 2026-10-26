@@ -5,6 +5,9 @@ import { EMPTY_LIVE, LiveWorkspace, coverageFor, liveLabel, type KnownWorktree, 
 import { applyFilters, filterOptions, NO_FILTERS, placeOf, projectsFor } from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { plansPage, summary } from './fixtures.ts';
+import { baseName } from '../../ui/shared/format.ts';
+import { directoryWithin } from '../../ui/shared/model.ts';
+import { directoryKey } from '../../ui/shared/path.ts';
 
 const home = { id: 'path_home', name: 'Home', directory: '/synthetic/home' };
 const a = { id: 'path_a', name: 'Project A', directory: '/synthetic/home/projects/a' };
@@ -31,6 +34,31 @@ test('external worktrees use SDK ownership for groups, filters AND subscription 
   const options = filterOptions(plans, live, NO_FILTERS);
   assert.deepEqual(options.projects.map((p) => p.label), ['All projects', 'Project A', 'Project B']);
   assert.deepEqual(applyFilters(plans, live, { ...NO_FILTERS, project: 'p:path_a', worktree: `w:${wa.directory}` }).map((p) => p.id), ['work-a']);
+});
+
+test('Windows host and report separator spellings share exact checkout/worktree membership and labels', () => {
+  const root = { id: 'windows-a', name: 'Project A', directory: 'c:/fixture/Alpha/' };
+  const tree: KnownWorktree = { directory: 'C:/fixture/worktrees/topic', name: 'Topic', branch: 'topic', status: 'ready' };
+  const live: LiveSnapshot = { ...EMPTY_LIVE, projectsState: 'ready', projects: [root], sessions: new Map(), worktrees: new Map([[root.id, { state: 'ready', records: [tree] }]]) };
+  const rows = parsePlansPage(JSON.stringify(plansPage([
+    summary('win-main', [], { sessionId: 'wm', directory: 'C:\\fixture\\Alpha', projectId: 'global' }),
+    summary('win-tree', [], { sessionId: 'wt', directory: 'C:\\fixture\\worktrees\\topic\\', projectId: 'global' }),
+    summary('win-other', [], { sessionId: 'wo', directory: 'C:\\fixture\\Alpha-other', projectId: 'global' }),
+    summary('win-case', [], { sessionId: 'wc', directory: 'C:\\fixture\\alpha', projectId: 'global' }),
+  ]))).data;
+  assert.equal(placeOf(rows[0], live).worktreeLabel, 'Main checkout');
+  assert.equal(placeOf(rows[1], live).worktreeLabel, 'Topic');
+  assert.deepEqual(projectsFor(rows.slice(0, 2), live), [root.id]);
+  assert.deepEqual(applyFilters(rows, live, { ...NO_FILTERS, project: 'p:windows-a' }).map((p) => p.id), ['win-main', 'win-tree']);
+  assert.equal(placeOf(rows[2], live).projectKey, 'd:C:/fixture/Alpha-other', 'a similar prefix is still a different checkout');
+  assert.equal(placeOf(rows[3], live).projectKey, 'd:C:/fixture/alpha', 'folder identities are not case-folded');
+  assert.equal(baseName('C:\\fixture\\Alpha\\'), 'Alpha');
+  assert.equal(baseName('/fixture/Alpha\\'), 'Alpha\\', 'a POSIX backslash is part of its name');
+  assert.equal(directoryKey('c:\\'), 'C:/');
+  assert.equal(directoryWithin('C:\\fixture\\Alpha\\sub', 'c:/fixture/Alpha'), true);
+  assert.equal(directoryWithin('C:\\fixture\\Alpha-other', 'c:/fixture/Alpha'), false);
+  assert.equal(directoryWithin('C:\\fixture', 'c:/'), true);
+  assert.equal(directoryKey('/fixture/Alpha\\'), '/fixture/Alpha\\');
 });
 
 test('unknown, pending, missing, invalid, failed and ambiguous discovery never invent Home ownership', () => {

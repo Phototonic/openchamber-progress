@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
-import { openSync, closeSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
+import { openSync, closeSync, lstatSync, unlinkSync, realpathSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { identifier, ProgressError, requireProgress as need } from './progress.ts';
+import { windows, windowsPaths, sameWindowsObject, sameWindowsDirectory, privatePaths, platformSecurityScope } from './platform.ts';
 
 export type CleanupAction = 'archive' | 'restore' | 'delete';
 export interface CleanupRequest { storeId:string; source:string; plan:string; rev:number; cleanupRev:number; oid:string; confirmed?:true }
@@ -66,14 +67,27 @@ function preflight(db:DatabaseSync,action:CleanupAction,r:CleanupRequest,install
 
 /** Consistent private recovery material, not a product undo or automatic restore. */
 function backup(db:DatabaseSync,file:string) {
+  return platformSecurityScope(()=>backupPrivate(db,file));
+}
+function backupPrivate(db:DatabaseSync,file:string) {
   const parent=path.dirname(file);const owned=lstatSync(parent);
-  need(owned.isDirectory()&&!owned.isSymbolicLink()&&owned.uid===process.getuid?.()&&(owned.mode&0o777)===0o700&&realpathSync(parent)===parent,'binding');
+  need(owned.isDirectory()&&!owned.isSymbolicLink()&&privatePaths([parent]),'binding');
+  if(windows){
+    const secured=[parent,file,...['-journal','-wal','-shm'].map(s=>file+s)].filter(existsSync);
+    const resolved=windowsPaths(secured);
+    need(existsSync(file)&&sameWindowsDirectory(resolved[0]!,parent)&&resolved.every((v,i)=>sameWindowsObject(v,secured[i]!))&&privatePaths(secured),'binding');
+  }else need(realpathSync(parent)===parent,'binding');
   const destination=path.join(path.dirname(file),`cleanup-backup-${randomUUID()}.sqlite`);
   const fd=openSync(destination,'wx',0o600);closeSync(fd);
   let copy:DatabaseSync|undefined;
   try {
+    // Windows files inherit the already-verified private parent DACL; never repair
+    // an existing ACL. Verify the exclusive empty file before copying any content.
+    if(windows)need(sameWindowsObject(windowsPaths([destination])[0]!,destination),'binding');
+    need(privatePaths([destination]),'binding');
     db.prepare('VACUUM INTO ?').run(destination);
-    const stat=lstatSync(destination);need(stat.isFile()&&!stat.isSymbolicLink()&&stat.uid===process.getuid?.()&&(stat.mode&0o777)===0o600,'binding');
+    const stat=lstatSync(destination);need(stat.isFile()&&!stat.isSymbolicLink()&&privatePaths([parent,destination]),'binding');
+    if(windows)need(sameWindowsObject(windowsPaths([destination])[0]!,destination),'binding');
     copy=new DatabaseSync(destination,{readOnly:true});
     need(copy.prepare('PRAGMA integrity_check').get()?.integrity_check==='ok'&&copy.prepare('PRAGMA foreign_key_check').all().length===0,'corrupt');
     need(copy.prepare('PRAGMA user_version').get()?.user_version===2&&copy.prepare('SELECT store_id FROM meta').get()?.store_id===db.prepare('SELECT store_id FROM meta').get()?.store_id,'corrupt');

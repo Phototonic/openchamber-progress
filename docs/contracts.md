@@ -1,6 +1,6 @@
 # Frozen production contract v2 — T3 / Designer handoff
 
-Current package version **0.2.7** is independent of protocol/schema **2**. Setup's version
+Current package version **0.2.8** is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases. Local QA under
 evidence/ and project instructions AGENTS.md are never committed or shipped.
@@ -73,7 +73,8 @@ SDK coverage. Navigation must be verified by Designer against the CURRENT host.
 
 ## Finished-plan cleanup (CP-H frozen additive contract)
 
-Package version remains **0.2.7**, protocol/base schema **2**. A ready capable
+The integrated base supplies package **0.2.8**; cleanup adds no version bump.
+Protocol/base schema remain **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.
 
@@ -142,8 +143,9 @@ Other frames converge on their existing successful refresh, not a new bus/poll r
 
 No GET, service open or ordinary capture initializes the cleanup extension. After
 read-only eligibility checks, first explicit cleanup takes a verified private
-SQLite snapshot at `cleanup-backup-<random>.sqlite` in the owned0700 store folder
-(file0600), then revalidates and atomically installs format1 metadata and persistent
+SQLite snapshot at `cleanup-backup-<random>.sqlite` in the verified private store
+folder (POSIX0700/file0600; on Windows the existing native path/owner/DACL policy
+and private inherited file ACL), then revalidates and atomically installs format1 metadata and persistent
 guards with the action. A racing or failed action can leave recovery material;
 it cannot partially change the selected plan. Unknown format/missing or altered
 guards fail closed, never silently repair/reset. No arbitrary backup destination.
@@ -200,7 +202,7 @@ Older services may return404; missing/malformed optional replies mean unavailabl
 
 ```ts
 interface ExtensionUpdateRead {
-  installedVersion: string; // this extension's RELEASE, currently0.2.7
+  installedVersion: string; // this extension's RELEASE
   repository: 'Phototonic/openchamber-progress';
   ref: 'main';
   state: 'available' | 'not-newer' | 'unknown';
@@ -379,7 +381,7 @@ interface SetupSuggestions {
 // SetupRead gains: suggestions?: SetupSuggestions
 ```
 
-This object is present only when unconfigured on Linux; omit it once configured
+This object is present only when unconfigured on Linux or supported Windows; omit it once configured
 or on unsupported platforms. `null` means unknown for that field; old services
 omitting the entire object remain valid. `resolved` means the service observed an
 owned directory without a symlink alias. It does **not** identify effective
@@ -387,13 +389,14 @@ OpenCode scope or verify source identity. `candidate` is a host-derived default,
 including missing/inaccessible/foreign/non-directory/aliased candidates, not an
 accepted target. Inspect remains authoritative for validation.
 
-Host-side inputs are only HOME/XDG_CONFIG_HOME/XDG_DATA_HOME. Absolute canonical
-XDG bases take precedence; otherwise use HOME/.config and HOME/.local/share,
-appending opencode. Missing HOME with no corresponding XDG hint yields null; an
-invalid relative/traversing override also yields null, never a cwd-based guess.
-No OS-home fallback, browser/project/binary inference, search, config/auth content
-read or CLI launch. Filtered-out OpenCode overrides cannot be ruled out, even
-when a candidate directory is observed. Current support remains Linux-only.
+Host-side inputs are HOME/XDG_CONFIG_HOME/XDG_DATA_HOME and, on Windows when HOME
+is absent, the host runtime's homedir result. Absolute canonical XDG bases take
+precedence; otherwise append opencode to the home-relative .config and
+.local/share directories. Missing Linux HOME with no corresponding XDG hint
+yields null; an invalid relative/traversing override also yields null, never a
+cwd-based guess. No browser/project/binary inference, search, config/auth content
+read or CLI launch. Windows does not substitute APPDATA for OpenCode's roots.
+Filtered-out OpenCode overrides cannot be ruled out even when a candidate is observed.
 
 storeRoot is `<dataRoot.value>/openchamber-progress` and inherits dataRoot.state.
 That is derivation provenance, **not** a claim that the child exists or has0700;

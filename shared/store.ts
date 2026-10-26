@@ -3,6 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, type Request, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type ItemInput, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 export function canonical(value: unknown): string {
@@ -11,6 +12,13 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 export function digest(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
+/** Presentation-only Windows spelling equivalence; never case-fold directory names. */
+function directoryFilter(value:string|undefined) {return windows?value?.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toUpperCase()):value;}
+function directoryExpression(expression:string) {
+  if(!windows)return expression;
+  const separators=`replace(${expression},char(92),'/')`;
+  return `(CASE WHEN substr(${expression},1,1) GLOB '[A-Za-z]' AND substr(${expression},2,1)=':' THEN upper(substr(${expression},1,1))||substr(${separators},2) ELSE ${separators} END)`;
+}
 export function storageError(e: unknown): ProgressError {
   if (e instanceof ProgressError) return e;
   const err = e as { errcode?: number; message?: string };
@@ -39,19 +47,22 @@ export class Store {
   constructor(file: string, options: { create?: boolean; busyMs?: number; readOnly?: boolean } = {}) {
     this.file=file;
     this.readOnly=options.readOnly??false;
+    const finish=beginPlatformSecurityScope();
     try {
+      if(windows){file=windowsPath(file,true);this.file=file;}
       need(path.isAbsolute(file), 'binding');
-      const parent = lstatSync(path.dirname(file)); need(parent.isDirectory() && parent.uid===process.getuid?.() && !parent.isSymbolicLink() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 0o777) === 0o700, 'binding');
+      const parent = lstatSync(path.dirname(file)); need(parent.isDirectory() && !parent.isSymbolicLink() && (windows?sameWindowsDirectory(windowsPath(path.dirname(file)),path.dirname(file)):parent.uid===process.getuid?.() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 0o777) === 0o700), 'binding');
       const existed = existsSync(file);
       need(existed || (options.create && !options.readOnly), 'not-found');
+      if(windows){const secured=[path.dirname(file),file,...['-journal','-wal','-shm'].map(s=>file+s)].filter(existsSync);need(windowsPaths(secured).every((v,i)=>sameWindowsObject(v,secured[i]!))&&privatePaths(secured),'binding');}
       if (existed) {
-        const stat = lstatSync(file); need(stat.isFile() && stat.uid===process.getuid?.() && !stat.isSymbolicLink() && (stat.mode & 0o777) === 0o600, 'binding');
+        const stat = lstatSync(file); need(stat.isFile() && !stat.isSymbolicLink() && (windows||stat.uid===process.getuid?.() && (stat.mode & 0o777) === 0o600), 'binding');
         const fd = openSync(file,'r'); const head = Buffer.alloc(16);
         try { readSync(fd,head,0,16,0); } finally { closeSync(fd); }
         need(head.toString('binary') === 'SQLite format 3\0', 'corrupt');
       }
       this.db = new DatabaseSync(file, { readOnly: options.readOnly ?? false });
-      if (!existed) chmodSync(file, 0o600);
+      if (!existed) {if(windows)need(privatePaths([file]),'binding');else chmodSync(file, 0o600);}
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
       if (!existed) {
@@ -61,7 +72,8 @@ export class Store {
       } else need(version === VERSION, 'schema');
       need(this.db.prepare('PRAGMA table_info(meta)').all().some(r=>r.name==='product'),'corrupt');
       need(this.db.prepare('SELECT product FROM meta WHERE singleton=1').get()?.product==='openchamber-agent-progress', 'corrupt');
-    } catch (e) { this.db!?.close(); throw storageError(e); }
+    } catch (e) { this.db!?.close(); if(e instanceof PlatformError)throw e;throw storageError(e); }
+    finally{finish();}
   }
   close() { this.db.close(); }
   observeLoaded(source:string,installId:string,fingerprint:string) {
@@ -120,8 +132,9 @@ export class Store {
       const cleanupWhere=installed?` AND ${options.archived==='only'?'':'NOT '}EXISTS(SELECT 1 FROM cleanup_state cs WHERE cs.source=plans.source AND cs.plan=plans.id AND cs.state='archived')`:options.archived==='only'?' AND 0':'';
       need(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       // JSON predicates select only known fields; values always remain bound parameters.
-      const where = ['(? IS NULL OR source=?)',`(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`,`(? IS NULL OR json_extract(snapshot,'$.directory')=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND json_extract(s.actor,'$.directory')=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(' AND ');
-      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where}${cleanupWhere} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null,options.source ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.directory ?? null,options.directory ?? null,options.directory ?? null,limit+1,cursor);
+      const where = ['(? IS NULL OR source=?)',`(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`,`(? IS NULL OR ${directoryExpression("json_extract(snapshot,'$.directory')") }=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND ${directoryExpression("json_extract(s.actor,'$.directory')") }=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(' AND ');
+      const directory=directoryFilter(options.directory)??null;
+      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where}${cleanupWhere} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null,options.source ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.session ?? null,directory,directory,directory,limit+1,cursor);
       const data = rows.slice(0,limit).map(r => this.summary(JSON.parse(String(r.snapshot))));
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor+limit) : null };
     });
