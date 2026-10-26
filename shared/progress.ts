@@ -24,7 +24,7 @@ export function countItems(items: readonly Item[]): Counts {
   return { done, total: leaves.length - skipped, remaining: leaves.length - skipped - done, skipped };
 }
 export interface Contribution { revision: number; reporterSessionId: string; reporterAgent: string; attributedSessionId: string; mode: 'direct' | 'parent-relay'; itemIds: string[]; reportedAt: string }
-export interface PlanSummary { id: string; sourceId: string; title: string; sessionId: string; revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string; directory: string; projectId?: string; counts: Counts; working: string[]; document: DocumentRef }
+export interface PlanSummary { id: string; sourceId: string; title: string; sessionId: string; revision: number; structuralRevision: number; lifecycle: Lifecycle; reportedAt: string; directory: string; projectId?: string; counts: Counts; working: string[]; document: DocumentRef; cleanup?: {state:'visible'|'archived';revision:number} }
 export interface PlanState extends Omit<PlanSummary, 'counts' | 'working'> { items: Item[]; links: { sessionId: string; itemIds: string[] }[] }
 export interface Envelope { protocolVersion: 2; schemaVersion: 2; storeId: string; sources: Source[]; sourceBinding: { sourceId: string | null; verified: boolean }; captureEnabled: boolean; coverage: 'recorded-only'; diagnostics: string[] }
 export interface Page<T> { data: T[]; nextCursor: string | null }

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
 import path from 'node:path';
+import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, type Request, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type ItemInput, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 export function canonical(value: unknown): string {
@@ -33,9 +34,11 @@ type StoredPlan = PlanState & { boundCanonicalPath?: string };
 export class Store {
   readonly db!: DatabaseSync;
   readonly file: string;
+  private readonly readOnly:boolean;
   private readBinding: {sourceId:string|null;verified:boolean}={sourceId:null,verified:false};
   constructor(file: string, options: { create?: boolean; busyMs?: number; readOnly?: boolean } = {}) {
     this.file=file;
+    this.readOnly=options.readOnly??false;
     try {
       need(path.isAbsolute(file), 'binding');
       const parent = lstatSync(path.dirname(file)); need(parent.isDirectory() && parent.uid===process.getuid?.() && !parent.isSymbolicLink() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 0o777) === 0o700, 'binding');
@@ -79,7 +82,7 @@ export class Store {
   private transaction<T>(write: boolean, action: () => T): T {
     try { this.db.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN'); }
     catch (e) { throw storageError(e); }
-    try { const value = action(); this.db.exec('COMMIT'); return value; }
+    try { need(Number(this.db.prepare('PRAGMA user_version').get()!.user_version)===VERSION,'schema');const value = action(); this.db.exec('COMMIT'); return value; }
     catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* original diagnostic wins */ } throw storageError(e); }
   }
   registerSource(source: Source) {
@@ -95,22 +98,30 @@ export class Store {
     try { if(!row)return undefined;const p=JSON.parse(String(row.snapshot)) as StoredPlan;need(p.sourceId===source&&p.id===id&&Array.isArray(p.items)&&Array.isArray(p.links),'corrupt');return p; } catch { throw new ProgressError('corrupt'); }
   }
   get(source: string, id: string) { return this.transaction(false, () => this.raw(source,id)); }
+  cleanup(action:CleanupAction,value:unknown) {
+    need(!this.readOnly,'storage');
+    try{return mutateCleanup(this.db,this.file,action,value,(write,fn)=>this.transaction(write,fn));}catch(e){throw storageError(e);}
+  }
   private summary(p: StoredPlan): PlanSummary {
     const { items, links: _links, boundCanonicalPath:_bound, ...rest } = p;
-    return { ...rest, counts: countItems(items), working: items.filter(i => i.kind === 'task' && i.status === 'working').map(i => i.id) };
+    const state=cleanupInstalled(this.db)?cleanupState(this.db,p.sourceId,p.id):undefined;
+    return { ...rest, ...(state?{cleanup:{state:state.state as 'visible'|'archived',revision:Number(state.generation)}}:{}), counts: countItems(items), working: items.filter(i => i.kind === 'task' && i.status === 'working').map(i => i.id) };
   }
   private metadata(): Envelope {
     const meta = this.db.prepare('SELECT * FROM meta WHERE singleton=1').get()!;
     const sources = this.db.prepare('SELECT * FROM sources ORDER BY id').all().map(r => ({ id: String(r.id), configRoot: String(r.config_root), dataRoot: String(r.data_root), verified: Boolean(r.verified) }));
     return { protocolVersion: VERSION, schemaVersion: VERSION, storeId: String(meta.store_id), sources, sourceBinding:{...this.readBinding}, captureEnabled: Boolean(meta.enabled), coverage: 'recorded-only', diagnostics: [...(!meta.enabled ? ['capture-disabled'] : []), ...(sources.some(s => !s.verified) ? ['source-unverified'] : []),...(!this.readBinding.verified?['host-source-binding-unverified']:[])] };
   }
-  list(options: { cursor?: number; limit?: number; source?: string; session?: string; directory?: string } = {}) {
+  list(options: { cursor?: number; limit?: number; source?: string; session?: string; directory?: string; archived?:'exclude'|'only' } = {}) {
     return this.transaction(false, () => {
       const limit = options.limit ?? LIMITS.pageSize; const cursor = options.cursor ?? 0;
+      need(options.archived===undefined||options.archived==='exclude'||options.archived==='only');
+      const installed=cleanupInstalled(this.db);
+      const cleanupWhere=installed?` AND ${options.archived==='only'?'':'NOT '}EXISTS(SELECT 1 FROM cleanup_state cs WHERE cs.source=plans.source AND cs.plan=plans.id AND cs.state='archived')`:options.archived==='only'?' AND 0':'';
       need(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       // JSON predicates select only known fields; values always remain bound parameters.
       const where = ['(? IS NULL OR source=?)',`(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`,`(? IS NULL OR json_extract(snapshot,'$.directory')=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND json_extract(s.actor,'$.directory')=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(' AND ');
-      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null,options.source ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.directory ?? null,options.directory ?? null,options.directory ?? null,limit+1,cursor);
+      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where}${cleanupWhere} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null,options.source ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.session ?? null,options.directory ?? null,options.directory ?? null,options.directory ?? null,limit+1,cursor);
       const data = rows.slice(0,limit).map(r => this.summary(JSON.parse(String(r.snapshot))));
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor+limit) : null };
     });
@@ -153,6 +164,8 @@ export class Store {
     const receiptStatement = this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)');
     return this.transaction(true, () => {
       need(Boolean(this.db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()!.enabled),'disabled');
+      const cleanup=cleanupInstalled(this.db)?cleanupState(this.db,actor.sourceId,r.plan):undefined;
+      need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
       const source = this.db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId); need(source,'binding');
       const replay = this.db.prepare('SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?').get(actor.sourceId,r.plan,r.oid!);
       if (replay) { need(replay.payload_hash === hash,'operation-reused'); return JSON.parse(String(replay.receipt)) as Receipt; }

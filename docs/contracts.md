@@ -71,6 +71,124 @@ The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified by Designer against the CURRENT host.
 
+## Finished-plan cleanup (CP-H frozen additive contract)
+
+Package version remains **0.2.7**, protocol/base schema **2**. A ready capable
+service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
+not an empty archive. No report-tool operation is added.
+
+Authenticated, query-free **POST** `/v1/plan/archive`, `/v1/plan/restore`, and
+`/v1/plan/delete` accept only this JSON body (identifiers use the existing80-character
+identifier rule; revisions are safe nonnegative integers, `rev` strictly positive):
+
+```json
+{"storeId":"store-fixture","source":"source-fixture","plan":"P-done","rev":2,"cleanupRev":0,"oid":"archive-example"}
+```
+
+Delete additionally requires literal `"confirmed":true`; archive/restore refuse
+that extra field. Capture the actual store ID and progress/cleanup revisions from
+the selected record, not these illustrative values. No paths, arrays, wildcard,
+session changes or unknown fields are accepted. Confirmation must remain bound to
+that captured key/revisions across context changes. Opening/cancelling sends nothing.
+
+Archive is the ordinary action; only lifecycle `finished` is eligible. Restore
+requires archived+finished and leaves it finished; deletion accepts visible or
+archived finished plans. Counts, report age and immutable progress history do not
+change on archive/restore. Cleanup works while capture is disabled without enabling it.
+
+Success200 is a bounded receipt, not a plan or progress revision:
+
+```json
+{"storeId":"store-fixture","source":"source-fixture","plan":"P-done","cleanup":{"state":"archived","revision":1},"oid":"archive-example"}
+```
+
+Restore with `cleanupRev:1`, a new oid and the same `rev` returns state `visible`,
+revision2. Delete with a fresh oid, `cleanupRev:2` and `confirmed:true` returns
+state `deleted`, revision3. Each transition increments the independent cleanup
+generation; progress revisions stay untouched. Only the latest identical request
+can replay its receipt (including delete after the plan is gone). Changed reuse
+of the latest oid refuses; older requests conflict, even after a restore. Do not
+blindly resubmit an ambiguous action: reconcile authoritative reads and show errors.
+
+Errors are code-only; no submitted values or exception text is returned:
+
+| Status | Example / meaning |
+| --- | --- |
+|400|`{"error":"invalid"}` malformed, extra fields, missing/false confirmation|
+|409|`{"error":"conflict"}` wrong store, stale progress revision or cleanup generation|
+|409|`{"error":"closed"}` non-finished plan or ineligible state transition|
+|409|`{"error":"operation-reused"}` latest oid with altered semantic input/action|
+|404|`{"error":"not-found"}` missing/deleted key, unknown route or query|
+|401/405|`{"error":"unauthorized"}` / `{"error":"method-not-allowed"}`|
+|413|`{"error":"request-too-large"}` above16,384 bytes|
+|503|`{"error":"busy"}`, `{"error":"storage"}`, `{"error":"schema"}`, `{"error":"corrupt"}` or existing binding diagnostic; no partial success|
+
+`GET /v1/plans` accepts `archived=exclude|only`, default `exclude`. This filter
+applies **before** cursor/limit, with unchanged source/session/directory matching.
+Never merge the two modes' caches or pages. Optional response-only
+`PlanSummary.cleanup = {state:'visible'|'archived',revision:number}` describes that
+record; on a capable service its absence means visible/generation0. Restore keeps
+the visible metadata/generation, never resets it. Archived detail, history and
+pinned document captures remain readable. Deleted keys return404 on every read,
+including old capture IDs. There are no deleted list entries.
+
+On action success retire pre-action reads and clear affected list memories,
+selection/detail/document/history caches before fetching authoritative state.
+Cleanup need not change the progress revision; revision-only cache equality is
+insufficient. Ignore late replies from retired host/store/action generations.
+Other frames converge on their existing successful refresh, not a new bus/poll rate.
+
+### Recovery and rollback limits
+
+No GET, service open or ordinary capture initializes the cleanup extension. After
+read-only eligibility checks, first explicit cleanup takes a verified private
+SQLite snapshot at `cleanup-backup-<random>.sqlite` in the owned0700 store folder
+(file0600), then revalidates and atomically installs format1 metadata and persistent
+guards with the action. A racing or failed action can leave recovery material;
+it cannot partially change the selected plan. Unknown format/missing or altered
+guards fail closed, never silently repair/reset. No arbitrary backup destination.
+
+Delete removes selected live-store items, revisions, contributions, captures,
+staged uploads and report receipts, retaining only key/state/generation and bounded
+latest-operation hash/receipt. Original source files, unrelated/source-isolated
+plans, shared sessions and installation history stay intact. **Not secure erasure:**
+SQLite free pages, journals, backups and filesystem snapshots may retain content.
+The first-use recovery backup may contain the deleted plan. Do not imply an undo
+button or silently purge those files.
+
+Persistent guards fence both already-loaded and newly opened older schema2
+writers. New writers refuse archived work with `closed`, deleted identities with
+`not-found`, before report receipt replay. Older writers may return generic storage
+errors; their old readers can show archived plans again. Restoring permits normal
+explicit reopen of a still-finished plan; deletion never frees its ID for reuse.
+Use a new plan ID for genuinely new work. Application rollback must retain guards,
+tombstones and cleanup tables. Never downgrade by resetting the store or restoring
+the first-use backup automatically: that would lose later acknowledged reports.
+
+### Disposable real-service fixture (Designer / CP-Q5)
+
+From the repository with Node24 on PATH:
+
+```sh
+node --experimental-strip-types tests/fixtures/cleanup-service.ts
+# Built-entry variant after backend build:
+node --experimental-strip-types tests/fixtures/cleanup-service.ts --built
+```
+
+Both launch an actual authenticated loopback HTTP service with exclusively fresh
+synthetic data and print one JSON readiness line only after `/health` reports
+`ready:true,planCleanup:1`. Use the returned `url` and fixture-only bearer
+`fixture-only` in a browser test's SDK serviceRequest transport adapter; no host
+installation, real config or history is used. Fetch `/v1/plans?source=source-fixture`
+for actual store/key/revision inputs. The readiness line's `finished` object is the
+initial archive body for P-done. Its document/history, long Unicode title, P-active,
+P-other, cancelled/failed records, other-source P-done and55 pagination records are
+seeded. Source binding is source-fixture; session M, directory `/fixture/Alpha`.
+Send SIGTERM/SIGINT to stop owned service processes and remove the disposable roots.
+Rerun to reset all data; never repoint it at a real binding. The built variant uses
+the actual checked-in service entry and temporary descriptor, not setup/install.
+Local execution/results and consumer launch receipt: `evidence/cleanup/backend.md`.
+
 ## DTO meanings
 
 ### Official-main version awareness (U1, U2 consumer contract)

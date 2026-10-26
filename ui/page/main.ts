@@ -1,7 +1,7 @@
 import { mountList, mountSelect, mountTabs, type Tone } from '@openchamber/sdk/ui';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
-  detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, staleBlock, testid, type Env,
+  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, staleBlock, testid, type Env,
 } from '../shared/components.ts';
 import { plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, sessionLabel } from '../shared/live.ts';
@@ -11,9 +11,10 @@ import {
 } from '../shared/scope.ts';
 import { officialMainBlock } from '../shared/official.ts';
 import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
+import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 
 type Tab = 'progress' | 'document' | 'history';
-type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: boolean; setup: SetupUi };
+type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: boolean; setup: SetupUi; archived: boolean };
 
 const visiblePlans = (vc: ViewContext<Ui>) => {
   if (!vc.read) return [];
@@ -26,19 +27,28 @@ const selectedPlan = (vc: ViewContext<Ui>) => pickPlan(visiblePlans(vc), vc.ui.s
 startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
-  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: false, setup: initialSetupUi() }),
-  scope: (_ctx, ui) => pageListScope(ui.filters),
+  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: false, setup: initialSetupUi(), archived: false }),
+  scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
+  actionPlan: selectedPlan,
+  forgetPlans: (keys, ui) => keys.has(ui.selected ?? '') ? { selected: null } : {},
   wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
   wantDetails: (vc) => { const p = selectedPlan(vc); return p && vc.ui.tab === 'progress' ? [p] : []; },
   paint(root, vc) {
     const { read, failure, env, ui } = vc;
     root.append(el('h1', 'ap-sr', 'Agent progress'));
+    const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
+    button(modes, 'cleanup-visible', 'Current plans', () => vc.setUi({ archived: false, selected: null, filters: NO_FILTERS, reveal: false }), ui.archived ? 'ghost' : 'outline');
+    button(modes, 'cleanup-archived', 'Archived plans', () => vc.setUi({ archived: true, selected: null, filters: NO_FILTERS, reveal: false }), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
+    modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
+    root.append(modes);
+    const notice = cleanupNotice(vc); if (notice) root.append(notice);
+    if (vc.health?.ready && !vc.health.planCleanup) root.append(testid(el('p', 'ap-note', 'Plan cleanup is unavailable with this service version.'), 'cleanup-unavailable'));
     // The official-main notice does not depend on companion setup or the store.
     const official = officialMainBlock(vc);
     if (!read) {
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
-      else root.append(loadingBlock());
+      else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock());
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
@@ -52,7 +62,7 @@ startView<Ui>({
       root.append(p);
     }
     if (!read.plans.length && ui.filters.session === ALL) {
-      root.append(emptyBlock('empty-state', 'No plans recorded yet', 'When an agent reports a plan, it appears here with its tasks and progress.'));
+      root.append(emptyBlock('empty-state', ui.archived ? 'No archived plans' : 'No plans recorded here', ui.archived ? 'Finished plans you archive will appear here. Their history stays available.' : 'New reports appear here. Finished work may be in Archived plans.'));
       footer(root, vc, null);
       return;
     }
@@ -80,14 +90,17 @@ startView<Ui>({
       const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
       if (ui.tab === 'document') {
         const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
+        article.dataset.source = plan.sourceId;
         article.append(planHeader(plan, env), documentBlock(plan, env, 'inline', docHooks));
         detail.append(article);
       } else if (ui.tab === 'history') {
         const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
+        article.dataset.source = plan.sourceId;
         vc.requestHistory(plan);
         article.append(planHeader(plan, env), historyBlock(plan, vc.history(plan), env));
         detail.append(article);
       } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit' }));
+      detail.append(cleanupBlock(vc, plan));
     } else detail.append(emptyBlock('filtered-empty', 'No plans match these filters', 'Choose another project, worktree or session.'));
     board.append(detail);
     root.append(board);

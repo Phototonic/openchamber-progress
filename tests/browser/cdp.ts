@@ -139,7 +139,9 @@ try {
   else if (command === 'key') {
     const codes: Record<string, number> = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, ArrowDown: 40, ArrowUp: 38, ArrowLeft: 37, ArrowRight: 39, End: 35, Home: 36, ' ': 32 };
     const times = Number(args[1] ?? 1);
-    for (let i = 0; i < times; i++) for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key: args[0], code: args[0], windowsVirtualKeyCode: codes[args[0]] ?? 0 });
+    // Native buttons activate on Enter's character event; keydown-only worked for
+    // SDK listbox handlers but did not faithfully exercise native button activation.
+    for (let i = 0; i < times; i++) for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key: args[0], code: args[0], windowsVirtualKeyCode: codes[args[0]] ?? 0, ...(type === 'keyDown' && args[0] === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
   } else if (command === 'console') {
     const seen: string[] = [];
     const record = (where: string) => (m: Msg) => {

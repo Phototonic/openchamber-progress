@@ -12,14 +12,15 @@
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
-import type { SetupAction } from './adapter.ts';
+import type { CleanupAction, SetupAction } from './adapter.ts';
+import { cleanupEligible, cleanupError, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { el, refreshLabels, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
 import { OFFICIAL_MAIN_URL } from './config.ts';
 import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
-import { readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
+import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
 import { CSS } from './style.ts';
 
 export const REFRESH_MS = 3000;
@@ -79,6 +80,11 @@ export interface ViewContext<U> {
   runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
+  cleanup: CleanupState;
+  requestDelete: (plan: PlanView) => void;
+  cancelCleanup: () => void;
+  confirmDelete: () => void;
+  runCleanup: (action: 'archive' | 'restore', plan: PlanView) => void;
   /** What official main advertises; null while unknown (not checked yet, older service, failure). */
   officialMain: OfficialMainView | null;
   /** Candidate version whose notice the user dismissed. */
@@ -101,6 +107,9 @@ export interface ViewSpec<U> {
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
   onContext?: (vc: ViewContext<U>) => void;
+  /** Only rail/page expose cleanup; the selected plan, including document/history tabs. */
+  actionPlan?: (vc: ViewContext<U>) => PlanView | null;
+  forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
 }
 
 const focusKey = (root: HTMLElement) => {
@@ -112,7 +121,7 @@ const focusKey = (root: HTMLElement) => {
   return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active) };
 };
 
-const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : s.directory ?? ''}` : 'none');
+const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : s.directory ?? ''}|a:${s.archived ?? 'exclude'}` : 'none');
 
 export function startView<U>(spec: ViewSpec<U>) {
   const host = connectHost();
@@ -148,6 +157,10 @@ export function startView<U>(spec: ViewSpec<U>) {
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
   let setup: Loadable<SetupView> | null = null;
   let detailQueue: Promise<void> = Promise.resolve();
+  let cacheGeneration = 0;
+  let cleanup = initialCleanup();
+  let cleanupBusy = false;
+  let cleanupFocus: string | null = null;
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
   const memory = new RecentMemory<{ read: StoreRead; sig: string; health: HealthView; at: number }>(RECENT_SCOPES);
@@ -156,7 +169,13 @@ export function startView<U>(spec: ViewSpec<U>) {
   const memoryKey = (key: string) => `${ctx?.connection?.account ?? ''}|${identity}#${key}`;
 
   const bump = () => { versions.data++; schedule(); };
-  const resetCaches = () => { details.clear(); documents.clear(); histories.clear(); memory.clear(); };
+  const retireParts = () => {
+    cacheGeneration++; detailQueue = Promise.resolve();
+    for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
+    for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
+  };
+  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); };
+  const forgetPlans = (keys: Set<string>) => { if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; } };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
   function adoptScope(key: string) {
@@ -179,6 +198,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (key === requestedScope) return false;
     requestedScope = key;
     gate.retire();
+    retireParts();
     adoptScope(key);
     return true;
   }
@@ -205,11 +225,22 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     if (result.ok) {
       const nextHealth = result.health;
+      let authorityChanged = false;
       if (health && health.ready !== nextHealth.ready) { setup = null; loadSetup(); }
       const nextRead = result.read ? { ...result.read, plans: scope ? result.read.plans : [] } : null;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
-        if (identity && nextIdentity !== identity) { ui = spec.initialUi(); versions.ui++; resetCaches(); live.restart(); }
+        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; live.restart(); }
+        // A complete refreshed scope is authoritative about keys formerly in that scope.
+        // Evict all remembered scopes/parts so another session cannot resurrect removed data.
+        const previous = memory.get(memoryKey(key))?.read;
+        if (previous && !nextRead.truncated && previous.storeId === nextRead.storeId) {
+          const changed = new Set(previous.plans.filter((p) => {
+            const next = nextRead.plans.find((n) => n.key === p.key);
+            return !next || (next.cleanup?.revision ?? 0) !== (p.cleanup?.revision ?? 0);
+          }).map((p) => p.key));
+          if (changed.size) { resetCaches(); forgetPlans(changed); }
+        }
         identity = nextIdentity;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
@@ -221,6 +252,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
+      if (authorityChanged) spec.onContext?.(context());
     } else {
       if (!failure || failure.kind !== result.failure.kind) versions.data++;
       failure = result.failure;
@@ -237,6 +269,42 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
   const retry = () => { if (timer) clearTimeout(timer); gate.request(); };
 
+  const cleanupContext = () => JSON.stringify([ctx?.connection?.account ?? '', identity, session?.id ?? null, directory, scopeKey(currentScope())]);
+  function validTarget(target: CleanupTarget) {
+    return !disposed && !failure && health?.planCleanup === 1 && cleanupMatches(target, spec.actionPlan?.(context()) ?? null, read?.storeId, cleanupContext());
+  }
+  function cancelCleanup() {
+    if (cleanupBusy) return;
+    cleanup = initialCleanup(); cleanupFocus = 'cleanup-delete'; versions.ui++; schedule();
+  }
+  function requestDelete(plan: PlanView) {
+    if (cleanupBusy || !read || !cleanupEligible('delete', plan)) return;
+    const target = cleanupTarget(plan, read.storeId, cleanupContext());
+    if (!validTarget(target)) return;
+    cleanup = { ...initialCleanup(), target }; cleanupFocus = 'cleanup-cancel'; versions.ui++; schedule();
+  }
+  async function runCleanup(action: CleanupAction, target: CleanupTarget) {
+    if (cleanupBusy || !validTarget(target)) { if (!cleanupBusy) cancelCleanup(); return; }
+    const selected = spec.actionPlan?.(context());
+    if (!selected || !cleanupEligible(action, selected)) return;
+    const actionIdentity = identity;
+    const actionAccount = ctx?.connection?.account;
+    cleanupBusy = true; cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
+    const result = await cleanupCall(host, action, target.request);
+    cleanupBusy = false;
+    if (disposed) return;
+    if (identity !== actionIdentity || ctx?.connection?.account !== actionAccount) {
+      cleanup = initialCleanup(); versions.ui++; schedule(); return;
+    }
+    const sameContext = target.context === cleanupContext();
+    // Also reconcile ambiguous failures. Never replay an action automatically or retain
+    // pre-action data as a fresh success; every part/list reply from before this is retired.
+    gate.retire(); resetCaches(); forgetPlans(new Set([target.key]));
+    read = null; readScope = ''; readSig = ''; failure = null;
+    cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? (action === 'archive' ? 'Plan archived. Find it in Archived plans on the full page.' : action === 'restore' ? 'Plan restored. It is still finished; its history is unchanged.' : 'Stored plan deleted. The original file was not changed.') : cleanupError(result.failure.code)) : null };
+    cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
+  }
+
   function loadDetails(plans: PlanView[]) {
     for (const p of plans) {
       const cached = details.get(p.key);
@@ -244,9 +312,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (cached && cached.value.state === 'loading') continue;
       details.set(p.key, { revision: p.revision, value: { state: 'loading' } });
       const id = identity;
+      const generation = cacheGeneration;
       detailQueue = detailQueue.then(async () => {
+        if (disposed || id !== identity || generation !== cacheGeneration) return;
         const result = await readDetail(host, p);
-        if (disposed || id !== identity) return;
+        if (disposed || id !== identity || generation !== cacheGeneration) return;
         details.set(p.key, result.ok ? { revision: result.detail.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, value: { state: 'error', failure: result.failure } });
         bump();
       });
@@ -320,6 +390,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   function context(): ViewContext<U> {
+    const actionContext = cleanupContext();
+    const confirmation = cleanup.target;
     const env: Env = {
       locale: ctx!.locale, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
@@ -341,8 +413,9 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (existing && existing.state !== 'error') return;
         documents.set(k, { state: 'loading' });
         const id = identity;
+        const generation = cacheGeneration;
         void readDocument(host, p).then((r) => {
-          if (disposed || id !== identity) return;
+          if (disposed || id !== identity || generation !== cacheGeneration) return;
           documents.set(k, r.ok ? { state: 'ready', value: r.body } : { state: 'error', failure: r.failure });
           bump();
         });
@@ -355,8 +428,9 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (existing && existing.state !== 'error') return;
         histories.set(k, { state: 'loading' });
         const id = identity;
+        const generation = cacheGeneration;
         void readHistory(host, p).then((r) => {
-          if (disposed || id !== identity) return;
+          if (disposed || id !== identity || generation !== cacheGeneration) return;
           histories.set(k, r.ok ? { state: 'ready', value: { entries: r.entries, truncated: r.truncated } } : { state: 'error', failure: r.failure });
           bump();
         });
@@ -374,6 +448,12 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       storage: host.storage,
       identity,
+      cleanup,
+      requestDelete: (plan) => { if (actionContext === cleanupContext()) requestDelete(plan); },
+      cancelCleanup: () => { if (confirmation === cleanup.target) cancelCleanup(); },
+      // A retired button must never confirm a newer dialog's target.
+      confirmDelete: () => { if (confirmation && confirmation === cleanup.target) void runCleanup('delete', confirmation); },
+      runCleanup: (action, plan) => { if (read && actionContext === cleanupContext()) void runCleanup(action, cleanupTarget(plan, read.storeId, actionContext)); },
       officialMain: official.value, officialMainDismissed: official.dismissed,
       dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
       openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
@@ -392,6 +472,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     paintedKey = key;
     paintedUi = versions.ui;
+    if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
     const vc = context();
 
     const focus = focusKey(mount!);
@@ -425,6 +506,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       const target = focus.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>('button,summary,[tabindex],a,input,select,textarea')[focus.index];
       target?.focus({ preventScroll: true });
     }
+    if (cleanupFocus) {
+      const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
+      const target = owner?.querySelector<HTMLElement>('button') ?? owner;
+      if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
+    }
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     spec.afterPaint?.(root, vc);
@@ -433,6 +519,7 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   const contextChanged = () => {
     versions.ctx++;
+    cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
     live.restart();
     // The host announces one switch in steps (session, then directory). Only a step that moves the
     // list scope retires the read; the others keep the read already in flight.
@@ -452,8 +539,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       document.head.append(style);
     }
     const first = !ctx;
+    const accountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
     ctx = next;
+    if (accountChanged) {
+      gate.retire(); resetCaches(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
+      cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
+      versions.ctx++; live.restart(); spec.onContext?.(context()); gate.request();
+    }
     if (first) {
       session = next.session;
       directory = next.directory;

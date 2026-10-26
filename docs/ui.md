@@ -1,7 +1,8 @@
 # Progress views (T4, Designer)
 
-Three guest frames read the frozen production contract v2 (`shared/progress.ts`,
-`docs/contracts.md`) through `host.serviceRequest`.
+Three guest frames read production contract v2 (`shared/progress.ts`,
+`docs/contracts.md`) through `host.serviceRequest`. Rail/page also expose its optional,
+explicit finished-plan cleanup actions; Work Status remains read-only.
 - Built from `@openchamber/sdk/ui` and host theme tokens; TypeScript source, classic IIFE bundles.
 - The plan (`.slim/plans/agent-progress.md`) owns behaviour; this file records the UI's structure and decisions.
 
@@ -27,6 +28,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
 | `setup.ts` | Setup UI, phases, plain-language SetupError and diagnostic text. |
 | `official.ts` | Official-main version notice (rail and page) and the compact Work Status line. |
+| `cleanup.ts` / `cleanup-view.ts` | Bound cleanup targets, eligibility and plain error copy; rail/page actions and inline delete confirmation. The shared controller owns mutations and cache retirement. |
 | `app.ts` / `refresh.ts` | Frame lifecycle, caches and repaint rules (under Controller below). |
 | `components.ts`, `style.ts`, `format.ts` | DOM pieces, CSS from host tokens only (including reported-progress motion), locale-aware time. |
 
@@ -46,6 +48,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   - Items and contributions page with one cursor: each nested `nextCursor` is passed back verbatim, and reading stops when both are null.
   - If `plan.revision` changes between pages, the read restarts.
   - Contributions use `itemIds[]` and never change counts. Relays show "Reported by <reporter> for <child>".
+- **Optional cleanup.** `health.planCleanup === 1` enables actions; absent/unknown hides them and the page explains that cleanup is unavailable. Optional plan `cleanup` is validated separately from progress revisions. Normal/archived list modes never share a scope-cache key; an older service is not asked an unsupported archive query and never establishes an empty archive.
 - **Document** (`/v1/document`) loads on demand, when the disclosure opens or the Document tab is shown.
   - Continuation pages pin the first reply's `captureId`.
   - States (`denied`, `missing`, `moved`, `oversized`, `non-text`, `unavailable`, `changed-during-read`) get plain copy.
@@ -78,6 +81,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 **Work Status (`ui/status`).** Compact, scoped to the section's own session or directory.
 - **Automatic** features the most recently reported active plan with explicitly working task IDs (stable plan-key tie-break). Without one, it keeps the existing scoped ordering: owned-first, then active/recent within each ownership group, including the existing finished/cancelled fallback. Live Running/Idle labels never determine selection or completion.
 - With multiple scoped plans, **Featured plan** offers Automatic and every available plan. A manual choice, including a pending or finished plan, stays through refreshes and newer reports. Removed choices revert to Automatic. Choices are frame-local, retained for up to eight recent session/directory contexts, and cleared when the store/source binding or host account changes; reopening the frame starts Automatic. No asynchronous preference restore or server writes.
+- The status-only SDK selector shares one row with its label: a right-aligned 24px-high control, bounded to 65% of the row and shrinkable at narrow guest widths. Its value truncates with the full title on hover; popup labels wrap for keyboard/touch discovery. SDK naming and keyboard behavior remain intact, with an inset host-token focus outline. Other surfaces keep their existing select sizing.
 - Shows: counts and bar; first working (else blocked) task from the primary plan's detail; age and live state; up to two other plans.
 - Detail loading and the first live project subscription follow the featured plan, including a selection beyond the first three list entries; the two-session-stream/32-total-subscription limits remain unchanged.
 - "Open progress" calls `openSurface` to open the rail, whose selection remains independent. The compact picker does not synchronize other panes. Unconfigured shows "Set up", which opens the rail's setup flow.
@@ -87,6 +91,16 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 - Project → worktree → session filters; a grouped keyboard listbox (live/lifecycle/"Other setup" badge, done/total).
 - Detail tabs: Progress / Document / History. A coverage note covers missing live state, other-source plans and the subscription cap.
 - Footer zone: collapsed **Setup**, then collapsed **Details**.
+
+## Finished-plan cleanup
+
+- **Archive** is the ordinary action for a selected explicitly Finished plan in the rail/page. It hides the plan from ordinary lists and featured choices, retaining tasks, counts, report age, document and history. Archived plans cannot receive further reports until restored. No action for Active, Cancelled or Failed plans, and no automatic/bulk cleanup.
+- **Archived plans** is a page-level view above filters, including when ordinary results are empty. It uses the existing list/detail/document/history views. **Restore** preserves Finished lifecycle and history; it does not reopen the plan. Switching Current/Archived plans resets filters and selection so archived work is discoverable.
+- **Delete permanently…** is a separate action for either a visible or archived Finished plan. It opens an inline confirmation (not a modal) naming the plan and explaining deletion of stored tasks/history/copied document, preservation of the original file, irreversibility, the minimal replay guard and non-secure-erasure/recovery-backup limits. Nothing is sent on open or Cancel. Cancel receives focus; Enter there cancels, Escape cancels, and focus returns to the opener. The destructive button requires its own activation. Pending controls are disabled and the controller rejects duplicate submissions.
+- **Binding.** The confirmation captures store/source/plan, current progress revision and cleanup generation. Context, account/store, selection or revision changes invalidate it. A retired confirmation callback cannot act on a newer dialog. The controller checks eligibility and binding again before the POST; the server remains authoritative.
+- **Failure.** Conflict/busy/unavailable responses have plain feedback and an authoritative re-read; ambiguous requests are never silently retried or claimed successful. Cleanup is disabled while a read is stale/failed. Failed archived lookup is an error or explicitly stale prior data, never an authoritative empty archive. Capture-off does not disable explicit cleanup.
+- **Invalidation.** On success or ambiguous failure, retire list and part-read generations, clear list/detail/document/history memories and the affected selections, then refetch. Late replies cannot refill retired caches. Cleanup generation changes invalidate content even if the agent revision is unchanged. Every other mounted surface converges on its existing successful poll; a complete refreshed scope that loses a key evicts remembered scopes/parts and that key's recent choices too. No new bus or polling cadence. Known persisted rail choices are cleared when their removed keys are observed.
+- Setup's capture removal still retains history; only this separately confirmed plan deletion removes stored plan content. SQLite recovery files/backups are not erased or automatically restored.
 
 ### Diagnostics placement (owner direction, unchanged)
 
@@ -256,11 +270,12 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - `history-<planId>`, `revision-<n>`, `history-loading`
   - `detail-loading`
 - **Rail:** `plan-selector`, `helping-note`, `scope-note`, `details`
-- **Work Status:** `open-detail`, `more-plans`, `setup-needed`, `setup-needed-action`
+- **Work Status:** `status-plan-selector` (SDK button named **Featured plan**), `open-detail`, `more-plans`, `setup-needed`, `setup-needed-action`
 - **Page:**
   - `filters`, `filter-project`, `filter-worktree`, `filter-session`
   - `plan-list`, `project-<projectKey>`, `plan-row-<planId>` (`data-source`: two sources can report the same plan ID), `list-empty`
   - `plan-detail`, `detail-tabs`, `coverage-note`, `setup-section`
+- **Cleanup (rail/page only):** `cleanup-actions`, `cleanup-archive`, `cleanup-restore`, `cleanup-delete`, `cleanup-confirm`, `cleanup-cancel`, `cleanup-confirm-delete`, `cleanup-notice`, `cleanup-error`; page `cleanup-modes`, `cleanup-visible`, `cleanup-archived`, `cleanup-unavailable`. Existing `plan-row-<id>` / `plan-<id>` carry source identity for same-ID records from different sources, including document/history articles and Work Status.
 - **Setup:**
   - `setup-panel` (`data-phase`), `setup-form`, `setup-configRoot`, `setup-dataRoot`, `setup-storeRoot` (each with `data-hint` = `resolved` | `candidate` | `derived` | `none`)
   - `setup-hints-loading`, `setup-hints-unknown`
@@ -298,6 +313,9 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **`race-document.ts`:** the same re-capture race in a real frame. It holds the frame's pinned continuation request at the host page (CDP `Fetch`), runs real writes, releases it, and checks the historical note.
 - **`cdp.ts`:** drives the isolated desktop host over CDP: real frame clicks (`fclick`), bounded waits (`fwait`), keys, screenshots and console capture. Frames are chosen by URL part, or by `surface:<panel|status|page>` (matched on the view's own `data-surface` root). The relay runtime delivers guest documents as `srcdoc` frames with no URL, so it uses the latter, with click offsets taken from the frame's owner element.
   - `viewport WxH` persistently resizes an isolated Chromium window for responsive interaction across commands; `shot --size WxH` is a capture-only emulation and must not be used to claim mobile interaction coverage.
+- **`status-picker-fixture.ts` / `status-picker-qa.ts`:** dependency-free synthetic SDK host on loopback port 47841 and a CDP-driven compact-picker regression. Start the fixture with Node's `--experimental-strip-types`, open it in an isolated Chromium with CDP, then run `node --experimental-strip-types tests/browser/status-picker-qa.ts <CDP port>`. Checks 280/360/480px guest layout, keyboard/focus, long/finished/Automatic selection, refresh and context isolation; saves sanitized screenshots under `evidence/cleanup/`. This is current-bundle UI proof, not a real-service or native-host check.
+- **`cleanup.test.ts`:** capability/metadata parsing, bounded request bodies and matching receipts, finished eligibility, confirmation identity/revisions, old-service archive behavior, paging and removed-choice eviction.
+- **`cleanup-fixture.ts` / `cleanup-qa.ts`:** synthetic SDK shell with two real disposable built HTTP services/SQLite stores, using the accepted backend fixture. Launch `node --experimental-strip-types tests/browser/cleanup-fixture.ts`, open loopback 47851 in isolated Chromium/CDP, then run `node --experimental-strip-types tests/browser/cleanup-qa.ts <CDP port>`. The driver resets only its disposable stores at each explicit run, uses real mouse/keyboard input, reads SQLite side effects and original-source preservation, and saves cleanup screenshots. Fault seams are labelled: stripped capability, synthetic busy/network reply, held pre-action list/detail/document/history and mutation replies. Conflict comes from a real concurrent cleanup. SIGTERM stops its owned service children and removes their roots. No native host/install claim.
 
 - **`setup-intercept.ts`:** QA9 interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It can also strip plan-detail `timing` or drop entries (an older service, an unknown start) and replace `/v1/extension-update` replies (404, malformed): labelled QA seams. It is controlled live through a JSON file.
 - **`motion-probe.ts`:** motion QA for an isolated host. It holds reduced-motion emulation for the whole command and reports, per guest frame:

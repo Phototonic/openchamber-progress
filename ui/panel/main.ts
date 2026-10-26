@@ -8,6 +8,7 @@ import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
 import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
+import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 
 type Ui = { selected: string | null; setup: SetupUi };
 const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
@@ -15,24 +16,39 @@ const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
 // (host storage stays the durable copy and is still read on every switch).
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
 let contextSession: string | null | undefined;
+let contextAuthority = '';
+let selectionGeneration = 0;
 
 // Right rail: the selected session's plan, progress first; diagnostics collapsed at the end.
 startView<Ui>({
   surface: 'panel',
   maxSessionSubscriptions: 4,
   initialUi: () => ({ selected: null, setup: initialSetupUi() }),
+  actionPlan: current,
+  forgetPlans: (keys, ui, vc) => {
+    selectionGeneration++;
+    recentSelection.deleteWhere((key, session) => {
+      if (!keys.has(key)) return false;
+      void vc.storage.delete(storeKey(session)).catch(() => {});
+      return true;
+    });
+    if (keys.has(ui.selected ?? '') && vc.session) void vc.storage.delete(storeKey(vc.session.id)).catch(() => {});
+    return keys.has(ui.selected ?? '') ? { selected: null } : {};
+  },
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
   wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
   wantDetails: (vc) => { const p = current(vc); return p ? [p] : []; },
   // The chosen plan is remembered per session, so reopening the panel keeps it.
   onContext: (vc) => {
     const id = vc.session?.id ?? null;
+    if (contextAuthority !== vc.identity) { recentSelection.clear(); contextSession = undefined; contextAuthority = vc.identity; }
     if (id === contextSession) return; // another step of the same switch keeps the selection
     contextSession = id;
+    const generation = ++selectionGeneration;
     vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null });
     if (!id) return;
     void vc.storage.get(storeKey(id)).then((v) => {
-      if (typeof v !== 'string' || vc.session?.id !== id) return;
+      if (typeof v !== 'string' || generation !== selectionGeneration) return;
       recentSelection.set(id, v);
       if (vc.ui.selected !== v) vc.setUi({ selected: v });
     }).catch(() => {});
@@ -40,6 +56,7 @@ startView<Ui>({
   paint(root, vc) {
     const { read, failure, env } = vc;
     root.append(el('h1', 'ap-sr', 'Agent progress'));
+    const notice = cleanupNotice(vc); if (notice) root.append(notice);
     // The official-main notice does not depend on companion setup or the store.
     const official = officialMainBlock(vc);
     if (!read) {
@@ -73,7 +90,7 @@ startView<Ui>({
       if (plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId) {
         root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${sessionLabel(plan.ownerSessionId, env.live)}.`), 'helping-note'));
       }
-      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure' }));
+      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure' }), cleanupBlock(vc, plan));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));

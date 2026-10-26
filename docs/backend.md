@@ -72,6 +72,46 @@ on a closed plan require reopen on staging and commit but do not reopen alone.
 
 ## Storage and document consistency
 
+Finished-plan cleanup is the bounded exception to default history retention;
+see the frozen API and fixture in `docs/contracts.md`. `shared/cleanup.ts` extends
+the existing Store owner, not a second storage engine. Cleanup format1 is additive
+to schema2 without changing legacy columns/order or stored snapshots. First-use
+read-only preflight precedes a private verified `VACUUM INTO` snapshot outside the
+write transaction. Under `BEGIN IMMEDIATE`, eligibility, store/key, progress revision
+and cleanup generation are checked again before DDL/action commit. Backup/init
+failure never auto-restores or resets data; a race can leave a private recovery file.
+
+Archive/restore write only separate cleanup metadata; archive freezes progress.
+Delete removes the key's contributions/revisions/captures/chunks/receipts/plan in
+foreign-key-safe order and retains a minimal replay tombstone. Persistent main-DB
+INSERT/UPDATE guards cover plans, chunks, captures, revisions, contributions and
+receipts, including both identities on UPDATE. Already-open old writers are fenced
+by SQLite itself; transaction rollback removes preceding partial capture writes.
+New writers check cleanup state before ordinary receipt replay. No normal GET,
+startup or report initializes this extension. Future/inconsistent extension formats
+are refused, not repaired. Rollback retains all guards/tombstones; old readers may
+show archived work, never deleted payloads. No secure-erasure claim is made for
+free pages, journals, recovery backups or filesystem snapshots. Original source
+files and unrelated records are never deleted.
+
+Focused safety/API checks:
+
+```sh
+node --experimental-strip-types --test tests/backend/plan-cleanup.test.ts tests/backend/production-storage.test.ts tests/backend/production-contract.test.ts
+node --experimental-strip-types --test tests/backend/plan-cleanup-service.test.ts tests/backend/production-service.test.ts tests/backend/service-recovery.test.ts tests/backend/task-timing.test.ts
+```
+
+The test-only legacy driver extracts **unmodified** Store/progress source from
+repository object `498c7e58fc0b53b21edfe71b3ba4abbcca3faee6` into disposable roots.
+It runs in separate Node processes both before and after extension activation;
+it is not today's Store with checks disabled. This compatibility test needs that
+Git object (a source export without Git cannot run it); it does not claim every
+historical binary/runtime is certified. Fault checks combine actual process kills,
+SQLite lock/page-capacity failures and explicitly labelled snapshot-boundary fault
+injection. All history/config/backup fixtures are synthetic and removed on teardown.
+The built-entry check is opt-in with `CP_BUILT_SERVICE=1` for the coordinated stable
+CP-Q5 join; it restarts the actual service against the same disposable store.
+
 Schema2, prepared statements, foreign keys/check constraints, default rollback
 journal,1-second busy timeout. BEGIN IMMEDIATE mutation rechecks enabled/revision,
 validates whole batch and writes state/history/attribution/capture/receipt before

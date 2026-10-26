@@ -61,6 +61,8 @@ export interface PlanView {
   /** IDs of working items; titles need the detail read. */
   working: string[];
   document: DocumentRefView;
+  /** Independent of agent progress revisions; absent on older services. */
+  cleanup?: { state: 'visible' | 'archived'; revision: number };
 }
 
 export interface PlanDetail {
@@ -102,7 +104,7 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[] }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1 }
 
 export interface SetupTargets { configRoot: string; dataRoot: string; storeRoot: string }
 /**

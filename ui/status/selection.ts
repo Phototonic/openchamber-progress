@@ -37,4 +37,5 @@ export class StatusSelection {
     if (selected && !manual) this.choices.set(this.context, null);
     return { plan: manual ?? automaticPlan(scope), selected: manual?.key ?? null };
   }
+  forget(keys: Set<string>) { this.choices.deleteWhere((key) => !!key && keys.has(key)); }
 }

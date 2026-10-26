@@ -46,7 +46,7 @@ export function parseHealth(body: string): HealthView {
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [] };
+  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}) };
 }
 
 /** Error body of a non-200 reply: `{error: fixed-code}`. */
@@ -100,6 +100,7 @@ function parseSummary(v: unknown): PlanView {
   check(isInt(v.revision) && isInt(v.structuralRevision) && isStr(v.reportedAt) && isStr(v.directory), `Plan ${v.id} has no revision, time or location.`);
   const lifecycle = LIFECYCLES[String(v.lifecycle)];
   check(lifecycle, `Plan ${v.id} has an unknown lifecycle.`);
+  if (v.cleanup !== undefined) check(isRec(v.cleanup) && (v.cleanup.state === 'visible' || v.cleanup.state === 'archived') && isInt(v.cleanup.revision) && v.cleanup.revision >= 0, 'A plan has unreadable cleanup metadata.');
   return {
     key: `${v.sourceId}/${v.id}`, id: v.id, sourceId: v.sourceId, title: v.title, ownerSessionId: v.sessionId,
     revision: v.revision, structuralRevision: v.structuralRevision, lifecycle, reportedAt: v.reportedAt,
@@ -107,6 +108,7 @@ function parseSummary(v: unknown): PlanView {
     counts: v.counts === undefined ? null : parseCounts(v.counts),
     working: Array.isArray(v.working) ? v.working.filter(isStr) : [],
     document: parseDocumentRef(v.document),
+    ...(v.cleanup === undefined ? {} : { cleanup: v.cleanup as PlanView['cleanup'] }),
   };
 }
 
@@ -268,4 +270,17 @@ export function parseExtensionUpdate(body: string): OfficialMainView {
 /** Setup request body: only these keys, all three roots or none (docs/contracts.md). */
 export function setupBody(targets: { configRoot: string; dataRoot: string; storeRoot: string } | null, confirmed: boolean) {
   return JSON.stringify({ ...(targets ? { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot } : {}), ...(confirmed ? { confirmed: true } : {}) });
+}
+
+export type CleanupAction = 'archive' | 'restore' | 'delete';
+export interface CleanupRequest { storeId: string; source: string; plan: string; rev: number; cleanupRev: number; oid: string }
+export function cleanupBody(request: CleanupRequest, action: CleanupAction) {
+  const { storeId, source, plan, rev, cleanupRev, oid } = request;
+  return JSON.stringify({ storeId, source, plan, rev, cleanupRev, oid, ...(action === 'delete' ? { confirmed: true } : {}) });
+}
+export function parseCleanupReceipt(body: string, request: CleanupRequest, action: CleanupAction) {
+  const v: unknown = JSON.parse(body);
+  const state = action === 'archive' ? 'archived' : action === 'restore' ? 'visible' : 'deleted';
+  check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan && v.oid === request.oid && isRec(v.cleanup) && v.cleanup.state === state && v.cleanup.revision === request.cleanupRev + 1, 'The cleanup receipt does not match this action.');
+  return { state, revision: request.cleanupRev + 1 };
 }

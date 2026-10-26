@@ -138,10 +138,133 @@ function validRequest(value, hint) {
 }
 
 // shared/store.ts
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
+import { existsSync, lstatSync as lstatSync2, openSync as openSync2, readSync, closeSync as closeSync2, realpathSync as realpathSync2, chmodSync } from "node:fs";
+import path2 from "node:path";
+
+// shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from "node:fs";
+import { openSync, closeSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
+var definitions = {
+  cleanup_format: "CREATE TABLE cleanup_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1))",
+  cleanup_state: "CREATE TABLE cleanup_state(source TEXT NOT NULL, plan TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN('visible','archived','deleted')), generation INTEGER NOT NULL CHECK(generation>0), oid TEXT NOT NULL, request_hash TEXT NOT NULL, receipt TEXT NOT NULL CHECK(json_valid(receipt)), PRIMARY KEY(source,plan))"
+};
+for (const table of ["plans", "chunks", "captures", "revisions", "contributions", "receipts"]) {
+  const key = table === "plans" ? "id" : "plan";
+  for (const event of ["INSERT", "UPDATE"]) {
+    const name = `cleanup_guard_${table}_${event.toLowerCase()}`;
+    const predicate = (row) => `EXISTS(SELECT 1 FROM cleanup_state WHERE source=${row}.source AND plan=${row}.${key} AND state IN('archived','deleted'))`;
+    definitions[name] = `CREATE TRIGGER ${name} BEFORE ${event} ON ${table} WHEN ${predicate("NEW")}${event === "UPDATE" ? ` OR ${predicate("OLD")}` : ""} BEGIN SELECT RAISE(ABORT, 'cleanup-closed'); END`;
+  }
+}
+var normalized = (sql) => sql.trim().replace(/\s+/g, " ");
+function cleanupInstalled(db) {
+  requireProgress(Number(db.prepare("PRAGMA user_version").get().user_version) === 2, "schema");
+  const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'cleanup_*'").all();
+  if (!rows.length)
+    return false;
+  requireProgress(rows.length === Object.keys(definitions).length, "schema");
+  for (const row of rows)
+    requireProgress(typeof row.name === "string" && definitions[row.name] !== undefined && normalized(String(row.sql)) === normalized(definitions[row.name]), "schema");
+  const format = db.prepare("SELECT * FROM cleanup_format").all();
+  requireProgress(format.length === 1 && format[0].singleton === 1 && format[0].version === 1, "schema");
+  return true;
+}
+function cleanupState(db, source, plan) {
+  return db.prepare("SELECT * FROM cleanup_state WHERE source=? AND plan=?").get(source, plan);
+}
+function parseCleanup(action, value) {
+  requireProgress(["archive", "restore", "delete"].includes(action));
+  requireProgress(value && typeof value === "object" && !Array.isArray(value));
+  const r = value;
+  const fields = ["storeId", "source", "plan", "rev", "cleanupRev", "oid", ...action === "delete" ? ["confirmed"] : []];
+  requireProgress(Object.keys(r).every((k) => fields.includes(k)));
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && identifier(r.oid));
+  requireProgress(Number.isSafeInteger(r.rev) && r.rev > 0 && Number.isSafeInteger(r.cleanupRev) && r.cleanupRev >= 0 && r.cleanupRev < Number.MAX_SAFE_INTEGER);
+  requireProgress(action !== "delete" || r.confirmed === true);
+  return r;
+}
+function requestHash(action, r) {
+  return createHash("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false])).digest("hex");
+}
+function preflight(db, action, r, installed) {
+  requireProgress(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id === r.storeId, "conflict");
+  const state = installed ? cleanupState(db, r.source, r.plan) : undefined;
+  if (state?.oid === r.oid) {
+    requireProgress(state.request_hash === requestHash(action, r), "operation-reused");
+    return JSON.parse(String(state.receipt));
+  }
+  requireProgress((state?.generation ?? 0) === r.cleanupRev, "conflict");
+  const row = db.prepare("SELECT snapshot,revision FROM plans WHERE source=? AND id=?").get(r.source, r.plan);
+  requireProgress(row && state?.state !== "deleted", "not-found");
+  requireProgress(row.revision === r.rev, "conflict");
+  let p;
+  try {
+    p = JSON.parse(String(row.snapshot));
+  } catch {
+    throw new ProgressError("corrupt");
+  }
+  requireProgress(p.id === r.plan && p.sourceId === r.source && p.revision === r.rev, "corrupt");
+  requireProgress(p.lifecycle === "finished", "closed");
+  requireProgress(action === "restore" ? state?.state === "archived" : action === "delete" || !state || state.state === "visible", "closed");
+}
+function backup(db, file) {
+  const parent = path.dirname(file);
+  const owned = lstatSync(parent);
+  requireProgress(owned.isDirectory() && !owned.isSymbolicLink() && owned.uid === process.getuid?.() && (owned.mode & 511) === 448 && realpathSync(parent) === parent, "binding");
+  const destination = path.join(path.dirname(file), `cleanup-backup-${randomUUID()}.sqlite`);
+  const fd = openSync(destination, "wx", 384);
+  closeSync(fd);
+  let copy;
+  try {
+    db.prepare("VACUUM INTO ?").run(destination);
+    const stat = lstatSync(destination);
+    requireProgress(stat.isFile() && !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 511) === 384, "binding");
+    copy = new DatabaseSync(destination, { readOnly: true });
+    requireProgress(copy.prepare("PRAGMA integrity_check").get()?.integrity_check === "ok" && copy.prepare("PRAGMA foreign_key_check").all().length === 0, "corrupt");
+    requireProgress(copy.prepare("PRAGMA user_version").get()?.user_version === 2 && copy.prepare("SELECT store_id FROM meta").get()?.store_id === db.prepare("SELECT store_id FROM meta").get()?.store_id, "corrupt");
+  } catch (e) {
+    copy?.close();
+    copy = undefined;
+    unlinkSync(destination);
+    throw e;
+  } finally {
+    copy?.close();
+  }
+}
+function mutateCleanup(db, file, action, value, transaction) {
+  const r = parseCleanup(action, value);
+  const initial = transaction(false, () => {
+    const installed = cleanupInstalled(db);
+    return { installed, replay: preflight(db, action, r, installed) };
+  });
+  if (initial.replay)
+    return initial.replay;
+  if (!initial.installed)
+    backup(db, file);
+  return transaction(true, () => {
+    const installed = cleanupInstalled(db);
+    const replay = preflight(db, action, r, installed);
+    if (replay)
+      return replay;
+    if (!installed) {
+      for (const sql of Object.values(definitions))
+        db.exec(sql);
+      db.exec("INSERT INTO cleanup_format VALUES(1,1)");
+    }
+    const receipt = { storeId: r.storeId, source: r.source, plan: r.plan, cleanup: { state: action === "archive" ? "archived" : action === "restore" ? "visible" : "deleted", revision: r.cleanupRev + 1 }, oid: r.oid };
+    db.prepare("INSERT INTO cleanup_state VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,plan) DO UPDATE SET state=excluded.state,generation=excluded.generation,oid=excluded.oid,request_hash=excluded.request_hash,receipt=excluded.receipt").run(r.source, r.plan, receipt.cleanup.state, receipt.cleanup.revision, r.oid, requestHash(action, r), JSON.stringify(receipt));
+    if (action === "delete")
+      for (const table of ["contributions", "revisions", "captures", "chunks", "receipts", "plans"])
+        db.prepare(`DELETE FROM ${table} WHERE source=? AND ${table === "plans" ? "id" : "plan"}=?`).run(r.source, r.plan);
+    return receipt;
+  });
+}
+
+// shared/store.ts
 function canonical(value) {
   if (Array.isArray(value))
     return `[${value.map(canonical).join(",")}]`;
@@ -150,7 +273,7 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 function digest(value) {
-  return createHash("sha256").update(value).digest("hex");
+  return createHash2("sha256").update(value).digest("hex");
 }
 function storageError(e) {
   if (e instanceof ProgressError)
@@ -177,28 +300,30 @@ PRAGMA user_version=2;`;
 class Store {
   db;
   file;
+  readOnly;
   readBinding = { sourceId: null, verified: false };
   constructor(file, options = {}) {
     this.file = file;
+    this.readOnly = options.readOnly ?? false;
     try {
-      requireProgress(path.isAbsolute(file), "binding");
-      const parent = lstatSync(path.dirname(file));
-      requireProgress(parent.isDirectory() && parent.uid === process.getuid?.() && !parent.isSymbolicLink() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 511) === 448, "binding");
+      requireProgress(path2.isAbsolute(file), "binding");
+      const parent = lstatSync2(path2.dirname(file));
+      requireProgress(parent.isDirectory() && parent.uid === process.getuid?.() && !parent.isSymbolicLink() && realpathSync2(path2.dirname(file)) === path2.dirname(file) && (parent.mode & 511) === 448, "binding");
       const existed = existsSync(file);
       requireProgress(existed || options.create && !options.readOnly, "not-found");
       if (existed) {
-        const stat = lstatSync(file);
+        const stat = lstatSync2(file);
         requireProgress(stat.isFile() && stat.uid === process.getuid?.() && !stat.isSymbolicLink() && (stat.mode & 511) === 384, "binding");
-        const fd = openSync(file, "r");
+        const fd = openSync2(file, "r");
         const head = Buffer.alloc(16);
         try {
           readSync(fd, head, 0, 16, 0);
         } finally {
-          closeSync(fd);
+          closeSync2(fd);
         }
         requireProgress(head.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
-      this.db = new DatabaseSync(file, { readOnly: options.readOnly ?? false });
+      this.db = new DatabaseSync2(file, { readOnly: options.readOnly ?? false });
       if (!existed)
         chmodSync(file, 384);
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
@@ -207,7 +332,7 @@ class Store {
         this.db.exec("BEGIN IMMEDIATE");
         try {
           this.db.exec(SCHEMA);
-          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID());
+          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID2());
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -251,6 +376,7 @@ class Store {
       throw storageError(e);
     }
     try {
+      requireProgress(Number(this.db.prepare("PRAGMA user_version").get().user_version) === VERSION, "schema");
       const value = action();
       this.db.exec("COMMIT");
       return value;
@@ -290,9 +416,18 @@ class Store {
   get(source, id) {
     return this.transaction(false, () => this.raw(source, id));
   }
+  cleanup(action, value) {
+    requireProgress(!this.readOnly, "storage");
+    try {
+      return mutateCleanup(this.db, this.file, action, value, (write, fn) => this.transaction(write, fn));
+    } catch (e) {
+      throw storageError(e);
+    }
+  }
   summary(p) {
     const { items, links: _links, boundCanonicalPath: _bound, ...rest } = p;
-    return { ...rest, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
+    const state = cleanupInstalled(this.db) ? cleanupState(this.db, p.sourceId, p.id) : undefined;
+    return { ...rest, ...state ? { cleanup: { state: state.state, revision: Number(state.generation) } } : {}, counts: countItems(items), working: items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id) };
   }
   metadata() {
     const meta = this.db.prepare("SELECT * FROM meta WHERE singleton=1").get();
@@ -303,9 +438,12 @@ class Store {
     return this.transaction(false, () => {
       const limit = options.limit ?? LIMITS.pageSize;
       const cursor = options.cursor ?? 0;
+      requireProgress(options.archived === undefined || options.archived === "exclude" || options.archived === "only");
+      const installed = cleanupInstalled(this.db);
+      const cleanupWhere = installed ? ` AND ${options.archived === "only" ? "" : "NOT "}EXISTS(SELECT 1 FROM cleanup_state cs WHERE cs.source=plans.source AND cs.plan=plans.id AND cs.state='archived')` : options.archived === "only" ? " AND 0" : "";
       requireProgress(Number.isSafeInteger(cursor) && cursor >= 0 && Number.isInteger(limit) && limit > 0 && limit <= LIMITS.maxPageSize);
       const where = ["(? IS NULL OR source=?)", `(? IS NULL OR json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=?) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=?))`, `(? IS NULL OR json_extract(snapshot,'$.directory')=? OR EXISTS(SELECT 1 FROM sessions s WHERE s.source=plans.source AND json_extract(s.actor,'$.directory')=? AND (s.id=json_extract(plans.snapshot,'$.sessionId') OR EXISTS(SELECT 1 FROM json_each(plans.snapshot,'$.links') j WHERE json_extract(j.value,'$.sessionId')=s.id) OR EXISTS(SELECT 1 FROM contributions c WHERE c.source=plans.source AND c.plan=plans.id AND json_extract(c.payload,'$.attributedSessionId')=s.id))))`].join(" AND ");
-      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null, options.source ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.directory ?? null, options.directory ?? null, options.directory ?? null, limit + 1, cursor);
+      const rows = this.db.prepare(`SELECT snapshot FROM plans WHERE ${where}${cleanupWhere} ORDER BY source,id LIMIT ? OFFSET ?`).all(options.source ?? null, options.source ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.session ?? null, options.directory ?? null, options.directory ?? null, options.directory ?? null, limit + 1, cursor);
       const data = rows.slice(0, limit).map((r) => this.summary(JSON.parse(String(r.snapshot))));
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor + limit) : null };
     });
@@ -364,6 +502,9 @@ class Store {
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(cleanup?.state !== "deleted", "not-found");
+      requireProgress(cleanup?.state !== "archived", "closed");
       const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
@@ -469,7 +610,7 @@ class Store {
         p.lifecycle = r.outcome;
       }
       if (r.op === "bind" || r.op === "start" && r.source) {
-        requireProgress(capture && path.isAbsolute(capture.path), "invalid");
+        requireProgress(capture && path2.isAbsolute(capture.path), "invalid");
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
@@ -547,23 +688,23 @@ function validateItems(items) {
 }
 
 // setup/lifecycle.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync2, lstatSync as lstatSync3, realpathSync as realpathSync3, mkdirSync, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, openSync as openSync2, closeSync as closeSync2, fsyncSync, appendFileSync } from "node:fs";
-import path3 from "node:path";
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { existsSync as existsSync2, lstatSync as lstatSync4, realpathSync as realpathSync4, mkdirSync, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, openSync as openSync3, closeSync as closeSync3, fsyncSync, appendFileSync } from "node:fs";
+import path4 from "node:path";
 
 // shared/binding.ts
-import { lstatSync as lstatSync2, readFileSync, realpathSync as realpathSync2 } from "node:fs";
-import path2 from "node:path";
+import { lstatSync as lstatSync3, readFileSync, realpathSync as realpathSync3 } from "node:fs";
+import path3 from "node:path";
 function readBinding(file) {
-  const p = file instanceof URL ? file : path2.resolve(file);
-  const stat = lstatSync2(p);
+  const p = file instanceof URL ? file : path3.resolve(file);
+  const stat = lstatSync3(p);
   requireProgress(!stat.isSymbolicLink() && stat.isFile() && stat.uid === process.getuid?.() && (stat.mode & 511) === 384, "binding");
   const b = JSON.parse(readFileSync(p, "utf8"));
   requireProgress(b.protocolVersion === VERSION && b.schemaVersion === VERSION, "schema");
-  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path2.isAbsolute(b.database) && path2.basename(b.database) === "progress.sqlite", "binding");
+  requireProgress(typeof b.installId === "string" && typeof b.version === "string" && typeof b.storeId === "string" && path3.isAbsolute(b.database) && path3.basename(b.database) === "progress.sqlite", "binding");
   requireProgress(b.source && typeof b.source.id === "string" && typeof b.source.verified === "boolean", "binding");
-  for (const root of [path2.dirname(b.database), b.source.configRoot, b.source.dataRoot])
-    requireProgress(path2.isAbsolute(root) && realpathSync2(root) === root, "binding");
+  for (const root of [path3.dirname(b.database), b.source.configRoot, b.source.dataRoot])
+    requireProgress(path3.isAbsolute(root) && realpathSync3(root) === root, "binding");
   return b;
 }
 function verifyStore(store, b) {
@@ -579,8 +720,8 @@ function activationFingerprint(binding, plugin, guidance) {
 // setup/lifecycle.ts
 function normalizeTargets(targets) {
   const trim = (value) => {
-    const root = path3.parse(value).root;
-    while (value.length > root.length && value.endsWith(path3.sep))
+    const root = path4.parse(value).root;
+    while (value.length > root.length && value.endsWith(path4.sep))
       value = value.slice(0, -1);
     return value;
   };
@@ -599,46 +740,46 @@ function need(v, code) {
     throw new SetupError(code);
 }
 function safe(p, allowMissing = false) {
-  need(path3.isAbsolute(p) && path3.resolve(p) === p, "path-unverified");
+  need(path4.isAbsolute(p) && path4.resolve(p) === p, "path-unverified");
   let current = p;
   while (!existsSync2(current)) {
     need(allowMissing, "path-unverified");
-    const parent = path3.dirname(current);
+    const parent = path4.dirname(current);
     need(parent !== current, "path-unverified");
     current = parent;
   }
-  need(realpathSync3(current) === current && !lstatSync3(current).isSymbolicLink(), "symlink-escape");
+  need(realpathSync4(current) === current && !lstatSync4(current).isSymbolicLink(), "symlink-escape");
 }
 function fsyncDir(dir) {
-  const fd = openSync2(dir, "r");
+  const fd = openSync3(dir, "r");
   try {
     fsyncSync(fd);
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function atomic(file, content, stagingRoot) {
-  const tmp = path3.join(stagingRoot, `.agent-progress-activation-${randomUUID2()}`);
+  const tmp = path4.join(stagingRoot, `.agent-progress-activation-${randomUUID3()}`);
   writeFileSync(tmp, content, { mode: 384, flag: "wx" });
-  const fd = openSync2(tmp, "r");
+  const fd = openSync3(tmp, "r");
   try {
     fsyncSync(fd);
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
   renameSync(tmp, file);
-  fsyncDir(path3.dirname(file));
+  fsyncDir(path4.dirname(file));
 }
 function writeFiles(root, files) {
   mkdirSync(root, { mode: 448 });
   for (const [name, body] of Object.entries(files)) {
     need(/^[A-Za-z0-9_.-]+$/.test(name), "payload-invalid");
-    writeFileSync(path3.join(root, name), body, { mode: 384, flag: "wx" });
-    const fd = openSync2(path3.join(root, name), "r");
+    writeFileSync(path4.join(root, name), body, { mode: 384, flag: "wx" });
+    const fd = openSync3(path4.join(root, name), "r");
     try {
       fsyncSync(fd);
     } finally {
-      closeSync2(fd);
+      closeSync3(fd);
     }
   }
   fsyncDir(root);
@@ -688,18 +829,18 @@ function updatePreview(o, payload) {
   const comparison = compareVersions(payload.version, o.manifest.releases[o.manifest.active].version);
   if (comparison === undefined || !payload.plugin || !payload.guidance)
     return;
-  const rootPackage = JSON.parse(readFileSync2(path3.join(o.root, "package.json"), "utf8"));
+  const rootPackage = JSON.parse(readFileSync2(path4.join(o.root, "package.json"), "utf8"));
   return { state: releasePayload(o.binding, payload).release === o.manifest.active ? "current" : comparison < 0 ? "newer-installed" : "available", candidateVersion: payload.version, rootVersion: typeof rootPackage.version === "string" ? rootPackage.version : null };
 }
 function verifyFiles(root, expected, extras = []) {
   safe(root);
-  need(lstatSync3(root).isDirectory(), "collision");
+  need(lstatSync4(root).isDirectory(), "collision");
   need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
   for (const [name, hash] of Object.entries(expected)) {
-    const file = path3.join(root, name);
+    const file = path4.join(root, name);
     need(existsSync2(file), "modified-owned-files");
     safe(file);
-    const st = lstatSync3(file);
+    const st = lstatSync4(file);
     need(st.isFile() && st.uid === process.getuid?.() && (st.mode & 511) === 384 && digest(readFileSync2(file)) === hash, "modified-owned-files");
   }
 }
@@ -709,12 +850,12 @@ function inspect(targets) {
   safe(targets.dataRoot);
   safe(targets.storeRoot, true);
   for (const root of [targets.configRoot, targets.dataRoot])
-    need(lstatSync3(root).isDirectory() && lstatSync3(root).uid === process.getuid?.(), "path-unverified");
-  const packageRoot = path3.join(targets.configRoot, "plugins", "agent-progress");
+    need(lstatSync4(root).isDirectory() && lstatSync4(root).uid === process.getuid?.(), "path-unverified");
+  const packageRoot = path4.join(targets.configRoot, "plugins", "agent-progress");
   safe(packageRoot, true);
   if (existsSync2(targets.storeRoot))
-    need(lstatSync3(targets.storeRoot).isDirectory() && (lstatSync3(targets.storeRoot).mode & 511) === 448, "store-permissions");
-  const payloadRoot = path3.join(targets.storeRoot, "payloads");
+    need(lstatSync4(targets.storeRoot).isDirectory() && (lstatSync4(targets.storeRoot).mode & 511) === 448, "store-permissions");
+  const payloadRoot = path4.join(targets.storeRoot, "payloads");
   safe(payloadRoot, true);
   return {
     targets,
@@ -733,7 +874,7 @@ function inspect(targets) {
 function owned(targets) {
   const info = inspect(targets);
   need(info.installed, "not-installed");
-  const manifestFile = path3.join(info.packageRoot, ".ownership.json");
+  const manifestFile = path4.join(info.packageRoot, ".ownership.json");
   need(existsSync2(manifestFile), "collision");
   safe(manifestFile);
   let m;
@@ -745,24 +886,24 @@ function owned(targets) {
   need(m.product === "openchamber-agent-progress" && typeof m.installId === "string" && /^[a-f0-9]{64}$/.test(m.active) && m.releases?.[m.active], "collision");
   need(Object.keys(m.files).sort().join(",") === "SKILL.md,index.js,package.json,progress-binding.json,remove.js", "ownership-invalid");
   verifyFiles(info.packageRoot, m.files, [".ownership.json"]);
-  const b = readBinding(path3.join(info.packageRoot, "progress-binding.json"));
-  need(b.installId === m.installId && b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot && path3.dirname(b.database) === targets.storeRoot, "ownership-invalid");
+  const b = readBinding(path4.join(info.packageRoot, "progress-binding.json"));
+  need(b.installId === m.installId && b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot && path4.dirname(b.database) === targets.storeRoot, "ownership-invalid");
   for (const [id, release] of Object.entries(m.releases)) {
     need(/^[a-f0-9]{64}$/.test(id) && Object.keys(release.files).sort().join(",") === "SKILL.md,index.js,progress-binding.json", "ownership-invalid");
-    verifyFiles(path3.join(targets.storeRoot, "payloads", id), release.files);
+    verifyFiles(path4.join(targets.storeRoot, "payloads", id), release.files);
   }
   return { root: info.packageRoot, manifest: m, binding: b };
 }
 function history(targets, event) {
-  const file = path3.join(targets.storeRoot, "installation-history.jsonl");
+  const file = path4.join(targets.storeRoot, "installation-history.jsonl");
   safe(file, true);
   appendFileSync(file, JSON.stringify(event) + `
 `, { mode: 384 });
-  const fd = openSync2(file, "r");
+  const fd = openSync3(file, "r");
   try {
     fsyncSync(fd);
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function lifecycle(action, targets, payload, testBoundary) {
@@ -770,40 +911,40 @@ function lifecycle(action, targets, payload, testBoundary) {
   targets = info.targets;
   if (action === "inspect" || action === "dry-run") {
     const o = info.installed ? owned(targets) : undefined;
-    const payloadRoot2 = path3.join(targets.storeRoot, "payloads");
+    const payloadRoot2 = path4.join(targets.storeRoot, "payloads");
     const unreferenced = existsSync2(payloadRoot2) && readdirSync(payloadRoot2).some((id) => {
       if (!/^[a-f0-9]{64}$/.test(id) || o?.manifest.releases[id])
         return false;
       try {
-        safe(path3.join(payloadRoot2, id));
-        const b = readBinding(path3.join(payloadRoot2, id, "progress-binding.json"));
+        safe(path4.join(payloadRoot2, id));
+        const b = readBinding(path4.join(payloadRoot2, id, "progress-binding.json"));
         return b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot;
       } catch {
         return !!o;
       }
     });
-    const active = o ? path3.join(payloadRoot2, o.manifest.active) : undefined;
-    const fingerprint = active ? activationFingerprint(readBinding(path3.join(active, "progress-binding.json")), readFileSync2(path3.join(active, "index.js")), readFileSync2(path3.join(active, "SKILL.md"))) : null;
+    const active = o ? path4.join(payloadRoot2, o.manifest.active) : undefined;
+    const fingerprint = active ? activationFingerprint(readBinding(path4.join(active, "progress-binding.json")), readFileSync2(path4.join(active, "index.js")), readFileSync2(path4.join(active, "SKILL.md"))) : null;
     return { ...info, fingerprint, version: o ? o.manifest.releases[o.manifest.active].version : null, ...o && targets.confirmed && o.binding.source.verified && payload ? { update: updatePreview(o, payload) } : {}, action, writes: false, diagnostics: [...!targets.confirmed ? ["targets-unverified"] : [], ...o && Object.keys(o.manifest.releases).length > 1 ? ["rollback-payloads-retained"] : [], ...unreferenced ? ["unreferenced-payloads-retained"] : [], ...info.recovery.stagedPackages || info.recovery.stagedActivations || info.recovery.stagedReleases ? ["staged-payloads-present"] : []] };
   }
   need(targets.confirmed, "confirmation-required");
   if (action === "disable" || action === "enable" || action === "remove-capture") {
-    const file = path3.join(targets.storeRoot, "progress.sqlite");
+    const file = path4.join(targets.storeRoot, "progress.sqlite");
     need(existsSync2(file), "not-installed");
     const store2 = new Store(file);
     try {
       if (action === "remove-capture") {
-        const controlBinding = readBinding(path3.join(info.packageRoot, "progress-binding.json"));
+        const controlBinding = readBinding(path4.join(info.packageRoot, "progress-binding.json"));
         need(controlBinding.database === file && controlBinding.source.configRoot === targets.configRoot && controlBinding.source.dataRoot === targets.dataRoot, "ownership-invalid");
         verifyStore(store2, controlBinding);
         store2.setEnabled(false);
         const o = owned(targets);
         verifyStore(store2, o.binding);
         for (const name of Object.keys(o.manifest.files))
-          rmSync(path3.join(o.root, name));
-        rmSync(path3.join(o.root, ".ownership.json"));
+          rmSync(path4.join(o.root, name));
+        rmSync(path4.join(o.root, ".ownership.json"));
         rmdirSync(o.root);
-        fsyncDir(path3.dirname(o.root));
+        fsyncDir(path4.dirname(o.root));
         history(targets, { action, at: new Date().toISOString(), installId: o.manifest.installId });
       } else {
         const o = owned(targets);
@@ -822,29 +963,29 @@ function lifecycle(action, targets, payload, testBoundary) {
   const old = info.installed ? owned(targets) : undefined;
   if (!existsSync2(targets.storeRoot))
     mkdirSync(targets.storeRoot, { recursive: true, mode: 448 });
-  const store = new Store(path3.join(targets.storeRoot, "progress.sqlite"), { create: true });
+  const store = new Store(path4.join(targets.storeRoot, "progress.sqlite"), { create: true });
   let binding;
   try {
     if (old) {
       binding = { ...old.binding, version: payload.version };
       verifyStore(store, binding);
     } else {
-      const source = store.list({ limit: 1 }).sources.find((s) => s.configRoot === targets.configRoot && s.dataRoot === targets.dataRoot) ?? { id: randomUUID2(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
+      const source = store.list({ limit: 1 }).sources.find((s) => s.configRoot === targets.configRoot && s.dataRoot === targets.dataRoot) ?? { id: randomUUID3(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
       store.registerSource(source);
-      binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID2(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
+      binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID3(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
     }
   } finally {
     store.close();
   }
   const { files, releaseHash, release } = releasePayload(binding, payload);
-  const payloadRoot = path3.join(targets.storeRoot, "payloads");
+  const payloadRoot = path4.join(targets.storeRoot, "payloads");
   safe(payloadRoot, true);
   mkdirSync(payloadRoot, { recursive: true, mode: 448 });
-  const releaseRoot = path3.join(payloadRoot, release);
+  const releaseRoot = path4.join(payloadRoot, release);
   if (existsSync2(releaseRoot))
     verifyFiles(releaseRoot, releaseHash);
   else {
-    const stage = path3.join(payloadRoot, `.staged-${randomUUID2()}`);
+    const stage = path4.join(payloadRoot, `.staged-${randomUUID3()}`);
     writeFiles(stage, files);
     testBoundary?.("release-staged");
     renameSync(stage, releaseRoot);
@@ -857,10 +998,10 @@ function lifecycle(action, targets, payload, testBoundary) {
     const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';export default{id:'agent-progress',async setup(ctx){const m=JSON.parse(readFileSync(new URL('./.ownership.json',import.meta.url),'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${JSON.stringify(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${JSON.stringify(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||realpathSync(file)!==file||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
-    const stage = path3.join(targets.configRoot, `.agent-progress-stage-${randomUUID2()}`);
+    const stage = path4.join(targets.configRoot, `.agent-progress-stage-${randomUUID3()}`);
     writeFiles(stage, { ...rootFiles, ".ownership.json": JSON.stringify(manifest) });
     testBoundary?.("before-activation");
-    const plugins = path3.dirname(info.packageRoot);
+    const plugins = path4.dirname(info.packageRoot);
     safe(plugins, true);
     mkdirSync(plugins, { recursive: true, mode: 448 });
     need(!existsSync2(info.packageRoot), "collision");
@@ -871,7 +1012,7 @@ function lifecycle(action, targets, payload, testBoundary) {
     testBoundary?.("before-activation");
     const current = owned(targets);
     need(canonical(current.manifest) === canonical(old.manifest), "installation-changed");
-    atomic(path3.join(old.root, ".ownership.json"), JSON.stringify(manifest), targets.configRoot);
+    atomic(path4.join(old.root, ".ownership.json"), JSON.stringify(manifest), targets.configRoot);
   }
   testBoundary?.("after-activation");
   history(targets, { action, at: new Date().toISOString(), installId: binding.installId, active: release, version: payload.version });
@@ -1763,10 +1904,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path4) {
-  if (!path4)
+function getElementAtPath(obj, path5) {
+  if (!path5)
     return obj;
-  return path4.reduce((acc, key) => acc?.[key], obj);
+  return path5.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -2102,11 +2243,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path4, issues) {
+function prefixIssues(path5, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path4);
+    iss.path.unshift(path5);
     return iss;
   });
 }
@@ -2568,16 +2709,16 @@ function flattenError(error, mapper = (issue2) => issue2.message) {
 }
 function formatError(error, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error2, path4 = []) => {
+  const processError = (error2, path5 = []) => {
     for (const issue2 of error2.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path4, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path5, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
       } else {
-        const fullpath = [...path4, ...issue2.path];
+        const fullpath = [...path5, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2616,17 +2757,17 @@ function formatError(error, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error2, path4 = []) => {
+  const processError = (error2, path5 = []) => {
     var _a2;
     for (const issue2 of error2.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path4, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path5, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path4, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
       } else {
-        const fullpath = [...path4, ...issue2.path];
+        const fullpath = [...path5, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2665,8 +2806,8 @@ function treeifyError(error, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path4 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path4) {
+  const path5 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path5) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -4546,8 +4687,8 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   const _normalized = cached(() => normalizeDef(def));
   const memo = globalConfig.memoizer;
   const generateFastpass = (shape) => {
-    const normalized = _normalized.value;
-    const syms = normalized.symbolKeys;
+    const normalized2 = _normalized.value;
+    const syms = normalized2.symbolKeys;
     const doc = new Doc(["payload", "ctx"], { shape, inst, memo, syms });
     const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     const prefixStr = (id, k) => `
@@ -4565,11 +4706,11 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     doc.write(`const input = payload.value;`);
     const ids = Object.create(null);
     let counter = 0;
-    for (const key of normalized.allKeys) {
+    for (const key of normalized2.allKeys) {
       ids[key] = `key_${counter++}`;
     }
     doc.write(memo ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-    for (const key of normalized.allKeys) {
+    for (const key of normalized2.allKeys) {
       if (key === "__proto__")
         continue;
       const id = ids[key];
@@ -19523,13 +19664,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path4 = ref.slice(1).split("/").filter(Boolean);
-  if (path4.length === 0) {
+  const path5 = ref.slice(1).split("/").filter(Boolean);
+  if (path5.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path4[0] === defsKey) {
-    const key = path4[1] === undefined ? undefined : decodeJSONPointerSegment(path4[1]);
+  if (path5[0] === defsKey) {
+    const key = path5[1] === undefined ? undefined : decodeJSONPointerSegment(path5[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -20137,23 +20278,23 @@ function fromJSONSchema(schema, params) {
   if (typeof schema === "boolean") {
     return schema ? z.any() : z.never();
   }
-  let normalized;
+  let normalized2;
   try {
-    normalized = JSON.parse(JSON.stringify(schema));
+    normalized2 = JSON.parse(JSON.stringify(schema));
   } catch {
     throw new Error("fromJSONSchema input is not valid JSON (possibly cyclic); use $defs/$ref for recursive schemas");
   }
-  const version2 = detectVersion(normalized, params?.defaultTarget);
-  const defs = normalized.$defs || normalized.definitions || {};
+  const version2 = detectVersion(normalized2, params?.defaultTarget);
+  const defs = normalized2.$defs || normalized2.definitions || {};
   const ctx = {
     version: version2,
     defs,
     refs: new Map,
     processing: new Set,
-    rootSchema: normalized,
+    rootSchema: normalized2,
     registry: params?.registry ?? globalRegistry
   };
-  return convertSchema(normalized, ctx);
+  return convertSchema(normalized2, ctx);
 }
 // node_modules/zod/v4/core/visit.js
 var RESOLVING = Symbol("z.visit/resolving");
@@ -20561,12 +20702,12 @@ var normalizeSocketObject = (entry) => {
   return { id: entry.id, candidatesByPlatform };
 };
 var socketEntrySchema = exports_external.union([
-  socketPathSchema.transform((path4) => ({
-    id: path4,
+  socketPathSchema.transform((path5) => ({
+    id: path5,
     candidatesByPlatform: {
-      linux: [path4],
-      darwin: [path4],
-      win32: [path4]
+      linux: [path5],
+      darwin: [path5],
+      win32: [path5]
     }
   })),
   socketBindingObjectSchema.transform(normalizeSocketObject)
@@ -20900,27 +21041,27 @@ var fail = (code, message) => ({
 var fieldPath = (issuePath) => (issuePath[0] === "openchamber" ? issuePath.slice(1) : issuePath).reduce((field, segment) => Number.isInteger(segment) ? `${field}[${String(segment)}]` : `${field ? `${field}.` : ""}${String(segment)}`, "");
 var failureFromIssue = (issue2) => {
   const segments = issue2.path.map(String);
-  const path4 = (segments[0] === "openchamber" ? segments.slice(1) : segments).join(".");
+  const path5 = (segments[0] === "openchamber" ? segments.slice(1) : segments).join(".");
   const isPackageEnvelope = segments[0] === "openchamber";
-  if (!path4 && issue2.code === "invalid_type") {
+  if (!path5 && issue2.code === "invalid_type") {
     return isPackageEnvelope ? fail("missing-openchamber", "package.json openchamber must be a plain object.") : fail("not-object", "Manifest must be a plain object.");
   }
   if (segments.length === 1 && segments[0] === "version") {
     return fail("invalid-version", "package.json version must be semver like 1.0.0.");
   }
-  if (path4 === "apiVersion") {
+  if (path5 === "apiVersion") {
     return fail("unsupported-api-version", `Unsupported apiVersion. This host accepts ${OPENCHAMBER_SDK_MANIFEST_API_VERSIONS.join(" and ")}.`);
   }
-  if (path4 === "engines" || path4.startsWith("engines.")) {
+  if (path5 === "engines" || path5.startsWith("engines.")) {
     return fail("invalid-engines", "engines.openchamber must be a version like 1.22.0 or >=1.22.0.");
   }
-  if (path4 === "contributes.panel" && issue2.code === "custom") {
+  if (path5 === "contributes.panel" && issue2.code === "custom") {
     return fail("invalid-panel", issue2.message);
   }
-  if (path4 === "contributes" || path4 === "contributes.panel") {
+  if (path5 === "contributes" || path5 === "contributes.panel") {
     return fail("missing-panel", "contributes.panel is required.");
   }
-  switch (path4) {
+  switch (path5) {
     case "contributes.panel.id":
       return fail("invalid-panel-id", "panel.id must be kebab-case starting with a letter.");
     case "contributes.panel.name":
@@ -20938,47 +21079,47 @@ var failureFromIssue = (issue2) => {
     default:
       break;
   }
-  if (path4 === "contributes.page" || path4.startsWith("contributes.page.")) {
+  if (path5 === "contributes.page" || path5.startsWith("contributes.page.")) {
     return fail("invalid-page", 'contributes.page must be true or { entry: "<package HTML>", title?: "Page title" }.');
   }
-  if (path4 === "contributes.statusSection" || path4.startsWith("contributes.statusSection.")) {
+  if (path5 === "contributes.statusSection" || path5.startsWith("contributes.statusSection.")) {
     return fail("invalid-status-section", issue2.code === "custom" ? issue2.message : `contributes.statusSection must be true or { entry: "<package .html>", title?: "1 to ${GUEST_STATUS_SECTION_TITLE_MAX} characters", height?: ${GUEST_STATUS_SECTION_HEIGHT_MIN} to ${GUEST_STATUS_SECTION_HEIGHT_MAX} }.`);
   }
-  if (path4 === "contributes.background" || path4.startsWith("contributes.background.")) {
+  if (path5 === "contributes.background" || path5.startsWith("contributes.background.")) {
     return fail("invalid-background", "contributes.background needs an entry ending in .html inside the package.");
   }
-  if (path4 === "contributes.attach" || path4.startsWith("contributes.attach.")) {
+  if (path5 === "contributes.attach" || path5.startsWith("contributes.attach.")) {
     return fail("invalid-attach", 'contributes.attach must be true, false, "panel", "dialog", or { "mode": "panel" | "dialog", "entry"?: "<html inside the package, dialog only>" }.');
   }
-  if (path4.startsWith("contributes.capabilities")) {
+  if (path5.startsWith("contributes.capabilities")) {
     return fail("invalid-capabilities", 'contributes.capabilities may list "prompt", "sessions", and "files".');
   }
-  if (path4.startsWith("contributes.filesystem")) {
+  if (path5.startsWith("contributes.filesystem")) {
     return fail("invalid-filesystem", 'contributes.filesystem lists 1 to 16 patterns starting with "/" or "~/", without "..", empty segments, or backslashes.');
   }
-  if (path4.startsWith("contributes.origins")) {
+  if (path5.startsWith("contributes.origins")) {
     return fail("invalid-origins", `contributes.origins lists 1 to ${GUEST_ORIGINS_MAX} unique https origins like "https://fonts.example.com", without a path.`);
   }
-  if (path4.startsWith("contributes.actions")) {
+  if (path5.startsWith("contributes.actions")) {
     return fail("invalid-actions", 'contributes.actions lists up to 8 entries with a unique kebab-case id, a label of 1 to 40 characters, where "message" or "session", optional roles (message only), and optional payload ["messages"] (session only).');
   }
-  if (path4.startsWith("contributes.commands")) {
+  if (path5.startsWith("contributes.commands")) {
     return fail("invalid-commands", "contributes.commands lists up to 8 entries with a unique name matching /^[a-z][a-z0-9-]{0,23}$/ and an optional description of 1 to 80 characters.");
   }
-  if (path4.startsWith("contributes.tools")) {
+  if (path5.startsWith("contributes.tools")) {
     return fail("invalid-tools", 'contributes.tools lists up to 16 entries with a match of 1 to 128 characters ([A-Za-z0-9_.:-], "*" only at the end), optional name (1 to 40), icon (Remixicon name or package .svg path), title and subtitle templates (1 to 200), output "auto" | "text" | "json" | "markdown" | "code" | "table", language (code only), and columns (table only, 1 to 16).');
   }
-  if (path4.startsWith("contributes.fileEditors")) {
+  if (path5.startsWith("contributes.fileEditors")) {
     return fail("invalid-file-editors", `contributes.fileEditors lists 1 to ${GUEST_FILE_EDITORS_MAX} editors with a unique kebab-case id, a title of 1 to ${GUEST_FILE_EDITOR_TITLE_MAX} characters, match: 1 to ${GUEST_FILE_EDITOR_PATTERNS_MAX} file-name patterns (no "/", not only wildcards, like "*.excalidraw"), an entry ending in .html inside the package, and optional content "text" or "binary".`);
   }
-  if (path4.startsWith("contributes.integration")) {
+  if (path5.startsWith("contributes.integration")) {
     return fail("invalid-integration", "contributes.integration needs a name, description, and oauth, token, or host.");
   }
-  if (path4.startsWith("contributes.sourceControl")) {
+  if (path5.startsWith("contributes.sourceControl")) {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.sourceControl" in GUEST_SERVICES.md for every field.`);
   }
-  if (path4.startsWith("contributes.service")) {
+  if (path5.startsWith("contributes.service")) {
     return fail("invalid-service", issue2.code === "custom" ? issue2.message : 'contributes.service needs entry, runtime "host", optional permissions, optional provides ("browser", "source-control"), and optional surface (true).');
   }
   return fail("missing-panel", "contributes.panel is required.");
@@ -22379,10 +22520,41 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
+    let cleanupRoute = false;
     try {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url2.origin !== "http://127.0.0.1")
         return answer(404, { error: "not-found" });
+      cleanupRoute = ["/v1/plan/archive", "/v1/plan/restore", "/v1/plan/delete"].includes(url2.pathname);
+      if (cleanupRoute) {
+        if (req.method !== "POST")
+          return answer(405, { error: "method-not-allowed" });
+        if (url2.search)
+          return answer(404, { error: "not-found" });
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+          const b = Buffer.from(chunk);
+          size += b.length;
+          if (size > LIMITS.requestBytes) {
+            req.resume();
+            return answer(413, { error: "request-too-large" });
+          }
+          chunks.push(b);
+        }
+        let body;
+        try {
+          body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        const action = url2.pathname.endsWith("/archive") ? "archive" : url2.pathname.endsWith("/restore") ? "restore" : "delete";
+        const request = parseCleanup(action, body);
+        const active2 = setup ? setup.current() : { store, error: unavailableCode };
+        if (!active2.store)
+          return answer(503, { error: active2.error ?? "storage" });
+        return answer(200, active2.store.cleanup(action, request));
+      }
       if (url2.pathname === "/v1/extension-update") {
         if (req.method !== "GET")
           return answer(405, { error: "method-not-allowed" });
@@ -22449,7 +22621,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       if (req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
-      const routes = { "/health": [], "/v1/plans": ["cursor", "limit", "source", "session", "directory"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      const routes = { "/health": [], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       const allowed = routes[url2.pathname];
       if (!allowed || [...url2.searchParams.keys()].some((k) => !allowed.includes(k) || url2.searchParams.getAll(k).length !== 1))
         return answer(404, { error: "not-found" });
@@ -22472,9 +22644,13 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
       if (url2.pathname === "/health")
-        return answer(200, { ok: true, ready: true, sqlite: true, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
-      if (url2.pathname === "/v1/plans")
-        return answer(200, currentStore.list({ cursor: number4("cursor", 0), limit: number4("limit", 20), source: text2("source"), session: text2("session"), directory: text2("directory") }));
+        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+      if (url2.pathname === "/v1/plans") {
+        const archived = url2.searchParams.get("archived") ?? "exclude";
+        if (archived !== "exclude" && archived !== "only")
+          throw new ProgressError("invalid");
+        return answer(200, currentStore.list({ cursor: number4("cursor", 0), limit: number4("limit", 20), source: text2("source"), session: text2("session"), directory: text2("directory"), archived }));
+      }
       const source = text2("source", true);
       const plan = text2("plan", true);
       if (url2.pathname === "/v1/plan") {
@@ -22488,6 +22664,8 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
+      if (cleanupRoute && ["conflict", "operation-reused", "closed"].includes(error62.code))
+        return answer(409, { error: error62.code });
       return answer(error62.code === "invalid" ? 400 : error62.code === "not-found" ? 404 : 503, { error: error62.code });
     }
   });
@@ -22503,13 +22681,13 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
 }
 
 // service/setup-controller.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3, realpathSync as realpathSync5, lstatSync as lstatSync5, writeFileSync as writeFileSync2, renameSync as renameSync2, openSync as openSync3, closeSync as closeSync3, fsyncSync as fsyncSync2 } from "node:fs";
-import path5 from "node:path";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { existsSync as existsSync3, readFileSync as readFileSync3, realpathSync as realpathSync6, lstatSync as lstatSync6, writeFileSync as writeFileSync2, renameSync as renameSync2, openSync as openSync4, closeSync as closeSync4, fsyncSync as fsyncSync2 } from "node:fs";
+import path6 from "node:path";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // service/suggestions.ts
-import { lstatSync as lstatSync4, realpathSync as realpathSync4 } from "node:fs";
-import path4 from "node:path";
+import { lstatSync as lstatSync5, realpathSync as realpathSync5 } from "node:fs";
+import path5 from "node:path";
 function setupSuggestions(context) {
   const host = context ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
   if (host.platform !== "linux")
@@ -22518,27 +22696,27 @@ function setupSuggestions(context) {
     if (!value || value.includes("\x00") || value.length > 4096)
       return null;
     const trimmed = value.replace(/\/+$/, "") || "/";
-    return path4.isAbsolute(trimmed) && path4.resolve(trimmed) === trimmed ? trimmed : null;
+    return path5.isAbsolute(trimmed) && path5.resolve(trimmed) === trimmed ? trimmed : null;
   }
   function root(override, fallback) {
     const home = base(host.env.HOME);
-    const parent = override ? base(override) : home ? path4.join(home, fallback) : null;
+    const parent = override ? base(override) : home ? path5.join(home, fallback) : null;
     if (!parent)
       return null;
-    const value = path4.join(parent, "opencode");
+    const value = path5.join(parent, "opencode");
     if (value.length > 4096)
       return null;
     let state2 = "candidate";
     try {
-      const stat = lstatSync4(value);
-      if (stat.isDirectory() && !stat.isSymbolicLink() && host.uid !== undefined && stat.uid === host.uid && realpathSync4(value) === value)
+      const stat = lstatSync5(value);
+      if (stat.isDirectory() && !stat.isSymbolicLink() && host.uid !== undefined && stat.uid === host.uid && realpathSync5(value) === value)
         state2 = "resolved";
     } catch {}
     return { value, state: state2 };
   }
   const configRoot = root(host.env.XDG_CONFIG_HOME, ".config");
   const dataRoot = root(host.env.XDG_DATA_HOME, ".local/share");
-  const storeValue = dataRoot ? path4.join(dataRoot.value, "openchamber-progress") : null;
+  const storeValue = dataRoot ? path5.join(dataRoot.value, "openchamber-progress") : null;
   return { configRoot, dataRoot, storeRoot: dataRoot && storeValue && storeValue.length <= 4096 ? { value: storeValue, state: dataRoot.state } : null };
 }
 
@@ -22556,7 +22734,7 @@ class SetupController {
     this.bindingFile = privateFile;
     this.readonlyPayload = readonlyPayload;
     this.suggestionContext = suggestionContext;
-    if (lstatSync5(privateFile, { throwIfNoEntry: false })) {
+    if (lstatSync6(privateFile, { throwIfNoEntry: false })) {
       try {
         this.binding = readBinding(privateFile);
         this.expectedDescriptor = digest(readFileSync3(privateFile));
@@ -22616,7 +22794,7 @@ class SetupController {
   }
   targets() {
     const b = this.binding;
-    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path5.dirname(b.database), confirmed: true } : undefined;
+    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path6.dirname(b.database), confirmed: true } : undefined;
   }
   status(includeSuggestions = false) {
     this.refresh();
@@ -22674,7 +22852,7 @@ class SetupController {
       this.validateDescriptor();
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
-      const b = readBinding(path5.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
+      const b = readBinding(path6.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
@@ -22699,10 +22877,10 @@ class SetupController {
   validateDescriptor() {
     if (!this.canPersist)
       throw new SetupError("service-binding-collision");
-    const parent = path5.dirname(this.bindingFile);
-    if (realpathSync5(parent) !== parent || !lstatSync5(parent).isDirectory())
+    const parent = path6.dirname(this.bindingFile);
+    if (realpathSync6(parent) !== parent || !lstatSync6(parent).isDirectory())
       throw new SetupError("service-binding-collision");
-    const stat = lstatSync5(this.bindingFile, { throwIfNoEntry: false });
+    const stat = lstatSync6(this.bindingFile, { throwIfNoEntry: false });
     if (stat) {
       if (stat.isSymbolicLink() || this.expectedDescriptor === null || digest(readFileSync3(this.bindingFile)) !== this.expectedDescriptor)
         throw new SetupError("service-binding-modified");
@@ -22711,62 +22889,62 @@ class SetupController {
   }
   persist(b) {
     this.validateDescriptor();
-    const file2 = `${this.bindingFile}.stage-${randomUUID3()}`;
+    const file2 = `${this.bindingFile}.stage-${randomUUID4()}`;
     const text2 = JSON.stringify(b);
     writeFileSync2(file2, text2, { mode: 384, flag: "wx" });
-    const fd = openSync3(file2, "r");
+    const fd = openSync4(file2, "r");
     try {
       fsyncSync2(fd);
     } finally {
-      closeSync3(fd);
+      closeSync4(fd);
     }
     renameSync2(file2, this.bindingFile);
-    const dir = openSync3(path5.dirname(file2), "r");
+    const dir = openSync4(path6.dirname(file2), "r");
     try {
       fsyncSync2(dir);
     } finally {
-      closeSync3(dir);
+      closeSync4(dir);
     }
     this.expectedDescriptor = digest(text2);
   }
 }
 
 // service/state.ts
-import { existsSync as existsSync4, lstatSync as lstatSync6, realpathSync as realpathSync6, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3, openSync as openSync4, fsyncSync as fsyncSync3, closeSync as closeSync4 } from "node:fs";
+import { existsSync as existsSync4, lstatSync as lstatSync7, realpathSync as realpathSync7, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync3, openSync as openSync5, fsyncSync as fsyncSync3, closeSync as closeSync5 } from "node:fs";
 import { homedir } from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 function serviceBindingFile(env = process.env) {
-  const base = env.XDG_STATE_HOME || path6.join(env.HOME || homedir(), ".local/state");
-  if (!path6.isAbsolute(base) || path6.resolve(base) !== base)
+  const base = env.XDG_STATE_HOME || path7.join(env.HOME || homedir(), ".local/state");
+  if (!path7.isAbsolute(base) || path7.resolve(base) !== base)
     throw new SetupError("service-binding-collision");
-  const root = path6.join(base, "agent-progress-service");
+  const root = path7.join(base, "agent-progress-service");
   let existing = root;
   while (!existsSync4(existing))
-    existing = path6.dirname(existing);
-  if (realpathSync6(existing) !== existing)
+    existing = path7.dirname(existing);
+  if (realpathSync7(existing) !== existing)
     throw new SetupError("service-binding-collision");
-  const marker = path6.join(root, ".ownership.json");
+  const marker = path7.join(root, ".ownership.json");
   const identity2 = '{"product":"openchamber-agent-progress-service","format":1}';
   if (!existsSync4(root)) {
     mkdirSync2(base, { recursive: true, mode: 448 });
     mkdirSync2(root, { mode: 448 });
     writeFileSync3(marker, identity2, { mode: 384, flag: "wx" });
     for (const file2 of [marker, root, base]) {
-      const fd = openSync4(file2, "r");
+      const fd = openSync5(file2, "r");
       try {
         fsyncSync3(fd);
       } finally {
-        closeSync4(fd);
+        closeSync5(fd);
       }
     }
   }
-  const owned2 = lstatSync6(root);
+  const owned2 = lstatSync7(root);
   if (!owned2.isDirectory() || owned2.isSymbolicLink() || owned2.uid !== process.getuid?.() || (owned2.mode & 511) !== 448 || !existsSync4(marker))
     throw new SetupError("service-binding-collision");
-  const m = lstatSync6(marker);
+  const m = lstatSync7(marker);
   if (!m.isFile() || m.isSymbolicLink() || m.uid !== process.getuid?.() || (m.mode & 511) !== 384 || readFileSync4(marker, "utf8") !== identity2)
     throw new SetupError("service-binding-collision");
-  return path6.join(root, "progress-binding.json");
+  return path7.join(root, "progress-binding.json");
 }
 
 // service/main.ts

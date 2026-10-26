@@ -142,6 +142,14 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-footer>.ap-details+.ap-details{border-top:0;padding-top:0}
 
 /* Quiet diagnostics */
+.ap-cleanup{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-cleanup:empty{display:none}
+.ap-cleanup-confirm{display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--oc-muted-surface);border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px)}
+.ap-cleanup-confirm h3{font-size:13px}
+.ap-cleanup-title{font-weight:600;overflow-wrap:anywhere}
+.ap-cleanup-error{padding:10px 12px;border-left:2px solid var(--oc-warning);color:var(--oc-warning-text,var(--oc-warning));background:var(--oc-muted-surface);border-radius:4px}
+[data-testid="cleanup-delete"] button{color:var(--oc-error-text,var(--oc-fg))}
+.ap-cleanup button:focus-visible,[data-testid="cleanup-modes"] button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-details{border-top:1px solid var(--oc-border);padding-top:8px;font-size:11.5px;color:var(--oc-muted)}
 .ap-details>summary{cursor:pointer;width:fit-content}
 .ap-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;margin-top:8px}
@@ -154,6 +162,14 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
 html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
+/* Status-only compact SDK select. Keep its label association and popup behavior. */
+.ap-status-picker .oc-sdk-select{flex-direction:row;align-items:center;gap:8px}
+.ap-status-picker .oc-sdk-field-label{flex:none;white-space:nowrap}
+.ap-status-picker .oc-sdk-trigger{margin-left:auto;max-width:65%;height:24px;padding:0 8px}
+.ap-status-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-status-picker .oc-sdk-popup{width:min(24rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
+.ap-status-picker .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+.ap-status-picker .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
 .ap-status-plan{display:flex;flex-direction:column;gap:6px}
 .ap-status-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .ap-status-row{display:flex;align-items:baseline;gap:8px;min-width:0}
