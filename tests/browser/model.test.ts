@@ -26,7 +26,7 @@ const detailOf = (): PlanDetail => {
 
 function liveWith(sessions: Partial<LiveSession>[], projects = [{ id: 'pa', name: 'Alpha', directory: '/fixture/Alpha' }, { id: 'pb', name: 'Beta', directory: '/fixture/Beta' }]): LiveSnapshot {
   const records = sessions.map((s) => ({ id: '', title: '', projectId: 'pa', directory: '/fixture/Alpha', parentId: null, archivedAt: null, worktree: null, activity: 'idle' as const, outcome: null, ...s }));
-  return { projectsState: 'ready', projects, sessions: new Map(projects.map((p) => [p.id, { state: 'ready' as const, records: records.filter((r) => r.projectId === p.id) }])), capped: [] };
+  return { projectsState: 'ready', projects, worktrees: new Map(), sessions: new Map(projects.map((p) => [p.id, { state: 'ready' as const, records: records.filter((r) => r.projectId === p.id) }])), capped: [] };
 }
 
 function fakeHost(route: (r: GuestRequest) => { status: number; body: unknown }): ServiceHost & { calls: GuestRequest[] } {
@@ -455,7 +455,8 @@ test('live workspace stays within its cap, restarts cleanly and releases late-re
   let resolveLate: (() => void) | null = null;
   const subscribe = (name: string) => { const id = ++seq; active.set(id, name); return () => { active.delete(id); }; };
   const host = {
-    onProjects: async () => subscribe('projects'),
+    onProjects: async (cb: (s: unknown) => void) => { cb({ state: 'ready', projects: ['a', 'b', 'c', 'late'].map((id) => ({ id, name: id, directory: `/${id}` })) }); return subscribe('projects'); },
+    onWorktrees: async () => () => {},
     onSessions: (id: string) => new Promise<() => void>((resolve) => {
       const done = () => resolve(subscribe(id));
       if (id === 'late') resolveLate = done; else done();
@@ -471,11 +472,11 @@ test('live workspace stays within its cap, restarts cleanly and releases late-re
   ws.want(['late']);
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(names(), ['projects']);
-  // Restart (after a host-side drop on context change) re-subscribes the same set once.
+  // Restart waits for the old slot's late release before replacing subscriptions.
   ws.restart();
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(ws.subscriptionCount, 2);
-  assert.deepEqual(names(), ['projects']);
+  assert.equal(ws.sessionSubscriptionCount, 0);
+  assert.deepEqual(names(), []);
   ws.dispose();
   (resolveLate as (() => void) | null)?.();
   await new Promise((r) => setTimeout(r, 0));

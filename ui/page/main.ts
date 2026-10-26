@@ -95,8 +95,8 @@ startView<Ui>({
     const gap = coverageGap(visible, env.live, env.boundSource);
     const notes: string[] = [];
     if (gap.missing) notes.push(gap.missing === 1
-      ? 'Live status is unavailable for 1 plan: its session isn’t open in this window, so it can’t be opened from here.'
-      : `Live status is unavailable for ${gap.missing} plans: their sessions aren’t open in this window, so they can’t be opened from here.`);
+      ? 'Live status is unavailable for 1 plan: its session is not in the current workspace coverage, so it can’t be opened from here.'
+      : `Live status is unavailable for ${gap.missing} plans: their sessions are not in the current workspace coverage, so they can’t be opened from here.`);
     if (gap.otherSource) notes.push(`${plural(gap.otherSource, 'plan comes', 'plans come')} from another OpenCode setup, so ${gap.otherSource === 1 ? 'it' : 'they'} can be read but not opened from here.`);
     if (gap.capped) notes.push(`Live status is limited to the first projects; ${plural(gap.capped, 'project is', 'projects are')} not watched.`);
     if (read.truncated) notes.push('Some older plans were not loaded.');
@@ -124,7 +124,7 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   setup.append(body);
   zone.append(setup, detailsBlock(vc.read, plan, [
     ['Plans loaded', String(vc.read?.plans.length ?? 0)],
-    ['Live sessions watched', String(Math.max(0, vc.liveSubscriptions - 1))],
+    ['Live sessions watched', String(vc.sessionSubscriptions)],
     ...failureFacts(vc.failure),
   ], vc.env));
   root.append(zone);

@@ -3,6 +3,7 @@
 // Usage: node --experimental-strip-types tests/browser/cdp.ts <port> <command> [...args]
 //   targets | eval <expr> | frames | feval <urlPart> <expr> | shot <out.png> [x y w h] [--size WxH]
 //   click <x> <y> | type <text> | key <Key> | console <seconds>
+//   viewport <WxH> resizes an isolated browser window persistently for responsive interaction.
 import { writeFileSync } from 'node:fs';
 
 type Msg = { id?: number; method?: string; params?: any; result?: any; error?: { message: string }; sessionId?: string };
@@ -84,7 +85,7 @@ try {
     if (sizeIndex >= 0) {
       const [width, height] = args[sizeIndex + 1].split('x').map(Number);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-      await new Promise((r) => setTimeout(r, 900));
+      await evaluate(cdp, 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
       args.splice(sizeIndex, 2);
     }
     const [out, x, y, w, h] = args;
@@ -92,6 +93,11 @@ try {
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', ...(clip ? { clip } : {}) });
     writeFileSync(out, Buffer.from(shot.data, 'base64'));
     console.log(`wrote ${out}`);
+  } else if (command === 'viewport') {
+    const [width, height] = args[0].split('x').map(Number);
+    const { windowId } = await cdp.send('Browser.getWindowForTarget', { targetId: page.id });
+    await cdp.send('Browser.setContentsSize', { windowId, width, height });
+    console.log(JSON.stringify(await evaluate(cdp, 'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r({width:innerWidth,height:innerHeight}))))')));
   } else if (command === 'fclick' || command === 'fwait' || command === 'pclick') {
     // fclick <urlPart> <selector>: real mouse click on an element inside a guest frame.
     // fwait <urlPart> <expr> [ms]: poll a frame expression until truthy (bounded, no fixed sleep).

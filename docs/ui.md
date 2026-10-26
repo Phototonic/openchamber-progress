@@ -23,7 +23,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy. |
 | `source.ts` | Paged reads through the host proxy (rules under v2 mapping below). Classifies fixed error codes into plain states. |
-| `live.ts` | SDK workspace enrichment: one projects stream plus capped session streams. Coverage, live-state labels, navigation gating (`canOpen`), and `restart()` after a context change. |
+| `live.ts` | SDK workspace enrichment: projects plus bounded worktree discovery and selected session streams. Shared project membership, coverage, live-state labels, navigation gating (`canOpen`), and `restart()` after a context change. |
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
 | `setup.ts` | Setup UI, phases, plain-language SetupError and diagnostic text. |
 | `official.ts` | Official-main version notice (rail and page) and the compact Work Status line. |
@@ -140,7 +140,7 @@ Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `relo
 | No session or directory | "No session selected" / "No project open" | `unscoped-state` |
 | Filters match nothing | page detail empty | `filtered-empty` |
 | Detail / document / history loading or failed | inline line, Try again where useful | `detail-loading`, `document-loading`, `history-loading` |
-| No live SDK coverage / other source | chip "Not open in this window", "From another OpenCode setup", page note | `coverage-note`, `other-source` |
+| No live SDK coverage / other source | chip "Live state unavailable" (unwatched/unknown) or "Not open in this window" (ready stream without the session), "From another OpenCode setup", page note | `coverage-note`, `other-source` |
 | Plan from an unverified source | "Unverified OpenCode setup" in the header, "Unverified setup" list badge | `unverified-source` |
 | Document text from an earlier capture | warning line above the text | `document-historical` |
 
@@ -220,8 +220,10 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **Polling.** 3 s; 8 s after a failure; paused while hidden; stopped on `pagehide`.
 - **Label ticker and official-main check.** See the two sections above: one 30 s text-only ticker while visible with labels; the official-main check at readiness and when due (5–60 min), never on the poll.
 - **Workspace subscriptions.**
-  - Projects: 1 stream. Session streams are capped at rail 4, status 2 and page 16, all under 32.
-  - Streams are released on change and on dispose, including late resolutions.
+  - Projects: 1 stream. Session streams are capped at rail 4, status 2 and page 16. Remaining slots up to the host's total of 32 watch worktrees for configured projects in SDK order. This reads existing host discovery; it never opens projects, starts discovery itself or watches every project's sessions.
+  - Membership uses an exact configured main checkout or a ready, unambiguous SDK worktree (including its subfolders). The same resolver chooses board groups/filters and session subscriptions. Captured repository IDs are not compared to SDK path-derived project IDs. Current session coverage can supply its owning project.
+  - An unknown location is grouped by its recorded directory, not an enclosing project such as Home. Missing, pending, invalid, error, ambiguous or capped-out discovery never establishes ownership. New/changed worktree snapshots reclassify stored plans without a new report or migration. Main-checkout subfolders without discovered worktree or session coverage also retain the directory fallback.
+  - Streams are released on change and on dispose, including late resolutions; replacements wait for retired slots. Restart clears membership and rejects callbacks from previous subscriptions. Store/source binding changes also restart enrichment.
   - **Restarted on every session/directory notification.** The host's PluginPane clears a frame's workspace subscriptions without telling the guest when its effect re-runs (observed on session navigation), so the guest re-subscribes.
 - **Repaint.** Only when data, live state, context or UI state changed.
   - A background repaint waits while a kit popup is open.
@@ -283,6 +285,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - blue elapsed labels (muted for an unknown start)
   - reported-progress motion: the gate (closed, stale/failed, capture off, nothing working); CSS contract (motion only under `data-motion`, `transform`/`opacity`-only keyframes, reduced motion and hidden also stopping pseudo-elements, readable text token)
 - **`fixtures.ts`:** v2 wire fixtures (P1/P2/P3 plus an other-source plan, setup replies).
+- **`worktree.test.ts`:** external-worktree membership with Home configured and distinct SDK/repository IDs; shared grouping/filter/subscription resolution; pending/error/ambiguous coverage, membership changes/removal, restart, late release and the total subscription ceiling.
 - **`seed-real.ts`:** seeds a real store through the production write path without a model.
   - Loads the **installed** companion (hash-checking loader → release payload) and calls its registered `agent_progress_report` tool.
   - Caller identity comes from real session records of the isolated host.
@@ -291,6 +294,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **`live-adapter.ts`:** runs the packaged service standalone (host-shaped loopback port and bearer, explicit binding) and drives `ui/shared/source.ts` against it. It injects real companion writes between pages: a revision change mid-detail (restart) and a document re-capture mid-read (historical).
 - **`race-document.ts`:** the same re-capture race in a real frame. It holds the frame's pinned continuation request at the host page (CDP `Fetch`), runs real writes, releases it, and checks the historical note.
 - **`cdp.ts`:** drives the isolated desktop host over CDP: real frame clicks (`fclick`), bounded waits (`fwait`), keys, screenshots and console capture. Frames are chosen by URL part, or by `surface:<panel|status|page>` (matched on the view's own `data-surface` root). The relay runtime delivers guest documents as `srcdoc` frames with no URL, so it uses the latter, with click offsets taken from the frame's owner element.
+  - `viewport WxH` persistently resizes an isolated Chromium window for responsive interaction across commands; `shot --size WxH` is a capture-only emulation and must not be used to claim mobile interaction coverage.
 
 - **`setup-intercept.ts`:** QA9 interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It can also strip plan-detail `timing` or drop entries (an older service, an unknown start) and replace `/v1/extension-update` replies (404, malformed): labelled QA seams. It is controlled live through a JSON file.
 - **`motion-probe.ts`:** motion QA for an isolated host. It holds reduced-motion emulation for the whole command and reports, per guest frame:

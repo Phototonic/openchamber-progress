@@ -1,6 +1,6 @@
 # Production backend v2 (T3)
 
-Current package version: **0.2.6**. Here v2 means protocol/schema2,
+Current package version: **0.2.7**. Here v2 means protocol/schema2,
 not a release major. Owner-corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
 `evidence/` and `AGENTS.md` are local-only, never committed or packaged. Evidence

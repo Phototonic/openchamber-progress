@@ -2,7 +2,7 @@
 // Session and directory scoping is done by the service (its filters include participants);
 // project/worktree grouping uses the plan's recorded directory plus live SDK labels.
 import { baseName } from './format.ts';
-import { coverageFor, projectFor, sessionLabel, type LiveSnapshot } from './live.ts';
+import { coverageFor, planProject, projectFor, sessionLabel, type LiveSnapshot } from './live.ts';
 import { orderPlans, type PlanView } from './model.ts';
 import type { ListScope } from './source.ts';
 
@@ -36,7 +36,7 @@ export interface Place { projectKey: string; projectLabel: string; worktreeKey: 
 
 export function placeOf(plan: PlanView, live: LiveSnapshot): Place {
   const cov = coverageFor(plan.ownerSessionId, plan.directory, live);
-  const project = (cov.kind === 'live' ? live.projects.find((p) => p.id === cov.session.projectId) : undefined) ?? projectFor(plan.directory, live.projects);
+  const project = planProject(plan.ownerSessionId, plan.directory, live);
   if (!project) {
     const label = plan.directory ? baseName(plan.directory) : 'Unknown location';
     return { projectKey: `d:${plan.directory}`, projectLabel: label, worktreeKey: `d:${plan.directory}`, worktreeLabel: label };
@@ -44,7 +44,9 @@ export function placeOf(plan: PlanView, live: LiveSnapshot): Place {
   // The plan's recorded directory decides the worktree; live sessions only supply its name.
   const dir = (plan.directory || (cov.kind === 'live' ? cov.session.directory : '')).replace(/\/+$/, '');
   if (!dir || dir === project.directory.replace(/\/+$/, '')) return { projectKey: `p:${project.id}`, projectLabel: project.name, worktreeKey: `root:${project.id}`, worktreeLabel: 'Main checkout' };
-  let named: string | undefined;
+  const trees = live.worktrees.get(project.id);
+  const tree = trees?.state === 'ready' ? trees.records.find((w) => w.status === 'ready' && w.directory.replace(/\/+$/, '') === dir) : undefined;
+  let named: string | undefined = tree ? tree.name || tree.branch : undefined;
   for (const entry of live.sessions.values()) {
     const wt = entry.records.find((r) => r.worktree && r.worktree.directory.replace(/\/+$/, '') === dir)?.worktree;
     if (wt) { named = wt.name || wt.branch; break; }
@@ -104,8 +106,8 @@ export function applyFilters(plans: PlanView[], live: LiveSnapshot, f: Filters) 
 /** Projects whose sessions should be watched so these plans get live state. */
 export function projectsFor(plans: PlanView[], live: LiveSnapshot, directory?: string | null) {
   const ids: string[] = [];
-  if (directory) { const p = projectFor(directory, live.projects); if (p) ids.push(p.id); }
-  for (const plan of plans) { const p = projectFor(plan.directory, live.projects); if (p) ids.push(p.id); }
+  if (directory) { const p = projectFor(directory, live); if (p) ids.push(p.id); }
+  for (const plan of plans) { const p = planProject(plan.ownerSessionId, plan.directory, live); if (p) ids.push(p.id); }
   return [...new Set(ids)];
 }
 
