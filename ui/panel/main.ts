@@ -76,7 +76,7 @@ startView<Ui>({
       if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure' }));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
-    root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(Math.max(0, vc.liveSubscriptions - 1))], ...failureFacts(failure)], env));
+    root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));
   },
 });
 

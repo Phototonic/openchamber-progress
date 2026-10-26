@@ -68,7 +68,7 @@ export interface ViewContext<U> {
   /** Functional update against the latest UI state (safe after an await). */
   updateUi: (fn: (ui: U) => Partial<U>) => void;
   retry: () => void;
-  liveSubscriptions: number;
+  sessionSubscriptions: number;
   detail: (plan: PlanView) => Loadable<PlanDetail> | null;
   document: (plan: PlanView) => Loadable<DocumentBody> | null;
   requestDocument: (plan: PlanView) => void;
@@ -89,7 +89,7 @@ export interface ViewContext<U> {
 
 export interface ViewSpec<U> {
   surface: Surface;
-  /** Session streams this frame may hold; one more is used for projects (host limit 32). */
+  /** Session stream budget; remaining host slots are used for worktree discovery (total ≤32). */
   maxSessionSubscriptions: number;
   initialUi: () => U;
   /** Server-side list scope for the current context; null reads health only. */
@@ -168,7 +168,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   const live = new LiveWorkspace(host, spec.maxSessionSubscriptions, () => {
-    const sig = JSON.stringify([live.snapshot.projectsState, live.snapshot.projects, [...live.snapshot.sessions], live.snapshot.capped]);
+    const sig = JSON.stringify([live.snapshot.projectsState, live.snapshot.projects, [...live.snapshot.worktrees], [...live.snapshot.sessions], live.snapshot.capped]);
     if (sig !== liveSig) { liveSig = sig; versions.live++; schedule(); }
   });
 
@@ -209,7 +209,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const nextRead = result.read ? { ...result.read, plans: scope ? result.read.plans : [] } : null;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
-        if (identity && nextIdentity !== identity) { ui = spec.initialUi(); versions.ui++; resetCaches(); }
+        if (identity && nextIdentity !== identity) { ui = spec.initialUi(); versions.ui++; resetCaches(); live.restart(); }
         identity = nextIdentity;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
@@ -332,7 +332,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       host, ctx: ctx!, session, directory, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       setUi: (patch) => applyUi(patch),
       updateUi: (fn) => applyUi(fn(ui)),
-      retry, liveSubscriptions: live.subscriptionCount,
+      retry, sessionSubscriptions: live.sessionSubscriptionCount,
       detail: (p) => { const c = details.get(p.key); return c ? c.value : null; },
       document: (p) => documents.get(docKey(p)) ?? null,
       requestDocument: (p) => {
