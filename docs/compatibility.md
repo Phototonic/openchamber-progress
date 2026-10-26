@@ -25,8 +25,8 @@ The Windows filesystem suite covers private creation/inheritance and refusal,
 Unicode/case/separators/junctions, ACL mutation/cache invalidation, unsafe storage
 parents, ordinary source reads, SQLite side files, binding, selector persistence,
 interrupted activation/removal, hard-linked state refusal, and missing PowerShell.
-The final local run passed 12 tests with two explicit skips: the account cannot
-assign a foreign owner, and Windows/.NET refused a persisted canonical callback
+Local runs explicitly skip two unavailable fixtures: the account cannot assign
+a foreign owner, and Windows/.NET refused a persisted canonical callback
 ACE fixture. Public .NET in-memory descriptors separately verify foreign-owner
 policy and rejection of null, callback, object and audit DACL forms. Persisting
 those unavailable fixtures is not claimed as tested.

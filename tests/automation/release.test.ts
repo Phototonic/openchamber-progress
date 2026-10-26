@@ -180,7 +180,9 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert(!text.includes('pull_request_target'));assert(!text.includes('secrets.'));
   assert.match(text,/permissions:\n  contents: read/);assert.match(text,/publish:\n    needs: \[portable, windows-native\]/);
   assert.match(text,/windows-native:\n    runs-on: windows-2025/);
-  assert.match(text,/node --experimental-strip-types --test tests\/backend\/windows-platform\.test\.ts/);
+  assert.match(text,/--experimental-strip-types --test tests\/backend\/windows-platform\.test\.ts/);
+  assert.match(text,/name: Run native tests as a standard user/);
+  assert.match(text,/-Credential \$credential -LoadUserProfile -WindowStyle Hidden/);
   assert.match(text,/group: publish-v\$\{\{ needs.portable.outputs.version \}\}/);
   assert.match(text,/cancel-in-progress: false/);assert(!/^concurrency:/m.test(text));
   assert.equal((text.match(/persist-credentials: false/g)??[]).length,3);

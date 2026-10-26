@@ -50,7 +50,30 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: node --experimental-strip-types --test tests/backend/windows-platform.test.ts
+      - name: Run native tests as a standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Hosted Windows runners are elevated; test the supported normal-user
+          # ownership semantics without relaxing the product's SID policy.
+          $name = 'progress' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
+          $password = ConvertTo-SecureString ('Aa1!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+          $output = Join-Path $env:RUNNER_TEMP ($name + '.stdout')
+          $errors = Join-Path $env:RUNNER_TEMP ($name + '.stderr')
+          $created = $false
+          try {
+            $user = New-LocalUser -Name $name -Password $password -AccountNeverExpires
+            $created = $true
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+            $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $name), $password)
+            $process = Start-Process -FilePath (Get-Command node).Source -ArgumentList '--experimental-strip-types --test tests/backend/windows-platform.test.ts' -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $output -RedirectStandardError $errors
+            if (Test-Path $output) { Get-Content -LiteralPath $output }
+            if (Test-Path $errors) { Get-Content -LiteralPath $errors }
+            if ($process.ExitCode -ne 0) { throw 'Native Windows tests failed.' }
+          } finally {
+            if ($created) { Remove-LocalUser -Name $name }
+            Remove-Item -LiteralPath $output, $errors -Force -ErrorAction SilentlyContinue
+          }
   publish:
     needs: [portable, windows-native]
     if: github.event_name == 'push' && github.repository == 'Phototonic/openchamber-progress' && github.ref == 'refs/heads/main' && needs.portable.outputs.eligible == 'true'
