@@ -609,6 +609,14 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, notice
   if (notice && message) notice.textContent = message;
 }
 
+/**
+ * History's "View current task": the same canonical reveal path, inside this plan's painted reading
+ * article (same plan ID, source and revision), never a same-ID task elsewhere.
+ */
+export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string) {
+  if (articleOf(article, plan)) revealTask(article, plan, itemId, 'focus-notice', message);
+}
+
 function navLink(plan: PlanView, itemId: string, text: string, name: string) {
   const b = el('button', 'ap-link ap-ready-link', text);
   b.type = 'button';

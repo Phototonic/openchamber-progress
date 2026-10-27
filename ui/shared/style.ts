@@ -199,6 +199,31 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-doc-body{display:flex;flex-direction:column;gap:4px}
 
 /* History */
+/* "Since you last reviewed" (page History). Static: no animation or transition; classification is
+   always spelled out in text, colour only reinforces it. Everything wraps at 360px / 200% reflow. */
+.ap-digest{gap:10px;padding:12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
+.ap-digest p,.ap-digest li{min-width:0;overflow-wrap:anywhere}
+.ap-digest-h{font-size:12px;font-weight:600}
+.ap-digest-coverage{display:flex;flex-direction:column;gap:2px;font-size:12.5px}
+.ap-digest-warn{font-size:12px;color:var(--oc-warning-text,var(--oc-warning))}
+.ap-digest-notice{font-size:12px;padding:6px 8px;border-left:3px solid var(--oc-info);background:color-mix(in srgb,var(--oc-info) 8%,transparent);border-radius:4px}
+.ap-digest-fraction{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.ap-digest-causes{display:flex;flex-direction:column;gap:2px;font-size:12px}
+.ap-digest-events{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;font-variant-numeric:tabular-nums}
+.ap-digest-group{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-digest-tasks{display:flex;flex-direction:column;gap:8px}
+.ap-digest-task{display:flex;flex-direction:column;gap:3px;padding:8px;border-radius:6px;background:var(--oc-bg);border:1px solid var(--oc-border)}
+.ap-digest-task[data-present="false"]{border-style:dashed}
+.ap-digest-line{display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px 8px;min-width:0}
+.ap-digest-title{flex:1 1 12em;min-width:0;font-weight:500}
+.ap-digest-facets{font-size:12px}
+.ap-digest-entry summary{cursor:pointer;font-size:11.5px;color:var(--oc-muted);width:fit-content;max-width:100%}
+.ap-digest-refs{display:flex;flex-direction:column;gap:4px;margin-top:4px;padding-left:2px;font-size:11.5px}
+.ap-digest-refs time{color:var(--oc-muted)}
+.ap-digest-task>.ap-link{align-self:flex-start;text-align:start}
+.ap-digest-actions button{max-width:100%;white-space:normal;min-height:28px}
+.ap-digest [aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.ap-digest button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
 .ap-history{display:flex;flex-direction:column}
 .ap-history-row{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--oc-border);font-size:12px}
 .ap-history-rev{font-weight:600;font-variant-numeric:tabular-nums}
