@@ -158,7 +158,8 @@ const TASKS_HEADING = '.ap-tasks-h';
 const COMPLETE_TASKS = '.ap-tasks[data-complete]';
 /** Logical focus on a canonical row or its summary, with what a fallback needs from the old paint. */
 type Logical = { id: string; summary: boolean; ancestors: string[]; order: string[] };
-type Anchor = { id: string; top: number; next: string[] };
+/** A row line in view and its viewport offset, or (no row in view) the raw page scroll to keep across a loading paint. */
+type Anchor = { id: string; top: number; next: string[] } | { scroll: number };
 const rowsOf = (list: Element) => [...list.querySelectorAll<HTMLElement>('li[data-testid]')];
 const summaryOf = (li: Element) => li.querySelector<HTMLElement>(':scope > details > summary');
 /** Not hidden by a filter and not folded inside a closed ancestor disclosure. */
@@ -177,18 +178,24 @@ function logicalOf(active: Element, list: Element): Logical | null {
 }
 /** Row line (a task's own row or a branch summary), so a tall open branch is not the anchor itself. */
 const lineOf = (li: Element) => li.querySelector<HTMLElement>(':scope > .ap-item, :scope > details > summary') ?? (li as HTMLElement);
-/** First row line in view, while the document is scrolled. */
+/**
+ * First row line that intersects the viewport, while the document is scrolled. None in view (e.g.
+ * the reader is in Readiness above the tasks): no anchor, so plain page-scroll preservation stands.
+ */
 function anchorOf(list: Element): Anchor | null {
   if (!document.scrollingElement?.scrollTop) return null;
   const rows = rowsOf(list);
+  const bottom = document.documentElement.clientHeight;
   for (let i = 0; i < rows.length; i++) {
     const r = lineOf(rows[i]).getBoundingClientRect();
+    if (r.top >= bottom) return null; // rows are in document order: the rest are below the fold too
     if (r.height > 0 && r.bottom > 0) return { id: rows[i].dataset.testid!, top: r.top, next: rows.slice(i + 1).map((n) => n.dataset.testid!) };
   }
   return null;
 }
-/** Keeps the anchor row (or the next surviving one) at its old viewport offset. */
+/** Keeps the anchor row (or the next surviving one) at its old viewport offset, or the raw page scroll. */
 function applyAnchor(list: Element, anchor: Anchor) {
+  if ('scroll' in anchor) { if (document.scrollingElement && document.scrollingElement.scrollTop !== anchor.scroll) document.scrollingElement.scrollTop = anchor.scroll; return; }
   const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
   for (const id of [anchor.id, ...anchor.next]) {
     const li = rows.get(id);
@@ -646,7 +653,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       for (const d of oldArticle.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) reading.open.set(d.dataset.testid!, d.open);
       const list = oldArticle.querySelector('ul.ap-items');
       const active = document.activeElement;
-      if (list) { reading.anchor = anchorOf(list) ?? reading.anchor; logical = active ? logicalOf(active, list) : null; }
+      // A painted list is authoritative about what is in view; only a loading paint keeps an earlier
+      // anchor. With no task row in view (reading Readiness above them), keep the page offset itself.
+      if (list) { const top = document.scrollingElement?.scrollTop ?? 0; reading.anchor = anchorOf(list) ?? (top ? { scroll: top } : null); logical = active ? logicalOf(active, list) : null; }
       onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
       taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks') && oldArticle.contains(active);
       if (!onFallback) { reading.parked = null; reading.parkedControl = null; }

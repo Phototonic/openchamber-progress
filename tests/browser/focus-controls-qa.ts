@@ -858,6 +858,32 @@ try {
     race.narrow = { jumpTop, afterPoll: await guest<number>('page', `return d.scrollingElement.scrollTop`), active: await guest<string>('page', `return d.activeElement?.dataset.testid`), k1Before, k1After: await rowTop(), paints: (await paints('page')).map((x) => x.rows), height: await guest<number>('page', `return d.scrollingElement.scrollHeight`) };
     // The reading anchor keeps the target row's viewport position (raw scroll may change when content above it changes height).
     check('Q6:narrow-select-jump-poll-no-rescroll', Math.abs((race.narrow as any).k1After - k1Before) < 2 && (race.narrow as any).active === 'item-K1' && (race.narrow as any).afterPoll > 50, race.narrow);
+    // Reading Readiness with every task row below the fold: a revision that changes Readiness height
+    // (prerequisites added, then removed) must not shift the page to hold an off-screen task in place.
+    {
+      await show('panel', 360);
+      await context('A');
+      await wait('panel', `d.querySelector('${art} [data-testid="readiness"][data-state="ready"]')&&d.querySelector('${art} .ap-tasks[data-complete]')`, 'rail P-focus readiness');
+      await evaluate(`frame('panel').style.height='320px';true`);
+      await wait('panel', `w.innerHeight===320`, 'short rail frame');
+      await guest('panel', `d.activeElement?.blur?.();d.querySelector('${art} [data-testid="readiness"]').scrollIntoView({block:'start'});return true`);
+      await frameRaf('panel');
+      const view = () => guest<{ top: number; section: number; ref: number; readiness: number; firstTask: number; viewport: number }>('panel', `const a=d.querySelector('${art}'),rows=[...a.querySelectorAll('ul.ap-items li[data-testid]')].map(n=>n.querySelector(':scope > .ap-item, :scope > details > summary')??n).filter(n=>n.getBoundingClientRect().height>0);return {top:d.scrollingElement.scrollTop,section:a.querySelector('[data-testid="readiness"]').getBoundingClientRect().top,ref:a.querySelector('[data-testid="readiness"] .ap-h').getBoundingClientRect().top,readiness:a.querySelector('[data-testid="readiness"]').getBoundingClientRect().height,firstTask:Math.min(...rows.map(n=>n.getBoundingClientRect().top)),viewport:d.documentElement.clientHeight}`);
+      const steps: Record<string, unknown>[] = [];
+      const before = await view();
+      check('Q6:readiness-in-view-precondition', before.top > 0 && Math.abs(before.section) < 2 && before.firstTask >= before.viewport, before);
+      for (const [what, deps] of [['added', ['D', 'W', 'X']], ['removed', []]] as const) {
+        const prev = await view();
+        await evaluate(`qa.update('P-focus',p=>{p.items.find(i=>i.id==='N').dependencies=${JSON.stringify(deps)}});true`);
+        await wait('panel', `d.querySelector('${art}')?.dataset.revision===String(qa.plan('P-focus').summary.revision)&&d.querySelector('${art} [data-testid="readiness"][data-state="ready"]')`, `readiness ${what}`, 15_000);
+        await frameRaf('panel');
+        const next = await view();
+        steps.push({ what, before: prev, after: next });
+        check(`Q6:readiness-height-change-no-shift-${what}`, Math.abs(next.readiness - prev.readiness) > 10 && Math.abs(next.top - prev.top) < 2 && Math.abs(next.ref - prev.ref) < 2, { prev, next });
+      }
+      race.readinessInView = steps;
+      await show('panel', 360);
+    }
     requestFacts.race = race;
 
     // ================================================================ Q7 widths, themes, motion, zoom/reflow and states
