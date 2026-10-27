@@ -22731,7 +22731,7 @@ var surfaceHostMessageSchema = exports_external.discriminatedUnion("type", [
 var surfaceResizeAnswerSchema = exports_external.object({ width: dimension, height: dimension });
 var surfaceClipboardAnswerSchema = exports_external.object({ text: exports_external.string().max(SURFACE_TEXT_MAX) });
 // shared/release.ts
-var RELEASE = "0.2.8";
+var RELEASE = "0.2.9";
 
 // service/extension-updates.ts
 var OFFICIAL_MANIFEST = "https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main";

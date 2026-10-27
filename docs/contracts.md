@@ -1,6 +1,6 @@
 # Frozen production contract v2 — T3 / Designer handoff
 
-Current package version **0.2.8** is independent of protocol/schema **2**. Setup's version
+Current package version **0.2.9** is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases. Local QA under
 evidence/ and project instructions AGENTS.md are never committed or shipped.
@@ -73,7 +73,7 @@ SDK coverage. Navigation must be verified by Designer against the CURRENT host.
 
 ## Finished-plan cleanup (CP-H frozen additive contract)
 
-The integrated base supplies package **0.2.8**; cleanup adds no version bump.
+Package **0.2.9** preserves the additive cleanup contract.
 Protocol/base schema remain **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.
