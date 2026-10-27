@@ -372,3 +372,53 @@ test('chosen summary-only text survives another failed refresh, advances on succ
   const full = c.view!; c.vc.setUi({ filter: 'B' }); await settle(); assert.equal(c.view!.preview, null);
   old.copy(); full.copy(); assert.equal(c.writes.length, 1); c.stop();
 });
+
+test('capture toggles re-read summary detail without revision changes; unchanged capture state stays cached', async () => {
+  const c = controller(); c.ready(); await settle(); c.view!.open('progress'); await settle();
+  const starts = c.readStarts;
+  const revision = c.vc.read!.plans[0].revision;
+  assert.doesNotMatch(c.view!.preview!.text!, /Progress capture is disabled/);
+  for (const [index, enabled] of [false, true].entries()) {
+    c.state.envelope = summaryEnvelope({ captureEnabled: enabled, diagnostics: enabled ? [] : ['capture-disabled'] });
+    c.vc.retry(); await settle();
+    assert.equal(c.readStarts, starts + index + 1, 'one new complete read per observed toggle');
+    assert.equal(c.vc.read!.plans[0].revision, revision);
+    assert.equal(c.view!.preview!.text!.includes('Progress capture is disabled.'), !enabled);
+    c.view!.copy(); await settle(); assert.equal(c.writes.at(-1), c.view!.preview!.text);
+    c.view!.close(); await settle(); c.view!.open('handoff'); await settle();
+    assert.equal(c.view!.preview!.text!.includes('Progress capture is disabled.'), !enabled, 'reopening uses the refreshed outcome');
+    for (let i = 0; i < 3; i++) { c.vc.retry(); await settle(); }
+    assert.equal(c.readStarts, starts + index + 1, 'unchanged capture metadata does not trigger refresh storms');
+  }
+  c.stop();
+});
+
+test('capture-triggered held reads obey loading and scope retirement guards', async () => {
+  const c = controller('page'); c.state.items = pagedSummaryItems(45); c.state.rows = [summaryPlan(c.state.items)];
+  c.ready(); await settle(); c.view!.open('handoff'); await settle(); const old = c.view!;
+  const held = deferred<GuestRequestResult>(); const normal = c.normal;
+  c.route((q) => q.query?.cursor === '1' ? held.promise : normal(q));
+  c.state.envelope = summaryEnvelope({ captureEnabled: false, diagnostics: ['capture-disabled'] });
+  const starts = c.readStarts; c.vc.retry(); await settle();
+  assert.equal(c.readStarts, starts + 1);
+  c.vc.retry(); await settle(); c.vc.setUi({ selected: null }); await settle();
+  assert.equal(c.readStarts, starts + 1, 'the loading guard prevents duplicate reads');
+  const heldPage = await normal({ method: 'GET', path: '/v1/plan', query: { source: c.state.rows[0].sourceId, plan: c.state.rows[0].id, cursor: '1' } });
+  c.route(normal); c.vc.setUi({ filter: 'B' }); await settle();
+  c.view!.open('handoff'); await settle(); const currentText = c.view!.preview!.text;
+  assert.match(currentText!, /Progress capture is disabled/);
+  const mark = c.requests.length;
+  held.resolve(heldPage); await settle(); old.copy(); old.open('progress');
+  assert.equal(c.requests.slice(mark).some((q) => q.path === '/v1/plan'), false, 'retired continuation issues no more pages');
+  assert.equal(c.view!.preview!.text, currentText); assert.equal(c.writes.length, 0); c.stop();
+});
+
+test('failed capture-triggered reads retry only after a new list refresh, not a repaint', async () => {
+  const c = controller(); c.ready(); await settle(); c.view!.open('progress'); await settle();
+  c.route(() => reply({ error: 'busy' }, 503));
+  c.state.envelope = summaryEnvelope({ captureEnabled: false, diagnostics: ['capture-disabled'] });
+  const starts = c.readStarts; c.vc.retry(); await settle(); assert.equal(c.readStarts, starts + 1);
+  for (let i = 0; i < 3; i++) { c.vc.setUi({ selected: null }); await settle(); }
+  assert.equal(c.readStarts, starts + 1, 'a failed read is not retried per paint');
+  c.vc.retry(); await settle(); assert.equal(c.readStarts, starts + 2, 'a new list refresh permits the existing bounded retry'); c.stop();
+});

@@ -280,9 +280,10 @@ export function startView<U>(spec: ViewSpec<U>) {
    * `revision`: of the value (a read may return a newer one than requested). `requested`: the listed
    * revision the read was started for, so a reply ahead of a lagging list is read once, not on every
    * paint until the list catches up. `listRead`: for a failed read, the list read it failed under;
-   * it is retried after a newer one.
+   * it is retried after a newer one. `captureEnabled`: list envelope state at read start;
+   * capture toggles change this metadata without advancing either plan revision.
    */
-  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number }>();
+  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number }>();
   let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
@@ -594,11 +595,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const p of plans) {
       const cached = details.get(p.key);
       const cleanupRev = p.cleanup?.revision ?? 0;
-      if (!force && cached && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') continue;
+      const captureEnabled = read?.captureEnabled;
+      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') continue;
       if (cached && cached.value.state === 'loading') continue;
       if (!force && cached && cached.value.state === 'error' && cached.revision === p.revision && cached.requestedCleanup === cleanupRev && cached.listRead === listReads) continue;
       const historical = cached?.generation === cacheGeneration ? cached.result?.snapshot ?? cached.historical : undefined;
-      details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, generation: cacheGeneration, historical, value: { state: 'loading' } });
+      details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } });
       const id = identity;
       const generation = cacheGeneration;
       detailQueue = detailQueue.then(async () => {
@@ -606,7 +608,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         let result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
         if (disposed || id !== identity || generation !== cacheGeneration) return;
         if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
-        const common = { requested: p.revision, requestedCleanup: cleanupRev, generation, result, historical };
+        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
         details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
