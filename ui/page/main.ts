@@ -1,10 +1,10 @@
 import { mountList, mountSelect, mountTabs, type Tone } from '@openchamber/sdk/ui';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
-  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, staleBlock, testid, type Env,
+  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, recordedLabel, staleBlock, testid, type Env,
 } from '../shared/components.ts';
 import { plural } from '../shared/format.ts';
-import { coverageFor, liveLabel, sessionLabel } from '../shared/live.ts';
+import { coverageFor, liveLabel } from '../shared/live.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import {
   ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf, projectsFor, type Filters, type Option,
@@ -14,7 +14,8 @@ import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } 
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 
 type Tab = 'progress' | 'document' | 'history';
-type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: boolean; setup: SetupUi; archived: boolean };
+/** `reveal`: token of an explicit list selection whose detail is scrolled into view once (narrow layout). */
+type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean };
 
 const visiblePlans = (vc: ViewContext<Ui>) => {
   if (!vc.read) return [];
@@ -22,23 +23,28 @@ const visiblePlans = (vc: ViewContext<Ui>) => {
   return applyFilters(vc.read.plans, vc.env.live, filters);
 };
 const selectedPlan = (vc: ViewContext<Ui>) => pickPlan(visiblePlans(vc), vc.ui.selected);
+let reveals = 0;
+let revealed = 0;
 
 // Fullscreen board: every plan in the connected store, filtered by project/worktree/session.
 startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
-  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: false, setup: initialSetupUi(), archived: false }),
+  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false }),
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
   forgetPlans: (keys, ui) => keys.has(ui.selected ?? '') ? { selected: null } : {},
   wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
   wantDetails: (vc) => { const p = selectedPlan(vc); return p && vc.ui.tab === 'progress' ? [p] : []; },
+  // Task reading follows the board's own scope and selection (never the host session); the
+  // Progress/Document/History tabs of one selection share it.
+  reading: (vc) => { const p = selectedPlan(vc); return p ? { plan: p.key, scope: `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}` } : null; },
   paint(root, vc) {
     const { read, failure, env, ui } = vc;
     root.append(el('h1', 'ap-sr', 'Agent progress'));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
-    button(modes, 'cleanup-visible', 'Current plans', () => vc.setUi({ archived: false, selected: null, filters: NO_FILTERS, reveal: false }), ui.archived ? 'ghost' : 'outline');
-    button(modes, 'cleanup-archived', 'Archived plans', () => vc.setUi({ archived: true, selected: null, filters: NO_FILTERS, reveal: false }), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
+    button(modes, 'cleanup-visible', 'Current plans', () => vc.setUi({ archived: false, selected: null, filters: NO_FILTERS, reveal: 0 }), ui.archived ? 'ghost' : 'outline');
+    button(modes, 'cleanup-archived', 'Archived plans', () => vc.setUi({ archived: true, selected: null, filters: NO_FILTERS, reveal: 0 }), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
     modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
     root.append(modes);
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
@@ -67,7 +73,7 @@ startView<Ui>({
       return;
     }
     const filters = normalizeFilters(read.plans, env.live, ui.filters);
-    const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: false });
+    const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: 0 });
     const options = filterOptions(read.plans, env.live, filters);
     const bar = testid(el('div', 'ap-filters'), 'filters');
     bar.setAttribute('role', 'group');
@@ -80,7 +86,7 @@ startView<Ui>({
     const visible = applyFilters(read.plans, env.live, filters);
     const plan = pickPlan(visible, ui.selected);
     const board = el('div', 'ap-board');
-    board.append(planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: true })));
+    board.append(planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: ++reveals })));
     const detail = testid(el('section', 'ap-detail'), 'plan-detail');
     detail.setAttribute('aria-label', 'Plan detail');
     if (plan) {
@@ -99,7 +105,7 @@ startView<Ui>({
         vc.requestHistory(plan);
         article.append(planHeader(plan, env), historyBlock(plan, vc.history(plan), env));
         detail.append(article);
-      } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession: filters.session !== ALL ? filters.session : null }));
+      } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession: filters.session !== ALL ? filters.session : null, reading: vc.reading }));
       detail.append(cleanupBlock(vc, plan));
     } else detail.append(emptyBlock('filtered-empty', 'No plans match these filters', 'Choose another project, worktree or session.'));
     board.append(detail);
@@ -120,8 +126,11 @@ startView<Ui>({
     }
     footer(root, vc, plan);
   },
+  // An explicit selection reveals its detail once; later paints (polls, task jumps) never scroll back to it.
   afterPaint(root, vc) {
-    if (!vc.ui.reveal || window.matchMedia('(min-width: 820px)').matches) return;
+    if (!vc.ui.reveal || vc.ui.reveal === revealed) return;
+    revealed = vc.ui.reveal;
+    if (window.matchMedia('(min-width: 820px)').matches) return;
     root.querySelector('[data-testid="plan-detail"]')?.scrollIntoView({ block: 'start' });
   },
 });
@@ -177,7 +186,7 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
           ? { label: LIFECYCLE_LABEL[p.lifecycle], tone: p.lifecycle === 'completed' ? 'success' : p.lifecycle === 'failed' ? 'error' : 'neutral' }
           : env.unverifiedSources.has(p.sourceId) ? { label: 'Unverified setup', tone: 'warning' }
           : other ? { label: 'Other setup', tone: 'neutral' } : { label: liveLabel(cov).label, tone: liveLabel(cov).tone };
-        return { id: p.key, title: p.title, subtitle: `${place.worktreeLabel} · ${sessionLabel(p.ownerSessionId, env.live)}`, meta: s.total ? `${s.done}/${s.total}` : '—', badge };
+        return { id: p.key, title: p.title, subtitle: `${place.worktreeLabel} · ${recordedLabel(p, env)(p.ownerSessionId)}`, meta: s.total ? `${s.done}/${s.total}` : '—', badge };
       }),
     });
     g.plans.forEach((p, i) => {
