@@ -14,6 +14,14 @@ button{font:inherit}
 .ap-between{justify-content:space-between}
 .ap-grow{flex:1 1 auto;min-width:0}
 
+/* Inline, selectable summaries: no modal or automatic clipboard write. */
+.ap-summary{display:flex;flex-direction:column;gap:10px;min-width:0}
+.ap-summary-preview{display:flex;flex-direction:column;gap:10px;padding:12px;min-width:0;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
+.ap-summary-label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px}
+.ap-summary-text{display:block;width:100%;min-width:0;max-width:100%;resize:vertical;padding:9px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font-family:var(--oc-font-mono,monospace);font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.ap-summary button{max-width:100%;white-space:normal;min-height:28px}
+.ap-summary :is(button,textarea):focus-visible{outline:2px solid var(--oc-info);outline-offset:2px}
+
 /* Plan header and progress story */
 .ap-plan{display:flex;flex-direction:column;gap:14px;min-width:0}
 .ap-plan-head{display:flex;flex-direction:column;gap:4px}
