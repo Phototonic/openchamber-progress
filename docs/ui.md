@@ -24,6 +24,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy, and the task-view projection (row membership, branch aggregates, jump order; see Task view). |
 | `readiness.ts` | Pure task-readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
+| `summary.ts` | Pure deterministic Markdown for progress updates, handoffs and explicitly historical summary-only snapshots (see Previewable summaries). Uses complete matching detail and the shared readiness projection. |
 | `source.ts` | Paged reads through the host proxy (rules under v2 mapping below). Classifies fixed error codes into plain states. |
 | `live.ts` | SDK workspace enrichment: projects plus bounded worktree discovery and selected session streams. Shared project membership, coverage, live-state labels, navigation gating (`canOpen`), and `restart()` after a context change. |
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
@@ -102,6 +103,74 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 - Project → worktree → session filters; a grouped keyboard listbox (live/lifecycle/"Other setup" badge, done/total).
 - Detail tabs: Progress / Document / History. The Progress tab is the same shared plan detail as the rail, including Readiness. A coverage note covers missing live state, other-source plans and the subscription cap.
 - Footer zone: collapsed **Setup**, then collapsed **Details**.
+
+## Previewable summaries
+
+**Copy progress update** and **Copy handoff** open an inline preview for the selected plan in the rail and the board's Progress tab. Work Status stays compact, without these actions. Both formats cover the whole selected plan, regardless of task filters, participant filters or collapsed groups; they never combine plans. They use recorded progress only: no model, new service endpoint, source-document body or transcript read, reporting operation or progress mutation.
+- **Preview and copy.** Opening never copies, including after a read finishes. The labelled, read-only plain-text textarea is selectable and shows the exact Markdown passed to the explicit **Copy Markdown** action. Its selection and vertical scroll position survive unrelated paints while the preview generation is unchanged. Titles containing Markdown or HTML remain text, never executable UI. Copy is disabled without preview text or while a write is pending. Copy success (`Markdown copied.`) is announced only after the clipboard write resolves. An absent, throwing or rejecting clipboard API reports `Clipboard unavailable. Select and copy the preview text below.`, not success; the same text remains available to select and copy manually. Controls are keyboard-operable; feedback uses `role="status"` with polite, atomic announcements. Close returns focus once to the opening format's action if the reading selection still matches; later paints do not repeat that focus return.
+- **Complete input.** One accepted detail read supplies the matching summary, all item pages and all contribution pages. Loading is not an empty summary; a failed or bounded-out read never supplies partial tasks as full detail. No list-row summary is joined to older detail. A read ahead of the list waits for its matching revision before becoming a full preview.
+- **Progress update, in order.** `Plan: <title> (<plan id>)`, with ` (archived)` appended when recorded; `Lifecycle`; `Progress: D/T done; R remaining; S skipped`; `Last report` from `reportedAt`, in absolute UTC. Lifecycle uses the existing labels, including Finished. A `Remaining breakdown: W working; B blocked; P pending` line appears only when those task-row counts reconcile with the server's remaining count. Next come **Current work**, **Explicitly blocked**, and, only when relevant, **Freshness warnings**. Blocked task titles say `— no reason recorded`, never an invented explanation. Empty work sections say `No current work is recorded.` or `No explicitly blocked work is recorded.` The title is not an objective.
+- **Handoff, in order.** The same four header lines, then `Origin session`, `Coverage: full (revision N)`, and the optional reconciled remaining breakdown. **Current work** and **Explicitly blocked** are followed by **Not started** (pending task rows only), then the line `Recorded reports: D direct; R parent-relay`, **Suggested next step (suggestion, not an authoritative plan step)**, and relevant **Freshness warnings**. Report counts count contribution records by direct/parent-relay mode, not distinct agents, changed items or assignments; there is no session roster. Working and blocked tasks never appear as Not started. Its empty copy is `No not-started work is recorded.`
+- **Counts and limits.** Done/total/remaining/skipped stay server-authoritative: groups never count as tasks and skipped tasks are excluded from the done denominator and remaining work. Not started lists at most 10 pending tasks in stored order; when shortened, a separate `…showing 10 of N` line names the full pending-list count, not the plan total. Current work and Explicitly blocked have no extra list cap. Both formats use stable section/stored-item order, LF line endings and a final newline, without relative ages or elapsed times.
+- **Recorded prerequisites.** Handoff task entries describe declared prerequisites, including done ones, in recorded order using titles and reported status. A skipped prerequisite says `Skipped; does not count as done`; a group says `group; not a task prerequisite`. An unresolved reference says `Prerequisite task unavailable`, without its item ID. An empty or omitted list says `No prerequisites recorded`, not that none exist. An explicitly blocked task stays blocked even when its prerequisites are done; a pending task waiting on prerequisites stays in Not started, never Explicitly blocked. Closed plans and invalid graphs retain recorded task and dependency facts without inventing active readiness.
+- **Suggested next step.** Only the shared `readiness()` result on complete matching detail may supply the first ready task in stored order, and only for an active plan with valid, complete readiness. It is a labelled suggestion, never an authoritative next plan step or a working task. Otherwise the section says `No ready next step is recorded.` A missing prerequisite anywhere suppresses the suggestion, even if another task would otherwise be ready.
+- **Freshness.** Warnings reflect recorded document state, checklist synchronization, capture on/off and fixed envelope diagnostics. A failed latest capture can leave a last successful snapshot retained; the current file has not been rechecked. Age alone establishes nothing. Known codes receive fixed plain-language copy; unknown diagnostics get a generic diagnostic-unavailable explanation, never arbitrary raw error text. No body, path or hash is interpolated.
+- **Failed reads and summary-only choice.** Retry appears when the accepted result cannot supply full preview text, not during initial loading or a successful full preview. Describe the actual failure category: exhausted revision restarts, detail page limit, refused identity/response contract, unreachable/disconnected/access refusal, not-found, or the applicable HTTP 503 store code (`unavailable`, `corrupt`, `schema`, `busy`; unknown codes use a generic store-unavailable explanation). Never replace these with generic “plan changed” copy. Only a failed read with a validated first-page snapshot for this reading identity offers **Preview summary only**, never a list row or continuation page; without one, Retry only. Choosing it hides that choice while retaining Retry. The historical output contains just the four header lines (including any archive suffix), `Coverage: summary-only historical snapshot; full detail is unavailable.`, `Read failure: <classified cause>`, and relevant Freshness warnings. It omits the remaining breakdown, origin session, task lists, prerequisites, report attribution and suggested next step. The snapshot is not silently relabelled with a newer list revision.
+- **Privacy defaults.** Generated text never includes source-document bodies, transcripts, tool output, history, machine paths, source/store/item/capture IDs, hashes, assignee/reporter IDs or internal tracker details by default. The only identifier fields are the plan ID and, in a full handoff, the origin session ID. Recorded literals are Markdown-escaped, with multiline titles flattened and HTML-looking text escaped. Field selection and literal escaping are **not a redaction promise**: recorded titles may themselves contain sensitive text, so review the preview before sharing. There is no identifier toggle, redaction subsystem, persistent summary cache, background generation or automatic clipboard write.
+- **Invalidation.** Preview state and callbacks belong to host account, store/source binding, surface reading scope and selected source/plan, with progress revision, cleanup revision and preview generation guards. A change retires obsolete reads, text and buttons before a new selection can copy. Rail scope follows its selected session; board scope follows its explicit selection/filters and Current/Archived mode, not host A/B/null notifications. Progress revision changes refresh/rebind the preview. For cleanup-only changes, the rail refreshes/rebinds the same selection; the board evicts its selection and retires the preview, leaving no stale text. A same-selection archive change regenerates the text; archived detail remains readable. Removal from a refreshed selection retires its full preview, but disappearance from Current plans does not prove deletion. An actual deleted-plan lookup says not-found, not revision churn. A Copy click validates its current binding synchronously and captures the displayed immutable text before starting the clipboard call; it never awaits a new read and auto-copies later. A write already authorized and started cannot be revoked at the operating-system clipboard, but a retired completion cannot announce success or authorize another selection.
+
+### Synthetic examples
+
+Both examples below are formatter output for one synthetic plan: ten task rows (five done, one skipped, one working, one blocked and two pending), plus a group; five direct and two parent-relay reports. The denominator is nine, with four remaining. The document snapshot is captured and checklist-synchronized, but the current file is not rechecked.
+
+**Progress update**
+
+```markdown
+Plan: Add export flow (P\-summary)
+Lifecycle: In progress
+Progress: 5/9 done; 4 remaining; 1 skipped
+Last report: 2026-10-27T09:14:00.000Z
+Remaining breakdown: 1 working; 1 blocked; 2 pending
+
+## Current work
+- Validate import mapping
+
+## Explicitly blocked
+- Migrate legacy rows — no reason recorded
+
+## Freshness warnings
+- The current document file has not been rechecked.
+```
+
+**Handoff**
+
+```markdown
+Plan: Add export flow (P\-summary)
+Lifecycle: In progress
+Progress: 5/9 done; 4 remaining; 1 skipped
+Last report: 2026-10-27T09:14:00.000Z
+Origin session: session\-example
+Coverage: full (revision 7)
+Remaining breakdown: 1 working; 1 blocked; 2 pending
+
+## Current work
+- Validate import mapping — No prerequisites recorded
+
+## Explicitly blocked
+- Migrate legacy rows — no reason recorded — No prerequisites recorded
+
+## Not started
+- Update export docs — Recorded prerequisites: Validate import mapping (In progress)
+- Review rollout checklist — Recorded prerequisites: Dry\-run export (Done)
+
+Recorded reports: 5 direct; 2 parent-relay
+
+## Suggested next step (suggestion, not an authoritative plan step)
+Review rollout checklist
+
+## Freshness warnings
+- The current document file has not been rechecked.
+```
 
 ## Task readiness
 

@@ -22,7 +22,8 @@ import { OFFICIAL_MAIN_URL } from './config.ts';
 import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
-import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
+import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
+import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
 
@@ -96,6 +97,17 @@ export interface ViewContext<U> {
   openOfficialMain: () => void;
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
+  summary: (plan: PlanView) => SummaryView | null;
+}
+
+export type SummaryMode = 'progress' | 'handoff';
+export interface SummaryView {
+  preview: { generation: number; mode: SummaryMode; text: string | null; message: string; canRetry: boolean; canSummaryOnly: boolean; copying: boolean; status: string } | null;
+  open: (mode: SummaryMode) => void;
+  close: () => void;
+  copy: () => void;
+  retry: () => void;
+  summaryOnly: () => void;
 }
 
 /** Task-reading controls of one reading identity. A view from a retired identity does nothing. */
@@ -268,9 +280,10 @@ export function startView<U>(spec: ViewSpec<U>) {
    * `revision`: of the value (a read may return a newer one than requested). `requested`: the listed
    * revision the read was started for, so a reply ahead of a lagging list is read once, not on every
    * paint until the list catches up. `listRead`: for a failed read, the list read it failed under;
-   * it is retried after a newer one.
+   * it is retried after a newer one. `captureEnabled`: list envelope state at read start;
+   * capture toggles change this metadata without advancing either plan revision.
    */
-  const details = new Map<string, { revision: number; requested: number; value: Loadable<PlanDetail>; listRead?: number }>();
+  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number }>();
   let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
@@ -282,6 +295,119 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupFocus: string | null = null;
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
+  type PreviewBinding = { selection: string; key: string; plan: PlanView };
+  type Preview = NonNullable<SummaryView['preview']> & { binding: PreviewBinding; result?: DetailResult; historical?: DetailSnapshot; summaryOnly?: boolean };
+  let preview: Preview | null = null;
+  let previewGeneration = 0;
+  let previewScopeKey: string | null = null;
+  let previewSelection: string | null = null;
+  let previewFocus: { selection: string; hook: string; generation?: number } | null = null;
+  // A disabled replacement loses focus to body. Recover only that gap: never take focus
+  // away from text selection or another control the user reached while the write waited.
+  const canReturnCopyFocus = () => !document.activeElement || document.activeElement === document.body || (document.activeElement as HTMLElement).dataset?.testid === 'summary-copy';
+
+  function previewBinding(vc: ViewContext<U>, p: PlanView): PreviewBinding | null {
+    const target = spec.reading?.(vc);
+    if (disposed || spec.surface === 'status' || !vc.read || !target || target.plan !== p.key || !vc.read.plans.includes(p)) return null;
+    const selection = JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface, target.scope, p.sourceId, p.id]);
+    return { selection, key: JSON.stringify([selection, p.revision, p.cleanup?.revision ?? 0, cacheGeneration]), plan: p };
+  }
+  function currentPreviewBinding(): PreviewBinding | null {
+    const vc = context();
+    const target = spec.reading?.(vc);
+    const p = target && vc.read?.plans.find((p) => p.key === target.plan);
+    return p ? previewBinding(vc, p) : null;
+  }
+  function freshPreview(binding: PreviewBinding, mode: SummaryMode): Preview {
+    return { binding, mode, generation: ++previewGeneration, text: null, message: 'Loading complete plan…', canRetry: false, canSummaryOnly: false, copying: false, status: '' };
+  }
+  /** Synchronous retirement also covers two selection changes before the next paint. */
+  function reconcilePreview() {
+    let binding = currentPreviewBinding();
+    if ((binding?.selection ?? null) !== previewSelection) {
+      // An obsolete selected-plan read must not hold the next selection behind its queue,
+      // nor issue more continuation pages when a held reply is released.
+      if (previewSelection !== null) { retireParts(); binding = currentPreviewBinding(); }
+      previewSelection = binding?.selection ?? null;
+    }
+    if ((binding?.key ?? null) !== previewScopeKey) { previewScopeKey = binding?.key ?? null; previewGeneration++; }
+    if (!preview) return;
+    if (!binding || binding.selection !== preview.binding.selection) { preview = null; previewFocus = null; previewGeneration++; }
+    else if (binding.key !== preview.binding.key) preview = freshPreview(binding, preview.mode);
+  }
+  function matchesSnapshot(s: DetailSnapshot, p: PlanView) {
+    return !!read && s.identity.storeId === read.storeId && s.identity.binding.sourceId === read.binding.sourceId && s.identity.binding.verified === read.binding.verified && s.identity.sourceId === p.sourceId && s.identity.planId === p.id;
+  }
+  function preparePreview() {
+    reconcilePreview();
+    const bound = preview;
+    if (!bound) return;
+    const p = bound.binding.plan;
+    const c = details.get(p.key);
+    if (!c?.result || c.result === bound.result || c.requested !== p.revision && c.revision !== p.revision) return;
+    const r = c.result;
+    // A complete read ahead of the list waits for the list, without another read per paint.
+    if (r.ok && (r.plan.revision !== p.revision || (r.plan.cleanup?.revision ?? 0) !== (p.cleanup?.revision ?? 0))) return;
+    if (currentPreviewBinding()?.key !== bound.binding.key) return;
+    // An explicit historical choice stays selectable through further background failures.
+    // User actions and binding changes create a fresh preview; a complete read replaces it.
+    if (bound.summaryOnly && !r.ok) return;
+    // Complete matching cached reads remain reusable; degraded snapshots cannot cross a
+    // retired reading generation (including leaving and returning to the same selection).
+    const historical = c.generation === cacheGeneration ? r.snapshot ?? c.historical : undefined;
+    const valid = historical && matchesSnapshot(historical, p) ? historical : undefined;
+    const text = r.ok && r.snapshot && matchesSnapshot(r.snapshot, p) ? (bound.mode === 'progress' ? formatProgressUpdate(r) : formatHandoff(r)) : null;
+    // Replacement retires every callback for the previous displayed string, including pending copy feedback.
+    preview = { ...bound, generation: ++previewGeneration, result: r, historical: valid, text, summaryOnly: false, copying: false, status: '',
+      message: r.ok ? (text === null ? describeDetailFailure({ kind: 'identity-contract' }) : '') : describeDetailFailure(r.cause), canRetry: text === null, canSummaryOnly: !r.ok && !!valid };
+  }
+  function summaryView(p: PlanView): SummaryView | null {
+    reconcilePreview();
+    const binding = previewBinding(context(), p);
+    if (!binding) return null;
+    const bound = preview;
+    const generation = previewGeneration;
+    const current = () => !disposed && generation === previewGeneration && currentPreviewBinding()?.key === binding.key;
+    const active = () => current() && !!bound && preview === bound;
+    const shown = bound?.binding.key === binding.key ? bound : null;
+    const text = shown?.text ?? null;
+    return {
+      preview: shown ? { generation: shown.generation, mode: shown.mode, text, message: shown.message, canRetry: shown.canRetry, canSummaryOnly: shown.canSummaryOnly, copying: shown.copying, status: shown.status } : null,
+      open: (mode) => { if (current()) { preview = freshPreview(binding, mode); versions.ui++; schedule(); } },
+      close: () => {
+        if (!active()) return;
+        previewFocus = { selection: binding.selection, hook: `summary-${bound!.mode}` };
+        preview = null; previewGeneration++; versions.ui++; schedule();
+      },
+      retry: () => {
+        if (!active() || !bound!.canRetry) return;
+        // Reuse the existing detail queue; preserve only its validated historical summary.
+        preview = freshPreview(binding, bound!.mode); loadDetails([p], true); versions.ui++; schedule(); retry();
+      },
+      summaryOnly: () => {
+        if (!active() || !bound!.canSummaryOnly || !bound!.historical || !bound!.result || bound!.result.ok || !matchesSnapshot(bound!.historical, p)) return;
+        preview = { ...bound!, generation: ++previewGeneration, text: formatSummaryOnly(bound!.historical, bound!.result.cause), summaryOnly: true, canSummaryOnly: false, status: '' };
+        versions.ui++; schedule();
+      },
+      copy: () => {
+        // The user click authorizes exactly this immutable displayed string, never a later read.
+        if (!active() || text === null || bound!.copying) return;
+        bound!.copying = true; bound!.status = 'Copying…'; versions.ui++; schedule();
+        const finish = (success: boolean) => {
+          if (!active()) return; // an OS write cannot be revoked; its retired feedback can be discarded
+          bound!.copying = false;
+          bound!.status = success ? 'Markdown copied.' : 'Clipboard unavailable. Select and copy the preview text below.';
+          if (canReturnCopyFocus()) previewFocus = { selection: binding.selection, hook: 'summary-copy', generation: bound!.generation };
+          versions.ui++; schedule();
+        };
+        try {
+          const clipboard = globalThis.navigator?.clipboard;
+          if (!clipboard?.writeText) { finish(false); return; }
+          void clipboard.writeText(text).then(() => finish(true), () => finish(false));
+        } catch { finish(false); }
+      },
+    };
+  }
   /**
    * Task-reading state of the current reading identity (spec.reading). Replaced, never carried
    * over, when the identity changes; cleared with the caches on authority resets and disposal.
@@ -316,6 +442,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   const bump = () => { versions.data++; schedule(); };
   const retireParts = () => {
     cacheGeneration++; detailQueue = Promise.resolve();
+    if (preview) preview = freshPreview(preview.binding, preview.mode);
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
@@ -360,6 +487,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   function applyUi(patch: Partial<U>) {
     ui = { ...ui, ...patch }; versions.ui++; schedule();
     if (scopeMoved()) retry();
+    reconcilePreview();
   }
 
   const gate = new RefreshGate(async (generation) => {
@@ -463,20 +591,25 @@ export function startView<U>(spec: ViewSpec<U>) {
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
   }
 
-  function loadDetails(plans: PlanView[]) {
+  function loadDetails(plans: PlanView[], force = false) {
     for (const p of plans) {
       const cached = details.get(p.key);
-      if (cached && (cached.revision === p.revision || cached.requested === p.revision) && cached.value.state !== 'error') continue;
+      const cleanupRev = p.cleanup?.revision ?? 0;
+      const captureEnabled = read?.captureEnabled;
+      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') continue;
       if (cached && cached.value.state === 'loading') continue;
-      if (cached && cached.value.state === 'error' && cached.revision === p.revision && cached.listRead === listReads) continue;
-      details.set(p.key, { revision: p.revision, requested: p.revision, value: { state: 'loading' } });
+      if (!force && cached && cached.value.state === 'error' && cached.revision === p.revision && cached.requestedCleanup === cleanupRev && cached.listRead === listReads) continue;
+      const historical = cached?.generation === cacheGeneration ? cached.result?.snapshot ?? cached.historical : undefined;
+      details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } });
       const id = identity;
       const generation = cacheGeneration;
       detailQueue = detailQueue.then(async () => {
         if (disposed || id !== identity || generation !== cacheGeneration) return;
-        const result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
+        let result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
         if (disposed || id !== identity || generation !== cacheGeneration) return;
-        details.set(p.key, result.ok ? { revision: result.detail.revision, requested: p.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, requested: p.revision, value: { state: 'error', failure: result.failure }, listRead: listReads });
+        if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
+        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
+        details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
     }
@@ -621,6 +754,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
       openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
       reading: readingView(),
+      summary: summaryView,
     };
   }
 
@@ -639,9 +773,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
+    preparePreview();
     let vc = context();
 
     const focus = focusKey(mount!);
+    const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
+    const textSelection = oldText && preview && oldText.dataset.generation === String(preview.generation) ? { start: oldText.selectionStart, end: oldText.selectionEnd, direction: oldText.selectionDirection, top: oldText.scrollTop } : null;
     // Plan-reading disclosures, logical focus and anchor belong to the reading they were painted
     // under; a loading paint without the task list keeps what an earlier paint recorded.
     let logical: Logical | null = null;
@@ -735,6 +872,13 @@ export function startView<U>(spec: ViewSpec<U>) {
       const target = owner?.querySelector<HTMLElement>('button') ?? owner;
       if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
     }
+    const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
+    if (nextText && textSelection) { nextText.setSelectionRange(textSelection.start, textSelection.end, textSelection.direction); nextText.scrollTop = textSelection.top; }
+    if (previewFocus) {
+      const copyCurrent = previewFocus.generation === undefined || (preview?.generation === previewFocus.generation && canReturnCopyFocus());
+      if (copyCurrent && currentPreviewBinding()?.selection === previewFocus.selection) root.querySelector<HTMLElement>(`[data-testid="${previewFocus.hook}"]`)?.focus({ preventScroll: true });
+      previewFocus = null;
+    }
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     spec.afterPaint?.(root, vc);
@@ -752,6 +896,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A full snapshot or incremental event can move context. Duplicate follow-up events
     // are idempotent; directory-only enrichment does not change a session list scope.
     const moved = scopeMoved();
+    reconcilePreview();
     // While not set up, the read-only setup reply (folder hints) is refreshed on navigation; the
     // form keeps every field the user touched.
     if (setup?.state === 'ready' && !setup.value.configured) loadSetup();
@@ -836,6 +981,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     live.dispose();
     memory.clear();
     clearReading();
+    preview = null; previewFocus = null; previewGeneration++;
   });
 }
 

@@ -1,6 +1,6 @@
 // DOM building blocks shared by the three surfaces. Every string lands through textContent.
 import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpinner, type SelectOption, type Tone } from '@openchamber/sdk/ui';
-import type { Loadable, ReadingView } from './app.ts';
+import type { Loadable, ReadingView, SummaryView } from './app.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, plural, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
 import { assignment, readiness, type InvalidReason, type Prerequisite, type ReadinessEntry, type ReadinessGroup } from './readiness.ts';
@@ -747,6 +747,7 @@ export function readinessBlock(plan: PlanView, detail: Loadable<PlanDetail> | nu
 
 export interface DetailHooks {
   detail: Loadable<PlanDetail> | null;
+  summary?: SummaryView | null;
   retryDetail?: () => void;
   document: { get: () => Loadable<DocumentBody> | null; request: () => void };
 }
@@ -767,6 +768,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   const summary = summarize(plan, ready);
   if (showsLiveness(plan.lifecycle, summary, env.view)) root.dataset.motion = 'on';
   root.append(planHeader(plan, env, options.heading), progressBlock(summary));
+  if (hooks.summary) root.append(summaryBlock(hooks.summary));
   if (ready) {
     const now = currentWorkBlock(plan, ready, env);
     if (now) root.append(now);
@@ -783,6 +785,48 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   root.append(peopleBlock(plan, ready, env));
   if (options.document !== 'omit') root.append(documentBlock(plan, env, options.document, hooks.document));
   return root;
+}
+
+/** Plain selectable Markdown. Async state and all action authority stay in the controller. */
+function summaryBlock(view: SummaryView) {
+  const section = el('section', 'ap-summary');
+  section.setAttribute('aria-label', 'Plan summaries');
+  const actions = el('div', 'ap-row');
+  const action = (parent: HTMLElement, id: string, label: string, run: () => void, disabled = false) => {
+    const holder = button(parent, id, label, run, 'outline', disabled);
+    // Hooks and focus belong to the native control, not the kit's wrapper.
+    delete holder.dataset.testid;
+    const control = holder.querySelector('button');
+    if (control) control.dataset.testid = id;
+    return control;
+  };
+  action(actions, 'summary-progress', 'Copy progress update', () => view.open('progress'));
+  action(actions, 'summary-handoff', 'Copy handoff', () => view.open('handoff'));
+  section.append(actions);
+  const state = view.preview;
+  if (!state) return section;
+  const box = testid(el('div', 'ap-summary-preview'), 'summary-preview');
+  box.append(el('h3', 'ap-h', state.mode === 'progress' ? 'Progress update preview' : 'Handoff preview'));
+  const status = testid(el('p', 'ap-note', state.status || state.message || 'Review the Markdown, then copy it.'), 'summary-status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-atomic', 'true');
+  box.append(status);
+  if (state.status && state.message) box.append(el('p', 'ap-note', state.message));
+  if (state.text !== null) {
+    const label = el('label', 'ap-summary-label', 'Markdown preview (read-only)');
+    const text = testid(el('textarea', 'ap-summary-text'), 'summary-text');
+    text.readOnly = true; text.value = state.text; text.rows = 12; text.spellcheck = false;
+    text.dataset.generation = String(state.generation);
+    label.append(text); box.append(label);
+  }
+  const controls = el('div', 'ap-row');
+  action(controls, 'summary-copy', 'Copy Markdown', view.copy, state.text === null || state.copying);
+  if (state.canRetry) action(controls, 'summary-retry', 'Retry', view.retry);
+  if (state.canSummaryOnly) action(controls, 'summary-only', 'Preview summary only', view.summaryOnly);
+  action(controls, 'summary-close', 'Close', view.close);
+  box.append(controls); section.append(box);
+  return section;
 }
 
 export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> | null, env: Env) {

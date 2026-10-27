@@ -105,7 +105,7 @@ startView<Ui>({
         vc.requestHistory(plan);
         article.append(planHeader(plan, env), historyBlock(plan, vc.history(plan), env));
         detail.append(article);
-      } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession: filters.session !== ALL ? filters.session : null, reading: vc.reading }));
+      } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession: filters.session !== ALL ? filters.session : null, reading: vc.reading }));
       detail.append(cleanupBlock(vc, plan));
     } else detail.append(emptyBlock('filtered-empty', 'No plans match these filters', 'Choose another project, worktree or session.'));
     board.append(detail);

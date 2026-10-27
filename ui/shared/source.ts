@@ -100,7 +100,46 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
   } catch (error) { return { ok: false, failure: classify(error) }; }
 }
 
-export type DetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number } | { ok: false; failure: ReadFailure };
+/** First-page facts only. No partial item, report or link arrays are retained here. */
+export interface DetailSnapshot {
+  readonly plan: PlanView & { counts: NonNullable<PlanView['counts']> };
+  readonly identity: { readonly storeId: string; readonly binding: { readonly sourceId: string | null; readonly verified: boolean }; readonly sourceId: string; readonly planId: string };
+  readonly captureEnabled: boolean;
+  readonly diagnostics: readonly string[];
+}
+export type DetailFailureCause =
+  | { kind: 'revision-restarts' | 'page-cap' | 'identity-contract' | 'unreachable-auth' | 'not-found' }
+  | { kind: 'store'; code: 'unavailable' | 'storage' | 'binding' | 'corrupt' | 'schema' | 'busy' | 'unknown' };
+export type CompleteDetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number; snapshot: DetailSnapshot | null };
+export type DetailResult = CompleteDetailResult | { ok: false; failure: ReadFailure; cause: DetailFailureCause; snapshot: DetailSnapshot | null };
+
+class DetailReadError extends ContractError {
+  readonly causeKind: 'revision-restarts' | 'page-cap';
+  constructor(kind: DetailReadError['causeKind'], message: string) { super(message); this.causeKind = kind; }
+}
+
+function detailFailureCause(error: unknown): DetailFailureCause {
+  if (error instanceof DetailReadError) return { kind: error.causeKind };
+  if (error instanceof ContractError || error instanceof SyntaxError) return { kind: 'identity-contract' };
+  if (error instanceof HttpError && error.status === 404 && error.code === 'not-found') return { kind: 'not-found' };
+  if (error instanceof HttpError && error.status === 503) {
+    const code = error.code;
+    return { kind: 'store', code: code === 'unavailable' || code === 'storage' || code === 'binding' || code === 'corrupt' || code === 'schema' || code === 'busy' ? code : 'unknown' };
+  }
+  if (classify(error).kind === 'invalid' || classify(error).kind === 'incompatible') return { kind: 'identity-contract' };
+  return { kind: 'unreachable-auth' };
+}
+
+function detailSnapshot(first: ReturnType<typeof parsePlanPage>): DetailSnapshot | null {
+  const c = first.plan.counts;
+  // Older replies may omit counts. Never manufacture authoritative totals or a timestamp.
+  if (!c || Object.values(c).some((n) => n < 0) || c.done + c.remaining !== c.total || Number.isNaN(Date.parse(first.plan.reportedAt))) return null;
+  return {
+    plan: first.plan as DetailSnapshot['plan'],
+    identity: { storeId: first.envelope.storeId, binding: { ...first.envelope.binding }, sourceId: first.plan.sourceId, planId: first.plan.id },
+    captureEnabled: first.envelope.captureEnabled, diagnostics: [...first.envelope.diagnostics],
+  };
+}
 
 /** Store, source binding and requested plan of one detail page; every page of a read must agree. */
 const pageIdentity = (page: ReturnType<typeof parsePlanPage>) => JSON.stringify([page.envelope.storeId, page.envelope.binding.sourceId, page.envelope.binding.verified, page.plan.sourceId, page.plan.id]);
@@ -112,10 +151,12 @@ const pageIdentity = (page: ReturnType<typeof parsePlanPage>) => JSON.stringify(
  * store, source binding or plan is refused, even at the same revision: never a joined detail.
  */
 export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now()): Promise<DetailResult> {
+  let snapshot: DetailSnapshot | null = null;
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
       const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
       if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
+      snapshot = detailSnapshot(first);
       const identity = pageIdentity(first);
       // Timing covers the whole plan at this revision; anchor it when the reply arrives.
       const receivedAt = mono();
@@ -135,13 +176,13 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
         contribNext = contribNext ? next.contributions.nextCursor : null;
       }
       if (mixed) continue;
-      if (itemsNext || contribNext) throw new ContractError('The plan has more pages than this view reads at once.');
+      if (itemsNext || contribNext) throw new DetailReadError('page-cap', 'The plan has more pages than this view reads at once.');
       const timing = first.timing && Object.fromEntries(Object.entries(first.timing.items).map(([id, t]) => [id, { ...t, receivedAt }]));
-      return { ok: true, plan: first.plan, restarts, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}) } };
+      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}) } };
     }
-    throw new ContractError('The plan kept changing while it was read.');
+    throw new DetailReadError('revision-restarts', 'The plan kept changing while it was read.');
   } catch (error) {
-    return { ok: false, failure: classify(error) };
+    return { ok: false, failure: classify(error), cause: detailFailureCause(error), snapshot };
   }
 }
 
