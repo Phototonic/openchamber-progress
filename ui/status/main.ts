@@ -2,7 +2,7 @@ import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, testid } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
-import { baseName, clockTime } from '../shared/format.ts';
+import { clockTime } from '../shared/format.ts';
 import { coverageFor, liveLabel } from '../shared/live.ts';
 import { blockedWork, currentWork, LIFECYCLE_LABEL, showsLiveness, summarize } from '../shared/model.ts';
 import { officialMainLine } from '../shared/official.ts';
@@ -26,7 +26,7 @@ const primary = (vc: ViewContext<Ui>) => {
   return vc.ui.selection.resolve(scope).plan;
 };
 
-// Work Status section: compact, scoped to the section's own session/directory context.
+// Work Status section: compact, scoped only to its explicit host-selected session.
 // The host draws the section title; this frame never writes a badge.
 startView<Ui>({
   surface: 'status',
@@ -50,22 +50,21 @@ startView<Ui>({
     const official = () => officialMainLine(vc, () => openRail(vc));
     const withOfficial = (block: HTMLElement) => { const line = official(); if (line) block.append(line); return block; };
     if (!read) {
+      if (!vc.session?.id) root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) root.append(withOfficial(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Set it up to see plans here.', true, { label: 'Set up', onClick: () => openRail(vc) })));
-      else root.append(loadingBlock());
+      else if (vc.session?.id) root.append(loadingBlock());
       return;
     }
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);
     const { plan, selected } = vc.ui.selection.resolve(scope);
     if (scope.kind === 'none') {
-      root.append(withOfficial(emptyBlock('unscoped-state', 'No project open', 'Open a project or session to see agent progress.', true)));
+      root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
       return;
     }
     if (!scope.plans.length) {
-      root.append(withOfficial(scope.kind === 'session'
-        ? emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)
-        : emptyBlock('empty-state', `No plans recorded in ${baseName(scope.directory)}`, 'Progress appears here when an agent reports a plan.', true)));
+      root.append(failure ? failureBlock(failure, vc.retry) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));
       return;
     }
     if (!plan) return;

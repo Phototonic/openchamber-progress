@@ -39,11 +39,13 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   - The plan key is `${sourceId}/${id}`; the owner is `sessionId`; `finished` displays as "Finished".
   - List rows and summaries use server `counts` / `working` only.
 - **Rail and Work Status.**
-  - Read `/v1/plans?session=<ctx session>`, or `?directory=<ctx directory>` when there is no session; with neither, the view is unscoped.
-  - The server's filter includes participants (links, assignments, attributed contributions), so a child session sees the plan it works on, with a "contributes to a plan from …" note.
+  - Read `/v1/plans?session=<ctx session>` only for an explicit selected session. Null/draft/missing session is **No session selected**, even if directory metadata exists: health only, no plan list or part requests and no fabricated store read.
+  - A successful empty session read is **No plan reported for this session**. Pending and failed reads stay distinct from that authoritative empty result.
+  - The server's filter includes participants (links, assignments, attributed contributions), so a contributing child sees the plan it works on, with a "contributes to a plan from …" note. A fork with no recorded membership does not inherit ancestor plans.
 - **Page.**
   - Reads all plans (`limit=50`, cursor pages up to 10).
   - The session filter goes to the server (`session=`); project/worktree narrowing is local, from the recorded `directory` plus live SDK labels.
+  - This is the history board, independent of host-selected session. Host A/B/null updates do not narrow current/archived lists or reset its explicit filters. The host may destroy the frame during navigation; reopening starts the page's ordinary defaults, not an implicit host-session filter.
 - **Detail** (`/v1/plan`) loads on demand for the shown plan only.
   - Items and contributions page with one cursor: each nested `nextCursor` is passed back verbatim, and reading stops when both are null.
   - If `plan.revision` changes between pages, the read restarts.
@@ -79,9 +81,11 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   7. collapsed Details
 - Unconfigured service: the setup flow in compact form. After install, a reload notice.
 
-**Work Status (`ui/status`).** Compact, scoped to the section's own session or directory.
+![Selected session's reported plan in the rail (synthetic example)](images/session-selected.png)
+
+**Work Status (`ui/status`).** Compact, scoped only to the section's explicit selected session.
 - **Automatic** features the most recently reported active plan with explicitly working task IDs (stable plan-key tie-break). Without one, it keeps the existing scoped ordering: owned-first, then active/recent within each ownership group, including the existing finished/cancelled fallback. Live Running/Idle labels never determine selection or completion.
-- With multiple scoped plans, **Featured plan** offers Automatic and every available plan. A manual choice, including a pending or finished plan, stays through refreshes and newer reports. Removed choices revert to Automatic. Choices are frame-local, retained for up to eight recent session/directory contexts, and cleared when the store/source binding or host account changes; reopening the frame starts Automatic. No asynchronous preference restore or server writes.
+- With multiple scoped plans, **Featured plan** offers Automatic and every available plan. A manual choice, including a pending or finished plan, stays through refreshes, newer reports and directory moves of the same session. Removed choices revert to Automatic. Choices are frame-local, retained for up to eight recent session contexts, and cleared when the store/source binding or host account changes; reopening the frame starts Automatic. No asynchronous preference restore or server writes.
 - The status-only SDK selector shares one row with its label: a right-aligned 24px-high control, bounded to 65% of the row and shrinkable at narrow guest widths. Its value truncates with the full title on hover; popup labels wrap for keyboard/touch discovery. SDK naming and keyboard behavior remain intact, with an inset host-token focus outline. Other surfaces keep their existing select sizing.
 - Shows: counts and bar; first working (else blocked) task from the primary plan's detail; age and live state; up to two other plans.
 - Detail loading and the first live project subscription follow the featured plan, including a selection beyond the first three list entries; the two-session-stream/32-total-subscription limits remain unchanged.
@@ -159,13 +163,15 @@ Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `relo
 | Refresh failed after good data | last data kept + "Showing progress from HH:MM … may be out of date" | `stale-banner` |
 | Service reports not set up after this frame showed data | last data kept, banner "Progress setup can’t be read right now" | `stale-banner` (kind `setup-lost`) |
 | Capture turned off | quiet warning line | `capture-off` |
-| Store/session/folder has no plans | kit empty state (compact in Work Status) | `empty-state` |
-| No session or directory | "No session selected" / "No project open" | `unscoped-state` |
+| Selected session has no reports / board store has no plans | kit empty state (compact in Work Status) | `empty-state` |
+| Sidebar has no selected session, regardless of directory | "No session selected"; health/setup/error diagnostics remain available | `unscoped-state` |
 | Filters match nothing | page detail empty | `filtered-empty` |
 | Detail / document / history loading or failed | inline line, Try again where useful | `detail-loading`, `document-loading`, `history-loading` |
 | No live SDK coverage / other source | chip "Live state unavailable" (unwatched/unknown) or "Not open in this window" (ready stream without the session), "From another OpenCode setup", page note | `coverage-note`, `other-source` |
 | Plan from an unverified source | "Unverified OpenCode setup" in the header, "Unverified setup" list badge | `unverified-source` |
 | Document text from an earlier capture | warning line above the text | `document-historical` |
+
+![Draft sidebar with no session selected (synthetic example)](images/no-session-draft.png)
 
 Live session state (Running, Retrying, Waiting for permission, Waiting for an answer, Idle, State unknown, Checking…, Live state unavailable, Not open in this window) is always separate from task status. Age is information only: nothing is inferred from it.
 
@@ -229,7 +235,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 ## Controller
 
 - **Refresh (latest context wins).**
-  - A context notification re-reads only when the **list scope** changes. The host announces one switch in steps (session, then directory); a step that keeps the scope keeps the read already in flight.
+   - Full ready snapshots adopt session and directory together before callbacks or refresh. Observed native ordering is ready → directory → session; duplicate incremental context is idempotent. A context notification re-reads only when the **list scope** changes; same-session directory enrichment keeps the read already in flight.
   - When the scope changes, the obsolete read is retired, not awaited: the new read starts at once and the old reply is dropped by generation. Overlap is bounded to one obsolete plus one current read; anything more collapses into one queued follow-up. Same-scope requests still coalesce (one in flight, one follow-up).
   - `pagehide` stops the gate (no new or queued reads) along with timers and subscriptions.
 - **Scoped reads and recent memory.**
@@ -237,7 +243,8 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - Each frame remembers the last **complete, validated** list read of up to 8 recent scopes (`RECENT_SCOPES`), keyed by host account + store ID + bound source + verified flag + scope. Any store or binding change, setup action or disposal clears it.
   - Returning to a remembered scope paints it immediately, with no spinner, and revalidates quietly; the view repaints only if the reply differs. If the service is failing, the remembered data shows under the out-of-date banner with its own time.
   - An unseen scope still shows loading, never another scope's data.
-  - Plan detail, document and history stay cached by plan key plus revision or capture. Live session chips always come from the current live subscription, never from memory.
+   - Plan detail, document and history stay cached by plan key plus revision or capture. Live session chips always come from the current live subscription, never from memory.
+   - A changed scope clears the previous read/error before adopting its own recent entry. Retired generations cannot issue continuation requests or use old document/history/cleanup callbacks; draft has no plan-read authority. Rail preference restores and picker callbacks also carry selection generations.
   - The rail also remembers the chosen plan for up to 8 recent sessions, so a revisit paints its own selection at once (host storage stays the durable copy and is re-read).
   - **Limit:** a frame the host rebuilds (for example, the per-project rail open state swapping rail and Work Status on a project switch) starts cold.
 - **Polling.** 3 s; 8 s after a failure; paused while hidden; stopped on `pagehide`.
@@ -249,7 +256,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - Streams are released on change and on dispose, including late resolutions; replacements wait for retired slots. Restart clears membership and rejects callbacks from previous subscriptions. Store/source binding changes also restart enrichment.
   - **Restarted on every session/directory notification.** The host's PluginPane clears a frame's workspace subscriptions without telling the guest when its effect re-runs (observed on session navigation), so the guest re-subscribes.
 - **Repaint.** Only when data, live state, context or UI state changed.
-  - A background repaint waits while a kit popup is open.
+   - A background repaint waits while a kit popup is open, but a context change paints immediately so retired content cannot remain actionable.
   - Focus, scroll, open disclosures and typed setup fields survive a repaint.
   - Setup typing does not repaint.
 - **UI updates.** Functional `updateUi` merges onto the latest UI state, so writes after an await are safe.

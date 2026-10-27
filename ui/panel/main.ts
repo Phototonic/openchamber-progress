@@ -2,7 +2,6 @@ import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
 import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, staleBlock, testid } from '../shared/components.ts';
-import { baseName } from '../shared/format.ts';
 import { sessionLabel } from '../shared/live.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
@@ -60,12 +59,14 @@ startView<Ui>({
     // The official-main notice does not depend on companion setup or the store.
     const official = officialMainBlock(vc);
     if (!read) {
+      if (!vc.session?.id) root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.'));
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) {
         if (official) root.append(official);
         root.append(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Connect it to your OpenCode setup to start showing plans.', true));
         root.append(setupBlock(vc, { compact: true }));
-      } else root.append(loadingBlock());
+      } else if (vc.session?.id) root.append(loadingBlock());
+      else if (official) root.append(official);
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
@@ -77,13 +78,13 @@ startView<Ui>({
     if (scope.kind === 'none') {
       root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see the plan its agent reported.'));
     } else if (!scope.plans.length) {
-      root.append(scope.kind === 'session'
-        ? emptyBlock('empty-state', 'No plan reported for this session', 'When an agent in this session reports a plan, its progress appears here.')
-        : emptyBlock('empty-state', 'No plans recorded in this folder', 'Open a session, or wait for an agent here to report a plan.'));
+      root.append(emptyBlock('empty-state', 'No plan reported for this session', 'When an agent in this session reports a plan, its progress appears here.'));
     } else {
-      if (scope.kind === 'directory') root.append(testid(el('p', 'ap-note', `No session selected · plans recorded in ${baseName(scope.directory)}`), 'scope-note'));
+      const generation = selectionGeneration;
       const plan = pickPlan(scope.plans, vc.ui.selected);
       if (scope.plans.length > 1 && plan) root.append(picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, (key) => {
+        if (generation !== selectionGeneration) return;
+        selectionGeneration++; // a manual choice also retires a pending preference restore
         vc.setUi({ selected: key });
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
       }));

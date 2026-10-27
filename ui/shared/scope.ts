@@ -12,21 +12,18 @@ export type Scope =
   | { kind: 'directory'; directory: string; plans: PlanView[] }
   | { kind: 'none' };
 
-/** Server scope for the rail and Work Status: the session if provided, else the directory. */
-export function contextListScope(sessionId: string | null | undefined, directory: string | null | undefined): ListScope | null {
-  if (sessionId) return { session: sessionId };
-  if (directory) return { directory };
-  return null;
+/** Sidebar scope is the explicit selected session; directory metadata never broadens it. */
+export function contextListScope(sessionId: string | null | undefined, _directory?: string | null): ListScope | null {
+  return sessionId ? { session: sessionId } : null;
 }
 
 /** Orders an already server-scoped list: plans the session owns first, then ones it takes part in. */
-export function contextScope(plans: PlanView[], sessionId: string | null | undefined, directory: string | null | undefined): Scope {
+export function contextScope(plans: PlanView[], sessionId: string | null | undefined, _directory?: string | null): Scope {
   if (sessionId) {
     const owned = orderPlans(plans.filter((p) => p.ownerSessionId === sessionId));
     const helping = orderPlans(plans.filter((p) => p.ownerSessionId !== sessionId));
     return { kind: 'session', sessionId, plans: [...owned, ...helping], owned: owned.length };
   }
-  if (directory) return { kind: 'directory', directory, plans: orderPlans(plans) };
   return { kind: 'none' };
 }
 

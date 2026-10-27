@@ -65,11 +65,11 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
 });
 
-/** Health, then the scoped plan list page by page (cursor passed back verbatim). */
-export async function readList(host: ServiceHost, scope: ListScope, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
+/** Null checks health only; {} deliberately reads the unfiltered history board. */
+export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
   try {
     const health = parseHealth(await call(host, ROUTES.health));
-    if (!health.ready) return { ok: true, health, read: null };
+    if (!health.ready || scope === null) return { ok: true, health, read: null };
     // An older service cannot establish an empty archive; never send it the new query.
     if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };
     const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null, archived: health.planCleanup ? scope.archived ?? 'exclude' : null };
