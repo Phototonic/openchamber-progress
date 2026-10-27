@@ -206,6 +206,182 @@ export function itemTree(items: ItemView[]): ItemNode[] {
 export const currentWork = (detail: PlanDetail) => detail.items.filter((i) => i.kind === 'task' && i.status === 'working');
 export const blockedWork = (detail: PlanDetail) => detail.items.filter((i) => i.kind === 'task' && i.status === 'blocked');
 
+/** Task view filter: every row, or only unfinished tasks (pending, working, blocked). */
+export type StatusFilter = 'all' | 'unfinished';
+export type JumpKind = 'working' | 'blocked';
+/**
+ * Task participant filter, always chosen deliberately (never from the host session, plan owner or
+ * board filters). `none`: tasks with no recorded participant fact at all, not "unassigned".
+ */
+export type ParticipantFilter = { kind: 'all' } | { kind: 'none' } | { kind: 'session'; sessionId: string };
+export const ALL_PARTICIPANTS: ParticipantFilter = { kind: 'all' };
+/** Frame-local reading state of one plan detail (app.ts owns its lifetime). */
+export interface ReadingState { status: StatusFilter; participant: ParticipantFilter; cursor: Record<JumpKind, string | null> }
+
+const UNFINISHED: ReadonlySet<ItemStatus> = new Set(['pending', 'working', 'blocked']);
+/** Membership predicate for a status filter; null when nothing is filtered. Never consults dependencies, age or lifecycle. */
+export const statusMatch = (filter: StatusFilter) => (filter === 'all' ? null : (i: ItemView) => UNFINISHED.has(i.status));
+
+/**
+ * `match`: a task the filter keeps (every row while nothing is filtered); `context`: a group or a
+ * nonmatching task kept only because a descendant task matches; `hidden`: hidden by the filter.
+ */
+export type RowState = 'match' | 'context' | 'hidden';
+/** Descendant task rows of one branch (the branch's own row excluded). */
+export interface BranchSummary extends Counts {
+  working: number;
+  blocked: number;
+  /** Task rows, skipped included: a row count, not the progress denominator. */
+  rows: number;
+  matching: number;
+  context: number;
+  hidden: number;
+  hiddenWorking: number;
+  hiddenBlocked: number;
+}
+export interface TaskProjection {
+  tree: ItemNode[];
+  filtered: boolean;
+  rows: Map<string, RowState>;
+  /** Per item with children. */
+  branches: Map<string, BranchSummary>;
+  /** Every task row of the plan, under the same rules. */
+  totals: BranchSummary;
+  /** Every row in canonical hierarchy reading order. */
+  order: ItemView[];
+}
+
+type Tally = Omit<BranchSummary, keyof Counts> & { done: number; skipped: number };
+const tally = (): Tally => ({ done: 0, skipped: 0, working: 0, blocked: 0, rows: 0, matching: 0, context: 0, hidden: 0, hiddenWorking: 0, hiddenBlocked: 0 });
+const settle = (t: Tally): BranchSummary => ({ ...t, total: t.rows - t.skipped, remaining: t.rows - t.skipped - t.done });
+
+/**
+ * One pass over the canonical hierarchy: which rows a filter keeps (matching tasks plus every
+ * existing ancestor as context), and full descendant aggregates per branch. Done/total/remaining/
+ * skipped follow the shared count rule (groups never count); working/blocked are task-only and
+ * ignore the filter. `match` is the intersection of every active task filter, or null.
+ */
+export function taskProjection(items: ItemView[], match: ((item: ItemView) => boolean) | null): TaskProjection {
+  const tree = itemTree(items);
+  const rows = new Map<string, RowState>();
+  const branches = new Map<string, BranchSummary>();
+  const order: ItemView[] = [];
+  const visit = (node: ItemNode): Tally => {
+    const { item } = node;
+    order.push(item);
+    const below = tally();
+    for (const child of node.children) {
+      const t = visit(child);
+      for (const k of Object.keys(below) as (keyof Tally)[]) below[k] += t[k];
+    }
+    const state: RowState = match === null || (item.kind === 'task' && match(item)) ? 'match' : below.matching ? 'context' : 'hidden';
+    rows.set(item.id, state);
+    if (node.children.length) branches.set(item.id, settle(below));
+    if (item.kind !== 'task') return below;
+    const self = { ...below, rows: below.rows + 1 };
+    self[state === 'match' ? 'matching' : state]++;
+    if (item.status === 'done') self.done++;
+    if (item.status === 'skipped') self.skipped++;
+    if (item.status === 'working') { self.working++; if (state === 'hidden') self.hiddenWorking++; }
+    if (item.status === 'blocked') { self.blocked++; if (state === 'hidden') self.hiddenBlocked++; }
+    return self;
+  };
+  const all = tally();
+  for (const root of tree) { const t = visit(root); for (const k of Object.keys(all) as (keyof Tally)[]) all[k] += t[k]; }
+  return { tree, filtered: match !== null, rows, branches, totals: settle(all), order };
+}
+
+/** Reported working or blocked tasks in canonical hierarchy order (not the Now callout's cap). */
+export const jumpTargets = (p: TaskProjection, kind: JumpKind) => p.order.filter((i) => i.kind === 'task' && i.status === kind);
+/** The target after `last`, wrapping; a removed or absent `last` starts at the first. */
+export function nextJump(targets: ItemView[], last: string | null) {
+  if (!targets.length) return null;
+  const at = last === null ? -1 : targets.findIndex((i) => i.id === last);
+  const index = (at + 1) % targets.length;
+  return { item: targets[index], index };
+}
+
+/**
+ * One recorded task-specific relationship of a session. `assigned`: assigneeSessionId only.
+ * `direct` / `direct-attributed`: reporter / differing attributed identity of a direct report.
+ * `relayed-for` / `relayed-by`: attributed child / reporter of a parent relay. `reporter`: the
+ * item's recorded reporter with no contribution proving its mode. `linked`: a session link
+ * naming the task, context only, never an assignment.
+ */
+export type Relation = 'assigned' | 'direct' | 'direct-attributed' | 'relayed-for' | 'relayed-by' | 'reporter' | 'linked';
+export const RELATION_ORDER: readonly Relation[] = ['assigned', 'direct', 'direct-attributed', 'relayed-for', 'relayed-by', 'reporter', 'linked'];
+
+export interface ParticipantIndex {
+  /** Task ID → session → its relationships with that task; tasks without any fact are absent. */
+  tasks: Map<string, Map<string, Set<Relation>>>;
+  /** Every recorded session of this plan, owner first, then in recorded order. */
+  sessions: string[];
+  /** Tasks each session relates to (one per task however many relationships). */
+  taskCount: Map<string, number>;
+  /** Tasks with no recorded participant fact. */
+  unknownCount: number;
+}
+
+/**
+ * Who each task of one plan's detail relates to, from recorded facts only: one pass over items,
+ * links and contributions. Group rows never relate (no inheritance either way); IDs that name no
+ * task of this detail (removed items, groups) add no relationship, though their sessions stay
+ * selectable. Nothing is inferred from the owner, names or directories.
+ */
+export function participantIndex(plan: Pick<PlanView, 'ownerSessionId'>, detail: Pick<PlanDetail, 'items' | 'links' | 'contributions'>): ParticipantIndex {
+  const sessions = new Set([plan.ownerSessionId]);
+  const task = new Map(detail.items.filter((i) => i.kind === 'task').map((i) => [i.id, i]));
+  const tasks = new Map<string, Map<string, Set<Relation>>>();
+  const add = (itemId: string, sessionId: string, relation: Relation) => {
+    sessions.add(sessionId);
+    if (!task.has(itemId)) return;
+    let bySession = tasks.get(itemId);
+    if (!bySession) tasks.set(itemId, bySession = new Map());
+    let set = bySession.get(sessionId);
+    if (!set) bySession.set(sessionId, set = new Set());
+    set.add(relation);
+  };
+  for (const i of detail.items) if (i.kind === 'task' && i.assigneeSessionId) add(i.id, i.assigneeSessionId, 'assigned');
+  /** Item → reporters a contribution proves a mode for. */
+  const proven = new Map<string, Set<string>>();
+  for (const c of detail.contributions) {
+    sessions.add(c.reporterSessionId); sessions.add(c.attributedSessionId);
+    for (const id of new Set(c.itemIds)) {
+      if (!proven.has(id)) proven.set(id, new Set());
+      proven.get(id)!.add(c.reporterSessionId);
+      if (c.mode === 'parent-relay') { add(id, c.attributedSessionId, 'relayed-for'); add(id, c.reporterSessionId, 'relayed-by'); }
+      else { add(id, c.reporterSessionId, 'direct'); if (c.attributedSessionId !== c.reporterSessionId) add(id, c.attributedSessionId, 'direct-attributed'); }
+    }
+  }
+  for (const i of detail.items) if (i.kind === 'task' && i.reporterSessionId && !proven.get(i.id)?.has(i.reporterSessionId)) add(i.id, i.reporterSessionId, 'reporter');
+  for (const l of detail.links) { sessions.add(l.sessionId); for (const id of l.itemIds) add(id, l.sessionId, 'linked'); }
+  const taskCount = new Map<string, number>();
+  for (const bySession of tasks.values()) for (const sid of bySession.keys()) taskCount.set(sid, (taskCount.get(sid) ?? 0) + 1);
+  return { tasks, sessions: [...sessions], taskCount, unknownCount: task.size - tasks.size };
+}
+
+/** Membership predicate of a participant filter; null when nothing is filtered. */
+export function participantMatch(filter: ParticipantFilter, index: ParticipantIndex): ((item: ItemView) => boolean) | null {
+  if (filter.kind === 'all') return null;
+  if (filter.kind === 'none') return (i) => !index.tasks.has(i.id);
+  const id = filter.sessionId;
+  return (i) => index.tasks.get(i.id)?.has(id) ?? false;
+}
+
+/** Intersection of the active task filters, or null when neither filters (taskProjection's `match`). */
+export function taskMatch(state: Pick<ReadingState, 'status' | 'participant'>, index: ParticipantIndex) {
+  const a = statusMatch(state.status);
+  const b = participantMatch(state.participant, index);
+  return a && b ? (i: ItemView) => a(i) && b(i) : a ?? b;
+}
+
+/** Relationships of one task with the filter's session, in display order (empty for other filters). */
+export function relationsOf(index: ParticipantIndex, itemId: string, filter: ParticipantFilter): Relation[] {
+  if (filter.kind !== 'session') return [];
+  const set = index.tasks.get(itemId)?.get(filter.sessionId);
+  return set ? RELATION_ORDER.filter((r) => set.has(r)) : [];
+}
+
 /** Sessions involved, main first. Assignment comes from links and item assignees; relays keep both sides. */
 export interface Participant { sessionId: string; role: 'main' | 'child'; assigned: number; relayed: boolean; reporterAgents: string[] }
 

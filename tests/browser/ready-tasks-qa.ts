@@ -55,7 +55,7 @@ async function connect(url: string): Promise<Cdp> {
 
 const profile = mkdtempSync(join(tmpdir(), 'ready-tasks-qa-'));
 const { server, port } = await startReadyFixture(0);
-const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1000', 'about:blank'], { stdio: 'ignore' });
+const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1000', 'about:blank'], { stdio: 'ignore', detached: true });
 let cdp: Cdp | null = null;
 let failure: string | null = null;
 try {
@@ -410,14 +410,17 @@ try {
   failure = e instanceof Error ? e.message : String(e);
 } finally {
   cdp?.close();
-  chrome.kill('SIGTERM');
-  await new Promise((r) => { if (chrome.exitCode !== null) r(null); else chrome.once('exit', r); });
+  // Our own Chromium process group only (its helpers too), never another browser.
+  const exited = new Promise((r) => { if (chrome.exitCode !== null) r(null); else chrome.once('exit', r); });
+  try { process.kill(-chrome.pid!, 'SIGTERM'); } catch { chrome.kill('SIGTERM'); }
+  await exited;
   server.close(); server.closeAllConnections();
-  rmSync(profile, { recursive: true, force: true });
   const summary = { evidenceClass: 'synthetic SDK/service, isolated headless Linux Chromium, current guest bundles', nativeHostProof: false, passed: !failure && results.every((r) => r.pass), failure, assertions: results.length, results, screenshots: shots };
   writeFileSync(join(artifacts, 'results.json'), `${JSON.stringify(summary, null, 2)}\n`);
   const races = results.filter((r) => r.id.startsWith('Q6:'));
   writeFileSync(join(artifacts, 'race-results.json'), `${JSON.stringify({ evidenceClass: summary.evidenceClass, passed: summary.passed && races.every((r) => r.pass), failure, results: races }, null, 2)}\n`);
   console.log(JSON.stringify({ passed: summary.passed, assertions: summary.assertions, failure }, null, 2));
   if (!summary.passed) process.exitCode = 1;
+  // Chromium helpers may still be flushing the disposable profile right after exit.
+  rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

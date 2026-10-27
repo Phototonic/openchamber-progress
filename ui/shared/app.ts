@@ -8,6 +8,8 @@
 // - selected-plan detail, document and history load on demand and are cached by revision/capture
 // - cache identity = frame (host generation) + storeId + source binding; a change resets UI state
 // - repaint only on change; focus, scroll and open disclosures survive a repaint
+// - task-reading state (filters, jump cursors, task disclosures, logical focus, reading anchor)
+//   lives for one reading identity: account + store/binding + view scope + plan; never stored
 // - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
@@ -17,7 +19,7 @@ import { cleanupEligible, cleanupError, cleanupMatches, cleanupTarget, initialCl
 import { el, refreshLabels, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
 import { OFFICIAL_MAIN_URL } from './config.ts';
-import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
@@ -92,6 +94,18 @@ export interface ViewContext<U> {
   officialMainDismissed: string | null;
   dismissOfficialMain: (version: string) => void;
   openOfficialMain: () => void;
+  /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
+  reading: ReadingView | null;
+}
+
+/** Task-reading controls of one reading identity. A view from a retired identity does nothing. */
+export interface ReadingView extends ReadingState {
+  /** Latest state of this identity; null once it is retired. */
+  current: () => ReadingState | null;
+  /** Changes the state and repaints; `then` runs once after that paint, with its root. */
+  set: (patch: Partial<ReadingState>, then?: (root: HTMLElement) => void) => void;
+  /** Changes the state without a repaint (a jump cursor). */
+  remember: (patch: Partial<ReadingState>) => void;
 }
 
 export interface ViewSpec<U> {
@@ -111,6 +125,12 @@ export interface ViewSpec<U> {
   /** Only rail/page expose cleanup; the selected plan, including document/history tabs. */
   actionPlan?: (vc: ViewContext<U>) => PlanView | null;
   forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
+  /**
+   * The plan this view reads in full detail and the explicit view scope it is read under (rail: the
+   * selected session; board: its own list scope, never the host session). Its task-reading state
+   * lives exactly as long as this identity; a plan article painted with `data-reading` uses it.
+   */
+  reading?: (vc: ViewContext<U>) => { plan: string; scope: string } | null;
 }
 
 const FOCUSABLE = 'button,summary,[tabindex],a,input,select,textarea';
@@ -119,14 +139,90 @@ const planScope = (n: Element | null | undefined) => {
   const article = n?.closest<HTMLElement>('article[data-testid^="plan-"]');
   return article ? `${article.dataset.testid}|${article.dataset.source ?? ''}` : null;
 };
+type FocusKey = NonNullable<ReturnType<typeof focusKey>>;
 const focusKey = (root: HTMLElement) => {
   const active = document.activeElement as HTMLElement | null;
   if (!active || !root.contains(active)) return null;
   const owner = active.closest<HTMLElement>('[data-testid]');
   if (!owner) return null;
   const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: planScope(owner) };
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: planScope(owner), reading: !!active.closest(READING) };
 };
+
+// Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
+// hierarchy `ul.ap-items`). Its Tasks section carries `data-complete` only when painted from
+// complete detail, with or without task rows; a loading or failed paint has no marker. Rows are `li[data-testid]` (item-*/group-*); a branch's summary is
+// its disclosure's `summary`.
+const READING = 'article[data-reading]';
+const TASKS_HEADING = '.ap-tasks-h';
+const COMPLETE_TASKS = '.ap-tasks[data-complete]';
+/** Logical focus on a canonical row or its summary, with what a fallback needs from the old paint. */
+type Logical = { id: string; summary: boolean; ancestors: string[]; order: string[] };
+type Anchor = { id: string; top: number; next: string[] };
+const rowsOf = (list: Element) => [...list.querySelectorAll<HTMLElement>('li[data-testid]')];
+const summaryOf = (li: Element) => li.querySelector<HTMLElement>(':scope > details > summary');
+/** Not hidden by a filter and not folded inside a closed ancestor disclosure. */
+function shownRow(li: HTMLElement, list: Element) {
+  if (li.closest('[hidden]')) return false;
+  for (let d = li.parentElement?.closest('details'); d && list.contains(d); d = d.parentElement?.closest('details')) if (!d.open) return false;
+  return true;
+}
+function logicalOf(active: Element, list: Element): Logical | null {
+  const summary = active.tagName === 'SUMMARY' && !!active.parentElement?.matches('details.ap-group');
+  const row = summary ? active.parentElement!.parentElement : active.matches('li[data-testid]') ? active : null;
+  if (!(row instanceof HTMLElement) || !row.dataset.testid || !list.contains(row)) return null;
+  const ancestors: string[] = [];
+  for (let li = row.parentElement?.closest<HTMLElement>('li[data-testid]'); li && list.contains(li); li = li.parentElement?.closest<HTMLElement>('li[data-testid]')) ancestors.push(li.dataset.testid!);
+  return { id: row.dataset.testid, summary, ancestors, order: rowsOf(list).map((n) => n.dataset.testid!) };
+}
+/** Row line (a task's own row or a branch summary), so a tall open branch is not the anchor itself. */
+const lineOf = (li: Element) => li.querySelector<HTMLElement>(':scope > .ap-item, :scope > details > summary') ?? (li as HTMLElement);
+/** First row line in view, while the document is scrolled. */
+function anchorOf(list: Element): Anchor | null {
+  if (!document.scrollingElement?.scrollTop) return null;
+  const rows = rowsOf(list);
+  for (let i = 0; i < rows.length; i++) {
+    const r = lineOf(rows[i]).getBoundingClientRect();
+    if (r.height > 0 && r.bottom > 0) return { id: rows[i].dataset.testid!, top: r.top, next: rows.slice(i + 1).map((n) => n.dataset.testid!) };
+  }
+  return null;
+}
+/** Keeps the anchor row (or the next surviving one) at its old viewport offset. */
+function applyAnchor(list: Element, anchor: Anchor) {
+  const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
+  for (const id of [anchor.id, ...anchor.next]) {
+    const li = rows.get(id);
+    const r = li && shownRow(li, list) ? lineOf(li).getBoundingClientRect() : null;
+    if (!r?.height) continue;
+    const delta = r.top - anchor.top;
+    if (Math.abs(delta) >= 1 && document.scrollingElement) document.scrollingElement.scrollTop += delta;
+    return;
+  }
+}
+/**
+ * Restores logical focus without scrolling: the same row if it is still shown, otherwise the
+ * nearest shown ancestor summary, the next then previous shown task in the old reading order,
+ * then the Tasks heading; a moved focus gets a short local notice.
+ */
+function restoreLogical(article: Element, list: Element, want: Logical) {
+  const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
+  const exact = rows.get(want.id);
+  let target: HTMLElement | null = exact && shownRow(exact, list) ? (want.summary ? summaryOf(exact) : null) ?? exact : null;
+  const moved = !target;
+  for (const id of want.ancestors) {
+    if (target) break;
+    const li = rows.get(id);
+    if (li && shownRow(li, list)) target = summaryOf(li);
+  }
+  const at = want.order.indexOf(want.id);
+  const task = (id: string) => { const li = id.startsWith('item-') ? rows.get(id) : undefined; return li && shownRow(li, list) ? li : null; };
+  for (let i = at + 1; !target && i < want.order.length; i++) target = task(want.order[i]);
+  for (let i = at - 1; !target && i >= 0; i--) target = task(want.order[i]);
+  target ??= article.querySelector<HTMLElement>(TASKS_HEADING);
+  target?.focus({ preventScroll: true });
+  const notice = article.querySelector('[data-testid="focus-notice"]');
+  if (moved && notice) notice.textContent = 'The row you were on is no longer shown, so focus moved to a nearby row.';
+}
 
 const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : directoryKey(s.directory ?? '')}|a:${s.archived ?? 'exclude'}` : 'none');
 
@@ -161,8 +257,13 @@ export function startView<U>(spec: ViewSpec<U>) {
   let mainDueAt = 0;
   let disposed = false;
   let renderQueued = false;
-  /** `listRead`: for a failed read, the list read it failed under; it is retried after a newer one. */
-  const details = new Map<string, { revision: number; value: Loadable<PlanDetail>; listRead?: number }>();
+  /**
+   * `revision`: of the value (a read may return a newer one than requested). `requested`: the listed
+   * revision the read was started for, so a reply ahead of a lagging list is read once, not on every
+   * paint until the list catches up. `listRead`: for a failed read, the list read it failed under;
+   * it is retried after a newer one.
+   */
+  const details = new Map<string, { revision: number; requested: number; value: Loadable<PlanDetail>; listRead?: number }>();
   let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
@@ -174,6 +275,32 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupFocus: string | null = null;
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
+  /**
+   * Task-reading state of the current reading identity (spec.reading). Replaced, never carried
+   * over, when the identity changes; cleared with the caches on authority resets and disposal.
+   */
+  /** `parked`/`parkedControl`: a task row or a task-view control whose focus waits at Tasks during a loading paint. */
+  type Reading = { key: string; plan: string; state: ReadingState; open: Map<string, boolean>; anchor: Anchor | null; parked: Logical | null; parkedControl: FocusKey | null; then: ((root: HTMLElement) => void)[] };
+  let reading: Reading | null = null;
+  /** The reading the current DOM was painted under: only its own paint is harvested. */
+  let paintedReading: Reading | null = null;
+  const clearReading = () => { reading = null; paintedReading = null; };
+  function readingView(): ReadingView | null {
+    const bound = reading;
+    if (!bound) return null;
+    const live = () => !disposed && reading === bound;
+    return {
+      ...bound.state,
+      current: () => (live() ? bound.state : null),
+      set: (patch, then) => {
+        if (!live()) return;
+        bound.state = { ...bound.state, ...patch };
+        if (then) bound.then.push(then);
+        versions.ui++; schedule();
+      },
+      remember: (patch) => { if (live()) bound.state = { ...bound.state, ...patch }; },
+    };
+  }
   const memory = new RecentMemory<{ read: StoreRead; sig: string; health: HealthView; at: number }>(RECENT_SCOPES);
   // Authority of a remembered read: this frame's host account and the service's store + binding.
   // (A frame document belongs to one host server; a runtime switch reloads the frame.)
@@ -186,7 +313,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
   const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); };
-  const forgetPlans = (keys: Set<string>) => { if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; } };
+  const forgetPlans = (keys: Set<string>) => {
+    if (reading && keys.has(reading.plan)) clearReading();
+    if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; }
+  };
 
   /** The list scope changed: show its remembered validated read (if any) until the new read lands. */
   function adoptScope(key: string) {
@@ -248,7 +378,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
-        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; live.restart(); }
+        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
         // Evict all remembered scopes/parts so another session cannot resurrect removed data.
         const previous = memory.get(memoryKey(key))?.read;
@@ -329,17 +459,17 @@ export function startView<U>(spec: ViewSpec<U>) {
   function loadDetails(plans: PlanView[]) {
     for (const p of plans) {
       const cached = details.get(p.key);
-      if (cached && cached.revision === p.revision && cached.value.state !== 'error') continue;
+      if (cached && (cached.revision === p.revision || cached.requested === p.revision) && cached.value.state !== 'error') continue;
       if (cached && cached.value.state === 'loading') continue;
       if (cached && cached.value.state === 'error' && cached.revision === p.revision && cached.listRead === listReads) continue;
-      details.set(p.key, { revision: p.revision, value: { state: 'loading' } });
+      details.set(p.key, { revision: p.revision, requested: p.revision, value: { state: 'loading' } });
       const id = identity;
       const generation = cacheGeneration;
       detailQueue = detailQueue.then(async () => {
         if (disposed || id !== identity || generation !== cacheGeneration) return;
         const result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
         if (disposed || id !== identity || generation !== cacheGeneration) return;
-        details.set(p.key, result.ok ? { revision: result.detail.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, value: { state: 'error', failure: result.failure }, listRead: listReads });
+        details.set(p.key, result.ok ? { revision: result.detail.revision, requested: p.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, requested: p.revision, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
     }
@@ -465,7 +595,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       setup, requestSetup: loadSetup,
       runSetup: async (action, targets, confirmed) => {
         const r = await setupCall(host, action, targets, confirmed);
-        if (r.ok && action !== 'inspect') { setup = { state: 'ready', value: r.setup }; resetCaches(); retry(); }
+        if (r.ok && action !== 'inspect') { setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
         // A refused action may mean the installation changed: re-read setup once, so the update
         // notice reflects the service again rather than the read the action started from.
         if (!r.ok && setup?.state === 'ready' && setup.value.configured) loadSetup();
@@ -483,6 +613,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       officialMain: official.value, officialMainDismissed: official.dismissed,
       dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
       openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
+      reading: readingView(),
     };
   }
 
@@ -501,22 +632,55 @@ export function startView<U>(spec: ViewSpec<U>) {
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
-    const vc = context();
+    let vc = context();
 
     const focus = focusKey(mount!);
-    const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].map((d) => [d.dataset.testid!, d.open]));
+    // Plan-reading disclosures, logical focus and anchor belong to the reading they were painted
+    // under; a loading paint without the task list keeps what an earlier paint recorded.
+    let logical: Logical | null = null;
+    let onFallback = false;
+    /** Focus on a task-view control (outside the task list) of the plan being read. */
+    let taskControl = false;
+    const oldArticle = mount!.querySelector<HTMLElement>(READING);
+    if (reading && paintedReading === reading && oldArticle) {
+      for (const d of oldArticle.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) reading.open.set(d.dataset.testid!, d.open);
+      const list = oldArticle.querySelector('ul.ap-items');
+      const active = document.activeElement;
+      if (list) { reading.anchor = anchorOf(list) ?? reading.anchor; logical = active ? logicalOf(active, list) : null; }
+      onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
+      taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks') && oldArticle.contains(active);
+      if (!onFallback) { reading.parked = null; reading.parkedControl = null; }
+    }
+    const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
     const scrolls = new Map([...mount!.querySelectorAll<HTMLElement>('[data-scroll-key]')].map((n) => [n.dataset.scrollKey!, n.scrollTop]));
     const pageScroll = document.scrollingElement?.scrollTop ?? 0;
     const values = new Map([...mount!.querySelectorAll<HTMLInputElement>('input[data-keep]')].map((n) => [n.dataset.keep!, n.value]));
+
+    // Equal plan and item IDs never carry reading state into another account, store, binding or scope.
+    const target = spec.reading?.(vc) ?? null;
+    const readingKey = target ? JSON.stringify([ctx?.connection?.account ?? '', identity, target.scope, target.plan]) : null;
+    const sameReading = reading !== null && reading.key === readingKey;
+    if (!sameReading) {
+      reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null } }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
+      vc = { ...vc, reading: readingView() };
+    }
 
     const root = el('main', 'ap');
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
     spec.paint(root, vc);
+    const article = reading ? root.querySelector<HTMLElement>(READING) : null;
+    const list = article?.querySelector<HTMLElement>('ul.ap-items') ?? null;
+    const complete = !!article?.querySelector(COMPLETE_TASKS);
     for (const d of root.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) {
-      const was = open.get(d.dataset.testid!);
+      const was = d.closest(READING) ? reading?.open.get(d.dataset.testid!) : open.get(d.dataset.testid!);
       if (was !== undefined && was !== d.open) { d.open = was; d.dispatchEvent(new Event('toggle')); }
+    }
+    // Complete detail (even with no task rows) is authoritative about which disclosures still exist.
+    if (reading && complete) {
+      const present = new Set([...article!.querySelectorAll<HTMLElement>('details[data-testid]')].map((d) => d.dataset.testid!));
+      for (const id of reading.open.keys()) if (!present.has(id)) reading.open.delete(id);
     }
     for (const n of root.querySelectorAll<HTMLInputElement>('input[data-keep]')) {
       const v = values.get(n.dataset.keep!);
@@ -529,11 +693,32 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (top) n.scrollTop = top;
     }
     if (document.scrollingElement) document.scrollingElement.scrollTop = pageScroll;
-    if (focus) {
+    if (sameReading && reading && complete && reading.anchor) { if (list) applyAnchor(list, reading.anchor); reading.anchor = null; }
+    // Logical task focus: restored without scrolling, parked at Tasks across a loading gap and
+    // brought back only while focus is still parked there.
+    let restored = false;
+    let back = focus;
+    if (sameReading && reading && article) {
+      const want = logical ?? (onFallback ? reading.parked : null);
+      const toTasks = () => { restored = true; article.querySelector<HTMLElement>(TASKS_HEADING)?.focus({ preventScroll: true }); };
+      if (!complete) {
+        // Loading or failed: task rows and task-view controls are absent; wait at Tasks.
+        if (want) { reading.parked = want; toTasks(); }
+        else if (taskControl && focus) { reading.parkedControl = focus; toTasks(); }
+      } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want); }
+      else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; }
+      else if (want || onFallback || (taskControl && !list)) {
+        // Complete detail without the remembered target (e.g. no task rows): nothing stays parked;
+        // focus stays at the Tasks heading, the nearby fallback.
+        reading.parked = null; reading.parkedControl = null; toTasks();
+      }
+    }
+    if (back && !restored && !(back.reading && !sameReading)) {
       // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
-      const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(focus.id)}"]`)];
-      const owner = candidates.find((n) => planScope(n) === focus.plan);
-      const target = focus.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[focus.index];
+      const f = back;
+      const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
+      const owner = candidates.find((n) => planScope(n) === f.plan);
+      const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       target?.focus({ preventScroll: true });
     }
     if (cleanupFocus) {
@@ -544,6 +729,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     spec.afterPaint?.(root, vc);
+    paintedReading = reading;
+    // One-shot follow-ups of this reading's own state change (e.g. reveal a task once filters clear).
+    for (const then of reading?.then.splice(0) ?? []) then(root);
     planLabels();
   }
 
@@ -587,7 +775,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const nextDirectory = next.directory ?? null;
     if (accountChanged) {
       contextGeneration++;
-      gate.retire(); resetCaches(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
+      gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
       failure = null; lastGoodAt = null;
       cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
       session = nextSession; directory = nextDirectory;
@@ -638,6 +826,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     retireMain();
     live.dispose();
     memory.clear();
+    clearReading();
   });
 }
 

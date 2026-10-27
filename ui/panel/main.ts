@@ -1,8 +1,7 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, staleBlock, testid } from '../shared/components.ts';
-import { sessionLabel } from '../shared/live.ts';
+import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, recordedLabel, staleBlock, testid } from '../shared/components.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
 import { officialMainBlock } from '../shared/official.ts';
@@ -37,6 +36,9 @@ startView<Ui>({
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
   wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
   wantDetails: (vc) => { const p = current(vc); return p ? [p] : []; },
+  // Task reading belongs to the selected session's view of the plan: another session (even of the
+  // same plan) or plan starts at Show all again; nothing about it is stored.
+  reading: (vc) => { const p = current(vc); return p && vc.session ? { plan: p.key, scope: `rail:${vc.session.id}` } : null; },
   // The chosen plan is remembered per session, so reopening the panel keeps it.
   onContext: (vc) => {
     const id = vc.session?.id ?? null;
@@ -89,9 +91,9 @@ startView<Ui>({
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
       }));
       if (plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId) {
-        root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${sessionLabel(plan.ownerSessionId, env.live)}.`), 'helping-note'));
+        root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${recordedLabel(plan, env)(plan.ownerSessionId)}.`), 'helping-note'));
       }
-      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null }), cleanupBlock(vc, plan));
+      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading }), cleanupBlock(vc, plan));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));

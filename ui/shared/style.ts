@@ -79,7 +79,42 @@ button{font:inherit}
 .ap-group[open]>summary::before{transform:rotate(45deg)}
 .ap-group>summary .ap-count{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
 .ap-group>ul{margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
-summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-tasks-h:focus{outline:none}
+/* Branch facts stay visible while folded: full working/blocked, filter-hidden rows; "folded" only while closed */
+.ap-group>summary{flex-wrap:wrap;row-gap:2px}
+.ap-group>summary .ap-grow{flex:1 1 0}
+.ap-branch{display:flex;flex-wrap:wrap;gap:0 8px;width:100%;padding-left:24px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
+.ap-branch>*+*::before{content:"·";margin-right:8px}
+.ap-branch [data-k="working"]{color:var(--oc-info-text,var(--oc-info))}
+.ap-branch [data-k="blocked"]{color:var(--oc-warning-text,var(--oc-warning))}
+.ap-branch [data-k="lead"]+*::before{content:none}
+.ap-folded{display:none}
+.ap-group:not([open])>summary .ap-folded{display:inline}
+.ap-group[open]>summary .ap-branch:not(:has(>:not(.ap-folded))){display:none}
+.ap-context{font-weight:400;font-size:11px;color:var(--oc-muted)}
+.ap-items li[hidden]{display:none!important}
+
+/* Task view controls: one wrapping group at the Tasks heading; native buttons, ordinary tab order */
+.ap-focus{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-focus-bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;min-width:0}
+.ap-focus-set{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.ap-focus-notice:empty{display:none}
+.ap-focus-participant{min-width:0;max-width:100%}
+.ap-focus-participant .oc-sdk-select{flex-direction:row;align-items:center;gap:6px;min-width:0}
+.ap-focus-participant .oc-sdk-field-label{flex:none;white-space:nowrap}
+.ap-focus-participant .oc-sdk-trigger{min-width:0;max-width:min(16rem,100%);height:24px;padding:0 8px}
+.ap-focus-participant .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-focus-participant .oc-sdk-popup{width:min(22rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
+.ap-focus-participant .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+.ap-focus-participant .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
+/* Why a row matches the participant filter: recorded relationships, never inferred ownership */
+.ap-reasons{display:flex;flex-wrap:wrap;gap:0 8px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
+.ap-group>summary .ap-reasons{width:100%;padding-left:24px}
+/* A task-parent's own recorded people (assignee chip, relay line) stay in its summary, visible while folded */
+.ap-group>summary .ap-summary-sub{width:100%;margin-top:0;padding-left:24px;font-weight:400;min-width:0}
+.ap-reasons>*+*::before{content:"·";margin-right:8px}
+.ap-focus-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 /* Canonical task rows are navigation targets (tabindex -1): ring for keyboard focus or a readiness jump */
 .ap-items li:focus{outline:none}
 .ap-items li:focus-visible,.ap-items li[data-nav-target]:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
