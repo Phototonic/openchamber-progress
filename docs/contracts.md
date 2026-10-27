@@ -1,14 +1,34 @@
-# Frozen production contract v2 — T3 / Designer handoff
+# Production contract v2
 
 Current package version **0.2.9** is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
-schemaVersion remain contract versions, not package-major aliases. Local QA under
-evidence/ and project instructions AGENTS.md are never committed or shipped.
+schemaVersion remain contract versions, not package-major aliases.
 
 Canonical DTO: `shared/progress.ts` (protocolVersion=2, schemaVersion=2).
-Announced before shared changes. Only Heavy Fixer owns shared files; consumers
-must switch sequentially. The old `shared/contract.ts` ProbeRead is historical
-fixture code, never a production fallback. UI implementation is Designer-owned.
+Changes to shared contract files (`shared/progress.ts`, `docs/contracts.md`) require
+an announced contract revision before consumers update; consumers must switch
+sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
+never a production fallback.
+
+## System boundaries
+
+The system has four components: an OpenCode companion plugin that captures explicit
+reports; an independent local SQLite progress store; a host-owned loopback service;
+and three guest frames (the session-scoped rail, compact Work Status, and fullscreen
+cross-project board). Capture writes directly to the store and has an independent
+lifecycle: it continues while OpenChamber is closed or the extension is uninstalled,
+until explicitly disabled or removed. Stored history is retained on capture removal.
+The board lists recorded plans and enriches them with host workspace snapshots;
+discovery is not guaranteed complete, and missing or partial live coverage is shown
+explicitly. Capture and service require the same host/account and shared local
+files; there is no cross-host transport.
+
+## Reporting participation
+
+Tool registration and guidance do not guarantee that an agent reports progress.
+The UI shows report age, coverage and reporter attribution rather than inferring
+progress from session activity. Missing reports remain unknown, not completion
+or failure.
 
 ## Tool invocation validation help (additive v2)
 
@@ -69,9 +89,9 @@ transactional control, not history. Disable remains available for a loaded
 instance even with modified files; enabling requires verified installed ownership.
 The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
-SDK coverage. Navigation must be verified by Designer against the CURRENT host.
+SDK coverage. Navigation must be verified against the CURRENT host.
 
-## Finished-plan cleanup (CP-H frozen additive contract)
+## Finished-plan cleanup (frozen additive contract)
 
 Package **0.2.9** preserves the additive cleanup contract.
 Protocol/base schema remain **2**. A ready capable
@@ -167,7 +187,7 @@ Use a new plan ID for genuinely new work. Application rollback must retain guard
 tombstones and cleanup tables. Never downgrade by resetting the store or restoring
 the first-use backup automatically: that would lose later acknowledged reports.
 
-### Disposable real-service fixture (Designer / CP-Q5)
+### Disposable real-service fixture
 
 From the repository with Node24 on PATH:
 
@@ -193,7 +213,7 @@ Local execution/results and consumer launch receipt: `evidence/cleanup/backend.m
 
 ## DTO meanings
 
-### Official-main version awareness (U1, U2 consumer contract)
+### Official-main version awareness
 
 `GET /v1/extension-update` requires the same service bearer, no query/body, and
 works before companion/store lookup. Wrong method405, query404, body400, auth401.
@@ -237,7 +257,7 @@ late replies on host/service generation changes. A service restart starts a new
 in-memory cache. Cache successful knowledge for1h, failures for at least5min (longer
 provider deadlines honored); multiple frames share one service in-flight request.
 
-### Optional reported-working timing (T1, M2 consumer contract)
+### Optional reported-working timing
 
 Only service `GET /v1/plan` adds the following response-only field. Older services
 may omit it; absence is valid and means no elapsed claim. Stored items, tool input,
@@ -290,13 +310,21 @@ counts, working item IDs and DocumentRef. Items/contributions never inflate each
 other. Counts exclude groups and skipped tasks from total, count skipped
 separately; remaining=total-done. No age/activity-based completion or failure.
 
+A session move preserves plan identity and recorded contributions. Last-reported
+location is metadata, separate from the bound document path. A document left in
+the old worktree remains the source; following a relocated file requires an
+explicit new binding, never silent path rewriting.
+
 DocumentRef distinguishes unbound/captured/denied/missing/moved/oversized/non-text/
 unavailable/changed-during-read. Last valid capture stays referenced on failure,
 never relabeled current. checklistSynchronized marks a confirmed matching
 checklist/capture; currentFile=not-rechecked honestly describes between-report
 coverage. Body text is fetched only on demand and rendered as untrusted plain text.
+Show the last successful capture time separately from the last check time. Reports
+recheck the bound file under the same bounded permission rules; between checks,
+the current file remains unverified. Age alone does not establish a mismatch.
 
-## Frozen mapping for T4 Designer
+## Mapping for the progress views
 
 - Owner is `PlanSummary.sessionId` (no ownerSessionId alias). Lifecycle is
   active/finished/cancelled/failed; map finished to the UI's completed label.
@@ -324,7 +352,7 @@ configured, verified, installed, captureEnabled(boolean|null), targets({configRo
 dataRoot,storeRoot}|null), version(string|null), activation, separateLifecycle=true,
 historyRetained=true, diagnostics[], optional recovery counts. No tokens.
 
-### U1 frozen additive companion comparison (U2 consumer contract)
+### Frozen additive companion comparison (consumed by the setup UI)
 
 Existing setup reads and action replies produced by `status()` may add:
 
@@ -367,7 +395,7 @@ not candidate detection. Last observed does not mean every running session is
 current. Detection uses existing setup-read occasions, never progress polling;
 the full mutation ownership/store/descriptor checks are still performed afresh.
 
-### T7 frozen additive setup suggestions (T8 consumer contract)
+### Frozen additive setup suggestions (consumed by the setup UI)
 
 Only the existing `GET /v1/setup` may additionally return:
 
@@ -406,12 +434,12 @@ Suggestions never set targets, verified, sourceBinding or persistent selection.
 They are absent from POST replies. POST shapes, confirmation, fixed error codes,
 active tool and protocol/schema2 are unchanged. Opening/inspecting writes no
 setup-target directory, payload, descriptor or DB. Existing service-owned selector
-bootstrap is outside that target-only promise, not newly changed by T7.
+bootstrap is outside that target-only promise.
 
-Designer precedence is configured targets > user edits > suggestions; deliberately
+UI precedence is configured targets > user edits > suggestions; deliberately
 cleared fields count as edits. All three fields stay editable. Late hints,
 refreshes and failed inspect replies must preserve edits, especially a manually
-chosen store folder. No T8 UI implementation is included in T7.
+chosen store folder.
 
 `POST /v1/setup/{inspect,install,update,disable,enable,remove-capture}` accepts JSON
 with ONLY `{configRoot?,dataRoot?,storeRoot?,confirmed?:boolean}`. Supply all three
@@ -492,5 +520,5 @@ rules. No token billing or exact tokenizer measurement is implied by estimates.
 Schema/protocol mismatch fails closed; independent component rollback may not
 downgrade stored data. Old probe DBs are not migrated/reset into production.
 
-Existing Designer entry paths and package manifest remain unchanged for T4/T5.
-T3 builds backend/companion/setup utility, not the installable extension ZIP.
+Backend builds produce service/companion/setup utility entries; package assembly
+joins these with the guest bundles to produce the installable extension ZIP.

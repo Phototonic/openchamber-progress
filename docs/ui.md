@@ -1,10 +1,10 @@
-# Progress views (T4, Designer)
+# Progress views
 
 Three guest frames read production contract v2 (`shared/progress.ts`,
 `docs/contracts.md`) through `host.serviceRequest`. Rail/page also expose its optional,
 explicit finished-plan cleanup actions; Work Status remains read-only.
 - Built from `@openchamber/sdk/ui` and host theme tokens; TypeScript source, classic IIFE bundles.
-- The plan (`.slim/plans/agent-progress.md`) owns behaviour; this file records the UI's structure and decisions.
+- This file is the authority for the UI surfaces' structure and behaviour; the wire contract lives in `docs/contracts.md` and `shared/progress.ts`.
 
 ## Build and checks
 
@@ -111,7 +111,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 ![Archived synthetic plan with preserved history, Restore and separate Delete permanently action](images/archived-plan-actions.png)
 
-### Diagnostics placement (owner direction, unchanged)
+### Diagnostics placement
 
 Only the progress story is in the normal reading order. These live in one collapsed **Details** disclosure (`data-testid="details"`): store and plan source IDs, binding (verified or not), every recorded source with its verified flag, capture on/off, coverage value, plan ID and revision (structure), absolute report time, last reported location, document path, state, capture ID, hash and checked time, live-subscription count, last refresh error, and translated envelope diagnostics.
 - Placement: at the end of the rail, and in the page footer below Setup. Work Status omits it.
@@ -120,7 +120,7 @@ Only the progress story is in the normal reading order. These live in one collap
 ## Setup UI (`ui/shared/setup.ts`)
 
 Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `reload-required` (selected files without a matching observed load), `removed`, `recovery` (staged files present). Rules:
-- **Prefill (M2/T8).** An unconfigured service may add `suggestions` (`configRoot`, `dataRoot`, `storeRoot`, each `{ value, state: 'resolved' | 'candidate' }` or `null`) to `GET /v1/setup`.
+- **Prefill.** An unconfigured service may add `suggestions` (`configRoot`, `dataRoot`, `storeRoot`, each `{ value, state: 'resolved' | 'candidate' }` or `null`) to `GET /v1/setup`.
   - The form appears as soon as health says the service is not set up, with "Looking for your OpenCode folders on this computer…" while the reply is pending. Hints fill only fields the user has not typed in; a deliberately cleared field counts as typed.
   - Precedence: configured targets (no form) > the user's edits > suggestions. Late replies, the setup refresh an unconfigured frame does on navigation, and inspect errors never overwrite an edited field. A later unknown (`null`) hint never wipes an earlier prefill.
   - The store suggestion is `<data folder>/openchamber-progress`. While the store field is untouched, it follows a data folder the user types; once the user types or clears the store, it is never re-derived.
@@ -135,7 +135,7 @@ Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `relo
 - **Review before any change.** "Check these folders" sends `POST /v1/setup/inspect` with the three roots exactly as they stand in the form (after any edits). It writes nothing.
   - The review card then shows the resolved companion folder (`<config>/plugins/agent-progress`), OpenCode data folder, progress store, any installed version, diagnostics, the **privilege** disclosure (full user access; records only reported progress) and the **separate lifecycle** disclosure: capture survives closing, pausing or uninstalling the extension; use "Remove capture" before uninstalling the extension, because uninstalling it alone leaves capture installed (the companion's remove utility also works afterwards); history is always kept. The host offers no uninstall hook, so nothing is cleaned up automatically. The "Remove capture?" confirmation repeats the before-uninstall advice.
   - Install needs the acknowledgement checkbox. It sends `confirmed:true` with exactly the inspected roots.
-  - If the typed folders already hold the companion, the review becomes **Review before updating** and sends `update` with exactly those roots. This is the recovery after the extension is reinstalled or updated, which removes the service's binding; it re-binds the same store and source.
+  - If the typed folders already hold the companion, the review becomes **Review before updating** and sends `update` with exactly those roots. This can recover a missing legacy service binding by re-binding the same store and source; current stable bindings survive extension replacement (`docs/setup.md`).
   - The "Install again" route over an existing companion keeps Install disabled with "Use update instead".
 - **No silent target switching.** Disable, enable, remove-capture and update send only `{confirmed:true}`, so they act on the configured folders. Each confirmation card restates those folders and the consequence. Only install/update with an explicit inspect can choose folders.
 - **Bodies.** They contain only `configRoot`, `dataRoot`, `storeRoot` (all three or none) and `confirmed`.
@@ -192,7 +192,7 @@ Subtle motion marks work that agents **reported** as in progress. It never means
 
 ## Elapsed time (reported in progress)
 
-From the optional `timing` of `GET /v1/plan` (`docs/contracts.md`, T1). It shows how long a task has been **reported** in progress, never CPU, token or model time, and never proof that work continued.
+From the optional `timing` of `GET /v1/plan` (`docs/contracts.md`). It shows how long a task has been **reported** in progress, never CPU, token or model time, and never proof that work continued.
 - **Where.** Beside working tasks in the Now callout (rail, page) and Work Status's focus row. Nowhere else, so labels don't repeat in every row.
 - **Copy.**
   - Whole minutes: "<1 min", "12 min", "3 h 5 min", "2 days 4 h"; never seconds.
@@ -212,7 +212,7 @@ From the optional `timing` of `GET /v1/plan` (`docs/contracts.md`, T1). It shows
 
 ## Official-main notice
 
-From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the official repository's **main** branch advertises. It is not the source this extension was installed from, and not a bundled or installed version.
+From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the official repository's **main** branch advertises. It is not the source this extension was installed from, and not a bundled or installed version.
 - **Shown** when `state` is `available` and that candidate version isn't dismissed:
   - title "Official main version 0.2.5 available · This extension 0.2.4";
   - plain directions to check and update in OpenChamber Settings → Extensions for the standard official Git URL;
@@ -261,7 +261,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
   - Setup typing does not repaint.
 - **UI updates.** Functional `updateUi` merges onto the latest UI state, so writes after an await are safe.
 
-## data-testid contract (stable for QA5/QA6)
+## data-testid contract (stable for browser QA)
 
 - **Root and plans:**
   - `progress-root` (`data-surface`)
@@ -330,7 +330,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`, U1). It says only what the
 - **`cleanup.test.ts`:** capability/metadata parsing, bounded request bodies and matching receipts, finished eligibility, confirmation identity/revisions, old-service archive behavior, paging and removed-choice eviction.
 - **`cleanup-fixture.ts` / `cleanup-qa.ts`:** synthetic SDK shell with two real disposable built HTTP services/SQLite stores, using the accepted backend fixture. Launch `node --experimental-strip-types tests/browser/cleanup-fixture.ts`, open loopback 47851 in isolated Chromium/CDP, then run `node --experimental-strip-types tests/browser/cleanup-qa.ts <CDP port>`. The driver resets only its disposable stores at each explicit run, uses real mouse/keyboard input, reads SQLite side effects and original-source preservation, and saves cleanup screenshots. Fault seams are labelled: stripped capability, synthetic busy/network reply, held pre-action list/detail/document/history and mutation replies. Conflict comes from a real concurrent cleanup. SIGTERM stops its owned service children and removes their roots. No native host/install claim.
 
-- **`setup-intercept.ts`:** QA9 interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It can also strip plan-detail `timing` or drop entries (an older service, an unknown start) and replace `/v1/extension-update` replies (404, malformed): labelled QA seams. It is controlled live through a JSON file.
+- **`setup-intercept.ts`:** setup interceptor on the host's service proxy (CDP `Fetch`). It logs every guest service request (method and path only), can hold `GET /v1/setup` replies (late hints), can strip `suggestions` (a service without hints), and can strip or replace `update` in setup reads (an older service, malformed metadata). It can also strip plan-detail `timing` or drop entries (an older service, an unknown start) and replace `/v1/extension-update` replies (404, malformed): labelled QA seams. It is controlled live through a JSON file.
 - **`motion-probe.ts`:** motion QA for an isolated host. It holds reduced-motion emulation for the whole command and reports, per guest frame:
   - the gate and the running element and pseudo-element animations;
   - status-text contrast at rest, at peak and as sampled (composited over the real backdrop);
@@ -343,6 +343,6 @@ The real-service run is recorded in `evidence/ui/qa.md`.
 
 ## Known gaps
 
-- The relay runtime was verified once, owner-authorized, on OpenChamber's public cloud relay between two isolated desktops (relay-only pairing link). There is no isolated or self-hosted relay route for repeatable testing (`evidence/ui/qa.md`, T6 final round).
+- The relay runtime was verified once on OpenChamber's public cloud relay between two isolated desktops (relay-only pairing link). There is no isolated or self-hosted relay route for repeatable testing (`evidence/ui/qa.md`).
 - The web runtime was verified through the desktop host's embedded web server in an isolated Chromium, not a separately launched web CLI.
-- Running/waiting live labels still need model-driven sessions; T6 checked idle and recorded-only sessions.
+- Running/waiting live labels still need model-driven sessions; the recorded checks covered idle and recorded-only sessions.

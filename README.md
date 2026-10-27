@@ -52,7 +52,7 @@ The public Git distribution uses **`main`** and includes built runtime files: **
 2. If the extension offers a different bundled companion, choose **Review update**. Inspect versions and existing folders, then explicitly confirm. A newer installed companion is a downgrade warning, not an automatic replacement.
 3. Follow the reload notice and restart OpenCode **when safe**. Installed files and loaded code are separate states; OpenCode is never restarted automatically.
 
-Companion updates preserve the configured store and history. See [setup and lifecycle details](docs/setup.md#bundled-companion-detection-u1-backend-u2-ui-follow-up).
+Companion updates preserve the configured store and history. See [setup and lifecycle details](docs/setup.md#bundled-companion-detection).
 
 ### Automated releases
 

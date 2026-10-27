@@ -1,18 +1,16 @@
-# Production backend v2 (T3)
+# Production backend v2
 
 Current package version: **0.2.9**. Here v2 means protocol/schema2,
-not a release major. Owner-corrected historical package labels below are0.2.0
+not a release major. Corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
-`evidence/` and `AGENTS.md` are local-only, never committed or packaged. Evidence
-references in this guide describe local QA records, not consumer deliverables.
+Evidence references in this guide describe local QA records, not consumer deliverables.
 
-`docs/contracts.md` and `shared/progress.ts` are the frozen Designer contract.
-T1 probe DTO/store/scripts are historical fixtures, not a production fallback.
-The archived probe HTTP service exists only in tests/fixtures. No UI code is owned
-or changed by this backend lane. Panel ID remains agent-progress-probe (stable
-openSurface target); companion/skill ID is agent-progress. T5 assembles packages.
+`docs/contracts.md` and `shared/progress.ts` are the frozen contract.
+Probe DTO/store/scripts are historical fixtures, not a production fallback.
+The archived probe HTTP service exists only in tests/fixtures. Panel ID remains
+agent-progress-probe (stable openSurface target); companion/skill ID is agent-progress.
 
-## Owners and trust boundaries
+## Components and trust boundaries
 
 - plugin/index.ts registers one namespaced codemode:false report tool and inline
   skill. It gets actual caller IDs/agent from invocation context and refreshes
@@ -70,6 +68,11 @@ plans refuse. Successful finish requires at least one non-skipped task and none
 remaining. Cancel/fail preserve unfinished work. Reopen is explicit; staged chunks
 on a closed plan require reopen on staging and commit but do not reopen alone.
 
+Moving a session preserves plan identity and contributions. Each report refreshes
+authoritative location metadata without changing the bound document path. If the
+document stays in the old worktree, it remains the source; a relocated document
+requires an explicit new binding rather than silently following the move.
+
 ## Storage and document consistency
 
 Finished-plan cleanup is the bounded exception to default history retention;
@@ -117,8 +120,8 @@ Git object (a source export without Git cannot run it); it does not claim every
 historical binary/runtime is certified. Fault checks combine actual process kills,
 SQLite lock/page-capacity failures and explicitly labelled snapshot-boundary fault
 injection. All history/config/backup fixtures are synthetic and removed on teardown.
-The built-entry check is opt-in with `CP_BUILT_SERVICE=1` for the coordinated stable
-CP-Q5 join; it restarts the actual service against the same disposable store.
+The built-entry check is opt-in with `CP_BUILT_SERVICE=1` for stable-input
+integration; it restarts the actual service against the same disposable store.
 
 Schema2, prepared statements, foreign keys/check constraints, default rollback
 journal,1-second busy timeout. BEGIN IMMEDIATE mutation rechecks enabled/revision,
@@ -136,6 +139,9 @@ Changed unconfirmed documents mark checklistSynchronized=false; no Markdown pars
 Unchanged hashes reuse immutable captured bytes and update checkedAt, not body
 duplication. Document pagination may pin immutable capture IDs. Current-file state
 always says not-rechecked between reports, never stale/stuck from age alone.
+Consumers show the last successful capture time and last check time separately;
+current file contents remain unverified until rechecked under the same permission
+and size bounds. Age alone cannot prove that the document and checklist differ.
 
 ## Adopted bounded defaults
 
@@ -168,7 +174,7 @@ No timer, persistent reminder, new RPC or automatic progress/capture write exist
 
 ## Verification and known limits
 
-### U1 official-main metadata checker
+### Official-main metadata checker
 
 `service/extension-updates.ts` owns one in-memory checker/cache per service
 generation. `GET /v1/extension-update` runs behind existing bearer validation and
@@ -199,7 +205,7 @@ timeout and shutdown clear the bounded timer. There is no background daemon or
 check when no frame asks. Internal constructor transport/clock/timeout seams are
 only test construction, not production HTTP/environment configuration.
 
-Frozen DTO/lifecycle meaning: docs/contracts.md. Focused QA-U:
+Frozen DTO/lifecycle meaning: docs/contracts.md. Focused metadata checks:
 
 ```sh
 bun run typecheck
@@ -211,11 +217,11 @@ logical fixed-target assertions and no live GitHub/private authentication. They
 cover coalescing/cache/ETag/provider failure, validation/semver, bounded redirects/
 body/deadline/shutdown, store independence and unchanged fixture selection/config/
 DB bytes. Local evidence: evidence/release-checks-live-status/updates-http.txt.
-An ignored runnable loopback-only fixture with companion/setup siblings is handed
-to Designer for U2. No current installed companion or real setup roots are touched.
-Final stable-input package/Git-distribution joins remain P1/D1, not U1 acceptance.
+An ignored runnable loopback-only fixture includes companion/setup siblings for UI
+integration. No current installed companion or real setup roots are touched.
+Final stable-input package/Git-distribution checks are separate validation.
 
-### T1 reported-working interval reader
+### Reported-working interval reader
 
 `service/task-timing.ts` derives optional detail timing from immutable v2 revision
 snapshots after `Store.detail()` completes its own transaction. One prepared reverse
@@ -242,7 +248,7 @@ docs/contracts.md. It describes continuous **reported** working, never live mode
 execution. Legacy v2 snapshots need no timing field. Malformed optional history
 does not break an otherwise valid detail response or rewrite stored bytes.
 
-QA-T commands (Node24 available through the local version-manager bin directory):
+Timing checks (Node24 available through the local version-manager bin directory):
 
 ```sh
 bun run typecheck
@@ -253,11 +259,11 @@ These checks use actual Store writes, a controlled clock, authenticated HTTP,
 replay, neutral link/relay/structure changes, reset boundaries, cap/byte-budget and
 isolated corrupt snapshots, paging/concurrent commits, store/source isolation and
 closed-handle recovery. Evidence: evidence/release-checks-live-status/timing.txt.
-The ignored isolated service fixture for Designer includes copied companion/setup
-siblings. This is not final package/distribution or browser acceptance; P1 performs
-the final stable-input build and companion byte-identity join.
+The ignored isolated service fixture includes copied companion/setup siblings.
+This is not final package/distribution or browser validation; those require a
+stable-input build and companion byte-identity check.
 
-### U1 companion comparison / frozen U2 seam
+### Companion comparison / frozen setup UI seam
 
 `SetupRead.update?: CompanionUpdateRead` is additive on existing setup status
 reads and mutating action replies (see docs/contracts.md). SetupController uses
@@ -280,16 +286,15 @@ upgrade, same-version changed bytes, newer-installed/downgrade, retained root by
 post-update pending/matching observed activation, uncertainty/absence and modified
 update refusal with retained history. Local evidence: evidence/upgrade-ux/backend.txt.
 The real-service fixture includes companion and setup siblings, not just the
-read-only service. U1 is not package/release acceptance. The owner now reports no
-issues on0.2.4 and lifts the prior performance hold for PR preparation, without
-establishing the earlier slowdown's cause. No real-user operation is part of
-these fixture checks.
+read-only service. These checks are not package/release validation. Reported real
+use of0.2.4 had no issues, without establishing the earlier slowdown's cause.
+No real-user operation is part of these fixture checks.
 
-### T7 host-side setup suggestions / frozen T8 seam
+### Host-side setup suggestions / frozen setup UI seam
 
 `shared/progress.ts` adds Suggestion/SetupSuggestions and optional
 SetupRead.suggestions, populated only by existing GET /v1/setup while unconfigured
-on Linux. `service/suggestions.ts` reads only allowlisted host HOME/XDG config/data
+on Linux or supported Windows. `service/suggestions.ts` reads only allowlisted host HOME/XDG config/data
 hints, validates their absolute canonical spelling and directly observes the two
 candidate roots. It uses no cwd/binary/project inference, home-account lookup,
 recursive search, file-content/config/auth reads or CLI subprocess. The trusted
@@ -303,17 +308,17 @@ child. GET hints never set verified/targets/binding and never persist a selectio
 Configured bindings (including unavailable stores) omit suggestions; POST replies
 and bodies remain unchanged. Read-only setup-target semantics exclude only the
 already-existing service-private selector bootstrap. No service reuse or payload
-cache was introduced. See docs/contracts.md for the frozen field names and T8
+cache was introduced. See docs/contracts.md for the frozen field names and UI
 edit-preservation precedence.
 
-QA8 runs real authenticated HTTP with fixture HOME/custom XDG, missing/partial/
+Suggestion checks run real authenticated HTTP with fixture HOME/custom XDG, missing/partial/
 invalid hints, unsupported host, symlink/foreign-UID/non-directory candidates,
 permissive store and configured binding. It checks fixture bytes/mtime unchanged
 on GET/inspect and verifies discovery reads no contents or child-store metadata.
 Foreign UID is scoped stat injection, not privileged chown. A separately compiled
 service smoke test uses a fresh allowlisted HOME with a different cwd and no model.
 The existing21 setup regressions are retained, including all7 normalization tests.
-No owner's actual installed invocation is claimed as diagnosed by those fixtures.
+No actual installed invocation is claimed as diagnosed by those fixtures.
 
 Source-only command/evidence:
 
@@ -322,32 +327,32 @@ node --test tests/backend/setup-suggestions.test.ts tests/backend/setup-paths.te
 ```
 
 Local evidence is under evidence/backend/setup-suggestions* (ignored, not shipped).
-T8 consumes a separately built service fixture after parent acceptance; T9 alone
-joins packaging. No UI, release-version or protocol/schema change accompanies T7.
+UI integration uses a separately built service fixture; packaging is validated
+separately. The suggestions API did not change the release version or protocol/schema.
 
-QA2 contract tests cover fixture P1/P2/P3, relay counts, atomic invalid batches,
+Contract tests cover fixture P1/P2/P3, relay counts, atomic invalid batches,
 conflicts/replays, assignment/closed/reopen/finish variants, move history, chunks,
 pagination, Unicode document/version capture and denied/moved/oversized reads.
-QA3 uses actual production writer processes, trigger pause inside write transaction,
+Storage checks use actual production writer processes, trigger pause inside write transaction,
 SIGKILL before commit and after commit-before-reply, bounded busy, SQLite page
 capacity/read-only write failure, corrupt/future files preserved. Capacity fault
 is a real SQLite storage failure, not a full filesystem exhaustion experiment.
-QA4 uses real HTTP and disposable setup roots, update interruption, modified files,
+Setup checks use real HTTP and disposable setup roots, update interruption, modified files,
 symlink/collision refusal, transactional control and history-retaining removal.
 The self-contained production companion activates/updates in an EMPTY isolated
 OpenCode2.1.4; standalone removal utility controls that loaded instance after
 extension absence. No credentials, inference or real-user installation.
 
-Fresh real OpenChamber production-frame/service integration is T4/T5/T6, not
-claimed by T3 unit/integration tests. Existing T2 host SQLite evidence is retained.
-Slim/model relay/title/generate/wire fallback limitations of T1 remain explicit.
-No T5 ZIP/folder assembly, publishing, commits or remote operations were included
-in the original T3 scope; later bounded joins are recorded below.
+The initial backend unit/integration tests did not establish real OpenChamber
+production-frame/service integration. Earlier desktop host SQLite evidence is
+retained. Slim/model relay/title/generate/wire fallback limitations of the initial
+probe remain explicit. Initial backend validation excluded ZIP/folder assembly;
+subsequent package validation is recorded below.
 
-## Accepted-T3 follow-up and T5 artifacts
+## Initial recovery follow-up and 0.2.0 artifacts
 
-The paragraph above records the original T3 boundary. The subsequent authorized
-fix-then-package dispatch adds service recovery and local package assembly:
+Following the initial backend validation, service recovery and local package
+assembly were added:
 
 - SetupController retains a validated descriptor independently from store open
   failures. Descriptor collisions still fail closed; store failures no longer
@@ -359,7 +364,7 @@ fix-then-package dispatch adds service recovery and local package assembly:
   after restart; no descriptor or frozen DTO shape changed. A service restart or
   successful capture control is not proof that a host reloaded the selected code.
 - scripts/package.ts assembles the extension/companion folders and ZIPs from built
-  backend outputs and unchanged Designer guest artifacts. Package metadata0.2.0
+  backend outputs and unchanged guest artifacts. Package metadata0.2.0
   agrees with production payload/status version; protocol/schema are2.
 - scripts/verify-package.ts exercises the extracted companion setup utility,
   actual packaged tool with synthetic SDK callers, loaded disable/enable, retained
@@ -371,9 +376,10 @@ Artifacts/inventory: build/artifacts/. Documentation: docs/setup.md. Regression
 tests: tests/backend/service-recovery.test.ts. Check logs, acceptance limits and
 hashes: evidence/backend/qa.md and its follow-up addendum. The optional actual-host
 gate is required for this handoff and was run; it is not silently claimed by a
-normal check that prints actualHostInstaller=not-run. T6 remains unexecuted.
+normal check that prints actualHostInstaller=not-run. At this historical stage,
+final runtime/relay validation had not yet run.
 
-## T6 backend corrections /0.2.1 (supersedes prior default/reload behavior)
+## Backend corrections /0.2.1 (supersedes prior default/reload behavior)
 
 - Default service selection is now product-owned state OUTSIDE the replaceable
   extension directory: XDG_STATE_HOME/agent-progress-service, or the product's
@@ -405,18 +411,18 @@ OpenCode runtime test's pending/loaded/update/reloaded observations. Artifact QA
 also replaces the entire packaged extension directory, then proves configured
 views/store identity and unreadable-store recovery through real HTTP. Entry
 inventory equality is required across assembly; ZIP container byte equality is
-not (timestamps/headers are not canonical). Designer bundles are copied unchanged.
-The original live2 proof applies to the owner-labelled0.2.0 build; no new model run was performed or claimed.
+not (timestamps/headers are not canonical). UI bundles are copied unchanged.
+The original live2 proof applies to the corrected0.2.0 build label; no new model run was performed or claimed.
 Evidence and migration limits: evidence/backend/qa.md and docs/setup.md.
 
-## T9 /0.2.3 private testing candidate join
+## Historical 0.2.3 package validation
 
 Extension/companion metadata moves together to0.2.3; protocol/schema remain2.
-Backend outputs include the preserved separator normalization, T7 read-only
+Backend outputs include the preserved separator normalization, read-only
 suggestions and deterministic Store cleanup on failed plugin setup. The plugin
 retains its normal success disposer and original setup errors. The smaller-import
 candidate was not promoted; persistent-service Store reuse and payload caches
-remain deliberately absent. Designer's accepted F1/F2/T8 guest bundles are copied
+remain deliberately absent. Accepted guest bundles are copied
 byte-for-byte, never rebuilt by backend packaging.
 
 `scripts/verify-package.ts` checks canonical entry inventories, exact folder/ZIP
@@ -427,20 +433,21 @@ installer gate uses the explicitly supplied isolated host module and installs th
 folder and ZIP into fresh registries, not a real app/configuration.
 
 The separate `scripts/verify-source-package.ts` copies git-visible source into a
-new temporary tree without build/evidence/.slim/AGENTS or node_modules; only an
-explicit symlink to existing dependencies is provided. It runs typecheck and the
+new temporary tree without generated backend output, local-only ignored directories
+or node_modules; only an explicit symlink to existing dependencies is provided.
+It runs typecheck and the
 backend build, not a second full test/aggregate suite. This proves no local
 evidence/generated-backend dependency for that path, not a fresh dependency install
-or the parent's later git-archive/clone gate. No network fetch is required.
+or the later git-archive/clone gate. No network fetch is required.
 
 Local QA: evidence/package/m2-checks.txt, source-export.txt and canonical entry/hash
 inventories; backend acceptance limits remain in evidence/backend/qa.md. Cached
-revisit/spinner and bounded latest-switch refresh fixes have accepted Designer
+revisit/spinner and bounded latest-switch refresh fixes have browser regression
 evidence; failed-setup connection cleanup has focused runtime regressions. None
-establishes the owner's hours-long real-host sluggishness cause. This is an
-unreleased private testing candidate, not a release-ready or complete-cure claim.
+establishes the reported hours-long real-host sluggishness cause. This historical
+0.2.3 candidate validation did not establish a complete performance cure.
 
-## Companion upgrade UX /0.2.4 private candidate join
+## Companion upgrade UX / historical 0.2.4 package validation
 
 Extension/companion metadata moves together to0.2.4; protocol/schema remain2.
 The accepted update-detection service and guest bytes are joined without rebuilding
@@ -452,4 +459,4 @@ metadata and history are retained; modified payloads and corrupt ownership refus
 updates and make no comparison claim. Both ZIPs are extracted and every declared
 file is compared to its assembled folder. Local evidence:
 `evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
-no real0.2.4 install/reload or new performance claim is authorized or implied.
+these checks did not include a real0.2.4 install/reload or establish a new performance claim.

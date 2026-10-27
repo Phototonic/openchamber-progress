@@ -1,4 +1,4 @@
-# T1/T2 compatibility commands and evidence
+# Compatibility commands and evidence
 
 ## Native Windows verification
 
@@ -47,10 +47,10 @@ standalone removal using packaged Electron's Node mode; synthetic plan data and
 installation history remained available afterwards. These checks used fresh
 synthetic directories, without changing a live profile or installing dependencies.
 
-See `evidence/compatibility/probe.md` for the final per-claim record:
-**T1/T2 live compatibility PASSED WITH LIMITATIONS for the bounded scope.**
-This is not an installable production product. T3 implementation remains
-separately gated on owner authorization per the canonical plan. Primary desktop
+The initial Linux capture/desktop probe **passed with limitations for its bounded
+scope**; that probe was not an installable production product. This historical
+limitation does not apply to the shipped 0.2.9 artifacts described in `docs/setup.md`.
+See `evidence/compatibility/probe.md` for the per-claim record. Primary desktop
 evidence is `evidence/compatibility/ui-probe.md` and `ui-runtime.json`; accepted
 live backend outcomes are in `backend-auth-live.json` and
 `backend-auth-subtests-summary.json` under `evidence/compatibility/`.
@@ -61,7 +61,7 @@ Bun1.3.14 manages tooling/build only; TypeScript5.9.3, @types/node24.19.2,
 @openchamber/sdk2.5.1, @opencode/plugin2.1.4; `bun.lock` pins transitives.
 Node24.19.0 runs backend tests and standalone HTTP smoke. Independent downloaded
 OpenCode2.1.4 embeds Bun1.4.4 (Node compatibility version26.3.0).
-Designer observed OpenChamber2.5.1 spawning its service with Electron44.9.3 as
+OpenChamber2.5.1 was observed spawning its service with Electron44.9.3 as
 Node24.22.0, no Bun. The actual service opens the shared SQLite DB; SQLite3.53.4
 from the same binary standalone is supplementary, not an actual service query.
 
@@ -73,24 +73,24 @@ bun run build:backend
 bun run check
 ```
 
-`build` currently aliases backend build only, NOT guest/package assembly.
-`check` is typecheck + backend tests + backend build. There is no `test:browser`
-or aggregate guest QA script yet; Designer owns browser implementation/config.
-Designer built all3 guest bundles with the pinned SDK bundler:
+At the initial probe, `build` aliased backend build only, NOT guest/package assembly,
+and `check` was typecheck + backend tests + backend build. There was no `test:browser`
+or aggregate guest QA script. Current package validation is described in `docs/setup.md`.
+All three guest bundles were built with the pinned SDK bundler:
 
 ```sh
 bun run bundle:guest ui/panel/main.ts ui/panel/main.js
 # Same invocation for ui/status/main.ts and ui/page/main.ts.
 ```
 
-Parent reports successful shared validation on the stable tree (not rerun for
+Recorded shared validation on the initial stable tree (not rerun for
 this docs reconciliation): `bun run check` (typecheck,6 backend tests,backend
 build), `node_modules/.bin/tsc -p ui/tsconfig.json --noEmit`, and
-`node --experimental-strip-types --test tests/browser/*.test.ts` (4/4). Parent
-also verified all3 `ui/*/main.js` SHA256 hashes against the screenshot bundle
+`node --experimental-strip-types --test tests/browser/*.test.ts` (4/4).
+All three `ui/*/main.js` SHA256 hashes were verified against the screenshot bundle
 hashes in `evidence/compatibility/ui-runtime.json`.
 
-## Agnostic activation (private0.2.4 package validation)
+## Agnostic activation (historical0.2.4 package validation)
 
 The credential-free2.1.4 native probe in
 `tests/backend/progress-activation-runtime.test.ts` uses a separate test observer
@@ -100,9 +100,9 @@ requests, not merely observer callback snapshots. Real `write` create/replacemen
 `edit`, a write error, effective report-tool hiding for a restricted child and an
 authenticated source-free report receipt/Store write are exercised. Installed
 adapter tests exercise production hooks with a fake host and real Store. Scripted
-choices prove plumbing, never LLM compliance or universal activation. A1's accepted
-observer-only/baseline-package evidence remains archived separately. The private
-P1 join also passed this native test against the final packaged companion entry
+choices prove plumbing, never LLM compliance or universal activation. Earlier
+observer-only/baseline-package evidence remains archived separately. The final
+package validation also passed this native test against the packaged companion entry
 and matching sibling guidance, without rebuilding the accepted guest bundles.
 This validates those bytes in isolation, not a real-user install or public release.
 
@@ -112,7 +112,7 @@ Pinned file metadata is `write`/`edit` with `input.path` (not legacy `filePath`)
 partial outcome. Shell writes, opaque `patch`/`apply_patch`/`functions.patch`,
 unknown tools and arbitrary/non-Markdown document names are **not detected** by
 the conventional-path hint; source-free deliberate reports still work. This
-coordinator's frequent opaque patch writes can therefore receive no file hint.
+type of opaque patch write can therefore receive no file hint.
 The primary context still receives recurring generic guidance when eligible.
 No patch-body or content parsing is implied. Local diagnostic evidence and the
 exact bounded coverage are in `evidence/activation/{native-host.md,coverage.md}`.
@@ -124,7 +124,7 @@ the native probe requires the independent 2.1.4 binary plus working rootless
 companion bytes and sibling guidance, with the observer separately loaded. Use
 that argument against the selected activation package; unchanged old bundles do
 not contain activation and cannot pass the production-guidance assertions. The
-Designer browser helper was also exercised against the packaged payload with real
+browser helper was also exercised against the packaged payload with real
 Store writes/awaited disposal, but its hook stubs prove no native/browser behavior.
 
 ```sh
@@ -143,10 +143,10 @@ new declaration gate or external repository change is implemented or required.
 
 ## Independent CLI, not the managed wrapper
 
-Owner explicitly approved an independent temporary CLI download. The PATH
+The isolated probe used an independent temporary CLI download. The PATH
 `opencode` wrapper is owned by real OpenChamber and cannot be used for isolation.
 Never bypass it with the bundled executable or stop the real server. Credential
-copy was allowed only through the separately reviewed M1 credential-only route,
+transfer used only the separately reviewed credential-only test route,
 not by copying a live DB/config/profile. The independent archive came from the official V2 URL:
 
 ```sh
@@ -160,9 +160,9 @@ Observed archive SHA256:
 `latest` is mutable: verify downloaded version again, do not assume future bytes.
 
 Recovery on2026-10-24 re-downloaded the official archive: actual version2.1.4,
-same SHA256 shown above. The host restart cleared retained temporary T1b/T2
+same SHA256 shown above. The host restart cleared retained temporary CLI/desktop
 fixtures and the extracted AppImage; repository evidence remains available.
-Future T2/UI reruns require fixture regeneration; none was performed for this
+Future desktop/UI reruns require fixture regeneration; none was performed for this
 recovery. Early live refusals and later accepted z.ai root/native/move/compaction
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
@@ -191,7 +191,7 @@ this route elsewhere. None was present for the recorded fixture.
 Main implementation and supporting build/setup/test/probe tooling are TypeScript.
 The former temporary Python HTTP driver was replaced by `scripts/cli-probe.ts`;
 there is no Python service or setup path. Generated JavaScript runtime bundles
-are expected. Designer exclusively owns all UI implementation and browser QA.
+are expected.
 
 Resolved clean paths were established with `debug paths` before launching;
 `backend-paths.txt` records all paths. Fixture descriptor explicitly binds config
@@ -199,16 +199,16 @@ and data roots; mismatching scopes or OPENCODE_DB/OPENCODE_CONFIG overrides refu
 plugin activation. This proves that particular explicit fixture binding, not a
 general installer resolving every custom/channel/platform path.
 
-## T2 fixture and service request
+## Historical desktop fixture and service request
 
 Historical prepared reusable fixture (subsequently cleared by the host restart):
 `/tmp/opencode/agent-progress-probe-live-t1b/extension`.
 Its service descriptor references the DB actually written by OpenCode plugin
 processes at `/tmp/opencode/agent-progress-probe-live-t1b/data/progress.sqlite`.
-Designer built guest files under `ui/**` and copied them into the prepared
-extension. All implementation writes and owned processes are now stopped.
+Guest files were built under `ui/**` and copied into the prepared
+extension. All owned probe processes were stopped.
 
-Designer installed that **folder** through Settings → Extensions → Add in the
+That **folder** was installed through Settings → Extensions → Add in the
 verified isolated desktop host. Before grant, the host mounted no frames and
 spawned no service; its service route returned400 NO_SERVICE. After approval of
 sessions/service: ready service and actual `host.serviceRequest` health/progress200
@@ -220,12 +220,12 @@ visible. SDK surface/directory context proved, but session=null because no promp
 were sent. Actual current-session context/navigation remains unproved; fixture
 session IDs are never navigable. See `ui-probe.md` for screenshots/interactions.
 
-## Isolated OpenChamber launch: Designer's tested desktop route
+## Isolated OpenChamber launch: tested desktop route
 
 The available installed OpenChamber executable was the OpenChamber2.5.1
-AppImage (SHA256 in `ui-runtime.json`), not a web CLI. Designer extracted that exact
-AppImage to a temporary directory and verified isolation before installation.
-The earlier T1 direct-binary DISPLAY candidate was not the tested route. OpenCode
+AppImage (SHA256 in `ui-runtime.json`), not a web CLI. That exact AppImage was
+extracted to a temporary directory and isolation verified before installation.
+The earlier direct-binary DISPLAY candidate was not the tested route. OpenCode
 `serve` is NOT OpenChamber and cannot host extension frames. No sibling source
 installation/build/modification or managed bundled-CLI invocation was used.
 
@@ -251,14 +251,14 @@ env -i PATH=/usr/bin:/bin SHELL=/bin/sh LANG=en_US.UTF-8 APPDIR=$X/squashfs-root
   $X/squashfs-root/AppRun --ozone-platform=wayland --password-store=basic --remote-debugging-port=9333 >/dev/null 2>&1
 ```
 
-Designer checked installed bundle controls, migration/default roots, login-shell
+Checks covered installed bundle controls, migration/default roots, login-shell
 probing (only PWD/XDG_DATA_DIRS added), actual main/CLI/service environments and no
 real-home config/data/cache fds. Independent CLI override honored; user's instance
 57123 untouched. Service uses host-allocated loopback port/bearer, never exposed to
 the guest. Relay disabled; no relay/tunnel listener. Web/relay runtimes were not
 exercised. This evidence is specific to the tested desktop build/environment.
 
-Designer stopped the isolated host and verified no host/CLI/service processes
+The isolated host was stopped and no host/CLI/service processes
 remained; CDP9333 and isolated host port closed. The then-retained H contained
 generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
@@ -266,11 +266,10 @@ clean real directories or reuse real profiles; no server restart is authorized.
 
 ## Historical Big Pickle attempt — capacity path abandoned
 
-Owner initially authorized the already-present **free Big Pickle only**,
-superseding the earlier built-in-provider prohibition for that historical route.
-It did not authorize sign-in, credential copy, a new account or paid fallback.
-Owner later explicitly redirected the bounded M1 tests to their existing z.ai
-key, accepting tiny billed usage; no free-model retry or automatic fallback.
+The initial attempt used the already-present **free Big Pickle only**, with no
+sign-in, credential copy, new account or paid fallback. Later bounded tests used
+an existing z.ai key with tiny billed usage; there was no free-model retry or
+automatic fallback.
 The pending OpenAI OAuth attempt was cancelled through the isolated native UI;
 all owned host/CLI/service processes are now stopped.
 
@@ -296,11 +295,11 @@ The free attempt alone proved no executor identity. Later accepted z.ai evidence
 proves actual caller attribution, native-child reporting, move attribution and
 compaction/resume, with guarded output caps. Inline skill invocation, slim access,
 model-exercised parent relay and exact billed-token measurement remain unproved.
-Receipts do not enforce production membership/assignment or authorize a full build.
+Probe receipts alone do not prove production membership/assignment enforcement.
 
-## M1 credential-only transfer and final bounded live evidence
+## Credential-only transfer and final bounded live evidence
 
-Under explicit owner/parent clearance, the reviewed runner copied one active
+The reviewed runner copied one active
 existing `zai-coding-plan` key in memory into each fresh isolated destination.
 Real `glm-5.3-flash` calls proved root attribution, native reporting, root move
 attribution and manual compaction/resume. Root used3 admissions/3 dispatches;
@@ -320,6 +319,6 @@ Limits: slim blocked/uninstalled/no safe binding recipe; model-exercised parent
 relay unexercised (fixture-only); title/generate not dispatched; wire fallback
 unproved; web/relay extension runtimes unexercised. New locations/reload/restart
 remain prohibited while a copied credential exists. Legacy OpenAI capped-route
-incompatibility was not bypassed; z.ai was an explicit owner redirect. No further
-live runs, new commands or launches are authorized by this documentation update.
-T3 production implementation still requires separate owner authorization.
+incompatibility was not bypassed; z.ai was selected explicitly, not as an automatic
+fallback. These are historical test limitations, not restrictions on the shipped
+production artifacts.

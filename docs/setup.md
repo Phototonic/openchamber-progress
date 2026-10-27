@@ -4,12 +4,11 @@ Package versions use the 0.x line; protocol/schema remain 2. Current package ver
 is 0.2.9. Tagged releases are published after main promotion and successful
 workflow checks. Historical
 package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
-original labels. `evidence/` and `AGENTS.md` are local-only, never committed or
-included in either package. Local evidence references below are not shipped files.
+original labels. Local evidence references below are not shipped files.
 
 Initial lifecycle validation used disposable roots, with no real-user installation
-in that validation boundary. Any real installation, update or reload requires
-separate explicit user approval; fixture validation never grants that approval.
+in that validation boundary. Fixture validation proves isolated lifecycle behavior,
+not activation or compatibility in every existing installation.
 OpenChamber service permission runs code with full user privileges; the UI must
 show that disclosure plus target paths/version and the separate lifecycle BEFORE
 installing. Uninstalling/closing the extension does NOT disable global capture.
@@ -51,11 +50,10 @@ entries; it does not install dependencies or compile TypeScript. The root manife
 is used as committed, not repaired into a ZIP manifest. Required generated backend
 files are `build/service/main.js`, `build/companion/{index.js,package.json,SKILL.md}`
 and `build/setup/main.js`, alongside the three existing guest HTML/JS entries.
-Other generated output, bindings, DBs, dependencies, evidence and AGENTS stay local.
+Other generated output, bindings, DBs, dependencies and local QA records are excluded.
 
-Develop/accept runtime changes on `dev`; only a separately approved ready version
-may reach `main`. The owner-authorized launch docs/licensing/CI setup is a narrow
-exception, not a routine runtime promotion or permission for partial builds:
+Develop runtime changes on `dev`; promote ready versions to `main` after review
+and validation. Runtime promotion requires complete builds:
 
 1. Accept final guest and backend inputs, with no overlapping writers during the
    artifact join. Maintainers stage the exact required outputs; allowlisting a file
@@ -80,7 +78,7 @@ exception, not a routine runtime promotion or permission for partial builds:
    Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
    bootstrap an empty release history. Automation never bumps versions or commits
    to main. Portable CI is not native-host certification or a causal performance
-   diagnosis. Fixture success never authorizes a real installation or restart.
+   diagnosis. Fixture success does not establish activation in an existing installation.
 
 Portable CI requires a fresh disposable checkout and refuses nonempty artifact
 directories without deleting archives. Its external-runtime exclusions and current
@@ -89,7 +87,7 @@ main/dev push and PR-target coverage are documented in
 OpenChamber update awareness remains based on the main manifest, not GitHub Releases;
 companion updates and activation still require explicit review/confirmation/reload.
 
-Focused Git gate (parent supplies an isolated supported host installer module):
+Focused Git gate (requires an isolated supported host installer module):
 
 ```sh
 AGENT_PROGRESS_HOST_MODULE=<isolated-host-install.js> \
@@ -107,9 +105,9 @@ production source version. A loopback official-main metadata fixture serves the
 same real Git main manifest. Service startup uses the installed clone without a
 consumer build. This proves installer/ref mechanics, not live GitHub reachability.
 
-The initial D1 mechanics check uses accepted baseline guest runtime bytes; final
-P1 repeats against stable accepted current guest/backend bytes and Designer's real
-three-frame evidence. Fixture results do not grant permission for a real update.
+The initial Git mechanics check uses validated baseline guest runtime bytes; final
+validation repeats against stable current guest/backend bytes and real browser
+checks of all three frames. Fixture results do not establish real-install activation.
 
 ## Resolve, inspect, confirm
 
@@ -117,8 +115,8 @@ three-frame evidence. Fixture results do not grant permission for a real update.
 
 The archived local0.2.2 utility rejected trailing directory separators in
 disposable reproductions, even on otherwise valid absolute owned folders. The
-owner's actual installed invocation was not traced, so this is not a proven cause
-of their UI symptom. For that archived utility, the workaround was to enter all
+reported installed invocation was not traced, so this is not a proven cause
+of the UI symptom. For that archived utility, the workaround was to enter all
 three folder paths **without a trailing slash**. Removing
 slashes does not waive any other check: an existing progress-store folder must
 still be private0700. A775/755 store remains intentionally refused; setup never
@@ -152,7 +150,7 @@ not silently advertised. Same-host/account/local-filesystem only. Store/schema
 or source mismatch fails closed and preserves bytes. Corrupt/future stores need
 deliberate recovery outside this V1 tool, not an automatic reset/downgrade.
 
-### Best-effort setup suggestions (source T7; UI follows in T8)
+### Best-effort setup suggestions
 
 On an unconfigured Linux or supported Windows service, `GET /v1/setup` adds optional `suggestions` for
 configRoot/dataRoot/storeRoot. Unsupported hosts omit it; configured targets always win.
@@ -170,7 +168,7 @@ Each field is `{value,state:'resolved'|'candidate'}` or null (unknown).
   or the whole OpenCode data directory; it need not exist yet or already have0700.
 
 All fields remain editable. Configured targets outrank user edits, and user edits
-(including deliberate clearing) outrank hints. T8 must preserve them across late
+(including deliberate clearing) outrank hints. The UI must preserve them across late
 hints, refreshes and failed inspections, never rederive over a manual store choice.
 The mandatory inspect -> resolved-target review -> acknowledge/confirm sequence
 is unchanged. Hints do not set targets, verified state or any binding. Installed
@@ -226,7 +224,7 @@ request may supply executable payloads, URLs, commands, SQL or binding-file path
 
 ## Ownership, activation and interruption
 
-### Bundled companion detection (U1 backend; U2 UI follow-up)
+### Bundled companion detection
 
 Existing setup status reads automatically compare a verified selected immutable
 release against the bundled update candidate. `update.state` is `current` only
@@ -278,9 +276,9 @@ until the selected payload matches the most recently observed successful
 tool/skill/RPC setup. An unchanged already-observed payload needs no new reload.
 No automatic global service restart. Production read-only RPC
 agent-progress-status.inspect reports protocol/version/toolAvailable and stable
-source/store IDs for supported SDK clients. T3 proved it in an owned EMPTY2.1.4
+source/store IDs for supported SDK clients. Initial backend validation proved it in an owned EMPTY2.1.4
 runtime, including update/reload, without model calls. A service cannot discover
-real source auth merely to probe activation; M1 transfer helpers are test-only.
+real source auth merely to probe activation; credential-transfer helpers are test-only.
 
 ## Disable, enable, remove after extension uninstall
 
@@ -329,15 +327,16 @@ Extension folder/ZIP replacement does not remove its authoritative descriptor.
 A valid legacy package-local descriptor is adopted only if stable state is
 absent; a later package default cannot override stable state. Adoption never edits
 the legacy file. If an old0.2.0 updater already deleted that only legacy copy
-before0.2.1 ever ran, its roots cannot be safely rediscovered: use Designer's
+before0.2.1 ever ran, its roots cannot be safely rediscovered: use the
 explicit update-with-the-same-roots recovery once. Future replacement preserves
 the new stable selection. An already deleted descriptor is not magically restored.
 
 Details of routes, confirmation bodies, version/activation/error fields and
 read-only paging are frozen in docs/contracts.md. Production panel ID remains
 agent-progress-probe to preserve Work Status openSurface; labels are Agent progress.
-T5 assembles these built backend entries with Designer's already-owned guests;
-this document does not claim an installable extension ZIP was produced in T3.
+Package assembly joins built backend entries with the three guest frames. The
+initial backend-only validation did not produce an installable extension ZIP;
+the shipped artifacts are described below.
 
 ## V1 installable artifacts (0.2.9)
 
@@ -358,17 +357,17 @@ The smaller-import experiment was not promoted; no persistent-service Store reus
 or payload-audit cache was added. This patch distinguishes the distribution from
 installed/archived0.2.2; it is not a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
-UX; updates remain user-confirmed and activation remains separate. Release publication
-does not authorize installing0.2.9 into the real host; historical real0.2.3 update
-evidence and its pending-load status are unchanged. Protocol/schema remain2.
+UX; updates remain user-confirmed and activation remains separate. Publication of
+0.2.9 does not activate an installed companion; historical real0.2.3 update
+observations and their pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. The artifacts described here are
 unsigned; checksum inventories verify content integrity, not publisher signatures.
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.9/` and `.zip`: host manifest, the three Designer
-  HTML/main.js guests copied unchanged, self-contained service, companion and
+- `agent-progress-extension-0.2.9/` and `.zip`: host manifest, the three guest
+  HTML/main.js frames copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
 - `agent-progress-companion-0.2.9/` and `.zip`: standalone companion installer,
@@ -430,18 +429,17 @@ isolated host's extracted `server/lib/guests/install.js` module before that comm
 It installs the folder and ZIP into disposable extension registries only; no app
 or guest is launched. System `zip`/`unzip` are build/QA tools, not consumer runtime
 dependencies. Local-only QA evidence (not shipped): evidence/package/m2-checks.txt,
-canonical entry/hash inventories, and the T9 addendum in evidence/backend/qa.md.
-Parent accepted Designer's final runtime/relay checks on the labelled test
+canonical entry/hash inventories, and the packaging addendum in evidence/backend/qa.md.
+Final runtime/relay checks passed on the labelled test
 ZIP with byte-identical guest bundles; final reassembly adds artifact gates, not
 another full runtime/relay run. No retained fixture was changed by reassembly.
 
 The cached-revisit/spinner and bounded refresh issues, and failed-setup connection
-cleanup, have focused regression evidence. The owner's hours-long real-host
-sluggishness was **not established** by isolated diagnostics. The owner now reports
-no issues in real use of0.2.4 and requests a dev-to-main PR, lifting the previous
-performance hold for PR preparation. The short low-load soak is not proof of an
+cleanup, have focused regression evidence. The reported hours-long real-host
+sluggishness was **not established** by isolated diagnostics. Real use of0.2.4
+was reported issue-free. The short low-load soak is not proof of an
 hours-long leak's absence, and no new agent-run long soak or causal fix is claimed.
-Parent acceptance and public source checks remain separate. No real installation,
+Public source checks remain separate. No real installation,
 auth transfer, model call or automatic
 restart is part of packaging validation.
 
