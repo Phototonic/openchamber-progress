@@ -102,15 +102,21 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
 
 export type DetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number } | { ok: false; failure: ReadFailure };
 
+/** Store, source binding and requested plan of one detail page; every page of a read must agree. */
+const pageIdentity = (page: ReturnType<typeof parsePlanPage>) => JSON.stringify([page.envelope.storeId, page.envelope.binding.sourceId, page.envelope.binding.verified, page.plan.sourceId, page.plan.id]);
+
 /**
  * Full selected-plan detail. Items and contributions page with one cursor (each nested
  * nextCursor is passed back verbatim; stop when both are null). If the plan revision
- * changes between pages, the read restarts rather than mixing revisions.
+ * changes between pages, the read restarts rather than mixing revisions. A page from another
+ * store, source binding or plan is refused, even at the same revision: never a joined detail.
  */
 export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now()): Promise<DetailResult> {
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
       const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+      if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
+      const identity = pageIdentity(first);
       // Timing covers the whole plan at this revision; anchor it when the reply arrives.
       const receivedAt = mono();
       const items: ItemView[] = [...first.items.data];
@@ -121,6 +127,7 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
       for (let pages = 1; (itemsNext || contribNext) && pages < MAX_DETAIL_PAGES; pages++) {
         const cursor = itemsNext ?? contribNext!;
         const next = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id, cursor })));
+        if (pageIdentity(next) !== identity) throw new ContractError('The progress store changed while the plan was read.');
         if (next.plan.revision !== first.plan.revision) { mixed = true; break; }
         if (itemsNext) items.push(...next.items.data);
         if (contribNext) contributions.push(...next.contributions.data);

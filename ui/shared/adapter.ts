@@ -116,9 +116,11 @@ function parseItem(v: unknown, planId: string): ItemView {
   check(isRec(v) && isStr(v.id) && isStr(v.title), `Plan ${planId} has an item without an id or title.`);
   check(v.kind === 'group' || v.kind === 'task', `Item ${v.id} has an unknown kind.`);
   check(STATUSES.includes(v.status as ItemStatus), `Item ${v.id} has an unknown status.`);
+  // Omitted dependencies are valid; a present but malformed list must not read as "none recorded".
+  check(v.dependencies === undefined || (Array.isArray(v.dependencies) && v.dependencies.every((d) => isStr(d) && d.length > 0)), `Item ${v.id} has unreadable dependencies.`);
   return {
     id: v.id, title: v.title, kind: v.kind, status: v.status as ItemStatus, parentId: optStr(v.parentId),
-    dependencies: Array.isArray(v.dependencies) ? v.dependencies.filter(isStr) : undefined,
+    dependencies: v.dependencies as string[] | undefined,
     assigneeSessionId: optStr(v.assigneeSessionId), reporterSessionId: optStr(v.reporterSessionId),
   };
 }

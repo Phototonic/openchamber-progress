@@ -80,6 +80,35 @@ button{font:inherit}
 .ap-group>summary .ap-count{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
 .ap-group>ul{margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
 summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+/* Canonical task rows are navigation targets (tabindex -1): ring for keyboard focus or a readiness jump */
+.ap-items li:focus{outline:none}
+.ap-items li:focus-visible,.ap-items li[data-nav-target]:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+
+/* Readiness (active plans): recorded prerequisites only, read-only */
+.ap-readiness{padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
+.ap-readiness .ap-note:empty{display:none}
+.ap-ready-group{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ap-ready-group+.ap-ready-group{border-top:1px solid var(--oc-border);padding-top:8px}
+.ap-ready-sub{margin-top:4px;padding-left:10px;border-left:2px dashed color-mix(in srgb,var(--oc-muted) 60%,transparent)}
+.ap-ready-title{margin:0;font-size:12px;font-weight:600}
+.ap-ready-list{display:flex;flex-direction:column;gap:8px}
+.ap-ready-entry{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ap-ready-head{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;align-items:start}
+.ap-ready-head .ap-ready-link{font-size:13px;font-weight:500;color:var(--oc-fg);text-align:left;line-height:1.4}
+.ap-ready-link{overflow-wrap:anywhere;text-align:left;text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 35%,transparent);text-underline-offset:2px}
+.ap-ready-meta,.ap-ready-deps,.ap-ready-entry>p{margin-left:27px}
+.ap-ready-meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:11.5px;color:var(--oc-muted);min-width:0}
+.ap-ready-meta>*{min-width:0;overflow-wrap:anywhere}
+.ap-ready-who b{font-weight:500;color:var(--oc-fg)}
+/* A session link is softer than a recorded assignment: muted name, never the assignee styling */
+.ap-ready-links{display:inline-flex;flex-direction:column;gap:2px}
+.ap-ready-links .ap-ready-who b{color:inherit}
+.ap-ready-none{font-size:11.5px;color:var(--oc-muted)}
+.ap-ready-deps{display:flex;flex-direction:column;gap:2px;font-size:11.5px}
+.ap-ready-dep{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;min-width:0}
+.ap-ready-dep .ap-glyph{width:12px;height:12px;font-size:8px;align-self:center;margin-top:0}
+.ap-ready-ref{overflow-wrap:anywhere;font-family:var(--oc-mono);font-size:11px}
+span.ap-ready-ref{font-family:inherit;font-size:inherit}
 
 /* Status glyph: shape + colour + hidden text, never colour alone */
 .ap-glyph{width:16px;height:16px;margin-top:1px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;line-height:1;flex:none}

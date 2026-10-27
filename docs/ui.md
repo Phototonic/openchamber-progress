@@ -23,6 +23,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | --- | --- |
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy. |
+| `readiness.ts` | Pure task-readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
 | `source.ts` | Paged reads through the host proxy (rules under v2 mapping below). Classifies fixed error codes into plain states. |
 | `live.ts` | SDK workspace enrichment: projects plus bounded worktree discovery and selected session streams. Shared project membership, coverage, live-state labels, navigation gating (`canOpen`), and `restart()` after a context change. |
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
@@ -48,7 +49,9 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   - This is the history board, independent of host-selected session. Host A/B/null updates do not narrow current/archived lists or reset its explicit filters. The host may destroy the frame during navigation; reopening starts the page's ordinary defaults, not an implicit host-session filter.
 - **Detail** (`/v1/plan`) loads on demand for the shown plan only.
   - Items and contributions page with one cursor: each nested `nextCursor` is passed back verbatim, and reading stops when both are null.
-  - If `plan.revision` changes between pages, the read restarts.
+  - If `plan.revision` changes between pages, the read restarts (bounded).
+  - Every page must match the first page's store, source binding and requested plan; a mixed page is a refused read (unreadable reply), never joined into one detail, even at the same revision. A failed continuation or page-cap exhaustion is an error, not a partial detail.
+  - A present `dependencies` value must be an array of nonempty strings; anything else refuses the reply instead of reading as "none recorded". An omitted list stays valid.
   - Contributions use `itemIds[]` and never change counts. Relays show "Reported by <reporter> for <child>".
 - **Optional cleanup.** `health.planCleanup === 1` enables actions; absent/unknown hides them and the page explains that cleanup is unavailable. Optional plan `cleanup` is validated separately from progress revisions. Normal/archived list modes never share a scope-cache key; an older service is not asked an unsupported archive query and never establishes an empty archive.
 - **Document** (`/v1/document`) loads on demand, when the disclosure opens or the Document tab is shown.
@@ -75,10 +78,11 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   1. plan title, location, "Updated …"
   2. large done/total and segmented bar (done / in progress / blocked)
   3. "Now" callout
-  4. task hierarchy (groups collapsible, with their own counts)
-  5. sessions with live state and verified "Open session"
-  6. collapsed plan document
-  7. collapsed Details
+  4. Readiness (active plans only; see Task readiness)
+  5. task hierarchy (groups collapsible, with their own counts)
+  6. sessions with live state and verified "Open session"
+  7. collapsed plan document
+  8. collapsed Details
 - Unconfigured service: the setup flow in compact form. After install, a reload notice.
 
 ![Selected session's reported plan in the rail (synthetic example)](images/session-selected.png)
@@ -96,8 +100,31 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 **Fullscreen page (`ui/page`).**
 - Project → worktree → session filters; a grouped keyboard listbox (live/lifecycle/"Other setup" badge, done/total).
-- Detail tabs: Progress / Document / History. A coverage note covers missing live state, other-source plans and the subscription cap.
+- Detail tabs: Progress / Document / History. The Progress tab is the same shared plan detail as the rail, including Readiness. A coverage note covers missing live state, other-source plans and the subscription cap.
 - Footer zone: collapsed **Setup**, then collapsed **Details**.
+
+## Task readiness
+
+A read-only section in the shared plan detail (rail and the board's Progress tab), between the "Now" callout and the task hierarchy, for **active** plans only. It says which recorded tasks are ready to start, waiting on recorded prerequisites, or explicitly blocked. It is not permission to start, proof that every real-world prerequisite is known, or a completion claim. Finished, cancelled and failed plans, Work Status, board list rows and the Document/History tabs have no readiness. There is no cross-plan readiness.
+- **Input.** The selected plan plus its complete detail at the same plan key and revision (`readiness.ts`), derived on each paint; no extra request, cache or polling. Only declared direct prerequisites (`dependencies`, intra-plan item IDs) count; nothing is inferred from activity, age, ancestry, titles or directories, and a done task is not re-judged from its own prerequisites.
+- **Precedence** (first match wins):
+  1. plan not active → no section; detail loading/failed/for another revision → no list;
+  2. duplicate item IDs, a self-prerequisite or a prerequisite cycle → "Readiness is unavailable for this report", with the tasks still shown as reported (no repair or cycle breaking);
+  3. groups, and working/done/skipped tasks → never listed (still valid navigation targets);
+  4. reported `blocked` → **Blocked**, even with every prerequisite done or none recorded; it is never cleared automatically;
+  5. a pending task with any skipped prerequisite → **Waiting — skipped prerequisite**, a distinct subgroup of Waiting. A skipped prerequisite never counts as done; the entry still lists every other reason and appears once;
+  6. any other prerequisite not explicitly done, unavailable or a group → **Waiting on prerequisites**;
+  7. otherwise, including an empty or omitted list → **Ready to start**.
+- **Explanations.** Every recorded prerequisite is listed in recorded order with its title and reported status, done ones included, and a task prerequisite is a button. An ID with no item shows the recorded reference and "Prerequisite task unavailable" (no title, no link) and keeps its dependant from being ready; a group reference says it can't count as done. Each entry names its parent group ("In …"); an unresolvable parent reads "Parent group unavailable".
+- **Honest copy.** The section always says "Based on recorded prerequisites only. Other prerequisites may not be recorded." An omitted or empty list is "No prerequisites recorded", never "none exist". An empty ready group is "No tasks are ready from the recorded information." Empty, all-skipped and all-done active plans make no completion claim. While any detail page is pending the section says readiness appears once every task has loaded (no prefix is classified, no "nothing ready" flash); a failed read says readiness is unavailable next to the existing Tasks error and Try again. Data kept under the stale banner is qualified "Last reported readiness. It may be out of date and isn’t a current recommendation."; a newer revision or lifecycle never reuses the older result.
+- **Attribution.** Assignment comes only from the item's recorded `assigneeSessionId` (no link, owner, reporter or selected-session fallback). Three cases:
+  - recorded assignee → "Assigned to …" (below);
+  - no assignee, but the plan's session links name the task → one softer line per linked session, "Linked to <session> · <live state> (no recorded assignment)", for example "Linked to Review session · Idle (no recorded assignment)". This matches the task list's link-based label, but a link is never an assignee: it is never "Assigned to …", never "Assigned to the selected session" (even when the linked session is the selected one), and never affects grouping or counts. The name and live state follow the same rules as assignees: a session this window doesn't list keeps the plain "Session …" label with "Not open in this window" or "Live state unavailable", and a plan from another or unverified source gets "· from another OpenCode setup" with no borrowed title;
+  - neither → "No assignee recorded".
+
+  "Assigned to the selected session" needs the same recorded session as the surface's comparison session **and** a plan from the verified bound source: the rail compares with its selected session; the board only with an explicit session filter, otherwise labels stay neutral ("Assigned to …" with the live state, such as "Not open in this window"). Host A/B/null changes never filter the board. A plan from another or unverified source never borrows this host's session titles ("Assigned to Session … · from another OpenCode setup"). Reports stay separate from assignment: "Reported directly by …" and "Reported by <reporter> for <child>"; repeated contributions give one line each and never add entries, tasks or counts.
+- **Navigation.** Task titles ("Show task: …") and prerequisites ("Show prerequisite: …") are native buttons. Activation looks only inside the plan article that holds the button (same plan ID, source and revision), opens collapsed ancestor groups, focuses the canonical row `item-<id>` (`tabindex=-1`, focus ring) and scrolls it into view instantly, so reduced motion needs nothing extra. No request, route, deep link or session action; "Open session" keeps its existing gate. A button from a replaced paint does nothing; a missing target in the current article shows a local notice. Refreshes never move focus. Focus that survives a repaint returns only to the same plan (source + ID), never a same-ID item of another plan.
+- **Limits.** A missing `dependencies` field and an explicit empty list cannot distinguish "none" from "not recorded". Readiness reflects the last read, not live state.
 
 ## Finished-plan cleanup
 
@@ -244,6 +271,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - Returning to a remembered scope paints it immediately, with no spinner, and revalidates quietly; the view repaints only if the reply differs. If the service is failing, the remembered data shows under the out-of-date banner with its own time.
   - An unseen scope still shows loading, never another scope's data.
    - Plan detail, document and history stay cached by plan key plus revision or capture. Live session chips always come from the current live subscription, never from memory.
+   - A failed detail read stays a stable error and is retried once per successful list refresh (the existing poll, or Try again), or at once for a new revision; never on every repaint.
    - A changed scope clears the previous read/error before adopting its own recent entry. Retired generations cannot issue continuation requests or use old document/history/cleanup callbacks; draft has no plan-read authority. Rail preference restores and picker callbacks also carry selection generations.
   - The rail also remembers the chosen plan for up to 8 recent sessions, so a revisit paints its own selection at once (host storage stays the durable copy and is re-read).
   - **Limit:** a frame the host rebuilds (for example, the per-project rail open state swapping rail and Work Status on a project switch) starts cold.
@@ -257,7 +285,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - **Restarted on every session/directory notification.** The host's PluginPane clears a frame's workspace subscriptions without telling the guest when its effect re-runs (observed on session navigation), so the guest re-subscribes.
 - **Repaint.** Only when data, live state, context or UI state changed.
    - A background repaint waits while a kit popup is open, but a context change paints immediately so retired content cannot remain actionable.
-  - Focus, scroll, open disclosures and typed setup fields survive a repaint.
+  - Focus, scroll, open disclosures and typed setup fields survive a repaint. Focus inside a plan article is restored only into the same plan (`plan-<id>` + `data-source`).
   - Setup typing does not repaint.
 - **UI updates.** Functional `updateUi` merges onto the latest UI state, so writes after an await are safe.
 
@@ -274,6 +302,11 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - `item-<itemId>` and `group-<itemId>` (`data-status`)
   - `item-toggle-<id>` and `group-toggle-<id>`
   - `relay-<itemId>`
+- **Readiness** (inside `plan-<id>`, active plans only; never repeats canonical `item-*` IDs):
+  - `readiness` (`data-state` = `ready` | `loading` | `unavailable` | `invalid`; `data-reason` = `duplicate-id` | `self-dependency` | `cycle`; `data-stale="true"` under the stale banner), `readiness-notice`
+  - groups `readiness-ready`, `readiness-waiting` (contains `readiness-skipped`), `readiness-blocked`, each with `data-count`
+  - `readiness-entry-<itemId>` (`data-source`, `data-plan`, `data-item`, `data-group`, `data-assignment` = `none` | `selected` | `other`), `readiness-assignee-<itemId>`, `readiness-link-<itemId>` (link-only tasks; the entry carries `data-linked` with the session IDs, each line `data-session`), report lines `[data-report="direct" | "parent-relay"]`
+  - prerequisite rows `[data-dep="<id>"]` with `data-dep-state` = an item status | `not-task` | `unresolved`; buttons named "Show task: …" / "Show prerequisite: …"
 - **Work and sessions:**
   - `current-work`
   - `contributors`, `contributor-<sessionId>` (`data-role` main/child)
@@ -316,6 +349,8 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - blue elapsed labels (muted for an unknown start)
   - reported-progress motion: the gate (closed, stale/failed, capture off, nothing working); CSS contract (motion only under `data-motion`, `transform`/`opacity`-only keyframes, reduced motion and hidden also stopping pseudo-elements, readable text token)
 - **`fixtures.ts`:** v2 wire fixtures (P1/P2/P3 plus an other-source plan, setup replies).
+- **`ready-tasks.test.ts` / `ready-tasks-fixtures.ts`:** readiness precedence over the synthetic `P-ready` plan and its variants (status changes, closed lifecycles, omitted/empty lists, unresolved and group references, malformed lists, duplicate IDs, self-edge, cycles, 1000-task chain), unchanged inputs and counts, recorded-only assignment, link-only context (assignee / link only / neither) and deduplicated reports; detail read boundary (held 20 + 1 page, unequal item/contribution cursors, bounded revision restarts, mixed store/binding/plan pages, page cap, 1000 tasks at page size 20); and the actual controller with held continuations, context and store changes, bounded detail-error retry and the null rail session.
+- **`ready-tasks-fixture.ts` / `ready-tasks-qa.ts`:** synthetic SDK host (rail, Work Status and page frames) plus a self-contained CDP driver. Run `node --experimental-strip-types tests/browser/ready-tasks-qa.ts --artifacts <dir>`: it starts the fixture on a free loopback port and an already installed headless Chromium with a fresh disposable profile (never downloads one or attaches to another browser), emulates reduced motion before navigation, drives real mouse/keyboard input at 280/360 px rail and 360/1100 px board widths in light and dark, and stops only what it started. It writes `results.json`, `race-results.json` and sanitized screenshots. Current-bundle UI proof only, not native-host, relay, Windows or real-service proof.
 - **`worktree.test.ts`:** external-worktree membership with Home configured and distinct SDK/repository IDs; shared grouping/filter/subscription resolution; pending/error/ambiguous coverage, membership changes/removal, restart, late release and the total subscription ceiling.
 - **`seed-real.ts`:** seeds a real store through the production write path without a model.
   - Loads the **installed** companion (hash-checking loader → release payload) and calls its registered `agent_progress_report` tool.

@@ -91,7 +91,7 @@ startView<Ui>({
       if (plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId) {
         root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${sessionLabel(plan.ownerSessionId, env.live)}.`), 'helping-note'));
       }
-      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure' }), cleanupBlock(vc, plan));
+      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null }), cleanupBlock(vc, plan));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));
