@@ -143,6 +143,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   const versions = { data: 0, live: 0, ui: 0, ctx: 0 };
   let paintedKey = '';
   let paintedUi = -1;
+  let contextGeneration = 0;
+  let paintedContextGeneration = -1;
   let liveSig = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
   let labelTimer: ReturnType<typeof setTimeout> | null = null;
@@ -193,6 +195,12 @@ export function startView<U>(spec: ViewSpec<U>) {
   });
 
   const currentScope = () => spec.scope({ session, directory }, ui);
+  // The proxy cannot abort an already sent request. Retired reads must also stop
+  // issuing continuation pages after a held health/detail/document reply arrives.
+  const guardedHost = (current: () => boolean) => ({
+    serviceRequest: (request: Parameters<HostClient['serviceRequest']>[0]) =>
+      !disposed && current() ? host.serviceRequest(request) : Promise.reject(new Error('Retired read')),
+  });
   /** Latest context wins: retire the read only when the list scope really changed. */
   function scopeMoved() {
     const key = scopeKey(currentScope());
@@ -200,6 +208,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     requestedScope = key;
     gate.retire();
     retireParts();
+    read = null; readScope = ''; readSig = ''; failure = null; lastGoodAt = null;
     adoptScope(key);
     return true;
   }
@@ -211,7 +220,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   const gate = new RefreshGate(async (generation) => {
     const scope = currentScope();
     const key = scopeKey(scope);
-    const result = await readList(host, scope ?? {}, scope ? undefined : 1);
+    const result = await readList(guardedHost(() => generation === gate.current), scope);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (result.ok && !result.health.ready && read) {
       // The service no longer finds its setup, but this frame showed data from it: keep that
@@ -228,7 +237,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const nextHealth = result.health;
       let authorityChanged = false;
       if (health && health.ready !== nextHealth.ready) { setup = null; loadSetup(); }
-      const nextRead = result.read ? { ...result.read, plans: scope ? result.read.plans : [] } : null;
+      const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
         if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; live.restart(); }
@@ -316,7 +325,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const generation = cacheGeneration;
       detailQueue = detailQueue.then(async () => {
         if (disposed || id !== identity || generation !== cacheGeneration) return;
-        const result = await readDetail(host, p);
+        const result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
         if (disposed || id !== identity || generation !== cacheGeneration) return;
         details.set(p.key, result.ok ? { revision: result.detail.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, value: { state: 'error', failure: result.failure } });
         bump();
@@ -393,6 +402,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   function context(): ViewContext<U> {
     const actionContext = cleanupContext();
     const confirmation = cleanup.target;
+    const partGeneration = cacheGeneration;
+    const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const env: Env = {
       locale: ctx!.locale, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
@@ -409,13 +420,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       detail: (p) => { const c = details.get(p.key); return c ? c.value : null; },
       document: (p) => documents.get(docKey(p)) ?? null,
       requestDocument: (p) => {
+        if (!canReadPart()) return;
         const k = docKey(p);
         const existing = documents.get(k);
         if (existing && existing.state !== 'error') return;
         documents.set(k, { state: 'loading' });
         const id = identity;
         const generation = cacheGeneration;
-        void readDocument(host, p).then((r) => {
+        void readDocument(guardedHost(() => generation === cacheGeneration), p).then((r) => {
           if (disposed || id !== identity || generation !== cacheGeneration) return;
           documents.set(k, r.ok ? { state: 'ready', value: r.body } : { state: 'error', failure: r.failure });
           bump();
@@ -424,13 +436,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       history: (p) => histories.get(`${p.key}@${p.revision}`) ?? null,
       requestHistory: (p) => {
+        if (!canReadPart()) return;
         const k = `${p.key}@${p.revision}`;
         const existing = histories.get(k);
         if (existing && existing.state !== 'error') return;
         histories.set(k, { state: 'loading' });
         const id = identity;
         const generation = cacheGeneration;
-        void readHistory(host, p).then((r) => {
+        void readHistory(guardedHost(() => generation === cacheGeneration), p).then((r) => {
           if (disposed || id !== identity || generation !== cacheGeneration) return;
           histories.set(k, r.ok ? { state: 'ready', value: { entries: r.entries, truncated: r.truncated } } : { state: 'error', failure: r.failure });
           bump();
@@ -466,13 +479,15 @@ export function startView<U>(spec: ViewSpec<U>) {
     const key = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
     if (key === paintedKey) return;
     // A background change must not close a picker the user has open; it paints once the
-    // popup closes. A change the user made (UI state) paints immediately.
-    if (versions.ui === paintedUi && mount!.querySelector('[aria-expanded="true"]')) {
+    // popup closes, including same-session metadata. Navigation and authority/UI
+    // changes paint immediately; versions.ctx also includes non-navigation updates.
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && mount!.querySelector('[aria-expanded="true"]')) {
       setTimeout(schedule, 300);
       return;
     }
     paintedKey = key;
     paintedUi = versions.ui;
+    paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
     const vc = context();
 
@@ -485,7 +500,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const root = el('main', 'ap');
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
-    root.setAttribute('aria-busy', String(!vc.read && !failure && !(health && !health.ready)));
+    root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
     spec.paint(root, vc);
     for (const d of root.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) {
       const was = open.get(d.dataset.testid!);
@@ -519,17 +534,26 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   const contextChanged = () => {
+    contextGeneration++;
     versions.ctx++;
     cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
     live.restart();
-    // The host announces one switch in steps (session, then directory). Only a step that moves the
-    // list scope retires the read; the others keep the read already in flight.
+    // A full snapshot or incremental event can move context. Duplicate follow-up events
+    // are idempotent; directory-only enrichment does not change a session list scope.
     const moved = scopeMoved();
     // While not set up, the read-only setup reply (folder hints) is refreshed on navigation; the
     // form keeps every field the user touched.
     if (setup?.state === 'ready' && !setup.value.configured) loadSetup();
     schedule();
     if (ctx) { spec.onContext?.(context()); if (moved || failure) retry(); }
+  };
+
+  const applyContext = (nextSession: SessionSnapshot | null, nextDirectory: string | null) => {
+    const moved = nextSession?.id !== session?.id || nextDirectory !== directory;
+    if (nextSession?.title !== session?.title || nextSession?.busy !== session?.busy) versions.ctx++;
+    session = nextSession;
+    directory = nextDirectory;
+    if (moved) contextChanged(); else schedule();
   };
 
   host.onReady((next) => {
@@ -543,32 +567,35 @@ export function startView<U>(spec: ViewSpec<U>) {
     const accountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
     ctx = next;
+    // Ready is authoritative, not just a theme notification. Adopt both fields before
+    // any refresh/onContext callback; later directory/session events repeat this state.
+    const nextSession = next.session ?? null;
+    const nextDirectory = next.directory ?? null;
     if (accountChanged) {
+      contextGeneration++;
       gate.retire(); resetCaches(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
+      failure = null; lastGoodAt = null;
       cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
+      session = nextSession; directory = nextDirectory;
+      requestedScope = scopeKey(currentScope());
       versions.ctx++; live.restart(); spec.onContext?.(context()); gate.request();
     }
     if (first) {
-      session = next.session;
-      directory = next.directory;
+      session = nextSession;
+      directory = nextDirectory;
       live.start();
       requestedScope = scopeKey(currentScope());
       spec.onContext?.(context());
       gate.request();
       checkMain();
-    }
+    } else if (!accountChanged) applyContext(nextSession, nextDirectory);
     schedule();
   });
   host.onSession((next) => {
-    const changed = next?.id !== session?.id;
-    if (changed || next?.title !== session?.title || next?.busy !== session?.busy) versions.ctx++;
-    session = next;
-    if (changed) contextChanged(); else schedule();
+    applyContext(next ?? null, directory);
   });
   host.onDirectory((next) => {
-    const changed = next !== directory;
-    directory = next;
-    if (changed) contextChanged();
+    applyContext(session, next ?? null);
   });
 
   // Motion stops while hidden or disposed (style.ts `[data-ap-hidden]`) and resumes on the shared phase.

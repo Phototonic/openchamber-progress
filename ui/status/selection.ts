@@ -17,9 +17,9 @@ export class StatusSelection {
   private generation = 0;
   constructor(limit = 8) { this.choices = new RecentMemory(limit); }
 
-  enter(authority: string, session: string | null, directory: string | null) {
+  enter(authority: string, session: string | null, _directory: string | null) {
     if (authority !== this.authority) { this.choices.clear(); this.authority = authority; }
-    const context = JSON.stringify([authority, session, directory]);
+    const context = JSON.stringify([authority, session]);
     if (context !== this.context) { this.context = context; this.generation++; }
     return this.generation;
   }

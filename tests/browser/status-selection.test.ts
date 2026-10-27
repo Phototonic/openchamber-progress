@@ -81,7 +81,7 @@ test('removed manual choice becomes Automatic and cannot resurrect when the plan
   assert.equal(selection.resolve(scoped([acceptance, execution])).plan?.key, execution.key);
 });
 
-test('choices are scoped by session/directory and cleared on authority change; retired picker cannot select', () => {
+test('choices follow session across moves and clear on authority change; retired picker cannot select', () => {
   const selection = new StatusSelection();
   const original = selection.enter('store|source|true', S.M, execution.directory);
   selection.choose(original, acceptance.key);
@@ -89,7 +89,7 @@ test('choices are scoped by session/directory and cleared on authority change; r
   assert.equal(selection.resolve(scoped([execution, acceptance])).selected, null);
   assert.equal(selection.choose(original, acceptance.key), false);
   selection.enter('store|source|true', S.M, '/fixture/Beta');
-  assert.equal(selection.resolve(scoped([execution, acceptance])).selected, null);
+  assert.equal(selection.resolve(scoped([execution, acceptance])).selected, acceptance.key);
   selection.enter('store|source|true', S.M, execution.directory);
   assert.equal(selection.resolve(scoped([execution, acceptance])).selected, acceptance.key);
   selection.enter('store|source|false', S.M, execution.directory);
@@ -103,9 +103,9 @@ test('actual Work Status details and first project enrichment follow a manual fo
   const spec = statusSpec();
   const projects = ['a', 'b', 'c', 'd'].map((id) => ({ id, name: id, directory: `/synthetic/${id}` }));
   const plans = projects.map((p, i) => ({ ...acceptance, key: `src-local/${p.id}`, id: p.id, directory: p.directory, reportedAt: at(i) }));
-  const vc = { ctx: { connection: { account: 'synthetic' } }, identity: 'authority', read: { plans }, session: null, directory: '/synthetic', live: { ...EMPTY_LIVE, projectsState: 'ready', projects }, ui: spec.initialUi() } as ViewContext<Ui>;
+  const vc = { ctx: { connection: { account: 'synthetic' } }, identity: 'authority', read: { plans }, session: { id: S.M }, directory: '/synthetic', live: { ...EMPTY_LIVE, projectsState: 'ready', projects }, ui: spec.initialUi() } as ViewContext<Ui>;
   spec.onContext!(vc);
-  const generation = vc.ui.selection.enter(JSON.stringify(['synthetic', 'authority']), null, vc.directory);
+  const generation = vc.ui.selection.enter(JSON.stringify(['synthetic', 'authority']), S.M, vc.directory);
   vc.ui.selection.choose(generation, plans[3].key);
   assert.equal(spec.wantDetails(vc)[0].key, plans[3].key);
   assert.equal(spec.wantProjects(vc)[0], projects[3].id);

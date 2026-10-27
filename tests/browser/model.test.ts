@@ -69,7 +69,7 @@ test('participants: links + assignees + relays; relay keeps reporter agent; noth
 
 test('scope: server does session/directory filtering; UI orders owned first and never guesses', () => {
   assert.deepEqual(contextListScope('s1', '/d'), { session: 's1' });
-  assert.deepEqual(contextListScope(null, '/d'), { directory: '/d' });
+  assert.equal(contextListScope(null, '/d'), null);
   assert.equal(contextListScope(null, null), null);
   const r = list([P1, P2, summary('H', [], { sessionId: 'someone-else', reportedAt: new Date(NOW).toISOString() })]).data;
   const s = contextScope(r, S.M, null);
