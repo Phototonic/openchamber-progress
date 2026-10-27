@@ -116,6 +116,8 @@ try {
   const groups = (s: string) => guest<Record<string, string[]>>(s, `const out={ready:[],waiting:[],skipped:[],blocked:[]};for(const e of d.querySelectorAll('${rd} [data-testid^="readiness-entry-"]'))out[e.dataset.group].push(e.dataset.item);return out`);
   const counts = (s: string) => guest<string[]>(s, `const n=d.querySelector('article.ap-plan [data-testid="counts"]');return [n.dataset.done,n.dataset.total,n.dataset.remaining,n.dataset.skipped]`);
   const requests = (filter = 'true') => evaluate<any[]>(`qa.requests.filter(q=>${filter})`);
+  /** Session chips under the linked (W) and assigned (K) tasks in the canonical task list. */
+  const taskChips = (s: string) => guest<{ name: string; state: string; nameClipped: boolean; stateClipped: boolean; inside: boolean; oneLine: boolean }[]>(s, `return ['W','K'].map(id=>{const c=d.querySelector('[data-testid="item-'+id+'"] .ap-item-sub .ap-chip'),b=c.querySelector('b'),st=c.querySelector('.ap-chip-state'),r=c.getBoundingClientRect();return {name:b.textContent,state:st.textContent,nameClipped:b.scrollWidth>b.clientWidth+1,stateClipped:st.scrollWidth>st.clientWidth+1,inside:r.right<=d.documentElement.clientWidth+0.5,oneLine:Math.abs(b.getBoundingClientRect().top-st.getBoundingClientRect().top)<1}})`);
   const FIXTURE_GROUPS = { ready: ['R', 'I'], waiting: ['W'], skipped: ['K'], blocked: ['B'] };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -195,6 +197,10 @@ try {
   check('Q4:board-counts-unchanged', same(await counts('page'), ['1', '7', '6', '1']));
   check('Q5:board-no-filter-neutral-assignee', await guest('page', `const r=d.querySelector('[data-testid="readiness-entry-R"]');return r.dataset.assignment==='other'&&!d.querySelector('${rd}').textContent.includes('selected session')`));
   await shot('page', 'board-dark');
+  // Wide layout: each task-list chip keeps name and state on one line.
+  await shot('page', 'task-chips-wide', '[data-testid="item-W"]');
+  const wideChips = await taskChips('page');
+  check('Q5:wide-task-chip-one-line', wideChips.length === 2 && wideChips.every((x) => x.oneLine && !x.nameClipped), wideChips);
   // Only the shown plan's detail is read: the default selection before the click, then P-ready.
   const all = await requests();
   const detailKey = (q: any) => `plan-${q.query.plan}|${q.query.source}`;
@@ -228,6 +234,11 @@ try {
   // Link only at 280px: full wrapped text, nothing clipped or ellipsized.
   const narrowLink = await guest('panel', `const n=d.querySelector('[data-testid="readiness-link-W"]'),line=n.querySelector('.ap-ready-who'),r=n.getBoundingClientRect(),cs=getComputedStyle(line);return {t:n.textContent,right:r.right<=d.documentElement.clientWidth+0.5,lines:Math.round(r.height/parseFloat(cs.lineHeight)),clipped:line.scrollWidth>line.clientWidth+1||cs.textOverflow==='ellipsis'||n.querySelector('b').scrollWidth>n.querySelector('b').clientWidth+1}`);
   check('Q5:narrow-link-only-wraps', narrowLink.t === 'Linked to Review session · Idle (no recorded assignment)' && narrowLink.right && narrowLink.lines > 1 && !narrowLink.clipped, narrowLink);
+  // Task-list session chips at 280px: the name is never ellipsized; the state may move below it.
+  await shot('panel', 'task-chips-narrow', '[data-testid="item-W"]');
+  const narrowChips = await taskChips('panel');
+  check('Q5:narrow-task-chip-name-readable', same(narrowChips.map((x) => x.name + '|' + x.state), ['Review session|Idle', 'Session C|Not open in this window'])
+    && narrowChips.every((x) => !x.nameClipped && !x.stateClipped && x.inside), narrowChips);
   // A link to a session this window can't open gets no guessed name, and is never "the selected session",
   // even when that session is the rail's selected session.
   await evaluate(`qa.update('P-ready',p=>{p.links=[{sessionId:'C',itemIds:['K']},{sessionId:'C',itemIds:['W']}]});true`);
