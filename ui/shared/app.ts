@@ -113,13 +113,19 @@ export interface ViewSpec<U> {
   forgetPlans?: (keys: Set<string>, ui: U, vc: ViewContext<U>) => Partial<U>;
 }
 
+const FOCUSABLE = 'button,summary,[tabindex],a,input,select,textarea';
+/** Plan identity of a plan article: plan IDs and item IDs repeat across sources and plans. */
+const planScope = (n: Element | null | undefined) => {
+  const article = n?.closest<HTMLElement>('article[data-testid^="plan-"]');
+  return article ? `${article.dataset.testid}|${article.dataset.source ?? ''}` : null;
+};
 const focusKey = (root: HTMLElement) => {
   const active = document.activeElement as HTMLElement | null;
   if (!active || !root.contains(active)) return null;
   const owner = active.closest<HTMLElement>('[data-testid]');
   if (!owner) return null;
-  const focusables = [...owner.querySelectorAll<HTMLElement>('button,summary,[tabindex],a,input,select,textarea')];
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active) };
+  const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: planScope(owner) };
 };
 
 const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : directoryKey(s.directory ?? '')}|a:${s.archived ?? 'exclude'}` : 'none');
@@ -155,7 +161,9 @@ export function startView<U>(spec: ViewSpec<U>) {
   let mainDueAt = 0;
   let disposed = false;
   let renderQueued = false;
-  const details = new Map<string, { revision: number; value: Loadable<PlanDetail> }>();
+  /** `listRead`: for a failed read, the list read it failed under; it is retried after a newer one. */
+  const details = new Map<string, { revision: number; value: Loadable<PlanDetail>; listRead?: number }>();
+  let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
   let setup: Loadable<SetupView> | null = null;
@@ -255,6 +263,9 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
       if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
+      // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
+      listReads++;
+      if ([...details.values()].some((d) => d.value.state === 'error')) versions.data++;
       // Only a complete, current-generation list read for a real scope is remembered.
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
       // Setup status (reload-required, capture off) is shown on every surface. A pending reload is
@@ -320,6 +331,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const cached = details.get(p.key);
       if (cached && cached.revision === p.revision && cached.value.state !== 'error') continue;
       if (cached && cached.value.state === 'loading') continue;
+      if (cached && cached.value.state === 'error' && cached.revision === p.revision && cached.listRead === listReads) continue;
       details.set(p.key, { revision: p.revision, value: { state: 'loading' } });
       const id = identity;
       const generation = cacheGeneration;
@@ -327,7 +339,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (disposed || id !== identity || generation !== cacheGeneration) return;
         const result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
         if (disposed || id !== identity || generation !== cacheGeneration) return;
-        details.set(p.key, result.ok ? { revision: result.detail.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, value: { state: 'error', failure: result.failure } });
+        details.set(p.key, result.ok ? { revision: result.detail.revision, value: { state: 'ready', value: result.detail } } : { revision: p.revision, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
     }
@@ -518,8 +530,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     if (document.scrollingElement) document.scrollingElement.scrollTop = pageScroll;
     if (focus) {
-      const owner = root.querySelector<HTMLElement>(`[data-testid="${CSS_ESCAPE(focus.id)}"]`);
-      const target = focus.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>('button,summary,[tabindex],a,input,select,textarea')[focus.index];
+      // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
+      const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(focus.id)}"]`)];
+      const owner = candidates.find((n) => planScope(n) === focus.plan);
+      const target = focus.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[focus.index];
       target?.focus({ preventScroll: true });
     }
     if (cleanupFocus) {

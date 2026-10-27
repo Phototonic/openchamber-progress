@@ -2,7 +2,8 @@
 import { mountBadge, mountBanner, mountButton, mountEmpty, mountSpinner, type Tone } from '@openchamber/sdk/ui';
 import type { Loadable } from './app.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, relativeAge } from './format.ts';
-import { canOpen, coverageFor, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
+import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
+import { assignment, readiness, type InvalidReason, type Prerequisite, type ReadinessEntry, type ReadinessGroup } from './readiness.ts';
 import {
   blockedWork, currentWork, DOCUMENT_STATE_TEXT, elapsedAt, itemTree, LIFECYCLE_LABEL, participants, showsLiveness, STATUS_LABEL, subtreeCounts, summarize, summaryText,
   type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type PlanDetail, type PlanSummary, type PlanView, type StoreRead,
@@ -228,6 +229,8 @@ function itemRow(node: ItemNode, plan: PlanView, detail: PlanDetail, env: Env): 
   const { item } = node;
   const li = testid(el('li'), `${item.kind === 'group' ? 'group' : 'item'}-${item.id}`);
   li.dataset.status = item.status;
+  // A named, programmatically focusable destination for in-detail task navigation (not a tab stop).
+  if (item.kind === 'task') li.tabIndex = -1;
   if (item.kind === 'group' || node.children.length) {
     const details = el('details', 'ap-group');
     details.open = true;
@@ -354,13 +357,160 @@ export function documentBlock(plan: PlanView, env: Env, mode: 'disclosure' | 'in
   return wrap;
 }
 
+/**
+ * Local in-detail navigation: reveal and focus the canonical task row of the plan article that
+ * holds the control. A control from a replaced paint (detached) or another plan, source or
+ * revision does nothing. No route, request or session action.
+ */
+function showTask(control: HTMLElement, plan: PlanView, itemId: string) {
+  const article = control.closest<HTMLElement>('article.ap-plan');
+  if (!article?.isConnected || article.dataset.testid !== `plan-${plan.id}` || article.dataset.source !== plan.sourceId || article.dataset.revision !== String(plan.revision)) return;
+  const target = [...article.querySelectorAll<HTMLElement>('[data-testid^="item-"]')].find((n) => n.tagName === 'LI' && n.dataset.testid === `item-${itemId}`);
+  const notice = article.querySelector<HTMLElement>('[data-testid="readiness-notice"]');
+  if (!target) { if (notice) notice.textContent = 'That task is no longer shown in this plan.'; return; }
+  if (notice) notice.textContent = '';
+  for (let d = target.parentElement?.closest('details'); d && article.contains(d); d = d.parentElement?.closest('details')) if (!d.open) d.open = true;
+  target.dataset.navTarget = '';
+  target.addEventListener('blur', () => { delete target.dataset.navTarget; }, { once: true });
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'center', behavior: 'instant' });
+}
+
+function navLink(plan: PlanView, itemId: string, text: string, name: string) {
+  const b = el('button', 'ap-link ap-ready-link', text);
+  b.type = 'button';
+  b.setAttribute('aria-label', name);
+  b.dataset.target = itemId;
+  b.addEventListener('click', () => showTask(b, plan, itemId));
+  return b;
+}
+
+/** Status glyph whose meaning is spoken by the adjacent status text instead. */
+const quietGlyph = (status: ItemView['status']) => { const g = glyph(status); g.removeAttribute('role'); g.removeAttribute('aria-label'); g.setAttribute('aria-hidden', 'true'); return g; };
+
+function prerequisiteRow(plan: PlanView, p: Prerequisite) {
+  const li = el('li', 'ap-ready-dep');
+  li.dataset.dep = p.id;
+  li.dataset.depState = p.kind === 'task' ? p.status : p.kind;
+  if (p.kind === 'task') li.append(quietGlyph(p.status), navLink(plan, p.id, p.title, `Show prerequisite: ${p.title}`), el('span', 'ap-muted', STATUS_LABEL[p.status]));
+  else if (p.kind === 'not-task') li.append(el('span', 'ap-ready-ref', p.title), el('span', 'ap-doc-warn', 'A group, not a task: it can’t count as done'));
+  else li.append(el('code', 'ap-ready-ref', p.id), el('span', 'ap-doc-warn', 'Prerequisite task unavailable'));
+  return li;
+}
+
+function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compareSession: string | null) {
+  const { item } = entry;
+  const li = testid(el('li', 'ap-ready-entry'), `readiness-entry-${item.id}`);
+  Object.assign(li.dataset, { source: plan.sourceId, plan: plan.id, item: item.id, group: entry.group });
+  const head = el('div', 'ap-ready-head');
+  head.append(glyph(item.status), navLink(plan, item.id, item.title, `Show task: ${item.title}`));
+  li.append(head);
+  // Labels from the current host only for the verified bound source; a foreign same-ID session
+  // must not borrow this host's titles.
+  const trusted = env.boundSource !== null && plan.sourceId === env.boundSource;
+  const label = (id: string) => sessionLabel(id, trusted ? env.live : EMPTY_LIVE);
+  const meta = el('div', 'ap-ready-meta');
+  if (entry.parent.kind === 'known') meta.append(el('span', '', `In ${entry.parent.title}`));
+  else if (entry.parent.kind === 'unknown') meta.append(el('span', '', 'Parent group unavailable'));
+  const who = assignment(entry, compareSession, plan.sourceId, env.boundSource);
+  li.dataset.assignment = who.kind;
+  if (who.kind === 'none') meta.append(el('span', '', 'No assignee recorded'));
+  else if (who.kind === 'selected') meta.append(testid(el('span', '', 'Assigned to the selected session'), `readiness-assignee-${item.id}`));
+  else {
+    // Plain wrapping text (no truncating chip): the name must stay readable at narrow widths.
+    const holder = testid(el('span', 'ap-ready-who'), `readiness-assignee-${item.id}`);
+    holder.append('Assigned to ', el('b', '', label(who.sessionId)), ` · ${trusted ? liveLabel(coverageFor(who.sessionId, plan.directory, env.live)).label : 'from another OpenCode setup'}`);
+    meta.append(holder);
+  }
+  for (const r of entry.reports) {
+    const text = r.mode === 'parent-relay' ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
+    const span = el('span', '', text);
+    span.dataset.report = r.mode;
+    meta.append(span);
+  }
+  if (meta.childNodes.length) li.append(meta);
+  if (entry.recorded !== 'listed') li.append(el('p', 'ap-ready-none', 'No prerequisites recorded'));
+  else {
+    const deps = el('ul', 'ap-ready-deps');
+    deps.setAttribute('aria-label', `Prerequisites of ${item.title}`);
+    for (const p of entry.prerequisites) deps.append(prerequisiteRow(plan, p));
+    li.append(deps);
+  }
+  if (entry.incomplete) li.append(el('p', 'ap-doc-warn', 'A recorded prerequisite is unavailable, so this task can’t be shown as ready.'));
+  return li;
+}
+
+const READINESS_GROUPS: Record<ReadinessGroup, { title: string; note?: string }> = {
+  ready: { title: 'Ready to start' },
+  waiting: { title: 'Waiting on prerequisites' },
+  skipped: { title: 'Waiting — skipped prerequisite', note: 'A skipped prerequisite doesn’t count as done.' },
+  blocked: { title: 'Blocked', note: 'Reported as blocked. It stays blocked until an agent reports otherwise.' },
+};
+const INVALID_COPY: Record<InvalidReason, string> = {
+  'duplicate-id': 'two tasks share an ID',
+  'self-dependency': 'a task lists itself as a prerequisite',
+  cycle: 'some tasks list each other as prerequisites',
+};
+
+function readinessGroup(plan: PlanView, group: ReadinessGroup, entries: ReadinessEntry[], env: Env, compareSession: string | null, heading: 'h4' | 'h5' = 'h4') {
+  const box = testid(el('div', `ap-ready-group${heading === 'h5' ? ' ap-ready-sub' : ''}`), `readiness-${group}`);
+  box.dataset.count = String(entries.length);
+  const copy = READINESS_GROUPS[group];
+  box.append(el(heading, 'ap-ready-title', `${copy.title} · ${entries.length}`));
+  if (copy.note && entries.length) box.append(el('p', 'ap-note', copy.note));
+  if (!entries.length) { if (group === 'ready') box.append(el('p', 'ap-note', 'No tasks are ready from the recorded information.')); return box; }
+  const ul = el('ul', 'ap-ready-list');
+  for (const e of entries) ul.append(readinessEntry(plan, e, env, compareSession));
+  box.append(ul);
+  return box;
+}
+
+/**
+ * Read-only readiness of an active plan's tasks, from recorded prerequisites only. Closed plans
+ * get nothing; pending, failed or inconsistent detail never shows an empty or ready list.
+ */
+export function readinessBlock(plan: PlanView, detail: Loadable<PlanDetail> | null, env: Env, compareSession: string | null) {
+  const r = readiness(plan, detail);
+  if (r.state === 'closed') return null;
+  const section = testid(el('section', 'ap-section ap-readiness'), 'readiness');
+  section.dataset.state = r.state;
+  section.setAttribute('aria-label', 'Task readiness');
+  section.append(el('h3', 'ap-h', 'Readiness'));
+  if (r.state === 'loading') { section.append(el('p', 'ap-note', 'Readiness appears once every task has loaded.')); return section; }
+  if (r.state === 'unavailable') { section.append(el('p', 'ap-note', 'Readiness is unavailable because the tasks could not be loaded.')); return section; }
+  if (r.state === 'invalid') {
+    section.dataset.reason = r.reason;
+    section.append(el('p', 'ap-doc-warn', `Readiness is unavailable for this report: ${INVALID_COPY[r.reason]}. The tasks are shown below as reported.`));
+    return section;
+  }
+  section.append(el('p', 'ap-note', 'Based on recorded prerequisites only. Other prerequisites may not be recorded.'));
+  if (!env.view.fresh) { section.dataset.stale = 'true'; section.append(el('p', 'ap-doc-warn', 'Last reported readiness. It may be out of date and isn’t a current recommendation.')); }
+  if (r.incomplete) section.append(el('p', 'ap-doc-warn', 'Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.'));
+  const notice = testid(el('p', 'ap-note'), 'readiness-notice');
+  notice.setAttribute('role', 'status');
+  section.append(notice, readinessGroup(plan, 'ready', r.groups.ready, env, compareSession));
+  if (r.groups.waiting.length || r.groups.skipped.length) {
+    const waiting = readinessGroup(plan, 'waiting', r.groups.waiting, env, compareSession);
+    waiting.querySelector('.ap-ready-title')!.textContent = `${READINESS_GROUPS.waiting.title} · ${r.groups.waiting.length + r.groups.skipped.length}`;
+    waiting.dataset.count = String(r.groups.waiting.length + r.groups.skipped.length);
+    if (r.groups.skipped.length) waiting.append(readinessGroup(plan, 'skipped', r.groups.skipped, env, compareSession, 'h5'));
+    section.append(waiting);
+  }
+  if (r.groups.blocked.length) section.append(readinessGroup(plan, 'blocked', r.groups.blocked, env, compareSession));
+  return section;
+}
+
 export interface DetailHooks {
   detail: Loadable<PlanDetail> | null;
   retryDetail?: () => void;
   document: { get: () => Loadable<DocumentBody> | null; request: () => void };
 }
 
-export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3' }) {
+/**
+ * `compareSession`: the session readiness compares recorded assignees with (rail: the selected
+ * host session; board: an explicit session filter). Null keeps neutral assignee labels.
+ */
+export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null }) {
   const root = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
   root.dataset.lifecycle = plan.lifecycle;
   root.dataset.source = plan.sourceId;
@@ -372,8 +522,11 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   if (ready) {
     const now = currentWorkBlock(plan, ready, env);
     if (now) root.append(now);
-    root.append(itemList(plan, ready, env));
-  } else {
+  }
+  const readinessSection = readinessBlock(plan, hooks.detail, env, options.compareSession ?? null);
+  if (readinessSection) root.append(readinessSection);
+  if (ready) root.append(itemList(plan, ready, env));
+  else {
     const tasks = el('section', 'ap-section');
     tasks.append(el('h3', 'ap-h', 'Tasks'), partState('detail-loading', 'tasks', hooks.detail?.state === 'error' ? hooks.detail : null, hooks.retryDetail));
     root.append(tasks);
