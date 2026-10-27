@@ -15,8 +15,9 @@ synthetic IDs/title/items with the real plan):
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 ```
 
-Read accepts only `op: "read"`, one concrete `plan` identifier and optional `page`;
-no wildcard, `oid` or `rev`. Read the current revision before updating an existing
+Read accepts only `op: "read"`, one concrete `plan` identifier and optional 0-based `page`;
+no wildcard, `oid` or `rev`. Omit `page` for a compact summary without items;
+explicit `page` returns paged detail. Read the current revision before updating an existing
 plan. An `invalid` reply may include a safe `hint` explaining what to correct;
 it is not evidence of a host outage. Empty/all-skipped plans cannot finish
 successfully. Denied document access still commits valid checklist changes with
