@@ -123,9 +123,10 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-glyph[data-status="skipped"]::after{content:"";width:6px;height:1.5px;background:var(--oc-muted)}
 
 /* Session chips */
-.ap-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
+/* When name and state don't fit on one line, the state wraps below instead of squeezing the name */
+.ap-chip{display:inline-flex;flex-wrap:wrap;align-items:center;gap:0 6px;min-width:0;max-width:100%}
 .ap-chip>b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ap-chip-state{color:var(--oc-muted);white-space:nowrap}
+.ap-chip-state{color:var(--oc-muted)}
 .ap-chip-state::before{content:"· "}
 .ap-dot{width:7px;height:7px;border-radius:50%;flex:none;background:color-mix(in srgb,var(--oc-muted) 55%,transparent)}
 .ap-dot[data-tone="info"]{background:var(--oc-info)}
