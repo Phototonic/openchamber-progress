@@ -319,6 +319,42 @@ test('hidden and disposed frames start nothing, and a held reply across hiding c
   });
 });
 
+test('hiding retires an undispatched review: a held preflight released after hide → show writes nothing; a fresh activation works; a dispatched write may finish', async () => {
+  await fixture(async (b, svc, device) => {
+    const a = frame('A', svc, device);
+    await a.open(); await ready(a);
+    const activated = a.panel!;
+    const hold = svc.hold('/v1/plan', 'A');
+    activated.markReviewed(trusted);
+    await until(() => a.panel!.review === 'pending', 'pending');
+    await until(() => svc.count('/v1/plan', 'A') === 1, 'preflight sent');
+    a.hide();
+    await until(() => a.panel!.review === 'idle', 'review retired by hiding');
+    assert.match(a.panel!.status, /hidden/);
+    a.show(); await settle();
+    hold(); await settle(); await new Promise((r) => setTimeout(r, 50)); await settle();
+    assert.equal(device.writes().length, 0, 'released preflight after hide → show dispatches no write');
+    assert.equal(a.panel!.review, 'idle');
+    activated.markReviewed(trusted); await settle();
+    assert.equal(device.writes().length, 0, 'the pre-hide panel cannot act again');
+    assert.equal(a.panel!.canReview, true);
+    // A fresh trusted activation after showing the frame works.
+    a.panel!.markReviewed(trusted);
+    await until(() => a.panel!.review === 'saved', 'fresh activation saved');
+    assert.deepEqual(revisionsOf(device), [1]);
+    // A write already dispatched to storage when the frame hides finishes under its captured target.
+    b.f.change('blocked'); await a.poll(); await a.refresh();
+    const release = device.hold('set');
+    a.panel!.markReviewed(trusted);
+    await until(() => device.holds.length === 0, 'write dispatched');
+    a.hide(); release();
+    await until(() => a.panel!.review === 'saved', 'dispatched write finished');
+    a.show(); await settle();
+    assert.deepEqual(revisionsOf(device), [2]);
+    a.stop();
+  });
+});
+
 test('changed progress while reviewing saves only the displayed target', async () => {
   await fixture(async (b, svc, device) => {
     const a = frame('A', svc, device);

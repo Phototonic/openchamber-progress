@@ -8,7 +8,7 @@ import { canonicalIdentity, checkpointKey, CheckpointStore, contextHash, sha256H
 import { countsText, coverageText, groupTasks, referenceText, scopeLines } from '../../ui/shared/change-digest-view.ts';
 import { readChangeDigest } from '../../ui/shared/source.ts';
 import type { DigestRequest } from '../../ui/shared/model.ts';
-import { digestFixture } from '../fixtures/change-digests.ts';
+import { digestFixture, digestItems } from '../fixtures/change-digests.ts';
 import { HEALTH } from './fixtures.ts';
 import { Device } from './change-digests-fixture.ts';
 
@@ -104,6 +104,25 @@ test('scope explanation keeps denominators apart from completion; zero total has
   assert.equal(groups.find((x) => x.id === 'blockers')!.tasks[0].id, 'B');
   assert.equal(groups.find((x) => x.id === 'added')!.tasks[0].id, 'D');
   assert.match(referenceText(d.tasks.find((t) => t.id === 'B')!.references.at(-1)!), /^Reported blocked\. Status In progress → Blocked\.$/);
+});
+
+test('recorded detail of added and removed tasks keeps the recorded group and prerequisites', () => {
+  const facts = { title: 'Publish build', status: 'blocked' as const, parentId: 'G-release', dependencies: ['T-build', 'T-sign'] };
+  const removed = referenceText({ from: 4, to: 5, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['removed'], before: facts, after: null });
+  assert.equal(removed, 'Removed. Last recorded as “Publish build” (Blocked). Group G-release. Prerequisites T-build, T-sign.');
+  const added = referenceText({ from: 1, to: 2, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['added', 'blocked'], before: null, after: facts });
+  assert.equal(added, 'Added, Reported blocked. Recorded as “Publish build” (Blocked). Group G-release. Prerequisites T-build, T-sign.');
+  // No group and no prerequisites recorded: nothing invented.
+  assert.equal(referenceText({ from: 1, to: 2, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['added'], before: null, after: { ...facts, status: 'pending', parentId: null, dependencies: [] } }), 'Added. Recorded as “Publish build” (Pending).');
+  // A real removed grouped task with prerequisites, through the actual backend and parser.
+  const { request, body } = real(7, 8, (f) => {
+    f.revise([...digestItems.map((i) => (i.id === 'B' ? { ...i, status: 'done' as const } : i)), { id: 'D', title: 'Added task', kind: 'task' }, { id: 'E', title: 'Grouped follow-up', kind: 'task', parentId: 'G', dependencies: ['A', 'D'] }]);
+    f.revise([...digestItems.map((i) => (i.id === 'B' ? { ...i, status: 'done' as const } : i)), { id: 'D', title: 'Added task', kind: 'task' }]);
+  });
+  const d = parseChangeDigest(body, request);
+  const e = d.tasks.find((t) => t.id === 'E')!;
+  assert.equal(e.presentAtTarget, false);
+  assert.equal(referenceText(e.references[0]), 'Removed. Last recorded as “Grouped follow-up” (Pending). Group G. Prerequisites A, D.');
 });
 
 // ---------------------------------------------------------------- checkpoint protocol

@@ -330,6 +330,15 @@ try {
   await wait('page', `d.querySelector('${D('P-digest')}')?.dataset.state==='comparison'`, 'restarted on return');
   await wait('page', `d.querySelector('${D('P-digest')}')?.dataset.to==='8'||!!d.querySelector('${H('P-digest', 'digest-newer')}')`, 'revision 8 pinned or offered', 8000);
   race('S4:visible-return-revalidates', same(await deviceKeys(), hidKeys), ['On return the retired sequence restarts for the listed revision; the newer revision is pinned or offered via Refresh; no acknowledgement']);
+  // A review whose preflight is held across hide → show is retired; releasing it writes nothing.
+  await evaluate(`qa.holds.push({tag:'hidden-review',frame:'page',path:'/v1/plan',plan:'P-digest'});true`);
+  await click('page', H('P-digest', 'digest-mark-reviewed'));
+  await wait('page', `qa.held.some(h=>h.tag==='hidden-review')&&d.querySelector('${D('P-digest')}')?.dataset.review==='pending'`, 'review preflight held');
+  await setHidden('page', true);
+  await setHidden('page', false);
+  await evaluate(`qa.release('hidden-review')`); await flightDone(); await frames2();
+  const hiddenReview = await guest<{ review: string | undefined; status: string; mark: string | null }>('page', `return {review:d.querySelector('${D('P-digest')}')?.dataset.review,status:d.querySelector('${H('P-digest', 'digest-status')}')?.textContent??'',mark:d.querySelector('${H('P-digest', 'digest-mark-reviewed')}')?.getAttribute('aria-disabled')}`);
+  race('S4:hidden-retires-pending-review', same(await deviceKeys(), hidKeys) && hiddenReview.review === 'idle' && /hidden/.test(hiddenReview.status) && hiddenReview.mark !== 'true', ['Held review preflight released after hide → show dispatched no write; Mark reviewed is available again for a fresh activation'], hiddenReview);
   // Two windows on one profile/account; a third on another profile.
   await show(['page', 'page2', 'page3'], 400);
   await select('page2', 'P-digest'); await settled('page2', 'P-digest');

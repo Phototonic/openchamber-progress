@@ -99,8 +99,13 @@ export function referenceText(r: DigestReference) {
   const parts = [r.facets.map((f) => FACET_LABEL[f]).join(', ') + '.'];
   const a = r.before, b = r.after;
   const facts = (f: DigestFacts) => `“${f.title}” (${STATUS_LABEL[f.status]})`;
-  if (!a && b) parts.push(`Recorded as ${facts(b)}.`);
-  else if (a && !b) parts.push(`Last recorded as ${facts(a)}.`);
+  // Additions and removals carry the one recorded side's group and prerequisites too.
+  const place = (f: DigestFacts) => {
+    if (f.parentId !== null) parts.push(`Group ${f.parentId}.`);
+    if (f.dependencies.length) parts.push(`Prerequisites ${f.dependencies.join(', ')}.`);
+  };
+  if (!a && b) { parts.push(`Recorded as ${facts(b)}.`); place(b); }
+  else if (a && !b) { parts.push(`Last recorded as ${facts(a)}.`); place(a); }
   else if (a && b) {
     if (a.status !== b.status) parts.push(`Status ${STATUS_LABEL[a.status]} → ${STATUS_LABEL[b.status]}.`);
     if (a.title !== b.title) parts.push(`Title “${a.title}” → “${b.title}”.`);

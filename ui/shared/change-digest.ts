@@ -82,6 +82,8 @@ interface Visit {
   statusId: number;
   /** Hidden while loading: the sequence was retired and restarts when visible. */
   resume: boolean;
+  /** The review's checkpoint write has been dispatched (it may finish under its captured identity). */
+  writing: boolean;
   reloading: boolean;
 }
 
@@ -133,7 +135,7 @@ export class DigestController {
       this.generation++;
       v = this.visit = {
         key, identity: claim.identity, plan: p, capable: claim.capable, fresh: claim.fresh, lifecycle: p.lifecycle, generation: this.generation,
-        phase: { kind: 'loading' }, review: 'idle', reviewedThrough: null, elsewhere: null, needsRefresh: false, checkpointFailed: false, status: '', statusId: 0, resume: false, reloading: false,
+        phase: { kind: 'loading' }, review: 'idle', reviewedThrough: null, elsewhere: null, needsRefresh: false, checkpointFailed: false, status: '', statusId: 0, resume: false, writing: false, reloading: false,
       };
       if (this.host.visible() && !this.disposed) void this.start(v, false); else v.resume = true;
     } else {
@@ -233,13 +235,22 @@ export class DigestController {
     const v = this.visit;
     if (!v || this.disposed) return;
     if (v.resume) void this.start(v, false); else void this.reload(v);
+    // Controls painted while hidden were unavailable; repaint them for the visible frame.
+    this.host.changed();
   }
   focus() { if (this.visit && !this.disposed) void this.reload(this.visit); }
   hidden() {
     const v = this.visit;
     if (!v) return;
     // Hidden frames start nothing; an in-flight sequence is retired and restarts when shown.
-    if (v.phase.kind === 'loading') { v.generation = ++this.generation; v.resume = true; }
+    if (v.phase.kind === 'loading') { v.generation = ++this.generation; v.resume = true; return; }
+    // A review not yet dispatched to storage is retired: showing the frame again never resumes it;
+    // only a fresh trusted activation can. A dispatched write may finish (captured identity only).
+    if (v.review === 'pending' && !v.writing) {
+      v.generation = ++this.generation; v.reloading = false; v.review = 'idle';
+      this.say(v, 'Review not saved because this view was hidden. Mark reviewed again when you are ready.');
+      this.host.changed();
+    }
   }
   dispose() { this.disposed = true; this.retire(); }
   /** Authoritative deletion of a plan (this frame's own confirmed delete). */
@@ -310,7 +321,9 @@ export class DigestController {
       return stop('already', `Already reviewed through revision ${saved.revision}. Refresh the digest to compare from there.`);
     }
     this.counts.writes++;
+    v.writing = true;
     const written = await this.checkpoints.write(identity, to);
+    v.writing = false;
     if (this.disposed || this.visit !== v || v.generation !== generation) return;
     if (written.ok) { v.reviewedThrough = to; return stop('saved', `Marked reviewed through revision ${to}. Later changes will appear in the next digest.`); }
     stop('failed', `${REVIEW_COPY[written.reason]} Your previous review point is unchanged.`);
