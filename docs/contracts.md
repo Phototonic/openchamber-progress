@@ -92,6 +92,143 @@ The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
 
+## Plan change digests (frozen additive read contract)
+
+A ready service advertises `planChangeDigests:1` on `/health`; absence means
+unavailable, not an empty comparison. Protocol/schema remain 2. Authenticated,
+body-free **GET** `/v1/change-digest` accepts only `storeId`, `source`, `plan`,
+`to`, `cleanupRev` and optional `after`. Identity strings use the existing
+identifier rule. `to` and `after` are positive safe integers (including values
+above nine digits); `cleanupRev` is a nonnegative safe integer. `after > to` or
+a target beyond the live revision is invalid. No cursor or viewer token exists.
+
+```http
+GET /v1/change-digest?storeId=store-fixture&source=source-fixture&plan=P-digest&after=1&to=6&cleanupRev=0
+```
+
+`ChangeDigest` is exported through `shared/progress.ts`; its definitions and pure
+classification live in `shared/change-digest.ts`. The following field names are
+the wire contract; `Counts`, `Status` and `Lifecycle` retain their existing meanings:
+
+```ts
+type DigestFacet = 'added' | 'removed' | 'revised' | 'completed' | 'reopened'
+  | 'blocked' | 'unblocked' | 'skipped' | 'unskipped';
+type DigestEvents = Record<DigestFacet, number>;
+type DigestReason = 'gap' | 'missing-snapshot' | 'invalid-snapshot'
+  | 'revision-bound' | 'byte-bound';
+interface DigestFacts {
+  title: string; status: Status; parentId: string | null; dependencies: string[];
+}
+interface DigestReference {
+  from: number; to: number; reportedAt: string; facets: DigestFacet[];
+  before: DigestFacts | null; after: DigestFacts | null;
+}
+interface DigestTask {
+  id: string; title: string; status: Status; presentAtTarget: boolean;
+  latestRevision: number; occurrences: DigestEvents;
+  references: DigestReference[]; omittedReferences: number;
+}
+interface DigestScope {
+  addedCounted: number; removedCounted: number; skipped: number; unskipped: number;
+  addedDone: number; removedDone: number; completed: number; reopened: number;
+}
+interface ChangeDigest {
+  protocolVersion: 2; schemaVersion: 2; storeId: string;
+  sourceBinding: { sourceId: string | null; verified: boolean };
+  source: string; plan: string;
+  cleanup: { state: 'visible' | 'archived'; revision: number };
+  interval: {
+    after: number | null; to: number;
+    targetLifecycle: Lifecycle | null; targetReportedAt: string | null;
+    latestRevision: number; currentLifecycle: Lifecycle;
+    coverageStart: number | null; coverageEnd: number | null;
+    coverageStartReportedAt: string | null; coverageEndReportedAt: string | null;
+  };
+  availability: 'initial' | 'comparison' | 'baseline-unavailable' | 'target-unavailable';
+  complete: boolean; reasons: DigestReason[]; validTarget: boolean;
+  counts: { before: Counts | null; after: Counts | null; scope: DigestScope | null };
+  summary: { unit: 'transitions'; events: DigestEvents };
+  tasks: DigestTask[];
+  details: { omittedTasks: boolean; omittedTaskCount: number | null; truncated: boolean };
+  work: { intervalSnapshots: number; baselineLookups: number; inputBytes: number };
+}
+```
+
+One transaction pins existence, cleanup, live metadata, target, baseline and event
+coverage. Consumers must match **all** request identity fields and source binding,
+not just a revision. `to`/`after` are never silently substituted. `latestRevision`
+and `currentLifecycle` describe that read's live plan, not a promise of freshness
+after delivery. Coverage endpoints describe validated snapshots; events cover
+only adjacent pairs inside that range. Timestamps are recorded ISO timestamps,
+not observation or completion times. With no proven pair, coverage may be `to→to`.
+
+- No `after`: `initial`, target counts only, no invented revision-zero events.
+  `complete:true` means this initial target read succeeded, not that history was scanned.
+- Valid endpoints: `comparison`; `after === to` is complete and empty with equal counts.
+- Missing/invalid/budget-excluded baseline: `baseline-unavailable`, never initial;
+  `counts.before` and `scope` stay null. A proven recent suffix can still be shown.
+- Missing/invalid/budget-excluded target: `target-unavailable`, `validTarget:false`,
+  null target/coverage/counts and no events; cannot be reviewed.
+- `complete:false` qualifies interval events, independently of exact endpoint counts.
+  `reasons` is a deduplicated set of fixed diagnostics, not a diagnostic ordering
+  contract. Never bridge missing/invalid snapshots; a baseline lookup alone cannot
+  certify intermediate events. Unknown history must not be labelled zero changes.
+
+Tasks alone count; skipped tasks are outside `total`, groups never contribute.
+`counts.scope` explains endpoint deltas separately from witnessed transitions:
+`totalDelta = addedCounted - removedCounted - skipped + unskipped`;
+`doneDelta = addedDone - removedDone + completed - reopened`.
+Here `completed`/`reopened` describe **surviving endpoint tasks**, not interval
+event totals. Display percentage is `Math.round(done / total * 100)` only when
+total is nonzero; do not allocate causal percentage points to individual facets.
+
+Summary/occurrences count transitions, not distinct tasks. Reversals survive:
+reported blocker then unblocked, or completed then reopened, do not cancel out.
+Added-as-done is added scope, not a witnessed completion. Added-as-blocked also
+has a `blocked` facet. Removing a blocked task is not resolving its blocker;
+removing a done task is not reopening it. Task↔group conversion is removal/addition.
+`unblocked` means no longer reported blocked, including a skipped destination,
+not proof an underlying problem was solved. Title/parent/dependency-set changes
+are `revised`; dependency order, metadata, group-only and pending↔working changes
+alone are not highlights. Identical statuses/fresh operation IDs add no events;
+receipt replay adds no revision. Staging adds no events before commit.
+
+Rows are recent-highlight-first, ties by ascending task ID. For surviving tasks,
+title/status are recorded at the target; historical-only rows use their most
+recent change facts. `presentAtTarget` does not certify presence in today's live
+task tree. Each reference records the actual adjacent pair, including nullable
+addition/removal facts and sorted dependency sets. At most 50 task rows and four
+recent references per retained task are emitted; occurrences still cover the
+proven suffix. `omittedReferences` counts dropped references per retained task.
+`details.truncated` covers any row/reference omission, **not** interval gaps.
+When unretained identities prevent an exact distinct omitted-task count,
+`omittedTaskCount:null` and `omittedTasks:true` disclose that uncertainty.
+Otherwise the count is exact (zero if none). Summary facts survive detail caps.
+
+Example comparison excerpt for a blocked→working→done task and one new pending task:
+
+```json
+{"availability":"comparison","complete":true,"validTarget":true,"reasons":[],"counts":{"before":{"done":1,"total":2,"remaining":1,"skipped":1},"after":{"done":2,"total":3,"remaining":1,"skipped":1},"scope":{"addedCounted":1,"removedCounted":0,"skipped":0,"unskipped":0,"addedDone":0,"removedDone":0,"completed":1,"reopened":0}},"summary":{"unit":"transitions","events":{"added":1,"removed":0,"revised":0,"completed":1,"reopened":0,"blocked":1,"unblocked":1,"skipped":0,"unskipped":0}}}
+```
+
+Work is bounded to 128 interval snapshots plus at most one separate baseline
+lookup, sharing 8 MiB of input before parsing. `work` reports inspected interval
+slots (including unavailable/oversized attempts), baseline lookup attempts and
+actual snapshot bytes returned for parsing; reused baseline text is not reread.
+The body is at most 256 KiB UTF-8; least-recent rows are dropped first while
+preserving summary/counts/qualification. There is no continuation/backfill.
+
+Auth errors are 401, wrong method 405, unknown/duplicate fields 404, missing or
+malformed fields/ranges 400 (`invalid`), store/cleanup mismatch 409 (`conflict`),
+missing/deleted plan 404 (`not-found`), unavailable/corrupt/schema/busy storage
+503 with fixed codes. An unusable historical snapshot is a qualified 200 DTO,
+not a fabricated success comparison. Archive/restore preserve baseline history
+but change cleanup generation, so stale reads refuse. Reopen preserves identity.
+Delete makes new reads fail; an already captured response must be retired by the
+consumer's live identity/cleanup checks and cannot authorize review by itself.
+No backend checkpoint, mutation, filesystem capture, schema change or cache is
+introduced. List/detail/history routes do not invoke digest comparison.
+
 ## Finished-plan cleanup (frozen additive contract)
 
 Package **0.3.0** preserves the additive cleanup contract.
