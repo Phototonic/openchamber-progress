@@ -412,14 +412,26 @@ function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compare
   const meta = el('div', 'ap-ready-meta');
   if (entry.parent.kind === 'known') meta.append(el('span', '', `In ${entry.parent.title}`));
   else if (entry.parent.kind === 'unknown') meta.append(el('span', '', 'Parent group unavailable'));
+  const state = (id: string) => (trusted ? liveLabel(coverageFor(id, plan.directory, env.live)).label : 'from another OpenCode setup');
   const who = assignment(entry, compareSession, plan.sourceId, env.boundSource);
   li.dataset.assignment = who.kind;
-  if (who.kind === 'none') meta.append(el('span', '', 'No assignee recorded'));
+  if (who.kind === 'none' && entry.linkedSessionIds.length) {
+    // A session link is context only: it is never shown as, or compared like, an assignment.
+    li.dataset.linked = entry.linkedSessionIds.join(' ');
+    const holder = testid(el('span', 'ap-ready-links'), `readiness-link-${item.id}`);
+    for (const id of entry.linkedSessionIds) {
+      const line = el('span', 'ap-ready-who');
+      line.dataset.session = id;
+      line.append('Linked to ', el('b', '', label(id)), ` · ${state(id)} (no recorded assignment)`);
+      holder.append(line);
+    }
+    meta.append(holder);
+  } else if (who.kind === 'none') meta.append(el('span', '', 'No assignee recorded'));
   else if (who.kind === 'selected') meta.append(testid(el('span', '', 'Assigned to the selected session'), `readiness-assignee-${item.id}`));
   else {
     // Plain wrapping text (no truncating chip): the name must stay readable at narrow widths.
     const holder = testid(el('span', 'ap-ready-who'), `readiness-assignee-${item.id}`);
-    holder.append('Assigned to ', el('b', '', label(who.sessionId)), ` · ${trusted ? liveLabel(coverageFor(who.sessionId, plan.directory, env.live)).label : 'from another OpenCode setup'}`);
+    holder.append('Assigned to ', el('b', '', label(who.sessionId)), ` · ${state(who.sessionId)}`);
     meta.append(holder);
   }
   for (const r of entry.reports) {

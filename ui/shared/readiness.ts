@@ -33,6 +33,11 @@ export interface ReadinessEntry {
   incomplete: boolean;
   /** Recorded assignee only (`assigneeSessionId`), never a link, owner or reporter fallback. */
   assigneeSessionId: string | null;
+  /**
+   * Sessions the plan's session links associate with this task, only when no assignee is recorded.
+   * Context for display, never an assignment: `assignment()` ignores it.
+   */
+  linkedSessionIds: string[];
   reports: ReportView[];
 }
 
@@ -114,6 +119,7 @@ export function readiness(plan: { key: string; revision: number; lifecycle: Life
       parent: parentOf(item, byId),
       recorded: item.dependencies === undefined ? 'omitted' : item.dependencies.length ? 'listed' : 'empty',
       assigneeSessionId: item.assigneeSessionId ?? null,
+      linkedSessionIds: item.assigneeSessionId ? [] : [...new Set(d.links.filter((l) => l.itemIds.includes(item.id)).map((l) => l.sessionId))],
       reports: reportsFor(item.id, d.contributions),
     });
   }

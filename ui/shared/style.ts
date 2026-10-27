@@ -100,6 +100,9 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible{outline:none;box-
 .ap-ready-meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:11.5px;color:var(--oc-muted);min-width:0}
 .ap-ready-meta>*{min-width:0;overflow-wrap:anywhere}
 .ap-ready-who b{font-weight:500;color:var(--oc-fg)}
+/* A session link is softer than a recorded assignment: muted name, never the assignee styling */
+.ap-ready-links{display:inline-flex;flex-direction:column;gap:2px}
+.ap-ready-links .ap-ready-who b{color:inherit}
 .ap-ready-none{font-size:11.5px;color:var(--oc-muted)}
 .ap-ready-deps{display:flex;flex-direction:column;gap:2px;font-size:11.5px}
 .ap-ready-dep{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;min-width:0}

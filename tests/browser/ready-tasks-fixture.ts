@@ -10,7 +10,8 @@ const record = (summary: ReturnType<typeof readySummary>, items: unknown[], cont
 const PLANS = [
   record(readySummary(), READY_ITEMS, READY_CONTRIBUTIONS, READY_LINKS),
   record(readySummary(SAME_ID_ITEMS, { id: 'P-same', title: 'Same item IDs, other plan', sessionId: 'B', reportedAt: new Date(Date.now() - 600_000).toISOString() }), SAME_ID_ITEMS),
-  record(readySummary(FOREIGN_ITEMS, { sourceId: FOREIGN, title: 'Foreign setup plan', revision: 3 }), FOREIGN_ITEMS),
+  // Foreign W is linked (not assigned) to a session ID this host also knows: no borrowed title.
+  record(readySummary(FOREIGN_ITEMS, { sourceId: FOREIGN, title: 'Foreign setup plan', revision: 3 }), FOREIGN_ITEMS, [], [{ sessionId: 'A', itemIds: ['W'] }]),
   record(readySummary(boundaryItems(21), { id: 'P-boundary', title: 'Twenty-one task plan', sessionId: 'E', reportedAt: new Date(Date.now() - 1_200_000).toISOString() }), boundaryItems(21)),
 ];
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };

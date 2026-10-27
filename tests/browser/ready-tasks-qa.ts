@@ -139,6 +139,11 @@ try {
   check('Q4:rail-attribution', attribution.r === 'selected' && attribution.k === 'other' && attribution.w === 'none'
     && /Assigned to Session C.*Not open in this window/.test(attribution.kText)
     && same(attribution.reports, ['direct:Reported directly by Session C', 'parent-relay:Reported by Planner session for Session C']), attribution);
+  // Recorded assignee, link only and neither: three distinct lines; a link never reads as an assignment.
+  const who = await guest('panel', `const t=id=>d.querySelector('[data-testid="readiness-entry-'+id+'"]'),m=id=>t(id).querySelector('.ap-ready-meta').textContent;return {r:m('R'),w:m('W'),wLink:d.querySelector('[data-testid="readiness-link-W"]')?.textContent,wLinked:t('W').dataset.linked,wAssignee:!!d.querySelector('[data-testid="readiness-assignee-W"]'),i:m('I'),iLink:!!d.querySelector('[data-testid="readiness-link-I"]'),rLink:!!d.querySelector('[data-testid="readiness-link-R"]'),canonicalW:d.querySelector('[data-testid="item-W"] .ap-item-sub')?.textContent}`);
+  check('Q4:link-three-cases', who.r.includes('Assigned to the selected session') && !who.rLink
+    && who.wLink === 'Linked to Review session · Idle (no recorded assignment)' && who.wLinked === 'B' && !who.wAssignee && !who.w.includes('Assigned to') && !who.w.includes('No assignee recorded')
+    && who.i.includes('No assignee recorded') && !who.iLink && !who.i.includes('Linked to'), who);
   check('Q4:relay-row-kept', await guest('panel', `return d.querySelector('[data-testid="item-K"] [data-testid="relay-K"]')?.textContent==='Reported by Planner session for Session C'`));
   check('Q4:no-canonical-testid-duplicates', await guest('panel', `return [...d.querySelectorAll('[data-testid^="item-"]')].every(n=>!n.closest('${rd}'))&&d.querySelectorAll('[data-testid="item-W"]').length===1`));
   await shot('panel', 'rail-light');
@@ -212,12 +217,31 @@ try {
   await wait('page', `d.querySelector('article[data-testid="plan-P-ready"][data-source="source-foreign"] ${rd}[data-state="ready"]')`);
   const foreign = await guest('page', `const r=d.querySelector('[data-testid="readiness-entry-R"]');return {a:r.dataset.assignment,t:r.querySelector('.ap-ready-meta').textContent,src:r.dataset.source}`);
   check('Q5:foreign-source-no-borrowed-identity', foreign.a === 'other' && foreign.src === 'source-foreign' && foreign.t.includes('Session A') && !foreign.t.includes('Planner session') && foreign.t.includes('another OpenCode setup'), foreign);
+  const foreignLink = await guest('page', `const e=d.querySelector('[data-testid="readiness-entry-W"]');return {a:e.dataset.assignment,t:d.querySelector('[data-testid="readiness-link-W"]')?.textContent}`);
+  check('Q5:foreign-link-no-borrowed-identity', foreignLink.a === 'none' && foreignLink.t === 'Linked to Session A · from another OpenCode setup (no recorded assignment)', foreignLink);
 
   // ---------------------------------------------------------------- Q5 narrow widths, pairwise themes
   await evaluate(`qa.theme('dark');true`);
   await show('panel', 280); await context('A');
   await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
   await shot('panel', 'rail-narrow-dark');
+  // Link only at 280px: full wrapped text, nothing clipped or ellipsized.
+  const narrowLink = await guest('panel', `const n=d.querySelector('[data-testid="readiness-link-W"]'),line=n.querySelector('.ap-ready-who'),r=n.getBoundingClientRect(),cs=getComputedStyle(line);return {t:n.textContent,right:r.right<=d.documentElement.clientWidth+0.5,lines:Math.round(r.height/parseFloat(cs.lineHeight)),clipped:line.scrollWidth>line.clientWidth+1||cs.textOverflow==='ellipsis'||n.querySelector('b').scrollWidth>n.querySelector('b').clientWidth+1}`);
+  check('Q5:narrow-link-only-wraps', narrowLink.t === 'Linked to Review session · Idle (no recorded assignment)' && narrowLink.right && narrowLink.lines > 1 && !narrowLink.clipped, narrowLink);
+  // A link to a session this window can't open gets no guessed name, and is never "the selected session",
+  // even when that session is the rail's selected session.
+  await evaluate(`qa.update('P-ready',p=>{p.links=[{sessionId:'C',itemIds:['K']},{sessionId:'C',itemIds:['W']}]});true`);
+  await wait('panel', `d.querySelector('[data-testid="readiness-link-W"]')?.textContent.includes('Session C')`, 'W linked to C');
+  check('Q5:unavailable-link-plain-label', await guest<string>('panel', `return d.querySelector('[data-testid="readiness-link-W"]').textContent`) === 'Linked to Session C · Not open in this window (no recorded assignment)');
+  await shot('panel', 'link-unavailable-narrow', '[data-testid="readiness-entry-W"]');
+  await context('C');
+  await wait('panel', `d.querySelector('[data-testid="helping-note"]')&&d.querySelector('[data-testid="readiness-entry-K"][data-assignment="selected"]')`, 'rail C');
+  const asC = await guest('panel', `const e=d.querySelector('[data-testid="readiness-entry-W"]');return {a:e.dataset.assignment,t:e.querySelector('.ap-ready-meta').textContent}`);
+  check('Q5:link-never-selected-session', asC.a === 'none' && !asC.t.includes('selected session') && !asC.t.includes('Assigned to') && asC.t.includes('(no recorded assignment)'), asC);
+  check('Q5:link-counts-unchanged', same(await counts('panel'), ['1', '7', '6', '1']));
+  await context('A');
+  await evaluate(`qa.update('P-ready',p=>{p.links=${JSON.stringify([{ sessionId: 'C', itemIds: ['K'] }, { sessionId: 'B', itemIds: ['W'] }])}});true`);
+  await wait('panel', `d.querySelector('[data-testid="readiness-link-W"]')?.textContent.includes('Review session')&&d.querySelector('[data-assignment="selected"]')`, 'links restored');
   const wrapped = await guest('panel', `const b=d.querySelector('[data-testid="readiness-entry-I"] .ap-ready-head button'),cs=getComputedStyle(b);return {lines:Math.round(b.getBoundingClientRect().height/parseFloat(cs.lineHeight)),text:b.textContent.includes('<b>not markup</b>'),html:!!b.querySelector('b')}`);
   check('Q5:long-untrusted-title-wraps-as-text', wrapped.lines > 1 && wrapped.text && !wrapped.html, wrapped);
   check('Q5:focus-ring-visible-dark', await (async () => { await guest('panel', `w.focus();d.querySelector('[data-testid="readiness-entry-W"] .ap-ready-head button').focus();return true`); await key('Tab'); return guest<boolean>('panel', `return d.activeElement.matches(':focus-visible')&&getComputedStyle(d.activeElement).boxShadow!=='none'`); })());

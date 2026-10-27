@@ -119,6 +119,29 @@ test('loading, failed and mismatched detail never classify', () => {
   assert.deepEqual(readiness({ ...plan, key: `${FOREIGN}/P-ready` }, { state: 'ready', value: detail }), { state: 'loading' });
 });
 
+test('session links: recorded assignee, link only and neither stay three distinct cases; a link never assigns', () => {
+  const { plan, detail } = detailOf();
+  const before = JSON.stringify(detail);
+  const r = ready(readiness(plan, { state: 'ready', value: detail }));
+  const entry = (id: string) => Object.values(r.groups).flat().find((e) => e.item.id === id)!;
+  // Recorded assignee: the assignee only, even where a link also names the same session (K → C).
+  assert.deepEqual([entry('R').assigneeSessionId, entry('R').linkedSessionIds], [SA, []]);
+  assert.deepEqual([entry('K').assigneeSessionId, entry('K').linkedSessionIds], [SC, []]);
+  // Link only: context, never the assignee, never "selected" — not even for the linked session itself.
+  assert.deepEqual([entry('W').assigneeSessionId, entry('W').linkedSessionIds], [null, [SB]]);
+  for (const compare of [SB, SA, null]) assert.deepEqual(assignment(entry('W'), compare, SOURCE, SOURCE), { kind: 'none' });
+  // Neither: no assignee and no link.
+  assert.deepEqual([entry('I').assigneeSessionId, entry('I').linkedSessionIds], [null, []]);
+  // Repeated links to one task give one session; a link never changes membership, input or counts.
+  const twice = detailOf(READY_ITEMS, readySummary(), READY_CONTRIBUTIONS);
+  twice.detail.links = [...READY_LINKS, { sessionId: SB, itemIds: ['W', 'W'] }, { sessionId: SA, itemIds: ['W'] }];
+  const r2 = ready(readiness(twice.plan, { state: 'ready', value: twice.detail }));
+  assert.deepEqual(r2.groups.waiting.find((e) => e.item.id === 'W')!.linkedSessionIds, [SB, SA]);
+  assert.deepEqual(ids(r2), ids(r));
+  assert.equal(JSON.stringify(detail), before);
+  assert.deepEqual(countItems(detail.items), { done: 1, total: 7, remaining: 6, skipped: 1 });
+});
+
 test('assignment is the recorded assignee only; "selected" needs the same session and the verified bound source', () => {
   const r = ready(classify(READY_ITEMS));
   const entry = (id: string) => Object.values(r.groups).flat().find((e) => e.item.id === id)!;
