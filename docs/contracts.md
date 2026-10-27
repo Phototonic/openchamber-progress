@@ -36,7 +36,8 @@ The flat tool input schema remains provider-compatible; operation-specific
 requirements are enforced by `parseRequest` and described directly in the tool.
 Every mutation requires `oid` and expected `rev`. New `start` also requires title
 and complete items, using `rev:0`; read accepts only op, one concrete plan ID and
-optional page, never a wildcard or mutation fields. No defaults are inferred.
+optional 0-based page, never a wildcard or mutation fields. Omit page for a compact
+summary without items; explicit page returns paged detail. No defaults are inferred.
 
 Tool replies retain `error` and optional conflict `rev`. Only `error: "invalid"`
 may additionally carry optional `hint`, bounded constant recovery text (at most
@@ -320,6 +321,8 @@ unavailable/changed-during-read. Last valid capture stays referenced on failure,
 never relabeled current. checklistSynchronized marks a confirmed matching
 checklist/capture; currentFile=not-rechecked honestly describes between-report
 coverage. Body text is fetched only on demand and rendered as untrusted plain text.
+capturedAt records when the bound document was captured and can be older;
+checklistSynchronized is the current-match guarantee, not the capture timestamp.
 Show the last successful capture time separately from the last check time. Reports
 recheck the bound file under the same bounded permission rules; between checks,
 the current file remains unverified. Age alone does not establish a mismatch.
@@ -488,7 +491,8 @@ agent-progress. Input Request / REPORT_SCHEMA in shared/progress.ts. Mutations
 require plan, oid and rev (start rev0). Receipt `{plan,rev,structuralRev,changed?}`;
 errors `{error,rev?,hint?}` (safe optional hint only for invalid tool requests).
 Read without page returns compact plan/revision/lifecycle/
-counts/documentState/detailPageSize; explicit page returns paged PlanRead+Envelope.
+counts/documentState/detailPageSize without items; explicit 0-based page returns
+paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
 
 - start: title/items/source?; creates independent plan identity.

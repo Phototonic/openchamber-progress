@@ -120,7 +120,7 @@ export function parseRequest(value: unknown): Request {
 }
 export const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['op','plan'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional page.' },
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail.' },
     plan: { type: 'string', description: 'One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } } }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] } }, required: ['id','status'], additionalProperties: false } },
@@ -133,7 +133,7 @@ const VALIDATION_HINTS = {
   request: 'Send one request object.',
   op: 'Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.',
   plan: 'Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.',
-  fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.',
+  fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.',
   oid: 'Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.',
   rev: 'Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.',
   title: 'Use a nonempty title of at most 256 characters.',

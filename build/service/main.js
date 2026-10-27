@@ -124,7 +124,7 @@ var VALIDATION_HINTS = {
   request: "Send one request object.",
   op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
-  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.",
+  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
   rev: "Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.",
   title: "Use a nonempty title of at most 256 characters.",
