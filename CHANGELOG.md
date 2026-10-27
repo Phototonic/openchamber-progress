@@ -1,0 +1,58 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/). Package versions are independent of the frozen protocol/schema version (currently 2). GitHub Releases additionally carry the native per-release change lists.
+
+## [Unreleased]
+
+## [0.3.0] - 2026-10-27
+
+### Added
+
+- **Task readiness view with dependency explanations** (#7): active plans now have a Readiness section in the plan detail (session rail and fullscreen board Progress tab) grouping task items into Ready to start, Waiting on prerequisites (with a distinct skipped-prerequisite subgroup) and Blocked. Every recorded prerequisite is listed with its title and reported status, and selecting one reveals and focuses that task in the same plan; assignment labels come only from the recorded assignee. The section states that it is based on recorded prerequisites only; empty, partial, error and stale states stay distinct.
+- **Focus controls for large plan hierarchies** (#9): the task view gains reading controls — Show all / Unfinished filtering with ancestors kept and labelled for context, a participant filter that distinguishes explicit assignment, links, direct reports and parent relay (the matching reason is shown on each row), Expand all / Collapse all, and Jump to in progress / Jump to blocked. Plan totals, Now and Readiness always cover the whole plan while the summary labels matching, context and hidden counts separately. The reading state (collapsed groups, focus, scroll) is scoped per view, never persisted, and survives new revisions. Navigation only — nothing changes status, assignment or readiness.
+
+### Fixed
+
+- Session chips in narrow sidebars (around 280 px) no longer squeeze the session name to a few characters: the state text can now wrap below the name, and a name that still cannot fit truncates with an ellipsis. Wide layouts are unchanged (#8).
+- Paged plan-detail reads refuse a page from a different store, binding or plan instead of joining it; a malformed `dependencies` value refuses the reply instead of reading as "none recorded"; and a failed detail read keeps a stable error and is retried once per list refresh or on a new revision instead of being re-requested on every repaint (#7).
+- A detail reply carrying a newer revision than the plan list no longer triggers a full re-read on every repaint (previously tens of thousands of requests in seconds, including from a hidden frame); host session names are shown only for plans of the verified bound source; tasks with subtasks now show their assignee and relay attribution in the summary; and a plan whose tasks were all removed is no longer treated as still loading (#9).
+
+### Documentation
+
+- Guides are self-contained for outside contributors: internal workflow references were removed, durable contracts (system boundaries, reporting participation, session-move/rebinding and capture-freshness rules) were consolidated into the tracked guides, and stale statements were corrected to match shipped behavior (#6).
+
+## [0.2.9] - 2026-10-27
+
+### Added
+
+- Compact plan picker with management of finished plans (#4).
+- Sidebar progress scoped to the selected session (#5).
+
+## [0.2.8] - 2026-10-26
+
+### Fixed
+
+- Native Windows progress capture support, retained-source reinstallation, and clearer progress invocation and working-plan selection (#3).
+
+## [0.2.7] - 2026-10-26
+
+### Fixed
+
+- External worktree project ownership: live grouping and coverage of external worktrees (#2).
+
+## [0.2.6] - 2026-10-26
+
+### Added
+
+- First automated release from `main`: update awareness, live progress cues and proactive reporting (#1).
+
+## 0.2.5 and earlier
+
+Baseline before automated releases; see the repository history.
+
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.9...v0.3.0
+[0.2.9]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/Phototonic/openchamber-progress/commits/v0.2.6
