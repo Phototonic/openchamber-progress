@@ -35,7 +35,7 @@ Progress comes from **deliberate reports**, not passive observation or inferred 
 3. **Inspect**, review the resolved targets and full-user host-service privilege, then explicitly confirm companion installation.
 4. Follow the activation notice and reload/restart OpenCode **when safe**. Opening a new session alone is not a reliable reload. Begin work with an agent that can use `agent_progress_report`.
 
-The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Current package version is **0.2.9**. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
+The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Current package version is **0.3.0**. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
 
 ## Before you enable capture
 

@@ -1,6 +1,6 @@
 # Production contract v2
 
-Current package version **0.2.9** is independent of protocol/schema **2**. Setup's version
+Current package version **0.3.0** is independent of protocol/schema **2**. Setup's version
 and the loaded tool's version report package semver; /health protocolVersion and
 schemaVersion remain contract versions, not package-major aliases.
 
@@ -93,7 +93,7 @@ SDK coverage. Navigation must be verified against the CURRENT host.
 
 ## Finished-plan cleanup (frozen additive contract)
 
-Package **0.2.9** preserves the additive cleanup contract.
+Package **0.3.0** preserves the additive cleanup contract.
 Protocol/base schema remain **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.

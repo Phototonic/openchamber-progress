@@ -1,8 +1,9 @@
 # Safe global companion setup (production v2)
 
 Package versions use the 0.x line; protocol/schema remain 2. Current package version
-is 0.2.9. Tagged releases are published after main promotion and successful
-workflow checks. Historical
+is 0.3.0. Tagged releases are published after main promotion and successful
+workflow checks. Each release preparation also updates `CHANGELOG.md`, the maintained
+human-readable change history; GitHub release notes remain native What's Changed lists. Historical
 package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
 original labels. Local evidence references below are not shipped files.
 
@@ -43,7 +44,7 @@ report receipt. Hidden/restricted tools are never enabled or bypassed.
 
 The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
 with default branch `main`. Anonymous access to its main manifest is established;
-the package manifest version is 0.2.9. The root `private: true` is an npm publishing
+the package manifest version is 0.3.0. The root `private: true` is an npm publishing
 guard, not a statement about GitHub visibility.
 OpenChamber clones the selected/default ref and inspects its existing runtime
 entries; it does not install dependencies or compile TypeScript. The root manifest
@@ -338,11 +339,12 @@ Package assembly joins built backend entries with the three guest frames. The
 initial backend-only validation did not produce an installable extension ZIP;
 the shipped artifacts are described below.
 
-## V1 installable artifacts (0.2.9)
+## V1 installable artifacts (0.3.0)
 
-V1 is the product scope; the current package version is **0.2.9**,
-agreeing across extension and companion payloads. Version 0.2.9 packages the
-accepted cleanup and session-scoping changes. Version 0.2.8 added native
+V1 is the product scope; the current package version is **0.3.0**,
+agreeing across extension and companion payloads. Version 0.3.0 packages the readiness
+view, focus controls and session-chip readability changes. Version 0.2.9 packaged
+the accepted cleanup and session-scoping changes. Version 0.2.8 added native
 Windows setup, storage and document capture, preserves retained-source
 reinstallation, and includes clearer progress invocation and working-plan selection.
 See the native Windows boundary below. Version 0.2.7 corrected external
@@ -358,7 +360,7 @@ or payload-audit cache was added. This patch distinguishes the distribution from
 installed/archived0.2.2; it is not a complete performance cure.
 It also joins automatic advisory companion comparison and explicit review/update
 UX; updates remain user-confirmed and activation remains separate. Publication of
-0.2.9 does not activate an installed companion; historical real0.2.3 update
+0.3.0 does not activate an installed companion; historical real0.2.3 update
 observations and their pending-load status are unchanged. Protocol/schema remain2.
 The panel ID and
 Agent progress manifest labels are unchanged. The artifacts described here are
@@ -366,19 +368,19 @@ unsigned; checksum inventories verify content integrity, not publisher signature
 
 After `bun run build:backend && bun run package`, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.2.9/` and `.zip`: host manifest, the three guest
+- `agent-progress-extension-0.3.0/` and `.zip`: host manifest, the three guest
   HTML/main.js frames copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.2.9/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-0.3.0/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.2.9.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-0.3.0.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
   Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts remain local QA history; select the0.2.9 pair explicitly.
+   older0.x artifacts remain local QA history; select the 0.3.0 pair explicitly.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.
