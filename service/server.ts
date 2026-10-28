@@ -7,12 +7,13 @@ import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
 import { ExtensionUpdates } from './extension-updates.ts';
 import { parseCleanup } from '../shared/cleanup.ts';
+import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
 
 /** Only fixed read/control routes. No store path, token or SQL from request bodies. */
 export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController, updates = new ExtensionUpdates()) {
   if (!token) throw new ProgressError('binding');
   const expected = Buffer.from(`Bearer ${token}`);
-  const server = http.createServer(async (req,res) => {
+  const server = http.createServer({maxHeaderSize:32*1024},async (req,res) => {
     function answer(status: number, body: unknown) {
       let text = JSON.stringify(body);
       if (Buffer.byteLength(text) > LIMITS.responseBytes) { status=413;text=JSON.stringify({error:'response-too-large'}); }
@@ -20,11 +21,13 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       digestRoute=url.pathname==='/v1/change-digest';
+      searchRoute=url.pathname==='/v1/search'||url.pathname==='/v1/search-state';
       if (url.origin !== 'http://127.0.0.1') return answer(404,{error:'not-found'});
+      if(searchRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       cleanupRoute=['/v1/plan/archive','/v1/plan/restore','/v1/plan/delete'].includes(url.pathname);
       if(cleanupRoute) {
         if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
@@ -70,14 +73,24 @@ export function createProgressServer(store: Store | undefined, token: string, un
         currentStore.setEnabled(url.pathname.endsWith('/enable')); return answer(200,{ok:true,captureEnabled:url.pathname.endsWith('/enable')});
       }
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
-      const routes: Record<string,string[]> = { '/health':[], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
+      const routes: Record<string,string[]> = { '/health':[], '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       const allowed = routes[url.pathname];
       if (!allowed || [...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) return answer(404,{error:'not-found'});
+      if(searchRoute && Buffer.byteLength(url.search)>SEARCH_LIMITS.queryBytes)throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if(url.pathname==='/health'&&!currentStore&&setup&&'configured' in active&&!active.configured&&active.error==='binding')return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       if(!currentStore)return answer(503,{error:active.error??'storage'});
-      if (url.pathname === '/health') return answer(200,{ok:true,ready:true,sqlite:true,planCleanup:1,planChangeDigests:1,protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      if (url.pathname === '/health') return answer(200,{ok:true,ready:true,sqlite:true,planCleanup:1,planChangeDigests:1,planTaskSearch:1,protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      if(url.pathname==='/v1/search') {
+        const options=Object.fromEntries(url.searchParams) as SearchOptions;
+        if(url.searchParams.has('limit'))options.limit=number('limit',20);
+        return answer(200,currentStore.search(options));
+      }
+      if(url.pathname==='/v1/search-state') {
+        let keys:SearchKey[];try{keys=JSON.parse(url.searchParams.get('keys')??'null');}catch{throw new ProgressError('invalid');}
+        return answer(200,currentStore.searchState(text('storeId',true)!,keys));
+      }
       if (url.pathname === '/v1/plans') {
         const archived=url.searchParams.get('archived')??'exclude';if(archived!=='exclude'&&archived!=='only')throw new ProgressError('invalid');
         return answer(200,currentStore.list({cursor:number('cursor',0),limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived}));
@@ -96,7 +109,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     } catch (e) {
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });

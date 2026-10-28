@@ -24523,6 +24523,7 @@ function countItems(items) {
   const skipped = leaves.filter((i) => i.status === "skipped").length;
   return { done: done3, total: leaves.length - skipped, remaining: leaves.length - skipped - done3, skipped };
 }
+var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier2(value3) {
   return typeof value3 === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value3);
 }
@@ -24666,7 +24667,7 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
 import path4 from "node:path";
 
@@ -24804,6 +24805,9 @@ function mutateCleanup(db, file, action, value3, transaction) {
     return receipt;
   });
 }
+
+// shared/plan-task-search.ts
+import { createHash as createHash2 } from "node:crypto";
 
 // shared/change-digest.ts
 var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
@@ -24954,6 +24958,229 @@ function capDigest(result3) {
   return result3;
 }
 
+// shared/plan-task-search.ts
+var normalize3 = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
+function searchTokens(q) {
+  requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
+  const tokens = normalize3(q).trim().split(/\s+/u).filter(Boolean);
+  requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
+  return tokens;
+}
+function searchMatches(tokens, title, id2) {
+  const t = normalize3(title), key = normalize3(id2);
+  return tokens.every((word) => t.includes(word) || key.includes(word));
+}
+var safe = (n, min6 = 0) => Number.isSafeInteger(n) && Number(n) >= min6;
+var hash2 = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var fields = (v, keys4) => Object.keys(v).length === keys4.length && Object.keys(v).every((k) => keys4.includes(k));
+function parseCursor(text) {
+  requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && fields(c, ["v", "identity", "fingerprint", "after", "pending", "gapped"]) && c.v === 1 && typeof c.identity === "string" && /^[a-f0-9]{64}$/.test(c.identity) && typeof c.fingerprint === "string" && /^[a-f0-9]{64}$/.test(c.fingerprint) && typeof c.gapped === "boolean");
+  const key = (v) => v && fields(v, ["source", "plan"]) && identifier2(v.source) && identifier2(v.plan);
+  requireProgress(c.after === null || key(c.after));
+  const p = c.pending;
+  requireProgress(p === null || p && fields(p, ["source", "plan", "revision", "cleanup", "member", "offset", "counted", "phase"]) && identifier2(p.source) && identifier2(p.plan) && safe(p.revision, 1) && safe(p.cleanup) && safe(p.member) && p.member <= p.revision && safe(p.offset) && p.offset <= 1000 && typeof p.counted === "boolean" && typeof p.phase === "string" && ["membership", "hits"].includes(p.phase) && (p.phase !== "membership" || p.offset === 0 && !p.counted));
+  return c;
+}
+function searchIdentity(db, binding) {
+  return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
+}
+function cleanup(db, installed, source, plan) {
+  const c = installed ? cleanupState(db, source, plan) : undefined;
+  return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
+}
+function validPlan(value3, source, id2, revision) {
+  const p = value3;
+  if (!validateDigestSnapshot(value3, source, id2, revision) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || !identifier2(p.sessionId) || typeof p.directory !== "string" || p.directory.length > 4096 || p.directory.includes("\x00") || p.projectId !== undefined && (typeof p.projectId !== "string" || p.projectId.length > 4096) || !Array.isArray(p.links) || p.links.length > 64 || p.links.some((l) => !l || !identifier2(l.sessionId) || !Array.isArray(l.itemIds) || l.itemIds.length > 1000 || !l.itemIds.every(identifier2)))
+    return null;
+  return p;
+}
+function context3(p, item) {
+  const byId = new Map(p.items.map((i) => [i.id, i]));
+  const ancestors = [];
+  let parent = item.parentId;
+  while (parent) {
+    const a = byId.get(parent);
+    ancestors.unshift({ id: a.id, title: a.title });
+    parent = a.parentId;
+  }
+  const omittedAncestors = Math.max(0, ancestors.length - SEARCH_LIMITS.ancestors);
+  return { ancestors: omittedAncestors ? [ancestors[0], ...ancestors.slice(-(SEARCH_LIMITS.ancestors - 1))] : ancestors, omittedAncestors };
+}
+function searchWindow(db, binding, options2 = {}) {
+  requireProgress(Object.keys(options2).every((k) => ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"].includes(k)));
+  const tokens = searchTokens(options2.q ?? ""), limit = options2.limit ?? 20, archived = options2.archived ?? "exclude";
+  requireProgress(Number.isInteger(limit) && limit > 0 && limit <= SEARCH_LIMITS.hits && ["exclude", "only"].includes(archived));
+  for (const key of ["source", "session"])
+    requireProgress(options2[key] === undefined || identifier2(options2[key]));
+  requireProgress(options2.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options2.lifecycle));
+  requireProgress(options2.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options2.status));
+  const identity3 = searchIdentity(db, binding), identityHash = hash2(identity3), fingerprint = hash2([options2.q ?? "", options2.source ?? null, options2.session ?? null, options2.lifecycle ?? null, options2.status ?? null, archived, limit]);
+  const c = options2.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options2.cursor);
+  requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
+  requireProgress(!options2.source || (!c.after || c.after.source === options2.source) && (!c.pending || c.pending.source === options2.source));
+  const installed = cleanupInstalled(db);
+  const r = { ...identity3, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const gap = (reason) => {
+    c.gapped = r.coverage.gapped = true;
+    r.coverage.skippedRecords++;
+    if (!r.coverage.reasons.includes(reason))
+      r.coverage.reasons.push(reason);
+  };
+  const advance = (source, plan) => {
+    c.after = { source, plan };
+    c.pending = null;
+  };
+  let hitBytes = 0;
+  while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
+    const pending = c.pending;
+    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options2.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options2.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    r.work.planSlots++;
+    if (!row) {
+      requireProgress(!pending, "conflict");
+      r.exhausted = true;
+      break;
+    }
+    const source = String(row.source), id2 = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id2);
+    if (pending)
+      requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
+    requireProgress(identifier2(source) && identifier2(id2), "corrupt");
+    if (!safe(revision, 1)) {
+      gap("invalid-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    if (state.state === "deleted" || state.state === "archived" !== (archived === "only")) {
+      advance(source, id2);
+      continue;
+    }
+    const bytes2 = Number(row.bytes);
+    if (bytes2 > SEARCH_LIMITS.inputBytes) {
+      gap("oversized-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    if (r.work.inputBytes + bytes2 > SEARCH_LIMITS.inputBytes)
+      break;
+    const text = db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2).snapshot;
+    r.work.inputBytes += bytes2;
+    let p = null;
+    try {
+      p = validPlan(JSON.parse(String(text)), source, id2, revision);
+    } catch {}
+    if (!p) {
+      gap("invalid-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    r.work.inspectedItems += p.items.length;
+    if (options2.lifecycle && options2.lifecycle !== p.lifecycle) {
+      advance(source, id2);
+      continue;
+    }
+    const pos = pending ?? { source, plan: id2, revision, cleanup: state.revision, member: 0, offset: 0, counted: false, phase: "membership" };
+    if (options2.session && pos.phase === "membership" && p.sessionId !== options2.session && !p.links.some((l) => l.sessionId === options2.session)) {
+      let member = false, finished = false, invalid4 = false;
+      while (r.work.membershipRows < SEARCH_LIMITS.membershipRows) {
+        const m = db.prepare("SELECT revision,length(CAST(payload AS BLOB)) AS bytes FROM contributions WHERE source=? AND plan=? AND revision>? AND revision<=? ORDER BY revision LIMIT 1").get(source, id2, pos.member, revision);
+        if (!m) {
+          finished = true;
+          break;
+        }
+        r.work.membershipRows++;
+        const size6 = Number(m.bytes);
+        if (size6 + bytes2 > SEARCH_LIMITS.inputBytes) {
+          gap("oversized-membership");
+          invalid4 = true;
+          break;
+        }
+        if (r.work.inputBytes + size6 > SEARCH_LIMITS.inputBytes)
+          break;
+        const payload = db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? AND revision=?").get(source, id2, m.revision).payload;
+        r.work.inputBytes += size6;
+        let v;
+        try {
+          v = JSON.parse(String(payload));
+        } catch {}
+        if (!v || v.revision !== m.revision || !identifier2(v.attributedSessionId)) {
+          gap("invalid-membership");
+          invalid4 = true;
+          break;
+        }
+        pos.member = Number(m.revision);
+        if (v.attributedSessionId === options2.session) {
+          member = true;
+          break;
+        }
+      }
+      if (invalid4 || finished && !member) {
+        advance(source, id2);
+        continue;
+      }
+      if (!member) {
+        c.pending = pos;
+        break;
+      }
+    }
+    pos.phase = "hits";
+    const planMatched = searchMatches(tokens, p.title, p.id);
+    const matches = p.items.filter((i) => i.kind === "task" && (!options2.status || i.status === options2.status) && searchMatches(tokens, i.title, i.id));
+    if (!matches.length && (!planMatched || options2.status)) {
+      advance(source, id2);
+      continue;
+    }
+    const tasks2 = matches.length ? matches : [null];
+    const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
+    const plan = { id: id2, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    requireProgress(pos.offset < tasks2.length);
+    while (pos.offset < tasks2.length && r.hits.length < limit) {
+      const task = tasks2[pos.offset];
+      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context3(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const size6 = Buffer.byteLength(JSON.stringify(hit)) + 1;
+      if (hitBytes + size6 > SEARCH_LIMITS.responseBytes - 16 * 1024)
+        break;
+      if (!pos.counted) {
+        r.counts.matchedPlans++;
+        r.counts.matchingTasks += matches.length;
+        pos.counted = true;
+      }
+      hitBytes += size6;
+      r.hits.push(hit);
+      pos.offset++;
+    }
+    if (pos.offset < tasks2.length) {
+      c.pending = pos;
+      break;
+    }
+    advance(source, id2);
+  }
+  r.nextCursor = r.exhausted ? null : Buffer.from(JSON.stringify(c)).toString("base64url");
+  requireProgress(r.nextCursor === null || Buffer.byteLength(r.nextCursor) <= SEARCH_LIMITS.cursorBytes);
+  r.work.outputHits = r.hits.length;
+  for (let n = 0;n < 3; n++)
+    r.work.outputBytes = Buffer.byteLength(JSON.stringify(r));
+  requireProgress(r.work.outputBytes <= SEARCH_LIMITS.responseBytes);
+  return r;
+}
+function searchState(db, binding, storeId, keys4) {
+  requireProgress(identifier2(storeId) && Array.isArray(keys4) && keys4.length > 0 && keys4.length <= SEARCH_LIMITS.stateKeys && keys4.every((k) => k && fields(k, ["source", "plan"]) && identifier2(k.source) && identifier2(k.plan)));
+  requireProgress(new Set(keys4.map((k) => JSON.stringify([k.source, k.plan]))).size === keys4.length);
+  const identity3 = searchIdentity(db, binding);
+  requireProgress(identity3.storeId === storeId, "conflict");
+  const installed = cleanupInstalled(db);
+  return { ...identity3, data: keys4.map((k) => {
+    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row || safe(row.revision, 1), "corrupt");
+    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  }) };
+}
+
 // shared/store.ts
 function canonical(value3) {
   if (Array.isArray(value3))
@@ -24963,7 +25190,7 @@ function canonical(value3) {
   return JSON.stringify(value3);
 }
 function digest(value3) {
-  return createHash2("sha256").update(value3).digest("hex");
+  return createHash3("sha256").update(value3).digest("hex");
 }
 function directoryFilter(value3) {
   return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
@@ -25065,6 +25292,12 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  search(options2 = {}) {
+    return this.transaction(false, () => searchWindow(this.db, this.readBinding, options2));
+  }
+  searchState(storeId, keys4) {
+    return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys4));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
@@ -25223,8 +25456,8 @@ class Store {
       requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
       const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
       requireProgress(state?.state !== "deleted", "not-found");
-      const cleanup = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
-      requireProgress(cleanup.revision === cleanupRev, "conflict");
+      const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
+      requireProgress(cleanup2.revision === cleanupRev, "conflict");
       requireProgress(to <= Number(live.revision));
       const result3 = {
         protocolVersion: 2,
@@ -25233,7 +25466,7 @@ class Store {
         sourceBinding: { ...this.readBinding },
         source,
         plan,
-        cleanup,
+        cleanup: cleanup2,
         interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
         availability: "target-unavailable",
         complete: false,
@@ -25325,18 +25558,18 @@ class Store {
   apply(value3, actor, capture, child) {
     const r = parseRequest(value3);
     requireProgress(r.op !== "read");
-    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
-      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(cleanup?.state !== "deleted", "not-found");
-      requireProgress(cleanup?.state !== "archived", "closed");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
       const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash2, "operation-reused");
+        requireProgress(replay.payload_hash === hash3, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -25476,7 +25709,7 @@ class Store {
         return receipt;
       }
       function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash2, JSON.stringify(receipt));
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash3, JSON.stringify(receipt));
       }
     });
   }
