@@ -151,7 +151,6 @@ startView<Ui>({
     button(modes, 'cleanup-archived', 'Archived plans', () => mode(true), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
     modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
     root.append(modes);
-    root.append(reportingHealthBlock(reporting.claim({key:JSON.stringify([ownerOf(vc),vc.read?.storeId,vc.read?.binding,vc.read?.captureEnabled,!!vc.failure,selectedPlan(vc)?.key,vc.ui.filters,vc.ui.archived,vc.ui.search?.key??null]),read:vc.read,plan:selectedPlan(vc),stale:!!vc.failure})));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
     if (vc.health?.ready && !vc.health.planCleanup) root.append(testid(el('p', 'ap-note', 'Plan cleanup is unavailable with this service version.'), 'cleanup-unavailable'));
     // The official-main notice does not depend on companion setup or the store.
@@ -160,6 +159,7 @@ startView<Ui>({
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
       else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock());
+      footer(root, vc, null);
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
@@ -458,6 +458,7 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   const fill = () => { body.replaceChildren(setupBlock(vc)); };
   setup.addEventListener('toggle', () => { if (setup.open) { if (!vc.setup) vc.requestSetup(); fill(); } });
   setup.append(body);
+  zone.append(reportingHealthBlock(reporting.claim({key:JSON.stringify([ownerOf(vc),vc.read?.storeId,vc.read?.binding,vc.read?.captureEnabled,!!vc.failure,plan?.key,vc.ui.filters,vc.ui.archived,vc.ui.search?.key??null]),read:vc.read,plan,stale:!!vc.failure})));
   zone.append(setup, detailsBlock(vc.read, plan, [
     ['Plans loaded', String(vc.read?.plans.length ?? 0)],
     ['Live sessions watched', String(vc.sessionSubscriptions)],

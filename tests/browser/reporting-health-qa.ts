@@ -34,7 +34,11 @@ try{
   await send('Runtime.enable');await send('Page.enable');await send('Network.enable');await send('Emulation.setFocusEmulationEnabled',{enabled:true});
   await send('Page.navigate',{url:`http://127.0.0.1:${fx.port}/`});await wait(`!!d.querySelector('[data-testid="reporting-health-toggle"] button')`,'health control');await evaluate(`qa.show(['page'],1100);true`);
   await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="reporting-support-preview"]')`,'observations');
-  check('keyboard-open',await guest(`return d.querySelector('[data-testid="reporting-health"]').textContent.includes('Reporting health')`));
+  check('secondary-placement',await guest(`return !!d.querySelector('.ap-footer [data-testid="reporting-health"]')`));
+  check('details-collapsed-by-default',await guest(`return !d.querySelector('[data-testid="reporting-explanations"]').open&&!d.querySelector('[data-testid="reporting-support"]').open`));
+  check('compact-status-overview',await guest(`return d.querySelectorAll('.ap-health-row').length===7&&d.querySelector('.ap-health-grid').getBoundingClientRect().height<330`));
+  await focus('[data-testid="reporting-support"] summary');await key('Enter');await wait(`d.querySelector('[data-testid="reporting-support"]').open`,'support expanded');
+  check('keyboard-open',await guest(`return d.querySelector('[data-testid="reporting-health-toggle"] button').getAttribute('aria-expanded')==='true'`));
   check('privacy-preview',await guest(`return !/fixture|source-|account-|private|\\//.test(d.querySelector('[data-testid="reporting-support-preview"]').value)`));
   await guest(`Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:()=>Promise.reject(new Error('fixture rejection'))}});return true`);
   await click('[data-testid="reporting-support-copy"] button');await wait(`d.querySelector('[data-testid="reporting-health"]').textContent.includes('manually')`,'copy fallback');check('copy-fallback',true);
@@ -43,7 +47,7 @@ try{
   await evaluate(`qa.show(['page'],360);true`);await wait('w.innerWidth===360','narrow');check('narrow-preview',await guest(`const n=d.querySelector('[data-testid="reporting-support-preview"]');return n.getBoundingClientRect().width<=360`));
   await evaluate('new Promise(r=>setTimeout(r,250))');
   if(await guest(`return !d.querySelector('[data-testid="reporting-support-preview"]')`)){await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="reporting-support-preview"]')`,'reopen after host context update');}
-  await guest(`d.querySelector('[data-testid="reporting-health"]').scrollIntoView({block:'start'});return true`);const shot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(join(output,'reporting-health-narrow.png'),Buffer.from(shot.data,'base64'));
+  await guest(`d.querySelector('[data-testid="reporting-support"]').open=false;d.querySelector('[data-testid="reporting-explanations"]').open=false;return true`);await guest(`d.querySelector('[data-testid="reporting-health"]').scrollIntoView({block:'start'});return true`);const shot=await send('Page.captureScreenshot',{format:'png',clip:{x:0,y:0,width:400,height:950,scale:1}});writeFileSync(join(output,'reporting-health-narrow.png'),Buffer.from(shot.data,'base64'));
   await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!d.querySelector('[data-testid="reporting-support-preview"]')`,'preview closed');check('close-clears-preview',await guest(`return !d.querySelector('[data-testid="reporting-support-preview"]')`));
   await wait(`d.querySelector('[data-testid="reporting-health-toggle"] button')?.textContent==='Reporting health'`,'closed');await evaluate(`qa.holds.push({path:'/v1/setup',tag:'health',frame:'page'});true`);await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`qa.held.some(h=>h.tag==='health')`,'held setup');await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await evaluate(`qa.release('health');true`);await evaluate('new Promise(r=>setTimeout(r,150))');check('closed-reply-discarded',await guest(`return !d.querySelector('[data-testid="reporting-support-preview"]')`));
   check('no-runtime-errors',runtimeErrors===0);
