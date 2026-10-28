@@ -19,7 +19,12 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // service/server.ts
 import http from "node:http";
-import { timingSafeEqual } from "node:crypto";
+
+// shared/cleanup.ts
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID, createHash } from "node:crypto";
+import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2, unlinkSync, realpathSync as realpathSync2, existsSync as existsSync2 } from "node:fs";
+import path2 from "node:path";
 
 // shared/progress.ts
 var VERSION = 2;
@@ -137,18 +142,6 @@ function validRequest(value, hint) {
   if (!value)
     throw new ProgressError("invalid", undefined, VALIDATION_HINTS[hint]);
 }
-
-// shared/store.ts
-import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
-import path3 from "node:path";
-
-// shared/cleanup.ts
-import { DatabaseSync } from "node:sqlite";
-import { randomUUID, createHash } from "node:crypto";
-import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2, unlinkSync, realpathSync as realpathSync2, existsSync as existsSync2 } from "node:fs";
-import path2 from "node:path";
 
 // shared/platform.ts
 import { spawnSync } from "node:child_process";
@@ -582,6 +575,279 @@ function mutateCleanup(db, file, action, value, transaction) {
     return receipt;
   });
 }
+
+// shared/document-comparison.ts
+var CAPTURE_LIMITS = {
+  rows: 128,
+  entries: 50,
+  responseBytes: 262144,
+  cursorBytes: 4096,
+  queryBytes: 16384,
+  snapshotBytes: 1048576,
+  documentBytes: 262144,
+  lines: 20000,
+  steps: 1e6,
+  traceCells: 1e6,
+  renderedLines: 2000,
+  renderedBytes: 131072
+};
+function compareCaptureText(before, after) {
+  const bytes = (s) => new TextEncoder().encode(s).length;
+  if (bytes(before) > CAPTURE_LIMITS.documentBytes || bytes(after) > CAPTURE_LIMITS.documentBytes)
+    return { state: "limited", reason: "bytes" };
+  const lines = (s) => {
+    const out = [];
+    let start = 0;
+    for (let i = 0;i < s.length; i++)
+      if (s[i] === `
+`) {
+        if (out.length === CAPTURE_LIMITS.lines)
+          return null;
+        out.push(s.slice(start, i + 1));
+        start = i + 1;
+      }
+    if (start < s.length) {
+      if (out.length === CAPTURE_LIMITS.lines)
+        return null;
+      out.push(s.slice(start));
+    }
+    return out;
+  };
+  const a = lines(before), b = lines(after);
+  if (!a || !b)
+    return { state: "limited", reason: "lines" };
+  if (before === after)
+    return { state: "equal" };
+  const intern = new Map;
+  const ids = (values) => values.map((s) => {
+    let id = intern.get(s);
+    if (id === undefined) {
+      id = intern.size;
+      intern.set(s, id);
+    }
+    return id;
+  });
+  const aa = ids(a), bb = ids(b), n = a.length, m = b.length;
+  const trace = [];
+  const v = new Map([[1, 0]]);
+  let steps = 0, cells = 0, found = -1;
+  outer:
+    for (let d = 0;d <= n + m; d++) {
+      cells += v.size;
+      if (cells > CAPTURE_LIMITS.traceCells)
+        return { state: "limited", reason: "work" };
+      trace.push(new Map(v));
+      for (let k = -d;k <= d; k += 2) {
+        if (++steps > CAPTURE_LIMITS.steps)
+          return { state: "limited", reason: "work" };
+        let x2 = k === -d || k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+        let y2 = x2 - k;
+        while (x2 < n && y2 < m && aa[x2] === bb[y2]) {
+          x2++;
+          y2++;
+          if (++steps > CAPTURE_LIMITS.steps)
+            return { state: "limited", reason: "work" };
+        }
+        v.set(k, x2);
+        if (x2 >= n && y2 >= m) {
+          found = d;
+          break outer;
+        }
+      }
+    }
+  const operations = [];
+  let x = n, y = m;
+  for (let d = found;d >= 0; d--) {
+    const previous = trace[d], k = x - y;
+    const pk = k === -d || k !== d && (previous.get(k - 1) ?? -1) < (previous.get(k + 1) ?? -1) ? k + 1 : k - 1;
+    const px = previous.get(pk) ?? 0, py = px - pk;
+    while (x > px && y > py) {
+      operations.push({ kind: "context", value: a[--x] });
+      y--;
+    }
+    if (d > 0) {
+      if (x === px)
+        operations.push({ kind: "added", value: b[--y] });
+      else
+        operations.push({ kind: "removed", value: a[--x] });
+    }
+  }
+  operations.reverse();
+  let oldLine = 1, newLine = 1, added = 0, removed = 0;
+  const positioned = operations.map((o) => {
+    const ending = o.value.endsWith(`\r
+`) ? "crlf" : o.value.endsWith(`
+`) ? "lf" : "none";
+    if (o.kind === "added")
+      added++;
+    if (o.kind === "removed")
+      removed++;
+    return { kind: o.kind, oldLine: o.kind === "added" ? null : oldLine++, newLine: o.kind === "removed" ? null : newLine++, text: o.value.slice(0, o.value.length - (ending === "crlf" ? 2 : ending === "lf" ? 1 : 0)), ending };
+  });
+  const ranges = [];
+  for (let i = 0;i < positioned.length; i++)
+    if (positioned[i].kind !== "context") {
+      const start = Math.max(0, i - 3), end = Math.min(positioned.length, i + 4), last = ranges.at(-1);
+      if (last && start <= last[1])
+        last[1] = end;
+      else
+        ranges.push([start, end]);
+    }
+  let count = 0, size = 0, previousEnd = 0;
+  const hunks = [];
+  for (const [start, end] of ranges) {
+    count += end - start;
+    if (count > CAPTURE_LIMITS.renderedLines)
+      return { state: "limited", reason: "output" };
+    const kept = positioned.slice(start, end);
+    for (const line of kept) {
+      size += bytes(line.text);
+      if (size > CAPTURE_LIMITS.renderedBytes)
+        return { state: "limited", reason: "output" };
+    }
+    const oldStart = kept.find((l) => l.oldLine !== null)?.oldLine ?? positioned.slice(0, start).filter((l) => l.oldLine !== null).length + 1;
+    const newStart = kept.find((l) => l.newLine !== null)?.newLine ?? positioned.slice(0, start).filter((l) => l.newLine !== null).length + 1;
+    hunks.push({ oldStart, newStart, omittedBefore: start - previousEnd, lines: kept });
+    previousEnd = end;
+  }
+  return { state: "diff", hunks, omittedAfter: positioned.length - previousEnd, added, removed };
+}
+
+// shared/document-captures.ts
+var integer = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
+function parseCaptureBinding(value) {
+  requireProgress(value && Buffer.byteLength(value) <= 256);
+  let v;
+  try {
+    v = JSON.parse(value);
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(v && typeof v === "object" && Object.keys(v).length === 2 && (v.sourceId === null || identifier(v.sourceId)) && typeof v.verified === "boolean");
+  return { sourceId: v.sourceId, verified: v.verified };
+}
+var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
+function head(db, binding, r) {
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer(r.cleanupRev));
+  requireProgress(r.binding && same(binding, r.binding), "conflict");
+  const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(meta.store_id === r.storeId, "conflict");
+  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
+      CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
+    END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
+  requireProgress(row, "not-found");
+  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
+  requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
+  requireProgress(typeof row.document === "string", "corrupt");
+  let doc;
+  try {
+    doc = JSON.parse(row.document);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
+  for (const key of ["path", "canonicalPath"])
+    requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
+  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
+  return {
+    identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
+    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+  };
+}
+var projection = `id, revision,
+ CASE WHEN length(CAST(source AS BLOB))<=80 THEN source END AS source,
+ CASE WHEN length(CAST(plan AS BLOB))<=80 THEN plan END AS plan,
+ CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
+ CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
+ CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
+function entry(row) {
+  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier(row.source) && identifier(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
+  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+}
+function decodeCursor(raw, r) {
+  requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  const i = c.identity;
+  requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
+  return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
+}
+function captureIndex(db, binding, r, cursor) {
+  const h = head(db, binding, r);
+  const max = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
+  requireProgress(integer(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
+  const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max, revision: h.current.revision, before: max + 1 };
+  requireProgress(c.revision <= h.current.revision, "conflict");
+  const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
+  const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
+  let before = c.before;
+  for (const row of rows) {
+    const e = entry(row);
+    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+    if (qualifies) {
+      if (out.data.length === CAPTURE_LIMITS.entries) {
+        out.limit = "entries";
+        break;
+      }
+      if (Buffer.byteLength(JSON.stringify({ ...out, data: [...out.data, e] })) > CAPTURE_LIMITS.responseBytes - CAPTURE_LIMITS.cursorBytes - 1024) {
+        out.limit = "bytes";
+        break;
+      }
+      out.data.push(e);
+    }
+    before = e.id;
+    out.scanned++;
+  }
+  out.exhausted = out.scanned === rows.length && rows.length < CAPTURE_LIMITS.rows;
+  if (!out.exhausted) {
+    out.limit ??= "rows";
+    out.nextCursor = Buffer.from(JSON.stringify({ ...c, before })).toString("base64url");
+  }
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function captureComparison(db, binding, r, before, after) {
+  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  const h = head(db, binding, r);
+  const read = (id) => {
+    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id, r.source, r.plan);
+    requireProgress(row, "not-found");
+    return { entry: entry(row), bytes: Number(row.bytes) };
+  };
+  const a = read(before), b = before === after ? a : read(after);
+  const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
+  if (a.bytes <= CAPTURE_LIMITS.documentBytes && b.bytes <= CAPTURE_LIMITS.documentBytes && a.bytes >= 0 && b.bytes >= 0) {
+    const body = (id) => String(db.prepare("SELECT text FROM captures WHERE id=?").get(id).text);
+    const text = body(before);
+    out.result = compareCaptureText(text, before === after ? text : body(after));
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > CAPTURE_LIMITS.responseBytes)
+    out.result = { state: "limited", reason: "output" };
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+
+// service/server.ts
+import { timingSafeEqual } from "node:crypto";
+
+// shared/store.ts
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
+import path3 from "node:path";
 
 // shared/plan-task-search.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -1028,13 +1294,13 @@ class Store {
         const stat = lstatSync3(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
-        const head = Buffer.alloc(16);
+        const head2 = Buffer.alloc(16);
         try {
-          readSync(fd, head, 0, 16, 0);
+          readSync(fd, head2, 0, 16, 0);
         } finally {
           closeSync3(fd);
         }
-        requireProgress(head.toString("binary") === "SQLite format 3\x00", "corrupt");
+        requireProgress(head2.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync2(file, { readOnly: options.readOnly ?? false });
       if (!existed) {
@@ -1070,6 +1336,12 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  documentCaptures(r, cursor) {
+    return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
+  }
+  documentComparison(r, before, after) {
+    return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after));
   }
   search(options = {}) {
     return this.transaction(false, () => searchWindow(this.db, this.readBinding, options));
@@ -3948,7 +4220,7 @@ __export(exports_regexes, {
   ksuid: () => ksuid,
   ipv6: () => ipv6,
   ipv4: () => ipv4,
-  integer: () => integer,
+  integer: () => integer2,
   idnEmail: () => idnEmail,
   iban: () => iban,
   httpProtocol: () => httpProtocol,
@@ -4051,7 +4323,7 @@ var string = (params) => {
   return new RegExp(`^${regex}$`);
 };
 var bigint = /^-?\d+n?$/;
-var integer = /^-?\d+$/;
+var integer2 = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
 var boolean = /^(?:true|false)$/i;
 var _null = /^null$/i;
@@ -6841,7 +7113,7 @@ function leafPattern(schema) {
   if (minimum !== undefined || maximum !== undefined)
     return string({ minimum, maximum }).source;
   const own2 = schema._zod.pattern;
-  return (isInt && own2 === number ? integer : own2)?.source;
+  return (isInt && own2 === number ? integer2 : own2)?.source;
 }
 function partPattern(schema) {
   const def = schema._zod.def;
@@ -7204,9 +7476,9 @@ var memo = {
     if (!bucket)
       return empty;
     handoff = undefined;
-    const entry = { value: empty, issues: null };
-    bucket.set(payload.value, entry);
-    open.push(entry);
+    const entry2 = { value: empty, issues: null };
+    bucket.set(payload.value, entry2);
+    open.push(entry2);
     return empty;
   },
   guard(inst) {
@@ -7280,16 +7552,16 @@ var memo = {
         const depth = open.length;
         const result = base(payload, ctx);
         handoff = undefined;
-        const entry = open.length > depth ? open.pop() : undefined;
+        const entry2 = open.length > depth ? open.pop() : undefined;
         if (result instanceof Promise) {
           return result.then((r) => {
-            if (entry)
-              entry.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
+            if (entry2)
+              entry2.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
             return r;
           });
         }
-        if (entry)
-          entry.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
+        if (entry2)
+          entry2.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
         return result;
       };
       inst._zod.parse = wrapped;
@@ -17506,42 +17778,42 @@ function extractDefs(ctx, schema) {
   if (ctx.external && ctx.sharedDefsExtractedFor === ctx.external)
     return;
   const idToSchema = new Map;
-  for (const entry of ctx.seen.entries()) {
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+  for (const entry2 of ctx.seen.entries()) {
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
       const existing = idToSchema.get(id);
-      if (existing && existing !== entry[0]) {
+      if (existing && existing !== entry2[0]) {
         throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
       }
-      idToSchema.set(id, entry[0]);
+      idToSchema.set(id, entry2[0]);
     }
   }
-  const makeURI = (entry) => {
+  const makeURI = (entry2) => {
     const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
     if (ctx.external) {
-      const externalId = ctx.external.registry.get(entry[0])?.id;
+      const externalId = ctx.external.registry.get(entry2[0])?.id;
       const uriGenerator = ctx.external.uri ?? ((id2) => id2);
       if (externalId) {
         return { ref: uriGenerator(externalId) };
       }
-      const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
-      entry[1].defId = id;
+      const id = entry2[1].defId ?? entry2[1].schema.id ?? `schema${ctx.counter++}`;
+      entry2[1].defId = id;
       return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id)}` };
     }
     const uriPrefix = `#`;
     const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
-    if (entry[1] === root && !entry[1].schema.id) {
+    if (entry2[1] === root && !entry2[1].schema.id) {
       return { ref: uriPrefix };
     }
-    const defId = entry[1].schema.id ?? `__schema${ctx.counter++}`;
+    const defId = entry2[1].schema.id ?? `__schema${ctx.counter++}`;
     return { defId, ref: defUriPrefix + encodeJSONPointerSegment(defId) };
   };
-  const extractToDef = (entry) => {
-    if (entry[1].schema.$ref) {
+  const extractToDef = (entry2) => {
+    if (entry2[1].schema.$ref) {
       return;
     }
-    const seen = entry[1];
-    const { ref, defId } = makeURI(entry);
+    const seen = entry2[1];
+    const { ref, defId } = makeURI(entry2);
     seen.def = { ...seen.schema };
     if (defId)
       seen.defId = defId;
@@ -17552,38 +17824,38 @@ function extractDefs(ctx, schema) {
     schema2.$ref = ref;
   };
   if (ctx.cycles === "throw") {
-    for (const entry of ctx.seen.entries()) {
-      const seen = entry[1];
+    for (const entry2 of ctx.seen.entries()) {
+      const seen = entry2[1];
       if (seen.cycle) {
         throw new Error("Cycle detected: " + `#/${seen.cycle?.join("/")}/<root>` + '\n\nSet the `cycles` parameter to `"ref"` to resolve cyclical schemas with defs.');
       }
     }
   }
-  for (const entry of ctx.seen.entries()) {
-    const seen = entry[1];
-    if (schema === entry[0]) {
-      extractToDef(entry);
+  for (const entry2 of ctx.seen.entries()) {
+    const seen = entry2[1];
+    if (schema === entry2[0]) {
+      extractToDef(entry2);
       continue;
     }
     if (ctx.external) {
-      const ext = ctx.external.registry.get(entry[0])?.id;
-      if (schema !== entry[0] && ext) {
-        extractToDef(entry);
+      const ext = ctx.external.registry.get(entry2[0])?.id;
+      if (schema !== entry2[0] && ext) {
+        extractToDef(entry2);
         continue;
       }
     }
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.cycle) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.count > 1) {
       if (ctx.reused === "ref") {
-        extractToDef(entry);
+        extractToDef(entry2);
       }
     }
   }
@@ -17765,12 +18037,12 @@ function finalize(ctx, schema) {
     });
   };
   if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
-    for (const entry of [...ctx.seen.entries()].reverse()) {
-      flattenRef(entry[0]);
+    for (const entry2 of [...ctx.seen.entries()].reverse()) {
+      flattenRef(entry2[0]);
     }
     if (ctx.target !== "openapi-3.0") {
-      for (const entry of ctx.seen.entries()) {
-        compactTypeUnion(entry[1].def ?? entry[1].schema);
+      for (const entry2 of ctx.seen.entries()) {
+        compactTypeUnion(entry2[1].def ?? entry2[1].schema);
       }
     }
     for (const rewrite of ctx.deferred)
@@ -17815,8 +18087,8 @@ function finalize(ctx, schema) {
     delete result.id;
   const defs = ctx.external?.defs ?? {};
   if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
-    for (const entry of ctx.seen.entries()) {
-      const seen = entry[1];
+    for (const entry2 of ctx.seen.entries()) {
+      const seen = entry2[1];
       if (seen.def && seen.defId) {
         if (seen.def.id === seen.defId)
           delete seen.def.id;
@@ -18416,15 +18688,15 @@ function stringifyKeyNames(bySchema, json, visited) {
     return rest;
   rest.type = "string";
   if (!values)
-    rest.pattern = (types.includes("number") ? number : integer).source;
+    rest.pattern = (types.includes("number") ? number : integer2).source;
   return rest;
 }
 var pendingRecords = new WeakMap;
 function rewriteKeyNames(ctx) {
   const bySchema = new Map;
-  for (const entry of ctx.seen.values()) {
-    if (entry.def && !bySchema.has(entry.schema))
-      bySchema.set(entry.schema, entry);
+  for (const entry2 of ctx.seen.values()) {
+    if (entry2.def && !bySchema.has(entry2.schema))
+      bySchema.set(entry2.schema, entry2);
   }
   const rewrites = new Map;
   for (const record of pendingRecords.get(ctx) ?? []) {
@@ -18438,8 +18710,8 @@ function rewriteKeyNames(ctx) {
   }
   if (!rewrites.size)
     return;
-  for (const entry of ctx.seen.values()) {
-    for (const carrier of [entry.schema, entry.def]) {
+  for (const entry2 of ctx.seen.values()) {
+    for (const carrier of [entry2.schema, entry2.def]) {
       const rewritten = carrier && rewrites.get(carrier.propertyNames);
       if (rewritten)
         carrier.propertyNames = rewritten;
@@ -18633,8 +18905,8 @@ function toJSONSchema(input, params) {
     const registry2 = input;
     const ctx2 = initializeContext({ ...params, processors: allProcessors });
     const defs = {};
-    for (const entry of registry2._idmap.entries()) {
-      const [_, schema] = entry;
+    for (const entry2 of registry2._idmap.entries()) {
+      const [_, schema] = entry2;
       processSchema(schema, ctx2);
     }
     const schemas = {};
@@ -18644,8 +18916,8 @@ function toJSONSchema(input, params) {
       defs
     };
     ctx2.external = external;
-    for (const entry of registry2._idmap.entries()) {
-      const [key, schema] = entry;
+    for (const entry2 of registry2._idmap.entries()) {
+      const [key, schema] = entry2;
       extractDefs(ctx2, schema);
       assignProp(schemas, key, finalize(ctx2, schema));
     }
@@ -21601,21 +21873,21 @@ var socketBindingObjectSchema = exports_external.object({
   path: socketPathSchema.optional(),
   candidates: socketCandidatesSchema.optional()
 }).strict().refine((value) => Boolean(value.path) || Boolean(value.candidates), { message: "socket binding needs path or candidates" });
-var normalizeSocketObject = (entry) => {
+var normalizeSocketObject = (entry2) => {
   const candidatesByPlatform = {};
-  if (entry.candidates) {
+  if (entry2.candidates) {
     for (const platform of SOCKET_PLATFORMS) {
-      const list = entry.candidates[platform];
+      const list = entry2.candidates[platform];
       if (list && list.length > 0) {
         candidatesByPlatform[platform] = [...list];
       }
     }
-  } else if (entry.path) {
+  } else if (entry2.path) {
     for (const platform of SOCKET_PLATFORMS) {
-      candidatesByPlatform[platform] = [entry.path];
+      candidatesByPlatform[platform] = [entry2.path];
     }
   }
-  return { id: entry.id, candidatesByPlatform };
+  return { id: entry2.id, candidatesByPlatform };
 };
 var socketEntrySchema = exports_external.union([
   socketPathSchema.transform((path6) => ({
@@ -23436,9 +23708,12 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false;
     try {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
+      comparisonRoute = ["/v1/document-captures", "/v1/document-comparison"].includes(url2.pathname);
+      if (comparisonRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
       digestRoute = url2.pathname === "/v1/change-digest";
       searchRoute = url2.pathname === "/v1/search" || url2.pathname === "/v1/search-state";
       if (url2.origin !== "http://127.0.0.1")
@@ -23542,10 +23817,14 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
       const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
+      routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url2.pathname];
       if (!allowed || [...url2.searchParams.keys()].some((k) => !allowed.includes(k) || url2.searchParams.getAll(k).length !== 1))
         return answer(404, { error: "not-found" });
       if (searchRoute && Buffer.byteLength(url2.search) > SEARCH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (comparisonRoute && Buffer.byteLength(url2.search) > CAPTURE_LIMITS.queryBytes)
         throw new ProgressError("invalid");
       const number4 = (key, fallback) => {
         const v = url2.searchParams.get(key);
@@ -23566,7 +23845,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
       if (url2.pathname === "/health")
-        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
       if (url2.pathname === "/v1/search") {
         const options = Object.fromEntries(url2.searchParams);
         if (url2.searchParams.has("limit"))
@@ -23590,6 +23869,16 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       const source = text2("source", true);
       const plan = text2("plan", true);
+      if (comparisonRoute) {
+        const integer3 = (key, min) => {
+          const value = url2.searchParams.get(key);
+          if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
+            throw new ProgressError("invalid");
+          return Number(value);
+        };
+        const r = { storeId: text2("storeId", true), binding: parseCaptureBinding(url2.searchParams.get("binding")), source, plan, cleanupRev: integer3("cleanupRev", 0) };
+        return answer(200, url2.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url2.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer3("before", 1), integer3("after", 1)));
+      }
       if (digestRoute) {
         const revision = (key, minimum) => {
           const v = url2.searchParams.get(key);
@@ -23610,7 +23899,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
         return answer(409, { error: error62.code });
       return answer(error62.code === "invalid" ? 400 : error62.code === "not-found" ? 404 : 503, { error: error62.code });
     }

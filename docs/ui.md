@@ -1,5 +1,68 @@
 # Progress views
 
+## Compare recorded document captures
+
+The board's Document tab offers **Compare recorded captures** after the existing
+document. Opening it explicitly discovers recorded versions and defaults to the
+newest two available capture IDs. Two labelled SDK selectors choose the older
+and newer capture; **Compare** reads the selected pair. Choosing the same ID
+shows equal text; a reversed pair is refused with a plain explanation. Existing
+document reading remains separate. The rail and Work Status never request a
+comparison. An absent `documentCaptureComparison:1` capability explains that the
+feature is unavailable without calling unsupported routes.
+
+![Two recorded captures with timestamps, synchronization labels and a literal unified diff](images/document-capture-comparison.png)
+
+Synthetic fixture, including literal markup used to check text-only rendering.
+
+Discovery reads at most ten bounded windows per explicit action. Empty windows
+do not establish no history; **Look for older captures** continues it. The option
+page retains at most 50 entries plus the two selected records. Advancing replaces
+the page while keeping selected IDs. Refresh discovers new versions without
+silently changing that pair. Zero/one-capture messages require exhausted,
+successful discovery; failed windows retain prior choices with Retry and never
+claim complete coverage. New reports offer refresh while the pair stays pinned.
+
+`capture-comparison.ts` owns one frame-local visit. Identity includes integration
+account, service/store/source binding, selected source/plan, board/search scope
+and cleanup generation. Leaving Document, selection/context changes, hidden
+frames, cleanup and disposal retire reads; no stale callback can continue
+discovery or restore removed bytes. A 404 clears retained comparison data and
+selections. Archive remains inspectable, but archive/restore restarts the visit.
+Normal list/search freshness observes remote deletion; filtered-list absence is
+not deletion. A search-opened plan uses complete validated detail metadata even
+outside the ordinary 500-plan list. There is no comparison polling or browser
+persistence, and no writes to reports, review points or the source document.
+
+The board retires requests synchronously through `beforeUiChange` when effective
+selection, tab, archive, filter or search scope changes, before the next paint.
+Background repaint deferral applies only to expanded popups with `aria-haspopup`;
+an open comparison disclosure never freezes newer-report or deletion updates.
+
+`capture-comparison-view.ts` renders literal text through textContent. Unified
+hunks show old/new line numbers, +/− prefixes, three context lines and explicit
+omitted-context counts. Changed lines distinguish LF, CRLF and no final newline.
+Long lines wrap; selectors and capture metadata stack at narrow widths. Text uses
+the host foreground token; border/tint colors supplement the textual prefixes.
+No captured HTML, remote assets, markdown rendering or source editing is enabled.
+
+Capture timestamps and paths identify each version. Current checklist metadata
+is labelled with its observed plan revision and last file-check time; historical
+synchronization stays unknown. Denied/missing/other later file checks can retain
+readable earlier captures, explicitly labelled as retained. An equal comparison
+does not prove the live file unchanged. Limit states explain why no partial diff
+is shown; comparison never establishes approval or completion. See the
+[wire limits](contracts.md#recorded-document-comparison-additive-revision-1).
+
+Focused validation: `tests/backend/document-captures.test.ts` exercises real
+storage/service reads and pure diff bounds; `tests/browser/capture-comparison.test.ts`
+exercises adapters/controller against a real disposable HTTP service.
+`node --experimental-strip-types tests/browser/capture-comparison-qa.ts <artifact-directory> --built-service`
+drives current guest bundles with real keyboard/pointer input in isolated
+Chromium, synthetic SDK events and disposable built services. It records bounded
+results, request metadata and synthetic screenshots. This is rendered browser
+evidence, not native-host or screen-reader certification.
+
 Three guest frames read production contract v2 (`shared/progress.ts`,
 `docs/contracts.md`) through `host.serviceRequest`. Rail/page also expose its optional,
 explicit finished-plan cleanup actions; Work Status remains read-only. Full-page History

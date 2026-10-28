@@ -19,6 +19,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { RELEASE } from '../../shared/release.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 import { searchFixture, seedSearchLibrary } from '../fixtures/plan-task-search.ts';
+import { digest } from '../../shared/store.ts';
 
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };
 const DARK = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
@@ -31,7 +32,7 @@ const light=${JSON.stringify(LIGHT)},dark=${JSON.stringify(DARK)},theme=JSON.par
 const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
-window.qa={account:'account-example',store:0,session:null,stripSearch:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],messages:[],errors:[]};
+window.qa={account:'account-example',store:0,session:null,stripSearch:false,stripComparison:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],messages:[],errors:[]};
 const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.reload=f=>{const n=frame(f);n.src=n.src};
@@ -65,7 +66,7 @@ addEventListener('message',async e=>{
   if(failing&&!(failing.skip>0)){if(failing.once)qa.fail=qa.fail.filter(x=>x!==failing);const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
   if(failing)failing.skip--;
   const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
-   if(q.path==='/health'&&qa.stripSearch){const b=JSON.parse(reply.body);delete b.planTaskSearch;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
+   if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
   const hold=qa.holds.find(h=>h.path===q.path&&(!h.frame||h.frame===f)&&(h.plan===undefined||q.query?.plan===h.plan)&&(h.cursor===undefined||!!q.query?.cursor===h.cursor));
   if(hold){qa.holds=qa.holds.filter(h=>h!==hold);const reply=forward();qa.held.push({tag:hold.tag,frame:f,path:q.path,go:()=>deliver(reply)})}
@@ -164,11 +165,19 @@ export async function startSearchShell(built = false) {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   let oid = 0;
   const call = services[0].call;
+  const recordedCapture = (plan: string) => {
+    const p=f.store.get(f.alpha.id,plan)!;if(!p.document.captureId)return undefined;
+    const row=f.store.db.prepare('SELECT text FROM captures WHERE id=?').get(p.document.captureId)!;
+    return {state:'captured' as const,path:p.document.path!,canonicalPath:p.document.canonicalPath!,text:String(row.text),hash:p.document.hash!,checkedAt:new Date().toISOString()};
+  };
+  function report(plan:string,request:Record<string,unknown>){
+    f.store.apply({plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`document-qa-${++oid}`,...request},f.actor,recordedCapture(plan));
+  }
   /** Completes open tasks and reports the plan finished (fixture-side production writes). */
   function finish(plan: string) {
     const open = f.store.get(f.alpha.id, plan)!.items.filter((i) => i.kind === 'task' && i.status !== 'done' && i.status !== 'skipped');
-    if (open.length) f.apply(plan, { op: 'change', changes: open.map((i) => ({ id: i.id, status: 'done' })) });
-    if (f.store.get(f.alpha.id, plan)!.lifecycle === 'active') f.apply(plan, { op: 'finish', outcome: 'finished' });
+    if (open.length) report(plan, { op: 'change', changes: open.map((i) => ({ id: i.id, status: 'done' })) });
+    if (f.store.get(f.alpha.id, plan)!.lifecycle === 'active') report(plan, { op: 'finish', outcome: 'finished' });
   }
   /** "Another client": a confirmed cleanup action through the service. */
   async function cleanupElsewhere(action: 'archive' | 'restore' | 'delete', plan: string) {
@@ -184,6 +193,11 @@ export async function startSearchShell(built = false) {
     insert: (plan: string, title: string) => { f.seedPlan(plan, title, [{ id: 'N1', title: 'Inserted task', kind: 'task', status: 'pending' }]); },
     /** Another client changes capture without updating any plan revision. */
     setCapture: (enabled: boolean) => f.store.setEnabled(enabled),
+    /** Explicit synthetic document report for the capture-comparison QA; no source file read. */
+    recordDocument: (plan:string,text:string,source='/fixture/plan.md',state:'captured'|'denied'='captured') => {
+      f.store.apply({op:'bind',plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`capture-qa-${++oid}`,source,confirm:false},f.actor,{state,path:source,canonicalPath:source,text,hash:digest(text),checkedAt:new Date().toISOString()});
+      return f.store.get(f.alpha.id,plan)!.document.captureId!;
+    },
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); },
