@@ -1,4 +1,9 @@
-# OpenChamber Agent Progress
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/agent-progress-header-dark.svg">
+    <img src="docs/images/brand/agent-progress-header-light.svg" alt="Agent Progress — an OpenChamber extension" width="1600">
+  </picture>
+</h1>
 
 **See the plan. Follow the work. Know what was actually reported.**
 
@@ -65,6 +70,7 @@ Maintainer-approved **higher package versions reaching `main`** are configured t
 - [Reporting and API contracts](docs/contracts.md)
 - [Tested compatibility and bounded evidence](docs/compatibility.md)
 - [Contributing and development commands](CONTRIBUTING.md)
+- [Logo assets, usage and attribution](docs/images/brand/README.md)
 
 The technical guides retain historical validation notes; early access does not imply complete platform/model coverage or the absence of long-running issues.
 
