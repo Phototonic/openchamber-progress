@@ -1,5 +1,26 @@
 # Compatibility commands and evidence
 
+## Current use and development
+
+Agent Progress is an installable early-access extension with Linux and native
+Windows capture. OpenCode 2.1.4 is the tested capture version; broader
+compatibility is not established. Use the [setup guide](setup.md) for installation,
+updates and lifecycle, including the [native Windows boundary](setup.md#native-windows).
+The selected tree's [package.json](../package.json) identifies its package version;
+[GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
+identifies published tags and assets. Matching version numbers alone do not make
+an unreleased checkout a tested release.
+
+For current toolchain, build and validation commands, follow
+[CONTRIBUTING.md](../CONTRIBUTING.md#local-development) and the selected tree's
+package scripts. Its [portable CI instructions](../CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only)
+are separate from native-host certification. The probe commands below record
+historical runs and are not the current installation procedure.
+
+The evidence sections retain the environments, artifacts and limitations of
+those runs; they do not certify every later checkout. References under `evidence/`
+name local-only records, not files shipped in the repository or release archives.
+
 ## Native Windows verification
 
 The native implementation adds no separate binary or compilation requirement for
@@ -47,15 +68,18 @@ standalone removal using packaged Electron's Node mode; synthetic plan data and
 installation history remained available afterwards. These checks used fresh
 synthetic directories, without changing a live profile or installing dependencies.
 
+## Historical Linux probe — 2026-10-24
+
 The initial Linux capture/desktop probe **passed with limitations for its bounded
-scope**; that probe was not an installable production product. This historical
-limitation does not apply to the shipped 0.2.9 artifacts described in `docs/setup.md`.
+scope**; that probe was not an installable production product. It predates the
+[installable distributions](setup.md#v1-installable-artifacts); its limitations
+below describe that probe, not the current installation workflow.
 See `evidence/compatibility/probe.md` for the per-claim record. Primary desktop
 evidence is `evidence/compatibility/ui-probe.md` and `ui-runtime.json`; accepted
 live backend outcomes are in `backend-auth-live.json` and
 `backend-auth-subtests-summary.json` under `evidence/compatibility/`.
 
-## Exact dependencies/runtime
+### Exact dependencies/runtime
 
 Bun1.3.14 manages tooling/build only; TypeScript5.9.3, @types/node24.19.2,
 @openchamber/sdk2.5.1, @opencode/plugin2.1.4; `bun.lock` pins transitives.
@@ -64,6 +88,8 @@ OpenCode2.1.4 embeds Bun1.4.4 (Node compatibility version26.3.0).
 OpenChamber2.5.1 was observed spawning its service with Electron44.9.3 as
 Node24.22.0, no Bun. The actual service opens the shared SQLite DB; SQLite3.53.4
 from the same binary standalone is supplementary, not an actual service query.
+
+Commands recorded for the initial probe (historical semantics):
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -75,7 +101,9 @@ bun run check
 
 At the initial probe, `build` aliased backend build only, NOT guest/package assembly,
 and `check` was typecheck + backend tests + backend build. There was no `test:browser`
-or aggregate guest QA script. Current package validation is described in `docs/setup.md`.
+or aggregate guest QA script. Today, `check` also assembles and verifies packages;
+it still omits the UI typecheck and browser tests. Use the current contributor
+instructions above for prerequisites and the complete portable check.
 All three guest bundles were built with the pinned SDK bundler:
 
 ```sh
@@ -141,7 +169,7 @@ handoff. Any missing typed lifecycle event needs demonstrated demand and separat
 review; RPC-supplied session IDs are not authority. No Slim dependency, adapter,
 new declaration gate or external repository change is implemented or required.
 
-## Independent CLI, not the managed wrapper
+## Historical CLI isolation
 
 The isolated probe used an independent temporary CLI download. The PATH
 `opencode` wrapper is owned by real OpenChamber and cannot be used for isolation.
@@ -167,7 +195,7 @@ recovery. Early live refusals and later accepted z.ai root/native/move/compactio
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
 
-## Reproduce isolated CLI probe
+## Historical CLI probe reproduction
 
 ```sh
 bun run build:backend
@@ -220,7 +248,7 @@ visible. SDK surface/directory context proved, but session=null because no promp
 were sent. Actual current-session context/navigation remains unproved; fixture
 session IDs are never navigable. See `ui-probe.md` for screenshots/interactions.
 
-## Isolated OpenChamber launch: tested desktop route
+## Historical isolated OpenChamber launch
 
 The available installed OpenChamber executable was the OpenChamber2.5.1
 AppImage (SHA256 in `ui-runtime.json`), not a web CLI. That exact AppImage was
@@ -297,7 +325,7 @@ compaction/resume, with guarded output caps. Inline skill invocation, slim acces
 model-exercised parent relay and exact billed-token measurement remain unproved.
 Probe receipts alone do not prove production membership/assignment enforcement.
 
-## Credential-only transfer and final bounded live evidence
+## Historical credential-only transfer and bounded live evidence
 
 The reviewed runner copied one active
 existing `zai-coding-plan` key in memory into each fresh isolated destination.
