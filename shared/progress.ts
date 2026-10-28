@@ -1,5 +1,6 @@
 /** Frozen production v2 DTO. Probe v1 types are historical fixtures only. */
 export const VERSION = 2 as const;
+export type { ChangeDigest, DigestTask, DigestReference, DigestFacts, DigestEvents, DigestFacet, DigestReason, DigestScope } from './change-digest.ts';
 export const LIMITS = { requestBytes: 16_384, documentBytes: 262_144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1_048_576 } as const;
 export type Status = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'finished' | 'cancelled' | 'failed';

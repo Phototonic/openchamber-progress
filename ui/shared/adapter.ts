@@ -2,7 +2,7 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import type {
-  ContributionView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
 } from './model.ts';
 
 export const SUPPORTED_PROTOCOL = 2;
@@ -25,7 +25,7 @@ const LIFECYCLES: Record<string, Lifecycle> = { active: 'active', finished: 'com
 const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', 'missing', 'moved', 'oversized', 'non-text', 'unavailable', 'changed-during-read'];
 
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
-export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
+export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
 export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 
@@ -46,7 +46,7 @@ export function parseHealth(body: string): HealthView {
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}) };
+  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}) };
 }
 
 /** Error body of a non-200 reply: `{error: fixed-code}`. */
@@ -207,6 +207,109 @@ export function parseHistoryPage(body: string) {
       check(isRec(x) && isInt(x.revision) && isStr(x.reportedAt), 'History has an unreadable revision.');
       return { revision: x.revision, structuralRevision: isInt(x.structuralRevision) ? x.structuralRevision : x.revision, lifecycle: LIFECYCLES[String(x.lifecycle)] ?? 'active', reportedAt: x.reportedAt };
     }, 'History'),
+  };
+}
+
+const FACETS: readonly DigestFacet[] = ['added', 'removed', 'revised', 'completed', 'reopened', 'blocked', 'unblocked', 'skipped', 'unskipped'];
+const REASONS: readonly DigestReason[] = ['gap', 'missing-snapshot', 'invalid-snapshot', 'revision-bound', 'byte-bound'];
+const AVAILABILITY: readonly DigestView['availability'][] = ['initial', 'comparison', 'baseline-unavailable', 'target-unavailable'];
+const DIGEST_ROWS = 50;
+const DIGEST_REFERENCES = 4;
+const isCount = (v: unknown): v is number => isInt(v) && v >= 0;
+const isRevision = (v: unknown): v is number => isInt(v) && v >= 1;
+const isIso = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v));
+const lifecycle = (v: unknown) => LIFECYCLES[String(v)];
+
+/** GET /v1/change-digest query: exactly the frozen fields; `after` only for a saved baseline. */
+export const digestQuery = (r: DigestRequest) => query({ storeId: r.storeId, source: r.source, plan: r.plan, to: r.to, cleanupRev: r.cleanupRev, after: r.after });
+
+function digestCounts(v: unknown) {
+  if (v === null) return null;
+  const c = parseCounts(v);
+  check(c.done >= 0 && c.total >= 0 && c.remaining >= 0 && c.skipped >= 0 && c.done + c.remaining === c.total, 'A change digest has inconsistent counts.');
+  return c;
+}
+function digestEvents(v: unknown): DigestEvents {
+  check(isRec(v) && Object.keys(v).length === FACETS.length && FACETS.every((f) => isCount(v[f])), 'A change digest has unreadable event counts.');
+  return Object.fromEntries(FACETS.map((f) => [f, v[f]])) as DigestEvents;
+}
+function digestFacts(v: unknown): DigestFacts | null {
+  if (v === null) return null;
+  check(isRec(v) && isStr(v.title) && STATUSES.includes(v.status as ItemStatus) && (v.parentId === null || isStr(v.parentId)) && Array.isArray(v.dependencies) && v.dependencies.every(isStr), 'A change digest has unreadable recorded facts.');
+  return { title: v.title, status: v.status as ItemStatus, parentId: v.parentId as string | null, dependencies: [...(v.dependencies as string[])] };
+}
+
+/**
+ * GET /v1/change-digest. Every request identity field must come back unchanged (store, source,
+ * plan, cleanup generation, pinned target and baseline) and each part must agree with its stated
+ * availability; anything else throws, so a reply is never borrowed by another context or turned
+ * into an empty comparison. Source binding is checked against the current list by the caller.
+ */
+export function parseChangeDigest(body: string, request: DigestRequest): DigestView {
+  const v: unknown = JSON.parse(body);
+  check(isRec(v), 'Change digest reply is not an object.');
+  versions(v);
+  check(v.storeId === request.storeId && v.source === request.source && v.plan === request.plan, 'The change digest answered for another plan or store.');
+  const b = v.sourceBinding;
+  check(isRec(b) && (b.sourceId === null || isStr(b.sourceId)) && typeof b.verified === 'boolean', 'The change digest has no source binding.');
+  const c = v.cleanup;
+  check(isRec(c) && (c.state === 'visible' || c.state === 'archived') && c.revision === request.cleanupRev, 'The change digest answered for another cleanup state.');
+  const i = v.interval;
+  check(isRec(i) && i.to === request.to && i.after === request.after, 'The change digest answered for another interval.');
+  check(isRevision(i.latestRevision) && i.latestRevision >= request.to && lifecycle(i.currentLifecycle), 'The change digest has unreadable live metadata.');
+  const availability = v.availability as DigestView['availability'];
+  check(AVAILABILITY.includes(availability) && typeof v.complete === 'boolean' && typeof v.validTarget === 'boolean', 'The change digest has an unknown availability.');
+  check(Array.isArray(v.reasons) && v.reasons.every((r) => REASONS.includes(r as DigestReason)) && new Set(v.reasons).size === v.reasons.length, 'The change digest has unknown qualifications.');
+  const counts = v.counts, summary = v.summary, details = v.details, work = v.work;
+  check(isRec(counts) && isRec(summary) && summary.unit === 'transitions' && isRec(details) && isRec(work) && Array.isArray(v.tasks), 'The change digest is incomplete.');
+  const before = digestCounts(counts.before), after = digestCounts(counts.after);
+  const scope = counts.scope === null ? null : (() => {
+    const s = counts.scope;
+    const keys = ['addedCounted', 'removedCounted', 'skipped', 'unskipped', 'addedDone', 'removedDone', 'completed', 'reopened'] as const;
+    check(isRec(s) && keys.every((k) => isCount(s[k])), 'The change digest has unreadable scope counts.');
+    return Object.fromEntries(keys.map((k) => [k, s[k]])) as DigestView['counts']['scope'] & object;
+  })();
+  const events = digestEvents(summary.events);
+  const target = availability !== 'target-unavailable';
+  check(target === v.validTarget, 'The change digest contradicts its target availability.');
+  if (!target) {
+    check(i.targetLifecycle === null && i.coverageStart === null && i.coverageEnd === null && !before && !after && !scope && !v.tasks.length && FACETS.every((f) => events[f] === 0) && !v.complete, 'An unavailable target has comparison data.');
+  } else {
+    check(lifecycle(i.targetLifecycle) && isIso(i.targetReportedAt) && isRevision(i.coverageStart) && i.coverageEnd === request.to && isIso(i.coverageStartReportedAt) && isIso(i.coverageEndReportedAt) && after, 'The change digest has unreadable coverage.');
+    check((i.coverageStart as number) >= (request.after ?? request.to) && (i.coverageStart as number) <= request.to, 'The change digest covers revisions outside its interval.');
+  }
+  if (availability === 'initial') check(request.after === null && v.complete && !before && !scope && !v.tasks.length && FACETS.every((f) => events[f] === 0), 'An initial digest has comparison data.');
+  if (availability === 'comparison') check(request.after !== null && !!before && !!scope && (!v.complete || i.coverageStart === request.after), 'A comparison digest is missing its baseline.');
+  if (availability === 'baseline-unavailable') check(request.after !== null && !before && !scope && !v.complete, 'A digest without its baseline claims endpoint counts.');
+  check(v.tasks.length <= DIGEST_ROWS, 'The change digest has too many task rows.');
+  const ids = new Set<string>();
+  const low = target ? (i.coverageStart as number) : request.to;
+  const tasks = v.tasks.map((t): DigestTask => {
+    check(isRec(t) && isStr(t.id) && t.id.length > 0 && !ids.has(t.id) && isStr(t.title) && STATUSES.includes(t.status as ItemStatus) && typeof t.presentAtTarget === 'boolean', 'A change digest task row is unreadable.');
+    ids.add(t.id);
+    check(isRevision(t.latestRevision) && t.latestRevision > low && t.latestRevision <= request.to && isCount(t.omittedReferences) && Array.isArray(t.references) && t.references.length >= 1 && t.references.length <= DIGEST_REFERENCES, `Change digest task ${t.id} has unreadable references.`);
+    const references = t.references.map((r): DigestReference => {
+      check(isRec(r) && isRevision(r.from) && r.to === (r.from as number) + 1 && (r.from as number) >= low && (r.to as number) <= request.to && isIso(r.reportedAt) && Array.isArray(r.facets) && r.facets.length > 0 && r.facets.every((f) => FACETS.includes(f as DigestFacet)), `Change digest task ${t.id} has an unreadable recorded change.`);
+      const factsBefore = digestFacts(r.before), factsAfter = digestFacts(r.after);
+      check(factsBefore || factsAfter, `Change digest task ${t.id} has a recorded change without facts.`);
+      return { from: r.from as number, to: r.to as number, reportedAt: r.reportedAt as string, facets: [...r.facets] as DigestFacet[], before: factsBefore, after: factsAfter };
+    });
+    return { id: t.id, title: t.title, status: t.status as ItemStatus, presentAtTarget: t.presentAtTarget, latestRevision: t.latestRevision, occurrences: digestEvents(t.occurrences), references, omittedReferences: t.omittedReferences };
+  });
+  check(typeof details.omittedTasks === 'boolean' && (details.omittedTaskCount === null || isCount(details.omittedTaskCount)) && typeof details.truncated === 'boolean', 'The change digest has unreadable detail limits.');
+  check(isCount(work.intervalSnapshots) && isCount(work.baselineLookups) && isCount(work.inputBytes), 'The change digest has unreadable work counters.');
+  return {
+    protocolVersion: 2, schemaVersion: 2, storeId: request.storeId, sourceBinding: { sourceId: b.sourceId as string | null, verified: b.verified as boolean },
+    source: request.source, plan: request.plan, cleanup: { state: c.state as 'visible' | 'archived', revision: request.cleanupRev },
+    interval: {
+      after: request.after, to: request.to, targetLifecycle: target ? lifecycle(i.targetLifecycle) : null, targetReportedAt: target ? i.targetReportedAt as string : null,
+      latestRevision: i.latestRevision, currentLifecycle: lifecycle(i.currentLifecycle), coverageStart: target ? i.coverageStart as number : null, coverageEnd: target ? request.to : null,
+      coverageStartReportedAt: target ? i.coverageStartReportedAt as string : null, coverageEndReportedAt: target ? i.coverageEndReportedAt as string : null,
+    },
+    availability, complete: v.complete, reasons: [...v.reasons] as DigestReason[], validTarget: v.validTarget,
+    counts: { before, after, scope }, summary: { unit: 'transitions', events }, tasks,
+    details: { omittedTasks: details.omittedTasks, omittedTaskCount: details.omittedTaskCount as number | null, truncated: details.truncated },
+    work: { intervalSnapshots: work.intervalSnapshots, baselineLookups: work.baselineLookups, inputBytes: work.inputBytes },
   };
 }
 

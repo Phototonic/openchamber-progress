@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import * as source from '../../ui/shared/source.ts';
+import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
@@ -57,6 +58,8 @@ function controller(board = false) {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './source.ts') return source;
+      // A confirmed delete retires review markers; without the advertised device feature it does nothing.
+      if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;

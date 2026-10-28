@@ -1,8 +1,10 @@
 import { mountList, mountSelect, mountTabs, type Tone } from '@openchamber/sdk/ui';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
-  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, recordedLabel, staleBlock, testid, type Env,
+  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, planDetail, planHeader, recordedLabel, revealCurrentTask, staleBlock, testid, type Env,
 } from '../shared/components.ts';
+import type { DigestPanel } from '../shared/change-digest.ts';
+import { digestBlock } from '../shared/change-digest-view.ts';
 import { plural } from '../shared/format.ts';
 import { coverageFor, liveLabel } from '../shared/live.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
@@ -25,6 +27,13 @@ const visiblePlans = (vc: ViewContext<Ui>) => {
 const selectedPlan = (vc: ViewContext<Ui>) => pickPlan(visiblePlans(vc), vc.ui.selected);
 let reveals = 0;
 let revealed = 0;
+/**
+ * "View current task" from the History digest. `detail`: wait (still on History) for complete current
+ * detail of the same plan at the listed revision; a task no longer in it is announced there, keeping
+ * the recorded context. `reveal`: on Progress, reveal its canonical row once complete detail is painted.
+ */
+let pendingTask: { key: string; item: string; title: string; stage: 'detail' | 'reveal' } | null = null;
+let shownDigest: DigestPanel | null = null;
 
 // Fullscreen board: every plan in the connected store, filtered by project/worktree/session.
 startView<Ui>({
@@ -35,7 +44,7 @@ startView<Ui>({
   actionPlan: selectedPlan,
   forgetPlans: (keys, ui) => keys.has(ui.selected ?? '') ? { selected: null } : {},
   wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
-  wantDetails: (vc) => { const p = selectedPlan(vc); return p && vc.ui.tab === 'progress' ? [p] : []; },
+  wantDetails: (vc) => { const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || pendingTask?.key === p.key) ? [p] : []; },
   // Task reading follows the board's own scope and selection (never the host session); the
   // Progress/Document/History tabs of one selection share it.
   reading: (vc) => { const p = selectedPlan(vc); return p ? { plan: p.key, scope: `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}` } : null; },
@@ -103,7 +112,11 @@ startView<Ui>({
         const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
         article.dataset.source = plan.sourceId;
         vc.requestHistory(plan);
-        article.append(planHeader(plan, env), historyBlock(plan, vc.history(plan), env));
+        article.append(planHeader(plan, env));
+        // Full-page History only: the digest sits above the existing metadata Revisions.
+        const panel = shownDigest = vc.digest(plan);
+        if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail' }; panel.announce(`Opening the current task “${title}”…`); }));
+        article.append(historyBlock(plan, vc.history(plan), env));
         detail.append(article);
       } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession: filters.session !== ALL ? filters.session : null, reading: vc.reading }));
       detail.append(cleanupBlock(vc, plan));
@@ -128,12 +141,40 @@ startView<Ui>({
   },
   // An explicit selection reveals its detail once; later paints (polls, task jumps) never scroll back to it.
   afterPaint(root, vc) {
+    currentTask(root, vc);
     if (!vc.ui.reveal || vc.ui.reveal === revealed) return;
     revealed = vc.ui.reveal;
     if (window.matchMedia('(min-width: 820px)').matches) return;
     root.querySelector('[data-testid="plan-detail"]')?.scrollIntoView({ block: 'start' });
   },
 });
+
+function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
+  const intent = pendingTask;
+  if (!intent) return;
+  const plan = selectedPlan(vc);
+  if (!plan || plan.key !== intent.key) { pendingTask = null; return; }
+  if (intent.stage === 'detail') {
+    if (vc.ui.tab !== 'history') { pendingTask = null; return; }
+    const d = vc.detail(plan);
+    if (!d || d.state === 'loading') return;
+    if (d.state === 'error') { pendingTask = null; shownDigest?.announce('The current task list couldn’t be loaded, so the task can’t be shown. Its recorded changes stay here.'); return; }
+    if (d.value.revision !== plan.revision) return; // wait for the list to announce this revision
+    if (!d.value.items.some((i) => i.kind === 'task' && i.id === intent.item)) {
+      pendingTask = null;
+      shownDigest?.announce(`“${intent.title}” is no longer in the current plan, so it can’t be shown there. Its recorded changes stay here.`);
+      return;
+    }
+    pendingTask = { ...intent, stage: 'reveal' };
+    vc.setUi({ tab: 'progress' });
+    return;
+  }
+  if (vc.ui.tab !== 'progress') { pendingTask = null; return; }
+  const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan[data-reading]')].find((a) => a.dataset.testid === `plan-${plan.id}` && a.dataset.source === plan.sourceId);
+  if (!article?.querySelector('.ap-tasks[data-complete]')) return;
+  pendingTask = null;
+  revealCurrentTask(article, plan, intent.item, `Current task from History: ${intent.title}`);
+}
 
 /** Footer zone: collapsed Setup and Details, after the progress story. */
 function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {

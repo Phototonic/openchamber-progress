@@ -1,5 +1,6 @@
 // View model shared by all three surfaces. The wire format lives only in adapter.ts.
 import { countItems } from '../../shared/progress.ts';
+import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
 
 export type ItemStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
@@ -105,7 +106,15 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1 }
+
+/** Frozen change-digest DTO (docs/contracts.md); lifecycles use this view's labels (finished → completed). */
+export type { DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask };
+export type DigestView = Omit<ChangeDigest, 'interval'> & {
+  interval: Omit<ChangeDigest['interval'], 'targetLifecycle' | 'currentLifecycle'> & { targetLifecycle: Lifecycle | null; currentLifecycle: Lifecycle };
+};
+/** One pinned request: every field is matched against the reply. `after` null is an initial view. */
+export interface DigestRequest { storeId: string; source: string; plan: string; to: number; cleanupRev: number; after: number | null }
 
 export interface SetupTargets { configRoot: string; dataRoot: string; storeRoot: string }
 /**

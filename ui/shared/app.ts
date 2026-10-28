@@ -12,6 +12,8 @@
 //   lives for one reading identity: account + store/binding + view scope + plan; never stored
 // - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
+// - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
+//   panel/status never construct it, so they start no digest read or checkpoint write
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
@@ -22,6 +24,8 @@ import { OFFICIAL_MAIN_URL } from './config.ts';
 import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
+import { DigestController, type DigestPanel } from './change-digest.ts';
+import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
 import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
@@ -98,6 +102,8 @@ export interface ViewContext<U> {
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
   summary: (plan: PlanView) => SummaryView | null;
+  /** Full-page History digest of this plan in the current read; null elsewhere (rail, status). */
+  digest: (plan: PlanView) => DigestPanel | null;
 }
 
 export type SummaryMode = 'progress' | 'handoff';
@@ -293,6 +299,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanup = initialCleanup();
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
+  let digests: DigestController | null = null;
+  const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ account: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
   type PreviewBinding = { selection: string; key: string; plan: PlanView };
@@ -575,9 +583,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!selected || !cleanupEligible(action, selected)) return;
     const actionIdentity = identity;
     const actionAccount = ctx?.connection?.account;
+    const deleted = action === 'delete' && read ? digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }) : null;
     cleanupBusy = true; cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
     const result = await cleanupCall(host, action, target.request);
     cleanupBusy = false;
+    // A confirmed deletion is authoritative for its captured context: retire its review markers.
+    if (result.ok && deleted) { if (digests) digests.forget(deleted); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(deleted); }
     if (disposed) return;
     if (identity !== actionIdentity || ctx?.connection?.account !== actionAccount) {
       cleanup = initialCleanup(); versions.ui++; schedule(); return;
@@ -755,6 +766,17 @@ export function startView<U>(spec: ViewSpec<U>) {
       openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
       reading: readingView(),
       summary: summaryView,
+      digest: (p) => {
+        if (spec.surface !== 'page' || disposed || !read || !identity || readScope !== scopeKey(currentScope()) || !read.plans.includes(p)) return null;
+        digests ??= new DigestController({
+          service: (current) => guardedHost(current),
+          storage: host.storage,
+          deviceStorage: () => ctx?.features?.deviceStorage === true,
+          visible: () => document.visibilityState !== 'hidden',
+          changed: () => { versions.ui++; schedule(); },
+        });
+        return digests.claim({ identity: digestIdentity(p, read), plan: p, capable: health?.planChangeDigests === 1, fresh: !failure });
+      },
     };
   }
 
@@ -815,7 +837,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
+    digests?.beginPaint();
     spec.paint(root, vc);
+    digests?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
     const list = article?.querySelector<HTMLElement>('ul.ap-items') ?? null;
     const complete = !!article?.querySelector(COMPLETE_TASKS);
@@ -963,16 +987,21 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (ctx) refreshLabels(mount, ctx.locale);
       planLabels();
       if (ctx) planMain();
+      digests?.visible();
       retry();
     } else {
       html.dataset.apHidden = '';
+      digests?.hidden();
       if (timer) { clearTimeout(timer); timer = null; }
       planLabels();
       retireMain();
     }
   });
+  // Focus return re-reads only the shared review checkpoint of an open digest (coalesced).
+  window.addEventListener('focus', () => { digests?.focus(); });
   window.addEventListener('pagehide', () => {
     disposed = true;
+    digests?.dispose();
     html.dataset.apHidden = '';
     gate.stop();
     if (timer) clearTimeout(timer);

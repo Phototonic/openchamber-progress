@@ -145,6 +145,64 @@ and size bounds. Age alone cannot prove that the document and checklist differ.
 
 ## Adopted bounded defaults
 
+### Read-only plan change digests
+
+`Store.changeDigest` owns a single read transaction; `shared/change-digest.ts`
+owns pure validation, task classification, endpoint causes and bounded aggregation.
+`GET /v1/change-digest` is capability-gated by `planChangeDigests:1` on ready
+health responses. Its frozen wire types, fixture excerpt and error discipline
+are in `docs/contracts.md`; types are re-exported through `shared/progress.ts`.
+
+The transaction checks store identity, live existence/metadata and cleanup
+generation, then validates the pinned target before any history scan. No baseline
+means initial target-only counts. Otherwise a separate baseline lookup can supply
+exact endpoint causes even if the intervening scan is partial. Starting at target,
+point lookups walk backward one revision at a time; only validated adjacent pairs
+produce events. Missing/invalid predecessors stop the contiguous suffix, never
+bridge to the direct baseline. A suffix includes its predecessor before claiming
+the first transition. Snapshot identity, safe revisions/structural metadata, ISO
+timestamps, item IDs/kinds/statuses/titles/parents/dependencies, uniqueness and
+structural cycles are validated; regressing chronology/structural metadata stops
+comparison. Unknown history is explicitly qualified, not treated as no changes.
+
+There are at most 128 interval snapshot slots plus one baseline lookup, sharing
+8 MiB of actual snapshot input. SQL projects byte length and returns text only
+when it fits the remaining budget, before JSON parsing. Baseline reuse does not
+consume bytes twice. Live existence/cleanup metadata is a separate fixed lookup.
+The scan keeps only endpoint and adjacent working snapshots, not a history array.
+Up to 1,000 items per snapshot bound validation/comparison. Aggregation retains
+the 50 most recently highlighted task identities, at most four references each,
+while counting all proven events. Untracked omitted identities are an indicator,
+not an invented distinct-task count. A final UTF-8 serialization cap removes
+least-recent rows until the body fits 256 KiB; summary and qualification survive.
+`work` counters make the input limits directly testable, not timing-dependent.
+
+All operations use the existing connection/read transaction. Read-only Store
+mode works without creating schema, cleanup state, receipts or checkpoints.
+No source-document filesystem reads/capture, retained Store, service cache,
+report operation, viewer table or migration exists. List polling does no digest
+work. Archive/restore retain snapshots and baseline identity; delete invalidates
+new reads. A reply captured before a concurrent write remains pinned; consumers
+still retire it on authoritative identity/cleanup/lifecycle changes.
+
+Focused verification (disposable synthetic SQLite/loopback HTTP fixtures):
+
+```sh
+node --experimental-strip-types --test tests/backend/change-digests.test.ts
+node --experimental-strip-types --test tests/backend/change-digests-service.test.ts
+node --experimental-strip-types --test tests/backend/change-digests-service.test.ts tests/backend/plan-cleanup.test.ts tests/backend/plan-cleanup-service.test.ts tests/backend/production-storage.test.ts tests/backend/task-timing.test.ts
+```
+
+Tests cover transient/reversed changes, independent endpoint scope causes,
+same-status/replay suppression, staging, gaps/corruption/missing endpoints,
+safe-integer parsing, input/output caps, SQL/source-byte immutability, cleanup
+continuity, source isolation and a real independent WAL writer at a labelled read
+transaction seam. The 1,000-item maximum-title history is a labelled direct SQL
+fixture for budget verification, not a claim that any one report bypasses the
+existing request/chunk limits. No wall-clock performance gate is used.
+
+### Existing production limits
+
 -16KiB report/setup bodies;262144-byte full document cap, strict UTF-8, no binary.
 -20 default read rows,50 max plan-list/history rows; document pages16384 Unicode
   code points, immutable capture ID continuation;1MiB response ceiling (413 rather

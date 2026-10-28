@@ -598,6 +598,155 @@ function mutateCleanup(db, file, action, value, transaction) {
   });
 }
 
+// shared/change-digest.ts
+var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
+function emptyEvents() {
+  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
+}
+var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
+var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
+function compareTasks(before, after) {
+  const a = tasks(before), b = tasks(after), changes = [];
+  for (const id of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const old = a.get(id), next = b.get(id), facets = [];
+    if (!old) {
+      facets.push("added");
+      if (next.status === "blocked")
+        facets.push("blocked");
+    } else if (!next)
+      facets.push("removed");
+    else {
+      if (old.status !== "done" && next.status === "done")
+        facets.push("completed");
+      if (old.status === "done" && next.status !== "done")
+        facets.push("reopened");
+      if (old.status !== "blocked" && next.status === "blocked")
+        facets.push("blocked");
+      if (old.status === "blocked" && next.status !== "blocked")
+        facets.push("unblocked");
+      if (old.status !== "skipped" && next.status === "skipped")
+        facets.push("skipped");
+      if (old.status === "skipped" && next.status !== "skipped")
+        facets.push("unskipped");
+      const x = facts(old), y = facts(next);
+      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
+        facets.push("revised");
+    }
+    if (facets.length)
+      changes.push({ id, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
+  }
+  return changes;
+}
+function endpointCounts(before, after) {
+  const scope2 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const a = tasks(before), b = tasks(after);
+  for (const id of new Set([...a.keys(), ...b.keys()])) {
+    const old = a.get(id), next = b.get(id);
+    if (!old) {
+      if (next.status !== "skipped")
+        scope2.addedCounted++;
+      if (next.status === "done")
+        scope2.addedDone++;
+    } else if (!next) {
+      if (old.status !== "skipped")
+        scope2.removedCounted++;
+      if (old.status === "done")
+        scope2.removedDone++;
+    } else {
+      if (old.status !== "skipped" && next.status === "skipped")
+        scope2.skipped++;
+      if (old.status === "skipped" && next.status !== "skipped")
+        scope2.unskipped++;
+      if (old.status !== "done" && next.status === "done")
+        scope2.completed++;
+      if (old.status === "done" && next.status !== "done")
+        scope2.reopened++;
+    }
+  }
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope2 };
+}
+function aggregatePair(result, before, after, target) {
+  for (const { id, reference } of compareTasks(before, after)) {
+    for (const facet of reference.facets)
+      result.summary.events[facet]++;
+    let row = result.tasks.find((t) => t.id === id);
+    if (!row && result.tasks.length >= DIGEST_LIMITS.tasks) {
+      result.details.omittedTasks = true;
+      result.details.omittedTaskCount = null;
+      result.details.truncated = true;
+      continue;
+    }
+    if (!row) {
+      const atTarget = target.items.find((i) => i.id === id && i.kind === "task");
+      const latest = atTarget ?? reference.after ?? reference.before;
+      row = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result.tasks.push(row);
+    }
+    for (const facet of reference.facets)
+      row.occurrences[facet]++;
+    if (row.references.length < DIGEST_LIMITS.references)
+      row.references.push(reference);
+    else {
+      row.omittedReferences++;
+      result.details.truncated = true;
+    }
+  }
+}
+function validateDigestSnapshot(value, source, plan, revision) {
+  try {
+    const p = value;
+    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
+      return null;
+    const byId = new Map;
+    for (const i of p.items) {
+      if (!i || !identifier(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier)))
+        return null;
+      byId.set(i.id, i);
+    }
+    for (const i of p.items) {
+      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id) => id === i.id || byId.get(id)?.kind !== "task"))
+        return null;
+      const seen = new Set([i.id]);
+      let parent = i.parentId;
+      while (parent) {
+        if (seen.has(parent))
+          return null;
+        seen.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const visiting = new Set, visited = new Set;
+    const visit = (id) => {
+      if (visited.has(id))
+        return true;
+      if (visiting.has(id))
+        return false;
+      visiting.add(id);
+      for (const dep of byId.get(id)?.dependencies ?? [])
+        if (!visit(dep))
+          return false;
+      visiting.delete(id);
+      visited.add(id);
+      return true;
+    };
+    if (!p.items.every((i) => visit(i.id)))
+      return null;
+    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
+  } catch {
+    return null;
+  }
+}
+function capDigest(result) {
+  while (Buffer.byteLength(JSON.stringify(result)) > DIGEST_LIMITS.responseBytes && result.tasks.length) {
+    result.tasks.pop();
+    result.details.truncated = true;
+    result.details.omittedTasks = true;
+    if (result.details.omittedTaskCount !== null)
+      result.details.omittedTaskCount++;
+  }
+  return result;
+}
+
 // shared/store.ts
 function canonical(value) {
   if (Array.isArray(value))
@@ -854,6 +1003,116 @@ class Store {
         const p = JSON.parse(String(r.snapshot));
         return { revision: p.revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt };
       }), nextCursor: rows.length > limit ? String(cursor + limit) : null };
+    });
+  }
+  changeDigest(request) {
+    const { source, plan, to, after, cleanupRev } = request;
+    requireProgress(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
+    return this.transaction(false, () => {
+      const storeId = String(this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id);
+      requireProgress(storeId === request.storeId, "conflict");
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      requireProgress(live, "not-found");
+      requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const cleanup = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
+      requireProgress(cleanup.revision === cleanupRev, "conflict");
+      requireProgress(to <= Number(live.revision));
+      const result = {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        storeId,
+        sourceBinding: { ...this.readBinding },
+        source,
+        plan,
+        cleanup,
+        interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
+        availability: "target-unavailable",
+        complete: false,
+        reasons: [],
+        validTarget: false,
+        counts: { before: null, after: null, scope: null },
+        summary: { unit: "transitions", events: emptyEvents() },
+        tasks: [],
+        details: { omittedTasks: false, omittedTaskCount: 0, truncated: false },
+        work: { intervalSnapshots: 0, baselineLookups: 0, inputBytes: 0 }
+      };
+      const reason = (r) => {
+        if (!result.reasons.includes(r))
+          result.reasons.push(r);
+      };
+      const load = (revision, baseline2 = false) => {
+        if (baseline2)
+          result.work.baselineLookups++;
+        else
+          result.work.intervalSnapshots++;
+        const remaining = DIGEST_LIMITS.bytes - result.work.inputBytes;
+        const row = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        if (!row) {
+          reason("missing-snapshot");
+          return null;
+        }
+        if (Number(row.bytes) > remaining) {
+          reason("byte-bound");
+          return null;
+        }
+        result.work.inputBytes += Number(row.bytes);
+        let p = null;
+        try {
+          p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision);
+        } catch {}
+        if (!p)
+          reason("invalid-snapshot");
+        return p;
+      };
+      const target = load(to);
+      if (!target)
+        return result;
+      result.validTarget = true;
+      result.interval.targetLifecycle = target.lifecycle;
+      result.interval.targetReportedAt = target.reportedAt;
+      result.interval.coverageStart = result.interval.coverageEnd = to;
+      result.interval.coverageStartReportedAt = result.interval.coverageEndReportedAt = target.reportedAt;
+      result.counts.after = countItems(target.items);
+      if (after === undefined) {
+        result.availability = "initial";
+        result.complete = true;
+        return result;
+      }
+      const baseline = after === to ? target : load(after, true);
+      result.availability = baseline ? "comparison" : "baseline-unavailable";
+      if (baseline)
+        result.counts = endpointCounts(baseline, target);
+      let newer = target;
+      while (newer.revision > after) {
+        if (result.work.intervalSnapshots >= DIGEST_LIMITS.snapshots) {
+          reason("revision-bound");
+          break;
+        }
+        const expected = newer.revision - 1;
+        let older;
+        if (expected === after) {
+          result.work.intervalSnapshots++;
+          older = baseline;
+        } else
+          older = load(expected);
+        if (!older) {
+          if (expected !== after)
+            reason("gap");
+          break;
+        }
+        if (older.reportedAt > newer.reportedAt || older.structuralRevision > newer.structuralRevision || newer.structuralRevision - older.structuralRevision > 1) {
+          reason("invalid-snapshot");
+          break;
+        }
+        aggregatePair(result, older, newer, target);
+        newer = older;
+        result.interval.coverageStart = older.revision;
+        result.interval.coverageStartReportedAt = older.reportedAt;
+      }
+      result.complete = !!baseline && newer.revision === after;
+      return capDigest(result);
     });
   }
   apply(value, actor, capture, child) {

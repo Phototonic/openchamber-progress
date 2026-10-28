@@ -3,8 +3,9 @@ import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
+  digestQuery, parseChangeDigest,
 } from './adapter.ts';
-import type { ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
@@ -230,6 +231,34 @@ export async function readHistory(host: ServiceHost, plan: Pick<PlanView, 'sourc
     return { ok: true, entries, truncated: Boolean(cursor) };
   } catch (error) {
     return { ok: false, failure: classify(error) };
+  }
+}
+
+/** `conflict`: store or cleanup generation moved; `not-found`: the plan is missing or deleted. */
+export type DigestResult = { ok: true; digest: DigestView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/** One pinned, bounded comparison (GET /v1/change-digest). No continuation, retry or fallback. */
+export async function readChangeDigest(host: ServiceHost, request: DigestRequest): Promise<DigestResult> {
+  try {
+    return { ok: true, digest: parseChangeDigest(await call(host, ROUTES.changeDigest, digestQuery(request)), request) };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
+  }
+}
+
+export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/**
+ * Review preflight: the FIRST page of /v1/plan only, validated envelope and plan metadata. Item and
+ * contribution cursors are never followed: one bounded live read, not a detail or history download.
+ */
+export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>): Promise<PlanHeadResult> {
+  try {
+    const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+    if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
+    return { ok: true, envelope: first.envelope, plan: first.plan };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
 }
 
