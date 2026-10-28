@@ -81,6 +81,24 @@ test('V2t actual HTTP gaps, corrupt/future/regressing history and current mismat
   } finally {await h.stop();f.cleanup();}
 });
 
+for(const scenario of [{name:'regression',structural:false,older:2},{name:'jump greater than one',structural:true,older:1}]){
+  test(`V2t actual HTTP adjacent structural-revision ${scenario.name} is unknown without a start claim`,async t=>{
+    t.mock.timers.enable({apis:['Date'],now:at(0)});
+    const f=productionFixture(),h=await http(f);
+    try {
+      f.store.apply({op:'start',plan:'P-attention',oid:'start',rev:0,title:'Structural history',items:single},f.actor);
+      for(let rev=1;rev<=2;rev++){
+        t.mock.timers.setTime(at(rev).getTime());f.store.apply({plan:'P-attention',oid:`revision-${rev}`,rev,...(scenario.structural?{op:'revise',title:`Revision ${rev}`,items:single}:{op:'change',changes:[{id:'decision',status:'blocked'}]})},f.actor);
+      }
+      t.mock.timers.setTime(at(6).getTime());
+      assert.deepEqual((await h.read()).blockedTiming?.items,{decision:{since:at(0).toISOString(),kind:'exact'}});
+      const row=f.store.db.prepare('SELECT snapshot FROM revisions WHERE revision=2').get()!;
+      f.store.db.prepare('UPDATE revisions SET snapshot=? WHERE revision=2').run(JSON.stringify({...JSON.parse(String(row.snapshot)),structuralRevision:scenario.older}));
+      assert.deepEqual((await h.read()).blockedTiming?.items,{});
+    } finally {await h.stop();f.cleanup();}
+  });
+}
+
 test('V2t pinned detail survives later progress writes but refuses store/source/page/cleanup identity mismatches',async t=>{
   t.mock.timers.enable({apis:['Date'],now:at(0)});
   const f=productionFixture(),other=productionFixture();let h:Awaited<ReturnType<typeof http>>|undefined;
