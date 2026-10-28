@@ -40,9 +40,10 @@ board's frozen live project/worktree projection. A response-byte pause leaves th
 first un-emitted hit pending. At most50 hits/8 ancestors per task and256 KiB output
 are emitted; bounded envelope/cursor space is reserved before accepting each hit.
 
-Freshness uses only current plan revision and cleanup point lookups for up to50
-explicit distinct keys, not detail/history or a new polling job. Neither operation
-calls the full source-metadata envelope, reads captured documents, creates schema,
+Freshness reads the scalar capture-enabled flag from `meta` alongside current
+plan revision and cleanup point lookups for up to50 explicit distinct keys, all
+in one read transaction. It does not read detail/history or add a polling job.
+Neither operation calls the full source-metadata envelope, reads captured documents, creates schema,
 retains cursor state or adds a server cache/connection. A legacy read-only schema2
 store remains readable without cleanup activation. Cross-request results are honest
 observations, not a global snapshot; consumers must retire stale generations and

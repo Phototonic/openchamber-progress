@@ -967,7 +967,8 @@ function searchState(db, binding, storeId, keys) {
   const identity = searchIdentity(db, binding);
   requireProgress(identity.storeId === storeId, "conflict");
   const installed = cleanupInstalled(db);
-  return { ...identity, data: keys.map((k) => {
+  const captureEnabled = Boolean(db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled);
+  return { ...identity, captureEnabled, data: keys.map((k) => {
     const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
     requireProgress(!row || safe(row.revision, 1), "corrupt");
     return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };

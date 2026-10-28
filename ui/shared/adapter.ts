@@ -403,6 +403,7 @@ export function parseSearchState(body: string, storeId: string, keys: SearchKeyV
   check(isRec(v), 'Search freshness reply is not an object.');
   const id = searchIdentity(v);
   check(id.storeId === storeId, 'The search freshness read answered for another store.');
+  check(typeof v.captureEnabled === 'boolean', 'The search freshness read has unreadable capture state.');
   check(keys.length >= 1 && keys.length <= SEARCH_STATE_KEYS && Array.isArray(v.data) && v.data.length === keys.length, 'The search freshness read answered for other plans.');
   const data = v.data.map((row, i) => {
     const c = isRec(row) ? row.cleanup : null;
@@ -411,7 +412,7 @@ export function parseSearchState(body: string, storeId: string, keys: SearchKeyV
     check(row.exists ? isRevision(row.revision) && c.state !== 'deleted' : row.revision === null || isRevision(row.revision), 'The search freshness read has an unreadable revision.');
     return { source: keys[i].source, plan: keys[i].plan, exists: row.exists, revision: row.revision as number | null, cleanup: { state: c.state as 'visible' | 'archived' | 'deleted', revision: c.revision as number } };
   });
-  return { ...id, data };
+  return { ...id, captureEnabled: v.captureEnabled, data };
 }
 
 /** GET /v1/setup and POST /v1/setup/<action> replies. */

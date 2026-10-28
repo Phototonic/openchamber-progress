@@ -182,6 +182,8 @@ export async function startSearchShell(built = false) {
     cleanupElsewhere, deleteElsewhere: (plan: string) => cleanupElsewhere('delete', plan),
     /** A new matching plan behind an active keyset cursor (production staged write). */
     insert: (plan: string, title: string) => { f.seedPlan(plan, title, [{ id: 'N1', title: 'Inserted task', kind: 'task', status: 'pending' }]); },
+    /** Another client changes capture without updating any plan revision. */
+    setCapture: (enabled: boolean) => f.store.setEnabled(enabled),
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); },

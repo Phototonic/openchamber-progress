@@ -13,6 +13,8 @@ export interface ServiceHost {
 
 export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost';
 export interface ReadFailure { kind: FailureKind; code: string; message: string }
+/** A retired search read supplies neither freshness authority nor capture metadata. */
+export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
 
 /** Bounds per refresh; beyond them the read says it is partial instead of guessing. */
 export const MAX_LIST_PAGES = 10;

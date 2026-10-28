@@ -28,7 +28,7 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
@@ -113,7 +113,7 @@ export interface ViewContext<U> {
 }
 
 /** One poll's bounded freshness read in place of the list read; `identity` asks for the list read instead. */
-export type Freshness = (service: ServiceHost) => Promise<{ ok: true } | { ok: false; failure: ReadFailure; identity: boolean }>;
+export type Freshness = (service: ServiceHost) => Promise<FreshnessResult>;
 
 export type SummaryMode = 'progress' | 'handoff';
 export interface SummaryView {
@@ -346,7 +346,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const target = spec.reading?.(vc);
     if (disposed || spec.surface === 'status' || !vc.read || !target || target.plan !== p.key || !vc.read.plans.includes(p)) return null;
     const selection = JSON.stringify([ctx?.connection?.account ?? '', identity, spec.surface, target.scope, p.sourceId, p.id]);
-    return { selection, key: JSON.stringify([selection, p.revision, p.cleanup?.revision ?? 0, cacheGeneration]), plan: p };
+    return { selection, key: JSON.stringify([selection, p.revision, p.cleanup?.revision ?? 0, cacheGeneration, vc.read.captureEnabled]), plan: p };
   }
   function currentPreviewBinding(): PreviewBinding | null {
     const vc = context();
@@ -380,7 +380,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!bound) return;
     const p = bound.binding.plan;
     const c = details.get(p.key);
-    if (!c?.result || c.result === bound.result || c.requested !== p.revision && c.revision !== p.revision) return;
+    if (!c?.result || c.captureEnabled !== read?.captureEnabled || c.result === bound.result || c.requested !== p.revision && c.revision !== p.revision) return;
     const r = c.result;
     // A complete read ahead of the list waits for the list, without another read per paint.
     if (r.ok && (r.plan.revision !== p.revision || (r.plan.cleanup?.revision ?? 0) !== (p.cleanup?.revision ?? 0))) return;
@@ -550,7 +550,28 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (fresh) {
       const result = await fresh(guardedHost(() => generation === gate.current));
       if (disposed || generation !== gate.current) return;
-      if (result.ok) {
+      if (result.state === 'retired') {
+        // Keep the current cadence without clearing failure or claiming a fresh read. plan()
+        // starts nothing while hidden; visible replacement searches still need future polls.
+        plan(failure ? RETRY_MS : REFRESH_MS);
+        return;
+      }
+      if (result.state === 'fresh') {
+        if (read && read.captureEnabled !== result.captureEnabled) {
+          const withCapture = (value: StoreRead): StoreRead => ({ ...value, captureEnabled: result.captureEnabled,
+            diagnostics: [...value.diagnostics.filter((d) => d !== 'capture-disabled'), ...(!result.captureEnabled ? ['capture-disabled'] : [])] });
+          read = withCapture(read);
+          readSig = JSON.stringify([key, health, read]);
+          const cachedKey = memoryKey(key), cached = memory.get(cachedKey);
+          if (cached) {
+            const cachedRead = withCapture(cached.read);
+            // Capture metadata does not establish a newly fetched plan list: retain its age.
+            memory.set(cachedKey, { ...cached, read: cachedRead, sig: JSON.stringify([key, cached.health, cachedRead]) });
+          }
+          // Other scope snapshots cannot temporarily restore the obsolete global capture flag.
+          memory.deleteWhere((value, savedKey) => savedKey !== cachedKey && value.read.captureEnabled !== result.captureEnabled);
+          versions.data++;
+        }
         // Counts as a successful refresh: a failed detail is retried once, as after a list read.
         listReads++;
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
@@ -688,6 +709,8 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (!own()) return;
         let result = await readDetail(guardedHost(own), p);
         if (!own()) return;
+        // A capture toggle can overtake a queued/held detail read at the same plan revision.
+        if (captureEnabled !== read?.captureEnabled) { details.delete(p.key); bump(); return; }
         if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
         const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
         details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
