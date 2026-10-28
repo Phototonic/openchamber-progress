@@ -32,6 +32,25 @@ restricted-child tool policies; an explicit parent relay labels both identities.
 Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
 
+For a deliberately blocked task, optionally report `blocker` with only
+`category`, `reason` and `nextAction`. Categories are `decision`, `dependency`,
+`review`, `external`, `other`; each prose field must be nonblank, at most 512
+JavaScript string code units and contain no NUL. Supply purpose-written safe
+summaries, never private prompts, transcripts or raw tool output; bounds and
+literal rendering do not redact secrets. Missing parts stay unknown.
+`blocker` is a complete replacement, not a merge: omitted members become unknown,
+`{}` records unknown parts, and `null` clears details without resolving blocked
+status. Omission preserves only verified-current details on a continuously
+blocked retained task. Groups reject this field; non-null details require blocked
+status. For a metadata-only change explicitly repeat `status:"blocked"`.
+Start/revise/staged items also support it; staged details appear only at commit.
+Leaving blocked or closing clears current details; re-entry/reopen without a new
+object starts with unknown details. Older writers can invalidate optional details;
+deliberately re-report them rather than inferring or reviving old text. Never send
+unsupported fields automatically to an older tool. Reported waiting time, when
+available, is derived from status history, not a caller-supplied duration or proof
+that a model is active. No automatic notification, approval or action is implied.
+
 If not already reported, mirror an actionable plan or meaningful change; repeated
 guidance or a possible-plan file hint alone is not a reason to report again.
 Document-backed plans may explicitly name their canonical source, subject to

@@ -9,7 +9,7 @@ import { searchWindow, searchState } from './plan-task-search.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
-import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, type Request, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type ItemInput, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
+import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -153,7 +153,10 @@ export class Store {
       need(Number.isSafeInteger(page) && page >= 0); const p = this.raw(source,id); need(p, 'not-found');
       const start = page * LIMITS.pageSize; const rows = this.db.prepare('SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,LIMITS.pageSize+1,start);
       return { ...this.metadata(), plan: this.summary(p), links: p.links,
-        items: { data: p.items.slice(start,start+LIMITS.pageSize), nextCursor: p.items.length > start+LIMITS.pageSize ? String(page+1) : null },
+        items: { data: p.items.slice(start,start+LIMITS.pageSize).map(i => {
+          const { blocker, ...item } = i;
+          return p.lifecycle === 'active' && i.kind === 'task' && i.status === 'blocked' && validBlockerAnnotation(blocker,p.revision) ? { ...item,blocker } : item;
+        }), nextCursor: p.items.length > start+LIMITS.pageSize ? String(page+1) : null },
         contributions: { data: rows.slice(0,LIMITS.pageSize).map(r => JSON.parse(String(r.payload)) as Contribution), nextCursor: rows.length > LIMITS.pageSize ? String(page+1) : null },
       };
     });
@@ -270,12 +273,23 @@ export class Store {
       if (r.op === 'commit') {
         const chunks = this.db.prepare('SELECT chunk,payload,expected FROM chunks WHERE source=? AND plan=? AND owner=? AND upload=? ORDER BY chunk').all(actor.sourceId,r.plan,actor.sessionId,r.upload!);
         need(chunks.length === r.chunks && chunks.every((c,i) => c.chunk === i && c.expected === revision),'stage-incomplete');
-        items = chunks.flatMap(c => JSON.parse(String(c.payload)) as ItemInput[]);
+        items = chunks.flatMap(c => JSON.parse(String(c.payload)) as BlockerItemInput[]);
       }
       if (!previous) need(['start','commit'].includes(r.op) && !!r.title && !!items,'not-found');
       else need(r.op !== 'start','invalid');
       const p: StoredPlan = previous ? structuredClone(previous) : { id:r.plan,sourceId:actor.sourceId,title:r.title!,sessionId:actor.sessionId,revision:0,structuralRevision:0,lifecycle:'active',reportedAt:now,directory:actor.directory,projectId:actor.projectId,items:[],links:[],document:{ state:'unbound',checklistSynchronized:false,currentFile:'not-rechecked' } };
+      // Validate against the OLD revision before advancing. An old writer cannot
+      // advance this marker, and a new neutral write must never recertify it.
+      for (const item of p.items) if (previous?.lifecycle !== 'active' || item.kind !== 'task' || item.status !== 'blocked' || !validBlockerAnnotation(item.blocker,revision)) delete item.blocker;
       need(p.revision<Number.MAX_SAFE_INTEGER);p.revision++;
+      const annotate = (item: Item, input: BlockerInput | null | undefined) => {
+        if (input !== undefined) {
+          need(item.kind === 'task' && (input === null || item.status === 'blocked' && validBlockerInput(input)));
+          if (input === null) delete item.blocker;
+          else item.blocker = { ...input,reportedRevision:p.revision,reportedAt:now,reporterSessionId:actor.sessionId,attributedSessionId:r.attributed ?? actor.sessionId,mode:r.attributed ? 'parent-relay' : 'direct',validAtRevision:p.revision };
+        }
+        if (item.kind !== 'task' || item.status !== 'blocked') delete item.blocker;
+      };
       if (coordinator) { p.directory = actor.directory; p.projectId = actor.projectId; }
       p.reportedAt = now;
       const structural = ['start','revise','commit'].includes(r.op);
@@ -286,7 +300,12 @@ export class Store {
         if (items) {
           need(items.length <= LIMITS.planItems);
           const old = new Map(p.items.map(i => [i.id,i]));
-          p.items = items.map(i => ({ ...i, status:i.status ?? old.get(i.id)?.status ?? 'pending', assigneeSessionId:i.kind==='task'?old.get(i.id)?.assigneeSessionId:undefined,reporterSessionId:i.status!==undefined||!old.has(i.id)?actor.sessionId:old.get(i.id)?.reporterSessionId }));
+          p.items = items.map(i => {
+            const { blocker, ...fields } = i; const retained = old.get(i.id);
+            const item: Item = { ...fields, status:i.status ?? retained?.status ?? 'pending', assigneeSessionId:i.kind==='task'?retained?.assigneeSessionId:undefined,reporterSessionId:i.status!==undefined||!old.has(i.id)?actor.sessionId:retained?.reporterSessionId };
+            if (retained?.kind === 'task' && retained.status === 'blocked' && item.kind === 'task' && item.status === 'blocked' && retained.blocker) item.blocker = retained.blocker;
+            annotate(item,blocker); return item;
+          });
           validateItems(p.items);
           const ids = new Set(p.items.filter(i => i.kind === 'task').map(i => i.id));
           p.links = p.links.map(l => ({ ...l,itemIds:l.itemIds.filter(id => ids.has(id)) })).filter(l => l.itemIds.length > 0);
@@ -304,7 +323,7 @@ export class Store {
           else need(actor.ancestry?.includes(p.sessionId),'assignment');
         }
         need(new Set(r.changes!.map(c => c.id)).size === r.changes!.length);
-        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); need(item?.kind === 'task'); item.status = c.status; item.reporterSessionId=actor.sessionId; }
+        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); need(item?.kind === 'task'); item.status = c.status; item.reporterSessionId=actor.sessionId; annotate(item,c.blocker); }
         changed = r.changes!.map(c => c.id);
       }
       if (r.op === 'link') {
@@ -337,6 +356,10 @@ export class Store {
             checklistSynchronized: structural && !!items || r.op === 'bind' && r.confirm === true || oldHash === capture.hash && p.document.checklistSynchronized };
           p.boundCanonicalPath ??= capture.canonicalPath;
         } else p.document.checklistSynchronized = false;
+      }
+      for (const item of p.items) {
+        if (p.lifecycle !== 'active' || item.kind !== 'task' || item.status !== 'blocked') delete item.blocker;
+        else if (item.blocker) item.blocker.validAtRevision = p.revision;
       }
       const snapshot = JSON.stringify(p);
       this.db.prepare('INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot').run(actor.sourceId,r.plan,p.revision,snapshot);

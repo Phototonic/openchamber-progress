@@ -16,11 +16,13 @@ export function taskTiming(store: Store, detail: Envelope & PlanRead, now = new 
   try {
     store.db.exec('BEGIN'); began = true;
     if (store.db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()?.store_id !== detail.storeId) throw new Error('identity');
-    const rows = store.db.prepare('SELECT revision,snapshot FROM revisions WHERE source=? AND plan=? AND revision<=? ORDER BY revision DESC LIMIT ?');
-    for (const row of rows.iterate(plan.sourceId, plan.id, plan.revision, TIMING_LIMITS.revisions)) {
-      const text = String(row.snapshot);
-      bytes += Buffer.byteLength(text);
+    const rows = store.db.prepare('SELECT revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?');
+    for (let visits = 0; visits < TIMING_LIMITS.revisions; visits++) {
+      const row = rows.get(TIMING_LIMITS.bytes - bytes,plan.sourceId,plan.id,expected);
+      if (!row) break;
+      bytes += Number(row.bytes);
       if (bytes > TIMING_LIMITS.bytes) break;
+      const text = String(row.snapshot);
       const p = JSON.parse(text) as PlanState;
       const time = typeof p.reportedAt === 'string' ? Date.parse(p.reportedAt) : NaN;
       if (row.revision !== expected || p.revision !== expected || p.sourceId !== plan.sourceId || p.id !== plan.id ||

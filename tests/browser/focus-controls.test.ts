@@ -620,21 +620,27 @@ test('re-reads: a hidden Work Status frame neither polls nor re-reads while the 
   c.state.items = RACE_ITEMS;
   const hold = holdSecondPage(c);
   c.ready(SA); await settle();
+  // Reported blockers revision 1 (docs/contracts.md, "Detail identity and current attention"):
+  // hiding retires in-flight detail reads, so the held page released while hidden continues
+  // nothing (no restart page) and paints nothing; becoming visible reads afresh. Before that
+  // contract the held read finished in the background and was reused on show (one read start).
   c.hide();
   const lists = () => c.requests.filter((q) => q.path === '/v1/plans').length;
   const listsHidden = lists();
+  const detailsHidden = detailRequests(c).length;
   const plannedHidden = c.timers.length;
   c.state.revision = 6; c.state.listRevision = 5;
   await hold.release(); await settle();
   const forced = await repaints(c);
-  assert.equal(c.readStarts, 1);
+  assert.equal(c.readStarts, 1, 'no read starts while hidden');
+  assert.equal(detailRequests(c).length, detailsHidden, 'the retired read requests no continuation or restart page while hidden');
   assert.equal(lists(), listsHidden, 'no hidden poll');
   assert.equal(c.timers.slice(plannedHidden).filter((ms) => ms === 3000 || ms === 8000).length, 0, 'no poll planned while hidden');
   c.state.listRevision = null; c.show(); await settle();
   assert.equal(shownRevision(c), 6);
-  assert.equal(c.readStarts, 1);
+  assert.equal(c.readStarts, 2, 'showing performs exactly one fresh read');
   neverMismatched(c);
-  t.diagnostic(JSON.stringify({ scenario: 'hidden-work-status', observedRevisionChanges: 1, forcedRepaints: forced, hiddenListReads: 0, ...pagingFacts(c) }));
+  t.diagnostic(JSON.stringify({ scenario: 'hidden-work-status', observedRevisionChanges: 1, forcedRepaints: forced, hiddenListReads: 0, hiddenDetailPageRequests: 0, readStartsAfterShow: c.readStarts, ...pagingFacts(c) }));
   c.stop();
 });
 

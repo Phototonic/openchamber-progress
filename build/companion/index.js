@@ -24500,6 +24500,7 @@ function privatePaths(files) {
 // shared/progress.ts
 var VERSION = 2;
 var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1048576 };
+var BLOCKER_LIMITS = { textCodeUnits: 512, snapshotVisits: 128, inputBytes: 8 * 1024 * 1024, taskEntries: 1000 };
 
 class ProgressError extends Error {
   code;
@@ -24526,6 +24527,22 @@ function countItems(items) {
 var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier2(value3) {
   return typeof value3 === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value3);
+}
+var BLOCKER_CATEGORIES = ["decision", "dependency", "review", "external", "other"];
+function blockerText(value3) {
+  return typeof value3 === "string" && value3.trim().length > 0 && value3.length <= BLOCKER_LIMITS.textCodeUnits && !value3.includes("\x00");
+}
+function validBlockerInput(value3) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction));
+}
+function validBlockerAnnotation(value3, revision) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction", "reportedRevision", "reportedAt", "reporterSessionId", "attributedSessionId", "mode", "validAtRevision"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction)) && Number.isSafeInteger(b.reportedRevision) && Number(b.reportedRevision) > 0 && Number(b.reportedRevision) <= revision && Number.isSafeInteger(b.validAtRevision) && b.validAtRevision === revision && typeof b.reportedAt === "string" && Number.isFinite(Date.parse(b.reportedAt)) && new Date(b.reportedAt).toISOString() === b.reportedAt && identifier2(b.reporterSessionId) && identifier2(b.attributedSessionId) && (b.mode === "direct" && b.reporterSessionId === b.attributedSessionId || b.mode === "parent-relay" && b.reporterSessionId !== b.attributedSessionId);
 }
 function parseRequest(value3) {
   validRequest(value3 && typeof value3 === "object" && !Array.isArray(value3), "request");
@@ -24562,17 +24579,19 @@ function parseRequest(value3) {
   if (r.items !== undefined) {
     validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, "items");
     for (const i of r.items) {
-      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
+      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies", "blocker"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
       if (i.status !== undefined)
         validRequest(["pending", "working", "blocked", "done", "skipped"].includes(i.status), "items");
       if (i.parentId !== undefined)
         validRequest(identifier2(i.parentId), "items");
       if (i.dependencies !== undefined)
         validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier2), "items");
+      if (Object.hasOwn(i, "blocker"))
+        requireProgress(i.kind === "task" && (i.blocker === null || validBlockerInput(i.blocker)) && (i.blocker === null || i.status === undefined || i.status === "blocked"));
     }
   }
   if (r.changes !== undefined)
-    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status"].includes(k)) && identifier2(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status)));
+    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status", "blocker"].includes(k)) && identifier2(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status) && (!Object.hasOwn(c, "blocker") || c.blocker === null || c.status === "blocked" && validBlockerInput(c.blocker))));
   if (r.child !== undefined)
     requireProgress(identifier2(r.child));
   if (r.attributed !== undefined)
@@ -24597,6 +24616,7 @@ function parseRequest(value3) {
   requireProgress(r.op !== "finish" || !!r.outcome);
   return JSON.parse(JSON.stringify(r));
 }
+var BLOCKER_SCHEMA = { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: { category: { type: "string", enum: ["decision", "dependency", "review", "external", "other"] }, reason: { type: "string", minLength: 1, maxLength: 512 }, nextAction: { type: "string", minLength: 1, maxLength: 512 } } }], description: "Blocked tasks only. Optional complete replacement: category, nonblank reason and nextAction (each at most 512 JS code units, no NUL). Null clears details, not status; omit to retain only verified-current details." };
 var REPORT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -24607,8 +24627,8 @@ var REPORT_SCHEMA = {
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
     title: { type: "string", description: "Required for start: nonempty plan title, at most 256 characters." },
-    items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } } }, required: ["id", "title", "kind"], additionalProperties: false } },
-    changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] } }, required: ["id", "status"], additionalProperties: false } },
+    items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } }, blocker: BLOCKER_SCHEMA }, required: ["id", "title", "kind"], additionalProperties: false } },
+    changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, blocker: BLOCKER_SCHEMA }, required: ["id", "status"], additionalProperties: false } },
     child: { type: "string" },
     assign: { type: "array", items: { type: "string" } },
     attributed: { type: "string" },
@@ -25671,7 +25691,10 @@ class Store {
         ...this.metadata(),
         plan: this.summary(p),
         links: p.links,
-        items: { data: p.items.slice(start, start + LIMITS.pageSize), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
+        items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
+          const { blocker, ...item } = i;
+          return p.lifecycle === "active" && i.kind === "task" && i.status === "blocked" && validBlockerAnnotation(blocker, p.revision) ? { ...item, blocker } : item;
+        }), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
         contributions: { data: rows.slice(0, LIMITS.pageSize).map((r) => JSON.parse(String(r.payload))), nextCursor: rows.length > LIMITS.pageSize ? String(page + 1) : null }
       };
     });
@@ -25863,8 +25886,22 @@ class Store {
       else
         requireProgress(r.op !== "start", "invalid");
       const p = previous ? structuredClone(previous) : { id: r.plan, sourceId: actor.sourceId, title: r.title, sessionId: actor.sessionId, revision: 0, structuralRevision: 0, lifecycle: "active", reportedAt: now3, directory: actor.directory, projectId: actor.projectId, items: [], links: [], document: { state: "unbound", checklistSynchronized: false, currentFile: "not-rechecked" } };
+      for (const item of p.items)
+        if (previous?.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked" || !validBlockerAnnotation(item.blocker, revision))
+          delete item.blocker;
       requireProgress(p.revision < Number.MAX_SAFE_INTEGER);
       p.revision++;
+      const annotate3 = (item, input) => {
+        if (input !== undefined) {
+          requireProgress(item.kind === "task" && (input === null || item.status === "blocked" && validBlockerInput(input)));
+          if (input === null)
+            delete item.blocker;
+          else
+            item.blocker = { ...input, reportedRevision: p.revision, reportedAt: now3, reporterSessionId: actor.sessionId, attributedSessionId: r.attributed ?? actor.sessionId, mode: r.attributed ? "parent-relay" : "direct", validAtRevision: p.revision };
+        }
+        if (item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+      };
       if (coordinator) {
         p.directory = actor.directory;
         p.projectId = actor.projectId;
@@ -25880,7 +25917,15 @@ class Store {
         if (items) {
           requireProgress(items.length <= LIMITS.planItems);
           const old = new Map(p.items.map((i) => [i.id, i]));
-          p.items = items.map((i) => ({ ...i, status: i.status ?? old.get(i.id)?.status ?? "pending", assigneeSessionId: i.kind === "task" ? old.get(i.id)?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : old.get(i.id)?.reporterSessionId }));
+          p.items = items.map((i) => {
+            const { blocker, ...fields2 } = i;
+            const retained = old.get(i.id);
+            const item = { ...fields2, status: i.status ?? retained?.status ?? "pending", assigneeSessionId: i.kind === "task" ? retained?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : retained?.reporterSessionId };
+            if (retained?.kind === "task" && retained.status === "blocked" && item.kind === "task" && item.status === "blocked" && retained.blocker)
+              item.blocker = retained.blocker;
+            annotate3(item, blocker);
+            return item;
+          });
           validateItems(p.items);
           const ids = new Set(p.items.filter((i) => i.kind === "task").map((i) => i.id));
           p.links = p.links.map((l) => ({ ...l, itemIds: l.itemIds.filter((id2) => ids.has(id2)) })).filter((l) => l.itemIds.length > 0);
@@ -25906,6 +25951,7 @@ class Store {
           requireProgress(item?.kind === "task");
           item.status = c.status;
           item.reporterSessionId = actor.sessionId;
+          annotate3(item, c.blocker);
         }
         changed = r.changes.map((c) => c.id);
       }
@@ -25956,6 +26002,12 @@ class Store {
           p.boundCanonicalPath ??= capture.canonicalPath;
         } else
           p.document.checklistSynchronized = false;
+      }
+      for (const item of p.items) {
+        if (p.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+        else if (item.blocker)
+          item.blocker.validAtRevision = p.revision;
       }
       const snapshot3 = JSON.stringify(p);
       this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot3);
@@ -26416,6 +26468,7 @@ var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 ${START_HELP}
+Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
