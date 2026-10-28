@@ -2179,7 +2179,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "0.3.0";
+var RELEASE = "0.4.0";
 
 // setup/cli.ts
 try {
