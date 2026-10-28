@@ -21,7 +21,7 @@ import { ALL } from '../../ui/shared/scope.ts';
 import { SearchController, type SearchCriteria } from '../../ui/shared/search.ts';
 import { libraryId, seedSearchLibrary } from '../fixtures/plan-task-search.ts';
 import { Device } from './change-digests-fixture.ts';
-import { searchBackend, searchProxy, settle, until, type Backend, type SearchProxy } from './plan-task-search-fixture.ts';
+import { searchBackend, searchProxy, settle, until, deferred, type Backend, type SearchProxy } from './plan-task-search-fixture.ts';
 
 const APP = ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 
@@ -51,9 +51,10 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; },
     openSession: async () => { throw new Error('search must never open a session'); }, toast: async () => {},
   };
+  const copies: string[] = [];
   const exports: any = {};
   runInNewContext(APP, {
-    exports, document, navigator: {}, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
+    exports, document, navigator: { clipboard: { writeText: async (text: string) => { copies.push(text); } } }, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
@@ -83,6 +84,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
     initialUi: () => ({ selected: null, archived: false, search: null }),
     scope: (_c, ui) => ({ archived: ui.archived ? 'only' : 'exclude' }),
     wantProjects: () => [],
+    reading: (c) => c.ui.selected ? { plan: c.ui.selected, scope: 'board-search' } : null,
     wantDetails: (c) => { const r = search.selectedPlan(); return active(c) && r && r.key === c.ui.selected ? [r] : []; },
     actionPlan: (c) => { const r = search.selectedPlan(); return r && active(c) ? c.detailPlan(r) : null; },
     forgetPlans: (keys, ui) => (keys.has(ui.selected ?? '') ? { selected: null } : {}),
@@ -100,7 +102,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
   ready();
   let n = 0;
   return {
-    search, get vc() { return vc; }, get paints() { return paints; },
+    search, copies, get vc() { return vc; }, get paints() { return paints; },
     loaded: () => until(() => !!vc?.read, 'list read'),
     submit: async (patch: Partial<SearchCriteria>) => {
       const c = criteria({ archived: vc.ui.archived, ...patch });
@@ -312,5 +314,174 @@ test('hidden frames start neither freshness nor windows; disposal stops everythi
       assert.equal(s.log.filter((l) => l.path.startsWith('/v1/search')).length, 0, `${surface}: zero search requests`);
       f.stop();
     }
+  });
+});
+
+test('capture toggles during search refresh the board and open summaries without a plan revision change', async () => {
+  await withBackend(false, async (b, svc) => {
+    const a = frame(svc);
+    try {
+      await a.loaded(); await a.submit({ q: 'export csv' }); await a.open('source-alpha/P-export');
+      const selected = () => a.vc.read!.plans.find((p) => p.key === 'source-alpha/P-export')!;
+      const revision = selected().revision;
+      for (const mode of ['progress', 'handoff'] as const) {
+        a.vc.summary(selected())!.open(mode); await settle();
+        assert.ok(a.vc.summary(selected())!.preview!.text);
+        for (const enabled of [false, true]) {
+          const mark = svc.log.length;
+          b.f.store.setEnabled(enabled);
+          await a.poll();
+          assert.equal(a.vc.read!.captureEnabled, enabled, 'successful search poll observes capture state');
+          assert.equal(a.vc.read!.diagnostics.includes('capture-disabled'), !enabled);
+          await until(() => !!a.vc.summary(selected())?.preview?.text && a.vc.summary(selected())!.preview!.text!.includes('Progress capture is disabled.') === !enabled, 'summary capture warning updated');
+          assert.equal(selected().revision, revision);
+          assert.equal(a.vc.summary(selected())!.preview!.mode, mode);
+          assert.deepEqual(since(svc, mark), ['/v1/search-state', '/v1/plan'], 'one freshness and one detail refresh, no list or extra poll');
+          const unchanged = svc.log.length, paints = a.paints;
+          await a.poll(); await a.poll();
+          assert.deepEqual(since(svc, unchanged), ['/v1/search-state', '/v1/search-state']);
+          assert.equal(a.paints, paints, 'unchanged capture state does not repaint');
+        }
+      }
+    } finally { a.stop(); }
+  });
+});
+
+test('failed capture metadata keeps the last known state and freshness until a valid retry', async () => {
+  await withBackend(false, async (b, svc) => {
+    let bad: 'missing' | 'malformed' | 'http' | null = null;
+    const a = frame({ ...svc, serviceRequest: async (q: GuestRequest) => {
+      const reply = await svc.serviceRequest(q);
+      if (q.path !== '/v1/search-state' || !bad) return reply;
+      if (bad === 'http') return { status: 503, body: '{"error":"busy"}' };
+      const body = JSON.parse(reply.body);
+      if (bad === 'missing') delete body.captureEnabled; else body.captureEnabled = 'false';
+      return { ...reply, body: JSON.stringify(body) };
+    } } as SearchProxy);
+    try {
+      await a.loaded(); await a.submit({ q: 'export csv' });
+      const freshAt = a.vc.lastGoodAt;
+      b.f.store.setEnabled(false);
+      for (bad of ['missing', 'malformed', 'http'] as const) {
+        await a.poll();
+        assert.ok(a.vc.failure, 'failed metadata remains visibly stale');
+        assert.equal(a.vc.read!.captureEnabled, true, 'no guessed capture state');
+        assert.equal(a.vc.lastGoodAt, freshAt);
+        assert.ok(a.search.view()!.page.hits.length);
+      }
+      bad = null; await a.poll();
+      assert.equal(a.vc.failure, null); assert.equal(a.vc.read!.captureEnabled, false);
+    } finally { a.stop(); }
+  });
+});
+
+test('retired freshness cannot apply capture metadata, clear failure or advance freshness', async () => {
+  for (const retire of ['hidden', 'replaced', 'cleared', 'disposed'] as const) {
+    await withBackend(false, async (b, svc) => {
+      let fail = false, captured = false;
+      const held = deferred<void>();
+      const a = frame({ ...svc, serviceRequest: async (q: GuestRequest) => {
+        if (q.path === '/v1/search-state' && fail) return { status: 503, body: '{"error":"busy"}' };
+        const reply = await svc.serviceRequest(q);
+        if (q.path === '/v1/search-state' && !captured) {
+          captured = true; await held.promise;
+        }
+        return reply;
+      } } as SearchProxy);
+      try {
+        await a.loaded(); await a.submit({ q: 'export csv' });
+        fail = true; await a.poll(); fail = false;
+        const freshAt = a.vc.lastGoodAt;
+        b.f.store.setEnabled(false); a.vc.retry();
+        await until(() => captured, 'capture-disabled reply held after service read');
+        if (retire === 'hidden') a.hide();
+        if (retire === 'replaced') await a.submit({ q: 'Export CSV delivery' });
+        if (retire === 'cleared') { a.vc.setUi({ search: null, selected: null }); await settle(); }
+        if (retire === 'disposed') a.stop();
+        held.resolve(); await settle();
+        assert.equal(a.vc.read!.captureEnabled, true, retire);
+        assert.equal(a.vc.failure?.kind, 'busy', `${retire}: retired success never clears failure`);
+        assert.equal(a.vc.lastGoodAt, freshAt, `${retire}: no freshness claim`);
+      } finally { held.resolve(); a.stop(); }
+    });
+  }
+});
+
+test('a detail reply captured before a toggle cannot restore an obsolete summary warning', async () => {
+  await withBackend(false, async (b, svc) => {
+    let captured = false;
+    const held = deferred<void>();
+    const a = frame({ ...svc, serviceRequest: async (q: GuestRequest) => {
+      const reply = await svc.serviceRequest(q);
+      if (q.path === '/v1/plan' && !captured) {
+        captured = true; await held.promise;
+      }
+      return reply;
+    } } as SearchProxy);
+    try {
+      await a.loaded(); await a.submit({ q: 'export csv' });
+      a.search.select('source-alpha/P-export'); a.vc.setUi({ selected: 'source-alpha/P-export' });
+      await until(() => captured, 'enabled detail held');
+      const selected = () => a.vc.read!.plans.find((p) => p.key === 'source-alpha/P-export')!;
+      a.vc.summary(selected())!.open('handoff'); await settle();
+      b.f.store.setEnabled(false); await a.poll();
+      assert.equal(a.vc.summary(selected())!.preview!.text, null, 'old preview is withheld during refresh');
+      held.resolve();
+      await until(() => !!a.vc.summary(selected())?.preview?.text, 'fresh detail and preview');
+      assert.match(a.vc.summary(selected())!.preview!.text!, /Progress capture is disabled/);
+      assert.equal(svc.count('/v1/plan'), 2, 'one replacement read after rejecting the old capture state');
+    } finally { held.resolve(); a.stop(); }
+  });
+});
+
+test('an open completed preview and its copy callbacks wait for the post-toggle detail', async () => {
+  await withBackend(false, async (b, svc) => {
+    const a = frame(svc);
+    try {
+      await a.loaded(); await a.submit({ q: 'export csv' }); await a.open('source-alpha/P-export');
+      const selected = () => a.vc.read!.plans.find((p) => p.key === 'source-alpha/P-export')!;
+      a.vc.summary(selected())!.open('handoff'); await settle();
+      for (const enabled of [false, true]) {
+        const old = a.vc.summary(selected())!;
+        assert.ok(old.preview!.text);
+        const release = svc.hold('/v1/plan');
+        try {
+          b.f.store.setEnabled(enabled); await a.poll();
+          const pending = a.vc.summary(selected())!;
+          assert.equal(pending.preview!.text, null, 'completed old detail cannot repopulate the preview under its new binding');
+          old.copy(); pending.copy(); await settle();
+          assert.equal(a.copies.length, 0, 'neither obsolete nor pending callbacks can copy');
+        } finally { release(); }
+        await until(() => !!a.vc.summary(selected())?.preview?.text, 'replacement preview');
+        assert.equal(a.vc.summary(selected())!.preview!.text!.includes('Progress capture is disabled.'), !enabled);
+      }
+      a.vc.summary(selected())!.copy(); await settle();
+      assert.equal(a.copies.length, 1, 'fresh preview remains explicitly copyable');
+    } finally { a.stop(); }
+  });
+});
+
+test('remembered scopes cannot restore obsolete capture state or pretend their lists were refreshed', async () => {
+  await withBackend(false, async (b, svc) => {
+    let failList = false;
+    const a = frame({ ...svc, serviceRequest: (q: GuestRequest) => q.path === '/v1/plans' && failList
+      ? Promise.resolve({ status: 503, body: '{"error":"busy"}' }) : svc.serviceRequest(q) } as SearchProxy);
+    try {
+      await a.loaded();
+      a.vc.setUi({ archived: true }); await settle(); await a.loaded();
+      a.vc.setUi({ archived: false }); await settle(); await a.loaded();
+      const listBeforeToggle = Date.now(), diagnostics = [...a.vc.read!.diagnostics];
+      await settle();
+      await a.submit({ q: 'export csv' }); b.f.store.setEnabled(false); await a.poll();
+      assert.deepEqual([...a.vc.read!.diagnostics], [...diagnostics, 'capture-disabled']);
+      failList = true;
+      a.vc.setUi({ archived: true, search: null, selected: null }); await settle();
+      assert.equal(a.vc.read, null, 'the other scope with obsolete capture state was evicted');
+      a.vc.setUi({ archived: false }); await settle();
+      assert.equal(a.vc.failure?.kind, 'busy');
+      assert.equal(a.vc.read!.captureEnabled, false, 'the remembered current scope keeps accepted capture state');
+      assert.ok(a.vc.lastGoodAt! <= listBeforeToggle, 'capture metadata did not refresh the cached list age');
+      assert.deepEqual([...a.vc.read!.diagnostics], [...diagnostics, 'capture-disabled']);
+    } finally { a.stop(); }
   });
 });

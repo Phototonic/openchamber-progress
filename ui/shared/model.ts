@@ -143,7 +143,7 @@ export interface SearchWindowView {
 export interface SearchRequest { q: string; source: string | null; session: string | null; lifecycle: Lifecycle | null; status: ItemStatus | null; archived: 'exclude' | 'only'; limit: number; cursor: string | null }
 export interface SearchKeyView { source: string; plan: string }
 export interface SearchStateRow { source: string; plan: string; exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } }
-export interface SearchStateView { storeId: string; binding: { sourceId: string | null; verified: boolean }; data: SearchStateRow[] }
+export interface SearchStateView { captureEnabled: boolean; storeId: string; binding: { sourceId: string | null; verified: boolean }; data: SearchStateRow[] }
 
 /** Frozen change-digest DTO (docs/contracts.md); lifecycles use this view's labels (finished → completed). */
 export type { DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask };

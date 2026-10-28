@@ -68,6 +68,11 @@ test('adapter: capability, frozen query fields, strict window/state parsing and 
     assert.deepEqual(searchStateQuery(b.f.storeId, k), { storeId: b.f.storeId, keys: JSON.stringify(k) });
     const state = parseSearchState(JSON.stringify(b.f.store.searchState(b.f.storeId, k)), b.f.storeId, k);
     assert.deepEqual(state.data.map((d) => d.exists), [true, false]);
+    assert.equal(state.captureEnabled, true);
+    for (const captureEnabled of [undefined, null, 0, 'false']) {
+      const invalid = { ...b.f.store.searchState(b.f.storeId, k), captureEnabled };
+      assert.throws(() => parseSearchState(JSON.stringify(invalid), b.f.storeId, k), /capture state/, 'missing and malformed flags are never guessed');
+    }
     assert.throws(() => parseSearchState(JSON.stringify(b.f.store.searchState(b.f.storeId, k)), b.f.storeId, [...k].reverse()), /other plans/, 'rows must answer the requested keys in order');
     assert.throws(() => parseSearchState(JSON.stringify(b.f.store.searchState(b.f.storeId, k)), 'other-store', k), /another store/);
   });
@@ -203,7 +208,7 @@ test('freshness: deletion beyond plan 500, archive with unchanged revision and r
     assert.deepEqual(v.page.hits.map((h) => h.plan.id), [libraryId(51), libraryId(501), libraryId(1001)]);
     assert.deepEqual(c.freshKeys().map((k) => k.plan), [libraryId(51), libraryId(501), libraryId(1001)]);
     const plain = { serviceRequest: svc.serviceRequest };
-    assert.deepEqual(await c.revalidate(plain), { ok: true });
+    assert.deepEqual(await c.revalidate(plain), { state: 'fresh', captureEnabled: true });
     assert.equal(c.view()!.stop, null, 'an unchanged poll changes nothing');
     // Same progress revision, new cleanup generation: archived out of Current.
     const revision = b.f.store.get(b.f.alpha.id, libraryId(501))!.revision;
@@ -235,7 +240,7 @@ test('freshness: deletion beyond plan 500, archive with unchanged revision and r
     await run(c, b, { q: 'Needle' });
     const failing = { serviceRequest: async () => ({ status: 503, body: '{"error":"busy"}' }) };
     const result = await c.revalidate(failing);
-    assert.equal(result.ok, false);
+    assert.equal(result.state, 'failed');
     assert.ok(c.view()!.page.hits.length > 0, 'nothing removed on failure');
   });
 });
@@ -424,10 +429,36 @@ test('J1-B3: an idle search hidden during a two-batch freshness read sends no se
     await settle();
     assert.equal(svc.count('/v1/search-state'), 1, 'no second batch while hidden');
     assert.equal(c.view()!.page.checked, false, 'the retired batch was not accepted');
-    assert.deepEqual(result, { ok: true }, 'a retired freshness read is neither a failure nor a change');
+    assert.deepEqual(result, { state: 'retired' }, 'a retired freshness read supplies no successful freshness or metadata');
     h.show();
     await c.revalidate({ serviceRequest: svc.serviceRequest });
     assert.equal(svc.count('/v1/search-state'), 3, 'visible again: the next poll reads both batches');
+    assert.equal(c.view()!.page.checked, true);
+  });
+});
+
+test('capture state must agree across freshness batches before any rows or metadata are accepted', async () => {
+  await withBackend(false, async (b, svc) => {
+    seedSearchLibrary(b.f);
+    const { c } = controller(svc);
+    await run(c, b, { q: 'Dense match' }); c.more(); await done(c);
+    c.select(c.view()!.page.hits[0].plan.key); c.showPage(-1);
+    assert.equal(c.freshKeys().length, 51);
+    const selected = c.selectedPlan()!;
+    b.f.apply(selected.id, { op: 'change', changes: [{ id: 'T', status: 'done' }] });
+    let batches = 0;
+    const result = await c.revalidate({ serviceRequest: async (q) => {
+      const reply = await svc.serviceRequest(q);
+      if (++batches === 1) b.f.store.setEnabled(false);
+      return reply;
+    } });
+    assert.equal(result.state, 'failed');
+    if (result.state === 'failed') { assert.equal(result.failure.kind, 'busy'); assert.equal(result.identity, false); }
+    assert.equal(c.view()!.page.checked, false, 'no partial fresh authority');
+    assert.equal(c.view()!.changedKeys, 0, 'no partial row reconciliation');
+    assert.equal(c.selectedPlan()!.revision, selected.revision, 'first batch did not apply its changed row');
+    assert.deepEqual(await c.revalidate({ serviceRequest: svc.serviceRequest }), { state: 'fresh', captureEnabled: false });
+    assert.equal(c.selectedPlan()!.revision, selected.revision + 1);
     assert.equal(c.view()!.page.checked, true);
   });
 });

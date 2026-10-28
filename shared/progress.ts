@@ -45,7 +45,7 @@ export interface SearchWindow extends SearchIdentity {
   coverage: { kind: 'recorded-current'; asSearched: true; gapped: boolean; skippedRecords: number; reasons: SearchGap[] };
   work: { planSlots: number; inspectedItems: number; membershipRows: number; inputBytes: number; outputHits: number; outputBytes: number };
 }
-export interface SearchState extends SearchIdentity { data: (SearchKey & { exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } })[] }
+export interface SearchState extends SearchIdentity { captureEnabled: boolean; data: (SearchKey & { exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } })[] }
 /** Response-only reported-working history; absent item entries mean no proven interval. */
 export interface PlanTiming { readAt: string; items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }> }
 export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links']; timing?: PlanTiming }

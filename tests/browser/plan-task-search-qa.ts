@@ -19,6 +19,7 @@ const built = process.argv.includes('--built-service');
 const measure = process.argv.includes('--measure');
 /** `--only j1`: just the J1 review cases (detail retirement and retention), for iteration. */
 const onlyJ1 = arg('--only') === 'j1';
+const onlyCapture = arg('--only') === 'capture';
 class OnlyDone extends Error {}
 mkdirSync(artifacts, { recursive: true });
 
@@ -185,6 +186,50 @@ try {
   await theme('light');
   await instrument();
   const storageMark = await now();
+
+  // Capture metadata uses the existing freshness poll, including when a preview stays open.
+  if (!onlyJ1) {
+    await searchFor('Ship export bundle', true);
+    await click('page', H('P-0005-ship'));
+    await wait('page', `d.querySelector('[data-testid="summary-handoff"]')`, 'capture fixture detail');
+    for (const mode of ['handoff', 'progress']) {
+      await click('page', `[data-testid="summary-${mode}"]`);
+      await wait('page', `d.querySelector('[data-testid="summary-text"]')`, `${mode} preview`);
+      for (const enabled of [false, true]) {
+        const mark = await now(), details = await count('/v1/plan');
+        await evaluate(`qa.holds.push({tag:'capture-detail',path:'/v1/plan',frame:'page'});true`);
+        fx.setCapture(enabled);
+        await wait('page', `qa.held.some(h=>h.tag==='capture-detail')`, 'post-toggle detail held');
+        check(`capture:${mode}:${enabled}:preview-waits`, await guest<boolean>('page', `return !d.querySelector('[data-testid="summary-text"]')&&d.querySelector('[data-testid="summary-copy"]')?.disabled===true`), ['Completed old summary is withheld and Copy is disabled until fresh detail arrives']);
+        await evaluate(`qa.release('capture-detail')`);
+        await wait('page', `!!d.querySelector('[data-testid="summary-text"]')&&d.querySelector('[data-testid="summary-text"]').value.includes('Progress capture is disabled.')===${!enabled}`, `${mode} capture ${enabled}`);
+        check(`capture:${mode}:${enabled}:warning`, await guest<boolean>('page', `return d.body.textContent.includes('Capture is turned off; no new reports are recorded.')===${!enabled}`));
+        const requests = await reqs(`r.frame==='page'&&r.at>=${mark}`);
+        check(`capture:${mode}:${enabled}:bounded-reads`, await count('/v1/plan') === details + 1 && requests.some(r => r.path === '/v1/search-state') && requests.every(r => ['/v1/search-state', '/v1/plan'].includes(r.path)), ['Existing freshness poll and one detail refresh; no list read'], requests.map(r => r.path));
+        if (!enabled && mode === 'handoff') await shot('capture-off-handoff', '[data-testid="progress-root"]');
+        if (enabled && mode === 'progress') await shot('capture-on-progress', '[data-testid="summary-preview"]');
+      }
+    }
+    await paints();
+    const mark = await now();
+    await sleep(6600);
+    const unchanged = await reqs(`r.frame==='page'&&r.at>=${mark}`);
+    check('capture:unchanged-polls', unchanged.length >= 2 && unchanged.every(r => r.path === '/v1/search-state') && (await paints()).length === 0, ['No list/detail requests or repaint on unchanged polls']);
+    // Hold the off reply after the service captured it, then hide and re-enable capture.
+    await evaluate(`qa.holds.push({tag:'capture-held',path:'/v1/search-state',frame:'page'});true`);
+    fx.setCapture(false);
+    await wait('page', `qa.held.some(h=>h.tag==='capture-held')`, 'held capture reply');
+    await setHidden(true); fx.setCapture(true);
+    await evaluate(`qa.release('capture-held')`); await sleep(300);
+    race('capture:hidden-reply-ignored', await guest<boolean>('page', `return !d.body.textContent.includes('Capture is turned off; no new reports are recorded.')&&!d.querySelector('[data-testid="summary-text"]').value.includes('Progress capture is disabled.')`));
+    await setHidden(false); await sleep(300);
+    check('capture:no-browser-errors', pageErrors().length === 0 && JSON.stringify(await evaluate('qa.errors')) === '[]');
+    replies = await evaluate<any[]>(`qa.replies`);
+    if (onlyCapture) throw new OnlyDone();
+    await evaluate(`qa.reload('page');true`);
+    await wait('page', `d.querySelector('[data-testid="search-form"]')&&d.querySelector('[data-testid="plan-list"]')`, 'fresh board');
+    await instrument();
+  }
 
   // ======================================================= J1 review: detail reads of search-opened plans
   {

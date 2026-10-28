@@ -131,18 +131,22 @@ those two fields. `keys` is a JSON array of1–50 distinct `{source,plan}` ident
 pairs (object field order does not affect distinctness). The same16 KiB encoded
 query and fixed error discipline applies. Wrong store returns409; empty, duplicate,
 extra-field or oversized key lists return400. It returns `SearchState`: the same
-minimal identity and `data` in requested order, each row containing exactly the
-requested `source`, `plan`, `exists`, `revision` (null when missing), and
+minimal identity, a required boolean `captureEnabled` from store metadata, and
+`data` in requested order, each row containing exactly the requested `source`, `plan`, `exists`, `revision` (null when missing), and
 `cleanup:{state:'visible'|'archived'|'deleted',revision}`. An unknown key has
 `exists:false`, null revision and visible generation0; a deleted key retains its
-deleted cleanup generation. No unsent keys, items, timing or history are read.
+deleted cleanup generation. Capture state and plan rows share one read transaction.
+No unsent keys, items, timing or history are read.
 
 Freshness is authoritative metadata point-lookup evidence, not list-filter absence.
 Archive/restore generation changes invalidate results even with unchanged progress
 revision. Consumers revalidate displayed keys before reuse, retire continuation and
 count authority on changed/missing identity, and offer Refresh search. Failure is
-stale/unavailable, never an empty successful read. Legacy schema2 and read-only
-stores work without creating cleanup tables or metadata. Search never mutates
+stale/unavailable, never an empty successful read. A missing/non-boolean capture
+flag is invalid. Consumers combining freshness batches accept rows and capture
+metadata only when all batches agree on capture state; a disagreement is stale
+and retried on the normal cadence. Capture changes need not advance plan revisions.
+Legacy schema2 and read-only stores work without creating cleanup tables or metadata. Search never mutates
 reports, starts/assigns/completes tasks, opens sessions or accesses captured bodies.
 
 ## System boundaries

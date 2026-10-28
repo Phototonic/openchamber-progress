@@ -107,3 +107,18 @@ test('real search/state honor archive/restore at unchanged revision and reject p
     }
   }finally{await s.stop();f.cleanup();}
 });
+
+test('search freshness returns capture state even when plan revision does not change', async () => {
+  const f=searchFixture(),s=await serve(f.store);
+  try {
+    const path=route('/v1/search-state',{storeId:f.storeId,keys:[{source:f.alpha.id,plan:'P-export'}]});
+    const before=await (await s.get(path)).json();
+    assert.equal(before.captureEnabled,true);
+    for(const enabled of [false,true]) {
+      f.store.setEnabled(enabled);
+      const response=await s.get(path);assert.equal(response.status,200);
+      const state=await response.json();assert.equal(state.captureEnabled,enabled);
+      assert.deepEqual(state.data,before.data,'capture state does not change plan revisions or cleanup');
+    }
+  } finally { await s.stop();f.cleanup(); }
+});
