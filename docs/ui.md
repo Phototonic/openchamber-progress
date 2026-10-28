@@ -1,5 +1,11 @@
 # Progress views
 
+## Reporting health
+
+The board offers Reporting health even when its normal read fails. Opening it or selecting Refresh observations performs a bounded read-only check. Installation, matching loaded-companion observation, capture, selected recorded revision and viewer freshness are explained separately. A matching load does not establish every running instance or restricted child session has the tool. Select a plan to check its recorded revision; unknown states remain explicit.
+
+The support summary is previewed in a labelled selectable text area. Copy is explicit, reports success only after clipboard acceptance, and offers manual copying on failure. It contains fixed observation enums and a numeric version, with private context excluded. No upload, persistent cache, synthetic plan, repair or automatic restart occurs. Account/store/source, selection/filter/archive/search, capture and failed-viewer changes retire the observation; otherwise it remains labelled as the last explicit check.
+
 ## Compare recorded document captures
 
 The board's Document tab offers **Compare recorded captures** after the existing

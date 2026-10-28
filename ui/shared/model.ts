@@ -185,6 +185,7 @@ export interface OfficialMainView {
 
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
+  reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
   configured: boolean;
   verified: boolean;
   installed: boolean;

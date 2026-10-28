@@ -20,6 +20,8 @@ import {
 import { officialMainBlock } from '../shared/official.ts';
 import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
+import { ReportingHealth } from '../shared/reporting-health.ts';
+import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 
 type Tab = 'progress' | 'document' | 'history';
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
@@ -69,6 +71,7 @@ let opened: string[] = [];
 
 const ownerOf = (vc: ViewContext<Ui>) => JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]);
 const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}) });
+const reporting = new ReportingHealth({service:current=>frame!.service(current),visible:()=>document.visibilityState!=='hidden',changed:()=>frame?.setUi({}),copy:async text=>{if(!navigator.clipboard?.writeText)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(text);}});
 function draftText(vc: ViewContext<Ui>) {
   if (text.owner !== ownerOf(vc)) text = { owner: ownerOf(vc), q: '' };
   return text.q;
@@ -110,10 +113,10 @@ startView<Ui>({
   initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
-  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); search.select(null); return { selected: null }; },
+  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
   beforeUiChange: (previous, next) => {
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
-    if (scope(previous) !== scope(next)) captures.retire();
+    if (scope(previous) !== scope(next)) { captures.retire(); reporting.retire(); }
   },
   wantProjects: ({ read, live, directory, env }) => (read ? projectsFor(read.plans, live, directory, env.boundSource) : []),
   wantDetails: (vc) => {
@@ -129,7 +132,7 @@ startView<Ui>({
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
-  retire: (reason) => { captures.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { captures.retire(); reporting.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
@@ -148,6 +151,7 @@ startView<Ui>({
     button(modes, 'cleanup-archived', 'Archived plans', () => mode(true), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
     modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
     root.append(modes);
+    root.append(reportingHealthBlock(reporting.claim({key:JSON.stringify([ownerOf(vc),vc.read?.storeId,vc.read?.binding,vc.read?.captureEnabled,!!vc.failure,selectedPlan(vc)?.key,vc.ui.filters,vc.ui.archived,vc.ui.search?.key??null]),read:vc.read,plan:selectedPlan(vc),stale:!!vc.failure})));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
     if (vc.health?.ready && !vc.health.planCleanup) root.append(testid(el('p', 'ap-note', 'Plan cleanup is unavailable with this service version.'), 'cleanup-unavailable'));
     // The official-main notice does not depend on companion setup or the store.

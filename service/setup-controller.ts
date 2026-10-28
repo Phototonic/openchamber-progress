@@ -53,6 +53,7 @@ export class SetupController {
       return {configured:false,verified:false,installed:false,captureEnabled:null,targets:null,version:null,activation:'unknown',separateLifecycle:true,historyRetained:true,diagnostics:[...(!this.canPersist?['service-binding-collision']:[]),...(this.securityUnavailable?['windows-security-unavailable']:[]),this.error==='binding'?'targets-unverified':this.error],...(suggestions?{suggestions}:{})};
     }
     const base:SetupRead={configured:true,verified:this.binding!.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,targets:{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot},version:null,activation:this.activation,separateLifecycle:true,historyRetained:true,diagnostics:this.store?[]:[...(this.securityUnavailable?['windows-security-unavailable']:[]),this.error]};
+    if(this.store)base.reportingIdentity={storeId:this.binding!.storeId,sourceId:this.binding!.source.id,verified:this.binding!.source.verified};
     let payload:Payload|undefined;
     if(this.store&&base.verified)try{payload=this.readonlyPayload();}catch{/* Missing bundled bytes make no update claim. */}
     try{const info=lifecycle('inspect',targets,payload);base.installed=info.installed;base.recovery=info.recovery;base.version=info.version;base.diagnostics.push(...info.diagnostics);

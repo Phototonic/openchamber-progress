@@ -901,6 +901,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     let vc = context();
 
     const focus = focusKey(mount!);
+    const supportText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
+    const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const textSelection = oldText && preview && oldText.dataset.generation === String(preview.generation) ? { start: oldText.selectionStart, end: oldText.selectionEnd, direction: oldText.selectionDirection, top: oldText.scrollTop } : null;
     // Plan-reading disclosures, logical focus and anchor belong to the reading they were painted
@@ -999,6 +1001,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (target) { if (target.tagName !== 'BUTTON') target.tabIndex = -1; target.focus({ preventScroll: true }); cleanupFocus = null; }
     }
     const nextText = root.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
+    const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
+    if(nextSupport && supportSelection && nextSupport.dataset.observation===supportSelection.observation && nextSupport.value===supportSelection.value){nextSupport.setSelectionRange(supportSelection.start,supportSelection.end,supportSelection.direction);nextSupport.scrollTop=supportSelection.top;}
     if (nextText && textSelection) { nextText.setSelectionRange(textSelection.start, textSelection.end, textSelection.direction); nextText.scrollTop = textSelection.top; }
     if (previewFocus) {
       const copyCurrent = previewFocus.generation === undefined || (preview?.generation === previewFocus.generation && canReturnCopyFocus());
