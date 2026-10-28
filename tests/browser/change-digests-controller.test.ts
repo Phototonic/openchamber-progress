@@ -224,7 +224,7 @@ test('since-reviewed digest after real mutations; transient blocker kept; replay
   });
 });
 
-test('two windows share one device/account checkpoint: interleaved 8/10 acknowledgements reopen at 10; other namespace/account stay initial; filter-only change keeps the baseline', async () => {
+test('two windows share one device/integration-account checkpoint: interleaved 8/10 acknowledgements reopen at 10; other namespace/integration value stay initial; filter-only change keeps the baseline', async () => {
   await fixture(async (b, svc, device) => {
     for (let i = 0; i < 7; i++) b.f.change(i % 2 ? 'working' : 'pending');
     assert.equal(b.revision(), 8);
@@ -248,7 +248,7 @@ test('two windows share one device/account checkpoint: interleaved 8/10 acknowle
     assert.equal(c.panel!.digest!.interval.after, 10);
     // A stale window cannot rewind: its acknowledgement of 8 reports "already reviewed".
     const stale = frame('D', svc, device); await stale.open(); await ready(stale);
-    // Other account and other device namespace: initial, not borrowed.
+    // Other integration account and other device namespace: initial, not borrowed.
     const other = frame('E', svc, device, { account: 'account-other' }); await other.open(); await ready(other);
     assert.equal(other.panel!.digest!.availability, 'initial');
     const elsewhere = frame('F', svc, new Device()); await elsewhere.open(); await ready(elsewhere);
@@ -261,7 +261,32 @@ test('two windows share one device/account checkpoint: interleaved 8/10 acknowle
   });
 });
 
-test('held digest replies across plan, account and store switches cannot paint or enable detached controls', async () => {
+test('empty and changed integration values select markers; returning restores the previous review point', async () => {
+  await fixture(async (b, svc, device) => {
+    const a = frame('A', svc, device);
+    let sharedEmpty: Frame | null = null;
+    try {
+      await a.open(); await ready(a);
+      a.panel!.markReviewed(trusted); await until(() => a.panel!.review === 'saved', 'named value saved');
+      b.f.change('working');
+      assert.equal(b.revision(), 2);
+      a.account(''); await a.open(); await ready(a);
+      assert.equal(a.panel!.digest!.availability, 'initial');
+      a.panel!.markReviewed(trusted); await until(() => a.panel!.review === 'saved', 'empty value saved');
+      sharedEmpty = frame('B', svc, device, { account: '' });
+      await sharedEmpty.open(); await ready(sharedEmpty);
+      assert.equal(sharedEmpty.panel!.digest!.interval.after, 2, 'same empty integration value shares markers, regardless of who uses the profile');
+      a.account('account-other'); await a.open(); await ready(a);
+      assert.equal(a.panel!.digest!.availability, 'initial');
+      a.account('account-example'); await a.open(); await ready(a);
+      assert.equal(a.panel!.digest!.interval.after, 1, 'original integration value recovers its review point');
+      a.account(''); await a.open(); await ready(a);
+      assert.equal(a.panel!.digest!.interval.after, 2, 'empty integration value recovers its review point');
+    } finally { a.stop(); sharedEmpty?.stop(); }
+  });
+});
+
+test('held digest replies across plan, integration-account and store switches cannot paint or enable detached controls', async () => {
   await fixture(async (b, svc, device) => {
     const a = frame('A', svc, device);
     // Plan switch.
@@ -274,13 +299,13 @@ test('held digest replies across plan, account and store switches cannot paint o
     assert.equal(a.panel!.digest!.plan, 'P-done', 'retired P-digest reply never paints');
     loading.markReviewed(trusted); loading.refresh(); await settle();
     assert.equal(device.writes().length, 0, 'detached controls inert');
-    // Account switch with a held reply.
+    // Integration-account switch with a held reply.
     const ready1 = a.panel!;
     const release2 = svc.hold('/v1/change-digest', 'A');
     ready1.refresh(); await until(() => a.panel!.state === 'loading', 'refreshing');
     a.account('account-other'); await settle();
     release2(); await settle();
-    assert.equal(a.panel, null, 'account change resets selection; no old content');
+    assert.equal(a.panel, null, 'integration-account change resets selection; no old content');
     ready1.markReviewed(trusted); await settle();
     assert.equal(device.writes().length, 0);
     // Store switch: a different store identity resets the frame.

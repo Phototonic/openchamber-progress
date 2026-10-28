@@ -124,7 +124,7 @@ export class DigestController {
 
   /**
    * The page paints History of `claim.plan`. Same context: the pinned digest stays; a different
-   * account/store/binding/plan or cleanup generation (archive/restore) starts a new visit.
+   * integration-account/store/binding/plan or cleanup generation (archive/restore) starts a new visit.
    */
   claim(claim: DigestClaim): DigestPanel {
     this.claimed = true;

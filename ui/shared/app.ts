@@ -2,14 +2,14 @@
 // - latest context wins: a context notification re-reads only when the list scope changes; an
 //   obsolete read never blocks the new one (bounded overlap) and its reply is dropped
 // - scoped reads carry their scope key and are never shown for another context
-// - the last validated read of up to 8 recent scopes is kept per frame, keyed by host account +
+// - the last validated read of up to 8 recent scopes is kept per frame, keyed by integration account +
 //   store + source binding + scope; returning to one paints it at once and revalidates quietly
 // - provisional 3 s polling (8 s after failure), paused while hidden, stopped on dispose
 // - selected-plan detail, document and history load on demand and are cached by revision/capture
 // - cache identity = frame (host generation) + storeId + source binding; a change resets UI state
 // - repaint only on change; focus, scroll and open disclosures survive a repaint
 // - task-reading state (filters, jump cursors, task disclosures, logical focus, reading anchor)
-//   lives for one reading identity: account + store/binding + view scope + plan; never stored
+//   lives for one reading identity: integration account + store/binding + view scope + plan; never stored
 // - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 // - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
@@ -164,7 +164,7 @@ export interface ViewSpec<U> {
    */
   freshness?: (vc: ViewContext<U>) => Freshness | null;
   /**
-   * Retirement of view-owned async work: `reset` with every cache reset (store/binding/account
+   * Retirement of view-owned async work: `reset` with every cache reset (store/binding/integration-account
    * change, setup action, cleanup, list eviction), `hidden` when the frame is hidden, `dispose` on pagehide.
    */
   retire?: (reason: 'reset' | 'hidden' | 'dispose') => void;
@@ -327,7 +327,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
   let digests: DigestController | null = null;
-  const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ account: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
+  // connection.account is integration-link state, not an authenticated host-user boundary.
+  const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
   type PreviewBinding = { selection: string; key: string; plan: PlanView };
@@ -470,7 +471,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     };
   }
   const memory = new RecentMemory<{ read: StoreRead; sig: string; health: HealthView; at: number }>(RECENT_SCOPES);
-  // Authority of a remembered read: this frame's host account and the service's store + binding.
+  // Authority of a remembered read: this frame's integration account and the service's store + binding.
   // (A frame document belongs to one host server; a runtime switch reloads the frame.)
   const memoryKey = (key: string) => `${ctx?.connection?.account ?? ''}|${identity}#${key}`;
 
@@ -648,7 +649,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const selected = spec.actionPlan?.(context());
     if (!selected || !cleanupEligible(action, selected)) return;
     const actionIdentity = identity;
-    const actionAccount = ctx?.connection?.account;
+    const actionIntegrationAccount = ctx?.connection?.account;
     const deleted = action === 'delete' && read ? digestIdentity({ sourceId: target.request.source, id: target.request.plan }, { storeId: target.request.storeId, binding: read.binding }) : null;
     cleanupBusy = true; cleanup = { ...cleanup, pending: true, message: null }; versions.ui++; schedule();
     const result = await cleanupCall(host, action, target.request);
@@ -656,7 +657,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A confirmed deletion is authoritative for its captured context: retire its review markers.
     if (result.ok && deleted) { if (digests) digests.forget(deleted); else void new CheckpointStore(host.storage, () => ctx?.features?.deviceStorage === true).forget(deleted); }
     if (disposed) return;
-    if (identity !== actionIdentity || ctx?.connection?.account !== actionAccount) {
+    if (identity !== actionIdentity || ctx?.connection?.account !== actionIntegrationAccount) {
       cleanup = initialCleanup(); versions.ui++; schedule(); return;
     }
     const sameContext = target.context === cleanupContext();
@@ -899,7 +900,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const pageScroll = document.scrollingElement?.scrollTop ?? 0;
     const values = new Map([...mount!.querySelectorAll<HTMLInputElement>('input[data-keep]')].map((n) => [n.dataset.keep!, n.value]));
 
-    // Equal plan and item IDs never carry reading state into another account, store, binding or scope.
+    // Equal plan and item IDs never carry reading state into another integration account, store, binding or scope.
     const target = spec.reading?.(vc) ?? null;
     const readingKey = target ? JSON.stringify([ctx?.connection?.account ?? '', identity, target.scope, target.plan]) : null;
     const sameReading = reading !== null && reading.key === readingKey;
@@ -1021,14 +1022,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       document.head.append(style);
     }
     const first = !ctx;
-    const accountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
+    const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
     ctx = next;
     // Ready is authoritative, not just a theme notification. Adopt both fields before
     // any refresh/onContext callback; later directory/session events repeat this state.
     const nextSession = next.session ?? null;
     const nextDirectory = next.directory ?? null;
-    if (accountChanged) {
+    if (integrationAccountChanged) {
       contextGeneration++;
       gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
       failure = null; lastGoodAt = null;
@@ -1045,7 +1046,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       spec.onContext?.(context());
       gate.request();
       checkMain();
-    } else if (!accountChanged) applyContext(nextSession, nextDirectory);
+    } else if (!integrationAccountChanged) applyContext(nextSession, nextDirectory);
     schedule();
   });
   host.onSession((next) => {
