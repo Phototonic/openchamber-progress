@@ -147,6 +147,8 @@ export interface ViewSpec<U> {
   wantDetails: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
+  /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
+  beforeUiChange?: (previous: U, next: U) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
   onContext?: (vc: ViewContext<U>) => void;
   /** Only rail/page expose cleanup; the selected plan, including document/history tabs. */
@@ -521,7 +523,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     return true;
   }
   function applyUi(patch: Partial<U>) {
-    ui = { ...ui, ...patch }; versions.ui++; schedule();
+    const next = { ...ui, ...patch }; spec.beforeUiChange?.(ui, next);
+    ui = next; versions.ui++; schedule();
     if (scopeMoved()) retry();
     reconcilePreview();
     reconcileParts();
@@ -886,7 +889,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A background change must not close a picker the user has open; it paints once the
     // popup closes, including same-session metadata. Navigation and authority/UI
     // changes paint immediately; versions.ctx also includes non-navigation updates.
-    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && mount!.querySelector('[aria-expanded="true"]')) {
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && mount!.querySelector('[aria-haspopup][aria-expanded="true"]')) {
       setTimeout(schedule, 300);
       return;
     }

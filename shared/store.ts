@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import { captureIndex, captureComparison } from './document-captures.ts';
+import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
 import path from 'node:path';
@@ -79,6 +81,8 @@ export class Store {
     finally{finish();}
   }
   close() { this.db.close(); }
+  documentCaptures(r: CaptureRequest, cursor?: string) { return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor)); }
+  documentComparison(r: CaptureRequest, before: number, after: number) { return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after)); }
   search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
   searchState(storeId: string, keys: SearchKey[]) { return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys)); }
   observeLoaded(source:string,installId:string,fingerprint:string) {

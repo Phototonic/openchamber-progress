@@ -24667,9 +24667,6 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
-import path4 from "node:path";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -24805,6 +24802,264 @@ function mutateCleanup(db, file, action, value3, transaction) {
     return receipt;
   });
 }
+
+// shared/document-comparison.ts
+var CAPTURE_LIMITS = {
+  rows: 128,
+  entries: 50,
+  responseBytes: 262144,
+  cursorBytes: 4096,
+  queryBytes: 16384,
+  snapshotBytes: 1048576,
+  documentBytes: 262144,
+  lines: 20000,
+  steps: 1e6,
+  traceCells: 1e6,
+  renderedLines: 2000,
+  renderedBytes: 131072
+};
+function compareCaptureText(before, after) {
+  const bytes2 = (s) => new TextEncoder().encode(s).length;
+  if (bytes2(before) > CAPTURE_LIMITS.documentBytes || bytes2(after) > CAPTURE_LIMITS.documentBytes)
+    return { state: "limited", reason: "bytes" };
+  const lines = (s) => {
+    const out = [];
+    let start = 0;
+    for (let i = 0;i < s.length; i++)
+      if (s[i] === `
+`) {
+        if (out.length === CAPTURE_LIMITS.lines)
+          return null;
+        out.push(s.slice(start, i + 1));
+        start = i + 1;
+      }
+    if (start < s.length) {
+      if (out.length === CAPTURE_LIMITS.lines)
+        return null;
+      out.push(s.slice(start));
+    }
+    return out;
+  };
+  const a = lines(before), b = lines(after);
+  if (!a || !b)
+    return { state: "limited", reason: "lines" };
+  if (before === after)
+    return { state: "equal" };
+  const intern = new Map;
+  const ids = (values2) => values2.map((s) => {
+    let id2 = intern.get(s);
+    if (id2 === undefined) {
+      id2 = intern.size;
+      intern.set(s, id2);
+    }
+    return id2;
+  });
+  const aa = ids(a), bb = ids(b), n = a.length, m = b.length;
+  const trace = [];
+  const v = new Map([[1, 0]]);
+  let steps = 0, cells = 0, found = -1;
+  outer:
+    for (let d = 0;d <= n + m; d++) {
+      cells += v.size;
+      if (cells > CAPTURE_LIMITS.traceCells)
+        return { state: "limited", reason: "work" };
+      trace.push(new Map(v));
+      for (let k = -d;k <= d; k += 2) {
+        if (++steps > CAPTURE_LIMITS.steps)
+          return { state: "limited", reason: "work" };
+        let x2 = k === -d || k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+        let y2 = x2 - k;
+        while (x2 < n && y2 < m && aa[x2] === bb[y2]) {
+          x2++;
+          y2++;
+          if (++steps > CAPTURE_LIMITS.steps)
+            return { state: "limited", reason: "work" };
+        }
+        v.set(k, x2);
+        if (x2 >= n && y2 >= m) {
+          found = d;
+          break outer;
+        }
+      }
+    }
+  const operations = [];
+  let x = n, y = m;
+  for (let d = found;d >= 0; d--) {
+    const previous = trace[d], k = x - y;
+    const pk = k === -d || k !== d && (previous.get(k - 1) ?? -1) < (previous.get(k + 1) ?? -1) ? k + 1 : k - 1;
+    const px = previous.get(pk) ?? 0, py = px - pk;
+    while (x > px && y > py) {
+      operations.push({ kind: "context", value: a[--x] });
+      y--;
+    }
+    if (d > 0) {
+      if (x === px)
+        operations.push({ kind: "added", value: b[--y] });
+      else
+        operations.push({ kind: "removed", value: a[--x] });
+    }
+  }
+  operations.reverse();
+  let oldLine = 1, newLine = 1, added = 0, removed2 = 0;
+  const positioned = operations.map((o) => {
+    const ending = o.value.endsWith(`\r
+`) ? "crlf" : o.value.endsWith(`
+`) ? "lf" : "none";
+    if (o.kind === "added")
+      added++;
+    if (o.kind === "removed")
+      removed2++;
+    return { kind: o.kind, oldLine: o.kind === "added" ? null : oldLine++, newLine: o.kind === "removed" ? null : newLine++, text: o.value.slice(0, o.value.length - (ending === "crlf" ? 2 : ending === "lf" ? 1 : 0)), ending };
+  });
+  const ranges = [];
+  for (let i = 0;i < positioned.length; i++)
+    if (positioned[i].kind !== "context") {
+      const start = Math.max(0, i - 3), end = Math.min(positioned.length, i + 4), last = ranges.at(-1);
+      if (last && start <= last[1])
+        last[1] = end;
+      else
+        ranges.push([start, end]);
+    }
+  let count = 0, size6 = 0, previousEnd = 0;
+  const hunks = [];
+  for (const [start, end] of ranges) {
+    count += end - start;
+    if (count > CAPTURE_LIMITS.renderedLines)
+      return { state: "limited", reason: "output" };
+    const kept = positioned.slice(start, end);
+    for (const line of kept) {
+      size6 += bytes2(line.text);
+      if (size6 > CAPTURE_LIMITS.renderedBytes)
+        return { state: "limited", reason: "output" };
+    }
+    const oldStart = kept.find((l) => l.oldLine !== null)?.oldLine ?? positioned.slice(0, start).filter((l) => l.oldLine !== null).length + 1;
+    const newStart = kept.find((l) => l.newLine !== null)?.newLine ?? positioned.slice(0, start).filter((l) => l.newLine !== null).length + 1;
+    hunks.push({ oldStart, newStart, omittedBefore: start - previousEnd, lines: kept });
+    previousEnd = end;
+  }
+  return { state: "diff", hunks, omittedAfter: positioned.length - previousEnd, added, removed: removed2 };
+}
+
+// shared/document-captures.ts
+var integer = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
+var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
+function head3(db, binding, r) {
+  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer(r.cleanupRev));
+  requireProgress(r.binding && same(binding, r.binding), "conflict");
+  const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(meta.store_id === r.storeId, "conflict");
+  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
+      CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
+    END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
+  requireProgress(row, "not-found");
+  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
+  requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
+  requireProgress(typeof row.document === "string", "corrupt");
+  let doc;
+  try {
+    doc = JSON.parse(row.document);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
+  for (const key of ["path", "canonicalPath"])
+    requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
+  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
+  return {
+    identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
+    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+  };
+}
+var projection = `id, revision,
+ CASE WHEN length(CAST(source AS BLOB))<=80 THEN source END AS source,
+ CASE WHEN length(CAST(plan AS BLOB))<=80 THEN plan END AS plan,
+ CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
+ CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
+ CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
+function entry(row) {
+  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier2(row.source) && identifier2(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
+  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+}
+function decodeCursor(raw, r) {
+  requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  const i = c.identity;
+  requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
+  return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
+}
+function captureIndex(db, binding, r, cursor) {
+  const h = head3(db, binding, r);
+  const max6 = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
+  requireProgress(integer(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
+  const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max6, revision: h.current.revision, before: max6 + 1 };
+  requireProgress(c.revision <= h.current.revision, "conflict");
+  const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
+  const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
+  let before = c.before;
+  for (const row of rows) {
+    const e = entry(row);
+    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+    if (qualifies) {
+      if (out.data.length === CAPTURE_LIMITS.entries) {
+        out.limit = "entries";
+        break;
+      }
+      if (Buffer.byteLength(JSON.stringify({ ...out, data: [...out.data, e] })) > CAPTURE_LIMITS.responseBytes - CAPTURE_LIMITS.cursorBytes - 1024) {
+        out.limit = "bytes";
+        break;
+      }
+      out.data.push(e);
+    }
+    before = e.id;
+    out.scanned++;
+  }
+  out.exhausted = out.scanned === rows.length && rows.length < CAPTURE_LIMITS.rows;
+  if (!out.exhausted) {
+    out.limit ??= "rows";
+    out.nextCursor = Buffer.from(JSON.stringify({ ...c, before })).toString("base64url");
+  }
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function captureComparison(db, binding, r, before, after) {
+  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  const h = head3(db, binding, r);
+  const read = (id2) => {
+    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id2, r.source, r.plan);
+    requireProgress(row, "not-found");
+    return { entry: entry(row), bytes: Number(row.bytes) };
+  };
+  const a = read(before), b = before === after ? a : read(after);
+  const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
+  if (a.bytes <= CAPTURE_LIMITS.documentBytes && b.bytes <= CAPTURE_LIMITS.documentBytes && a.bytes >= 0 && b.bytes >= 0) {
+    const body = (id2) => String(db.prepare("SELECT text FROM captures WHERE id=?").get(id2).text);
+    const text = body(before);
+    out.result = compareCaptureText(text, before === after ? text : body(after));
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > CAPTURE_LIMITS.responseBytes)
+    out.result = { state: "limited", reason: "output" };
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+
+// shared/store.ts
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
+import path4 from "node:path";
 
 // shared/plan-task-search.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -25251,13 +25506,13 @@ class Store {
         const stat = lstatSync4(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
-        const head3 = Buffer.alloc(16);
+        const head4 = Buffer.alloc(16);
         try {
-          readSync(fd, head3, 0, 16, 0);
+          readSync(fd, head4, 0, 16, 0);
         } finally {
           closeSync3(fd);
         }
-        requireProgress(head3.toString("binary") === "SQLite format 3\x00", "corrupt");
+        requireProgress(head4.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync2(file, { readOnly: options2.readOnly ?? false });
       if (!existed) {
@@ -25293,6 +25548,12 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  documentCaptures(r, cursor) {
+    return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
+  }
+  documentComparison(r, before, after) {
+    return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after));
   }
   search(options2 = {}) {
     return this.transaction(false, () => searchWindow(this.db, this.readBinding, options2));

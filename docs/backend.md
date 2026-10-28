@@ -1,5 +1,24 @@
 # Production backend v2
 
+## Recorded capture comparison
+
+`shared/document-captures.ts` owns bounded metadata discovery and same-plan
+pair reads; `shared/document-comparison.ts` owns the DTOs and pure bounded line
+diff. Store wraps each request in its existing read transaction. The routes in
+`service/server.ts` check expected store, source binding and cleanup generation.
+They do not invoke document capture, initialize schema, enumerate source roots,
+write a cache or open the canonical source path. The byte/row/work limits and
+failure semantics are frozen in [the comparison contract](contracts.md#recorded-document-comparison-additive-revision-1).
+
+There is no source/plan index on the existing captures table. Discovery scans
+bounded descending integer-primary-key windows, filters metadata in memory,
+and returns continuation rather than claiming a complete scan. A pinned plan
+revision excludes newer captures even if unrelated deletion allows SQLite to
+reuse an ID below the cursor ceiling. Comparison itself looks up exactly two
+same-plan IDs. Metadata and snapshot admission precede driver materialization;
+body lengths are checked before loading the two texts. Historical captures are
+immutable until the existing plan deletion removes them.
+
 Current package version: **0.3.0**. Here v2 means protocol/schema2,
 not a release major. Corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.

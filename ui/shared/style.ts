@@ -13,6 +13,20 @@ button{font:inherit}
 .ap-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;min-width:0}
 .ap-between{justify-content:space-between}
 .ap-grow{flex:1 1 auto;min-width:0}
+.ap-capture{display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--oc-border);padding-top:16px;min-width:0}
+.ap-capture-controls,.ap-capture-metadata{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ap-capture-metadata>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ap-capture-path{font-family:monospace;overflow-wrap:anywhere}
+.ap-capture-diff{border:1px solid var(--oc-border);border-radius:6px;overflow:hidden;min-width:0}
+.ap-capture-line{display:grid;grid-template-columns:13ch minmax(0,1fr);gap:8px;padding:4px 8px;border-left:3px solid transparent;color:var(--oc-fg);font-family:monospace}
+.ap-capture-added{border-left-color:var(--oc-success);background:color-mix(in srgb,var(--oc-success) 9%,var(--oc-bg))}
+.ap-capture-removed{border-left-color:var(--oc-warning);background:color-mix(in srgb,var(--oc-warning) 9%,var(--oc-bg))}
+.ap-capture-number{font-family:monospace;white-space:pre;text-align:right}
+.ap-capture-text{font-family:monospace;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.ap-capture-ending{grid-column:2;font-size:11px}
+.ap-capture-context{padding:6px 10px;background:var(--oc-hover);font-size:11px}
+@media(max-width:600px){.ap-capture-controls,.ap-capture-metadata{grid-template-columns:minmax(0,1fr)}}
+@media(forced-colors:active){.ap-capture-diff{border-color:CanvasText}.ap-capture-added,.ap-capture-removed{border-left-color:CanvasText}}
 
 /* Inline, selectable summaries: no modal or automatic clipboard write. */
 .ap-summary{display:flex;flex-direction:column;gap:10px;min-width:0}

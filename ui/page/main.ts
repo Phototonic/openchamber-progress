@@ -4,6 +4,8 @@ import {
   button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, partState, planDetail, planHeader, recordedLabel, revealCurrentTask, staleBlock, testid, type Env,
 } from '../shared/components.ts';
 import type { DigestPanel } from '../shared/change-digest.ts';
+import { CaptureController } from '../shared/capture-comparison.ts';
+import { captureComparisonBlock } from '../shared/capture-comparison-view.ts';
 import { digestBlock } from '../shared/change-digest-view.ts';
 import { plural } from '../shared/format.ts';
 import { coverageFor, liveLabel } from '../shared/live.ts';
@@ -66,6 +68,7 @@ const RECENT_OPENED = 3;
 let opened: string[] = [];
 
 const ownerOf = (vc: ViewContext<Ui>) => JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]);
+const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}) });
 function draftText(vc: ViewContext<Ui>) {
   if (text.owner !== ownerOf(vc)) text = { owner: ownerOf(vc), q: '' };
   return text.q;
@@ -107,7 +110,11 @@ startView<Ui>({
   initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
-  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; search.select(null); return { selected: null }; },
+  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); search.select(null); return { selected: null }; },
+  beforeUiChange: (previous, next) => {
+    const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
+    if (scope(previous) !== scope(next)) captures.retire();
+  },
   wantProjects: ({ read, live, directory, env }) => (read ? projectsFor(read.plans, live, directory, env.boundSource) : []),
   wantDetails: (vc) => {
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
@@ -122,13 +129,14 @@ startView<Ui>({
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
-  retire: (reason) => { if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { captures.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
   retainParts: (vc) => (isSearching(vc) ? new Set([...opened, ...(vc.ui.selected ? [vc.ui.selected] : [])]) : null),
   paint(root, vc) {
     frame = vc;
+    captures.beginPaint();
     const { read, failure, env, ui } = vc;
     const old = document.getElementById('ap-search-q') as HTMLInputElement | null;
     caret = old && document.activeElement === old ? [old.selectionStart, old.selectionEnd] : null;
@@ -203,6 +211,7 @@ startView<Ui>({
   },
   // An explicit selection reveals its detail once; later paints (polls, task jumps) never scroll back to it.
   afterPaint(root, vc) {
+    captures.endPaint();
     const input = root.querySelector<HTMLInputElement>('#ap-search-q');
     if (caret && input && document.activeElement === input) input.setSelectionRange(caret[0], caret[1]);
     currentTask(root, vc);
@@ -354,13 +363,18 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
 function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, compareSession: string | null) {
   const { env, ui } = vc;
   const tabs = testid(el('div', 'ap-detail-tabs'), 'detail-tabs');
-  mountTabs(tabs, { items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }], activeId: ui.tab, onChange: (id) => vc.setUi({ tab: id as Tab }) });
+  mountTabs(tabs, { items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }], activeId: ui.tab, onChange: (id) => { captures.retire(); vc.setUi({ tab: id as Tab }); } });
   detail.append(tabs);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
   if (ui.tab === 'document') {
     const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
     article.dataset.source = plan.sourceId;
     article.append(planHeader(plan, env), documentBlock(plan, env, 'inline', docHooks));
+    if (vc.read) article.append(captureComparisonBlock(captures.claim({
+      owner: JSON.stringify([ownerOf(vc),vc.ui.search?.key ?? null,vc.ui.filters]),
+      request: { storeId: vc.read.storeId, binding: vc.read.binding, source: plan.sourceId, plan: plan.id, cleanupRev: plan.cleanup?.revision ?? 0 },
+      revision: plan.revision, capable: vc.health?.documentCaptureComparison === 1,
+    }), env.locale));
     detail.append(article);
   } else if (ui.tab === 'history') {
     const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);

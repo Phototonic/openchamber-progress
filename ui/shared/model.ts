@@ -106,7 +106,7 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1 }
 
 /**
  * Plan/task search revision 1 (docs/contracts.md). A search plan is a current summary without the

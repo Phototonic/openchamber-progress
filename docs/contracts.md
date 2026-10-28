@@ -1,5 +1,55 @@
 # Production contract v2
 
+## Recorded document comparison (additive revision 1)
+
+`health.documentCaptureComparison:1` advertises the read-only DTOs in
+`shared/document-comparison.ts`. Protocol/schema remain 2. These authenticated
+GET routes reject bodies, duplicate/unknown fields and malformed identities;
+responses use `Cache-Control: no-store`. No source-file access, report write,
+schema migration, persistent cache or approval/completion action occurs.
+
+Both requests require `storeId`, `source`, `plan`, `cleanupRev` and `binding`
+(JSON `{sourceId:string|null,verified:boolean}` of the expected service binding).
+Replies echo these identities plus `sourceBinding`, protocol/schema and
+`documentCaptureComparison:1`. Same-store rebinding and cleanup changes conflict
+(409); missing plan/capture is 404. Archived plans remain readable. Capture off
+does not erase history. A filtered list absence is not proof of deletion.
+
+- **`/v1/document-captures`**, optional opaque `cursor`: descending immutable
+  capture metadata (`id`, creation `revision`, `hash`, `capturedAt`, recorded
+  `path`), at most 50 entries from 128 primary-key candidates per window. It
+  returns `scanned`, `revision` (the pinned plan-revision ceiling), `exhausted`,
+  `nextCursor` and `limit` (`rows`, `entries`, `bytes` or null). A cursor pins the
+  store/binding/source/plan/cleanup, maximum ID and plan revision, so capture-ID
+  reuse after unrelated deletion cannot introduce a newer capture. An empty
+  window with a cursor does not mean no history. Metadata corruption fails the
+  whole window; there is no silent skip or partial successful page.
+- **`/v1/document-comparison`**, required positive safe-integer `before` and
+  `after` IDs (`before <= after`): validates both same-plan captures and reads
+  their bytes in one transaction. Returns both metadata records, `current`
+  document/checklist state as observed at that read, and `result` with state
+  `equal`, `diff` or `limited`. Equal text may have different capture IDs/paths.
+  `limited.reason` is `bytes`, `lines`, `work` or `output`; no partial diff is
+  presented as complete. A diff contains unified hunks, old/new line numbers,
+  added/removed/context rows, explicit LF/CRLF/no-ending values, three context
+  lines and omitted-context counts. Content remains literal text.
+
+Discovery selects no document bodies or source-root envelope. Stored metadata
+is bounded in SQL before materialization; current-plan JSON is admitted at
+1 MiB, the document projection at 32 KiB and paths at 4096 characters. Cursors
+are at most 4096 bytes, queries 16 KiB and replies 256 KiB. Comparison admits at
+most two 262144-byte documents, 20000 lines each, one million diff steps and
+one million retained integer trace cells. Output is at most 2000 lines and
+128 KiB of line text within the reply limit. Newline-preserving lines are
+interned before the numeric diff; no unbounded quadratic matrix is allocated.
+
+Current checklist synchronization describes only `current.captureId` at the
+observed revision. Historical synchronization is unknown. A later failed file
+check can retain an older capture; capture time and last-check time are
+different facts. `currentFile: not-rechecked` is always explicit. Neither an
+equal diff nor a displayed capture proves that the live file is unchanged,
+reviewed, approved, completed or synchronized with a checklist.
+
 Package semver comes from the selected checkout or distribution’s
 [package.json](../package.json) and is independent of protocol/schema **2**.
 Setup and the loaded tool report their respective package versions; `/health`

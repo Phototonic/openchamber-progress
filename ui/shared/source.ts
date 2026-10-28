@@ -1,5 +1,7 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
+import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison } from './adapter.ts';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
@@ -307,4 +309,14 @@ export async function setupCall(host: ServiceHost, action: SetupAction | null, t
  */
 export async function readExtensionUpdate(host: ServiceHost): Promise<OfficialMainView | null> {
   try { return parseExtensionUpdate(await call(host, ROUTES.extensionUpdate)); } catch { return null; }
+}
+
+export type CaptureRead<T> = { ok: true; value: T } | { ok: false; failure: ReadFailure };
+export async function readCaptureIndex(host: ServiceHost, request: CaptureRequest, cursor?: string): Promise<CaptureRead<CaptureIndex>> {
+  try { return { ok: true, value: parseCaptureIndex(await call(host, CAPTURE_ROUTES.index, captureQuery(request, { cursor })), request) }; }
+  catch (error) { return { ok: false, failure: classify(error) }; }
+}
+export async function readCaptureComparison(host: ServiceHost, request: CaptureRequest, before: number, after: number): Promise<CaptureRead<CaptureComparison>> {
+  try { return { ok: true, value: parseCaptureComparison(await call(host, CAPTURE_ROUTES.comparison, captureQuery(request, { before, after })), request, before, after) }; }
+  catch (error) { return { ok: false, failure: classify(error) }; }
 }
