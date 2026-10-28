@@ -70,6 +70,7 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
   configured: boolean; verified: boolean; installed: boolean; captureEnabled: boolean | null;
   targets: { configRoot: string; dataRoot: string; storeRoot: string } | null;
   activation: string; separateLifecycle: true; historyRetained: true; diagnostics: string[];

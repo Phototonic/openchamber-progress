@@ -1,5 +1,13 @@
 # Production contract v2
 
+## Reporting health observations
+
+Setup replies optionally include `reportingIdentity: {storeId, sourceId, verified}` only after the configured store opens and its binding is verified. Unconfigured, unavailable-store and target-inspection replies omit it. This additive metadata does not change protocol/schema versions or grant authority to mutate. Guests must match it to the viewer store and source binding before joining installation/activation observations with a selected report; absent or mismatched identity means the association is unknown.
+
+The board's explicit reporting check performs one setup GET and at most one first-page selected-plan GET, without following cursors. A stored revision is evidence of recorded progress, not independent receipt verification, recent agent activity, tool availability or completion. No selection means no selected report checked; filtered or incomplete history never proves no reports exist. No new polling, endpoint, report write or model call is involved.
+
+Support text reconstructs fixed status fields and a bounded numeric version only. Paths, source/store/plan/session identifiers, timestamps, fingerprints, user text, arbitrary diagnostics and raw errors are excluded. Platform and per-session tool availability remain unknown. Preview and explicit copy are local; clipboard failure offers manual selection. Context changes, close, hide and disposal retire pending observations and copy feedback.
+
 ## Recorded document comparison (additive revision 1)
 
 `health.documentCaptureComparison:1` advertises the read-only DTOs in

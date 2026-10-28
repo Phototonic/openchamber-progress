@@ -1,5 +1,7 @@
 # Safe global companion setup (production v2)
 
+The board's **Reporting health** action explains observed installation, loaded companion and capture state alongside a selected stored report. It does not restart OpenCode, test a model, create reports or inspect conversations. When a reload is required, restart OpenCode yourself when convenient; other already-running instances may retain earlier files. A previewable support summary excludes folders, identifiers and user content. See [reporting observations](contracts.md#reporting-health-observations) for the evidence and privacy limits.
+
 Package versions use the 0.x line; protocol/schema remain 2. Read this checkout or
 distribution's version from its included [package.json](../package.json).
 [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)

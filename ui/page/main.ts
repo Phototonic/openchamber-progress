@@ -20,6 +20,8 @@ import {
 import { officialMainBlock } from '../shared/official.ts';
 import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
+import { ReportingHealth } from '../shared/reporting-health.ts';
+import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 
 type Tab = 'progress' | 'document' | 'history';
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
@@ -69,6 +71,7 @@ let opened: string[] = [];
 
 const ownerOf = (vc: ViewContext<Ui>) => JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]);
 const captures = new CaptureController({ service: current => frame!.service(current), visible: () => document.visibilityState !== 'hidden', changed: () => frame?.setUi({}) });
+const reporting = new ReportingHealth({service:current=>frame!.service(current),visible:()=>document.visibilityState!=='hidden',changed:()=>frame?.setUi({}),copy:async text=>{if(!navigator.clipboard?.writeText)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(text);}});
 function draftText(vc: ViewContext<Ui>) {
   if (text.owner !== ownerOf(vc)) text = { owner: ownerOf(vc), q: '' };
   return text.q;
@@ -110,10 +113,10 @@ startView<Ui>({
   initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
-  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); search.select(null); return { selected: null }; },
+  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
   beforeUiChange: (previous, next) => {
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
-    if (scope(previous) !== scope(next)) captures.retire();
+    if (scope(previous) !== scope(next)) { captures.retire(); reporting.retire(); }
   },
   wantProjects: ({ read, live, directory, env }) => (read ? projectsFor(read.plans, live, directory, env.boundSource) : []),
   wantDetails: (vc) => {
@@ -129,7 +132,7 @@ startView<Ui>({
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
-  retire: (reason) => { captures.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { captures.retire(); reporting.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
@@ -156,6 +159,7 @@ startView<Ui>({
       if (failure) root.append(failureBlock(failure, vc.retry));
       else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
       else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock());
+      footer(root, vc, null);
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
@@ -454,6 +458,7 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   const fill = () => { body.replaceChildren(setupBlock(vc)); };
   setup.addEventListener('toggle', () => { if (setup.open) { if (!vc.setup) vc.requestSetup(); fill(); } });
   setup.append(body);
+  zone.append(reportingHealthBlock(reporting.claim({key:JSON.stringify([ownerOf(vc),vc.read?.storeId,vc.read?.binding,vc.read?.captureEnabled,!!vc.failure,plan?.key,vc.ui.filters,vc.ui.archived,vc.ui.search?.key??null]),read:vc.read,plan,stale:!!vc.failure})));
   zone.append(setup, detailsBlock(vc.read, plan, [
     ['Plans loaded', String(vc.read?.plans.length ?? 0)],
     ['Live sessions watched', String(vc.sessionSubscriptions)],

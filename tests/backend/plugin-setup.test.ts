@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import plugin from '../../plugin/index.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
+import { SetupController } from '../../service/setup-controller.ts';
 
 function fixture(){
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-plugin-setup-');
@@ -56,6 +57,10 @@ test('successful setup retains its store for reports and closes on successful di
     assert.equal((await status()).toolAvailable,true);
     const reply=await execute({op:'start',plan:'setup-success',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Task',kind:'task'}]},{sessionID:'ses_fixture',agent:'synthetic'});
     assert.equal(JSON.parse(reply.content).rev,1);assert.equal(f.fds(),1);
+    const recorded=await execute({op:'read',plan:'setup-success'},{sessionID:'ses_fixture',agent:'synthetic'});
+    assert.equal(JSON.parse(recorded.content).rev,1);
+    const observer=new SetupController(f.binding,()=>({plugin:'// fixture',guidance:'fixture',removal:'// fixture',version:'0.2.2'}));
+    try{const binding=JSON.parse(fs.readFileSync(f.binding,'utf8'));assert.deepEqual(observer.status().reportingIdentity,{storeId:binding.storeId,sourceId:binding.source.id,verified:true});}finally{observer.close();}
     await dispose!();assert.equal(f.fds(),0);
   }finally{f.cleanup();}
 });

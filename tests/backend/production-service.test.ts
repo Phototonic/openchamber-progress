@@ -39,6 +39,7 @@ test('QA4 real HTTP setup bootstrap/inspect/install/controls/removal and modifie
     assert.equal((await post('install',targets)).status,400);
     const installed=await post('install',{...targets,confirmed:true});assert.equal(installed.status,200);const body=await installed.json();assert.equal(body.activation,'reload-required');assert.equal(body.version,'0.2.0');assert.equal(body.separateLifecycle,true);
     const plans=await(await fetch(`${url}/v1/plans`,{headers})).json();assert.deepEqual(plans.sourceBinding,{sourceId:f.source.id,verified:true});assert.equal(plans.storeId,f.store.list().storeId);
+    assert.deepEqual(body.reportingIdentity,{storeId:plans.storeId,sourceId:plans.sourceBinding.sourceId,verified:true});assert.equal(state.reportingIdentity,undefined);
     assert.equal((await post('disable',{confirmed:true})).status,200);assert.equal(f.store.list().captureEnabled,false);
     assert.equal((await post('enable',{confirmed:true})).status,200);assert.equal(f.store.list().captureEnabled,true);
     assert.equal((await post('inspect',{path:'/etc/passwd'})).status,400);

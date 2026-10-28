@@ -138,14 +138,14 @@ async function serve(f: Fixture, built: boolean) {
   };
 }
 
-export async function startSearchShell(built = false) {
+export async function startSearchShell(built = false, reportingSetup = false) {
   const f = searchFixture(true);
   seedSearchLibrary(f);
   seedExtras(f);
   const second = searchFixture(true);
   const services = [await serve(f, built), await serve(second, built)];
   const relay = async (q: GuestRequest, store: number): Promise<GuestRequestResult> => {
-    if (q.path === '/v1/extension-update' || q.path === '/v1/setup') return { status: 404, body: '{"error":"not-found"}' };
+    if (q.path === '/v1/extension-update' || (q.path === '/v1/setup' && !reportingSetup)) return { status: 404, body: '{"error":"not-found"}' };
     const query = new URLSearchParams(q.query ?? {}).toString();
     const r = await services[store === 1 ? 1 : 0].call(q.path + (query ? `?${query}` : ''), q.body ? JSON.parse(q.body) : undefined);
     return { status: r.status, body: await r.text() };

@@ -485,6 +485,7 @@ export function parseSetup(body: string): SetupView {
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
     configured: v.configured, verified: v.verified === true, installed: v.installed,
+    ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,
     targets: t, version: optStr(v.version) ?? null, activation: String(v.activation ?? 'unknown'),
     historyRetained: v.historyRetained === true, diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [],

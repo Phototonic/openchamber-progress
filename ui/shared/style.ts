@@ -28,6 +28,24 @@ button{font:inherit}
 @media(max-width:600px){.ap-capture-controls,.ap-capture-metadata{grid-template-columns:minmax(0,1fr)}}
 @media(forced-colors:active){.ap-capture-diff{border-color:CanvasText}.ap-capture-added,.ap-capture-removed{border-left-color:CanvasText}}
 
+/* Secondary reporting diagnostics: compact observations, optional explanations. */
+.ap-health{display:flex;flex-direction:column;gap:10px;max-width:520px;min-width:0}
+.ap-health-grid{border:1px solid var(--oc-border);border-radius:8px;overflow:hidden;background:var(--oc-bg)}
+.ap-health-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);align-items:center;gap:12px;padding:8px 12px}
+.ap-health-row+.ap-health-row{border-top:1px solid var(--oc-border)}
+.ap-health-row dt{color:var(--oc-muted);font-size:12px}
+.ap-health-status{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500}
+.ap-health-mark{display:inline-flex;align-items:center;justify-content:center;flex:0 0 18px;width:18px;height:18px;border:1px solid currentColor;border-radius:50%;font-size:11px}
+.ap-health-status[data-tone=good] .ap-health-mark{color:var(--oc-success-text,var(--oc-fg))}
+.ap-health-status[data-tone=attention] .ap-health-mark{color:var(--oc-warning-text,var(--oc-fg))}
+.ap-health-status[data-tone=neutral] .ap-health-mark{color:var(--oc-muted)}
+.ap-health-details{border-top:1px solid var(--oc-border);padding-top:8px}
+.ap-health-details summary{cursor:pointer;font-size:12px;min-height:28px;display:list-item;list-style:revert}
+.ap-health-details[open]>:not(summary){margin-top:8px}
+.ap-health-explanations dt{font-weight:600;margin-top:10px}
+.ap-health-explanations dd{font-size:12px;color:var(--oc-muted);margin-top:3px}
+.ap-health :is(summary,textarea,button):focus-visible{outline:2px solid var(--oc-focus,var(--oc-info));outline-offset:3px}
+
 /* Inline, selectable summaries: no modal or automatic clipboard write. */
 .ap-summary{display:flex;flex-direction:column;gap:10px;min-width:0}
 .ap-summary-preview{display:flex;flex-direction:column;gap:10px;padding:12px;min-width:0;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
