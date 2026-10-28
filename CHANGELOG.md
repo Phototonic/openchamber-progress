@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-28
+
+### Added
+
+- Previewable progress updates and handoff summaries with explicit copy, privacy controls and freshness checks (#11).
+- Since-last-reviewed plan change digests in the board History tab, with bounded revision reads and explicit review points (#12).
+- Plan and task search across recorded history, with filters, reusable local views and results beyond the loaded plan list (#13).
+- Comparison of two recorded document captures, with pinned selections, literal Unicode and line-ending diffs, bounded reads and deletion protections (#18).
+- Optional reporting-health diagnostics in the board footer: compact status rows, expandable explanations and a previewable support summary that excludes private context (#19).
+
+### Fixed
+
+- Review-point identity uses integration-account terminology while retaining existing stored keys (#14).
+- Active search refreshes capture state even when plan revisions do not change, keeping warnings and cached summaries current (#16).
+- An expanded document-comparison disclosure no longer prevents background updates; pending comparison reads retire before navigation and after authoritative deletion (#18).
+
+### Documentation
+
+- Added regression coverage for unsupported change-item fields and clarified compact versus paged report reads (#10).
+- Added the Agent Progress logo and themed README header (#15).
+- Current installation and development guidance follows the selected manifest version and is separated from historical compatibility evidence (#17).
+- Documented capture-comparison and reporting-health behavior, privacy boundaries and validation limits (#18, #19).
+
 ## [0.3.0] - 2026-10-27
 
 ### Added
@@ -50,7 +73,8 @@ All notable changes to this project are documented in this file. The format is b
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.7...v0.2.8

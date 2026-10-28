@@ -1,8 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
+import { captureIndex, captureComparison } from './document-captures.ts';
+import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
+import { searchWindow, searchState } from './plan-task-search.ts';
+import type { SearchOptions, SearchKey } from './progress.ts';
+import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, type Request, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type ItemInput, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
@@ -76,6 +81,10 @@ export class Store {
     finally{finish();}
   }
   close() { this.db.close(); }
+  documentCaptures(r: CaptureRequest, cursor?: string) { return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor)); }
+  documentComparison(r: CaptureRequest, before: number, after: number) { return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after)); }
+  search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
+  searchState(storeId: string, keys: SearchKey[]) { return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys)); }
   observeLoaded(source:string,installId:string,fingerprint:string) {
     this.transaction(true,()=>{
       // Optional additive runtime metadata: old v2 stores/readers remain valid.
@@ -169,6 +178,68 @@ export class Store {
       need(this.raw(source,id),'not-found');
       const rows = this.db.prepare('SELECT snapshot FROM revisions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,limit+1,cursor);
       return { ...this.metadata(), data: rows.slice(0,limit).map(r => { const p = JSON.parse(String(r.snapshot)) as PlanState; return { revision:p.revision,structuralRevision:p.structuralRevision,lifecycle:p.lifecycle,reportedAt:p.reportedAt }; }), nextCursor: rows.length > limit ? String(cursor+limit) : null };
+    });
+  }
+  changeDigest(request: { storeId: string; source: string; plan: string; to: number; after?: number; cleanupRev: number }): ChangeDigest {
+    const { source, plan, to, after, cleanupRev } = request;
+    need(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
+    return this.transaction(false, () => {
+      const storeId = String(this.db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()!.store_id);
+      need(storeId === request.storeId, 'conflict');
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      need(live, 'not-found');
+      need(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ['active','finished','cancelled','failed'].includes(String(live.lifecycle)), 'corrupt');
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      need(state?.state !== 'deleted', 'not-found');
+      const cleanup = { state: (state?.state ?? 'visible') as 'visible' | 'archived', revision: Number(state?.generation ?? 0) };
+      need(cleanup.revision === cleanupRev, 'conflict'); need(to <= Number(live.revision));
+      const result: ChangeDigest = {
+        protocolVersion: 2, schemaVersion: 2, storeId, sourceBinding: { ...this.readBinding }, source, plan, cleanup,
+        interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle as ChangeDigest['interval']['currentLifecycle'], coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
+        availability: 'target-unavailable', complete: false, reasons: [], validTarget: false,
+        counts: { before: null, after: null, scope: null }, summary: { unit: 'transitions', events: emptyEvents() }, tasks: [],
+        details: { omittedTasks: false, omittedTaskCount: 0, truncated: false }, work: { intervalSnapshots: 0, baselineLookups: 0, inputBytes: 0 },
+      };
+      const reason = (r: DigestReason) => { if (!result.reasons.includes(r)) result.reasons.push(r); };
+      const load = (revision: number, baseline = false): DigestSnapshot | null => {
+        if (baseline) result.work.baselineLookups++; else result.work.intervalSnapshots++;
+        const remaining = DIGEST_LIMITS.bytes - result.work.inputBytes;
+        // SQLite measures before returning text; oversized input never reaches JSON.parse.
+        const row = this.db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?').get(remaining, source, plan, revision);
+        if (!row) { reason('missing-snapshot'); return null; }
+        if (Number(row.bytes) > remaining) { reason('byte-bound'); return null; }
+        result.work.inputBytes += Number(row.bytes);
+        let p: DigestSnapshot | null = null;
+        try { p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision); } catch { /* qualified below */ }
+        if (!p) reason('invalid-snapshot');
+        return p;
+      };
+      const target = load(to);
+      if (!target) return result;
+      result.validTarget = true; result.interval.targetLifecycle = target.lifecycle; result.interval.targetReportedAt = target.reportedAt;
+      result.interval.coverageStart = result.interval.coverageEnd = to;
+      result.interval.coverageStartReportedAt = result.interval.coverageEndReportedAt = target.reportedAt;
+      result.counts.after = countItems(target.items);
+      if (after === undefined) { result.availability = 'initial'; result.complete = true; return result; }
+      const baseline = after === to ? target : load(after, true);
+      result.availability = baseline ? 'comparison' : 'baseline-unavailable';
+      if (baseline) result.counts = endpointCounts(baseline, target);
+      let newer = target;
+      while (newer.revision > after) {
+        if (result.work.intervalSnapshots >= DIGEST_LIMITS.snapshots) { reason('revision-bound'); break; }
+        const expected = newer.revision - 1;
+        // A separately loaded baseline may close only an adjacent pair, never a gap.
+        let older: DigestSnapshot | null;
+        if (expected === after) { result.work.intervalSnapshots++; older = baseline; }
+        else older = load(expected);
+        if (!older) { if (expected !== after) reason('gap'); break; }
+        if (older.reportedAt > newer.reportedAt || older.structuralRevision > newer.structuralRevision || newer.structuralRevision - older.structuralRevision > 1) { reason('invalid-snapshot'); break; }
+        aggregatePair(result, older, newer, target);
+        newer = older;
+        result.interval.coverageStart = older.revision; result.interval.coverageStartReportedAt = older.reportedAt;
+      }
+      result.complete = !!baseline && newer.revision === after;
+      return capDigest(result);
     });
   }
   apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor): Receipt {

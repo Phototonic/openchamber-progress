@@ -1,4 +1,9 @@
-# OpenChamber Agent Progress
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/agent-progress-header-dark.svg">
+    <img src="docs/images/brand/agent-progress-header-light.svg" alt="Agent Progress — an OpenChamber extension" width="1600">
+  </picture>
+</h1>
 
 **See the plan. Follow the work. Know what was actually reported.**
 
@@ -35,7 +40,9 @@ Progress comes from **deliberate reports**, not passive observation or inferred 
 3. **Inspect**, review the resolved targets and full-user host-service privilege, then explicitly confirm companion installation.
 4. Follow the activation notice and reload/restart OpenCode **when safe**. Opening a new session alone is not a reliable reload. Begin work with an agent that can use `agent_progress_report`.
 
-The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Current package version is **0.3.0**. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
+The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
+
+The version in [package.json](package.json) identifies the selected checkout or distribution. A `dev` checkout can contain unreleased changes even when its version matches a published tag. Use the release’s tag and assets for published contents, and [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Before you enable capture
 
@@ -65,6 +72,7 @@ Maintainer-approved **higher package versions reaching `main`** are configured t
 - [Reporting and API contracts](docs/contracts.md)
 - [Tested compatibility and bounded evidence](docs/compatibility.md)
 - [Contributing and development commands](CONTRIBUTING.md)
+- [Logo assets, usage and attribution](docs/images/brand/README.md)
 
 The technical guides retain historical validation notes; early access does not imply complete platform/model coverage or the absence of long-running issues.
 

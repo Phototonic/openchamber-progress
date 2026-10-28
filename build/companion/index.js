@@ -24523,6 +24523,7 @@ function countItems(items) {
   const skipped = leaves.filter((i) => i.status === "skipped").length;
   return { done: done3, total: leaves.length - skipped, remaining: leaves.length - skipped - done3, skipped };
 }
+var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier2(value3) {
   return typeof value3 === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value3);
 }
@@ -24601,7 +24602,7 @@ var REPORT_SCHEMA = {
   additionalProperties: false,
   required: ["op", "plan"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional page." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
     plan: { type: "string", description: "One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
@@ -24625,7 +24626,7 @@ var VALIDATION_HINTS = {
   request: "Send one request object.",
   op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
-  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.",
+  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
   rev: "Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.",
   title: "Use a nonempty title of at most 256 characters.",
@@ -24666,9 +24667,6 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
-import path4 from "node:path";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -24805,6 +24803,640 @@ function mutateCleanup(db, file, action, value3, transaction) {
   });
 }
 
+// shared/document-comparison.ts
+var CAPTURE_LIMITS = {
+  rows: 128,
+  entries: 50,
+  responseBytes: 262144,
+  cursorBytes: 4096,
+  queryBytes: 16384,
+  snapshotBytes: 1048576,
+  documentBytes: 262144,
+  lines: 20000,
+  steps: 1e6,
+  traceCells: 1e6,
+  renderedLines: 2000,
+  renderedBytes: 131072
+};
+function compareCaptureText(before, after) {
+  const bytes2 = (s) => new TextEncoder().encode(s).length;
+  if (bytes2(before) > CAPTURE_LIMITS.documentBytes || bytes2(after) > CAPTURE_LIMITS.documentBytes)
+    return { state: "limited", reason: "bytes" };
+  const lines = (s) => {
+    const out = [];
+    let start = 0;
+    for (let i = 0;i < s.length; i++)
+      if (s[i] === `
+`) {
+        if (out.length === CAPTURE_LIMITS.lines)
+          return null;
+        out.push(s.slice(start, i + 1));
+        start = i + 1;
+      }
+    if (start < s.length) {
+      if (out.length === CAPTURE_LIMITS.lines)
+        return null;
+      out.push(s.slice(start));
+    }
+    return out;
+  };
+  const a = lines(before), b = lines(after);
+  if (!a || !b)
+    return { state: "limited", reason: "lines" };
+  if (before === after)
+    return { state: "equal" };
+  const intern = new Map;
+  const ids = (values2) => values2.map((s) => {
+    let id2 = intern.get(s);
+    if (id2 === undefined) {
+      id2 = intern.size;
+      intern.set(s, id2);
+    }
+    return id2;
+  });
+  const aa = ids(a), bb = ids(b), n = a.length, m = b.length;
+  const trace = [];
+  const v = new Map([[1, 0]]);
+  let steps = 0, cells = 0, found = -1;
+  outer:
+    for (let d = 0;d <= n + m; d++) {
+      cells += v.size;
+      if (cells > CAPTURE_LIMITS.traceCells)
+        return { state: "limited", reason: "work" };
+      trace.push(new Map(v));
+      for (let k = -d;k <= d; k += 2) {
+        if (++steps > CAPTURE_LIMITS.steps)
+          return { state: "limited", reason: "work" };
+        let x2 = k === -d || k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+        let y2 = x2 - k;
+        while (x2 < n && y2 < m && aa[x2] === bb[y2]) {
+          x2++;
+          y2++;
+          if (++steps > CAPTURE_LIMITS.steps)
+            return { state: "limited", reason: "work" };
+        }
+        v.set(k, x2);
+        if (x2 >= n && y2 >= m) {
+          found = d;
+          break outer;
+        }
+      }
+    }
+  const operations = [];
+  let x = n, y = m;
+  for (let d = found;d >= 0; d--) {
+    const previous = trace[d], k = x - y;
+    const pk = k === -d || k !== d && (previous.get(k - 1) ?? -1) < (previous.get(k + 1) ?? -1) ? k + 1 : k - 1;
+    const px = previous.get(pk) ?? 0, py = px - pk;
+    while (x > px && y > py) {
+      operations.push({ kind: "context", value: a[--x] });
+      y--;
+    }
+    if (d > 0) {
+      if (x === px)
+        operations.push({ kind: "added", value: b[--y] });
+      else
+        operations.push({ kind: "removed", value: a[--x] });
+    }
+  }
+  operations.reverse();
+  let oldLine = 1, newLine = 1, added = 0, removed2 = 0;
+  const positioned = operations.map((o) => {
+    const ending = o.value.endsWith(`\r
+`) ? "crlf" : o.value.endsWith(`
+`) ? "lf" : "none";
+    if (o.kind === "added")
+      added++;
+    if (o.kind === "removed")
+      removed2++;
+    return { kind: o.kind, oldLine: o.kind === "added" ? null : oldLine++, newLine: o.kind === "removed" ? null : newLine++, text: o.value.slice(0, o.value.length - (ending === "crlf" ? 2 : ending === "lf" ? 1 : 0)), ending };
+  });
+  const ranges = [];
+  for (let i = 0;i < positioned.length; i++)
+    if (positioned[i].kind !== "context") {
+      const start = Math.max(0, i - 3), end = Math.min(positioned.length, i + 4), last = ranges.at(-1);
+      if (last && start <= last[1])
+        last[1] = end;
+      else
+        ranges.push([start, end]);
+    }
+  let count = 0, size6 = 0, previousEnd = 0;
+  const hunks = [];
+  for (const [start, end] of ranges) {
+    count += end - start;
+    if (count > CAPTURE_LIMITS.renderedLines)
+      return { state: "limited", reason: "output" };
+    const kept = positioned.slice(start, end);
+    for (const line of kept) {
+      size6 += bytes2(line.text);
+      if (size6 > CAPTURE_LIMITS.renderedBytes)
+        return { state: "limited", reason: "output" };
+    }
+    const oldStart = kept.find((l) => l.oldLine !== null)?.oldLine ?? positioned.slice(0, start).filter((l) => l.oldLine !== null).length + 1;
+    const newStart = kept.find((l) => l.newLine !== null)?.newLine ?? positioned.slice(0, start).filter((l) => l.newLine !== null).length + 1;
+    hunks.push({ oldStart, newStart, omittedBefore: start - previousEnd, lines: kept });
+    previousEnd = end;
+  }
+  return { state: "diff", hunks, omittedAfter: positioned.length - previousEnd, added, removed: removed2 };
+}
+
+// shared/document-captures.ts
+var integer = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
+var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
+function head3(db, binding, r) {
+  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer(r.cleanupRev));
+  requireProgress(r.binding && same(binding, r.binding), "conflict");
+  const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(meta.store_id === r.storeId, "conflict");
+  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
+      CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
+    END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
+  requireProgress(row, "not-found");
+  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
+  requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
+  requireProgress(typeof row.document === "string", "corrupt");
+  let doc;
+  try {
+    doc = JSON.parse(row.document);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
+  for (const key of ["path", "canonicalPath"])
+    requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
+  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
+  return {
+    identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
+    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+  };
+}
+var projection = `id, revision,
+ CASE WHEN length(CAST(source AS BLOB))<=80 THEN source END AS source,
+ CASE WHEN length(CAST(plan AS BLOB))<=80 THEN plan END AS plan,
+ CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
+ CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
+ CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
+function entry(row) {
+  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier2(row.source) && identifier2(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
+  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+}
+function decodeCursor(raw, r) {
+  requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  const i = c.identity;
+  requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
+  return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
+}
+function captureIndex(db, binding, r, cursor) {
+  const h = head3(db, binding, r);
+  const max6 = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
+  requireProgress(integer(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
+  const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max6, revision: h.current.revision, before: max6 + 1 };
+  requireProgress(c.revision <= h.current.revision, "conflict");
+  const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
+  const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
+  let before = c.before;
+  for (const row of rows) {
+    const e = entry(row);
+    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+    if (qualifies) {
+      if (out.data.length === CAPTURE_LIMITS.entries) {
+        out.limit = "entries";
+        break;
+      }
+      if (Buffer.byteLength(JSON.stringify({ ...out, data: [...out.data, e] })) > CAPTURE_LIMITS.responseBytes - CAPTURE_LIMITS.cursorBytes - 1024) {
+        out.limit = "bytes";
+        break;
+      }
+      out.data.push(e);
+    }
+    before = e.id;
+    out.scanned++;
+  }
+  out.exhausted = out.scanned === rows.length && rows.length < CAPTURE_LIMITS.rows;
+  if (!out.exhausted) {
+    out.limit ??= "rows";
+    out.nextCursor = Buffer.from(JSON.stringify({ ...c, before })).toString("base64url");
+  }
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function captureComparison(db, binding, r, before, after) {
+  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  const h = head3(db, binding, r);
+  const read = (id2) => {
+    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id2, r.source, r.plan);
+    requireProgress(row, "not-found");
+    return { entry: entry(row), bytes: Number(row.bytes) };
+  };
+  const a = read(before), b = before === after ? a : read(after);
+  const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
+  if (a.bytes <= CAPTURE_LIMITS.documentBytes && b.bytes <= CAPTURE_LIMITS.documentBytes && a.bytes >= 0 && b.bytes >= 0) {
+    const body = (id2) => String(db.prepare("SELECT text FROM captures WHERE id=?").get(id2).text);
+    const text = body(before);
+    out.result = compareCaptureText(text, before === after ? text : body(after));
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > CAPTURE_LIMITS.responseBytes)
+    out.result = { state: "limited", reason: "output" };
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+
+// shared/store.ts
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
+import path4 from "node:path";
+
+// shared/plan-task-search.ts
+import { createHash as createHash2 } from "node:crypto";
+
+// shared/change-digest.ts
+var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
+function emptyEvents() {
+  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
+}
+var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
+var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
+function compareTasks(before, after) {
+  const a = tasks(before), b = tasks(after), changes = [];
+  for (const id2 of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const old = a.get(id2), next = b.get(id2), facets = [];
+    if (!old) {
+      facets.push("added");
+      if (next.status === "blocked")
+        facets.push("blocked");
+    } else if (!next)
+      facets.push("removed");
+    else {
+      if (old.status !== "done" && next.status === "done")
+        facets.push("completed");
+      if (old.status === "done" && next.status !== "done")
+        facets.push("reopened");
+      if (old.status !== "blocked" && next.status === "blocked")
+        facets.push("blocked");
+      if (old.status === "blocked" && next.status !== "blocked")
+        facets.push("unblocked");
+      if (old.status !== "skipped" && next.status === "skipped")
+        facets.push("skipped");
+      if (old.status === "skipped" && next.status !== "skipped")
+        facets.push("unskipped");
+      const x = facts(old), y = facts(next);
+      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
+        facets.push("revised");
+    }
+    if (facets.length)
+      changes.push({ id: id2, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
+  }
+  return changes;
+}
+function endpointCounts(before, after) {
+  const scope4 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const a = tasks(before), b = tasks(after);
+  for (const id2 of new Set([...a.keys(), ...b.keys()])) {
+    const old = a.get(id2), next = b.get(id2);
+    if (!old) {
+      if (next.status !== "skipped")
+        scope4.addedCounted++;
+      if (next.status === "done")
+        scope4.addedDone++;
+    } else if (!next) {
+      if (old.status !== "skipped")
+        scope4.removedCounted++;
+      if (old.status === "done")
+        scope4.removedDone++;
+    } else {
+      if (old.status !== "skipped" && next.status === "skipped")
+        scope4.skipped++;
+      if (old.status === "skipped" && next.status !== "skipped")
+        scope4.unskipped++;
+      if (old.status !== "done" && next.status === "done")
+        scope4.completed++;
+      if (old.status === "done" && next.status !== "done")
+        scope4.reopened++;
+    }
+  }
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope4 };
+}
+function aggregatePair(result3, before, after, target) {
+  for (const { id: id2, reference } of compareTasks(before, after)) {
+    for (const facet of reference.facets)
+      result3.summary.events[facet]++;
+    let row = result3.tasks.find((t) => t.id === id2);
+    if (!row && result3.tasks.length >= DIGEST_LIMITS.tasks) {
+      result3.details.omittedTasks = true;
+      result3.details.omittedTaskCount = null;
+      result3.details.truncated = true;
+      continue;
+    }
+    if (!row) {
+      const atTarget = target.items.find((i) => i.id === id2 && i.kind === "task");
+      const latest2 = atTarget ?? reference.after ?? reference.before;
+      row = { id: id2, title: latest2.title, status: latest2.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result3.tasks.push(row);
+    }
+    for (const facet of reference.facets)
+      row.occurrences[facet]++;
+    if (row.references.length < DIGEST_LIMITS.references)
+      row.references.push(reference);
+    else {
+      row.omittedReferences++;
+      result3.details.truncated = true;
+    }
+  }
+}
+function validateDigestSnapshot(value3, source, plan, revision) {
+  try {
+    const p = value3;
+    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
+      return null;
+    const byId = new Map;
+    for (const i of p.items) {
+      if (!i || !identifier2(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier2(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier2)))
+        return null;
+      byId.set(i.id, i);
+    }
+    for (const i of p.items) {
+      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id2) => id2 === i.id || byId.get(id2)?.kind !== "task"))
+        return null;
+      const seen = new Set([i.id]);
+      let parent = i.parentId;
+      while (parent) {
+        if (seen.has(parent))
+          return null;
+        seen.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const visiting = new Set, visited = new Set;
+    const visit = (id2) => {
+      if (visited.has(id2))
+        return true;
+      if (visiting.has(id2))
+        return false;
+      visiting.add(id2);
+      for (const dep of byId.get(id2)?.dependencies ?? [])
+        if (!visit(dep))
+          return false;
+      visiting.delete(id2);
+      visited.add(id2);
+      return true;
+    };
+    if (!p.items.every((i) => visit(i.id)))
+      return null;
+    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
+  } catch {
+    return null;
+  }
+}
+function capDigest(result3) {
+  while (Buffer.byteLength(JSON.stringify(result3)) > DIGEST_LIMITS.responseBytes && result3.tasks.length) {
+    result3.tasks.pop();
+    result3.details.truncated = true;
+    result3.details.omittedTasks = true;
+    if (result3.details.omittedTaskCount !== null)
+      result3.details.omittedTaskCount++;
+  }
+  return result3;
+}
+
+// shared/plan-task-search.ts
+var normalize3 = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
+function searchTokens(q) {
+  requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
+  const tokens = normalize3(q).trim().split(/\s+/u).filter(Boolean);
+  requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
+  return tokens;
+}
+function searchMatches(tokens, title, id2) {
+  const t = normalize3(title), key = normalize3(id2);
+  return tokens.every((word) => t.includes(word) || key.includes(word));
+}
+var safe = (n, min6 = 0) => Number.isSafeInteger(n) && Number(n) >= min6;
+var hash2 = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var fields = (v, keys4) => Object.keys(v).length === keys4.length && Object.keys(v).every((k) => keys4.includes(k));
+function parseCursor(text) {
+  requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && fields(c, ["v", "identity", "fingerprint", "after", "pending", "gapped"]) && c.v === 1 && typeof c.identity === "string" && /^[a-f0-9]{64}$/.test(c.identity) && typeof c.fingerprint === "string" && /^[a-f0-9]{64}$/.test(c.fingerprint) && typeof c.gapped === "boolean");
+  const key = (v) => v && fields(v, ["source", "plan"]) && identifier2(v.source) && identifier2(v.plan);
+  requireProgress(c.after === null || key(c.after));
+  const p = c.pending;
+  requireProgress(p === null || p && fields(p, ["source", "plan", "revision", "cleanup", "member", "offset", "counted", "phase"]) && identifier2(p.source) && identifier2(p.plan) && safe(p.revision, 1) && safe(p.cleanup) && safe(p.member) && p.member <= p.revision && safe(p.offset) && p.offset <= 1000 && typeof p.counted === "boolean" && typeof p.phase === "string" && ["membership", "hits"].includes(p.phase) && (p.phase !== "membership" || p.offset === 0 && !p.counted));
+  return c;
+}
+function searchIdentity(db, binding) {
+  return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
+}
+function cleanup(db, installed, source, plan) {
+  const c = installed ? cleanupState(db, source, plan) : undefined;
+  return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
+}
+function validPlan(value3, source, id2, revision) {
+  const p = value3;
+  if (!validateDigestSnapshot(value3, source, id2, revision) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || !identifier2(p.sessionId) || typeof p.directory !== "string" || p.directory.length > 4096 || p.directory.includes("\x00") || p.projectId !== undefined && (typeof p.projectId !== "string" || p.projectId.length > 4096) || !Array.isArray(p.links) || p.links.length > 64 || p.links.some((l) => !l || !identifier2(l.sessionId) || !Array.isArray(l.itemIds) || l.itemIds.length > 1000 || !l.itemIds.every(identifier2)))
+    return null;
+  return p;
+}
+function context3(p, item) {
+  const byId = new Map(p.items.map((i) => [i.id, i]));
+  const ancestors = [];
+  let parent = item.parentId;
+  while (parent) {
+    const a = byId.get(parent);
+    ancestors.unshift({ id: a.id, title: a.title });
+    parent = a.parentId;
+  }
+  const omittedAncestors = Math.max(0, ancestors.length - SEARCH_LIMITS.ancestors);
+  return { ancestors: omittedAncestors ? [ancestors[0], ...ancestors.slice(-(SEARCH_LIMITS.ancestors - 1))] : ancestors, omittedAncestors };
+}
+function searchWindow(db, binding, options2 = {}) {
+  requireProgress(Object.keys(options2).every((k) => ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"].includes(k)));
+  const tokens = searchTokens(options2.q ?? ""), limit = options2.limit ?? 20, archived = options2.archived ?? "exclude";
+  requireProgress(Number.isInteger(limit) && limit > 0 && limit <= SEARCH_LIMITS.hits && ["exclude", "only"].includes(archived));
+  for (const key of ["source", "session"])
+    requireProgress(options2[key] === undefined || identifier2(options2[key]));
+  requireProgress(options2.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options2.lifecycle));
+  requireProgress(options2.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options2.status));
+  const identity3 = searchIdentity(db, binding), identityHash = hash2(identity3), fingerprint = hash2([options2.q ?? "", options2.source ?? null, options2.session ?? null, options2.lifecycle ?? null, options2.status ?? null, archived, limit]);
+  const c = options2.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options2.cursor);
+  requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
+  requireProgress(!options2.source || (!c.after || c.after.source === options2.source) && (!c.pending || c.pending.source === options2.source));
+  const installed = cleanupInstalled(db);
+  const r = { ...identity3, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const gap = (reason) => {
+    c.gapped = r.coverage.gapped = true;
+    r.coverage.skippedRecords++;
+    if (!r.coverage.reasons.includes(reason))
+      r.coverage.reasons.push(reason);
+  };
+  const advance = (source, plan) => {
+    c.after = { source, plan };
+    c.pending = null;
+  };
+  let hitBytes = 0;
+  while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
+    const pending = c.pending;
+    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options2.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options2.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    r.work.planSlots++;
+    if (!row) {
+      requireProgress(!pending, "conflict");
+      r.exhausted = true;
+      break;
+    }
+    const source = String(row.source), id2 = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id2);
+    if (pending)
+      requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
+    requireProgress(identifier2(source) && identifier2(id2), "corrupt");
+    if (!safe(revision, 1)) {
+      gap("invalid-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    if (state.state === "deleted" || state.state === "archived" !== (archived === "only")) {
+      advance(source, id2);
+      continue;
+    }
+    const bytes2 = Number(row.bytes);
+    if (bytes2 > SEARCH_LIMITS.inputBytes) {
+      gap("oversized-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    if (r.work.inputBytes + bytes2 > SEARCH_LIMITS.inputBytes)
+      break;
+    const text = db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2).snapshot;
+    r.work.inputBytes += bytes2;
+    let p = null;
+    try {
+      p = validPlan(JSON.parse(String(text)), source, id2, revision);
+    } catch {}
+    if (!p) {
+      gap("invalid-snapshot");
+      advance(source, id2);
+      continue;
+    }
+    r.work.inspectedItems += p.items.length;
+    if (options2.lifecycle && options2.lifecycle !== p.lifecycle) {
+      advance(source, id2);
+      continue;
+    }
+    const pos = pending ?? { source, plan: id2, revision, cleanup: state.revision, member: 0, offset: 0, counted: false, phase: "membership" };
+    if (options2.session && pos.phase === "membership" && p.sessionId !== options2.session && !p.links.some((l) => l.sessionId === options2.session)) {
+      let member = false, finished = false, invalid4 = false;
+      while (r.work.membershipRows < SEARCH_LIMITS.membershipRows) {
+        const m = db.prepare("SELECT revision,length(CAST(payload AS BLOB)) AS bytes FROM contributions WHERE source=? AND plan=? AND revision>? AND revision<=? ORDER BY revision LIMIT 1").get(source, id2, pos.member, revision);
+        if (!m) {
+          finished = true;
+          break;
+        }
+        r.work.membershipRows++;
+        const size6 = Number(m.bytes);
+        if (size6 + bytes2 > SEARCH_LIMITS.inputBytes) {
+          gap("oversized-membership");
+          invalid4 = true;
+          break;
+        }
+        if (r.work.inputBytes + size6 > SEARCH_LIMITS.inputBytes)
+          break;
+        const payload = db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? AND revision=?").get(source, id2, m.revision).payload;
+        r.work.inputBytes += size6;
+        let v;
+        try {
+          v = JSON.parse(String(payload));
+        } catch {}
+        if (!v || v.revision !== m.revision || !identifier2(v.attributedSessionId)) {
+          gap("invalid-membership");
+          invalid4 = true;
+          break;
+        }
+        pos.member = Number(m.revision);
+        if (v.attributedSessionId === options2.session) {
+          member = true;
+          break;
+        }
+      }
+      if (invalid4 || finished && !member) {
+        advance(source, id2);
+        continue;
+      }
+      if (!member) {
+        c.pending = pos;
+        break;
+      }
+    }
+    pos.phase = "hits";
+    const planMatched = searchMatches(tokens, p.title, p.id);
+    const matches = p.items.filter((i) => i.kind === "task" && (!options2.status || i.status === options2.status) && searchMatches(tokens, i.title, i.id));
+    if (!matches.length && (!planMatched || options2.status)) {
+      advance(source, id2);
+      continue;
+    }
+    const tasks2 = matches.length ? matches : [null];
+    const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
+    const plan = { id: id2, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    requireProgress(pos.offset < tasks2.length);
+    while (pos.offset < tasks2.length && r.hits.length < limit) {
+      const task = tasks2[pos.offset];
+      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context3(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const size6 = Buffer.byteLength(JSON.stringify(hit)) + 1;
+      if (hitBytes + size6 > SEARCH_LIMITS.responseBytes - 16 * 1024)
+        break;
+      if (!pos.counted) {
+        r.counts.matchedPlans++;
+        r.counts.matchingTasks += matches.length;
+        pos.counted = true;
+      }
+      hitBytes += size6;
+      r.hits.push(hit);
+      pos.offset++;
+    }
+    if (pos.offset < tasks2.length) {
+      c.pending = pos;
+      break;
+    }
+    advance(source, id2);
+  }
+  r.nextCursor = r.exhausted ? null : Buffer.from(JSON.stringify(c)).toString("base64url");
+  requireProgress(r.nextCursor === null || Buffer.byteLength(r.nextCursor) <= SEARCH_LIMITS.cursorBytes);
+  r.work.outputHits = r.hits.length;
+  for (let n = 0;n < 3; n++)
+    r.work.outputBytes = Buffer.byteLength(JSON.stringify(r));
+  requireProgress(r.work.outputBytes <= SEARCH_LIMITS.responseBytes);
+  return r;
+}
+function searchState(db, binding, storeId, keys4) {
+  requireProgress(identifier2(storeId) && Array.isArray(keys4) && keys4.length > 0 && keys4.length <= SEARCH_LIMITS.stateKeys && keys4.every((k) => k && fields(k, ["source", "plan"]) && identifier2(k.source) && identifier2(k.plan)));
+  requireProgress(new Set(keys4.map((k) => JSON.stringify([k.source, k.plan]))).size === keys4.length);
+  const identity3 = searchIdentity(db, binding);
+  requireProgress(identity3.storeId === storeId, "conflict");
+  const installed = cleanupInstalled(db);
+  const captureEnabled = Boolean(db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled);
+  return { ...identity3, captureEnabled, data: keys4.map((k) => {
+    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row || safe(row.revision, 1), "corrupt");
+    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  }) };
+}
+
 // shared/store.ts
 function canonical(value3) {
   if (Array.isArray(value3))
@@ -24814,7 +25446,7 @@ function canonical(value3) {
   return JSON.stringify(value3);
 }
 function digest(value3) {
-  return createHash2("sha256").update(value3).digest("hex");
+  return createHash3("sha256").update(value3).digest("hex");
 }
 function directoryFilter(value3) {
   return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
@@ -24874,13 +25506,13 @@ class Store {
         const stat = lstatSync4(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
-        const head3 = Buffer.alloc(16);
+        const head4 = Buffer.alloc(16);
         try {
-          readSync(fd, head3, 0, 16, 0);
+          readSync(fd, head4, 0, 16, 0);
         } finally {
           closeSync3(fd);
         }
-        requireProgress(head3.toString("binary") === "SQLite format 3\x00", "corrupt");
+        requireProgress(head4.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync2(file, { readOnly: options2.readOnly ?? false });
       if (!existed) {
@@ -24916,6 +25548,18 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  documentCaptures(r, cursor) {
+    return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
+  }
+  documentComparison(r, before, after) {
+    return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after));
+  }
+  search(options2 = {}) {
+    return this.transaction(false, () => searchWindow(this.db, this.readBinding, options2));
+  }
+  searchState(storeId, keys4) {
+    return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys4));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
@@ -25063,21 +25707,131 @@ class Store {
       }), nextCursor: rows.length > limit ? String(cursor + limit) : null };
     });
   }
+  changeDigest(request3) {
+    const { source, plan, to, after, cleanupRev } = request3;
+    requireProgress(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
+    return this.transaction(false, () => {
+      const storeId = String(this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id);
+      requireProgress(storeId === request3.storeId, "conflict");
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      requireProgress(live, "not-found");
+      requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
+      requireProgress(cleanup2.revision === cleanupRev, "conflict");
+      requireProgress(to <= Number(live.revision));
+      const result3 = {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        storeId,
+        sourceBinding: { ...this.readBinding },
+        source,
+        plan,
+        cleanup: cleanup2,
+        interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
+        availability: "target-unavailable",
+        complete: false,
+        reasons: [],
+        validTarget: false,
+        counts: { before: null, after: null, scope: null },
+        summary: { unit: "transitions", events: emptyEvents() },
+        tasks: [],
+        details: { omittedTasks: false, omittedTaskCount: 0, truncated: false },
+        work: { intervalSnapshots: 0, baselineLookups: 0, inputBytes: 0 }
+      };
+      const reason = (r) => {
+        if (!result3.reasons.includes(r))
+          result3.reasons.push(r);
+      };
+      const load = (revision, baseline2 = false) => {
+        if (baseline2)
+          result3.work.baselineLookups++;
+        else
+          result3.work.intervalSnapshots++;
+        const remaining = DIGEST_LIMITS.bytes - result3.work.inputBytes;
+        const row = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        if (!row) {
+          reason("missing-snapshot");
+          return null;
+        }
+        if (Number(row.bytes) > remaining) {
+          reason("byte-bound");
+          return null;
+        }
+        result3.work.inputBytes += Number(row.bytes);
+        let p = null;
+        try {
+          p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision);
+        } catch {}
+        if (!p)
+          reason("invalid-snapshot");
+        return p;
+      };
+      const target = load(to);
+      if (!target)
+        return result3;
+      result3.validTarget = true;
+      result3.interval.targetLifecycle = target.lifecycle;
+      result3.interval.targetReportedAt = target.reportedAt;
+      result3.interval.coverageStart = result3.interval.coverageEnd = to;
+      result3.interval.coverageStartReportedAt = result3.interval.coverageEndReportedAt = target.reportedAt;
+      result3.counts.after = countItems(target.items);
+      if (after === undefined) {
+        result3.availability = "initial";
+        result3.complete = true;
+        return result3;
+      }
+      const baseline = after === to ? target : load(after, true);
+      result3.availability = baseline ? "comparison" : "baseline-unavailable";
+      if (baseline)
+        result3.counts = endpointCounts(baseline, target);
+      let newer = target;
+      while (newer.revision > after) {
+        if (result3.work.intervalSnapshots >= DIGEST_LIMITS.snapshots) {
+          reason("revision-bound");
+          break;
+        }
+        const expected = newer.revision - 1;
+        let older;
+        if (expected === after) {
+          result3.work.intervalSnapshots++;
+          older = baseline;
+        } else
+          older = load(expected);
+        if (!older) {
+          if (expected !== after)
+            reason("gap");
+          break;
+        }
+        if (older.reportedAt > newer.reportedAt || older.structuralRevision > newer.structuralRevision || newer.structuralRevision - older.structuralRevision > 1) {
+          reason("invalid-snapshot");
+          break;
+        }
+        aggregatePair(result3, older, newer, target);
+        newer = older;
+        result3.interval.coverageStart = older.revision;
+        result3.interval.coverageStartReportedAt = older.reportedAt;
+      }
+      result3.complete = !!baseline && newer.revision === after;
+      return capDigest(result3);
+    });
+  }
   apply(value3, actor, capture, child) {
     const r = parseRequest(value3);
     requireProgress(r.op !== "read");
-    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
-      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(cleanup?.state !== "deleted", "not-found");
-      requireProgress(cleanup?.state !== "archived", "closed");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
       const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash2, "operation-reused");
+        requireProgress(replay.payload_hash === hash3, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -25217,7 +25971,7 @@ class Store {
         return receipt;
       }
       function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash2, JSON.stringify(receipt));
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash3, JSON.stringify(receipt));
       }
     });
   }
@@ -25659,7 +26413,7 @@ var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an
 \`\`\`json
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 \`\`\`
-Read uses only op=read, one concrete plan identifier and optional page; no wildcard, oid or rev. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
+Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 ${START_HELP}
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.

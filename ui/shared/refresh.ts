@@ -36,7 +36,7 @@ export class RefreshGate {
 
 /**
  * Bounded memory of the last validated read per scope (least recently used first out). Keys must
- * carry the full authority (host account, store, source binding) and the list scope, so an entry
+ * carry the full context (integration account, store, source binding) and the list scope, so an entry
  * can never be served for another session, store or binding.
  */
 export class RecentMemory<T> {

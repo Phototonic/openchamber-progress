@@ -1,5 +1,6 @@
 /** Frozen production v2 DTO. Probe v1 types are historical fixtures only. */
 export const VERSION = 2 as const;
+export type { ChangeDigest, DigestTask, DigestReference, DigestFacts, DigestEvents, DigestFacet, DigestReason, DigestScope } from './change-digest.ts';
 export const LIMITS = { requestBytes: 16_384, documentBytes: 262_144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1_048_576 } as const;
 export type Status = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'finished' | 'cancelled' | 'failed';
@@ -28,6 +29,23 @@ export interface PlanSummary { id: string; sourceId: string; title: string; sess
 export interface PlanState extends Omit<PlanSummary, 'counts' | 'working'> { items: Item[]; links: { sessionId: string; itemIds: string[] }[] }
 export interface Envelope { protocolVersion: 2; schemaVersion: 2; storeId: string; sources: Source[]; sourceBinding: { sourceId: string | null; verified: boolean }; captureEnabled: boolean; coverage: 'recorded-only'; diagnostics: string[] }
 export interface Page<T> { data: T[]; nextCursor: string | null }
+/** Additive v2 search contract revision 1. No schema or report-tool change. */
+export const SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 } as const;
+export interface SearchOptions { q?: string; source?: string; session?: string; lifecycle?: Lifecycle; status?: Status; archived?: 'exclude' | 'only'; limit?: number; cursor?: string }
+export interface SearchKey { source: string; plan: string }
+export interface SearchIdentity { protocolVersion: 2; schemaVersion: 2; planTaskSearch: 1; storeId: string; sourceBinding: Envelope['sourceBinding'] }
+export interface SearchPlan extends Omit<PlanSummary, 'working' | 'document'> { cleanup: { state: 'visible' | 'archived'; revision: number }; sourceVerified: boolean }
+export interface SearchHit { plan: SearchPlan; planMatched: boolean; task: { id: string; title: string; status: Status } | null; ancestors: { id: string; title: string }[]; omittedAncestors: number; continued: boolean; classified: { matchedPlans: 1; matchingTasks: number } | null }
+export type SearchGap = 'invalid-snapshot' | 'oversized-snapshot' | 'invalid-membership' | 'oversized-membership';
+export interface SearchWindow extends SearchIdentity {
+  fingerprint: string; hits: SearchHit[];
+  /** Fully classified qualifying plans only; applied once, even across task pages. */
+  counts: { matchedPlans: number; matchingTasks: number };
+  nextCursor: string | null; exhausted: boolean;
+  coverage: { kind: 'recorded-current'; asSearched: true; gapped: boolean; skippedRecords: number; reasons: SearchGap[] };
+  work: { planSlots: number; inspectedItems: number; membershipRows: number; inputBytes: number; outputHits: number; outputBytes: number };
+}
+export interface SearchState extends SearchIdentity { captureEnabled: boolean; data: (SearchKey & { exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } })[] }
 /** Response-only reported-working history; absent item entries mean no proven interval. */
 export interface PlanTiming { readAt: string; items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }> }
 export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links']; timing?: PlanTiming }
@@ -52,6 +70,7 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
   configured: boolean; verified: boolean; installed: boolean; captureEnabled: boolean | null;
   targets: { configRoot: string; dataRoot: string; storeRoot: string } | null;
   activation: string; separateLifecycle: true; historyRetained: true; diagnostics: string[];
@@ -120,7 +139,7 @@ export function parseRequest(value: unknown): Request {
 }
 export const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['op','plan'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional page.' },
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail.' },
     plan: { type: 'string', description: 'One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } } }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] } }, required: ['id','status'], additionalProperties: false } },
@@ -133,7 +152,7 @@ const VALIDATION_HINTS = {
   request: 'Send one request object.',
   op: 'Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.',
   plan: 'Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.',
-  fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.',
+  fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.',
   oid: 'Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.',
   rev: 'Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.',
   title: 'Use a nonempty title of at most 256 characters.',

@@ -19,7 +19,12 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // service/server.ts
 import http from "node:http";
-import { timingSafeEqual } from "node:crypto";
+
+// shared/cleanup.ts
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID, createHash } from "node:crypto";
+import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2, unlinkSync, realpathSync as realpathSync2, existsSync as existsSync2 } from "node:fs";
+import path2 from "node:path";
 
 // shared/progress.ts
 var VERSION = 2;
@@ -47,6 +52,7 @@ function countItems(items) {
   const skipped = leaves.filter((i) => i.status === "skipped").length;
   return { done, total: leaves.length - skipped, remaining: leaves.length - skipped - done, skipped };
 }
+var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value);
 }
@@ -124,7 +130,7 @@ var VALIDATION_HINTS = {
   request: "Send one request object.",
   op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
-  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional page; mutations also require oid and rev.",
+  fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
   rev: "Every mutation requires rev: a nonnegative safe integer. Use rev:0 for a new start; read the current revision before updating.",
   title: "Use a nonempty title of at most 256 characters.",
@@ -136,18 +142,6 @@ function validRequest(value, hint) {
   if (!value)
     throw new ProgressError("invalid", undefined, VALIDATION_HINTS[hint]);
 }
-
-// shared/store.ts
-import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
-import path3 from "node:path";
-
-// shared/cleanup.ts
-import { DatabaseSync } from "node:sqlite";
-import { randomUUID, createHash } from "node:crypto";
-import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2, unlinkSync, realpathSync as realpathSync2, existsSync as existsSync2 } from "node:fs";
-import path2 from "node:path";
 
 // shared/platform.ts
 import { spawnSync } from "node:child_process";
@@ -582,6 +576,655 @@ function mutateCleanup(db, file, action, value, transaction) {
   });
 }
 
+// shared/document-comparison.ts
+var CAPTURE_LIMITS = {
+  rows: 128,
+  entries: 50,
+  responseBytes: 262144,
+  cursorBytes: 4096,
+  queryBytes: 16384,
+  snapshotBytes: 1048576,
+  documentBytes: 262144,
+  lines: 20000,
+  steps: 1e6,
+  traceCells: 1e6,
+  renderedLines: 2000,
+  renderedBytes: 131072
+};
+function compareCaptureText(before, after) {
+  const bytes = (s) => new TextEncoder().encode(s).length;
+  if (bytes(before) > CAPTURE_LIMITS.documentBytes || bytes(after) > CAPTURE_LIMITS.documentBytes)
+    return { state: "limited", reason: "bytes" };
+  const lines = (s) => {
+    const out = [];
+    let start = 0;
+    for (let i = 0;i < s.length; i++)
+      if (s[i] === `
+`) {
+        if (out.length === CAPTURE_LIMITS.lines)
+          return null;
+        out.push(s.slice(start, i + 1));
+        start = i + 1;
+      }
+    if (start < s.length) {
+      if (out.length === CAPTURE_LIMITS.lines)
+        return null;
+      out.push(s.slice(start));
+    }
+    return out;
+  };
+  const a = lines(before), b = lines(after);
+  if (!a || !b)
+    return { state: "limited", reason: "lines" };
+  if (before === after)
+    return { state: "equal" };
+  const intern = new Map;
+  const ids = (values) => values.map((s) => {
+    let id = intern.get(s);
+    if (id === undefined) {
+      id = intern.size;
+      intern.set(s, id);
+    }
+    return id;
+  });
+  const aa = ids(a), bb = ids(b), n = a.length, m = b.length;
+  const trace = [];
+  const v = new Map([[1, 0]]);
+  let steps = 0, cells = 0, found = -1;
+  outer:
+    for (let d = 0;d <= n + m; d++) {
+      cells += v.size;
+      if (cells > CAPTURE_LIMITS.traceCells)
+        return { state: "limited", reason: "work" };
+      trace.push(new Map(v));
+      for (let k = -d;k <= d; k += 2) {
+        if (++steps > CAPTURE_LIMITS.steps)
+          return { state: "limited", reason: "work" };
+        let x2 = k === -d || k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+        let y2 = x2 - k;
+        while (x2 < n && y2 < m && aa[x2] === bb[y2]) {
+          x2++;
+          y2++;
+          if (++steps > CAPTURE_LIMITS.steps)
+            return { state: "limited", reason: "work" };
+        }
+        v.set(k, x2);
+        if (x2 >= n && y2 >= m) {
+          found = d;
+          break outer;
+        }
+      }
+    }
+  const operations = [];
+  let x = n, y = m;
+  for (let d = found;d >= 0; d--) {
+    const previous = trace[d], k = x - y;
+    const pk = k === -d || k !== d && (previous.get(k - 1) ?? -1) < (previous.get(k + 1) ?? -1) ? k + 1 : k - 1;
+    const px = previous.get(pk) ?? 0, py = px - pk;
+    while (x > px && y > py) {
+      operations.push({ kind: "context", value: a[--x] });
+      y--;
+    }
+    if (d > 0) {
+      if (x === px)
+        operations.push({ kind: "added", value: b[--y] });
+      else
+        operations.push({ kind: "removed", value: a[--x] });
+    }
+  }
+  operations.reverse();
+  let oldLine = 1, newLine = 1, added = 0, removed = 0;
+  const positioned = operations.map((o) => {
+    const ending = o.value.endsWith(`\r
+`) ? "crlf" : o.value.endsWith(`
+`) ? "lf" : "none";
+    if (o.kind === "added")
+      added++;
+    if (o.kind === "removed")
+      removed++;
+    return { kind: o.kind, oldLine: o.kind === "added" ? null : oldLine++, newLine: o.kind === "removed" ? null : newLine++, text: o.value.slice(0, o.value.length - (ending === "crlf" ? 2 : ending === "lf" ? 1 : 0)), ending };
+  });
+  const ranges = [];
+  for (let i = 0;i < positioned.length; i++)
+    if (positioned[i].kind !== "context") {
+      const start = Math.max(0, i - 3), end = Math.min(positioned.length, i + 4), last = ranges.at(-1);
+      if (last && start <= last[1])
+        last[1] = end;
+      else
+        ranges.push([start, end]);
+    }
+  let count = 0, size = 0, previousEnd = 0;
+  const hunks = [];
+  for (const [start, end] of ranges) {
+    count += end - start;
+    if (count > CAPTURE_LIMITS.renderedLines)
+      return { state: "limited", reason: "output" };
+    const kept = positioned.slice(start, end);
+    for (const line of kept) {
+      size += bytes(line.text);
+      if (size > CAPTURE_LIMITS.renderedBytes)
+        return { state: "limited", reason: "output" };
+    }
+    const oldStart = kept.find((l) => l.oldLine !== null)?.oldLine ?? positioned.slice(0, start).filter((l) => l.oldLine !== null).length + 1;
+    const newStart = kept.find((l) => l.newLine !== null)?.newLine ?? positioned.slice(0, start).filter((l) => l.newLine !== null).length + 1;
+    hunks.push({ oldStart, newStart, omittedBefore: start - previousEnd, lines: kept });
+    previousEnd = end;
+  }
+  return { state: "diff", hunks, omittedAfter: positioned.length - previousEnd, added, removed };
+}
+
+// shared/document-captures.ts
+var integer = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
+function parseCaptureBinding(value) {
+  requireProgress(value && Buffer.byteLength(value) <= 256);
+  let v;
+  try {
+    v = JSON.parse(value);
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(v && typeof v === "object" && Object.keys(v).length === 2 && (v.sourceId === null || identifier(v.sourceId)) && typeof v.verified === "boolean");
+  return { sourceId: v.sourceId, verified: v.verified };
+}
+var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
+function head(db, binding, r) {
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer(r.cleanupRev));
+  requireProgress(r.binding && same(binding, r.binding), "conflict");
+  const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(meta.store_id === r.storeId, "conflict");
+  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
+    CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
+      CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
+    END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
+  requireProgress(row, "not-found");
+  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
+  requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
+  requireProgress(typeof row.document === "string", "corrupt");
+  let doc;
+  try {
+    doc = JSON.parse(row.document);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
+  for (const key of ["path", "canonicalPath"])
+    requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
+  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
+  return {
+    identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
+    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+  };
+}
+var projection = `id, revision,
+ CASE WHEN length(CAST(source AS BLOB))<=80 THEN source END AS source,
+ CASE WHEN length(CAST(plan AS BLOB))<=80 THEN plan END AS plan,
+ CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
+ CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
+ CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
+function entry(row) {
+  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier(row.source) && identifier(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
+  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+}
+function decodeCursor(raw, r) {
+  requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  const i = c.identity;
+  requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
+  return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
+}
+function captureIndex(db, binding, r, cursor) {
+  const h = head(db, binding, r);
+  const max = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
+  requireProgress(integer(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
+  const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max, revision: h.current.revision, before: max + 1 };
+  requireProgress(c.revision <= h.current.revision, "conflict");
+  const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
+  const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
+  let before = c.before;
+  for (const row of rows) {
+    const e = entry(row);
+    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+    if (qualifies) {
+      if (out.data.length === CAPTURE_LIMITS.entries) {
+        out.limit = "entries";
+        break;
+      }
+      if (Buffer.byteLength(JSON.stringify({ ...out, data: [...out.data, e] })) > CAPTURE_LIMITS.responseBytes - CAPTURE_LIMITS.cursorBytes - 1024) {
+        out.limit = "bytes";
+        break;
+      }
+      out.data.push(e);
+    }
+    before = e.id;
+    out.scanned++;
+  }
+  out.exhausted = out.scanned === rows.length && rows.length < CAPTURE_LIMITS.rows;
+  if (!out.exhausted) {
+    out.limit ??= "rows";
+    out.nextCursor = Buffer.from(JSON.stringify({ ...c, before })).toString("base64url");
+  }
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function captureComparison(db, binding, r, before, after) {
+  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  const h = head(db, binding, r);
+  const read = (id) => {
+    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id, r.source, r.plan);
+    requireProgress(row, "not-found");
+    return { entry: entry(row), bytes: Number(row.bytes) };
+  };
+  const a = read(before), b = before === after ? a : read(after);
+  const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
+  if (a.bytes <= CAPTURE_LIMITS.documentBytes && b.bytes <= CAPTURE_LIMITS.documentBytes && a.bytes >= 0 && b.bytes >= 0) {
+    const body = (id) => String(db.prepare("SELECT text FROM captures WHERE id=?").get(id).text);
+    const text = body(before);
+    out.result = compareCaptureText(text, before === after ? text : body(after));
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > CAPTURE_LIMITS.responseBytes)
+    out.result = { state: "limited", reason: "output" };
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= CAPTURE_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+
+// service/server.ts
+import { timingSafeEqual } from "node:crypto";
+
+// shared/store.ts
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
+import path3 from "node:path";
+
+// shared/plan-task-search.ts
+import { createHash as createHash2 } from "node:crypto";
+
+// shared/change-digest.ts
+var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
+function emptyEvents() {
+  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
+}
+var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
+var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
+function compareTasks(before, after) {
+  const a = tasks(before), b = tasks(after), changes = [];
+  for (const id of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const old = a.get(id), next = b.get(id), facets = [];
+    if (!old) {
+      facets.push("added");
+      if (next.status === "blocked")
+        facets.push("blocked");
+    } else if (!next)
+      facets.push("removed");
+    else {
+      if (old.status !== "done" && next.status === "done")
+        facets.push("completed");
+      if (old.status === "done" && next.status !== "done")
+        facets.push("reopened");
+      if (old.status !== "blocked" && next.status === "blocked")
+        facets.push("blocked");
+      if (old.status === "blocked" && next.status !== "blocked")
+        facets.push("unblocked");
+      if (old.status !== "skipped" && next.status === "skipped")
+        facets.push("skipped");
+      if (old.status === "skipped" && next.status !== "skipped")
+        facets.push("unskipped");
+      const x = facts(old), y = facts(next);
+      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
+        facets.push("revised");
+    }
+    if (facets.length)
+      changes.push({ id, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
+  }
+  return changes;
+}
+function endpointCounts(before, after) {
+  const scope2 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const a = tasks(before), b = tasks(after);
+  for (const id of new Set([...a.keys(), ...b.keys()])) {
+    const old = a.get(id), next = b.get(id);
+    if (!old) {
+      if (next.status !== "skipped")
+        scope2.addedCounted++;
+      if (next.status === "done")
+        scope2.addedDone++;
+    } else if (!next) {
+      if (old.status !== "skipped")
+        scope2.removedCounted++;
+      if (old.status === "done")
+        scope2.removedDone++;
+    } else {
+      if (old.status !== "skipped" && next.status === "skipped")
+        scope2.skipped++;
+      if (old.status === "skipped" && next.status !== "skipped")
+        scope2.unskipped++;
+      if (old.status !== "done" && next.status === "done")
+        scope2.completed++;
+      if (old.status === "done" && next.status !== "done")
+        scope2.reopened++;
+    }
+  }
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope2 };
+}
+function aggregatePair(result, before, after, target) {
+  for (const { id, reference } of compareTasks(before, after)) {
+    for (const facet of reference.facets)
+      result.summary.events[facet]++;
+    let row = result.tasks.find((t) => t.id === id);
+    if (!row && result.tasks.length >= DIGEST_LIMITS.tasks) {
+      result.details.omittedTasks = true;
+      result.details.omittedTaskCount = null;
+      result.details.truncated = true;
+      continue;
+    }
+    if (!row) {
+      const atTarget = target.items.find((i) => i.id === id && i.kind === "task");
+      const latest = atTarget ?? reference.after ?? reference.before;
+      row = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result.tasks.push(row);
+    }
+    for (const facet of reference.facets)
+      row.occurrences[facet]++;
+    if (row.references.length < DIGEST_LIMITS.references)
+      row.references.push(reference);
+    else {
+      row.omittedReferences++;
+      result.details.truncated = true;
+    }
+  }
+}
+function validateDigestSnapshot(value, source, plan, revision) {
+  try {
+    const p = value;
+    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
+      return null;
+    const byId = new Map;
+    for (const i of p.items) {
+      if (!i || !identifier(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier)))
+        return null;
+      byId.set(i.id, i);
+    }
+    for (const i of p.items) {
+      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id) => id === i.id || byId.get(id)?.kind !== "task"))
+        return null;
+      const seen = new Set([i.id]);
+      let parent = i.parentId;
+      while (parent) {
+        if (seen.has(parent))
+          return null;
+        seen.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const visiting = new Set, visited = new Set;
+    const visit = (id) => {
+      if (visited.has(id))
+        return true;
+      if (visiting.has(id))
+        return false;
+      visiting.add(id);
+      for (const dep of byId.get(id)?.dependencies ?? [])
+        if (!visit(dep))
+          return false;
+      visiting.delete(id);
+      visited.add(id);
+      return true;
+    };
+    if (!p.items.every((i) => visit(i.id)))
+      return null;
+    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
+  } catch {
+    return null;
+  }
+}
+function capDigest(result) {
+  while (Buffer.byteLength(JSON.stringify(result)) > DIGEST_LIMITS.responseBytes && result.tasks.length) {
+    result.tasks.pop();
+    result.details.truncated = true;
+    result.details.omittedTasks = true;
+    if (result.details.omittedTaskCount !== null)
+      result.details.omittedTaskCount++;
+  }
+  return result;
+}
+
+// shared/plan-task-search.ts
+var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
+function searchTokens(q) {
+  requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
+  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean);
+  requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
+  return tokens;
+}
+function searchMatches(tokens, title, id) {
+  const t = normalize(title), key = normalize(id);
+  return tokens.every((word) => t.includes(word) || key.includes(word));
+}
+var safe = (n, min = 0) => Number.isSafeInteger(n) && Number(n) >= min;
+var hash = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var fields = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
+function parseCursor(text) {
+  requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && fields(c, ["v", "identity", "fingerprint", "after", "pending", "gapped"]) && c.v === 1 && typeof c.identity === "string" && /^[a-f0-9]{64}$/.test(c.identity) && typeof c.fingerprint === "string" && /^[a-f0-9]{64}$/.test(c.fingerprint) && typeof c.gapped === "boolean");
+  const key = (v) => v && fields(v, ["source", "plan"]) && identifier(v.source) && identifier(v.plan);
+  requireProgress(c.after === null || key(c.after));
+  const p = c.pending;
+  requireProgress(p === null || p && fields(p, ["source", "plan", "revision", "cleanup", "member", "offset", "counted", "phase"]) && identifier(p.source) && identifier(p.plan) && safe(p.revision, 1) && safe(p.cleanup) && safe(p.member) && p.member <= p.revision && safe(p.offset) && p.offset <= 1000 && typeof p.counted === "boolean" && typeof p.phase === "string" && ["membership", "hits"].includes(p.phase) && (p.phase !== "membership" || p.offset === 0 && !p.counted));
+  return c;
+}
+function searchIdentity(db, binding) {
+  return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
+}
+function cleanup(db, installed, source, plan) {
+  const c = installed ? cleanupState(db, source, plan) : undefined;
+  return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
+}
+function validPlan(value, source, id, revision) {
+  const p = value;
+  if (!validateDigestSnapshot(value, source, id, revision) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || !identifier(p.sessionId) || typeof p.directory !== "string" || p.directory.length > 4096 || p.directory.includes("\x00") || p.projectId !== undefined && (typeof p.projectId !== "string" || p.projectId.length > 4096) || !Array.isArray(p.links) || p.links.length > 64 || p.links.some((l) => !l || !identifier(l.sessionId) || !Array.isArray(l.itemIds) || l.itemIds.length > 1000 || !l.itemIds.every(identifier)))
+    return null;
+  return p;
+}
+function context(p, item) {
+  const byId = new Map(p.items.map((i) => [i.id, i]));
+  const ancestors = [];
+  let parent = item.parentId;
+  while (parent) {
+    const a = byId.get(parent);
+    ancestors.unshift({ id: a.id, title: a.title });
+    parent = a.parentId;
+  }
+  const omittedAncestors = Math.max(0, ancestors.length - SEARCH_LIMITS.ancestors);
+  return { ancestors: omittedAncestors ? [ancestors[0], ...ancestors.slice(-(SEARCH_LIMITS.ancestors - 1))] : ancestors, omittedAncestors };
+}
+function searchWindow(db, binding, options = {}) {
+  requireProgress(Object.keys(options).every((k) => ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"].includes(k)));
+  const tokens = searchTokens(options.q ?? ""), limit = options.limit ?? 20, archived = options.archived ?? "exclude";
+  requireProgress(Number.isInteger(limit) && limit > 0 && limit <= SEARCH_LIMITS.hits && ["exclude", "only"].includes(archived));
+  for (const key of ["source", "session"])
+    requireProgress(options[key] === undefined || identifier(options[key]));
+  requireProgress(options.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options.lifecycle));
+  requireProgress(options.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options.status));
+  const identity = searchIdentity(db, binding), identityHash = hash(identity), fingerprint = hash([options.q ?? "", options.source ?? null, options.session ?? null, options.lifecycle ?? null, options.status ?? null, archived, limit]);
+  const c = options.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options.cursor);
+  requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
+  requireProgress(!options.source || (!c.after || c.after.source === options.source) && (!c.pending || c.pending.source === options.source));
+  const installed = cleanupInstalled(db);
+  const r = { ...identity, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const gap = (reason) => {
+    c.gapped = r.coverage.gapped = true;
+    r.coverage.skippedRecords++;
+    if (!r.coverage.reasons.includes(reason))
+      r.coverage.reasons.push(reason);
+  };
+  const advance = (source, plan) => {
+    c.after = { source, plan };
+    c.pending = null;
+  };
+  let hitBytes = 0;
+  while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
+    const pending = c.pending;
+    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    r.work.planSlots++;
+    if (!row) {
+      requireProgress(!pending, "conflict");
+      r.exhausted = true;
+      break;
+    }
+    const source = String(row.source), id = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id);
+    if (pending)
+      requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
+    requireProgress(identifier(source) && identifier(id), "corrupt");
+    if (!safe(revision, 1)) {
+      gap("invalid-snapshot");
+      advance(source, id);
+      continue;
+    }
+    if (state.state === "deleted" || state.state === "archived" !== (archived === "only")) {
+      advance(source, id);
+      continue;
+    }
+    const bytes = Number(row.bytes);
+    if (bytes > SEARCH_LIMITS.inputBytes) {
+      gap("oversized-snapshot");
+      advance(source, id);
+      continue;
+    }
+    if (r.work.inputBytes + bytes > SEARCH_LIMITS.inputBytes)
+      break;
+    const text = db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id).snapshot;
+    r.work.inputBytes += bytes;
+    let p = null;
+    try {
+      p = validPlan(JSON.parse(String(text)), source, id, revision);
+    } catch {}
+    if (!p) {
+      gap("invalid-snapshot");
+      advance(source, id);
+      continue;
+    }
+    r.work.inspectedItems += p.items.length;
+    if (options.lifecycle && options.lifecycle !== p.lifecycle) {
+      advance(source, id);
+      continue;
+    }
+    const pos = pending ?? { source, plan: id, revision, cleanup: state.revision, member: 0, offset: 0, counted: false, phase: "membership" };
+    if (options.session && pos.phase === "membership" && p.sessionId !== options.session && !p.links.some((l) => l.sessionId === options.session)) {
+      let member = false, finished = false, invalid = false;
+      while (r.work.membershipRows < SEARCH_LIMITS.membershipRows) {
+        const m = db.prepare("SELECT revision,length(CAST(payload AS BLOB)) AS bytes FROM contributions WHERE source=? AND plan=? AND revision>? AND revision<=? ORDER BY revision LIMIT 1").get(source, id, pos.member, revision);
+        if (!m) {
+          finished = true;
+          break;
+        }
+        r.work.membershipRows++;
+        const size = Number(m.bytes);
+        if (size + bytes > SEARCH_LIMITS.inputBytes) {
+          gap("oversized-membership");
+          invalid = true;
+          break;
+        }
+        if (r.work.inputBytes + size > SEARCH_LIMITS.inputBytes)
+          break;
+        const payload = db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? AND revision=?").get(source, id, m.revision).payload;
+        r.work.inputBytes += size;
+        let v;
+        try {
+          v = JSON.parse(String(payload));
+        } catch {}
+        if (!v || v.revision !== m.revision || !identifier(v.attributedSessionId)) {
+          gap("invalid-membership");
+          invalid = true;
+          break;
+        }
+        pos.member = Number(m.revision);
+        if (v.attributedSessionId === options.session) {
+          member = true;
+          break;
+        }
+      }
+      if (invalid || finished && !member) {
+        advance(source, id);
+        continue;
+      }
+      if (!member) {
+        c.pending = pos;
+        break;
+      }
+    }
+    pos.phase = "hits";
+    const planMatched = searchMatches(tokens, p.title, p.id);
+    const matches = p.items.filter((i) => i.kind === "task" && (!options.status || i.status === options.status) && searchMatches(tokens, i.title, i.id));
+    if (!matches.length && (!planMatched || options.status)) {
+      advance(source, id);
+      continue;
+    }
+    const tasks2 = matches.length ? matches : [null];
+    const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
+    const plan = { id, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    requireProgress(pos.offset < tasks2.length);
+    while (pos.offset < tasks2.length && r.hits.length < limit) {
+      const task = tasks2[pos.offset];
+      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const size = Buffer.byteLength(JSON.stringify(hit)) + 1;
+      if (hitBytes + size > SEARCH_LIMITS.responseBytes - 16 * 1024)
+        break;
+      if (!pos.counted) {
+        r.counts.matchedPlans++;
+        r.counts.matchingTasks += matches.length;
+        pos.counted = true;
+      }
+      hitBytes += size;
+      r.hits.push(hit);
+      pos.offset++;
+    }
+    if (pos.offset < tasks2.length) {
+      c.pending = pos;
+      break;
+    }
+    advance(source, id);
+  }
+  r.nextCursor = r.exhausted ? null : Buffer.from(JSON.stringify(c)).toString("base64url");
+  requireProgress(r.nextCursor === null || Buffer.byteLength(r.nextCursor) <= SEARCH_LIMITS.cursorBytes);
+  r.work.outputHits = r.hits.length;
+  for (let n = 0;n < 3; n++)
+    r.work.outputBytes = Buffer.byteLength(JSON.stringify(r));
+  requireProgress(r.work.outputBytes <= SEARCH_LIMITS.responseBytes);
+  return r;
+}
+function searchState(db, binding, storeId, keys) {
+  requireProgress(identifier(storeId) && Array.isArray(keys) && keys.length > 0 && keys.length <= SEARCH_LIMITS.stateKeys && keys.every((k) => k && fields(k, ["source", "plan"]) && identifier(k.source) && identifier(k.plan)));
+  requireProgress(new Set(keys.map((k) => JSON.stringify([k.source, k.plan]))).size === keys.length);
+  const identity = searchIdentity(db, binding);
+  requireProgress(identity.storeId === storeId, "conflict");
+  const installed = cleanupInstalled(db);
+  const captureEnabled = Boolean(db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled);
+  return { ...identity, captureEnabled, data: keys.map((k) => {
+    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row || safe(row.revision, 1), "corrupt");
+    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  }) };
+}
+
 // shared/store.ts
 function canonical(value) {
   if (Array.isArray(value))
@@ -591,7 +1234,7 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 function digest(value) {
-  return createHash2("sha256").update(value).digest("hex");
+  return createHash3("sha256").update(value).digest("hex");
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -651,13 +1294,13 @@ class Store {
         const stat = lstatSync3(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
-        const head = Buffer.alloc(16);
+        const head2 = Buffer.alloc(16);
         try {
-          readSync(fd, head, 0, 16, 0);
+          readSync(fd, head2, 0, 16, 0);
         } finally {
           closeSync3(fd);
         }
-        requireProgress(head.toString("binary") === "SQLite format 3\x00", "corrupt");
+        requireProgress(head2.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync2(file, { readOnly: options.readOnly ?? false });
       if (!existed) {
@@ -693,6 +1336,18 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  documentCaptures(r, cursor) {
+    return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
+  }
+  documentComparison(r, before, after) {
+    return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after));
+  }
+  search(options = {}) {
+    return this.transaction(false, () => searchWindow(this.db, this.readBinding, options));
+  }
+  searchState(storeId, keys) {
+    return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
@@ -840,21 +1495,131 @@ class Store {
       }), nextCursor: rows.length > limit ? String(cursor + limit) : null };
     });
   }
+  changeDigest(request) {
+    const { source, plan, to, after, cleanupRev } = request;
+    requireProgress(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
+    return this.transaction(false, () => {
+      const storeId = String(this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id);
+      requireProgress(storeId === request.storeId, "conflict");
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      requireProgress(live, "not-found");
+      requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
+      requireProgress(cleanup2.revision === cleanupRev, "conflict");
+      requireProgress(to <= Number(live.revision));
+      const result = {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        storeId,
+        sourceBinding: { ...this.readBinding },
+        source,
+        plan,
+        cleanup: cleanup2,
+        interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
+        availability: "target-unavailable",
+        complete: false,
+        reasons: [],
+        validTarget: false,
+        counts: { before: null, after: null, scope: null },
+        summary: { unit: "transitions", events: emptyEvents() },
+        tasks: [],
+        details: { omittedTasks: false, omittedTaskCount: 0, truncated: false },
+        work: { intervalSnapshots: 0, baselineLookups: 0, inputBytes: 0 }
+      };
+      const reason = (r) => {
+        if (!result.reasons.includes(r))
+          result.reasons.push(r);
+      };
+      const load = (revision, baseline2 = false) => {
+        if (baseline2)
+          result.work.baselineLookups++;
+        else
+          result.work.intervalSnapshots++;
+        const remaining = DIGEST_LIMITS.bytes - result.work.inputBytes;
+        const row = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        if (!row) {
+          reason("missing-snapshot");
+          return null;
+        }
+        if (Number(row.bytes) > remaining) {
+          reason("byte-bound");
+          return null;
+        }
+        result.work.inputBytes += Number(row.bytes);
+        let p = null;
+        try {
+          p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision);
+        } catch {}
+        if (!p)
+          reason("invalid-snapshot");
+        return p;
+      };
+      const target = load(to);
+      if (!target)
+        return result;
+      result.validTarget = true;
+      result.interval.targetLifecycle = target.lifecycle;
+      result.interval.targetReportedAt = target.reportedAt;
+      result.interval.coverageStart = result.interval.coverageEnd = to;
+      result.interval.coverageStartReportedAt = result.interval.coverageEndReportedAt = target.reportedAt;
+      result.counts.after = countItems(target.items);
+      if (after === undefined) {
+        result.availability = "initial";
+        result.complete = true;
+        return result;
+      }
+      const baseline = after === to ? target : load(after, true);
+      result.availability = baseline ? "comparison" : "baseline-unavailable";
+      if (baseline)
+        result.counts = endpointCounts(baseline, target);
+      let newer = target;
+      while (newer.revision > after) {
+        if (result.work.intervalSnapshots >= DIGEST_LIMITS.snapshots) {
+          reason("revision-bound");
+          break;
+        }
+        const expected = newer.revision - 1;
+        let older;
+        if (expected === after) {
+          result.work.intervalSnapshots++;
+          older = baseline;
+        } else
+          older = load(expected);
+        if (!older) {
+          if (expected !== after)
+            reason("gap");
+          break;
+        }
+        if (older.reportedAt > newer.reportedAt || older.structuralRevision > newer.structuralRevision || newer.structuralRevision - older.structuralRevision > 1) {
+          reason("invalid-snapshot");
+          break;
+        }
+        aggregatePair(result, older, newer, target);
+        newer = older;
+        result.interval.coverageStart = older.revision;
+        result.interval.coverageStartReportedAt = older.reportedAt;
+      }
+      result.complete = !!baseline && newer.revision === after;
+      return capDigest(result);
+    });
+  }
   apply(value, actor, capture, child) {
     const r = parseRequest(value);
     requireProgress(r.op !== "read");
-    const hash = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
-      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(cleanup?.state !== "deleted", "not-found");
-      requireProgress(cleanup?.state !== "archived", "closed");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
       const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash, "operation-reused");
+        requireProgress(replay.payload_hash === hash2, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -994,7 +1759,7 @@ class Store {
         return receipt;
       }
       function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash, JSON.stringify(receipt));
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash2, JSON.stringify(receipt));
       }
     });
   }
@@ -1102,7 +1867,7 @@ function need(v, code) {
   if (!v)
     throw new SetupError(code);
 }
-function safe(p, allowMissing = false) {
+function safe2(p, allowMissing = false) {
   if (windows) {
     try {
       windowsPath(p, allowMissing);
@@ -1197,7 +1962,7 @@ function updatePreview(o, payload) {
 }
 function verifyFiles(root, expected, extras = []) {
   if (!windows)
-    safe(root);
+    safe2(root);
   need(lstatSync5(root).isDirectory(), "collision");
   need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
   const files = Object.keys(expected).map((name) => path5.join(root, name));
@@ -1205,13 +1970,13 @@ function verifyFiles(root, expected, extras = []) {
     const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash] of Object.entries(expected)) {
+  for (const [name, hash2] of Object.entries(expected)) {
     const file = path5.join(root, name);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
-      safe(file);
+      safe2(file);
     const st = lstatSync5(file);
-    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash, "modified-owned-files");
+    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash2, "modified-owned-files");
   }
 }
 function inspect(targets) {
@@ -1219,22 +1984,22 @@ function inspect(targets) {
 }
 function inspectInner(targets) {
   targets = normalizeTargets(targets);
-  safe(targets.configRoot);
-  safe(targets.dataRoot);
-  safe(targets.storeRoot, true);
+  safe2(targets.configRoot);
+  safe2(targets.dataRoot);
+  safe2(targets.storeRoot, true);
   for (const root of [targets.configRoot, targets.dataRoot])
     need(lstatSync5(root).isDirectory() && isOwned(root), "path-unverified");
   const packageRoot = path5.join(targets.configRoot, "plugins", "agent-progress");
-  safe(packageRoot, true);
+  safe2(packageRoot, true);
   if (existsSync4(targets.storeRoot))
     need(lstatSync5(targets.storeRoot).isDirectory() && (windows ? privatePaths([targets.storeRoot]) : (lstatSync5(targets.storeRoot).mode & 511) === 448), "store-permissions");
   const payloadRoot = path5.join(targets.storeRoot, "payloads");
-  safe(payloadRoot, true);
+  safe2(payloadRoot, true);
   if (windows && existsSync4(payloadRoot))
     need(privatePaths([payloadRoot]), "store-permissions");
   if (windows) {
     const historyFile = path5.join(targets.storeRoot, "installation-history.jsonl");
-    safe(historyFile, true);
+    safe2(historyFile, true);
     if (existsSync4(historyFile))
       need(lstatSync5(historyFile).isFile() && privatePaths([historyFile]), "store-permissions");
   }
@@ -1257,7 +2022,7 @@ function owned(targets) {
   need(info.installed, "not-installed");
   const manifestFile = path5.join(info.packageRoot, ".ownership.json");
   need(existsSync4(manifestFile), "collision");
-  safe(manifestFile);
+  safe2(manifestFile);
   if (windows)
     need(privatePaths([info.packageRoot, manifestFile]), "ownership-invalid");
   let m;
@@ -1293,7 +2058,7 @@ function removableSelectors(o) {
 }
 function history(targets, event) {
   const file = path5.join(targets.storeRoot, "installation-history.jsonl");
-  safe(file, true);
+  safe2(file, true);
   if (windows && existsSync4(file))
     need(privatePaths([file]), "store-permissions");
   appendFileSync(file, JSON.stringify(event) + `
@@ -1333,7 +2098,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
       if (!/^[a-f0-9]{64}$/.test(id) || o?.manifest.releases[id])
         return false;
       try {
-        safe(path5.join(payloadRoot2, id));
+        safe2(path5.join(payloadRoot2, id));
         const b = readBinding(path5.join(payloadRoot2, id, "progress-binding.json"));
         return b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot;
       } catch {
@@ -1399,7 +2164,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   }
   const { files, releaseHash, release } = releasePayload(binding, payload);
   const payloadRoot = path5.join(targets.storeRoot, "payloads");
-  safe(payloadRoot, true);
+  safe2(payloadRoot, true);
   privateDirectory(payloadRoot, true);
   const releaseRoot = path5.join(payloadRoot, release);
   if (existsSync4(releaseRoot))
@@ -1419,7 +2184,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);
-    safe(plugins, true);
+    safe2(plugins, true);
     if (windows && !existsSync4(plugins))
       privateDirectory(plugins, true);
     const stage = path5.join(windows ? plugins : targets.configRoot, `.agent-progress-stage-${randomUUID3()}`);
@@ -1633,7 +2398,7 @@ __export(exports_external, {
   httpUrl: () => httpUrl,
   hostname: () => hostname2,
   hex: () => hex2,
-  hash: () => hash,
+  hash: () => hash2,
   guid: () => guid2,
   gte: () => _gte,
   gt: () => _gt,
@@ -3455,7 +4220,7 @@ __export(exports_regexes, {
   ksuid: () => ksuid,
   ipv6: () => ipv6,
   ipv4: () => ipv4,
-  integer: () => integer,
+  integer: () => integer2,
   idnEmail: () => idnEmail,
   iban: () => iban,
   httpProtocol: () => httpProtocol,
@@ -3558,7 +4323,7 @@ var string = (params) => {
   return new RegExp(`^${regex}$`);
 };
 var bigint = /^-?\d+n?$/;
-var integer = /^-?\d+$/;
+var integer2 = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
 var boolean = /^(?:true|false)$/i;
 var _null = /^null$/i;
@@ -6348,7 +7113,7 @@ function leafPattern(schema) {
   if (minimum !== undefined || maximum !== undefined)
     return string({ minimum, maximum }).source;
   const own2 = schema._zod.pattern;
-  return (isInt && own2 === number ? integer : own2)?.source;
+  return (isInt && own2 === number ? integer2 : own2)?.source;
 }
 function partPattern(schema) {
   const def = schema._zod.def;
@@ -6711,9 +7476,9 @@ var memo = {
     if (!bucket)
       return empty;
     handoff = undefined;
-    const entry = { value: empty, issues: null };
-    bucket.set(payload.value, entry);
-    open.push(entry);
+    const entry2 = { value: empty, issues: null };
+    bucket.set(payload.value, entry2);
+    open.push(entry2);
     return empty;
   },
   guard(inst) {
@@ -6787,16 +7552,16 @@ var memo = {
         const depth = open.length;
         const result = base(payload, ctx);
         handoff = undefined;
-        const entry = open.length > depth ? open.pop() : undefined;
+        const entry2 = open.length > depth ? open.pop() : undefined;
         if (result instanceof Promise) {
           return result.then((r) => {
-            if (entry)
-              entry.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
+            if (entry2)
+              entry2.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
             return r;
           });
         }
-        if (entry)
-          entry.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
+        if (entry2)
+          entry2.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
         return result;
       };
       inst._zod.parse = wrapped;
@@ -17013,42 +17778,42 @@ function extractDefs(ctx, schema) {
   if (ctx.external && ctx.sharedDefsExtractedFor === ctx.external)
     return;
   const idToSchema = new Map;
-  for (const entry of ctx.seen.entries()) {
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+  for (const entry2 of ctx.seen.entries()) {
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
       const existing = idToSchema.get(id);
-      if (existing && existing !== entry[0]) {
+      if (existing && existing !== entry2[0]) {
         throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
       }
-      idToSchema.set(id, entry[0]);
+      idToSchema.set(id, entry2[0]);
     }
   }
-  const makeURI = (entry) => {
+  const makeURI = (entry2) => {
     const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
     if (ctx.external) {
-      const externalId = ctx.external.registry.get(entry[0])?.id;
+      const externalId = ctx.external.registry.get(entry2[0])?.id;
       const uriGenerator = ctx.external.uri ?? ((id2) => id2);
       if (externalId) {
         return { ref: uriGenerator(externalId) };
       }
-      const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
-      entry[1].defId = id;
+      const id = entry2[1].defId ?? entry2[1].schema.id ?? `schema${ctx.counter++}`;
+      entry2[1].defId = id;
       return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id)}` };
     }
     const uriPrefix = `#`;
     const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
-    if (entry[1] === root && !entry[1].schema.id) {
+    if (entry2[1] === root && !entry2[1].schema.id) {
       return { ref: uriPrefix };
     }
-    const defId = entry[1].schema.id ?? `__schema${ctx.counter++}`;
+    const defId = entry2[1].schema.id ?? `__schema${ctx.counter++}`;
     return { defId, ref: defUriPrefix + encodeJSONPointerSegment(defId) };
   };
-  const extractToDef = (entry) => {
-    if (entry[1].schema.$ref) {
+  const extractToDef = (entry2) => {
+    if (entry2[1].schema.$ref) {
       return;
     }
-    const seen = entry[1];
-    const { ref, defId } = makeURI(entry);
+    const seen = entry2[1];
+    const { ref, defId } = makeURI(entry2);
     seen.def = { ...seen.schema };
     if (defId)
       seen.defId = defId;
@@ -17059,38 +17824,38 @@ function extractDefs(ctx, schema) {
     schema2.$ref = ref;
   };
   if (ctx.cycles === "throw") {
-    for (const entry of ctx.seen.entries()) {
-      const seen = entry[1];
+    for (const entry2 of ctx.seen.entries()) {
+      const seen = entry2[1];
       if (seen.cycle) {
         throw new Error("Cycle detected: " + `#/${seen.cycle?.join("/")}/<root>` + '\n\nSet the `cycles` parameter to `"ref"` to resolve cyclical schemas with defs.');
       }
     }
   }
-  for (const entry of ctx.seen.entries()) {
-    const seen = entry[1];
-    if (schema === entry[0]) {
-      extractToDef(entry);
+  for (const entry2 of ctx.seen.entries()) {
+    const seen = entry2[1];
+    if (schema === entry2[0]) {
+      extractToDef(entry2);
       continue;
     }
     if (ctx.external) {
-      const ext = ctx.external.registry.get(entry[0])?.id;
-      if (schema !== entry[0] && ext) {
-        extractToDef(entry);
+      const ext = ctx.external.registry.get(entry2[0])?.id;
+      if (schema !== entry2[0] && ext) {
+        extractToDef(entry2);
         continue;
       }
     }
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.cycle) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.count > 1) {
       if (ctx.reused === "ref") {
-        extractToDef(entry);
+        extractToDef(entry2);
       }
     }
   }
@@ -17272,12 +18037,12 @@ function finalize(ctx, schema) {
     });
   };
   if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
-    for (const entry of [...ctx.seen.entries()].reverse()) {
-      flattenRef(entry[0]);
+    for (const entry2 of [...ctx.seen.entries()].reverse()) {
+      flattenRef(entry2[0]);
     }
     if (ctx.target !== "openapi-3.0") {
-      for (const entry of ctx.seen.entries()) {
-        compactTypeUnion(entry[1].def ?? entry[1].schema);
+      for (const entry2 of ctx.seen.entries()) {
+        compactTypeUnion(entry2[1].def ?? entry2[1].schema);
       }
     }
     for (const rewrite of ctx.deferred)
@@ -17322,8 +18087,8 @@ function finalize(ctx, schema) {
     delete result.id;
   const defs = ctx.external?.defs ?? {};
   if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
-    for (const entry of ctx.seen.entries()) {
-      const seen = entry[1];
+    for (const entry2 of ctx.seen.entries()) {
+      const seen = entry2[1];
       if (seen.def && seen.defId) {
         if (seen.def.id === seen.defId)
           delete seen.def.id;
@@ -17923,15 +18688,15 @@ function stringifyKeyNames(bySchema, json, visited) {
     return rest;
   rest.type = "string";
   if (!values)
-    rest.pattern = (types.includes("number") ? number : integer).source;
+    rest.pattern = (types.includes("number") ? number : integer2).source;
   return rest;
 }
 var pendingRecords = new WeakMap;
 function rewriteKeyNames(ctx) {
   const bySchema = new Map;
-  for (const entry of ctx.seen.values()) {
-    if (entry.def && !bySchema.has(entry.schema))
-      bySchema.set(entry.schema, entry);
+  for (const entry2 of ctx.seen.values()) {
+    if (entry2.def && !bySchema.has(entry2.schema))
+      bySchema.set(entry2.schema, entry2);
   }
   const rewrites = new Map;
   for (const record of pendingRecords.get(ctx) ?? []) {
@@ -17945,8 +18710,8 @@ function rewriteKeyNames(ctx) {
   }
   if (!rewrites.size)
     return;
-  for (const entry of ctx.seen.values()) {
-    for (const carrier of [entry.schema, entry.def]) {
+  for (const entry2 of ctx.seen.values()) {
+    for (const carrier of [entry2.schema, entry2.def]) {
       const rewritten = carrier && rewrites.get(carrier.propertyNames);
       if (rewritten)
         carrier.propertyNames = rewritten;
@@ -18140,8 +18905,8 @@ function toJSONSchema(input, params) {
     const registry2 = input;
     const ctx2 = initializeContext({ ...params, processors: allProcessors });
     const defs = {};
-    for (const entry of registry2._idmap.entries()) {
-      const [_, schema] = entry;
+    for (const entry2 of registry2._idmap.entries()) {
+      const [_, schema] = entry2;
       processSchema(schema, ctx2);
     }
     const schemas = {};
@@ -18151,8 +18916,8 @@ function toJSONSchema(input, params) {
       defs
     };
     ctx2.external = external;
-    for (const entry of registry2._idmap.entries()) {
-      const [key, schema] = entry;
+    for (const entry2 of registry2._idmap.entries()) {
+      const [key, schema] = entry2;
       extractDefs(ctx2, schema);
       assignProp(schemas, key, finalize(ctx2, schema));
     }
@@ -18302,7 +19067,7 @@ __export(exports_schemas2, {
   httpUrl: () => httpUrl,
   hostname: () => hostname2,
   hex: () => hex2,
-  hash: () => hash,
+  hash: () => hash2,
   guid: () => guid2,
   function: () => _function,
   float64: () => float64,
@@ -19035,7 +19800,7 @@ function hex2(_params) {
 function currencyCode2(_params) {
   return _stringFormat(ZodCustomStringFormat, "currency_code", currencyCode, _params);
 }
-function hash(alg, params) {
+function hash2(alg, params) {
   const enc = params?.enc ?? "hex";
   const format = `${alg}_${enc}`;
   const regex = exports_regexes[format];
@@ -21108,21 +21873,21 @@ var socketBindingObjectSchema = exports_external.object({
   path: socketPathSchema.optional(),
   candidates: socketCandidatesSchema.optional()
 }).strict().refine((value) => Boolean(value.path) || Boolean(value.candidates), { message: "socket binding needs path or candidates" });
-var normalizeSocketObject = (entry) => {
+var normalizeSocketObject = (entry2) => {
   const candidatesByPlatform = {};
-  if (entry.candidates) {
+  if (entry2.candidates) {
     for (const platform of SOCKET_PLATFORMS) {
-      const list = entry.candidates[platform];
+      const list = entry2.candidates[platform];
       if (list && list.length > 0) {
         candidatesByPlatform[platform] = [...list];
       }
     }
-  } else if (entry.path) {
+  } else if (entry2.path) {
     for (const platform of SOCKET_PLATFORMS) {
-      candidatesByPlatform[platform] = [entry.path];
+      candidatesByPlatform[platform] = [entry2.path];
     }
   }
-  return { id: entry.id, candidatesByPlatform };
+  return { id: entry2.id, candidatesByPlatform };
 };
 var socketEntrySchema = exports_external.union([
   socketPathSchema.transform((path6) => ({
@@ -22731,7 +23496,7 @@ var surfaceHostMessageSchema = exports_external.discriminatedUnion("type", [
 var surfaceResizeAnswerSchema = exports_external.object({ width: dimension, height: dimension });
 var surfaceClipboardAnswerSchema = exports_external.object({ text: exports_external.string().max(SURFACE_TEXT_MAX) });
 // shared/release.ts
-var RELEASE = "0.3.0";
+var RELEASE = "0.4.0";
 
 // service/extension-updates.ts
 var OFFICIAL_MANIFEST = "https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main";
@@ -22930,7 +23695,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
   if (!token)
     throw new ProgressError("binding");
   const expected = Buffer.from(`Bearer ${token}`);
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer({ maxHeaderSize: 32 * 1024 }, async (req, res) => {
     function answer(status, body) {
       let text2 = JSON.stringify(body);
       if (Buffer.byteLength(text2) > LIMITS.responseBytes) {
@@ -22943,11 +23708,18 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false;
     try {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
+      comparisonRoute = ["/v1/document-captures", "/v1/document-comparison"].includes(url2.pathname);
+      if (comparisonRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
+      digestRoute = url2.pathname === "/v1/change-digest";
+      searchRoute = url2.pathname === "/v1/search" || url2.pathname === "/v1/search-state";
       if (url2.origin !== "http://127.0.0.1")
         return answer(404, { error: "not-found" });
+      if (searchRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
       cleanupRoute = ["/v1/plan/archive", "/v1/plan/restore", "/v1/plan/delete"].includes(url2.pathname);
       if (cleanupRoute) {
         if (req.method !== "POST")
@@ -23044,10 +23816,16 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       if (req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
-      const routes = { "/health": [], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
+      routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url2.pathname];
       if (!allowed || [...url2.searchParams.keys()].some((k) => !allowed.includes(k) || url2.searchParams.getAll(k).length !== 1))
         return answer(404, { error: "not-found" });
+      if (searchRoute && Buffer.byteLength(url2.search) > SEARCH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (comparisonRoute && Buffer.byteLength(url2.search) > CAPTURE_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
       const number4 = (key, fallback) => {
         const v = url2.searchParams.get(key);
         if (v === null)
@@ -23067,7 +23845,22 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
       if (url2.pathname === "/health")
-        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+      if (url2.pathname === "/v1/search") {
+        const options = Object.fromEntries(url2.searchParams);
+        if (url2.searchParams.has("limit"))
+          options.limit = number4("limit", 20);
+        return answer(200, currentStore.search(options));
+      }
+      if (url2.pathname === "/v1/search-state") {
+        let keys;
+        try {
+          keys = JSON.parse(url2.searchParams.get("keys") ?? "null");
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        return answer(200, currentStore.searchState(text2("storeId", true), keys));
+      }
       if (url2.pathname === "/v1/plans") {
         const archived = url2.searchParams.get("archived") ?? "exclude";
         if (archived !== "exclude" && archived !== "only")
@@ -23076,6 +23869,25 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       const source = text2("source", true);
       const plan = text2("plan", true);
+      if (comparisonRoute) {
+        const integer3 = (key, min) => {
+          const value = url2.searchParams.get(key);
+          if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
+            throw new ProgressError("invalid");
+          return Number(value);
+        };
+        const r = { storeId: text2("storeId", true), binding: parseCaptureBinding(url2.searchParams.get("binding")), source, plan, cleanupRev: integer3("cleanupRev", 0) };
+        return answer(200, url2.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url2.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer3("before", 1), integer3("after", 1)));
+      }
+      if (digestRoute) {
+        const revision = (key, minimum) => {
+          const v = url2.searchParams.get(key);
+          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < minimum)
+            throw new ProgressError("invalid");
+          return Number(v);
+        };
+        return answer(200, currentStore.changeDigest({ storeId: text2("storeId", true), source, plan, to: revision("to", 1), cleanupRev: revision("cleanupRev", 0), ...url2.searchParams.has("after") ? { after: revision("after", 1) } : {} }));
+      }
       if (url2.pathname === "/v1/plan") {
         const detail = currentStore.detail(source, plan, number4("cursor", 0));
         return answer(200, { ...detail, timing: taskTiming(currentStore, detail) });
@@ -23087,7 +23899,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
-      if (cleanupRoute && ["conflict", "operation-reused", "closed"].includes(error62.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
         return answer(409, { error: error62.code });
       return answer(error62.code === "invalid" ? 400 : error62.code === "not-found" ? 404 : 503, { error: error62.code });
     }
@@ -23112,11 +23924,11 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { lstatSync as lstatSync6, realpathSync as realpathSync6 } from "node:fs";
 import path6 from "node:path";
 import { homedir } from "node:os";
-function setupSuggestions(context) {
-  return platformSecurityScope(() => suggestions(context));
+function setupSuggestions(context2) {
+  return platformSecurityScope(() => suggestions(context2));
 }
-function suggestions(context) {
-  const host = context ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
+function suggestions(context2) {
+  const host = context2 ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
   if (host.platform !== "linux" && host.platform !== "win32")
     return;
   const nativeWindows = host.platform === "win32" && process.platform === "win32";
@@ -23249,6 +24061,8 @@ class SetupController {
       return { configured: false, verified: false, installed: false, captureEnabled: null, targets: null, version: null, activation: "unknown", separateLifecycle: true, historyRetained: true, diagnostics: [...!this.canPersist ? ["service-binding-collision"] : [], ...this.securityUnavailable ? ["windows-security-unavailable"] : [], this.error === "binding" ? "targets-unverified" : this.error], ...suggestions2 ? { suggestions: suggestions2 } : {} };
     }
     const base = { configured: true, verified: this.binding.source.verified, installed: false, captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : null, targets: { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot }, version: null, activation: this.activation, separateLifecycle: true, historyRetained: true, diagnostics: this.store ? [] : [...this.securityUnavailable ? ["windows-security-unavailable"] : [], this.error] };
+    if (this.store)
+      base.reportingIdentity = { storeId: this.binding.storeId, sourceId: this.binding.source.id, verified: this.binding.source.verified };
     let payload;
     if (this.store && base.verified)
       try {

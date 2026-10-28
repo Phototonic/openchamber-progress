@@ -65,6 +65,13 @@ test('QA2 fixture parent relay C2 never adds work or infers completion from acti
     assert.throws(()=>parseRequest({op:'change',plan:'P1',oid:'idle',rev:3,changes:[{id:'I3',status:'done'}],activity:'idle'}),/invalid/);
   }finally{f.cleanup();}
 });
+for(const key of ['title','parentId'])test(`change items reject unsupported ${key} with invalid`,()=>{
+  assert.throws(()=>parseRequest({op:'change',plan:'P1',oid:'change',rev:1,changes:[{id:'I3',status:'working',[key]:'Changed'}]}),{code:'invalid'});
+});
+test('change accepts a valid changes-only batch',()=>{
+  const request={op:'change',plan:'P1',oid:'change',rev:1,changes:[{id:'I3',status:'working'},{id:'I4',status:'done'}]};
+  assert.deepEqual(parseRequest(request),request);
+});
 test('chunked full structure publishes only after complete atomic commit; pagination and status preservation',()=>{
   const f=productionFixture();try{
     const {store:s,actor:a}=f;

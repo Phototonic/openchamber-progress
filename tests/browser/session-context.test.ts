@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import * as source from '../../ui/shared/source.ts';
+import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
@@ -25,14 +26,14 @@ async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r 
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
-function controller(board = false) {
+function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
-  let expanded = false;
+  let expanded = false, disclosure = false;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
-    querySelector: (s: string) => s === '[aria-expanded="true"]' && expanded ? {} : null,
+    querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
     querySelectorAll: () => [], getAnimations: () => [], setAttribute() {}, append() {},
-    replaceChildren(child: any) { this.firstElementChild = child; expanded = false; },
+    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = false; },
   });
   const mount = node();
   const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
@@ -57,6 +58,8 @@ function controller(board = false) {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './source.ts') return source;
+      // A confirmed delete retires review markers; without the advertised device feature it does nothing.
+      if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
@@ -69,6 +72,7 @@ function controller(board = false) {
   let vc!: ViewContext<Ui>;
   const paints: Array<string | null> = [];
   const spec: ViewSpec<Ui> = {
+    beforeUiChange,
     surface: board ? 'page' : 'panel', maxSessionSubscriptions: 2,
     initialUi: () => ({ sessionFilter: 'all', archived: false, selected: null }),
     scope: ({ session, directory }, ui) => board ? { ...pageListScope({ ...NO_FILTERS, session: ui.sessionFilter }), archived: ui.archived ? 'only' : 'exclude' } : contextListScope(session?.id, directory),
@@ -77,7 +81,7 @@ function controller(board = false) {
     paint: (_root, value) => { vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
   };
   exports.startView(spec);
-  return { requests, paints, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; },
+  return { requests, paints, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
@@ -138,6 +142,28 @@ test('same-session metadata preserves open pickers and manual choice; navigation
     c.ready('B'); await settle(); assert.equal(c.pickerOpen, false);
     c.stop();
   }
+});
+
+test('an expanded disclosure does not indefinitely defer background reports',async()=>{
+  const c=controller(true);try{
+    c.ready('A');await settle();c.openDisclosure();const before=c.paints.length;
+    c.listeners.session({id:'A',title:'Updated while comparison is open'});await settle();
+    assert(c.paints.length>before);assert.equal(c.vc.session?.title,'Updated while comparison is open');
+  }finally{c.stop();}
+});
+
+test('view-owned requests retire on effective UI transitions before a held reply or repaint',async()=>{
+  let retired=false,continued=false;
+  const c=controller(true,(before,next)=>{if(before.selected!==next.selected||before.sessionFilter!==next.sessionFilter)retired=true;});
+  try{
+    c.ready('A');await settle();retired=false;
+    const held=deferred<void>();void held.promise.then(()=>{if(!retired)continued=true;});
+    const painted=c.paints.length;c.vc.setUi({selected:'source/other'});
+    assert.equal(retired,true);assert.equal(c.paints.length,painted);
+    held.resolve();await settle();assert.equal(continued,false);
+    retired=false;c.vc.setUi({});assert.equal(retired,false);
+    c.vc.setUi({sessionFilter:'another-session'});assert.equal(retired,true);
+  }finally{c.stop();}
 });
 
 test('retired health/part replies cannot start continuation requests or stale actions in draft', async () => {

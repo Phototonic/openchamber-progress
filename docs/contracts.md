@@ -1,14 +1,212 @@
 # Production contract v2
 
-Current package version **0.3.0** is independent of protocol/schema **2**. Setup's version
-and the loaded tool's version report package semver; /health protocolVersion and
-schemaVersion remain contract versions, not package-major aliases.
+## Reporting health observations
+
+Setup replies optionally include `reportingIdentity: {storeId, sourceId, verified}` only after the configured store opens and its binding is verified. Unconfigured, unavailable-store and target-inspection replies omit it. This additive metadata does not change protocol/schema versions or grant authority to mutate. Guests must match it to the viewer store and source binding before joining installation/activation observations with a selected report; absent or mismatched identity means the association is unknown.
+
+The board's explicit reporting check performs one setup GET and at most one first-page selected-plan GET, without following cursors. A stored revision is evidence of recorded progress, not independent receipt verification, recent agent activity, tool availability or completion. No selection means no selected report checked; filtered or incomplete history never proves no reports exist. No new polling, endpoint, report write or model call is involved.
+
+Support text reconstructs fixed status fields and a bounded numeric version only. Paths, source/store/plan/session identifiers, timestamps, fingerprints, user text, arbitrary diagnostics and raw errors are excluded. Platform and per-session tool availability remain unknown. Preview and explicit copy are local; clipboard failure offers manual selection. Context changes, close, hide and disposal retire pending observations and copy feedback.
+
+## Recorded document comparison (additive revision 1)
+
+`health.documentCaptureComparison:1` advertises the read-only DTOs in
+`shared/document-comparison.ts`. Protocol/schema remain 2. These authenticated
+GET routes reject bodies, duplicate/unknown fields and malformed identities;
+responses use `Cache-Control: no-store`. No source-file access, report write,
+schema migration, persistent cache or approval/completion action occurs.
+
+Both requests require `storeId`, `source`, `plan`, `cleanupRev` and `binding`
+(JSON `{sourceId:string|null,verified:boolean}` of the expected service binding).
+Replies echo these identities plus `sourceBinding`, protocol/schema and
+`documentCaptureComparison:1`. Same-store rebinding and cleanup changes conflict
+(409); missing plan/capture is 404. Archived plans remain readable. Capture off
+does not erase history. A filtered list absence is not proof of deletion.
+
+- **`/v1/document-captures`**, optional opaque `cursor`: descending immutable
+  capture metadata (`id`, creation `revision`, `hash`, `capturedAt`, recorded
+  `path`), at most 50 entries from 128 primary-key candidates per window. It
+  returns `scanned`, `revision` (the pinned plan-revision ceiling), `exhausted`,
+  `nextCursor` and `limit` (`rows`, `entries`, `bytes` or null). A cursor pins the
+  store/binding/source/plan/cleanup, maximum ID and plan revision, so capture-ID
+  reuse after unrelated deletion cannot introduce a newer capture. An empty
+  window with a cursor does not mean no history. Metadata corruption fails the
+  whole window; there is no silent skip or partial successful page.
+- **`/v1/document-comparison`**, required positive safe-integer `before` and
+  `after` IDs (`before <= after`): validates both same-plan captures and reads
+  their bytes in one transaction. Returns both metadata records, `current`
+  document/checklist state as observed at that read, and `result` with state
+  `equal`, `diff` or `limited`. Equal text may have different capture IDs/paths.
+  `limited.reason` is `bytes`, `lines`, `work` or `output`; no partial diff is
+  presented as complete. A diff contains unified hunks, old/new line numbers,
+  added/removed/context rows, explicit LF/CRLF/no-ending values, three context
+  lines and omitted-context counts. Content remains literal text.
+
+Discovery selects no document bodies or source-root envelope. Stored metadata
+is bounded in SQL before materialization; current-plan JSON is admitted at
+1 MiB, the document projection at 32 KiB and paths at 4096 characters. Cursors
+are at most 4096 bytes, queries 16 KiB and replies 256 KiB. Comparison admits at
+most two 262144-byte documents, 20000 lines each, one million diff steps and
+one million retained integer trace cells. Output is at most 2000 lines and
+128 KiB of line text within the reply limit. Newline-preserving lines are
+interned before the numeric diff; no unbounded quadratic matrix is allocated.
+
+Current checklist synchronization describes only `current.captureId` at the
+observed revision. Historical synchronization is unknown. A later failed file
+check can retain an older capture; capture time and last-check time are
+different facts. `currentFile: not-rechecked` is always explicit. Neither an
+equal diff nor a displayed capture proves that the live file is unchanged,
+reviewed, approved, completed or synchronized with a checklist.
+
+Package semver comes from the selected checkout or distribution’s
+[package.json](../package.json) and is independent of protocol/schema **2**.
+Setup and the loaded tool report their respective package versions; `/health`
+`protocolVersion` and `schemaVersion` remain contract versions.
 
 Canonical DTO: `shared/progress.ts` (protocolVersion=2, schemaVersion=2).
 Changes to shared contract files (`shared/progress.ts`, `docs/contracts.md`) require
 an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
+
+## Plan/task search revision 1 (frozen additive v2 read contract)
+
+Ready `/health` adds **`planTaskSearch:1`**. Absence means unavailable, never
+zero matches. Protocol/schema stay **2**; no migration, stored index, report-tool
+change or new permission is involved. Canonical DTOs and ceilings are
+`SearchOptions`, `SearchWindow`, `SearchHit`, `SearchState` and `SEARCH_LIMITS`
+in `shared/progress.ts`. The real SQLite/HTTP fixture is
+`tests/fixtures/plan-task-search.ts`; route proof is
+`tests/backend/plan-task-search-service.test.ts`.
+
+### Requests and identity
+
+Authenticated body-free **GET `/v1/search`** accepts only:
+
+| Query | Meaning / bound |
+| --- | --- |
+| `q` | Optional text, default empty; at most 256 Unicode code points, 16 nonempty whitespace-separated tokens; NUL refused |
+| `source`, `session` | Optional existing-format ASCII identifiers (1–80 characters); omitted source means all recorded sources |
+| `lifecycle` | Optional `active\|finished\|cancelled\|failed` |
+| `status` | Optional task status `pending\|working\|blocked\|done\|skipped` |
+| `archived` | `exclude` (default) or `only`; never implicitly includes both |
+| `limit` | Integer 1–50, default 20; bounds emitted hits, not scanned plans |
+| `cursor` | Optional opaque continuation, at most 4 KiB; return verbatim with identical other criteria |
+
+The encoded query including `?` is at most 16 KiB. Reject rather than truncate.
+Unknown or duplicate query fields return404; malformed values400; auth401;
+method405; request bodies400; cursor/store/binding conflict409; unavailable,
+corrupt, busy or unknown-schema stores503. Errors contain only fixed codes,
+never query text, rejected keys, paths or exceptions. The HTTP parser separately
+bounds total request headers at32 KiB; requests exceeding that transport limit
+can be refused by Node before application routing.
+
+First read returns actual `storeId` and `sourceBinding:{sourceId,verified}`.
+Each response includes `protocolVersion:2`, `schemaVersion:2`,
+`planTaskSearch:1` and a SHA-256 `fingerprint` of the complete backend criteria
+(including raw query and output limit). Continuations bind that identity and
+fingerprint. They contain only version, identity/fingerprint hashes, keyset
+position, optional pinned plan revision/cleanup generation, membership revision,
+task offset and classification/gap flags: no titles, bodies or credentials.
+They are not durable jobs, signed authorization grants, a frozen library snapshot
+or instructions to retain a server connection. Scope/account/host/live-membership
+generation remains a separate consumer identity boundary.
+
+Example: `/v1/search?q=export+csv&status=blocked&archived=exclude&limit=20`.
+Every token must occur in the **same entity's own title or ID**; tokens cannot be
+pooled across tasks or borrowed from the containing plan. Normalization is
+`NFC → JavaScript toLowerCase() → NFC`, with Unicode whitespace splitting.
+Case-insensitive ID punctuation remains literal; `%` and `*` are not operators.
+Canonical accented spellings match; accents are not removed. This is simple
+lowercase, not linguistic/full case folding (`Straße` does not match `STRASSE`).
+
+### Search windows, grouping and counts
+
+`SearchWindow` is **not** `Page<PlanSummary>`, a complete plan detail, a facet
+census or an ordinary list prefix. It has:
+
+- `hits`: zero to `limit` rows in binary `(source,id)` plan order, then stored
+  task order. A row contains `plan`, `planMatched`, `task` (or null), `ancestors`,
+  `omittedAncestors`, `continued`, and `classified`.
+- `plan`: current full-plan summary identity/title/location/session, revision,
+  structuralRevision, lifecycle, reportedAt, authoritative `counts`, explicit
+  `cleanup:{state,revision}` (legacy visible generation0) and `sourceVerified`.
+  No working-ID array, documents, source config/data roots or complete items.
+- `task`: only `{id,title,status}`. Groups never match/count as tasks. Breadcrumbs
+  contain `{id,title}` only; at most8, retaining root and nearest7 when deep,
+  with the number of omitted intermediate ancestors. They are context, not hits.
+- `planMatched`: whether the plan's own title/ID satisfies text. With no status,
+  a plan qualifies for its own match or matching tasks. Matching tasks appear as
+  rows; a plan-only hit appears only when there are no task hits. With status,
+  only tasks satisfying text **and** status qualify; plan text cannot bypass it.
+  Empty text plus status selects all tasks of that status. Lifecycle intersects
+  at plan level; source/archive/session filters also precede emission.
+- `classified:{matchedPlans:1,matchingTasks:N}` on the first emitted hit of a
+  fully classified plan, null thereafter. `N` includes matches awaiting task
+  continuation. `continued` is false on that first hit, true on subsequent hits
+  of the same plan (including within the same window). This per-plan delta lets
+  the board apply its frozen project/worktree predicate **before** counting.
+- `counts:{matchedPlans,matchingTasks}`: sum of this window's non-null
+  `classified` deltas, **not cumulative totals**. Accumulate once per traversal;
+  task-continuation windows do not recount the plan. Full-plan done/total/
+  remaining/skipped remain authoritative and never become filtered totals.
+- `nextCursor`, `exhausted`: only `exhausted:true` with null cursor ends traversal.
+  A full result page, empty window or work pause is not completion. Continuing
+  after an output-byte boundary resumes the first un-emitted hit.
+- `coverage:{kind:'recorded-current',asSearched:true,gapped,skippedRecords,reasons}`:
+  gap flag is cumulative through continuation; skipped count/reasons describe
+  this window. Fixed reasons are `invalid-snapshot`, `oversized-snapshot`,
+  `invalid-membership`, `oversized-membership`. A skipped record advances once;
+  unreadable/corrupt address keys or unknown cleanup formats instead fail closed.
+- `work:{planSlots,inspectedItems,membershipRows,inputBytes,outputHits,outputBytes}`:
+  measured plan-slot attempts (including an exhaustion lookup), items in accepted
+  validated snapshots, returned membership rows inspected, accepted pre-parse
+  UTF-8 input bytes, emitted hits and complete encoded response bytes. These are
+  per request; resumed plans are inspected again, not served from a hidden cache.
+
+Per transaction: at most64 raw plan-slot attempts,128 contribution rows,8 MiB
+accepted snapshot/contribution input,1,000 items per plan,50 hits,8 ancestors per
+task,256 KiB UTF-8 response. Raw keyset candidate work is limited **before**
+archive/session/lifecycle/status/text predicates; an excluded prefix cannot cause
+an unbounded scan to fill a page. An indexed source restriction is allowed.
+Owner/current links resolve session membership first; otherwise revision-keyed
+contribution windows resume membership instead of declaring a premature nonmatch.
+A record too large to parse in one read (or a contribution that cannot coexist
+with its snapshot in the input budget) is explicitly gapped, not looped forever.
+
+In-plan task/membership continuation pins progress revision and cleanup generation;
+change/disappearance requires refresh409. Completed earlier plans are not pinned
+forever. Concurrent changes/insertions behind the cursor can change the observed
+library. Accumulated counts mean **found so far**, or **as searched; reports may
+change** after clean exhaustion, never a live/transactionally frozen census.
+Gapped exhaustion cannot support an exact full-coverage claim. There is no
+full-table count, history/body search, broad source enumeration, durable index,
+persistent server cursor/job, server-wide cache or automatic continuation.
+
+### Narrow freshness read
+
+Authenticated body-free **GET `/v1/search-state?storeId=ID&keys=JSON`** accepts only
+those two fields. `keys` is a JSON array of1–50 distinct `{source,plan}` identifier
+pairs (object field order does not affect distinctness). The same16 KiB encoded
+query and fixed error discipline applies. Wrong store returns409; empty, duplicate,
+extra-field or oversized key lists return400. It returns `SearchState`: the same
+minimal identity, a required boolean `captureEnabled` from store metadata, and
+`data` in requested order, each row containing exactly the requested `source`, `plan`, `exists`, `revision` (null when missing), and
+`cleanup:{state:'visible'|'archived'|'deleted',revision}`. An unknown key has
+`exists:false`, null revision and visible generation0; a deleted key retains its
+deleted cleanup generation. Capture state and plan rows share one read transaction.
+No unsent keys, items, timing or history are read.
+
+Freshness is authoritative metadata point-lookup evidence, not list-filter absence.
+Archive/restore generation changes invalidate results even with unchanged progress
+revision. Consumers revalidate displayed keys before reuse, retire continuation and
+count authority on changed/missing identity, and offer Refresh search. Failure is
+stale/unavailable, never an empty successful read. A missing/non-boolean capture
+flag is invalid. Consumers combining freshness batches accept rows and capture
+metadata only when all batches agree on capture state; a disagreement is stale
+and retried on the normal cadence. Capture changes need not advance plan revisions.
+Legacy schema2 and read-only stores work without creating cleanup tables or metadata. Search never mutates
+reports, starts/assigns/completes tasks, opens sessions or accesses captured bodies.
 
 ## System boundaries
 
@@ -36,7 +234,8 @@ The flat tool input schema remains provider-compatible; operation-specific
 requirements are enforced by `parseRequest` and described directly in the tool.
 Every mutation requires `oid` and expected `rev`. New `start` also requires title
 and complete items, using `rev:0`; read accepts only op, one concrete plan ID and
-optional page, never a wildcard or mutation fields. No defaults are inferred.
+optional 0-based page, never a wildcard or mutation fields. Omit page for a compact
+summary without items; explicit page returns paged detail. No defaults are inferred.
 
 Tool replies retain `error` and optional conflict `rev`. Only `error: "invalid"`
 may additionally carry optional `hint`, bounded constant recovery text (at most
@@ -91,10 +290,149 @@ The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
 
+## Plan change digests (frozen additive read contract)
+
+See also the independent **Plan/task search revision 1** contract above. Search
+does not change list/detail/document/history, reporting, or change-digest semantics.
+
+A ready service advertises `planChangeDigests:1` on `/health`; absence means
+unavailable, not an empty comparison. Protocol/schema remain 2. Authenticated,
+body-free **GET** `/v1/change-digest` accepts only `storeId`, `source`, `plan`,
+`to`, `cleanupRev` and optional `after`. Identity strings use the existing
+identifier rule. `to` and `after` are positive safe integers (including values
+above nine digits); `cleanupRev` is a nonnegative safe integer. `after > to` or
+a target beyond the live revision is invalid. No cursor or viewer token exists.
+
+```http
+GET /v1/change-digest?storeId=store-fixture&source=source-fixture&plan=P-digest&after=1&to=6&cleanupRev=0
+```
+
+`ChangeDigest` is exported through `shared/progress.ts`; its definitions and pure
+classification live in `shared/change-digest.ts`. The following field names are
+the wire contract; `Counts`, `Status` and `Lifecycle` retain their existing meanings:
+
+```ts
+type DigestFacet = 'added' | 'removed' | 'revised' | 'completed' | 'reopened'
+  | 'blocked' | 'unblocked' | 'skipped' | 'unskipped';
+type DigestEvents = Record<DigestFacet, number>;
+type DigestReason = 'gap' | 'missing-snapshot' | 'invalid-snapshot'
+  | 'revision-bound' | 'byte-bound';
+interface DigestFacts {
+  title: string; status: Status; parentId: string | null; dependencies: string[];
+}
+interface DigestReference {
+  from: number; to: number; reportedAt: string; facets: DigestFacet[];
+  before: DigestFacts | null; after: DigestFacts | null;
+}
+interface DigestTask {
+  id: string; title: string; status: Status; presentAtTarget: boolean;
+  latestRevision: number; occurrences: DigestEvents;
+  references: DigestReference[]; omittedReferences: number;
+}
+interface DigestScope {
+  addedCounted: number; removedCounted: number; skipped: number; unskipped: number;
+  addedDone: number; removedDone: number; completed: number; reopened: number;
+}
+interface ChangeDigest {
+  protocolVersion: 2; schemaVersion: 2; storeId: string;
+  sourceBinding: { sourceId: string | null; verified: boolean };
+  source: string; plan: string;
+  cleanup: { state: 'visible' | 'archived'; revision: number };
+  interval: {
+    after: number | null; to: number;
+    targetLifecycle: Lifecycle | null; targetReportedAt: string | null;
+    latestRevision: number; currentLifecycle: Lifecycle;
+    coverageStart: number | null; coverageEnd: number | null;
+    coverageStartReportedAt: string | null; coverageEndReportedAt: string | null;
+  };
+  availability: 'initial' | 'comparison' | 'baseline-unavailable' | 'target-unavailable';
+  complete: boolean; reasons: DigestReason[]; validTarget: boolean;
+  counts: { before: Counts | null; after: Counts | null; scope: DigestScope | null };
+  summary: { unit: 'transitions'; events: DigestEvents };
+  tasks: DigestTask[];
+  details: { omittedTasks: boolean; omittedTaskCount: number | null; truncated: boolean };
+  work: { intervalSnapshots: number; baselineLookups: number; inputBytes: number };
+}
+```
+
+One transaction pins existence, cleanup, live metadata, target, baseline and event
+coverage. Consumers must match **all** request identity fields and source binding,
+not just a revision. `to`/`after` are never silently substituted. `latestRevision`
+and `currentLifecycle` describe that read's live plan, not a promise of freshness
+after delivery. Coverage endpoints describe validated snapshots; events cover
+only adjacent pairs inside that range. Timestamps are recorded ISO timestamps,
+not observation or completion times. With no proven pair, coverage may be `to→to`.
+
+- No `after`: `initial`, target counts only, no invented revision-zero events.
+  `complete:true` means this initial target read succeeded, not that history was scanned.
+- Valid endpoints: `comparison`; `after === to` is complete and empty with equal counts.
+- Missing/invalid/budget-excluded baseline: `baseline-unavailable`, never initial;
+  `counts.before` and `scope` stay null. A proven recent suffix can still be shown.
+- Missing/invalid/budget-excluded target: `target-unavailable`, `validTarget:false`,
+  null target/coverage/counts and no events; cannot be reviewed.
+- `complete:false` qualifies interval events, independently of exact endpoint counts.
+  `reasons` is a deduplicated set of fixed diagnostics, not a diagnostic ordering
+  contract. Never bridge missing/invalid snapshots; a baseline lookup alone cannot
+  certify intermediate events. Unknown history must not be labelled zero changes.
+
+Tasks alone count; skipped tasks are outside `total`, groups never contribute.
+`counts.scope` explains endpoint deltas separately from witnessed transitions:
+`totalDelta = addedCounted - removedCounted - skipped + unskipped`;
+`doneDelta = addedDone - removedDone + completed - reopened`.
+Here `completed`/`reopened` describe **surviving endpoint tasks**, not interval
+event totals. Display percentage is `Math.round(done / total * 100)` only when
+total is nonzero; do not allocate causal percentage points to individual facets.
+
+Summary/occurrences count transitions, not distinct tasks. Reversals survive:
+reported blocker then unblocked, or completed then reopened, do not cancel out.
+Added-as-done is added scope, not a witnessed completion. Added-as-blocked also
+has a `blocked` facet. Removing a blocked task is not resolving its blocker;
+removing a done task is not reopening it. Task↔group conversion is removal/addition.
+`unblocked` means no longer reported blocked, including a skipped destination,
+not proof an underlying problem was solved. Title/parent/dependency-set changes
+are `revised`; dependency order, metadata, group-only and pending↔working changes
+alone are not highlights. Identical statuses/fresh operation IDs add no events;
+receipt replay adds no revision. Staging adds no events before commit.
+
+Rows are recent-highlight-first, ties by ascending task ID. For surviving tasks,
+title/status are recorded at the target; historical-only rows use their most
+recent change facts. `presentAtTarget` does not certify presence in today's live
+task tree. Each reference records the actual adjacent pair, including nullable
+addition/removal facts and sorted dependency sets. At most 50 task rows and four
+recent references per retained task are emitted; occurrences still cover the
+proven suffix. `omittedReferences` counts dropped references per retained task.
+`details.truncated` covers any row/reference omission, **not** interval gaps.
+When unretained identities prevent an exact distinct omitted-task count,
+`omittedTaskCount:null` and `omittedTasks:true` disclose that uncertainty.
+Otherwise the count is exact (zero if none). Summary facts survive detail caps.
+
+Example comparison excerpt for a blocked→working→done task and one new pending task:
+
+```json
+{"availability":"comparison","complete":true,"validTarget":true,"reasons":[],"counts":{"before":{"done":1,"total":2,"remaining":1,"skipped":1},"after":{"done":2,"total":3,"remaining":1,"skipped":1},"scope":{"addedCounted":1,"removedCounted":0,"skipped":0,"unskipped":0,"addedDone":0,"removedDone":0,"completed":1,"reopened":0}},"summary":{"unit":"transitions","events":{"added":1,"removed":0,"revised":0,"completed":1,"reopened":0,"blocked":1,"unblocked":1,"skipped":0,"unskipped":0}}}
+```
+
+Work is bounded to 128 interval snapshots plus at most one separate baseline
+lookup, sharing 8 MiB of input before parsing. `work` reports inspected interval
+slots (including unavailable/oversized attempts), baseline lookup attempts and
+actual snapshot bytes returned for parsing; reused baseline text is not reread.
+The body is at most 256 KiB UTF-8; least-recent rows are dropped first while
+preserving summary/counts/qualification. There is no continuation/backfill.
+
+Auth errors are 401, wrong method 405, unknown/duplicate fields 404, missing or
+malformed fields/ranges 400 (`invalid`), store/cleanup mismatch 409 (`conflict`),
+missing/deleted plan 404 (`not-found`), unavailable/corrupt/schema/busy storage
+503 with fixed codes. An unusable historical snapshot is a qualified 200 DTO,
+not a fabricated success comparison. Archive/restore preserve baseline history
+but change cleanup generation, so stale reads refuse. Reopen preserves identity.
+Delete makes new reads fail; an already captured response must be retired by the
+consumer's live identity/cleanup checks and cannot authorize review by itself.
+No backend checkpoint, mutation, filesystem capture, schema change or cache is
+introduced. List/detail/history routes do not invoke digest comparison.
+
 ## Finished-plan cleanup (frozen additive contract)
 
-Package **0.3.0** preserves the additive cleanup contract.
-Protocol/base schema remain **2**. A ready capable
+This additive cleanup contract keeps protocol/base schema **2**. A ready capable
 service adds `planCleanup:1` to `/health`. Missing capability means unavailable,
 not an empty archive. No report-tool operation is added.
 
@@ -320,6 +658,8 @@ unavailable/changed-during-read. Last valid capture stays referenced on failure,
 never relabeled current. checklistSynchronized marks a confirmed matching
 checklist/capture; currentFile=not-rechecked honestly describes between-report
 coverage. Body text is fetched only on demand and rendered as untrusted plain text.
+capturedAt records when the bound document was captured and can be older;
+checklistSynchronized is the current-match guarantee, not the capture timestamp.
 Show the last successful capture time separately from the last check time. Reports
 recheck the bound file under the same bounded permission rules; between checks,
 the current file remains unverified. Age alone does not establish a mismatch.
@@ -488,7 +828,8 @@ agent-progress. Input Request / REPORT_SCHEMA in shared/progress.ts. Mutations
 require plan, oid and rev (start rev0). Receipt `{plan,rev,structuralRev,changed?}`;
 errors `{error,rev?,hint?}` (safe optional hint only for invalid tool requests).
 Read without page returns compact plan/revision/lifecycle/
-counts/documentState/detailPageSize; explicit page returns paged PlanRead+Envelope.
+counts/documentState/detailPageSize without items; explicit 0-based page returns
+paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
 
 - start: title/items/source?; creates independent plan identity.

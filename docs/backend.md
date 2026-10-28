@@ -1,5 +1,24 @@
 # Production backend v2
 
+## Recorded capture comparison
+
+`shared/document-captures.ts` owns bounded metadata discovery and same-plan
+pair reads; `shared/document-comparison.ts` owns the DTOs and pure bounded line
+diff. Store wraps each request in its existing read transaction. The routes in
+`service/server.ts` check expected store, source binding and cleanup generation.
+They do not invoke document capture, initialize schema, enumerate source roots,
+write a cache or open the canonical source path. The byte/row/work limits and
+failure semantics are frozen in [the comparison contract](contracts.md#recorded-document-comparison-additive-revision-1).
+
+There is no source/plan index on the existing captures table. Discovery scans
+bounded descending integer-primary-key windows, filters metadata in memory,
+and returns continuation rather than claiming a complete scan. A pinned plan
+revision excludes newer captures even if unrelated deletion allows SQLite to
+reuse an ID below the cursor ceiling. Comparison itself looks up exactly two
+same-plan IDs. Metadata and snapshot admission precede driver materialization;
+body lengths are checked before loading the two texts. Historical captures are
+immutable until the existing plan deletion removes them.
+
 Current package version: **0.3.0**. Here v2 means protocol/schema2,
 not a release major. Corrected historical package labels below are0.2.0
 and0.2.1; raw earlier local evidence retains the original mistaken labels.
@@ -9,6 +28,63 @@ Evidence references in this guide describe local QA records, not consumer delive
 Probe DTO/store/scripts are historical fixtures, not a production fallback.
 The archived probe HTTP service exists only in tests/fixtures. Panel ID remains
 agent-progress-probe (stable openSurface target); companion/skill ID is agent-progress.
+
+## Bounded plan/task search (additive read revision 1)
+
+`Store.search` and `Store.searchState` use the existing read-only transaction owner;
+`shared/plan-task-search.ts` is the bounded matcher/traversal helper, not a second
+store or index. Exact DTO/query/count/coverage meanings live in
+`shared/progress.ts` and `docs/contracts.md` under Plan/task search revision1.
+Ready health advertises `planTaskSearch:1`; the two new authenticated body-free
+GET routes are `/v1/search` and `/v1/search-state`. Existing routes are unchanged.
+
+Each search window seeks the existing binary primary key `(source,id)` one raw
+candidate at a time, using a row-value comparison (or source equality/id seek).
+There is no OFFSET, excluded-prefix SQL predicate, full count, JSON membership
+EXISTS, FTS or scan of source roots. Cleanup, snapshot and contribution reads share
+one transaction. SQLite measures BLOB byte length before text crosses into JS;
+only accepted bounded input is parsed. At most64 plan-slot attempts,128 membership
+rows and8 MiB input can contribute to one response. Snapshot validation checks
+identity, bounded fields/items/links and finite parent/dependency traversal before
+matching or context extraction. Invalid/oversized snapshots and membership payloads
+produce explicit fixed coverage gaps. Corrupt address keys/cleanup schema fail closed.
+
+Creator/current links resolve session membership without history reads. Otherwise
+contributions use the existing `(source,plan,revision)` index in bounded windows,
+pinned to current progress revision and cleanup generation. An unresolved membership
+check survives in a stateless cursor; it never becomes a false negative at row128.
+Task sequences similarly resume inside a plan. Full matching-task classification
+is counted once at first accepted emission, with per-plan deltas supplied for the
+board's frozen live project/worktree projection. A response-byte pause leaves the
+first un-emitted hit pending. At most50 hits/8 ancestors per task and256 KiB output
+are emitted; bounded envelope/cursor space is reserved before accepting each hit.
+
+Freshness reads the scalar capture-enabled flag from `meta` alongside current
+plan revision and cleanup point lookups for up to50 explicit distinct keys, all
+in one read transaction. It does not read detail/history or add a polling job.
+Neither operation calls the full source-metadata envelope, reads captured documents, creates schema,
+retains cursor state or adds a server cache/connection. A legacy read-only schema2
+store remains readable without cleanup activation. Cross-request results are honest
+observations, not a global snapshot; consumers must retire stale generations and
+bound automatic work at their explicit action/lifetime boundary.
+
+Focused proof commands (Node24, pinned dependencies):
+
+```sh
+node --experimental-strip-types --test tests/backend/plan-task-search.test.ts tests/backend/production-storage.test.ts tests/backend/plan-cleanup.test.ts
+node --experimental-strip-types --test tests/backend/plan-task-search-service.test.ts tests/backend/production-service.test.ts tests/backend/service-recovery.test.ts
+bun run typecheck
+bun run test:backend
+```
+
+The service test can write sanitized `api.json` under an explicitly supplied local
+`EVIDENCE` directory. Fixtures normally use production writes/staged commits;
+direct-SQL corrupt/padded/maximal-title inputs are labelled fault injection. Scale
+proof scans1,200 plans and1,000-item mixed/deep plans, records three post-warmup
+HTTP timing samples and measured work/bytes, and checks bounds rather than arbitrary
+millisecond thresholds. Local evidence: `evidence/plan-task-search/backend.md` and
+`api.json`. This backend proof does not establish native Windows, browser rendering,
+host account isolation, long-session memory behavior or a release/install result.
 
 ## Components and trust boundaries
 
@@ -144,6 +220,64 @@ current file contents remain unverified until rechecked under the same permissio
 and size bounds. Age alone cannot prove that the document and checklist differ.
 
 ## Adopted bounded defaults
+
+### Read-only plan change digests
+
+`Store.changeDigest` owns a single read transaction; `shared/change-digest.ts`
+owns pure validation, task classification, endpoint causes and bounded aggregation.
+`GET /v1/change-digest` is capability-gated by `planChangeDigests:1` on ready
+health responses. Its frozen wire types, fixture excerpt and error discipline
+are in `docs/contracts.md`; types are re-exported through `shared/progress.ts`.
+
+The transaction checks store identity, live existence/metadata and cleanup
+generation, then validates the pinned target before any history scan. No baseline
+means initial target-only counts. Otherwise a separate baseline lookup can supply
+exact endpoint causes even if the intervening scan is partial. Starting at target,
+point lookups walk backward one revision at a time; only validated adjacent pairs
+produce events. Missing/invalid predecessors stop the contiguous suffix, never
+bridge to the direct baseline. A suffix includes its predecessor before claiming
+the first transition. Snapshot identity, safe revisions/structural metadata, ISO
+timestamps, item IDs/kinds/statuses/titles/parents/dependencies, uniqueness and
+structural cycles are validated; regressing chronology/structural metadata stops
+comparison. Unknown history is explicitly qualified, not treated as no changes.
+
+There are at most 128 interval snapshot slots plus one baseline lookup, sharing
+8 MiB of actual snapshot input. SQL projects byte length and returns text only
+when it fits the remaining budget, before JSON parsing. Baseline reuse does not
+consume bytes twice. Live existence/cleanup metadata is a separate fixed lookup.
+The scan keeps only endpoint and adjacent working snapshots, not a history array.
+Up to 1,000 items per snapshot bound validation/comparison. Aggregation retains
+the 50 most recently highlighted task identities, at most four references each,
+while counting all proven events. Untracked omitted identities are an indicator,
+not an invented distinct-task count. A final UTF-8 serialization cap removes
+least-recent rows until the body fits 256 KiB; summary and qualification survive.
+`work` counters make the input limits directly testable, not timing-dependent.
+
+All operations use the existing connection/read transaction. Read-only Store
+mode works without creating schema, cleanup state, receipts or checkpoints.
+No source-document filesystem reads/capture, retained Store, service cache,
+report operation, viewer table or migration exists. List polling does no digest
+work. Archive/restore retain snapshots and baseline identity; delete invalidates
+new reads. A reply captured before a concurrent write remains pinned; consumers
+still retire it on authoritative identity/cleanup/lifecycle changes.
+
+Focused verification (disposable synthetic SQLite/loopback HTTP fixtures):
+
+```sh
+node --experimental-strip-types --test tests/backend/change-digests.test.ts
+node --experimental-strip-types --test tests/backend/change-digests-service.test.ts
+node --experimental-strip-types --test tests/backend/change-digests-service.test.ts tests/backend/plan-cleanup.test.ts tests/backend/plan-cleanup-service.test.ts tests/backend/production-storage.test.ts tests/backend/task-timing.test.ts
+```
+
+Tests cover transient/reversed changes, independent endpoint scope causes,
+same-status/replay suppression, staging, gaps/corruption/missing endpoints,
+safe-integer parsing, input/output caps, SQL/source-byte immutability, cleanup
+continuity, source isolation and a real independent WAL writer at a labelled read
+transaction seam. The 1,000-item maximum-title history is a labelled direct SQL
+fixture for budget verification, not a claim that any one report bypasses the
+existing request/chunk limits. No wall-clock performance gate is used.
+
+### Existing production limits
 
 -16KiB report/setup bodies;262144-byte full document cap, strict UTF-8, no binary.
 -20 default read rows,50 max plan-list/history rows; document pages16384 Unicode

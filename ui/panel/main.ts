@@ -109,6 +109,7 @@ function current(vc: ViewContext<Ui>) {
 function hooks(vc: ViewContext<Ui>, plan: PlanView) {
   return {
     detail: vc.detail(plan),
+    summary: vc.summary(plan),
     retryDetail: vc.retry,
     document: { get: () => vc.document(plan), request: () => vc.requestDocument(plan) },
   };

@@ -1,8 +1,11 @@
 // The only module that knows the service wire format: frozen production contract v2
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
+import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
+import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type {
-  ContributionView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
 
 export const SUPPORTED_PROTOCOL = 2;
@@ -25,7 +28,8 @@ const LIFECYCLES: Record<string, Lifecycle> = { active: 'active', finished: 'com
 const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', 'missing', 'moved', 'oversized', 'non-text', 'unavailable', 'changed-during-read'];
 
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
-export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
+export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
+export const CAPTURE_ROUTES = { index: '/v1/document-captures', comparison: '/v1/document-comparison' } as const;
 export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 
@@ -46,7 +50,54 @@ export function parseHealth(body: string): HealthView {
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}) };
+  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}) };
+}
+
+export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {
+  return query({ storeId: r.storeId, binding: JSON.stringify(r.binding), source: r.source, plan: r.plan, cleanupRev: r.cleanupRev, ...extra })!;
+}
+const captureInt = (v: unknown, minimum = 0): v is number => isInt(v) && v >= minimum;
+const captureTime = (v: unknown): v is string => isStr(v) && v.length <= 40 && Number.isFinite(Date.parse(v));
+function captureBase(body: string, r: CaptureRequest): Rec & CaptureIdentity {
+  check(body.length <= CAPTURE_LIMITS.responseBytes && new TextEncoder().encode(body).length <= CAPTURE_LIMITS.responseBytes, 'The capture reply exceeds its limit.');
+  const v: unknown = JSON.parse(body); check(isRec(v), 'Unreadable capture reply.'); versions(v);
+  const binding = (b: unknown) => isRec(b) && b.sourceId === r.binding.sourceId && b.verified === r.binding.verified;
+  check(v.documentCaptureComparison === 1 && v.storeId === r.storeId && v.source === r.source && v.plan === r.plan && v.cleanupRev === r.cleanupRev && binding(v.sourceBinding) && binding(v.binding), 'The capture reading identity changed.');
+  return v as Rec & CaptureIdentity;
+}
+function captureEntry(v: unknown): CaptureEntry {
+  check(isRec(v) && captureInt(v.id, 1) && captureInt(v.revision, 1) && isStr(v.hash) && /^[a-f0-9]{64}$/.test(v.hash) && captureTime(v.capturedAt) && isStr(v.path) && v.path.length <= 4096 && !v.path.includes('\0'), 'Unreadable capture metadata.');
+  return { id: v.id, revision: v.revision, hash: v.hash, capturedAt: v.capturedAt, path: v.path };
+}
+export function parseCaptureIndex(body: string, r: CaptureRequest): CaptureIndex {
+  const v = captureBase(body, r);
+  check(Array.isArray(v.data) && v.data.length <= CAPTURE_LIMITS.entries && captureInt(v.scanned) && v.scanned <= CAPTURE_LIMITS.rows && v.data.length <= v.scanned && captureInt(v.revision, 1), 'Unreadable capture discovery window.');
+  check((v.nextCursor === null || isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= CAPTURE_LIMITS.cursorBytes) && v.exhausted === (v.nextCursor === null) && [null,'rows','entries','bytes'].includes(v.limit as null), 'Unreadable capture continuation.');
+  const data = v.data.map(captureEntry);
+  check(data.every((e,i) => e.revision <= Number(v.revision) && (i === 0 || e.id < data[i-1].id)), 'Capture discovery is not in its pinned order.');
+  return { ...v, data } as CaptureIndex;
+}
+export function parseCaptureComparison(body: string, r: CaptureRequest, before: number, after: number): CaptureComparison {
+  const v = captureBase(body, r), a = captureEntry(v.before), b = captureEntry(v.after), c = v.current;
+  check(a.id === before && b.id === after && before <= after, 'The capture pair changed.');
+  check(isRec(c) && captureInt(c.revision, 1) && a.revision <= c.revision && b.revision <= c.revision && (c.captureId === null || captureInt(c.captureId, 1)) && DOC_STATES.includes(c.state as DocumentState) && typeof c.checklistSynchronized === 'boolean' && typeof c.captureEnabled === 'boolean' && c.currentFile === 'not-rechecked' && (c.checkedAt === null || captureTime(c.checkedAt)) && (c.path === null || isStr(c.path) && c.path.length <= 4096), 'Unreadable current capture metadata.');
+  const result = v.result; check(isRec(result) && ['equal','limited','diff'].includes(String(result.state)), 'Unreadable comparison result.');
+  if (result.state === 'limited') check(['bytes','lines','work','output'].includes(String(result.reason)), 'Unknown comparison limit.');
+  if (result.state === 'diff') {
+    check(Array.isArray(result.hunks) && result.hunks.length > 0 && result.hunks.length <= CAPTURE_LIMITS.renderedLines && captureInt(result.omittedAfter) && captureInt(result.added) && captureInt(result.removed), 'Unreadable diff hunks.');
+    let count = 0, bytes = 0, added = 0, removed = 0;
+    for (const h of result.hunks) {
+      check(isRec(h) && captureInt(h.oldStart, 1) && captureInt(h.newStart, 1) && captureInt(h.omittedBefore) && Array.isArray(h.lines) && h.lines.length > 0, 'Unreadable diff hunk.');
+      count += h.lines.length; check(count <= CAPTURE_LIMITS.renderedLines, 'Too many diff lines.');
+      for (const l of h.lines) {
+        check(isRec(l) && ['context','added','removed'].includes(String(l.kind)) && isStr(l.text) && ['lf','crlf','none'].includes(String(l.ending)) && (l.kind === 'added' ? l.oldLine === null : captureInt(l.oldLine, 1)) && (l.kind === 'removed' ? l.newLine === null : captureInt(l.newLine, 1)), 'Unreadable diff line.');
+        bytes += new TextEncoder().encode(l.text).length; check(bytes <= CAPTURE_LIMITS.renderedBytes, 'Diff text exceeds its limit.');
+        if (l.kind === 'added') added++; if (l.kind === 'removed') removed++;
+      }
+    }
+    check(added === result.added && removed === result.removed && added + removed > 0, 'Diff counts disagree.');
+  }
+  return { ...v, before: a, after: b } as unknown as CaptureComparison;
 }
 
 /** Error body of a non-200 reply: `{error: fixed-code}`. */
@@ -210,6 +261,210 @@ export function parseHistoryPage(body: string) {
   };
 }
 
+const FACETS: readonly DigestFacet[] = ['added', 'removed', 'revised', 'completed', 'reopened', 'blocked', 'unblocked', 'skipped', 'unskipped'];
+const REASONS: readonly DigestReason[] = ['gap', 'missing-snapshot', 'invalid-snapshot', 'revision-bound', 'byte-bound'];
+const AVAILABILITY: readonly DigestView['availability'][] = ['initial', 'comparison', 'baseline-unavailable', 'target-unavailable'];
+const DIGEST_ROWS = 50;
+const DIGEST_REFERENCES = 4;
+const isCount = (v: unknown): v is number => isInt(v) && v >= 0;
+const isRevision = (v: unknown): v is number => isInt(v) && v >= 1;
+const isIso = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v));
+const lifecycle = (v: unknown) => LIFECYCLES[String(v)];
+
+/** GET /v1/change-digest query: exactly the frozen fields; `after` only for a saved baseline. */
+export const digestQuery = (r: DigestRequest) => query({ storeId: r.storeId, source: r.source, plan: r.plan, to: r.to, cleanupRev: r.cleanupRev, after: r.after });
+
+function digestCounts(v: unknown) {
+  if (v === null) return null;
+  const c = parseCounts(v);
+  check(c.done >= 0 && c.total >= 0 && c.remaining >= 0 && c.skipped >= 0 && c.done + c.remaining === c.total, 'A change digest has inconsistent counts.');
+  return c;
+}
+function digestEvents(v: unknown): DigestEvents {
+  check(isRec(v) && Object.keys(v).length === FACETS.length && FACETS.every((f) => isCount(v[f])), 'A change digest has unreadable event counts.');
+  return Object.fromEntries(FACETS.map((f) => [f, v[f]])) as DigestEvents;
+}
+function digestFacts(v: unknown): DigestFacts | null {
+  if (v === null) return null;
+  check(isRec(v) && isStr(v.title) && STATUSES.includes(v.status as ItemStatus) && (v.parentId === null || isStr(v.parentId)) && Array.isArray(v.dependencies) && v.dependencies.every(isStr), 'A change digest has unreadable recorded facts.');
+  return { title: v.title, status: v.status as ItemStatus, parentId: v.parentId as string | null, dependencies: [...(v.dependencies as string[])] };
+}
+
+/**
+ * GET /v1/change-digest. Every request identity field must come back unchanged (store, source,
+ * plan, cleanup generation, pinned target and baseline) and each part must agree with its stated
+ * availability; anything else throws, so a reply is never borrowed by another context or turned
+ * into an empty comparison. Source binding is checked against the current list by the caller.
+ */
+export function parseChangeDigest(body: string, request: DigestRequest): DigestView {
+  const v: unknown = JSON.parse(body);
+  check(isRec(v), 'Change digest reply is not an object.');
+  versions(v);
+  check(v.storeId === request.storeId && v.source === request.source && v.plan === request.plan, 'The change digest answered for another plan or store.');
+  const b = v.sourceBinding;
+  check(isRec(b) && (b.sourceId === null || isStr(b.sourceId)) && typeof b.verified === 'boolean', 'The change digest has no source binding.');
+  const c = v.cleanup;
+  check(isRec(c) && (c.state === 'visible' || c.state === 'archived') && c.revision === request.cleanupRev, 'The change digest answered for another cleanup state.');
+  const i = v.interval;
+  check(isRec(i) && i.to === request.to && i.after === request.after, 'The change digest answered for another interval.');
+  check(isRevision(i.latestRevision) && i.latestRevision >= request.to && lifecycle(i.currentLifecycle), 'The change digest has unreadable live metadata.');
+  const availability = v.availability as DigestView['availability'];
+  check(AVAILABILITY.includes(availability) && typeof v.complete === 'boolean' && typeof v.validTarget === 'boolean', 'The change digest has an unknown availability.');
+  check(Array.isArray(v.reasons) && v.reasons.every((r) => REASONS.includes(r as DigestReason)) && new Set(v.reasons).size === v.reasons.length, 'The change digest has unknown qualifications.');
+  const counts = v.counts, summary = v.summary, details = v.details, work = v.work;
+  check(isRec(counts) && isRec(summary) && summary.unit === 'transitions' && isRec(details) && isRec(work) && Array.isArray(v.tasks), 'The change digest is incomplete.');
+  const before = digestCounts(counts.before), after = digestCounts(counts.after);
+  const scope = counts.scope === null ? null : (() => {
+    const s = counts.scope;
+    const keys = ['addedCounted', 'removedCounted', 'skipped', 'unskipped', 'addedDone', 'removedDone', 'completed', 'reopened'] as const;
+    check(isRec(s) && keys.every((k) => isCount(s[k])), 'The change digest has unreadable scope counts.');
+    return Object.fromEntries(keys.map((k) => [k, s[k]])) as DigestView['counts']['scope'] & object;
+  })();
+  const events = digestEvents(summary.events);
+  const target = availability !== 'target-unavailable';
+  check(target === v.validTarget, 'The change digest contradicts its target availability.');
+  if (!target) {
+    check(i.targetLifecycle === null && i.coverageStart === null && i.coverageEnd === null && !before && !after && !scope && !v.tasks.length && FACETS.every((f) => events[f] === 0) && !v.complete, 'An unavailable target has comparison data.');
+  } else {
+    check(lifecycle(i.targetLifecycle) && isIso(i.targetReportedAt) && isRevision(i.coverageStart) && i.coverageEnd === request.to && isIso(i.coverageStartReportedAt) && isIso(i.coverageEndReportedAt) && after, 'The change digest has unreadable coverage.');
+    check((i.coverageStart as number) >= (request.after ?? request.to) && (i.coverageStart as number) <= request.to, 'The change digest covers revisions outside its interval.');
+  }
+  if (availability === 'initial') check(request.after === null && v.complete && !before && !scope && !v.tasks.length && FACETS.every((f) => events[f] === 0), 'An initial digest has comparison data.');
+  if (availability === 'comparison') check(request.after !== null && !!before && !!scope && (!v.complete || i.coverageStart === request.after), 'A comparison digest is missing its baseline.');
+  if (availability === 'baseline-unavailable') check(request.after !== null && !before && !scope && !v.complete, 'A digest without its baseline claims endpoint counts.');
+  check(v.tasks.length <= DIGEST_ROWS, 'The change digest has too many task rows.');
+  const ids = new Set<string>();
+  const low = target ? (i.coverageStart as number) : request.to;
+  const tasks = v.tasks.map((t): DigestTask => {
+    check(isRec(t) && isStr(t.id) && t.id.length > 0 && !ids.has(t.id) && isStr(t.title) && STATUSES.includes(t.status as ItemStatus) && typeof t.presentAtTarget === 'boolean', 'A change digest task row is unreadable.');
+    ids.add(t.id);
+    check(isRevision(t.latestRevision) && t.latestRevision > low && t.latestRevision <= request.to && isCount(t.omittedReferences) && Array.isArray(t.references) && t.references.length >= 1 && t.references.length <= DIGEST_REFERENCES, `Change digest task ${t.id} has unreadable references.`);
+    const references = t.references.map((r): DigestReference => {
+      check(isRec(r) && isRevision(r.from) && r.to === (r.from as number) + 1 && (r.from as number) >= low && (r.to as number) <= request.to && isIso(r.reportedAt) && Array.isArray(r.facets) && r.facets.length > 0 && r.facets.every((f) => FACETS.includes(f as DigestFacet)), `Change digest task ${t.id} has an unreadable recorded change.`);
+      const factsBefore = digestFacts(r.before), factsAfter = digestFacts(r.after);
+      check(factsBefore || factsAfter, `Change digest task ${t.id} has a recorded change without facts.`);
+      return { from: r.from as number, to: r.to as number, reportedAt: r.reportedAt as string, facets: [...r.facets] as DigestFacet[], before: factsBefore, after: factsAfter };
+    });
+    return { id: t.id, title: t.title, status: t.status as ItemStatus, presentAtTarget: t.presentAtTarget, latestRevision: t.latestRevision, occurrences: digestEvents(t.occurrences), references, omittedReferences: t.omittedReferences };
+  });
+  check(typeof details.omittedTasks === 'boolean' && (details.omittedTaskCount === null || isCount(details.omittedTaskCount)) && typeof details.truncated === 'boolean', 'The change digest has unreadable detail limits.');
+  check(isCount(work.intervalSnapshots) && isCount(work.baselineLookups) && isCount(work.inputBytes), 'The change digest has unreadable work counters.');
+  return {
+    protocolVersion: 2, schemaVersion: 2, storeId: request.storeId, sourceBinding: { sourceId: b.sourceId as string | null, verified: b.verified as boolean },
+    source: request.source, plan: request.plan, cleanup: { state: c.state as 'visible' | 'archived', revision: request.cleanupRev },
+    interval: {
+      after: request.after, to: request.to, targetLifecycle: target ? lifecycle(i.targetLifecycle) : null, targetReportedAt: target ? i.targetReportedAt as string : null,
+      latestRevision: i.latestRevision, currentLifecycle: lifecycle(i.currentLifecycle), coverageStart: target ? i.coverageStart as number : null, coverageEnd: target ? request.to : null,
+      coverageStartReportedAt: target ? i.coverageStartReportedAt as string : null, coverageEndReportedAt: target ? i.coverageEndReportedAt as string : null,
+    },
+    availability, complete: v.complete, reasons: [...v.reasons] as DigestReason[], validTarget: v.validTarget,
+    counts: { before, after, scope }, summary: { unit: 'transitions', events }, tasks,
+    details: { omittedTasks: details.omittedTasks, omittedTaskCount: details.omittedTaskCount as number | null, truncated: details.truncated },
+    work: { intervalSnapshots: work.intervalSnapshots, baselineLookups: work.baselineLookups, inputBytes: work.inputBytes },
+  };
+}
+
+const WIRE_LIFECYCLE: Record<Lifecycle, string> = { active: 'active', completed: 'finished', cancelled: 'cancelled', failed: 'failed' };
+const GAPS: readonly SearchGap[] = ['invalid-snapshot', 'oversized-snapshot', 'invalid-membership', 'oversized-membership'];
+const SEARCH_HITS = 50;
+const SEARCH_ANCESTORS = 8;
+const SEARCH_STATE_KEYS = 50;
+const isHash = (v: unknown): v is string => isStr(v) && /^[0-9a-f]{64}$/.test(v);
+
+/** GET /v1/search query: exactly the frozen fields. A continuation repeats every other field unchanged. */
+export const searchQuery = (r: SearchRequest) => query({ q: r.q, source: r.source, session: r.session, lifecycle: r.lifecycle ? WIRE_LIFECYCLE[r.lifecycle] : null, status: r.status, archived: r.archived, limit: r.limit, cursor: r.cursor });
+/** GET /v1/search-state query: the store this view reads and 1–50 distinct keys. */
+export const searchStateQuery = (storeId: string, keys: SearchKeyView[]) => query({ storeId, keys: JSON.stringify(keys.map((k) => ({ source: k.source, plan: k.plan }))) });
+
+function searchIdentity(v: Rec) {
+  versions(v);
+  check(v.planTaskSearch === 1, 'The search reply has another contract revision.');
+  const b = v.sourceBinding;
+  check(isStr(v.storeId) && isRec(b) && (b.sourceId === null || isStr(b.sourceId)) && typeof b.verified === 'boolean', 'The search reply has no store identity.');
+  return { storeId: v.storeId, binding: { sourceId: b.sourceId as string | null, verified: b.verified as boolean } };
+}
+
+function parseSearchPlan(v: unknown): SearchPlanView {
+  check(isRec(v) && isStr(v.id) && isStr(v.sourceId) && isStr(v.title) && isStr(v.sessionId), 'A search result has no plan identity.');
+  check(isInt(v.revision) && v.revision >= 1 && isInt(v.structuralRevision) && isStr(v.reportedAt) && isStr(v.directory), `Search plan ${v.id} has no revision, time or location.`);
+  const lifecycle = LIFECYCLES[String(v.lifecycle)];
+  check(lifecycle, `Search plan ${v.id} has an unknown lifecycle.`);
+  const c = v.cleanup;
+  check(isRec(c) && (c.state === 'visible' || c.state === 'archived') && isInt(c.revision) && c.revision >= 0 && typeof v.sourceVerified === 'boolean', `Search plan ${v.id} has unreadable cleanup or source metadata.`);
+  const counts = parseCounts(v.counts);
+  check(counts.done >= 0 && counts.remaining >= 0 && counts.skipped >= 0 && counts.done + counts.remaining === counts.total, `Search plan ${v.id} has inconsistent counts.`);
+  return {
+    key: `${v.sourceId}/${v.id}`, id: v.id, sourceId: v.sourceId, title: v.title, ownerSessionId: v.sessionId,
+    revision: v.revision, structuralRevision: v.structuralRevision, lifecycle, reportedAt: v.reportedAt,
+    directory: v.directory, projectId: optStr(v.projectId), counts,
+    cleanup: { state: c.state as 'visible' | 'archived', revision: c.revision as number }, sourceVerified: v.sourceVerified,
+  };
+}
+
+function parseSearchHit(v: unknown, r: SearchRequest): SearchHitView {
+  check(isRec(v) && typeof v.planMatched === 'boolean' && typeof v.continued === 'boolean' && Array.isArray(v.ancestors) && isCount(v.omittedAncestors), 'A search result is unreadable.');
+  const plan = parseSearchPlan(v.plan);
+  const t = v.task;
+  check(t === null || (isRec(t) && isStr(t.id) && t.id.length > 0 && isStr(t.title) && STATUSES.includes(t.status as ItemStatus)), `Search result in ${plan.id} has an unreadable task.`);
+  // A plan-only hit exists only for the plan's own match without a task-status constraint.
+  check(t !== null || (v.planMatched && !r.status), `Search result in ${plan.id} is neither a task nor a plan match.`);
+  check(v.ancestors.length <= SEARCH_ANCESTORS && v.ancestors.every((a) => isRec(a) && isStr(a.id) && isStr(a.title)), `Search result in ${plan.id} has unreadable context.`);
+  const k = v.classified;
+  check(k === null || (isRec(k) && k.matchedPlans === 1 && isCount(k.matchingTasks) && !v.continued), `Search result in ${plan.id} has an unreadable count.`);
+  // Every chosen backend filter precedes emission; a reply outside them is not this search.
+  check((r.archived === 'only') === (plan.cleanup.state === 'archived'), `Search result ${plan.id} is outside the chosen archive mode.`);
+  check((!r.source || plan.sourceId === r.source) && (!r.lifecycle || plan.lifecycle === r.lifecycle) && (!r.status || (t as Rec | null)?.status === r.status), `Search result ${plan.id} is outside the chosen filters.`);
+  return {
+    plan, planMatched: v.planMatched,
+    task: t === null ? null : { id: (t as Rec).id as string, title: (t as Rec).title as string, status: (t as Rec).status as ItemStatus },
+    ancestors: (v.ancestors as Rec[]).map((a) => ({ id: a.id as string, title: a.title as string })), omittedAncestors: v.omittedAncestors,
+    continued: v.continued, classified: k === null ? null : { matchedPlans: 1, matchingTasks: (k as Rec).matchingTasks as number },
+  };
+}
+
+/**
+ * GET /v1/search: one bounded window. `expect` pins a continuation to the traversal that issued its
+ * cursor (store, binding, criteria fingerprint); anything else throws, so a window is never joined
+ * to another traversal. The window's own counts must equal its per-plan deltas (never totals).
+ */
+export function parseSearchWindow(body: string, request: SearchRequest, expect: { storeId: string; binding: { sourceId: string | null; verified: boolean }; fingerprint: string | null }): SearchWindowView {
+  const v: unknown = JSON.parse(body);
+  check(isRec(v), 'Search reply is not an object.');
+  const id = searchIdentity(v);
+  check(id.storeId === expect.storeId && id.binding.sourceId === expect.binding.sourceId && id.binding.verified === expect.binding.verified, 'The search answered for another store or binding.');
+  check(isHash(v.fingerprint) && (expect.fingerprint === null || v.fingerprint === expect.fingerprint), 'The search answered for other criteria.');
+  check(Array.isArray(v.hits) && v.hits.length <= Math.min(request.limit, SEARCH_HITS), 'The search reply has too many results.');
+  const hits = v.hits.map((h) => parseSearchHit(h, request));
+  const counts = v.counts;
+  check(isRec(counts) && isCount(counts.matchedPlans) && isCount(counts.matchingTasks), 'The search reply has unreadable counts.');
+  const sum = hits.reduce((s, h) => (h.classified ? { plans: s.plans + 1, tasks: s.tasks + h.classified.matchingTasks } : s), { plans: 0, tasks: 0 });
+  check(sum.plans === counts.matchedPlans && sum.tasks === counts.matchingTasks, 'The search reply counts disagree with its results.');
+  check((v.nextCursor === null || (isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= 4096)) && typeof v.exhausted === 'boolean' && v.exhausted === (v.nextCursor === null), 'The search reply has an unreadable continuation.');
+  const c = v.coverage;
+  check(isRec(c) && c.kind === 'recorded-current' && c.asSearched === true && typeof c.gapped === 'boolean' && isCount(c.skippedRecords) && Array.isArray(c.reasons) && c.reasons.every((r) => GAPS.includes(r as SearchGap)), 'The search reply has unreadable coverage.');
+  check(c.gapped || c.skippedRecords === 0, 'The search reply skipped records without a gap.');
+  check(isRec(v.work), 'The search reply has no work counters.');
+  return { ...id, fingerprint: v.fingerprint, hits, nextCursor: v.nextCursor as string | null, exhausted: v.exhausted, coverage: { gapped: c.gapped, skippedRecords: c.skippedRecords, reasons: [...new Set(c.reasons as SearchGap[])] } };
+}
+
+/** GET /v1/search-state: exactly the requested keys, in order, for the requested store. */
+export function parseSearchState(body: string, storeId: string, keys: SearchKeyView[]): SearchStateView {
+  const v: unknown = JSON.parse(body);
+  check(isRec(v), 'Search freshness reply is not an object.');
+  const id = searchIdentity(v);
+  check(id.storeId === storeId, 'The search freshness read answered for another store.');
+  check(typeof v.captureEnabled === 'boolean', 'The search freshness read has unreadable capture state.');
+  check(keys.length >= 1 && keys.length <= SEARCH_STATE_KEYS && Array.isArray(v.data) && v.data.length === keys.length, 'The search freshness read answered for other plans.');
+  const data = v.data.map((row, i) => {
+    const c = isRec(row) ? row.cleanup : null;
+    check(isRec(row) && row.source === keys[i].source && row.plan === keys[i].plan && typeof row.exists === 'boolean', 'The search freshness read answered for other plans.');
+    check(isRec(c) && (c.state === 'visible' || c.state === 'archived' || c.state === 'deleted') && isCount(c.revision), 'The search freshness read has unreadable cleanup metadata.');
+    check(row.exists ? isRevision(row.revision) && c.state !== 'deleted' : row.revision === null || isRevision(row.revision), 'The search freshness read has an unreadable revision.');
+    return { source: keys[i].source, plan: keys[i].plan, exists: row.exists, revision: row.revision as number | null, cleanup: { state: c.state as 'visible' | 'archived' | 'deleted', revision: c.revision as number } };
+  });
+  return { ...id, captureEnabled: v.captureEnabled, data };
+}
+
 /** GET /v1/setup and POST /v1/setup/<action> replies. */
 export function parseSetup(body: string): SetupView {
   const v: unknown = JSON.parse(body);
@@ -230,6 +485,7 @@ export function parseSetup(body: string): SetupView {
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
     configured: v.configured, verified: v.verified === true, installed: v.installed,
+    ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,
     targets: t, version: optStr(v.version) ?? null, activation: String(v.activation ?? 'unknown'),
     historyRetained: v.historyRetained === true, diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [],
