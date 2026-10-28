@@ -3,6 +3,8 @@ import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
+import { searchWindow, searchState } from './plan-task-search.ts';
+import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, type Request, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type ItemInput, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
@@ -77,6 +79,8 @@ export class Store {
     finally{finish();}
   }
   close() { this.db.close(); }
+  search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
+  searchState(storeId: string, keys: SearchKey[]) { return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys)); }
   observeLoaded(source:string,installId:string,fingerprint:string) {
     this.transaction(true,()=>{
       // Optional additive runtime metadata: old v2 stores/readers remain valid.

@@ -10,6 +10,62 @@ Probe DTO/store/scripts are historical fixtures, not a production fallback.
 The archived probe HTTP service exists only in tests/fixtures. Panel ID remains
 agent-progress-probe (stable openSurface target); companion/skill ID is agent-progress.
 
+## Bounded plan/task search (additive read revision 1)
+
+`Store.search` and `Store.searchState` use the existing read-only transaction owner;
+`shared/plan-task-search.ts` is the bounded matcher/traversal helper, not a second
+store or index. Exact DTO/query/count/coverage meanings live in
+`shared/progress.ts` and `docs/contracts.md` under Plan/task search revision1.
+Ready health advertises `planTaskSearch:1`; the two new authenticated body-free
+GET routes are `/v1/search` and `/v1/search-state`. Existing routes are unchanged.
+
+Each search window seeks the existing binary primary key `(source,id)` one raw
+candidate at a time, using a row-value comparison (or source equality/id seek).
+There is no OFFSET, excluded-prefix SQL predicate, full count, JSON membership
+EXISTS, FTS or scan of source roots. Cleanup, snapshot and contribution reads share
+one transaction. SQLite measures BLOB byte length before text crosses into JS;
+only accepted bounded input is parsed. At most64 plan-slot attempts,128 membership
+rows and8 MiB input can contribute to one response. Snapshot validation checks
+identity, bounded fields/items/links and finite parent/dependency traversal before
+matching or context extraction. Invalid/oversized snapshots and membership payloads
+produce explicit fixed coverage gaps. Corrupt address keys/cleanup schema fail closed.
+
+Creator/current links resolve session membership without history reads. Otherwise
+contributions use the existing `(source,plan,revision)` index in bounded windows,
+pinned to current progress revision and cleanup generation. An unresolved membership
+check survives in a stateless cursor; it never becomes a false negative at row128.
+Task sequences similarly resume inside a plan. Full matching-task classification
+is counted once at first accepted emission, with per-plan deltas supplied for the
+board's frozen live project/worktree projection. A response-byte pause leaves the
+first un-emitted hit pending. At most50 hits/8 ancestors per task and256 KiB output
+are emitted; bounded envelope/cursor space is reserved before accepting each hit.
+
+Freshness uses only current plan revision and cleanup point lookups for up to50
+explicit distinct keys, not detail/history or a new polling job. Neither operation
+calls the full source-metadata envelope, reads captured documents, creates schema,
+retains cursor state or adds a server cache/connection. A legacy read-only schema2
+store remains readable without cleanup activation. Cross-request results are honest
+observations, not a global snapshot; consumers must retire stale generations and
+bound automatic work at their explicit action/lifetime boundary.
+
+Focused proof commands (Node24, pinned dependencies):
+
+```sh
+node --experimental-strip-types --test tests/backend/plan-task-search.test.ts tests/backend/production-storage.test.ts tests/backend/plan-cleanup.test.ts
+node --experimental-strip-types --test tests/backend/plan-task-search-service.test.ts tests/backend/production-service.test.ts tests/backend/service-recovery.test.ts
+bun run typecheck
+bun run test:backend
+```
+
+The service test can write sanitized `api.json` under an explicitly supplied local
+`EVIDENCE` directory. Fixtures normally use production writes/staged commits;
+direct-SQL corrupt/padded/maximal-title inputs are labelled fault injection. Scale
+proof scans1,200 plans and1,000-item mixed/deep plans, records three post-warmup
+HTTP timing samples and measured work/bytes, and checks bounds rather than arbitrary
+millisecond thresholds. Local evidence: `evidence/plan-task-search/backend.md` and
+`api.json`. This backend proof does not establish native Windows, browser rendering,
+host account isolation, long-session memory behavior or a release/install result.
+
 ## Components and trust boundaries
 
 - plugin/index.ts registers one namespaced codemode:false report tool and inline

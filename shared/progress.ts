@@ -29,6 +29,23 @@ export interface PlanSummary { id: string; sourceId: string; title: string; sess
 export interface PlanState extends Omit<PlanSummary, 'counts' | 'working'> { items: Item[]; links: { sessionId: string; itemIds: string[] }[] }
 export interface Envelope { protocolVersion: 2; schemaVersion: 2; storeId: string; sources: Source[]; sourceBinding: { sourceId: string | null; verified: boolean }; captureEnabled: boolean; coverage: 'recorded-only'; diagnostics: string[] }
 export interface Page<T> { data: T[]; nextCursor: string | null }
+/** Additive v2 search contract revision 1. No schema or report-tool change. */
+export const SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 } as const;
+export interface SearchOptions { q?: string; source?: string; session?: string; lifecycle?: Lifecycle; status?: Status; archived?: 'exclude' | 'only'; limit?: number; cursor?: string }
+export interface SearchKey { source: string; plan: string }
+export interface SearchIdentity { protocolVersion: 2; schemaVersion: 2; planTaskSearch: 1; storeId: string; sourceBinding: Envelope['sourceBinding'] }
+export interface SearchPlan extends Omit<PlanSummary, 'working' | 'document'> { cleanup: { state: 'visible' | 'archived'; revision: number }; sourceVerified: boolean }
+export interface SearchHit { plan: SearchPlan; planMatched: boolean; task: { id: string; title: string; status: Status } | null; ancestors: { id: string; title: string }[]; omittedAncestors: number; continued: boolean; classified: { matchedPlans: 1; matchingTasks: number } | null }
+export type SearchGap = 'invalid-snapshot' | 'oversized-snapshot' | 'invalid-membership' | 'oversized-membership';
+export interface SearchWindow extends SearchIdentity {
+  fingerprint: string; hits: SearchHit[];
+  /** Fully classified qualifying plans only; applied once, even across task pages. */
+  counts: { matchedPlans: number; matchingTasks: number };
+  nextCursor: string | null; exhausted: boolean;
+  coverage: { kind: 'recorded-current'; asSearched: true; gapped: boolean; skippedRecords: number; reasons: SearchGap[] };
+  work: { planSlots: number; inspectedItems: number; membershipRows: number; inputBytes: number; outputHits: number; outputBytes: number };
+}
+export interface SearchState extends SearchIdentity { data: (SearchKey & { exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } })[] }
 /** Response-only reported-working history; absent item entries mean no proven interval. */
 export interface PlanTiming { readAt: string; items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }> }
 export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links']; timing?: PlanTiming }

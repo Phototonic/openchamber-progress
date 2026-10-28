@@ -47,6 +47,7 @@ function countItems(items) {
   const skipped = leaves.filter((i) => i.status === "skipped").length;
   return { done, total: leaves.length - skipped, remaining: leaves.length - skipped - done, skipped };
 }
+var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value);
 }
@@ -139,7 +140,7 @@ function validRequest(value, hint) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
 import path3 from "node:path";
 
@@ -582,6 +583,9 @@ function mutateCleanup(db, file, action, value, transaction) {
   });
 }
 
+// shared/plan-task-search.ts
+import { createHash as createHash2 } from "node:crypto";
+
 // shared/change-digest.ts
 var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
 function emptyEvents() {
@@ -731,6 +735,229 @@ function capDigest(result) {
   return result;
 }
 
+// shared/plan-task-search.ts
+var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
+function searchTokens(q) {
+  requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
+  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean);
+  requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
+  return tokens;
+}
+function searchMatches(tokens, title, id) {
+  const t = normalize(title), key = normalize(id);
+  return tokens.every((word) => t.includes(word) || key.includes(word));
+}
+var safe = (n, min = 0) => Number.isSafeInteger(n) && Number(n) >= min;
+var hash = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var fields = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
+function parseCursor(text) {
+  requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && fields(c, ["v", "identity", "fingerprint", "after", "pending", "gapped"]) && c.v === 1 && typeof c.identity === "string" && /^[a-f0-9]{64}$/.test(c.identity) && typeof c.fingerprint === "string" && /^[a-f0-9]{64}$/.test(c.fingerprint) && typeof c.gapped === "boolean");
+  const key = (v) => v && fields(v, ["source", "plan"]) && identifier(v.source) && identifier(v.plan);
+  requireProgress(c.after === null || key(c.after));
+  const p = c.pending;
+  requireProgress(p === null || p && fields(p, ["source", "plan", "revision", "cleanup", "member", "offset", "counted", "phase"]) && identifier(p.source) && identifier(p.plan) && safe(p.revision, 1) && safe(p.cleanup) && safe(p.member) && p.member <= p.revision && safe(p.offset) && p.offset <= 1000 && typeof p.counted === "boolean" && typeof p.phase === "string" && ["membership", "hits"].includes(p.phase) && (p.phase !== "membership" || p.offset === 0 && !p.counted));
+  return c;
+}
+function searchIdentity(db, binding) {
+  return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
+}
+function cleanup(db, installed, source, plan) {
+  const c = installed ? cleanupState(db, source, plan) : undefined;
+  return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
+}
+function validPlan(value, source, id, revision) {
+  const p = value;
+  if (!validateDigestSnapshot(value, source, id, revision) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || !identifier(p.sessionId) || typeof p.directory !== "string" || p.directory.length > 4096 || p.directory.includes("\x00") || p.projectId !== undefined && (typeof p.projectId !== "string" || p.projectId.length > 4096) || !Array.isArray(p.links) || p.links.length > 64 || p.links.some((l) => !l || !identifier(l.sessionId) || !Array.isArray(l.itemIds) || l.itemIds.length > 1000 || !l.itemIds.every(identifier)))
+    return null;
+  return p;
+}
+function context(p, item) {
+  const byId = new Map(p.items.map((i) => [i.id, i]));
+  const ancestors = [];
+  let parent = item.parentId;
+  while (parent) {
+    const a = byId.get(parent);
+    ancestors.unshift({ id: a.id, title: a.title });
+    parent = a.parentId;
+  }
+  const omittedAncestors = Math.max(0, ancestors.length - SEARCH_LIMITS.ancestors);
+  return { ancestors: omittedAncestors ? [ancestors[0], ...ancestors.slice(-(SEARCH_LIMITS.ancestors - 1))] : ancestors, omittedAncestors };
+}
+function searchWindow(db, binding, options = {}) {
+  requireProgress(Object.keys(options).every((k) => ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"].includes(k)));
+  const tokens = searchTokens(options.q ?? ""), limit = options.limit ?? 20, archived = options.archived ?? "exclude";
+  requireProgress(Number.isInteger(limit) && limit > 0 && limit <= SEARCH_LIMITS.hits && ["exclude", "only"].includes(archived));
+  for (const key of ["source", "session"])
+    requireProgress(options[key] === undefined || identifier(options[key]));
+  requireProgress(options.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options.lifecycle));
+  requireProgress(options.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options.status));
+  const identity = searchIdentity(db, binding), identityHash = hash(identity), fingerprint = hash([options.q ?? "", options.source ?? null, options.session ?? null, options.lifecycle ?? null, options.status ?? null, archived, limit]);
+  const c = options.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options.cursor);
+  requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
+  requireProgress(!options.source || (!c.after || c.after.source === options.source) && (!c.pending || c.pending.source === options.source));
+  const installed = cleanupInstalled(db);
+  const r = { ...identity, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const gap = (reason) => {
+    c.gapped = r.coverage.gapped = true;
+    r.coverage.skippedRecords++;
+    if (!r.coverage.reasons.includes(reason))
+      r.coverage.reasons.push(reason);
+  };
+  const advance = (source, plan) => {
+    c.after = { source, plan };
+    c.pending = null;
+  };
+  let hitBytes = 0;
+  while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
+    const pending = c.pending;
+    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    r.work.planSlots++;
+    if (!row) {
+      requireProgress(!pending, "conflict");
+      r.exhausted = true;
+      break;
+    }
+    const source = String(row.source), id = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id);
+    if (pending)
+      requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
+    requireProgress(identifier(source) && identifier(id), "corrupt");
+    if (!safe(revision, 1)) {
+      gap("invalid-snapshot");
+      advance(source, id);
+      continue;
+    }
+    if (state.state === "deleted" || state.state === "archived" !== (archived === "only")) {
+      advance(source, id);
+      continue;
+    }
+    const bytes = Number(row.bytes);
+    if (bytes > SEARCH_LIMITS.inputBytes) {
+      gap("oversized-snapshot");
+      advance(source, id);
+      continue;
+    }
+    if (r.work.inputBytes + bytes > SEARCH_LIMITS.inputBytes)
+      break;
+    const text = db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id).snapshot;
+    r.work.inputBytes += bytes;
+    let p = null;
+    try {
+      p = validPlan(JSON.parse(String(text)), source, id, revision);
+    } catch {}
+    if (!p) {
+      gap("invalid-snapshot");
+      advance(source, id);
+      continue;
+    }
+    r.work.inspectedItems += p.items.length;
+    if (options.lifecycle && options.lifecycle !== p.lifecycle) {
+      advance(source, id);
+      continue;
+    }
+    const pos = pending ?? { source, plan: id, revision, cleanup: state.revision, member: 0, offset: 0, counted: false, phase: "membership" };
+    if (options.session && pos.phase === "membership" && p.sessionId !== options.session && !p.links.some((l) => l.sessionId === options.session)) {
+      let member = false, finished = false, invalid = false;
+      while (r.work.membershipRows < SEARCH_LIMITS.membershipRows) {
+        const m = db.prepare("SELECT revision,length(CAST(payload AS BLOB)) AS bytes FROM contributions WHERE source=? AND plan=? AND revision>? AND revision<=? ORDER BY revision LIMIT 1").get(source, id, pos.member, revision);
+        if (!m) {
+          finished = true;
+          break;
+        }
+        r.work.membershipRows++;
+        const size = Number(m.bytes);
+        if (size + bytes > SEARCH_LIMITS.inputBytes) {
+          gap("oversized-membership");
+          invalid = true;
+          break;
+        }
+        if (r.work.inputBytes + size > SEARCH_LIMITS.inputBytes)
+          break;
+        const payload = db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? AND revision=?").get(source, id, m.revision).payload;
+        r.work.inputBytes += size;
+        let v;
+        try {
+          v = JSON.parse(String(payload));
+        } catch {}
+        if (!v || v.revision !== m.revision || !identifier(v.attributedSessionId)) {
+          gap("invalid-membership");
+          invalid = true;
+          break;
+        }
+        pos.member = Number(m.revision);
+        if (v.attributedSessionId === options.session) {
+          member = true;
+          break;
+        }
+      }
+      if (invalid || finished && !member) {
+        advance(source, id);
+        continue;
+      }
+      if (!member) {
+        c.pending = pos;
+        break;
+      }
+    }
+    pos.phase = "hits";
+    const planMatched = searchMatches(tokens, p.title, p.id);
+    const matches = p.items.filter((i) => i.kind === "task" && (!options.status || i.status === options.status) && searchMatches(tokens, i.title, i.id));
+    if (!matches.length && (!planMatched || options.status)) {
+      advance(source, id);
+      continue;
+    }
+    const tasks2 = matches.length ? matches : [null];
+    const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
+    const plan = { id, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    requireProgress(pos.offset < tasks2.length);
+    while (pos.offset < tasks2.length && r.hits.length < limit) {
+      const task = tasks2[pos.offset];
+      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const size = Buffer.byteLength(JSON.stringify(hit)) + 1;
+      if (hitBytes + size > SEARCH_LIMITS.responseBytes - 16 * 1024)
+        break;
+      if (!pos.counted) {
+        r.counts.matchedPlans++;
+        r.counts.matchingTasks += matches.length;
+        pos.counted = true;
+      }
+      hitBytes += size;
+      r.hits.push(hit);
+      pos.offset++;
+    }
+    if (pos.offset < tasks2.length) {
+      c.pending = pos;
+      break;
+    }
+    advance(source, id);
+  }
+  r.nextCursor = r.exhausted ? null : Buffer.from(JSON.stringify(c)).toString("base64url");
+  requireProgress(r.nextCursor === null || Buffer.byteLength(r.nextCursor) <= SEARCH_LIMITS.cursorBytes);
+  r.work.outputHits = r.hits.length;
+  for (let n = 0;n < 3; n++)
+    r.work.outputBytes = Buffer.byteLength(JSON.stringify(r));
+  requireProgress(r.work.outputBytes <= SEARCH_LIMITS.responseBytes);
+  return r;
+}
+function searchState(db, binding, storeId, keys) {
+  requireProgress(identifier(storeId) && Array.isArray(keys) && keys.length > 0 && keys.length <= SEARCH_LIMITS.stateKeys && keys.every((k) => k && fields(k, ["source", "plan"]) && identifier(k.source) && identifier(k.plan)));
+  requireProgress(new Set(keys.map((k) => JSON.stringify([k.source, k.plan]))).size === keys.length);
+  const identity = searchIdentity(db, binding);
+  requireProgress(identity.storeId === storeId, "conflict");
+  const installed = cleanupInstalled(db);
+  return { ...identity, data: keys.map((k) => {
+    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row || safe(row.revision, 1), "corrupt");
+    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  }) };
+}
+
 // shared/store.ts
 function canonical(value) {
   if (Array.isArray(value))
@@ -740,7 +967,7 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 function digest(value) {
-  return createHash2("sha256").update(value).digest("hex");
+  return createHash3("sha256").update(value).digest("hex");
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -842,6 +1069,12 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  search(options = {}) {
+    return this.transaction(false, () => searchWindow(this.db, this.readBinding, options));
+  }
+  searchState(storeId, keys) {
+    return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
@@ -1000,8 +1233,8 @@ class Store {
       requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
       const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
       requireProgress(state?.state !== "deleted", "not-found");
-      const cleanup = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
-      requireProgress(cleanup.revision === cleanupRev, "conflict");
+      const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
+      requireProgress(cleanup2.revision === cleanupRev, "conflict");
       requireProgress(to <= Number(live.revision));
       const result = {
         protocolVersion: 2,
@@ -1010,7 +1243,7 @@ class Store {
         sourceBinding: { ...this.readBinding },
         source,
         plan,
-        cleanup,
+        cleanup: cleanup2,
         interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
         availability: "target-unavailable",
         complete: false,
@@ -1102,18 +1335,18 @@ class Store {
   apply(value, actor, capture, child) {
     const r = parseRequest(value);
     requireProgress(r.op !== "read");
-    const hash = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
-      const cleanup = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(cleanup?.state !== "deleted", "not-found");
-      requireProgress(cleanup?.state !== "archived", "closed");
+      const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(cleanup2?.state !== "deleted", "not-found");
+      requireProgress(cleanup2?.state !== "archived", "closed");
       const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash, "operation-reused");
+        requireProgress(replay.payload_hash === hash2, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -1253,7 +1486,7 @@ class Store {
         return receipt;
       }
       function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash, JSON.stringify(receipt));
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash2, JSON.stringify(receipt));
       }
     });
   }
@@ -1361,7 +1594,7 @@ function need(v, code) {
   if (!v)
     throw new SetupError(code);
 }
-function safe(p, allowMissing = false) {
+function safe2(p, allowMissing = false) {
   if (windows) {
     try {
       windowsPath(p, allowMissing);
@@ -1456,7 +1689,7 @@ function updatePreview(o, payload) {
 }
 function verifyFiles(root, expected, extras = []) {
   if (!windows)
-    safe(root);
+    safe2(root);
   need(lstatSync5(root).isDirectory(), "collision");
   need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
   const files = Object.keys(expected).map((name) => path5.join(root, name));
@@ -1464,13 +1697,13 @@ function verifyFiles(root, expected, extras = []) {
     const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash] of Object.entries(expected)) {
+  for (const [name, hash2] of Object.entries(expected)) {
     const file = path5.join(root, name);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
-      safe(file);
+      safe2(file);
     const st = lstatSync5(file);
-    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash, "modified-owned-files");
+    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash2, "modified-owned-files");
   }
 }
 function inspect(targets) {
@@ -1478,22 +1711,22 @@ function inspect(targets) {
 }
 function inspectInner(targets) {
   targets = normalizeTargets(targets);
-  safe(targets.configRoot);
-  safe(targets.dataRoot);
-  safe(targets.storeRoot, true);
+  safe2(targets.configRoot);
+  safe2(targets.dataRoot);
+  safe2(targets.storeRoot, true);
   for (const root of [targets.configRoot, targets.dataRoot])
     need(lstatSync5(root).isDirectory() && isOwned(root), "path-unverified");
   const packageRoot = path5.join(targets.configRoot, "plugins", "agent-progress");
-  safe(packageRoot, true);
+  safe2(packageRoot, true);
   if (existsSync4(targets.storeRoot))
     need(lstatSync5(targets.storeRoot).isDirectory() && (windows ? privatePaths([targets.storeRoot]) : (lstatSync5(targets.storeRoot).mode & 511) === 448), "store-permissions");
   const payloadRoot = path5.join(targets.storeRoot, "payloads");
-  safe(payloadRoot, true);
+  safe2(payloadRoot, true);
   if (windows && existsSync4(payloadRoot))
     need(privatePaths([payloadRoot]), "store-permissions");
   if (windows) {
     const historyFile = path5.join(targets.storeRoot, "installation-history.jsonl");
-    safe(historyFile, true);
+    safe2(historyFile, true);
     if (existsSync4(historyFile))
       need(lstatSync5(historyFile).isFile() && privatePaths([historyFile]), "store-permissions");
   }
@@ -1516,7 +1749,7 @@ function owned(targets) {
   need(info.installed, "not-installed");
   const manifestFile = path5.join(info.packageRoot, ".ownership.json");
   need(existsSync4(manifestFile), "collision");
-  safe(manifestFile);
+  safe2(manifestFile);
   if (windows)
     need(privatePaths([info.packageRoot, manifestFile]), "ownership-invalid");
   let m;
@@ -1552,7 +1785,7 @@ function removableSelectors(o) {
 }
 function history(targets, event) {
   const file = path5.join(targets.storeRoot, "installation-history.jsonl");
-  safe(file, true);
+  safe2(file, true);
   if (windows && existsSync4(file))
     need(privatePaths([file]), "store-permissions");
   appendFileSync(file, JSON.stringify(event) + `
@@ -1592,7 +1825,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
       if (!/^[a-f0-9]{64}$/.test(id) || o?.manifest.releases[id])
         return false;
       try {
-        safe(path5.join(payloadRoot2, id));
+        safe2(path5.join(payloadRoot2, id));
         const b = readBinding(path5.join(payloadRoot2, id, "progress-binding.json"));
         return b.source.configRoot === targets.configRoot && b.source.dataRoot === targets.dataRoot;
       } catch {
@@ -1658,7 +1891,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   }
   const { files, releaseHash, release } = releasePayload(binding, payload);
   const payloadRoot = path5.join(targets.storeRoot, "payloads");
-  safe(payloadRoot, true);
+  safe2(payloadRoot, true);
   privateDirectory(payloadRoot, true);
   const releaseRoot = path5.join(payloadRoot, release);
   if (existsSync4(releaseRoot))
@@ -1678,7 +1911,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);
-    safe(plugins, true);
+    safe2(plugins, true);
     if (windows && !existsSync4(plugins))
       privateDirectory(plugins, true);
     const stage = path5.join(windows ? plugins : targets.configRoot, `.agent-progress-stage-${randomUUID3()}`);
@@ -1892,7 +2125,7 @@ __export(exports_external, {
   httpUrl: () => httpUrl,
   hostname: () => hostname2,
   hex: () => hex2,
-  hash: () => hash,
+  hash: () => hash2,
   guid: () => guid2,
   gte: () => _gte,
   gt: () => _gt,
@@ -18561,7 +18794,7 @@ __export(exports_schemas2, {
   httpUrl: () => httpUrl,
   hostname: () => hostname2,
   hex: () => hex2,
-  hash: () => hash,
+  hash: () => hash2,
   guid: () => guid2,
   function: () => _function,
   float64: () => float64,
@@ -19294,7 +19527,7 @@ function hex2(_params) {
 function currencyCode2(_params) {
   return _stringFormat(ZodCustomStringFormat, "currency_code", currencyCode, _params);
 }
-function hash(alg, params) {
+function hash2(alg, params) {
   const enc = params?.enc ?? "hex";
   const format = `${alg}_${enc}`;
   const regex = exports_regexes[format];
@@ -23189,7 +23422,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
   if (!token)
     throw new ProgressError("binding");
   const expected = Buffer.from(`Bearer ${token}`);
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer({ maxHeaderSize: 32 * 1024 }, async (req, res) => {
     function answer(status, body) {
       let text2 = JSON.stringify(body);
       if (Buffer.byteLength(text2) > LIMITS.responseBytes) {
@@ -23202,12 +23435,15 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false;
     try {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
       digestRoute = url2.pathname === "/v1/change-digest";
+      searchRoute = url2.pathname === "/v1/search" || url2.pathname === "/v1/search-state";
       if (url2.origin !== "http://127.0.0.1")
         return answer(404, { error: "not-found" });
+      if (searchRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
       cleanupRoute = ["/v1/plan/archive", "/v1/plan/restore", "/v1/plan/delete"].includes(url2.pathname);
       if (cleanupRoute) {
         if (req.method !== "POST")
@@ -23304,10 +23540,12 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       if (req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
-      const routes = { "/health": [], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       const allowed = routes[url2.pathname];
       if (!allowed || [...url2.searchParams.keys()].some((k) => !allowed.includes(k) || url2.searchParams.getAll(k).length !== 1))
         return answer(404, { error: "not-found" });
+      if (searchRoute && Buffer.byteLength(url2.search) > SEARCH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
       const number4 = (key, fallback) => {
         const v = url2.searchParams.get(key);
         if (v === null)
@@ -23327,7 +23565,22 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
       if (url2.pathname === "/health")
-        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+      if (url2.pathname === "/v1/search") {
+        const options = Object.fromEntries(url2.searchParams);
+        if (url2.searchParams.has("limit"))
+          options.limit = number4("limit", 20);
+        return answer(200, currentStore.search(options));
+      }
+      if (url2.pathname === "/v1/search-state") {
+        let keys;
+        try {
+          keys = JSON.parse(url2.searchParams.get("keys") ?? "null");
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        return answer(200, currentStore.searchState(text2("storeId", true), keys));
+      }
       if (url2.pathname === "/v1/plans") {
         const archived = url2.searchParams.get("archived") ?? "exclude";
         if (archived !== "exclude" && archived !== "only")
@@ -23356,7 +23609,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
+      if ((cleanupRoute || digestRoute || searchRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
         return answer(409, { error: error62.code });
       return answer(error62.code === "invalid" ? 400 : error62.code === "not-found" ? 404 : 503, { error: error62.code });
     }
@@ -23381,11 +23634,11 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { lstatSync as lstatSync6, realpathSync as realpathSync6 } from "node:fs";
 import path6 from "node:path";
 import { homedir } from "node:os";
-function setupSuggestions(context) {
-  return platformSecurityScope(() => suggestions(context));
+function setupSuggestions(context2) {
+  return platformSecurityScope(() => suggestions(context2));
 }
-function suggestions(context) {
-  const host = context ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
+function suggestions(context2) {
+  const host = context2 ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
   if (host.platform !== "linux" && host.platform !== "win32")
     return;
   const nativeWindows = host.platform === "win32" && process.platform === "win32";

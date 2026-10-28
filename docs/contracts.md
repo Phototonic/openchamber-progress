@@ -10,6 +10,141 @@ an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
 
+## Plan/task search revision 1 (frozen additive v2 read contract)
+
+Ready `/health` adds **`planTaskSearch:1`**. Absence means unavailable, never
+zero matches. Protocol/schema stay **2**; no migration, stored index, report-tool
+change or new permission is involved. Canonical DTOs and ceilings are
+`SearchOptions`, `SearchWindow`, `SearchHit`, `SearchState` and `SEARCH_LIMITS`
+in `shared/progress.ts`. The real SQLite/HTTP fixture is
+`tests/fixtures/plan-task-search.ts`; route proof is
+`tests/backend/plan-task-search-service.test.ts`.
+
+### Requests and identity
+
+Authenticated body-free **GET `/v1/search`** accepts only:
+
+| Query | Meaning / bound |
+| --- | --- |
+| `q` | Optional text, default empty; at most 256 Unicode code points, 16 nonempty whitespace-separated tokens; NUL refused |
+| `source`, `session` | Optional existing-format ASCII identifiers (1–80 characters); omitted source means all recorded sources |
+| `lifecycle` | Optional `active\|finished\|cancelled\|failed` |
+| `status` | Optional task status `pending\|working\|blocked\|done\|skipped` |
+| `archived` | `exclude` (default) or `only`; never implicitly includes both |
+| `limit` | Integer 1–50, default 20; bounds emitted hits, not scanned plans |
+| `cursor` | Optional opaque continuation, at most 4 KiB; return verbatim with identical other criteria |
+
+The encoded query including `?` is at most 16 KiB. Reject rather than truncate.
+Unknown or duplicate query fields return404; malformed values400; auth401;
+method405; request bodies400; cursor/store/binding conflict409; unavailable,
+corrupt, busy or unknown-schema stores503. Errors contain only fixed codes,
+never query text, rejected keys, paths or exceptions. The HTTP parser separately
+bounds total request headers at32 KiB; requests exceeding that transport limit
+can be refused by Node before application routing.
+
+First read returns actual `storeId` and `sourceBinding:{sourceId,verified}`.
+Each response includes `protocolVersion:2`, `schemaVersion:2`,
+`planTaskSearch:1` and a SHA-256 `fingerprint` of the complete backend criteria
+(including raw query and output limit). Continuations bind that identity and
+fingerprint. They contain only version, identity/fingerprint hashes, keyset
+position, optional pinned plan revision/cleanup generation, membership revision,
+task offset and classification/gap flags: no titles, bodies or credentials.
+They are not durable jobs, signed authorization grants, a frozen library snapshot
+or instructions to retain a server connection. Scope/account/host/live-membership
+generation remains a separate consumer identity boundary.
+
+Example: `/v1/search?q=export+csv&status=blocked&archived=exclude&limit=20`.
+Every token must occur in the **same entity's own title or ID**; tokens cannot be
+pooled across tasks or borrowed from the containing plan. Normalization is
+`NFC → JavaScript toLowerCase() → NFC`, with Unicode whitespace splitting.
+Case-insensitive ID punctuation remains literal; `%` and `*` are not operators.
+Canonical accented spellings match; accents are not removed. This is simple
+lowercase, not linguistic/full case folding (`Straße` does not match `STRASSE`).
+
+### Search windows, grouping and counts
+
+`SearchWindow` is **not** `Page<PlanSummary>`, a complete plan detail, a facet
+census or an ordinary list prefix. It has:
+
+- `hits`: zero to `limit` rows in binary `(source,id)` plan order, then stored
+  task order. A row contains `plan`, `planMatched`, `task` (or null), `ancestors`,
+  `omittedAncestors`, `continued`, and `classified`.
+- `plan`: current full-plan summary identity/title/location/session, revision,
+  structuralRevision, lifecycle, reportedAt, authoritative `counts`, explicit
+  `cleanup:{state,revision}` (legacy visible generation0) and `sourceVerified`.
+  No working-ID array, documents, source config/data roots or complete items.
+- `task`: only `{id,title,status}`. Groups never match/count as tasks. Breadcrumbs
+  contain `{id,title}` only; at most8, retaining root and nearest7 when deep,
+  with the number of omitted intermediate ancestors. They are context, not hits.
+- `planMatched`: whether the plan's own title/ID satisfies text. With no status,
+  a plan qualifies for its own match or matching tasks. Matching tasks appear as
+  rows; a plan-only hit appears only when there are no task hits. With status,
+  only tasks satisfying text **and** status qualify; plan text cannot bypass it.
+  Empty text plus status selects all tasks of that status. Lifecycle intersects
+  at plan level; source/archive/session filters also precede emission.
+- `classified:{matchedPlans:1,matchingTasks:N}` on the first emitted hit of a
+  fully classified plan, null thereafter. `N` includes matches awaiting task
+  continuation. `continued` is false on that first hit, true on subsequent hits
+  of the same plan (including within the same window). This per-plan delta lets
+  the board apply its frozen project/worktree predicate **before** counting.
+- `counts:{matchedPlans,matchingTasks}`: sum of this window's non-null
+  `classified` deltas, **not cumulative totals**. Accumulate once per traversal;
+  task-continuation windows do not recount the plan. Full-plan done/total/
+  remaining/skipped remain authoritative and never become filtered totals.
+- `nextCursor`, `exhausted`: only `exhausted:true` with null cursor ends traversal.
+  A full result page, empty window or work pause is not completion. Continuing
+  after an output-byte boundary resumes the first un-emitted hit.
+- `coverage:{kind:'recorded-current',asSearched:true,gapped,skippedRecords,reasons}`:
+  gap flag is cumulative through continuation; skipped count/reasons describe
+  this window. Fixed reasons are `invalid-snapshot`, `oversized-snapshot`,
+  `invalid-membership`, `oversized-membership`. A skipped record advances once;
+  unreadable/corrupt address keys or unknown cleanup formats instead fail closed.
+- `work:{planSlots,inspectedItems,membershipRows,inputBytes,outputHits,outputBytes}`:
+  measured plan-slot attempts (including an exhaustion lookup), items in accepted
+  validated snapshots, returned membership rows inspected, accepted pre-parse
+  UTF-8 input bytes, emitted hits and complete encoded response bytes. These are
+  per request; resumed plans are inspected again, not served from a hidden cache.
+
+Per transaction: at most64 raw plan-slot attempts,128 contribution rows,8 MiB
+accepted snapshot/contribution input,1,000 items per plan,50 hits,8 ancestors per
+task,256 KiB UTF-8 response. Raw keyset candidate work is limited **before**
+archive/session/lifecycle/status/text predicates; an excluded prefix cannot cause
+an unbounded scan to fill a page. An indexed source restriction is allowed.
+Owner/current links resolve session membership first; otherwise revision-keyed
+contribution windows resume membership instead of declaring a premature nonmatch.
+A record too large to parse in one read (or a contribution that cannot coexist
+with its snapshot in the input budget) is explicitly gapped, not looped forever.
+
+In-plan task/membership continuation pins progress revision and cleanup generation;
+change/disappearance requires refresh409. Completed earlier plans are not pinned
+forever. Concurrent changes/insertions behind the cursor can change the observed
+library. Accumulated counts mean **found so far**, or **as searched; reports may
+change** after clean exhaustion, never a live/transactionally frozen census.
+Gapped exhaustion cannot support an exact full-coverage claim. There is no
+full-table count, history/body search, broad source enumeration, durable index,
+persistent server cursor/job, server-wide cache or automatic continuation.
+
+### Narrow freshness read
+
+Authenticated body-free **GET `/v1/search-state?storeId=ID&keys=JSON`** accepts only
+those two fields. `keys` is a JSON array of1–50 distinct `{source,plan}` identifier
+pairs (object field order does not affect distinctness). The same16 KiB encoded
+query and fixed error discipline applies. Wrong store returns409; empty, duplicate,
+extra-field or oversized key lists return400. It returns `SearchState`: the same
+minimal identity and `data` in requested order, each row containing exactly the
+requested `source`, `plan`, `exists`, `revision` (null when missing), and
+`cleanup:{state:'visible'|'archived'|'deleted',revision}`. An unknown key has
+`exists:false`, null revision and visible generation0; a deleted key retains its
+deleted cleanup generation. No unsent keys, items, timing or history are read.
+
+Freshness is authoritative metadata point-lookup evidence, not list-filter absence.
+Archive/restore generation changes invalidate results even with unchanged progress
+revision. Consumers revalidate displayed keys before reuse, retire continuation and
+count authority on changed/missing identity, and offer Refresh search. Failure is
+stale/unavailable, never an empty successful read. Legacy schema2 and read-only
+stores work without creating cleanup tables or metadata. Search never mutates
+reports, starts/assigns/completes tasks, opens sessions or accesses captured bodies.
+
 ## System boundaries
 
 The system has four components: an OpenCode companion plugin that captures explicit
@@ -93,6 +228,9 @@ filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
 
 ## Plan change digests (frozen additive read contract)
+
+See also the independent **Plan/task search revision 1** contract above. Search
+does not change list/detail/document/history, reporting, or change-digest semantics.
 
 A ready service advertises `planChangeDigests:1` on `/health`; absence means
 unavailable, not an empty comparison. Protocol/schema remain 2. Authenticated,
