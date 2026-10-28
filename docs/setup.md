@@ -1,11 +1,18 @@
 # Safe global companion setup (production v2)
 
-Package versions use the 0.x line; protocol/schema remain 2. Current package version
-is 0.3.0. Tagged releases are published after main promotion and successful
-workflow checks. Each release preparation also updates `CHANGELOG.md`, the maintained
-human-readable change history; GitHub release notes remain native What's Changed lists. Historical
-package labels are corrected to0.2.0/0.2.1; earlier raw local QA records keep their
-original labels. Local evidence references below are not shipped files.
+Package versions use the 0.x line; protocol/schema remain 2. Read this checkout or
+distribution's version from its included [package.json](../package.json).
+[GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
+identifies published tags and assets after main promotion and successful workflow
+checks. A development checkout can share a package version with a release while
+containing additional unreleased changes.
+
+The [repository changelog](https://github.com/Phototonic/openchamber-progress/blob/main/CHANGELOG.md)
+records release history; GitHub release notes remain native What's Changed lists.
+This guide is included in both distribution archives. Other repository guides
+are linked online where needed; local evidence references below are not shipped
+files. Historical package labels are corrected to0.2.0/0.2.1; earlier raw local QA
+records keep their original labels.
 
 Initial lifecycle validation used disposable roots, with no real-user installation
 in that validation boundary. Fixture validation proves isolated lifecycle behavior,
@@ -20,7 +27,8 @@ files remain untouched. First cleanup creates a private recovery snapshot in the
 store folder; deletion does not securely erase backups, journals or free pages.
 Keep cleanup guards/tombstones during application rollback; never automatically
 restore that snapshot or reset schema2 to undo cleanup. Older readers may show
-archived records; older writers remain fenced. See `docs/contracts.md`.
+archived records; older writers remain fenced. See the
+[reporting and cleanup contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md).
 
 ## Proactive guidance after loading
 
@@ -43,9 +51,9 @@ report receipt. Hidden/restricted tools are never enabled or bypassed.
 ## Git distribution validation and main promotion
 
 The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
-with default branch `main`. Anonymous access to its main manifest is established;
-the package manifest version is 0.3.0. The root `private: true` is an npm publishing
-guard, not a statement about GitHub visibility.
+with default branch `main`. Its manifest is publicly readable; the selected ref
+determines the installed files and package version. The root `private: true` is
+an npm publishing guard, not a statement about GitHub visibility.
 OpenChamber clones the selected/default ref and inspects its existing runtime
 entries; it does not install dependencies or compile TypeScript. The root manifest
 is used as committed, not repaired into a ZIP manifest. Required generated backend
@@ -84,7 +92,7 @@ and validation. Runtime promotion requires complete builds:
 Portable CI requires a fresh disposable checkout and refuses nonempty artifact
 directories without deleting archives. Its external-runtime exclusions and current
 main/dev push and PR-target coverage are documented in
-[CONTRIBUTING.md](../CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only).
+[CONTRIBUTING.md](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only).
 OpenChamber update awareness remains based on the main manifest, not GitHub Releases;
 companion updates and activation still require explicit review/confirmation/reload.
 
@@ -333,54 +341,42 @@ explicit update-with-the-same-roots recovery once. Future replacement preserves
 the new stable selection. An already deleted descriptor is not magically restored.
 
 Details of routes, confirmation bodies, version/activation/error fields and
-read-only paging are frozen in docs/contracts.md. Production panel ID remains
+read-only paging are frozen in the
+[reporting contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md). Production panel ID remains
 agent-progress-probe to preserve Work Status openSurface; labels are Agent progress.
 Package assembly joins built backend entries with the three guest frames. The
 initial backend-only validation did not produce an installable extension ZIP;
 the shipped artifacts are described below.
 
-## V1 installable artifacts (0.3.0)
+## V1 installable artifacts
 
-V1 is the product scope; the current package version is **0.3.0**,
-agreeing across extension and companion payloads. Version 0.3.0 packages the readiness
-view, focus controls and session-chip readability changes. Version 0.2.9 packaged
-the accepted cleanup and session-scoping changes. Version 0.2.8 added native
-Windows setup, storage and document capture, preserves retained-source
-reinstallation, and includes clearer progress invocation and working-plan selection.
-See the native Windows boundary below. Version 0.2.7 corrected external
-worktree project grouping, filtering and session discovery using bounded workspace
-membership; unknown ownership retains a directory fallback. That release's backend
-behavior was unchanged from 0.2.6. The 0.2.6 version-only release added no runtime behavior to
-0.2.5. The 0.2.5 promotion-metadata patch
-adds no feature behavior to0.2.4. It retains accepted cached-revisit/
-spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
-suggestions, preserved separator normalization and failed-setup Store cleanup.
-The smaller-import experiment was not promoted; no persistent-service Store reuse
-or payload-audit cache was added. This patch distinguishes the distribution from
-installed/archived0.2.2; it is not a complete performance cure.
-It also joins automatic advisory companion comparison and explicit review/update
-UX; updates remain user-confirmed and activation remains separate. Publication of
-0.3.0 does not activate an installed companion; historical real0.2.3 update
-observations and their pending-load status are unchanged. Protocol/schema remain2.
-The panel ID and
-Agent progress manifest labels are unchanged. The artifacts described here are
-unsigned; checksum inventories verify content integrity, not publisher signatures.
+V1 describes the product scope. In the filenames below, `<version>` is the package
+version from the selected distribution's root `package.json`; extension and
+companion payload versions must agree. The panel ID and Agent progress manifest
+labels are unchanged. These artifacts are unsigned; checksum inventories verify
+content integrity, not publisher signatures.
 
-After `bun run build:backend && bun run package`, `build/artifacts/` contains:
+For maintainers assembling from source, use a fresh disposable checkout and
+accepted backend and guest entries. `bun run build:backend` rebuilds only the
+backend; rebuild affected guests separately before assembly. `bun run package`
+copies guest bytes unchanged. See the
+[build and packaging instructions](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#built-files-are-intentional).
+After assembly, `build/artifacts/` contains:
 
-- `agent-progress-extension-0.3.0/` and `.zip`: host manifest, the three guest
+- `agent-progress-extension-<version>/` and `.zip`: host manifest, the three guest
   HTML/main.js frames copied unchanged, self-contained service, companion and
   setup utility. No consumer compilation, dependency installation or network
   dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-0.3.0/` and `.zip`: standalone companion installer,
+- `agent-progress-companion-<version>/` and `.zip`: standalone companion installer,
   using the same build/companion and build/setup layout. **Do not** put this ZIP
   directly into OpenCode's plugins folder; invoke its setup utility instead.
 - `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-0.3.0.sha256`: canonical sorted filename/content-hash inventory for
+- `entries-<version>.sha256`: canonical sorted filename/content-hash inventory for
   these two folders. Reassembly must reproduce these entries, not ZIP container
   bytes: ZIP timestamps/headers can change without changing any payload entry.
-  Superseded, incorrectly labelled unreleased builds are local QA history only;
-   older0.x artifacts remain local QA history; select the 0.3.0 pair explicitly.
+
+Select the extension and companion pair from the same release. Superseded,
+incorrectly labelled unreleased builds remain local QA history only.
 
 With explicit approval, use OpenChamber's extension installer on the extension
 folder or ZIP. Review sessions and host-service privileges before granting them.
@@ -424,17 +420,49 @@ recovery is automatic once access is restored. Reinstall/update still requires
 explicit confirmation and valid owned files; there is no automatic reset or
 repair of corrupt/future stores.
 
-Verification: `bun run check` now assembles artifacts and runs parser, entry,
-version, packaged-service, lifecycle and synthetic packaged-tool guidance checks.
+### Maintainer verification
+
+With the [native test prerequisites](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#local-development)
+and accepted guest bundles, `bun run check` runs the root typecheck, backend tests,
+backend build, package assembly and package verification. Verification includes
+parser, entry, version, packaged-service, lifecycle and synthetic packaged-tool
+guidance checks. UI typechecking and browser tests are separate; the portable CI
+instructions linked above cover them and generated-entry parity.
 For the actual host installer gate, set AGENT_PROGRESS_HOST_MODULE to the existing
 isolated host's extracted `server/lib/guests/install.js` module before that command.
 It installs the folder and ZIP into disposable extension registries only; no app
 or guest is launched. System `zip`/`unzip` are build/QA tools, not consumer runtime
-dependencies. Local-only QA evidence (not shipped): evidence/package/m2-checks.txt,
-canonical entry/hash inventories, and the packaging addendum in evidence/backend/qa.md.
-Final runtime/relay checks passed on the labelled test
-ZIP with byte-identical guest bundles; final reassembly adds artifact gates, not
-another full runtime/relay run. No retained fixture was changed by reassembly.
+dependencies.
+
+### Historical release and validation notes
+
+Version 0.3.0 packaged the readiness view, focus controls and session-chip readability changes. Version 0.2.9 packaged
+the accepted cleanup and session-scoping changes. Version 0.2.8 added native
+Windows setup, storage and document capture, preserved retained-source
+reinstallation, and included clearer progress invocation and working-plan selection.
+See the [native Windows boundary](#native-windows). Version 0.2.7 corrected external
+worktree project grouping, filtering and session discovery using bounded workspace
+membership; unknown ownership retains a directory fallback. That release's backend
+behavior was unchanged from 0.2.6. The 0.2.6 version-only release added no runtime behavior to
+0.2.5. The 0.2.5 promotion-metadata patch
+added no feature behavior to0.2.4. It retained accepted cached-revisit/
+spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
+suggestions, preserved separator normalization and failed-setup Store cleanup.
+The smaller-import experiment was not promoted; no persistent-service Store reuse
+or payload-audit cache was added. That patch distinguished the distribution from
+installed/archived0.2.2; it is not a complete performance cure.
+It also joined automatic advisory companion comparison and explicit review/update
+UX; updates remain user-confirmed and activation remains separate. Publication of
+0.3.0 does not activate an installed companion; historical real0.2.3 update
+observations and their pending-load status are unchanged. Protocol/schema remain2.
+
+The original V1 packaging validation recorded final runtime/relay checks on its
+labelled test ZIP with byte-identical guest bundles. Reassembly added artifact
+gates; it did not repeat that full runtime/relay run or change a retained fixture.
+This is historical evidence for those tested bytes, not certification of a later
+checkout or newly assembled archive. Local-only QA evidence (not shipped):
+`evidence/package/m2-checks.txt`, canonical entry/hash inventories, and the packaging
+addendum in `evidence/backend/qa.md`.
 
 The cached-revisit/spinner and bounded refresh issues, and failed-setup connection
 cleanup, have focused regression evidence. The reported hours-long real-host

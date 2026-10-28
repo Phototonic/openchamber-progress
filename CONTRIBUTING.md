@@ -46,17 +46,20 @@ node --experimental-strip-types --test tests/browser/*.test.ts
 node --experimental-strip-types --test tests/automation/*.test.ts
 ```
 
-Some backend runtime tests require an independent OpenCode 2.1.4 binary and Linux isolation tools (`unshare -Urn` and `ip`). See the [compatibility guide](docs/compatibility.md#agnostic-activation-private024-package-validation) and the relevant test's prerequisites before running them. Never use a live profile, copy authentication, restart a real instance, or call a paid model just to run a test. Report unavailable prerequisites and skipped checks honestly.
+Some backend runtime tests require an independent OpenCode 2.1.4 binary and Linux isolation tools (`unshare -Urn` and `ip`). See the [compatibility guide](docs/compatibility.md#agnostic-activation-historical024-package-validation) and the relevant test's prerequisites before running them. Never use a live profile, copy authentication, restart a real instance, or call a paid model just to run a test. Report unavailable prerequisites and skipped checks honestly.
 
 ### Portable CI — fresh disposable checkout only
 
-In a **fresh disposable checkout** of the revision you want to test, with the toolchain above:
+In a **fresh disposable clone** of the revision you want to test, with full Git
+history and the toolchain above (the CI workflow uses `fetch-depth: 0`):
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
 node --experimental-strip-types scripts/ci.ts
 ```
 
+The legacy-writer fixtures read earlier committed code with `git show`; a source
+export without `.git` or a shallow clone missing that history is insufficient.
 The helper **refuses a nonempty `build/artifacts` before reading runtime entries or starting checks**. It never deletes existing archives. Do not clear a maintainer's artifact folder to make it run; use a fresh disposable checkout instead. The helper creates `/tmp/opencode` for its fixtures.
 
 It runs root/UI typechecks, portable backend tests, browser-model and automation tests, backend/guest builds with eight-entry parity checks, then package assembly and verification. It explicitly excludes these external-runtime tests:
@@ -96,6 +99,8 @@ bun run package
 bun run verify:package
 ```
 
+The `build` alias runs `build:backend` only; it does not rebuild guests.
+`package` copies the accepted guest bundles byte for byte and does not compile them.
 Assembly writes the extension and companion folders/ZIPs under `build/artifacts/`; these are local outputs, not files to commit. Verification exercises those folders and ZIPs, checks entries/versions, and runs isolated service and companion lifecycle checks.
 
 `bun run check` combines the root typecheck, backend tests, backend build, package assembly, and package verification. It **does not** include the UI typecheck or browser tests. Use it for relevant integration changes, not as a mandatory gate for a typo or documentation-only PR.
