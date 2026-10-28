@@ -7,6 +7,7 @@ import { Store, storageError } from '../shared/store.ts';
 import { SetupError, type Action } from '../setup/lifecycle.ts';
 import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
+import { blockedTiming } from './blocked-timing.ts';
 import { ExtensionUpdates } from './extension-updates.ts';
 import { parseCleanup } from '../shared/cleanup.ts';
 import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
@@ -114,7 +115,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       }
       if (url.pathname === '/v1/plan') {
         const detail=currentStore.detail(source,plan,number('cursor',0));
-        return answer(200,{...detail,timing:taskTiming(currentStore,detail)});
+        return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail)});
       }
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));

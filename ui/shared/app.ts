@@ -485,6 +485,16 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
   const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); spec.retire?.('reset'); };
+  /**
+   * Hide boundary: in-flight detail reads are retired, so a held reply released while hidden
+   * issues no continuation page and paints nothing; becoming visible reads them again. Completed
+   * details (and their timing anchors) stay cached.
+   */
+  let detailsDeferred = false;
+  const retireHiddenDetails = () => {
+    for (const [key, value] of details) if (value.value.state === 'loading') { details.delete(key); detailsDeferred = true; }
+    if (detailsDeferred) detailQueue = Promise.resolve();
+  };
   const forgetPlans = (keys: Set<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
     if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; }
@@ -694,6 +704,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   function loadDetails(plans: PlanView[], force = false) {
+    // A hidden frame starts no detail read; becoming visible repaints and reads (visibilitychange).
+    if (document.visibilityState === 'hidden') { if (plans.length) detailsDeferred = true; return; }
     for (const p of plans) {
       const cached = details.get(p.key);
       const cleanupRev = p.cleanup?.revision ?? 0;
@@ -909,7 +921,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // under; a loading paint without the task list keeps what an earlier paint recorded.
     let logical: Logical | null = null;
     let onFallback = false;
-    /** Focus on a task-view control (outside the task list) of the plan being read. */
+    /** Focus on a task-view or readiness control (outside the task list) of the plan being read. */
     let taskControl = false;
     const oldArticle = mount!.querySelector<HTMLElement>(READING);
     if (reading && paintedReading === reading && oldArticle) {
@@ -920,7 +932,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       // anchor. With no task row in view (reading Readiness above them), keep the page offset itself.
       if (list) { const top = document.scrollingElement?.scrollTop ?? 0; reading.anchor = anchorOf(list) ?? (top ? { scroll: top } : null); logical = active ? logicalOf(active, list) : null; }
       onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
-      taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks') && oldArticle.contains(active);
+      // Readiness (Needs you) controls exist only with complete detail too, so they park the same way.
+      taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks,[data-testid="readiness"]') && oldArticle.contains(active);
       if (!onFallback) { reading.parked = null; reading.parkedControl = null; }
     }
     const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
@@ -972,6 +985,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     // brought back only while focus is still parked there.
     let restored = false;
     let back = focus;
+    /** Where a parked control goes when its entry is gone from the complete paint: this paint's Tasks heading. */
+    let backFallback: HTMLElement | null = null;
     if (sameReading && reading && article) {
       const want = logical ?? (onFallback ? reading.parked : null);
       const toTasks = () => { restored = true; article.querySelector<HTMLElement>(TASKS_HEADING)?.focus({ preventScroll: true }); };
@@ -980,7 +995,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (want) { reading.parked = want; toTasks(); }
         else if (taskControl && focus) { reading.parkedControl = focus; toTasks(); }
       } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want); }
-      else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; }
+      else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; backFallback = article.querySelector<HTMLElement>(TASKS_HEADING); }
       else if (want || onFallback || (taskControl && !list)) {
         // Complete detail without the remembered target (e.g. no task rows): nothing stays parked;
         // focus stays at the Tasks heading, the nearby fallback.
@@ -993,7 +1008,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
       const owner = candidates.find((n) => planScope(n) === f.plan);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
-      target?.focus({ preventScroll: true });
+      (target ?? backFallback)?.focus({ preventScroll: true });
     }
     if (cleanupFocus) {
       const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
@@ -1097,10 +1112,12 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (ctx) planMain();
       digests?.visible();
       retry();
+      if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {
       html.dataset.apHidden = '';
       digests?.hidden();
       spec.retire?.('hidden');
+      retireHiddenDetails();
       if (timer) { clearTimeout(timer); timer = null; }
       planLabels();
       retireMain();

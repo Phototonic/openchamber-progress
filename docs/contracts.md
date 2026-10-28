@@ -208,6 +208,222 @@ and retried on the normal cadence. Capture changes need not advance plan revisio
 Legacy schema2 and read-only stores work without creating cleanup tables or metadata. Search never mutates
 reports, starts/assigns/completes tasks, opens sessions or accesses captured bodies.
 
+## Reported blockers revision 1 (frozen additive v2 contract)
+
+Protocol and schema remain **2**. This revision extends existing schema2 JSON
+snapshots and the existing report/detail owners: **no new table, migration,
+endpoint or health capability**. Optional fields are not an upgrade requirement.
+Existing operations, required statuses, counts, authorization, source/assignment
+checks, lifecycle, `oid`/`rev` and receipt semantics are unchanged. Types freeze
+before the sequential producer and consumer switch; type declarations alone do
+not establish runtime support.
+
+### Deliberate annotation input
+
+Task entries in `start`, `revise` and `stage` accept optional
+`blocker: BlockerInput | null`; `commit` consumes staged entries atomically, not
+a new top-level blocker parameter. Entries in `change.changes` accept the same
+field. A change still requires `id` and `status`; a metadata-only edit repeats
+`status:"blocked"`. No other new request fields are accepted.
+
+```ts
+type BlockerCategory = 'decision' | 'dependency' | 'review' | 'external' | 'other';
+interface BlockerInput {
+  category?: BlockerCategory;
+  reason?: string;
+  nextAction?: string;
+}
+```
+
+Each supplied prose value must be a nonblank string of at most **512 JavaScript
+string code units**, without NUL. Reject blank, NUL or oversized values rather
+than truncating them. Missing category, reason and next action are independently
+unknown; never synthesize them from titles, documents, inactivity, report age,
+prompts, transcripts, tool output or passive host states. Producers supply
+purpose-written safe summaries. Literal rendering and bounds are not a
+secret-redaction guarantee.
+
+Only the five listed categories are valid input. Unknown keys at every request
+object level, including inside `blocker`, remain invalid. Callers cannot supply
+annotation provenance, revisions or timestamps. Metadata describes a blocked
+**task**, not a group, approval, assignment or separate success flag. Group
+entries reject `blocker`, including null. A non-null object requires a blocked
+destination. Structural requests resolve inherited status within the ordinary
+transaction before accepting it. Incompatible entries reject the entire batch
+without partial mutations. Existing **16,384-byte report** and **1,048,576-byte
+complete response** ceilings remain; annotation limits do not override them.
+
+### Replacement, retention and clearing
+
+`blocker` is a complete replacement, never a merge:
+
+| Input / boundary | Result |
+| --- | --- |
+| Explicit object | Replace all content fields; omitted members are unknown. `{}` deliberately records all parts unknown. |
+| `null` on a task | Clear the annotation, without changing the requested status. |
+| Omitted on a continuously blocked retained task | Retain only verified-current annotation content and its original provenance. |
+| Creation, re-entry into blocked, remove/re-add, task-kind change or closed→reopen, with no explicit object | Annotation unknown; never recover earlier text. |
+| Nonblocked destination | Clear annotation; a non-null object is invalid. |
+| Finish, cancel or fail | Clear current annotations; immutable earlier revisions remain historical. |
+
+Neutral title, link, bind, assignment and unrelated changes preserve valid
+annotations. Reason edits alone do not change task status or restart its blocked
+interval. Removing reason text does not resolve blocked status. A reporter can
+explicitly change blocked→pending/working without completing the task. Staging
+publishes neither annotation nor provenance before commit. Failed commit leaves
+no partial current metadata. Identical receipt replay changes neither revision,
+content nor attribution; changing an annotation under the same `oid` is
+`operation-reused`, not an identical retry.
+
+### Stored/read annotation and old-writer validity
+
+`Item.blocker?: BlockerAnnotation` contains the optional content fields plus
+required server-authored provenance:
+
+```ts
+interface BlockerAnnotation extends BlockerInput {
+  reportedRevision: number;
+  reportedAt: string;
+  reporterSessionId: string;
+  attributedSessionId: string;
+  mode: 'direct' | 'parent-relay';
+  validAtRevision: number;
+}
+```
+
+Both revisions are positive safe integers and
+`reportedRevision <= validAtRevision === enclosing plan.revision`. `reportedAt`
+uses the existing ISO timestamp convention; session IDs use the existing 1–80
+character identifier rule. A direct annotation attributes the actual caller; a
+relay attributes only its already-authorized child and keeps the actual reporter
+separate. Explicit structural annotations are authored at the committed revision
+and timestamp, never the staging time. Retention preserves original provenance,
+even if a newer status-only report has a different reporter. Existing contribution
+records and their possibly empty structural `itemIds` do not change meaning.
+
+Before **every committed new-writer mutation**, inherited annotations qualify for
+retention only if their complete shape is valid and `validAtRevision` equals the
+**previous** plan revision. Clear at the relevant boundaries above, then stamp
+retained or explicitly new annotations with the new revision. Never recertify a
+stale inherited annotation. An older writer may copy unknown item fields without
+advancing their marker, or drop them during structural replacement. Either way,
+after any such committed mutation the old annotation is unknown until explicitly
+reported again; a later new-writer neutral write cannot revive it. Receipt replay
+and uncommitted staging are not new committed plan revisions.
+
+`Store.detail`, including explicit-page tool reads, suppresses stale/malformed
+annotations without rewriting snapshots. The UI adapter independently checks
+shape, bounds, provenance and revision equality to defend against older services
+returning raw inherited fields. Missing optional content remains unknown. Invalid
+optional content produces a fixed unavailable/invalid state, never rejected text
+or errors interpolated into the view. Unknown future category strings are
+unclassified (Category unknown), never mapped to one of the known categories.
+Absent metadata from older producers/services is not evidence of no blockers or
+success. Older consumers may ignore these additive fields; older producers are
+not automatically sent unsupported parameters or forced to update/reload.
+
+Only `assigneeSessionId` supplies recorded responsibility. Annotation reporter,
+attributed child, plan owner and historical contributors are distinct facts, not
+implicit assignees. If only an item reporter is known, label that fallback without
+inventing a report mode or claiming it authored the current reason.
+
+Example requests, starting with an existing revision-1 task named `format`:
+
+```json
+{"op":"change","plan":"P-format","oid":"report-wait","rev":1,"changes":[{"id":"format","status":"blocked","blocker":{"category":"decision","reason":"Choose an output format","nextAction":"Select CSV or JSON"}}]}
+{"op":"change","plan":"P-format","oid":"clear-details","rev":2,"changes":[{"id":"format","status":"blocked","blocker":null}]}
+{"op":"change","plan":"P-format","oid":"resume-task","rev":3,"changes":[{"id":"format","status":"pending"}]}
+```
+
+Use actual current revisions and fresh operation IDs. A subsequent
+explicit-page tool read or service detail read at revision 2 may contain the
+following item excerpt; the second request clears its annotation but leaves the
+task blocked; the third removes reported-blocked membership without adding a
+done task:
+
+```json
+{"id":"format","title":"Select format","kind":"task","status":"blocked","blocker":{"category":"decision","reason":"Choose an output format","nextAction":"Select CSV or JSON","reportedRevision":2,"reportedAt":"2026-01-01T00:01:00.000Z","reporterSessionId":"M","attributedSessionId":"M","mode":"direct","validAtRevision":2}}
+```
+
+### Separate reported-blocked timing
+
+Only service `GET /v1/plan` adds optional `blockedTiming?: BlockedTiming`.
+It is **response-only**, distinct from `timing`/`PlanTiming`, which continue to
+describe reported-working intervals unchanged. No stored duration, caller start
+timestamp, tool receipt expansion or timing in compact/explicit-page tool reads
+is introduced.
+
+```ts
+interface BlockedTiming {
+  readAt: string;
+  items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }>;
+}
+```
+
+It belongs to the enclosing store/source/plan/revision and covers eligible
+currently blocked tasks across the **whole validated current snapshot**, not the
+returned page prefix. Groups, nonblocked tasks and closed plans have no entries.
+Absent timing means unavailable; missing/unusable entries mean unknown, never
+elapsed zero. An empty map is not an empty-success assertion about blockers.
+
+- **Exact:** `since` is the first blocked snapshot after creation or a proven
+  nonblocked, absent, non-task or closed boundary.
+- **Lower-bound:** a valid contiguous capped suffix proves only its earliest
+  accepted blocked observation; say “at least” and that the start is unknown.
+- **Unknown:** gaps, corrupt/missing snapshots, future/regressing timestamps or
+  identity/current-snapshot mismatch cannot supply a start claim. Do not bridge
+  invalid history or substitute latest report/contribution age.
+
+Repeated blocked, relay, reason-only and neutral reports do not reset the
+interval. Unblock/reblock, remove/re-add, task-kind boundaries and close/reopen
+do; redundant active reopen is neutral. Timing is independent evidence of
+reported blocked status, **not** evidence that inherited annotation text is
+current: stale annotation provenance never becomes valid merely because a
+status interval can be proved.
+
+Derivation uses the existing Store connection in a finite read transaction pinned
+to the detail revision. Validate full current identity, lifecycle/time, unique
+bounded items and agreement with the returned page before selecting blocked IDs.
+Bound the reverse history scan to **128 snapshot visits, 8 MiB admitted snapshot
+text and 1,000 task entries** per detail request, never per task. Admit byte length
+in SQL before materializing text. With the independent working reader, combined
+timing work is at most **256 snapshot visits / 16 MiB admitted text**. List and
+history routes do not scan timing; no retained Store handle/cache, history rewrite,
+background backfill or additional list scan is introduced.
+
+Example service response excerpt at revision 2:
+
+```json
+{"blockedTiming":{"readAt":"2026-01-01T00:06:00.000Z","items":{"format":{"since":"2026-01-01T00:01:00.000Z","kind":"exact"}}}}
+```
+
+Anchor displayed elapsed to server `readAt - since`, advancing from a local
+monotonic receipt-time anchor on the existing frame ticker. Preserve that anchor
+on cached revisits/repaints; do not subtract server timestamps from browser wall
+time or create per-task timers/requests. New replies supply new server anchors;
+network transit makes the display approximate. Invalid/future times mean unknown,
+not zero. This measures continuous **reported blocked status**, not actual
+real-world waiting, model activity, working time or a viewer's personal obligation.
+
+### Detail identity and current attention
+
+Annotations/timing require complete matching detail. Restart/refuse mixed
+progress revisions **or cleanup states/generations** across pages; never combine
+pre-cleanup annotations with restored/current detail. Retire data and callbacks
+on source/store/binding, scope, selected-plan, cleanup, hide and dispose boundaries.
+Held retired replies cannot restore attention or issue further continuations.
+No new polling owner or subscription budget is introduced.
+
+Current attention requires a visible active plan and an explicitly blocked task.
+Finish/cancel/fail stop it without converting leftover task statuses to acceptance.
+Archive/delete cannot supply current attention; restore leaves a finished plan
+finished. Explicit reopening uses existing semantics and current reports only.
+One row represents each store/source/plan/task identity, without cross-plan
+text/title deduplication. Complete active empty detail may say “No reported
+blockers”; partial, loading, unavailable, stale and capture-off data cannot make
+that unqualified claim. Blocker text/provenance/timing are not added to summary
+exports, search indexes or automatic notifications/actions.
+
 ## System boundaries
 
 The system has four components: an OpenCode companion plugin that captures explicit
@@ -672,7 +888,7 @@ the current file remains unverified. Age alone does not establish a mismatch.
   inline. Use server `counts/working` for list summaries and selected `/v1/plan`
   paged items/contributions for full detail. Keep sourceId with every plan key.
 - Item fields: id/title/kind/status/parentId?/dependencies?/assigneeSessionId?/
-  reporterSessionId?. Group rows never count. Contributions have revision,
+  reporterSessionId?/blocker? (see Reported blockers revision 1). Group rows never count. Contributions have revision,
   reporterSessionId/reporterAgent/attributedSessionId, direct|parent-relay mode,
   `itemIds[]` and reportedAt; map plural IDs without adding work to denominators.
 - Document source is `document.path` (not source.path); capture time/hash/ID and

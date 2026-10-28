@@ -51,7 +51,7 @@ Remaining breakdown: 1 working; 1 blocked; 2 pending
 - Validate import mapping
 
 ## Explicitly blocked
-- Migrate legacy rows — no reason recorded
+- Migrate legacy rows — blocker details omitted from this summary
 
 ## Freshness warnings
 - The current document file has not been rechecked.
@@ -69,7 +69,7 @@ Remaining breakdown: 1 working; 1 blocked; 2 pending
 - Validate import mapping — No prerequisites recorded
 
 ## Explicitly blocked
-- Migrate legacy rows — no reason recorded — No prerequisites recorded
+- Migrate legacy rows — blocker details omitted from this summary — No prerequisites recorded
 
 ## Not started
 - Update export docs — Recorded prerequisites: Validate import mapping (In progress)

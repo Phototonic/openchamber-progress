@@ -79,7 +79,7 @@ function full(result: CompleteDetailResult, handoff: boolean): string | null {
   const section = (title: string, items: ItemView[], empty: string, isBlocked = false) => {
     lines.push('', `## ${title}`);
     if (!items.length) lines.push(empty);
-    for (const i of items) lines.push(`- ${markdownLiteral(i.title)}${isBlocked ? ' — no reason recorded' : ''}${handoff ? ` — ${prerequisites(i)}` : ''}`);
+    for (const i of items) lines.push(`- ${markdownLiteral(i.title)}${isBlocked ? ' — blocker details omitted from this summary' : ''}${handoff ? ` — ${prerequisites(i)}` : ''}`);
   };
   section('Current work', working, 'No current work is recorded.');
   section('Explicitly blocked', blocked, 'No explicitly blocked work is recorded.', true);

@@ -184,6 +184,22 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-ready-dep .ap-glyph{width:12px;height:12px;font-size:8px;align-self:center;margin-top:0}
 .ap-ready-ref{overflow-wrap:anywhere;font-family:var(--oc-mono);font-size:11px}
 span.ap-ready-ref{font-family:inherit;font-size:inherit}
+/* Needs you: reported blockers lead readiness; read-only, literal text, no new controls */
+.ap-ny{padding-bottom:8px;border-bottom:1px solid var(--oc-border)}
+.ap-ny:not([data-count="0"])>.ap-ready-title{display:flex;align-items:center;gap:6px}
+.ap-ny:not([data-count="0"])>.ap-ready-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--oc-warning);flex:none}
+.ap-ny .ap-ready-list{gap:10px}
+.ap-ny-entry .ap-ready-head{grid-template-columns:18px minmax(0,1fr) auto}
+.ap-ny-cat{align-self:start;margin-top:1px;padding:0 7px;border:1px solid transparent;border-radius:999px;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap;background:color-mix(in srgb,var(--oc-warning) 16%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-ny-cat:is([data-category="unknown"],[data-category="unclassified"]){background:color-mix(in srgb,var(--oc-fg) 7%,transparent);color:var(--oc-muted)}
+.ap-ny-facts{margin:2px 0 0 27px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:12px;min-width:0}
+.ap-ny-facts>div{display:contents}
+.ap-ny-facts dt{color:var(--oc-muted)}
+.ap-ny-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
+.ap-ny-facts .ap-ny-unknown,.ap-ny-facts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
+.ap-ny-facts .ap-elapsed{color:var(--oc-fg);font-size:12px}
+@media(max-width:300px){.ap-ny-facts{grid-template-columns:minmax(0,1fr)}.ap-ny-facts dd{margin-bottom:3px}}
+@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}.ap-ny:not([data-count="0"])>.ap-ready-title::before{background:CanvasText}}
 
 /* Status glyph: shape + colour + hidden text, never colour alone */
 .ap-glyph{width:16px;height:16px;margin-top:1px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;line-height:1;flex:none}

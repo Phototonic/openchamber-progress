@@ -313,6 +313,7 @@ function syncDirectory(dir) {
 // shared/progress.ts
 var VERSION = 2;
 var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1048576 };
+var BLOCKER_LIMITS = { textCodeUnits: 512, snapshotVisits: 128, inputBytes: 8 * 1024 * 1024, taskEntries: 1000 };
 
 class ProgressError extends Error {
   code;
@@ -339,6 +340,22 @@ function countItems(items) {
 var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 1024, hits: 50, ancestors: 8, responseBytes: 256 * 1024, queryBytes: 16 * 1024, queryPoints: 256, tokens: 16, cursorBytes: 4096, stateKeys: 50 };
 function identifier(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value);
+}
+var BLOCKER_CATEGORIES = ["decision", "dependency", "review", "external", "other"];
+function blockerText(value) {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= BLOCKER_LIMITS.textCodeUnits && !value.includes("\x00");
+}
+function validBlockerInput(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const b = value;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction));
+}
+function validBlockerAnnotation(value, revision) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const b = value;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction", "reportedRevision", "reportedAt", "reporterSessionId", "attributedSessionId", "mode", "validAtRevision"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction)) && Number.isSafeInteger(b.reportedRevision) && Number(b.reportedRevision) > 0 && Number(b.reportedRevision) <= revision && Number.isSafeInteger(b.validAtRevision) && b.validAtRevision === revision && typeof b.reportedAt === "string" && Number.isFinite(Date.parse(b.reportedAt)) && new Date(b.reportedAt).toISOString() === b.reportedAt && identifier(b.reporterSessionId) && identifier(b.attributedSessionId) && (b.mode === "direct" && b.reporterSessionId === b.attributedSessionId || b.mode === "parent-relay" && b.reporterSessionId !== b.attributedSessionId);
 }
 function parseRequest(value) {
   validRequest(value && typeof value === "object" && !Array.isArray(value), "request");
@@ -375,17 +392,19 @@ function parseRequest(value) {
   if (r.items !== undefined) {
     validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, "items");
     for (const i of r.items) {
-      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
+      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies", "blocker"].includes(k)) && identifier(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
       if (i.status !== undefined)
         validRequest(["pending", "working", "blocked", "done", "skipped"].includes(i.status), "items");
       if (i.parentId !== undefined)
         validRequest(identifier(i.parentId), "items");
       if (i.dependencies !== undefined)
         validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier), "items");
+      if (Object.hasOwn(i, "blocker"))
+        requireProgress(i.kind === "task" && (i.blocker === null || validBlockerInput(i.blocker)) && (i.blocker === null || i.status === undefined || i.status === "blocked"));
     }
   }
   if (r.changes !== undefined)
-    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status"].includes(k)) && identifier(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status)));
+    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status", "blocker"].includes(k)) && identifier(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status) && (!Object.hasOwn(c, "blocker") || c.blocker === null || c.status === "blocked" && validBlockerInput(c.blocker))));
   if (r.child !== undefined)
     requireProgress(identifier(r.child));
   if (r.attributed !== undefined)
@@ -1464,7 +1483,10 @@ class Store {
         ...this.metadata(),
         plan: this.summary(p),
         links: p.links,
-        items: { data: p.items.slice(start, start + LIMITS.pageSize), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
+        items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
+          const { blocker, ...item } = i;
+          return p.lifecycle === "active" && i.kind === "task" && i.status === "blocked" && validBlockerAnnotation(blocker, p.revision) ? { ...item, blocker } : item;
+        }), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
         contributions: { data: rows.slice(0, LIMITS.pageSize).map((r) => JSON.parse(String(r.payload))), nextCursor: rows.length > LIMITS.pageSize ? String(page + 1) : null }
       };
     });
@@ -1656,8 +1678,22 @@ class Store {
       else
         requireProgress(r.op !== "start", "invalid");
       const p = previous ? structuredClone(previous) : { id: r.plan, sourceId: actor.sourceId, title: r.title, sessionId: actor.sessionId, revision: 0, structuralRevision: 0, lifecycle: "active", reportedAt: now, directory: actor.directory, projectId: actor.projectId, items: [], links: [], document: { state: "unbound", checklistSynchronized: false, currentFile: "not-rechecked" } };
+      for (const item of p.items)
+        if (previous?.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked" || !validBlockerAnnotation(item.blocker, revision))
+          delete item.blocker;
       requireProgress(p.revision < Number.MAX_SAFE_INTEGER);
       p.revision++;
+      const annotate = (item, input) => {
+        if (input !== undefined) {
+          requireProgress(item.kind === "task" && (input === null || item.status === "blocked" && validBlockerInput(input)));
+          if (input === null)
+            delete item.blocker;
+          else
+            item.blocker = { ...input, reportedRevision: p.revision, reportedAt: now, reporterSessionId: actor.sessionId, attributedSessionId: r.attributed ?? actor.sessionId, mode: r.attributed ? "parent-relay" : "direct", validAtRevision: p.revision };
+        }
+        if (item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+      };
       if (coordinator) {
         p.directory = actor.directory;
         p.projectId = actor.projectId;
@@ -1673,7 +1709,15 @@ class Store {
         if (items) {
           requireProgress(items.length <= LIMITS.planItems);
           const old = new Map(p.items.map((i) => [i.id, i]));
-          p.items = items.map((i) => ({ ...i, status: i.status ?? old.get(i.id)?.status ?? "pending", assigneeSessionId: i.kind === "task" ? old.get(i.id)?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : old.get(i.id)?.reporterSessionId }));
+          p.items = items.map((i) => {
+            const { blocker, ...fields2 } = i;
+            const retained = old.get(i.id);
+            const item = { ...fields2, status: i.status ?? retained?.status ?? "pending", assigneeSessionId: i.kind === "task" ? retained?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : retained?.reporterSessionId };
+            if (retained?.kind === "task" && retained.status === "blocked" && item.kind === "task" && item.status === "blocked" && retained.blocker)
+              item.blocker = retained.blocker;
+            annotate(item, blocker);
+            return item;
+          });
           validateItems(p.items);
           const ids = new Set(p.items.filter((i) => i.kind === "task").map((i) => i.id));
           p.links = p.links.map((l) => ({ ...l, itemIds: l.itemIds.filter((id) => ids.has(id)) })).filter((l) => l.itemIds.length > 0);
@@ -1699,6 +1743,7 @@ class Store {
           requireProgress(item?.kind === "task");
           item.status = c.status;
           item.reporterSessionId = actor.sessionId;
+          annotate(item, c.blocker);
         }
         changed = r.changes.map((c) => c.id);
       }
@@ -1749,6 +1794,12 @@ class Store {
           p.boundCanonicalPath ??= capture.canonicalPath;
         } else
           p.document.checklistSynchronized = false;
+      }
+      for (const item of p.items) {
+        if (p.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+        else if (item.blocker)
+          item.blocker.validAtRevision = p.revision;
       }
       const snapshot2 = JSON.stringify(p);
       this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot2);

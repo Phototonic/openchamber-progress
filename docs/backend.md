@@ -277,6 +277,94 @@ transaction seam. The 1,000-item maximum-title history is a labelled direct SQL
 fixture for budget verification, not a claim that any one report bypasses the
 existing request/chunk limits. No wall-clock performance gate is used.
 
+### Deliberately reported blockers
+
+The additive blocker revision in `docs/contracts.md` extends schema2 JSON
+snapshots only. `parseRequest` and the registered report schema accept optional
+`blocker` on task items/changes; the real plugin executes the same parser and
+transactional Store path. `BlockerRequest` names the additive request contract.
+Only `category`, `reason`, `nextAction` are input content. Category is one of
+decision/dependency/review/external/other; prose is nonblank, NUL-free and at most
+512 JavaScript code units per field. Unknown keys and incompatible destinations
+fail atomically. Change status remains required. Existing receipt, assignment,
+source, count and lifecycle semantics remain authoritative.
+
+`Store.apply` first checks inherited annotation shape and validity against the
+previous revision, before advancing it. It retains only verified-current details
+on a continuously blocked task, applies explicit complete replacements/null
+clearing, then advances retained/new validity markers at commit. Server-only
+provenance preserves the actual annotation author, attributed session, mode,
+report revision and ISO timestamp. Status-only relay does not re-author retained
+text. Structural annotations are authored at commit, never staging. Leaving
+blocked, task-kind/removal/re-entry boundaries and closing/reopening clear
+inherited details. Explicit newly reported details can populate a reopened task.
+Failed validation, conflict, incomplete commit and replay expose no partial state.
+
+An unmodified older writer may carry unknown fields without advancing their
+validity marker, or discard them during structural replacement. The new writer
+never recertifies stale inherited data; deliberate re-reporting is required.
+`Store.detail` independently projects only valid blocked-task annotations, both
+for service pages and explicit-page tool reads, without rewriting snapshots.
+Malformed optional data (including unknown future categories) cannot certify a
+known annotation and is omitted; consumers label its parts unknown/unavailable,
+not success. Raw internal `Store.get` is not a safe public projection. The UI
+adapter must also validate markers because an older service may expose raw fields.
+There is no new table, migration, forced upgrade or history repair.
+
+`service/blocked-timing.ts` separately derives response-only `blockedTiming` on
+authenticated `GET /v1/plan`. One finite transaction on the existing Store
+connection checks store identity, the pinned detail revision, cleanup generation,
+full current snapshot and page agreement. Shared snapshot validation checks
+bounded unique items, references/cycles, identity, lifecycle and timestamps. A
+reverse point-lookup scan accepts at most128 snapshots/8MiB of text and emits at
+most1000 task entries across the whole plan. SQL tests byte length and returns
+NULL for over-budget text **before** materialization in JavaScript. No per-task
+history scan, retained handle/cache, list/history-route scan or backfill exists.
+
+Exact blocked starts require creation or a proven nonblocked/absent/non-task/
+closed boundary. Repeated/relay/neutral reports and reason-only edits do not reset;
+unblock/reblock and close/reopen do. Valid capped suffixes are lower bounds;
+gaps, corrupt/future/regressing history and mismatched identity produce unknown,
+not zero. Timing is status-history evidence, not certification of annotation
+text, real-world waiting or model activity. `readAt` is a fresh server anchor;
+the consumer advances it from monotonic receipt time on its existing ticker.
+Store/tool reads do not add timing. Working `timing` remains independent and its
+interval semantics are unchanged; its text admission is also SQL-bounded. The
+combined timing ceiling is256 snapshot visits/16MiB admitted text per detail.
+The existing1MiB complete response ceiling still applies. Consumers must restart
+detail traversal on progress **or cleanup-generation** changes between pages.
+
+Focused backend proof uses disposable SQLite stores, synthetic authoritative tool
+callers, controlled clocks and authenticated loopback HTTP:
+
+```sh
+node --experimental-strip-types --test tests/backend/needs-you.test.ts tests/backend/progress-invocation.test.ts tests/backend/production-contract.test.ts
+node --experimental-strip-types --test tests/backend/needs-you-service.test.ts tests/backend/production-storage.test.ts tests/backend/plan-cleanup.test.ts tests/backend/plan-cleanup-service.test.ts
+node --experimental-strip-types --test tests/backend/needs-you-timing.test.ts tests/backend/task-timing.test.ts
+```
+
+The compatibility test extracts the complete shared source projection from pinned
+pre-feature commit `4f582b7f3404088d01531598102833000c23cd87`, verifies extracted
+bytes and loads that **unmodified** Store separately. It exercises older unrelated,
+status and structural mutations plus unblock/reblock after annotations exist,
+then proves newer neutral writes cannot revive them. Old schema2 reports remain
+readable without rewriting snapshots/schema. Independent cleanup tests cover
+archive/restore/delete and concurrent writers; timing tests directly measure
+SQL admission, capped scans, current mismatches and the1000-task ceiling.
+
+`tests/fixtures/needs-you.ts` launches a source service, or the built service with
+`--built`, on disposable roots only. Its readiness line includes a fixture-only
+transport credential; never save that credential in evidence. P-attention has
+all five categories, missing parts, literal HTML-looking prose, group/skipped/
+prerequisite rows, explicit child C participation and enough items/contributions
+to paginate. Same-ID work in another source/plan stays isolated. P-lower and
+P-unknown provide capped and gapped timing examples; their controlled timestamps
+and history are fixture-only seeding, not production read behavior. P-finished
+is eligible for explicit cleanup checks. SIGTERM/SIGINT disposes the service and
+temporary data. No real installation/profile or source documents are involved.
+Sanitized local proof: `evidence/needs-you/` (backend, API, compatibility, timing).
+This does not replace browser/native-host or final built-artifact acceptance.
+
 ### Existing production limits
 
 -16KiB report/setup bodies;262144-byte full document cap, strict UTF-8, no binary.
