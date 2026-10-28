@@ -14,6 +14,8 @@
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 // - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
 //   panel/status never construct it, so they start no digest read or checkpoint write
+// - board search only (spec.freshness/retire): while results are shown, the same poll revalidates
+//   them with one bounded freshness read instead of the list read; every cache reset retires them
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
@@ -26,7 +28,7 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type SetupResult } from './source.ts';
+import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type ServiceHost, type SetupResult } from './source.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
@@ -104,7 +106,14 @@ export interface ViewContext<U> {
   summary: (plan: PlanView) => SummaryView | null;
   /** Full-page History digest of this plan in the current read; null elsewhere (rail, status). */
   digest: (plan: PlanView) => DigestPanel | null;
+  /** Proxy whose requests are refused once `current` is false or the frame is disposed. */
+  service: (current: () => boolean) => ServiceHost;
+  /** Plan metadata of the last complete detail read of this key, or null (not read, loading, failed). */
+  detailPlan: (plan: PlanView) => PlanView | null;
 }
+
+/** One poll's bounded freshness read in place of the list read; `identity` asks for the list read instead. */
+export type Freshness = (service: ServiceHost) => Promise<{ ok: true } | { ok: false; failure: ReadFailure; identity: boolean }>;
 
 export type SummaryMode = 'progress' | 'handoff';
 export interface SummaryView {
@@ -149,6 +158,24 @@ export interface ViewSpec<U> {
    * lives exactly as long as this identity; a plan article painted with `data-reading` uses it.
    */
   reading?: (vc: ViewContext<U>) => { plan: string; scope: string } | null;
+  /**
+   * Board search only: while it returns a read, each poll (same 3 s / 8 s cadence, visible frames
+   * only) runs it instead of the list read, as long as the current scope's list read is shown.
+   */
+  freshness?: (vc: ViewContext<U>) => Freshness | null;
+  /**
+   * Retirement of view-owned async work: `reset` with every cache reset (store/binding/account
+   * change, setup action, cleanup, list eviction), `hidden` when the frame is hidden, `dispose` on pagehide.
+   */
+  retire?: (reason: 'reset' | 'hidden' | 'dispose') => void;
+  /**
+   * Board search only: identity of the part-read selection outside the ordinary reading identity
+   * (search run + selection, also for plans outside the loaded list). A change retires in-flight
+   * detail/document/history reads exactly like a reading change; null leaves that to the reading.
+   */
+  partsKey?: (vc: ViewContext<U>) => string | null;
+  /** Board search only: plan keys whose detail/document/history caches are kept; others are evicted. Null: no bound. */
+  retainParts?: (vc: ViewContext<U>) => ReadonlySet<string> | null;
 }
 
 const FOCUSABLE = 'button,summary,[tabindex],a,input,select,textarea';
@@ -454,7 +481,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
-  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); };
+  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); spec.retire?.('reset'); };
   const forgetPlans = (keys: Set<string>) => {
     if (reading && keys.has(reading.plan)) clearReading();
     if (keys.size && spec.forgetPlans) { ui = { ...ui, ...spec.forgetPlans(keys, ui, context()) }; versions.ui++; }
@@ -496,11 +523,50 @@ export function startView<U>(spec: ViewSpec<U>) {
     ui = { ...ui, ...patch }; versions.ui++; schedule();
     if (scopeMoved()) retry();
     reconcilePreview();
+    reconcileParts();
+  }
+  let partsKey: string | null = null;
+  /** A changed part-read selection retires in-flight part reads (no continuation, no queue behind them). */
+  function reconcileParts() {
+    if (!spec.partsKey || !ctx) return;
+    const key = spec.partsKey(context());
+    if (key === partsKey) return;
+    const before = partsKey;
+    partsKey = key;
+    if (before !== null || key !== null) retireParts();
+  }
+  /** Bounded part caches (board search): entries of other plans are dropped; in-flight ones cannot return (identity guard). */
+  function retainParts(keep: ReadonlySet<string>) {
+    const plan = (k: string) => k.slice(0, k.indexOf('@'));
+    for (const k of details.keys()) if (!keep.has(k)) details.delete(k);
+    for (const cache of [documents, histories]) for (const k of cache.keys()) if (!keep.has(plan(k))) cache.delete(k);
   }
 
   const gate = new RefreshGate(async (generation) => {
     const scope = currentScope();
     const key = scopeKey(scope);
+    const fresh = read && identity && readScope === key ? spec.freshness?.(context()) ?? null : null;
+    if (fresh) {
+      const result = await fresh(guardedHost(() => generation === gate.current));
+      if (disposed || generation !== gate.current) return;
+      if (result.ok) {
+        // Counts as a successful refresh: a failed detail is retried once, as after a list read.
+        listReads++;
+        if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
+        // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
+        if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
+        failure = null; lastGoodAt = Date.now();
+        schedule(); plan(REFRESH_MS);
+        return;
+      }
+      if (!result.identity) {
+        if (!failure || failure.kind !== result.failure.kind) versions.data++;
+        failure = result.failure;
+        schedule(); plan(RETRY_MS);
+        return;
+      }
+      // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
+    }
     const result = await readList(guardedHost(() => generation === gate.current), scope);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (result.ok && !result.health.ready && read) {
@@ -611,13 +677,16 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (cached && cached.value.state === 'loading') continue;
       if (!force && cached && cached.value.state === 'error' && cached.revision === p.revision && cached.requestedCleanup === cleanupRev && cached.listRead === listReads) continue;
       const historical = cached?.generation === cacheGeneration ? cached.result?.snapshot ?? cached.historical : undefined;
-      details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } });
+      const pending: NonNullable<ReturnType<typeof details.get>> = { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } };
+      details.set(p.key, pending);
       const id = identity;
       const generation = cacheGeneration;
+      // Same generation and still this exact pending entry (an evicted read cannot repopulate the cache).
+      const own = () => !disposed && id === identity && generation === cacheGeneration && details.get(p.key) === pending;
       detailQueue = detailQueue.then(async () => {
-        if (disposed || id !== identity || generation !== cacheGeneration) return;
-        let result = await readDetail(guardedHost(() => generation === cacheGeneration), p);
-        if (disposed || id !== identity || generation !== cacheGeneration) return;
+        if (!own()) return;
+        let result = await readDetail(guardedHost(own), p);
+        if (!own()) return;
         if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
         const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
         details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
@@ -717,11 +786,13 @@ export function startView<U>(spec: ViewSpec<U>) {
         const k = docKey(p);
         const existing = documents.get(k);
         if (existing && existing.state !== 'error') return;
-        documents.set(k, { state: 'loading' });
+        const pending: Loadable<DocumentBody> = { state: 'loading' };
+        documents.set(k, pending);
         const id = identity;
         const generation = cacheGeneration;
-        void readDocument(guardedHost(() => generation === cacheGeneration), p).then((r) => {
-          if (disposed || id !== identity || generation !== cacheGeneration) return;
+        const own = () => !disposed && id === identity && generation === cacheGeneration && documents.get(k) === pending;
+        void readDocument(guardedHost(own), p).then((r) => {
+          if (!own()) return;
           documents.set(k, r.ok ? { state: 'ready', value: r.body } : { state: 'error', failure: r.failure });
           bump();
         });
@@ -733,11 +804,13 @@ export function startView<U>(spec: ViewSpec<U>) {
         const k = `${p.key}@${p.revision}`;
         const existing = histories.get(k);
         if (existing && existing.state !== 'error') return;
-        histories.set(k, { state: 'loading' });
+        const pending: Loadable<{ entries: HistoryEntry[]; truncated: boolean }> = { state: 'loading' };
+        histories.set(k, pending);
         const id = identity;
         const generation = cacheGeneration;
-        void readHistory(guardedHost(() => generation === cacheGeneration), p).then((r) => {
-          if (disposed || id !== identity || generation !== cacheGeneration) return;
+        const own = () => !disposed && id === identity && generation === cacheGeneration && histories.get(k) === pending;
+        void readHistory(guardedHost(own), p).then((r) => {
+          if (!own()) return;
           histories.set(k, r.ok ? { state: 'ready', value: { entries: r.entries, truncated: r.truncated } } : { state: 'error', failure: r.failure });
           bump();
         });
@@ -777,6 +850,8 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         return digests.claim({ identity: digestIdentity(p, read), plan: p, capable: health?.planChangeDigests === 1, fresh: !failure });
       },
+      service: (current) => guardedHost(current),
+      detailPlan: (p) => { const c = details.get(p.key)?.result; return c?.ok && c.plan.key === p.key ? c.plan : null; },
     };
   }
 
@@ -905,6 +980,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
+    const keep = spec.retainParts?.(vc);
+    if (keep) retainParts(keep);
     spec.afterPaint?.(root, vc);
     paintedReading = reading;
     // One-shot follow-ups of this reading's own state change (e.g. reveal a task once filters clear).
@@ -992,6 +1069,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else {
       html.dataset.apHidden = '';
       digests?.hidden();
+      spec.retire?.('hidden');
       if (timer) { clearTimeout(timer); timer = null; }
       planLabels();
       retireMain();
@@ -1002,6 +1080,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     disposed = true;
     digests?.dispose();
+    spec.retire?.('dispose');
     html.dataset.apHidden = '';
     gate.stop();
     if (timer) clearTimeout(timer);

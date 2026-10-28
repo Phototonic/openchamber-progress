@@ -168,8 +168,8 @@ export function progressBlock(s: PlanSummary, compact = false) {
   return wrap;
 }
 
-export function planLocation(plan: PlanView, live: LiveSnapshot) {
-  const place = placeOf(plan, live);
+export function planLocation(plan: PlanView, live: LiveSnapshot, bound?: string | null) {
+  const place = placeOf(plan, live, bound);
   return place.worktreeLabel === 'Main checkout' || place.worktreeLabel === place.projectLabel ? place.projectLabel : `${place.projectLabel} · ${place.worktreeLabel}`;
 }
 
@@ -201,7 +201,7 @@ export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' =
   top.append(el(headingLevel, 'ap-plan-title ap-grow', plan.title));
   if (plan.lifecycle !== 'active') top.append(lifecycleBadge(plan));
   const meta = el('div', 'ap-meta');
-  meta.append(el('span', '', planLocation(plan, env.live)), age(plan.reportedAt, env, 'Updated '));
+  meta.append(el('span', '', planLocation(plan, env.live, env.boundSource)), age(plan.reportedAt, env, 'Updated '));
   if (env.boundSource !== null && plan.sourceId !== env.boundSource) meta.append(testid(el('span', '', 'From another OpenCode setup'), 'other-source'));
   if (env.unverifiedSources.has(plan.sourceId)) meta.append(testid(el('span', 'ap-doc-warn', 'Unverified OpenCode setup'), 'unverified-source'));
   head.append(top, meta);

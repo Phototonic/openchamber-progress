@@ -106,7 +106,44 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1 }
+
+/**
+ * Plan/task search revision 1 (docs/contracts.md). A search plan is a current summary without the
+ * working IDs or document reference: never a complete plan detail, never painted as one.
+ */
+export interface SearchPlanView extends Omit<PlanView, 'working' | 'document' | 'cleanup' | 'counts'> {
+  counts: Counts;
+  cleanup: { state: 'visible' | 'archived'; revision: number };
+  sourceVerified: boolean;
+}
+export interface SearchHitView {
+  plan: SearchPlanView;
+  planMatched: boolean;
+  task: { id: string; title: string; status: ItemStatus } | null;
+  /** Context only: root first, nearest last; `omittedAncestors` intermediate ones are not sent. */
+  ancestors: { id: string; title: string }[];
+  omittedAncestors: number;
+  continued: boolean;
+  /** Per-plan count delta on the first emitted hit of a fully classified plan; null afterwards. */
+  classified: { matchedPlans: 1; matchingTasks: number } | null;
+}
+export type SearchGap = 'invalid-snapshot' | 'oversized-snapshot' | 'invalid-membership' | 'oversized-membership';
+export interface SearchWindowView {
+  storeId: string;
+  binding: { sourceId: string | null; verified: boolean };
+  fingerprint: string;
+  hits: SearchHitView[];
+  nextCursor: string | null;
+  exhausted: boolean;
+  /** `gapped` is cumulative through continuation; `skippedRecords`/`reasons` describe this window only. */
+  coverage: { gapped: boolean; skippedRecords: number; reasons: SearchGap[] };
+}
+/** What one search request asks; `cursor` continues the traversal that returned it, verbatim. */
+export interface SearchRequest { q: string; source: string | null; session: string | null; lifecycle: Lifecycle | null; status: ItemStatus | null; archived: 'exclude' | 'only'; limit: number; cursor: string | null }
+export interface SearchKeyView { source: string; plan: string }
+export interface SearchStateRow { source: string; plan: string; exists: boolean; revision: number | null; cleanup: { state: 'visible' | 'archived' | 'deleted'; revision: number } }
+export interface SearchStateView { storeId: string; binding: { sourceId: string | null; verified: boolean }; data: SearchStateRow[] }
 
 /** Frozen change-digest DTO (docs/contracts.md); lifecycles use this view's labels (finished → completed). */
 export type { DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask };

@@ -3,9 +3,9 @@ import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
-  digestQuery, parseChangeDigest,
+  digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
 } from './adapter.ts';
-import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
@@ -241,6 +241,29 @@ export type DigestResult = { ok: true; digest: DigestView } | { ok: false; failu
 export async function readChangeDigest(host: ServiceHost, request: DigestRequest): Promise<DigestResult> {
   try {
     return { ok: true, digest: parseChangeDigest(await call(host, ROUTES.changeDigest, digestQuery(request)), request) };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
+  }
+}
+
+/** `status` 409 means the store, binding, cursor or a pinned in-plan position moved: refresh, never retry the cursor. */
+export type SearchWindowResult = { ok: true; window: SearchWindowView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/** One bounded search window (GET /v1/search). No continuation, retry or fallback here. */
+export async function readSearchWindow(host: ServiceHost, request: SearchRequest, expect: Parameters<typeof parseSearchWindow>[2]): Promise<SearchWindowResult> {
+  try {
+    return { ok: true, window: parseSearchWindow(await call(host, ROUTES.search, searchQuery(request)), request, expect) };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
+  }
+}
+
+export type SearchStateResult = { ok: true; state: SearchStateView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/** Point-lookup freshness of at most 50 displayed keys (GET /v1/search-state). Failure is never "missing". */
+export async function readSearchState(host: ServiceHost, storeId: string, keys: SearchKeyView[]): Promise<SearchStateResult> {
+  try {
+    return { ok: true, state: parseSearchState(await call(host, ROUTES.searchState, searchStateQuery(storeId, keys)), storeId, keys) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
