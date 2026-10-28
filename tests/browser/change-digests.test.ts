@@ -127,14 +127,14 @@ test('recorded detail of added and removed tasks keeps the recorded group and pr
 
 // ---------------------------------------------------------------- checkpoint protocol
 
-const ID: CheckpointIdentity = { account: 'account-example', storeId: 'store-example', binding: { sourceId: 'source-example', verified: true }, source: 'source-example', plan: 'P-example' };
+const ID: CheckpointIdentity = { integrationAccount: 'account-example', storeId: 'store-example', binding: { sourceId: 'source-example', verified: true }, source: 'source-example', plan: 'P-example' };
 const store = (device: Device, supported = true) => new CheckpointStore(device.storage() as never, () => supported);
 
 test('keys are bounded, versioned and revision-addressed; values hold version, identity and revision only', async () => {
   assert.equal(sha256Hex('abc'), createHash('sha256').update('abc').digest('hex'));
   const long = 'x'.repeat(5000) + '計画';
   assert.equal(sha256Hex(long), createHash('sha256').update(long).digest('hex'));
-  const key = checkpointKey({ ...ID, plan: 'P'.repeat(128), account: 'a'.repeat(512) }, Number.MAX_SAFE_INTEGER);
+  const key = checkpointKey({ ...ID, plan: 'P'.repeat(128), integrationAccount: 'a'.repeat(512) }, Number.MAX_SAFE_INTEGER);
   assert.ok(key.length <= 128, String(key.length));
   const d = new Device(); const s = store(d);
   assert.deepEqual(await s.read(ID), { state: 'absent' });
@@ -145,16 +145,33 @@ test('keys are bounded, versioned and revision-addressed; values hold version, i
   assert.equal(d.instance.length, 0, 'never instance storage');
 });
 
-test('identity isolation: account (incl. absent sentinel), store, binding, source, plan and device namespace never cross', async () => {
+test('the integration-account name preserves version-1 markers and older writes cannot rewind them', async () => {
+  // Frozen stored representation, independent of the production serializer. This value is an
+  // integration label, not proof that the people using the profile are different users.
+  const legacyIdentity = '["agent-progress.review",1,"account-example","store-example","source-example",true,"source-example","P-example"]';
+  const legacyPrefix = `rv1.${createHash('sha256').update(legacyIdentity).digest('hex')}`;
+  const d = new Device(); const s = store(d);
+  const legacyValue = { v: 1, id: legacyIdentity, revision: 8 };
+  d.map.set(`${legacyPrefix}.8`, legacyValue);
+  assert.equal(canonicalIdentity(ID), legacyIdentity);
+  assert.deepEqual(await s.read(ID), { state: 'saved', revision: 8 });
+  assert.deepEqual(await s.write(ID, 10), { ok: true });
+  assert.deepEqual(d.map.get(`${legacyPrefix}.10`), { v: 1, id: legacyIdentity, revision: 10 });
+  // An older frame can finish a previously dispatched write after the newer frame.
+  d.map.set(`${legacyPrefix}.8`, legacyValue);
+  assert.deepEqual(await s.read(ID), { state: 'saved', revision: 10 });
+});
+
+test('identity partitioning: integration account (incl. absent sentinel), store, binding, source, plan and device namespace never cross', async () => {
   const d = new Device(); const s = store(d);
   await s.write(ID, 10);
   const others: CheckpointIdentity[] = [
-    { ...ID, account: 'account-other' }, { ...ID, account: null }, { ...ID, storeId: 'store-other' },
+    { ...ID, integrationAccount: 'account-other' }, { ...ID, integrationAccount: null }, { ...ID, storeId: 'store-other' },
     { ...ID, binding: { sourceId: 'source-other', verified: true } }, { ...ID, binding: { sourceId: 'source-example', verified: false } }, { ...ID, binding: { sourceId: null, verified: false } },
     { ...ID, source: 'source-other' }, { ...ID, plan: 'P-other' },
   ];
   for (const o of others) { assert.notEqual(contextHash(o), contextHash(ID)); assert.deepEqual(await s.read(o), { state: 'absent' }, JSON.stringify(o)); }
-  assert.equal(contextHash({ ...ID, account: '' }), contextHash({ ...ID, account: null }), 'empty account uses the explicit absent sentinel');
+  assert.equal(contextHash({ ...ID, integrationAccount: '' }), contextHash({ ...ID, integrationAccount: null }), 'empty integration account uses the explicit absent sentinel');
   assert.deepEqual(await store(new Device()).read(ID), { state: 'absent' }, 'another installation/device namespace');
   // A colliding key with another identity's value is malformed, never adopted.
   d.map.set(checkpointKey(ID, 11), { v: 1, id: canonicalIdentity({ ...ID, plan: 'P-other' }), revision: 11 });

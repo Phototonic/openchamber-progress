@@ -13,13 +13,15 @@ export interface DeviceStorage {
 }
 
 /**
- * Persistent viewer context of one plan baseline (owner Q4: shared within the local profile and
- * host account, across sessions, board filters, surfaces and frames). Frame/request/reading
- * generations are ephemeral guards and never part of it.
+ * Persistent context of one plan baseline within SDK device storage (browser profile, runtime,
+ * extension and installation). The integration account only partitions this preference; it is
+ * not a host-user identity. People sharing the namespace and integration value share markers
+ * across sessions, board filters, surfaces and frames. Frame/request/reading generations are
+ * ephemeral guards and never part of it.
  */
 export interface CheckpointIdentity {
-  /** Host account; an empty or missing account uses an explicit absent sentinel (null). */
-  account: string | null;
+  /** SDK connection.account: integration-link state, not a host login. Empty/missing uses null. */
+  integrationAccount: string | null;
   storeId: string;
   binding: { sourceId: string | null; verified: boolean };
   source: string;
@@ -37,9 +39,9 @@ const DEVICE = { scope: 'device' } as const;
 const KEYS_MAX = 2000;
 const KEY = /^rv1\.([0-9a-f]{64})\.([1-9][0-9]{0,15})$/;
 
-/** Canonical, versioned tuple. JSON null is the absent-account sentinel, distinct from any string. */
+/** Canonical, versioned tuple. JSON null is the absent-integration-account sentinel, distinct from any string. */
 export function canonicalIdentity(id: CheckpointIdentity) {
-  return JSON.stringify(['agent-progress.review', CHECKPOINT_VERSION, id.account || null, id.storeId, id.binding.sourceId, id.binding.verified, id.source, id.plan]);
+  return JSON.stringify(['agent-progress.review', CHECKPOINT_VERSION, id.integrationAccount || null, id.storeId, id.binding.sourceId, id.binding.verified, id.source, id.plan]);
 }
 
 export const contextHash = (id: CheckpointIdentity) => sha256Hex(canonicalIdentity(id));
