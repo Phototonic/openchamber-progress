@@ -106,6 +106,7 @@ test('A2 production guidance/hints reach native2.2.2 outgoing requests and real 
     lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: payload, guidance, removal: '// fixture only', version: RELEASE });
     const ownership = JSON.parse(fs.readFileSync(`${root}/config/opencode/plugins/agent-progress/.ownership.json`, 'utf8'));
     assert.equal(fs.readFileSync(`${root}/store/payloads/${ownership.active}/index.js`, 'utf8'), payload, 'selected companion bytes unchanged by observer');
+    assert.equal(fs.readFileSync(`${root}/store/payloads/${ownership.active}/SKILL.md`, 'utf8'), guidance, 'selected packaged skill bytes installed unchanged');
     console.log('selected-companion-sha256', createHash('sha256').update(payload).digest('hex'), process.env.ACTIVATION_COMPANION_ENTRY ? 'verbatim-entry' : 'source-built');
     const observer = `${root}/config/opencode/plugins/activation-observer`;
     fs.mkdirSync(observer, {recursive:true,mode:0o700});

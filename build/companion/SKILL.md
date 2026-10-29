@@ -6,6 +6,15 @@ batch changes, never timer heartbeats. Read current state after compaction or
 revision conflict. Original plan documents stay authoritative and are never
 rewritten by capture.
 
+Tracker updates are not Agent Progress reports. For tracked plan work, explicitly
+mirror meaningful unreported canonical state at PLAN_READY handoff, review approval,
+owner approval and work start; do not report again if already current. These are
+actual canonical states, not events the plugin detects. At PLAN_READY mirror the
+actionable structure, not implementation completion or approval. Review approval
+and owner approval are separate; reflect existing canonical gate/work items only,
+never invent review tasks to report. Work start means actual work, not a dispatch
+having run. Never manufacture a file or report automatically on each turn.
+
 Use `agent_progress_report`. Every mutation requires a fresh `oid` and expected
 `rev`; reuse an `oid` only for an identical retry. A new `start` requires `plan`,
 `title`, the complete `items` structure and `rev:0`. Minimal valid start (replace
