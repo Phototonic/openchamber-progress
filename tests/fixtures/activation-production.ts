@@ -1,6 +1,6 @@
 /** Production plugin through installed2.1.4 adapter; fake host, real SQLite. */
 import fs from 'node:fs';
-import { Effect, DateTime } from 'effect';
+import { Effect, DateTime, Stream } from 'effect';
 import { fromPromise } from '@opencode/plugin/promise/adapter';
 import plugin from '../../plugin/index.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
@@ -35,6 +35,7 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
       yield* Effect.addFinalizer(() => dispose); return { dispose };
     });
     const domains: Record<string, any> = {
+      event: { subscribe: () => Stream.empty },
       session: { hook: hook('session'), get: ({ sessionID }: any) => Effect.tryPromise({ try: async () => { lookupCount++; return f.lookup(sessionID); }, catch: error => error }) },
       tool: { hook: hook('tool'), transform: (callback: any) => Effect.sync(() => { callback({ namespace() {}, add(value: any) { tools.set('agent_progress_report', value); } }); return registration(); }), list: () => Effect.succeed([...tools].map(([id, value]) => ({ id, ...value }))) },
       skill: { transform: (callback: any) => Effect.sync(() => { callback({ add(value: any) { f.skill = value; } }); return registration(); }) },
