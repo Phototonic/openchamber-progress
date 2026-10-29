@@ -1249,6 +1249,108 @@ function searchState(db, binding, storeId, keys) {
   }) };
 }
 
+// shared/progress-resume.ts
+var RESUME_LIMITS = { candidates: 3, assignments: 20, planSlots: 64, snapshotBytes: 1048576, inputBytes: 8388608, scanMs: 100 };
+function validPlan2(value, source, id, revision) {
+  const p = value;
+  requireProgress(validateDigestSnapshot(value, source, id, revision), "corrupt");
+  requireProgress(typeof p.title === "string" && !!p.title.trim() && p.title.length <= 256 && !p.title.includes("\x00") && identifier(p.sessionId), "corrupt");
+  requireProgress(Array.isArray(p.links) && p.links.length <= 64, "corrupt");
+  const sessions = new Set, assigned = new Map;
+  const items = new Map(p.items.map((i) => [i.id, i]));
+  for (const link of p.links) {
+    requireProgress(link && identifier(link.sessionId) && !sessions.has(link.sessionId) && link.sessionId !== p.sessionId && Array.isArray(link.itemIds) && link.itemIds.length <= 1000, "corrupt");
+    sessions.add(link.sessionId);
+    for (const id2 of link.itemIds) {
+      requireProgress(identifier(id2) && !assigned.has(id2) && items.get(id2)?.kind === "task" && items.get(id2)?.assigneeSessionId === link.sessionId, "corrupt");
+      assigned.set(id2, link.sessionId);
+    }
+  }
+  for (const item of p.items)
+    if (item.assigneeSessionId !== undefined) {
+      requireProgress(identifier(item.assigneeSessionId) && item.kind === "task" && assigned.get(item.id) === item.assigneeSessionId, "corrupt");
+    }
+  return p;
+}
+function resumeSelection(db, binding, r, now = () => performance.now()) {
+  if (!identifier(r.storeId) || !identifier(r.sourceId) || !identifier(r.sessionId) || binding.sourceId !== r.sourceId || !binding.verified || !Array.isArray(r.ancestry) || r.ancestry.length > 32 || !r.ancestry.every(identifier) || new Set([r.sessionId, ...r.ancestry]).size !== r.ancestry.length + 1 || (r.parentId === null ? r.ancestry.length !== 0 : !identifier(r.parentId) || r.ancestry[0] !== r.parentId))
+    return null;
+  const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+  const source = db.prepare("SELECT verified FROM sources WHERE id=?").get(r.sourceId);
+  requireProgress(meta && identifier(meta.store_id) && (meta.enabled === 0 || meta.enabled === 1), "corrupt");
+  if (meta.store_id !== r.storeId || meta.enabled !== 1 || source?.verified !== 1)
+    return null;
+  requireProgress(Number(db.prepare("PRAGMA busy_timeout").get().timeout) <= 1000, "binding");
+  const installed = cleanupInstalled(db);
+  const result = { storeId: r.storeId, sourceId: r.sourceId, sessionId: r.sessionId, candidates: [], omitted: false, incomplete: false, limit: null, work: { planSlots: 0, snapshots: 0, inputBytes: 0 } };
+  const start = now();
+  let last = start;
+  requireProgress(Number.isFinite(start), "invalid");
+  const expired = () => {
+    const t = now();
+    requireProgress(Number.isFinite(t) && t >= last, "invalid");
+    last = t;
+    return t - start >= RESUME_LIMITS.scanMs;
+  };
+  const stop = (limit) => {
+    result.incomplete = true;
+    result.limit = limit;
+    return result;
+  };
+  let after = null;
+  while (result.work.planSlots < RESUME_LIMITS.planSlots) {
+    if (expired())
+      return stop("time");
+    const row = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
+    result.work.planSlots++;
+    if (!row)
+      return result;
+    requireProgress(identifier(row.id) && Number.isSafeInteger(row.revision) && Number(row.revision) > 0 && Number.isSafeInteger(row.bytes) && Number(row.bytes) > 0, "corrupt");
+    after = row.id;
+    requireProgress(Number(row.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
+    if (Number(row.bytes) > RESUME_LIMITS.inputBytes - result.work.inputBytes)
+      return stop("bytes");
+    result.work.inputBytes += Number(row.bytes);
+    result.work.snapshots++;
+    let value;
+    try {
+      value = JSON.parse(String(row.snapshot));
+    } catch {
+      throw new ProgressError("corrupt");
+    }
+    const p = validPlan2(value, r.sourceId, row.id, Number(row.revision));
+    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row.id) : undefined;
+    if (cleanup2)
+      requireProgress(["visible", "archived", "deleted"].includes(String(cleanup2.state)) && Number.isSafeInteger(cleanup2.generation) && Number(cleanup2.generation) > 0 && cleanup2.state !== "deleted", "corrupt");
+    if (expired())
+      return stop("time");
+    if (cleanup2?.state === "archived" || p.lifecycle !== "active")
+      continue;
+    const pointer = { sourceId: r.sourceId, plan: p.id, title: p.title, revision: p.revision };
+    let candidate;
+    if (r.parentId === null) {
+      if (p.sessionId !== r.sessionId)
+        continue;
+      candidate = { ...pointer, scope: "coordinator" };
+    } else {
+      const link = p.links.find((l) => l.sessionId === r.sessionId);
+      if (!r.ancestry.includes(p.sessionId) || !link?.itemIds.length)
+        continue;
+      if (link.itemIds.length > RESUME_LIMITS.assignments) {
+        result.omitted = true;
+        continue;
+      }
+      candidate = { ...pointer, scope: "assigned", itemIds: [...link.itemIds] };
+    }
+    if (result.candidates.length === RESUME_LIMITS.candidates) {
+      result.omitted = true;
+      return stop("candidates");
+    }
+    result.candidates.push(candidate);
+  }
+  return stop("slots");
+}
+
 // shared/store.ts
 function canonical(value) {
   if (Array.isArray(value))
@@ -1372,6 +1474,9 @@ class Store {
   }
   searchState(storeId, keys) {
     return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys));
+  }
+  resumePlans(request, options = {}) {
+    return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request, options.now));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {

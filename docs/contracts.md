@@ -444,6 +444,13 @@ The UI shows report age, coverage and reporter attribution rather than inferring
 progress from session activity. Missing reports remain unknown, not completion
 or failure.
 
+Resume pointer delivery or consumption is not a reporting action, receipt,
+compliance, acceptance or completion. Titles and labelled last-known revisions
+are recorded hints; explicitly read current state before any mutation (including
+after conflict), and read and confirm a target before reporting from a candidate list.
+Neither delivery nor a subsequent read establishes current source-file freshness
+or human approval. The capsule selects no action and grants no new permission.
+
 ## Tool invocation validation help (additive v2)
 
 The flat tool input schema remains provider-compatible; operation-specific
@@ -471,6 +478,112 @@ enabled by guidance; a child still needs explicit assignment and permitted relay
 Unknown tools, shell/opaque patches and arbitrary/non-Markdown paths are not
 inferred as plan documents. Structured plans need no file. There is no new
 service/RPC field, durable hint state, prompt configuration or global gate.
+
+Recovery is an optional addition inside that same owned section, only after a
+host compaction observed during the loaded plugin lifetime: a live start, an
+observe-only compaction hook and an increasing, matching-reason successful end
+must pair for the same session/source. A start or hook alone is not success.
+The first following primary context attempt consumes the opportunity even if
+delivery safely declines. Ordinary turns and uncompacted resumes do no recovery
+lookup and retain today's eligible generic guidance. Failed compactions retire
+pending recovery; title/generate and summarization requests receive no capsule.
+Observation never reads summary text or changes compaction inputs or `result`.
+
+A complete single eligible result is labelled **recorded pointer**; multiple
+results or incomplete/omitted coverage are **unconfirmed candidates**, including
+an incomplete singleton. Each entry renders the source/plan identifiers, a
+JSON-quoted literal title, **last-known revision**, and an explicit concrete-plan
+read example. Candidates require reading and confirming a target before reporting;
+known omissions disclose that additional eligible candidates may exist, not an
+invented exact total. Assigned children receive only the plan pointer and their
+complete assigned item IDs with an assigned-only restriction. Eligibility is
+defined below; missing/restricted report tools stay missing/restricted.
+
+Observed disable, source/store binding changes and disposal retire pending and
+held recovery; re-enable does not backfill. Control is sampled at observer/context
+boundaries and after awaits, not polled: an off/on transition entirely between
+observations is not guaranteed to be observed. The final authoritative Store read
+excludes closed, archived, deleted or no-longer-assigned work. Already dispatched
+text cannot be retracted and remains last-known, subject to the unchanged explicit
+read/expected-revision mutation protocol. No plan payload is cached across turns.
+Unavailable recovery observation or lookup suppresses the capsule without
+suppressing otherwise eligible generic guidance or possible-plan-file hints.
+
+### Internal resume read contract (revision 1)
+
+`Store.resumePlans` is a synchronous read-only projection on the existing connection
+and read transaction. `ResumeRequest`, `ResumeSelection` and the narrow `ResumeRead`
+callback live in `shared/progress-resume.ts`; activation receives the callback, never
+the Store, mutation executor or capture access. Requests carry expected `storeId`,
+`sourceId`, `sessionId`, `parentId` and complete authoritative `ancestry` (nearest
+parent first; null means unknown). Binding, verified source and current enabled
+state are checked in that transaction. Missing/uncertain authority returns null;
+corrupt required metadata rejects the entire lookup, including previously found
+candidates. Callers suppress recovery on read errors, not ordinary generic guidance.
+
+Only visible `lifecycle === 'active'` plans qualify. Root sessions qualify only
+for plans they coordinate. Helpers qualify only for a current nonempty explicit
+link whose coordinator is an authoritative ancestor, with consistent task assignees;
+their independently coordinated work does not qualify. Finished, cancelled, failed,
+archived and deleted plans cannot supply recovery. Closed-only sessions retain
+otherwise eligible generic guidance without a capsule. History, contributions,
+directory similarity and session-tree membership alone never establish authority.
+
+Candidates contain only `sourceId`, `plan`, literal `title`, last-known `revision`
+and `scope:'coordinator'` or `scope:'assigned'` with complete `itemIds`. No task
+prose, statuses, counts, blockers, document content or source roots escape in a
+candidate. `omitted` denotes known candidate/scope omissions; `incomplete` denotes
+unfinished discovery. Either flag prevents a uniqueness claim, even for a singleton.
+The bounded list is unconfirmed, with no invented exact total. The source ID is
+namespace metadata, not the tool's document-path `source` argument: explicit reads
+use `agent_progress_report` with `op:'read'` and one concrete `plan` only (optional
+explicit page), never manufactured source/oid/rev parameters.
+
+### Adopted bounds / compatibility — progress resume
+
+Selection returns at most **3** candidates in binary plan-key order and stops at
+a fourth with omissions/incomplete coverage. Helpers receive at most **20** assigned
+IDs per candidate; larger scopes are omitted completely, never partially represented.
+Each lookup admits at most **64** source-plan slot attempts (including exhaustion),
+**1 MiB** per snapshot and **8 MiB** total JSON, with byte admission in SQL before
+text is returned. Validation bounds remain **1000** items and **64** links per plan.
+Excluded lifecycles still consume scan work, not candidate slots. The result includes
+`work:{planSlots,snapshots,inputBytes}` and fixed `limit` metadata (`slots`, `bytes`,
+`time`, `candidates` or null). These counters are diagnostic, not child task scope.
+
+A **100 ms cooperative scan budget** is checked between bounded steps using a
+monotonic clock (injectable for tests). Already proven candidates may survive a
+budget stop only as incomplete/unconfirmed results; zero candidates means no capsule.
+SQLite's existing busy ceiling is at most **1 s**. Neither budget is a hard total
+latency guarantee: a synchronous admitted parse or busy wait can exceed the scan
+budget. No automatic continuation, history/document scan, cache, schema/index,
+write, new connection or public endpoint is introduced.
+
+Rendering adds at most **4096 UTF-8 bytes**, within the one existing advisory
+section. Whole candidates are removed to fit, with unconfirmed/omission wording;
+identifiers and safety instructions are never truncated. A candidate that cannot
+fit is omitted. Quoting titles treats them as literal data, not as a promise of
+prompt-injection prevention or secret redaction.
+
+Activation retains at most **128** session compaction records and **256** event
+replay identities, independently of existing file-hint bounds. Oldest eviction,
+reload or retirement can lose an advisory opportunity; they never reconstruct
+one from transcripts. Capsule-only authoritative identity work has a **1 s**
+deadline with cancellation checkpoints before and after each ancestry await
+(at most **32** hops). At most one recovery identity lookup is outstanding; a
+host lookup ignoring cancellation cannot start another hop or later inject its
+retired result. Its outstanding call can temporarily suppress further recovery.
+The request-scoped deadline timer is cleared after use; no background poller exists.
+
+Pinned **2.1.4** scripted-provider integration verifies production recovery at
+the actual outgoing boundary, not model compliance or desktop-native behavior.
+Native plugin reload does not re-arm an old completion; a fresh compaction still
+delivers. **Host replay remains unexercised:** the pinned event stream is live-only
+and volatile, with no replay controls. Duplicate/sequence guards are unit-tested,
+not certified against a host-replayed event. After reload or a missed event,
+generic guidance remains until a newly observed successful compaction. Broader
+runtime/version compatibility is not established. Commands and evidence scope
+are in [the compatibility guide](compatibility.md#progress-resume-capsule-verification).
 
 ## Fixed authenticated read API
 

@@ -25457,6 +25457,108 @@ function searchState(db, binding, storeId, keys4) {
   }) };
 }
 
+// shared/progress-resume.ts
+var RESUME_LIMITS = { candidates: 3, assignments: 20, planSlots: 64, snapshotBytes: 1048576, inputBytes: 8388608, scanMs: 100 };
+function validPlan2(value3, source, id2, revision) {
+  const p = value3;
+  requireProgress(validateDigestSnapshot(value3, source, id2, revision), "corrupt");
+  requireProgress(typeof p.title === "string" && !!p.title.trim() && p.title.length <= 256 && !p.title.includes("\x00") && identifier2(p.sessionId), "corrupt");
+  requireProgress(Array.isArray(p.links) && p.links.length <= 64, "corrupt");
+  const sessions = new Set, assigned = new Map;
+  const items = new Map(p.items.map((i) => [i.id, i]));
+  for (const link2 of p.links) {
+    requireProgress(link2 && identifier2(link2.sessionId) && !sessions.has(link2.sessionId) && link2.sessionId !== p.sessionId && Array.isArray(link2.itemIds) && link2.itemIds.length <= 1000, "corrupt");
+    sessions.add(link2.sessionId);
+    for (const id3 of link2.itemIds) {
+      requireProgress(identifier2(id3) && !assigned.has(id3) && items.get(id3)?.kind === "task" && items.get(id3)?.assigneeSessionId === link2.sessionId, "corrupt");
+      assigned.set(id3, link2.sessionId);
+    }
+  }
+  for (const item of p.items)
+    if (item.assigneeSessionId !== undefined) {
+      requireProgress(identifier2(item.assigneeSessionId) && item.kind === "task" && assigned.get(item.id) === item.assigneeSessionId, "corrupt");
+    }
+  return p;
+}
+function resumeSelection(db, binding, r, now3 = () => performance.now()) {
+  if (!identifier2(r.storeId) || !identifier2(r.sourceId) || !identifier2(r.sessionId) || binding.sourceId !== r.sourceId || !binding.verified || !Array.isArray(r.ancestry) || r.ancestry.length > 32 || !r.ancestry.every(identifier2) || new Set([r.sessionId, ...r.ancestry]).size !== r.ancestry.length + 1 || (r.parentId === null ? r.ancestry.length !== 0 : !identifier2(r.parentId) || r.ancestry[0] !== r.parentId))
+    return null;
+  const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+  const source = db.prepare("SELECT verified FROM sources WHERE id=?").get(r.sourceId);
+  requireProgress(meta && identifier2(meta.store_id) && (meta.enabled === 0 || meta.enabled === 1), "corrupt");
+  if (meta.store_id !== r.storeId || meta.enabled !== 1 || source?.verified !== 1)
+    return null;
+  requireProgress(Number(db.prepare("PRAGMA busy_timeout").get().timeout) <= 1000, "binding");
+  const installed = cleanupInstalled(db);
+  const result3 = { storeId: r.storeId, sourceId: r.sourceId, sessionId: r.sessionId, candidates: [], omitted: false, incomplete: false, limit: null, work: { planSlots: 0, snapshots: 0, inputBytes: 0 } };
+  const start = now3();
+  let last = start;
+  requireProgress(Number.isFinite(start), "invalid");
+  const expired = () => {
+    const t = now3();
+    requireProgress(Number.isFinite(t) && t >= last, "invalid");
+    last = t;
+    return t - start >= RESUME_LIMITS.scanMs;
+  };
+  const stop = (limit) => {
+    result3.incomplete = true;
+    result3.limit = limit;
+    return result3;
+  };
+  let after = null;
+  while (result3.work.planSlots < RESUME_LIMITS.planSlots) {
+    if (expired())
+      return stop("time");
+    const row = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result3.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
+    result3.work.planSlots++;
+    if (!row)
+      return result3;
+    requireProgress(identifier2(row.id) && Number.isSafeInteger(row.revision) && Number(row.revision) > 0 && Number.isSafeInteger(row.bytes) && Number(row.bytes) > 0, "corrupt");
+    after = row.id;
+    requireProgress(Number(row.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
+    if (Number(row.bytes) > RESUME_LIMITS.inputBytes - result3.work.inputBytes)
+      return stop("bytes");
+    result3.work.inputBytes += Number(row.bytes);
+    result3.work.snapshots++;
+    let value3;
+    try {
+      value3 = JSON.parse(String(row.snapshot));
+    } catch {
+      throw new ProgressError("corrupt");
+    }
+    const p = validPlan2(value3, r.sourceId, row.id, Number(row.revision));
+    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row.id) : undefined;
+    if (cleanup2)
+      requireProgress(["visible", "archived", "deleted"].includes(String(cleanup2.state)) && Number.isSafeInteger(cleanup2.generation) && Number(cleanup2.generation) > 0 && cleanup2.state !== "deleted", "corrupt");
+    if (expired())
+      return stop("time");
+    if (cleanup2?.state === "archived" || p.lifecycle !== "active")
+      continue;
+    const pointer = { sourceId: r.sourceId, plan: p.id, title: p.title, revision: p.revision };
+    let candidate;
+    if (r.parentId === null) {
+      if (p.sessionId !== r.sessionId)
+        continue;
+      candidate = { ...pointer, scope: "coordinator" };
+    } else {
+      const link2 = p.links.find((l) => l.sessionId === r.sessionId);
+      if (!r.ancestry.includes(p.sessionId) || !link2?.itemIds.length)
+        continue;
+      if (link2.itemIds.length > RESUME_LIMITS.assignments) {
+        result3.omitted = true;
+        continue;
+      }
+      candidate = { ...pointer, scope: "assigned", itemIds: [...link2.itemIds] };
+    }
+    if (result3.candidates.length === RESUME_LIMITS.candidates) {
+      result3.omitted = true;
+      return stop("candidates");
+    }
+    result3.candidates.push(candidate);
+  }
+  return stop("slots");
+}
+
 // shared/store.ts
 function canonical(value3) {
   if (Array.isArray(value3))
@@ -25580,6 +25682,9 @@ class Store {
   }
   searchState(storeId, keys4) {
     return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys4));
+  }
+  resumePlans(request3, options2 = {}) {
+    return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request3, options2.now));
   }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
@@ -26255,17 +26360,70 @@ function successfulPath(event) {
   } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
     return event.input.path;
 }
-async function registerActivation(ctx, source, enabled) {
+function resumeText(selection) {
+  let candidates = selection.candidates.slice(0, 3);
+  let omitted = selection.omitted || selection.candidates.length > 3;
+  while (candidates.length) {
+    const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
+    const text = [
+      unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
+      "Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.",
+      ...unconfirmed ? ["Read and confirm a target before reporting."] : [],
+      ...selection.incomplete || omitted ? ["Additional eligible candidates may exist; discovery or output is incomplete."] : [],
+      "Progress source IDs below are namespace metadata, not the tool’s document-path source argument.",
+      ...candidates.map((p) => `- source ${p.sourceId}; plan ${p.plan}; title ${JSON.stringify(p.title)}; last-known revision ${p.revision}. Read: agent_progress_report ${JSON.stringify({ op: "read", plan: p.plan })}` + (p.scope === "assigned" ? `
+  Assigned-only scope: ${JSON.stringify(p.itemIds)}. Contribute only these assigned item IDs; no broader scope is implied.` : ""))
+    ].join(`
+`);
+    if (Buffer.byteLength(text, "utf8") <= 4096)
+      return text;
+    candidates = candidates.slice(0, -1);
+    omitted = true;
+  }
+  return "";
+}
+async function registerActivation(ctx, source, enabled, recovery) {
   const pending = new Set;
   const recent = new Set;
   const owned = Symbol("agent-progress-section");
+  function section(hint, capsule = "") {
+    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
+
+${ACTIVATION_HINT}` : "") + (capsule ? `
+
+${capsule}` : "") };
+    Object.defineProperty(part, owned, { value: { hint } });
+    return part;
+  }
   const registrations = [];
   let disposed = false;
   let disableEpoch = 0;
+  const compactions = new Map;
+  const replay = new Set;
+  let eventFloor = Date.now();
+  let binding = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+  let recoveryAvailable = false, lookupBusy = false;
+  let stopRecovery;
+  let held;
+  function retireRecovery() {
+    compactions.clear();
+    held?.abort();
+    eventFloor = Math.max(eventFloor, Date.now());
+  }
   function control() {
-    if (enabled() === true)
-      return true;
+    const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+    if (current !== binding) {
+      binding = current;
+      retireRecovery();
+      pending.clear();
+      disableEpoch++;
+    }
+    try {
+      if (enabled() === true)
+        return true;
+    } catch {}
     pending.clear();
+    retireRecovery();
     disableEpoch++;
     return false;
   }
@@ -26283,6 +26441,9 @@ async function registerActivation(ctx, source, enabled) {
     disposed = true;
     pending.clear();
     recent.clear();
+    retireRecovery();
+    replay.clear();
+    await stopRecovery?.();
     for (const registration of registrations.splice(0)) {
       try {
         await registration.dispose();
@@ -26315,6 +26476,10 @@ async function registerActivation(ctx, source, enabled) {
             event.system.splice(i, 1);
       };
       try {
+        for (let i = 0;i < event.system.length; i++)
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
+            event.system[i] = section(event.system[i][owned].hint);
+          }
         if (disposed) {
           removeOwned();
           return;
@@ -26322,7 +26487,12 @@ async function registerActivation(ctx, source, enabled) {
         if (!boundedID(event.sessionID))
           return;
         const sessionKey = key(event.sessionID);
-        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !control()) {
+        const active = control();
+        const attempt = compactions.get(sessionKey);
+        const armed = attempt?.pending === true;
+        if (attempt)
+          attempt.pending = false;
+        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
           pending.delete(sessionKey);
           removeOwned();
           return;
@@ -26338,13 +26508,59 @@ async function registerActivation(ctx, source, enabled) {
           removeOwned();
           return;
         }
-        if (event.system.some((part) => Object.prototype.hasOwnProperty.call(part, owned)))
+        let capsule = "";
+        if (armed && recovery && recoveryAvailable && !lookupBusy && compactions.get(sessionKey) === attempt) {
+          const controller = new AbortController;
+          held = controller;
+          const now3 = recovery.now ?? (() => performance.now());
+          const deadline = now3() + 1000;
+          const alive = () => !controller.signal.aborted && !disposed && recoveryAvailable && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
+          let timer;
+          lookupBusy = true;
+          const lookup2 = (async () => {
+            try {
+              if (!alive())
+                return null;
+              const identity3 = await recovery.identity(event.sessionID, alive, controller.signal);
+              return alive() ? identity3 : null;
+            } catch {
+              return null;
+            } finally {
+              lookupBusy = false;
+              if (held === controller)
+                held = undefined;
+            }
+          })();
+          try {
+            const identity3 = await Promise.race([lookup2, new Promise((resolve3) => {
+              timer = setTimeout(() => {
+                controller.abort();
+                resolve3(null);
+              }, 1000);
+            })]);
+            if (identity3 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity3.sourceId === source.id && identity3.sessionId === event.sessionID) {
+              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity3.sourceId, sessionId: identity3.sessionId, parentId: identity3.parentId, ancestry: identity3.ancestry });
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
+                capsule = resumeText(selection);
+            }
+          } catch {} finally {
+            if (timer !== undefined)
+              clearTimeout(timer);
+            controller.abort();
+          }
+        }
+        if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
+          removeOwned();
           return;
-        const section = { type: "text", text: ACTIVATION_GUIDANCE + (pending.has(sessionKey) ? `
-
-${ACTIVATION_HINT}` : "") };
-        Object.defineProperty(section, owned, { value: true });
-        event.system.push(section);
+        }
+        const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
+        if (existing !== -1) {
+          if (capsule)
+            event.system[existing] = section(event.system[existing][owned].hint, capsule);
+          return;
+        }
+        const hint = pending.has(sessionKey);
+        event.system.push(section(hint, capsule));
         pending.delete(sessionKey);
       } catch {
         pending.delete(key(event.sessionID));
@@ -26353,6 +26569,75 @@ ${ACTIVATION_HINT}` : "") };
         } catch {}
       }
     }));
+    if (recovery) {
+      const abort = new AbortController;
+      let registration;
+      let events;
+      stopRecovery = async () => {
+        abort.abort();
+        await events;
+      };
+      try {
+        const stream = ctx.event.subscribe({ signal: abort.signal });
+        if (!stream || typeof stream[Symbol.asyncIterator] !== "function")
+          throw new Error("unsupported");
+        registration = await ctx.session.hook("compaction", (event) => {
+          if (disposed || !control() || !source.verified)
+            return;
+          const record3 = compactions.get(key(event.sessionID));
+          if (record3?.reason)
+            record3.live = true;
+        });
+        recoveryAvailable = true;
+        events = (async () => {
+          try {
+            for await (const event of stream) {
+              if (disposed || !control() || !source.verified)
+                continue;
+              if (event.type !== "session.compaction.started" && event.type !== "session.compaction.ended" && event.type !== "session.compaction.failed")
+                continue;
+              const { sessionID, reason } = event.data;
+              if (!identifier2(sessionID) || !boundedID(event.id) || !Number.isSafeInteger(event.durable.seq) || event.durable.seq < 1 || event.durable.aggregateID !== sessionID || !Number.isFinite(event.created) || event.location?.directory !== ctx.location.directory || reason !== "auto" && reason !== "manual")
+                continue;
+              const sessionKey = key(sessionID);
+              if (event.created <= eventFloor) {
+                compactions.delete(sessionKey);
+                continue;
+              }
+              const eventKey = JSON.stringify([sessionKey, event.id]);
+              const previous = compactions.get(sessionKey);
+              if (replay.has(eventKey) || previous && event.durable.seq <= previous.seq)
+                continue;
+              remember(replay, eventKey, 256);
+              const started = event.type === "session.compaction.started";
+              const ended = event.type === "session.compaction.ended";
+              const next = { seq: event.durable.seq, live: false, pending: ended && previous?.reason === reason && previous.live };
+              if (started)
+                next.reason = reason;
+              compactions.delete(sessionKey);
+              compactions.set(sessionKey, next);
+              if (compactions.size > 128) {
+                compactions.delete(compactions.keys().next().value);
+                eventFloor = Math.max(eventFloor, event.created);
+              }
+            }
+          } catch {} finally {
+            recoveryAvailable = false;
+            retireRecovery();
+            try {
+              await registration?.dispose();
+            } catch {}
+          }
+        })();
+      } catch {
+        abort.abort();
+        recoveryAvailable = false;
+        retireRecovery();
+        try {
+          await registration?.dispose();
+        } catch {}
+      }
+    }
     return dispose;
   } catch (error) {
     await dispose();
@@ -26374,13 +26659,19 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
   try {
     verifyStore(store, b);
     store.bindReads(b.source.id, b.source.verified);
-    async function identity3(sessionID, agent) {
+    async function identity3(sessionID, agent, guard) {
+      const checkpoint = () => {
+        if (guard)
+          requireProgress(guard.alive(), "binding");
+      };
       let s;
+      checkpoint();
       try {
-        s = await ctx.session.get({ sessionID });
+        s = await ctx.session.get({ sessionID }, guard ? { signal: guard.signal } : undefined);
       } catch {
         throw new ProgressError("binding");
       }
+      checkpoint();
       requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
       const ancestry = [];
       let parent = s.parentID;
@@ -26393,8 +26684,13 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         }
         seen.add(parent);
         ancestry.push(parent);
+        checkpoint();
         try {
-          parent = (await ctx.session.get({ sessionID: parent })).parentID;
+          const ancestor = await ctx.session.get({ sessionID: parent }, guard ? { signal: guard.signal } : undefined);
+          checkpoint();
+          if (guard)
+            requireProgress(ancestor.id === parent, "binding");
+          parent = ancestor.parentID;
         } catch {
           known = false;
           break;
@@ -26440,7 +26736,11 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       });
     });
     const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
-    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1);
+    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1, {
+      storeId: b.storeId,
+      read: (request3) => store.resumePlans(request3),
+      identity: (sessionID, alive, signal) => identity3(sessionID, "unknown", { alive, signal })
+    });
     await ctx.rpc.register(ProgressStatus, { inspect: async () => {
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
       return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };

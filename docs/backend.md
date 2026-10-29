@@ -94,13 +94,18 @@ host account isolation, long-session memory behavior or a release/install result
   lookup is bounded32, cycles/errors stay unknown. No activity/message scraping.
 - plugin/activation.ts adds advisory native primary-context/post-execute hooks.
   Verified source/session, enabled capture and effective report-tool availability
-  are required for guidance. Conditional ownership copy needs only the current
-  authoritative session, not ancestry/plan scans. A bounded single-row enabled
-  query is sampled at hook boundaries, including after awaited lookup. Reporting
-  still performs its unchanged assignment/ancestry/capture checks.
+  are required for guidance. Generic guidance/file hints need only the current
+  authoritative session; the first primary attempt after an observed successful
+  compaction may additionally resolve bounded ancestry and read `Store.resumePlans`.
+  A narrow read-only callback is the only recovery Store access, never the report
+  executor or capture path. A bounded single-row enabled query is sampled at hook
+  boundaries, including after awaited lookup. Reporting still performs its unchanged
+  assignment/ancestry/capture checks.
 - shared/store.ts owns mutations, counts, assignment/lifecycle validation,
   immutable revision snapshots, operation receipts, source namespaces, captures
   and capture-enabled control. No await/file/network work inside transactions.
+  `shared/progress-resume.ts` supplies the internal source-bound active-plan
+  projection on this same connection/read transaction, not a public discovery API.
 - plugin/document.ts asserts caller read permission on both requested and
   canonical paths through the supported ctx.permission.assert tool-source API.
   It then opens O_NOFOLLOW/nonblocking, verifies the actual opened target via
@@ -392,9 +397,71 @@ Restart/cap eviction may lose a hint or permit an old replay; base guidance recu
 Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
 closing Store; setup failures roll back partial registrations and close Store.
-No timer, persistent reminder, new RPC or automatic progress/capture write exists.
+No persistent reminder, new RPC or automatic progress/capture write exists.
+
+Progress resume separately retains at most128 session compaction records and256
+event identities, never plan titles/revisions/assignments between requests. It
+pairs a live start, observe-only compaction hook and increasing matching-reason
+end; failures clear pending state. It consumes on the first following primary
+attempt, with no per-turn recovery scan or automatic retry/backfill. Observation
+does not read summaries or alter the host's compaction system/messages/options,
+tools or result. Generic guidance/file hints remain independent.
+
+Capsule authority reuses the authoritative32-hop ancestry path with cancellation
+checkpoints before/after each await and a one-second capsule-only deadline. A
+request-scoped timer is cleared after use; there is no poller. Only one recovery
+identity lookup can be outstanding, including a host call ignoring cancellation;
+retired work cannot take another hop or inject late text. After identity, the
+synchronous bounded Store read and append introduce no further application await.
+Current control, binding and effective tool gates are rechecked at use. Observed
+disable/source/store-generation changes and disposal retire pending/held state;
+off/on transitions entirely between observations are not losslessly detected.
+
+The internal projection checks expected store/source binding, enabled control,
+active lifecycle, coordinator or current explicit assigned-child authority, and
+cleanup in the same read transaction. It admits64 source-plan slots,1MiB per
+snapshot and8MiB total JSON before materialization; validates1000 items/64 links;
+and checks a cooperative100ms scan budget between bounded steps. SQLite busy
+waits remain bounded to1s; this is not a hard100ms total-latency guarantee. No
+history/contribution/document/source-root inventory, broad list/detail envelope,
+schema/index change, persistent cache or new connection is involved.
+
+Rendering is at most3 candidates/4096 UTF-8 bytes, with whole-candidate omissions
+and explicitly unconfirmed partial coverage. A child receives at most20 complete
+assigned IDs per candidate, never task prose or sibling scope. The exact internal
+DTO, active-only eligibility, read-before-mutation instructions and generic
+fallback are frozen in [the contract](contracts.md#advisory-activation-does-not-change-the-protocol).
 
 ## Verification and known limits
+
+### Compaction-only progress resume
+
+Portable Store/installed-adapter checks (Node24.19.0, existing dependencies):
+
+```sh
+node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts
+bun run typecheck
+```
+
+The separately selected native `progress resume` case loads the real production
+plugin with direct synthetic Store seeding, not an installer. It captures actual
+outgoing recovery from system parts with a credential-free scripted AISDK provider,
+fresh HOME/XDG and a rootless loopback-only network namespace. Source and built
+commands are in [compatibility](compatibility.md#progress-resume-capsule-verification).
+Proof includes a changed current revision, unconfirmed candidates, assigned child,
+unlinked/restricted child, finished-only work, failed/empty compaction, disable,
+archive/delete before delivery, and real native plugin reload. No observer emits
+recovery in regression mode; the provider does not choose or execute report tools.
+
+The pinned2.1.4 native adapter subscribes in-process, not through an HTTP event
+connection. Its event stream is explicitly volatile/live-only without replay
+controls. Host replay therefore remains unexercised, not passed; duplicate and
+sequence guards are covered by unit tests. Actual plugin reload proves that old
+completion does not re-arm and a fresh successful compaction still delivers.
+Manual compactions were triggered; automatic reasons are unit-covered only.
+This integration proof does not establish model compliance, desktop-native
+OpenChamber/AppImage behavior, or cross-version support. Historical checks below
+are not recertified by these runs.
 
 ### Official-main metadata checker
 

@@ -160,6 +160,55 @@ node --experimental-strip-types --test tests/backend/progress-activation.test.ts
 node --experimental-strip-types --test tests/backend/progress-activation-runtime.test.ts tests/backend/plugin-failure-runtime.test.ts
 ```
 
+## Progress resume capsule verification
+
+The separately named `progress resume` native case verifies production activation
+and Store lookup on pinned OpenCode2.1.4 at the actual outgoing scripted-provider
+boundary. It uses direct synthetic Store construction and local plugin loading,
+not installation. The observer records metadata and the synthetic recovery section
+from actual outgoing system parts; it never manufactures recovery in regression
+mode or retains conversation/summary text. No real model or provider credentials
+are used. The test requires Node24.19.0, existing Bun/dependencies, working rootless
+`unshare -Urn`/`ip`, and the already-present independent binary below. A missing or
+wrong-version binary fails closed; do not substitute the managed PATH launcher,
+download a runtime, or select the older installer-based native case for this check.
+
+```sh
+export OPENCODE_BINARY=/tmp/opencode/agent-progress-probe-cli/opencode
+export EVIDENCE=evidence/progress-resume-capsule
+node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts
+bun run typecheck
+PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
+bun run build:backend
+EVIDENCE=evidence/progress-resume-capsule/built ACTIVATION_COMPANION_ENTRY=build/companion/index.js PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
+git diff --check
+```
+
+The built run copies unchanged companion bytes and sibling guidance, recording
+the tested entry's SHA-256. It does not install, package, rebuild guests or certify
+a release. Native runs own one isolated host/process group, verify zero credential
+inventory and loopback-only networking, and remove their disposable roots.
+Local-only `outgoing.json`, appended `lifecycle.json`, `checks.json` and `built/`
+records distinguish source/built integration from the earlier test-only sentinel
+gate in `runtime-gate.json`.
+
+Coverage includes the current-revision pointer, two unconfirmed candidates,
+assigned-only linked child, unlinked/restricted child suppression, finished-only
+fallback, uncompacted resume, failed/empty compaction and disable/archive/delete
+before delivery. Summarization receives no recovery and its inputs/result remain
+unchanged. Scripted text proves integration, not model willingness/compliance or
+OpenChamber desktop/AppImage behavior. No new cross-version or native Windows
+capsule certification is claimed by this Linux test.
+
+**Known replay limitation:** pinned2.1.4 event subscriptions are volatile/live-only,
+with no replay controls, and the production plugin uses the native in-process
+stream. Actual host replay cannot be exercised through that surface and is not
+reported as passed. Public native plugin reload was exercised: an old completion
+does not re-arm recovery and a fresh compaction delivers it. Duplicate/sequence
+guards are separately unit-tested. Actual runs trigger manual compaction only;
+automatic reason handling is covered at the unit layer. Historical evidence above
+remains scoped to its original artifacts and does not certify this feature.
+
 ### Future interoperability, not a required integration
 
 A cooperating vendor could deliberately report source-optional plans using the

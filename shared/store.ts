@@ -6,6 +6,7 @@ import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chm
 import path from 'node:path';
 import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
 import { searchWindow, searchState } from './plan-task-search.ts';
+import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
@@ -85,6 +86,7 @@ export class Store {
   documentComparison(r: CaptureRequest, before: number, after: number) { return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after)); }
   search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
   searchState(storeId: string, keys: SearchKey[]) { return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys)); }
+  resumePlans(request: ResumeRequest, options: { now?: () => number } = {}) { return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request, options.now)); }
   observeLoaded(source:string,installId:string,fingerprint:string) {
     this.transaction(true,()=>{
       // Optional additive runtime metadata: old v2 stores/readers remain valid.

@@ -21,15 +21,24 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
   let deactivate: (() => Promise<void>) | undefined;
   try {
   verifyStore(store,b);store.bindReads(b.source.id,b.source.verified);
-  async function identity(sessionID: Parameters<typeof ctx.session.get>[0]['sessionID'], agent: string): Promise<Actor> {
+  async function identity(sessionID: Parameters<typeof ctx.session.get>[0]['sessionID'], agent: string, guard?: { alive(): boolean; signal: AbortSignal }): Promise<Actor> {
+    const checkpoint = () => { if (guard) need(guard.alive(), 'binding'); };
     let s:Awaited<ReturnType<typeof ctx.session.get>>;
-    try{s=await ctx.session.get({sessionID});}catch{throw new ProgressError('binding');}
+    checkpoint();
+    try{s=await ctx.session.get({sessionID},guard ? {signal:guard.signal} : undefined);}catch{throw new ProgressError('binding');}
+    checkpoint();
     need(s.id === sessionID && path.isAbsolute(s.location.directory),'binding');
     const ancestry: string[] = []; let parent = s.parentID; const seen = new Set<string>([s.id]); let known = true;
     while (parent) {
       if (seen.has(parent) || ancestry.length >= 32) { known = false; break; }
       seen.add(parent); ancestry.push(parent);
-      try { parent = (await ctx.session.get({sessionID:parent})).parentID; } catch { known = false; break; }
+      checkpoint();
+      try {
+        const ancestor = await ctx.session.get({sessionID:parent},guard ? {signal:guard.signal} : undefined);
+        checkpoint();
+        if (guard) need(ancestor.id === parent, 'binding');
+        parent = ancestor.parentID;
+      } catch { known = false; break; }
     }
     return {sourceId:b.source.id,sessionId:s.id,agent:agent==='unknown'?s.agent??'unknown':agent,directory:s.location.directory,projectId:s.projectID,parentId:s.parentID ?? null,ancestry:known ? ancestry : null,verifiedSource:b.source.verified};
   }
@@ -60,7 +69,11 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
     });
   });
   const control = store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
-  deactivate = await registerActivation(ctx,b.source,()=>control.get()?.enabled===1);
+  deactivate = await registerActivation(ctx,b.source,()=>control.get()?.enabled===1,{
+    storeId:b.storeId,
+    read:request=>store.resumePlans(request),
+    identity:(sessionID,alive,signal)=>identity(sessionID,'unknown',{alive,signal}),
+  });
   await ctx.rpc.register(ProgressStatus,{inspect:async()=>{const tool=(await ctx.tool.list()).find(t=>t.id==='agent_progress_report');return{protocolVersion:2,version:b.version,storeId:b.storeId,sourceId:b.source.id,captureEnabled:store.list({limit:1}).captureEnabled,toolAvailable:!!tool,codemodeDisabled:tool?.options?.codemode===false};}});
   store.observeLoaded(b.source.id,b.installId,activationFingerprint(b,readFileSync(fileURLToPath(import.meta.url)),readFileSync(new URL('./SKILL.md',import.meta.url))));
   return async () => { try { await deactivate?.(); } finally { store.close(); } };
