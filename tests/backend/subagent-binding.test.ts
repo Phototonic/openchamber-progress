@@ -108,6 +108,36 @@ test('unresolved evidence remains bounded across TTL; overflow cannot manufactur
   });
 });
 
+for(const terminal of ['after','ended','failed','after-and-ended'])test(`capture-off retains ${terminal} evidence without assignment or re-enable poisoning`,async()=>{
+  await fixture(async f=>{
+    const request=f.request();f.declare(request);await f.native('old','message-old');await f.before('old','message-old');
+    f.store.setEnabled(false);
+    if(terminal==='after'||terminal==='after-and-ended')await f.after('old','message-old');
+    if(terminal==='ended'||terminal==='after-and-ended')await f.close('message-old');
+    if(terminal==='failed')await f.emit('step.failed',{assistantMessageID:'message-old'});
+    assert.equal(f.plan().revision,1);assert.deepEqual(f.plan().links,[]);
+    assert.throws(()=>f.declare(f.request({oid:'disabled'})),/disabled/);
+    f.store.setEnabled(true);
+    assert.equal(f.declare(request).delegation.state,'retired','re-enable cannot resurrect the old intent');
+    f.advance(300_001);
+    f.declare(f.request({oid:'fresh'}));await f.complete('C1','message-fresh');
+    assert.equal(f.plan().revision,2,'a delegation completed while disabled cannot poison later binding');
+  });
+});
+
+for(const observations of ['hooks','native'])test(`capture-off records new ${observations} without reserving; unresolved calls still block after re-enable`,async()=>{
+  await fixture(async f=>{
+    f.store.setEnabled(false);
+    if(observations==='hooks')await f.before('old','message-old');
+    else await f.native('old','message-old');
+    assert.throws(()=>f.declare(),/disabled/);
+    f.store.setEnabled(true);
+    f.declare();await f.complete();assert.equal(f.plan().revision,1,'disabled observation is still evidence of outstanding execution');
+    await f.close('message-old');
+    f.declare(f.request({oid:'after-terminal'}));await f.complete('C1','message-fresh');assert.equal(f.plan().revision,2);
+  });
+});
+
 for(const output of [undefined,{},'C1',{sessionId:'C1',status:'completed'},{sessionID:'C1',status:'cancelled'}])test('missing/malformed structured child identity never falls back to text or metadata',async()=>{
   await fixture(async f=>{
     f.declare();await f.native();await f.before();

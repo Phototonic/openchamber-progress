@@ -229,14 +229,20 @@ function detail(itemsIn: object[]): PlanDetail {
 
 test('assignment, update and observation stay separate facts; unknown detail is never unassigned', () => {
   const d = detail([{ ...items[0], assignmentBinding: binding('task-1') }, items[1], items[2]]);
-  const facts = planFacts(plan, { state: 'ready', value: d });
+  const facts = planFacts(plan, { state: 'ready', value: d }, plan.sourceId);
   assert.deepEqual(assignmentOf('C1', facts), { state: 'assigned', count: 2, fromDelegation: 1 });
   assert.deepEqual(assignmentOf('C2', facts), { state: 'unassigned' });
   assert.deepEqual(updateOf('C2', facts), { state: 'relayed', at: at(1) });
   assert.deepEqual(updateOf('C1', facts), { state: 'none' });
-  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'loading' })), { state: 'unknown' });
-  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'ready', value: { ...d, revision: 2 } })), { state: 'unknown' }, 'a lagging revision is not complete');
-  assert.deepEqual(assignmentOf('C2', planFacts(null, null)), { state: 'no-plan' });
+  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'loading' }, plan.sourceId)), { state: 'unknown' });
+  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'ready', value: { ...d, revision: 2 } }, plan.sourceId)), { state: 'unknown' }, 'a lagging revision is not complete');
+  assert.deepEqual(assignmentOf('C2', planFacts(null, null, plan.sourceId)), { state: 'no-plan' });
+  // Another setup's plan says nothing about this host's children, even with colliding IDs.
+  for (const bound of ['other-source', null]) {
+    const foreign = planFacts(plan, { state: 'ready', value: d }, bound);
+    assert.deepEqual(assignmentOf('C1', foreign), { state: 'unknown' }, String(bound));
+    assert.deepEqual(updateOf('C2', foreign).state, updateOf('C2', planFacts(plan, { state: 'loading' }, plan.sourceId)).state, String(bound));
+  }
   // Observation never adds a participant: the filter index is built from recorded facts only.
   assert.deepEqual(participantIndex(plan, d).sessions, ['A', 'C1', 'C2']);
 });
@@ -249,6 +255,6 @@ test('adapter keeps only current, matching delegation provenance; absence still 
     const d = detail([{ ...items[0], assignmentBinding: bad }, items[1], items[2]]);
     assert.equal(d.items[0].delegation, undefined, JSON.stringify(bad));
     assert.equal(d.items[0].assigneeSessionId, 'C1');
-    assert.deepEqual(assignmentOf('C1', planFacts(plan, { state: 'ready', value: d })), { state: 'assigned', count: 2, fromDelegation: 0 });
+    assert.deepEqual(assignmentOf('C1', planFacts(plan, { state: 'ready', value: d }, plan.sourceId)), { state: 'assigned', count: 2, fromDelegation: 0 });
   }
 });

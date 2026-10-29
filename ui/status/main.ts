@@ -70,7 +70,7 @@ startView<Ui>({
     }
     const census = (shown: typeof plan) => censusBlock({
       surface: 'status', census: censusFor(vc.session?.id, vc.directory, vc.live),
-      facts: planFacts(shown, shown ? vc.detail(shown) : null), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
+      facts: planFacts(shown, shown ? vc.detail(shown) : null, env.boundSource), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
     });
     if (!scope.plans.length) {
       root.append(failure ? failureBlock(failure, vc.retry) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));

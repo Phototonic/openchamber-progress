@@ -108,7 +108,7 @@ startView<Ui>({
     const shown = current(vc);
     const census = censusBlock({
       surface: 'panel', census: censusFor(vc.session?.id, vc.directory, vc.live),
-      facts: planFacts(shown, shown ? vc.detail(shown) : null), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
+      facts: planFacts(shown, shown ? vc.detail(shown) : null, env.boundSource), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
     });
     if (census) root.append(census);
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));

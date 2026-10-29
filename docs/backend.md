@@ -779,6 +779,11 @@ identity includes the parent and assistant message: reusing a call ID in another
 message cannot bypass outstanding execution. If unresolved evidence exhausts the
 census capacity, observation coverage fails closed rather than evicting it; the
 running companion cannot regain binding authority merely through expiry.
+Capture-off still records this bounded, volatile hook/census metadata, including
+new before calls and terminal observations, so it neither invents an empty census
+nor strands completed calls as unresolved after re-enable. Control checks still
+retire pending intents; declarations, reservations and binding commits remain
+disabled. Re-enable never resurrects an old intent or backfills an assignment.
 
 An intent reserves synchronously at the first delegation before-hook, with no
 other delegation already in flight. A completed after-hook records only the

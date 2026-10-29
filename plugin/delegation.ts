@@ -140,7 +140,7 @@ export async function registerDelegation(ctx: Plugin.Context, options: {
     registrations.push(await ctx.tool.hook('execute.before', event=>{
       try {
         if(event.tool!=='subagent' && event.tool!=='task')return;
-        prune(); if(!control() || !healthy)return;
+        prune(); const enabled=control(); if(!healthy)return;
         if(!identifier(event.sessionID)||!identifier(event.messageID)||!identifier(event.id)) { fault();return; }
         const g=group(event.sessionID,event.messageID); if(!g)return;
         if(g.hooks.get(event.id)?.before && g.hooks.get(event.id)?.tool===event.tool)return;
@@ -148,6 +148,7 @@ export async function registerDelegation(ctx: Plugin.Context, options: {
         const c=candidate(g,g.hooks,event.id); if(!c)return;
         if(c.before) { if(c.tool!==event.tool)reject(g);return; }
         c.tool=event.tool;c.before=true;
+        if(!enabled)return; // capture-off observes execution, never reserves authority
         const i=pending.get(event.sessionID);
         if(!i)return;
         if(i.state==='reserved') { reject(g);retire(i);return; }
@@ -159,7 +160,7 @@ export async function registerDelegation(ctx: Plugin.Context, options: {
     registrations.push(await ctx.tool.hook('execute.after',event=>{
       try {
         if(event.tool!=='subagent' && event.tool!=='task')return;
-        prune();if(!control()||!healthy)return;
+        prune();control();if(!healthy)return;
         const g=group(event.sessionID,event.messageID);if(!g)return;
         const c=g.hooks.get(event.id);
         const output=event.status==='completed' && object(event.result.output)?event.result.output:undefined;
@@ -181,7 +182,7 @@ export async function registerDelegation(ctx: Plugin.Context, options: {
           for await(const event of stream) {
             if(disposed)break;
             if(!['session.tool.input.started','session.tool.called','session.step.ended','session.step.failed'].includes(event.type))continue;
-            prune();if(!control()||!healthy)continue;
+            prune();control();if(!healthy)continue;
             const e=event as any, d=e.data;
             if(!object(d)||!identifier(d.sessionID)||!identifier(d.assistantMessageID)||e.location?.directory!==ctx.location.directory || e.durable?.aggregateID!==d.sessionID || !Number.isSafeInteger(e.durable?.seq)) { fault();continue; }
             const g=group(d.sessionID,d.assistantMessageID);if(!g)continue;

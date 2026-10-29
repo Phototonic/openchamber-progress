@@ -26940,7 +26940,8 @@ async function registerDelegation(ctx, options2) {
         if (event.tool !== "subagent" && event.tool !== "task")
           return;
         prune();
-        if (!control() || !healthy)
+        const enabled = control();
+        if (!healthy)
           return;
         if (!identifier2(event.sessionID) || !identifier2(event.messageID) || !identifier2(event.id)) {
           fault();
@@ -26968,6 +26969,8 @@ async function registerDelegation(ctx, options2) {
         }
         c.tool = event.tool;
         c.before = true;
+        if (!enabled)
+          return;
         const i = pending.get(event.sessionID);
         if (!i)
           return;
@@ -26995,7 +26998,8 @@ async function registerDelegation(ctx, options2) {
         if (event.tool !== "subagent" && event.tool !== "task")
           return;
         prune();
-        if (!control() || !healthy)
+        control();
+        if (!healthy)
           return;
         const g = group(event.sessionID, event.messageID);
         if (!g)
@@ -27039,7 +27043,8 @@ async function registerDelegation(ctx, options2) {
             if (!["session.tool.input.started", "session.tool.called", "session.step.ended", "session.step.failed"].includes(event.type))
               continue;
             prune();
-            if (!control() || !healthy)
+            control();
+            if (!healthy)
               continue;
             const e = event, d = e.data;
             if (!object(d) || !identifier2(d.sessionID) || !identifier2(d.assistantMessageID) || e.location?.directory !== ctx.location.directory || e.durable?.aggregateID !== d.sessionID || !Number.isSafeInteger(e.durable?.seq)) {

@@ -405,7 +405,7 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     // Rooted in this plan's verified coordinator session; a plan from another setup borrows nothing.
     const census = trusted(plan, env) && vc.read ? censusBlock({
       surface: 'page', census: censusFor(plan.ownerSessionId, plan.directory, vc.live),
-      facts: planFacts(plan, vc.detail(plan)), verified: true, captureEnabled: vc.read.captureEnabled, env,
+      facts: planFacts(plan, vc.detail(plan), env.boundSource), verified: true, captureEnabled: vc.read.captureEnabled, env,
     }) : null;
     if (census) detail.append(census);
   }

@@ -158,8 +158,11 @@ export const currentFor = (c: Census) => c.state === 'ready' && !c.gaps.includes
 
 /** One plan's recorded facts this view can compare a child with. */
 /** Facts of the plan a view shows, from its complete current-revision detail only. */
-export function planFacts(plan: PlanView | null, detail: { state: string; value?: PlanDetail } | null): PlanFacts {
+export function planFacts(plan: PlanView | null, detail: { state: string; value?: PlanDetail } | null, boundSource: string | null): PlanFacts {
   if (!plan) return { kind: 'no-plan' };
+  // Session IDs are only meaningful within one source: another setup's plan can't
+  // say anything about this host's children, even when the IDs collide.
+  if (boundSource === null || plan.sourceId !== boundSource) return { kind: 'unknown', plan };
   return detail?.state === 'ready' && detail.value && detail.value.revision === plan.revision ? { kind: 'complete', plan, detail: detail.value } : { kind: 'unknown', plan };
 }
 
