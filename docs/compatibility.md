@@ -341,6 +341,142 @@ generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
 clean real directories or reuse real profiles; no server restart is authorized.
 
+## Sub-agent activity — tested native and workspace signals
+
+The initial credential-free feasibility probe targets OpenCode **2.1.4**,
+`@opencode/plugin` **2.1.4**, `@openchamber/sdk` **2.5.1**, and cached
+oh-my-opencode-slim **2.2.25**. Built-in and slim profiles run separately in
+fresh private homes with loopback-only networking; neither uses an installed
+user profile or an external provider.
+
+Nine isolated probe invocations are recorded. The first failed bootstrap; a
+location-scoped readiness request fixed that. The second exposed a test transport
+marker issue. The third and fourth completed the native probe; the fourth also
+attempted a disposable OpenChamber 2.5.1 renderer. Three focused continuations
+proved slim V2 activation but not a usable Xvfb/X11 renderer. Two subsequent
+Wayland/AppRun runs mounted a metadata-only guest through direct disposable
+fixture loading and captured actual workspace SDK records. The accepted
+built-in/slim matrices were not rerun in those workspace continuations.
+No user profile was used.
+
+| Profile / mode | Native observation |
+| --- | --- |
+| Built-in foreground / background | Structured `result.output.sessionID`, verified native parent and complete ancestry; foreground returned completed, background running |
+| Built-in resume | Returned and verified the same child ID |
+| Built-in parallel / delayed second call | Two candidates share an assistant-message identity; never bind the first result optimistically |
+| Nested delegation | Refused by the native tool; separately API-created native nested records are fixture evidence, not successful nested delegation |
+| Slim 2.2.25 V2 setup: foreground / background | Activation and actual slim hooks proven; native `subagent` executor retained, structured results and verified native child ancestry observed |
+| Slim immediate resume before terminal-result acknowledgement | Slim's before hook refuses the request; no matching after hook or authoritative result. No binding. Resume after acknowledgement was not tested |
+| Slim competing calls | Both verified native child results observed, but two candidates in one spawning message are ambiguous. No binding |
+| Workspace onSessions / listSessions | Actual C1/C2 parent A and API-created N1 parent C1; ready Alpha/Beta directory coverage; unrelated B remains a root and Beta is absent from Alpha |
+| Workspace activity | Running, idle, unknown, waiting-question and failed outcome observed; unchanged lists and another child's updates do not establish a new observation of the first child |
+
+Native execution-start/succeeded/failed/interrupted events, active snapshots and
+persisted outcomes were observed. These are session/turn observations, not task
+completion or accepted handoff. A disconnected test client recovered a terminal
+outcome from a native snapshot; that is not proof of SDK replay or host recovery.
+
+The supported binding-signal boundary is: wait for the spawning assistant
+message's **`session.step.ended`**, require exactly one delegation candidate in
+that session/message group, and verify the matching structured result's native
+child and ancestry. Otherwise do not bind. `session.step.streamed` and the first
+result are not uniqueness fences. This supports the tested built-in
+foreground/background/resume and slim V2 foreground/background signal paths;
+it is not production automatic-binding or task-completion verification.
+
+Slim proof uses the cached package's unmodified V2 setup through a thin test
+observer entry. Its observed tool transforms add task-management tools but never
+add, update or remove `subagent`; actual before/after middleware executes around
+the native tool. This does not certify V1 loading, other versions or resume modes
+that the slim guard refuses.
+
+Actual workspace `GuestSessionRecord.parentId` is now proven on the pinned host;
+the separately observed selected-session context has no parentId field.
+Both native-created children were visible without progress reports. The test
+catalog contained only the enabled metadata fixture with the existing `sessions`
+grant; no folder installation/approval was needed.
+
+Two important limits apply to this host version:
+
+- A native interrupted execution produced SDK `idle` with raw outcome `completed`.
+  That SDK value cannot distinguish success from cancellation; treat the
+  unsupported end reason as unknown, never as successful completion.
+- During an observed roughly ten-second native-process outage, SDK reads still
+  returned cached `ready` coverage and `running`. Readiness is not a heartbeat or
+  proof of connection. Do not renew per-child freshness from repeated reads,
+  unchanged snapshots, title changes or another child's activity. Same-endpoint
+  restart retained IDs/parentage and yielded idle with unknown outcome, not proof
+  that the lost turn succeeded. Native last-completed outcome can also be stale.
+
+These are supported observations with cancellation/liveness limitations, not a
+new activity archive or alternate API. Explicit reporting/linking remains the
+fallback; observation never establishes assignment, task completion or acceptance.
+
+The opt-in probe entry is `tests/backend/subagent-activity-runtime.test.ts`
+(`SUBAGENT_ACTIVITY_PHASE=probe`); both Wayland workspace-only invocations passed.
+The slim subprocess passed in both focused two-profile continuations. Normal test runs
+do not silently launch the exploratory probe. All owned processes and roots
+were cleaned up. Loading/error coverage, retrying/waiting-permission activity and
+switching to a different runtime/source were not exercised by this probe. The
+bounded signal probe is complete with those limits; production integration/UI
+verification remains separate. No installed-host
+operation is authorized or certified.
+
+### Production native integration — tested with bounded freshness
+
+The isolated `SUBAGENT_ACTIVITY_PHASE=regression` now runs the real companion
+entry, report tool, delegation hooks, Store and authenticated production read API.
+It is the default phase, not an exploratory fallback or a skipped acceptance test.
+Temporary builds leave checked-in generated outputs unchanged. A supplied
+`ACTIVATION_COMPANION_ENTRY` is copied and hashed unchanged with sibling guidance;
+final generated-byte verification remains a separate gate.
+
+On OpenCode 2.1.4, both built-in-only and explicitly activated slim 2.2.25 V2
+profiles demonstrate a declared, unambiguous delegation producing exactly one
+persisted assignment with `items.data[].assignmentBinding`. Built-in same-ID
+continuation adds a declared task without replacing that child's explicit task;
+slim fresh-child delegation retains the existing other-child assignment.
+Statuses, task reporters, totals and report time stay unchanged. Restricted
+children have no report tool; a scripted report attempt does not mutate progress.
+Discovery alone adds no plan membership. Real authenticated health/list/detail/
+history reads pass, and a request without the ephemeral bearer returns 401.
+
+Competing native calls, an unknown-agent error, wrong caller, cancellation before
+the result/fence, and a labeled synthetic wrong-result identity fault remain
+unbound. The fault fixture executes the native tool but substitutes an unrelated
+native root in its structured return; it is not evidence of the unmodified tool
+returning a wrong ID. Binding trusts installed tools to identify the child they
+delegated to; correlation and lineage gates cannot independently prove that act.
+Built-in resume preserves native identity and links. Slim immediate pre-ack resume
+is refused without assignment; post-ack resume remains untested.
+
+The real production rail, Work Status and page bundles were also mounted in the
+disposable OpenChamber 2.5.1 Wayland host. Current native screenshots show a fresh
+bound child, an unassigned restricted child and API-created nested N1. A→B→draft
+retires the rail census; returning to A restores it. N1 is still an official
+native API fixture, not successful nested tool dispatch.
+
+The incorrect use of SDK integration-link state as native transport liveness has
+been corrected and verified in the disposable native host. Fresh bound and
+unassigned rows are current on all three surfaces, with ready coverage and no
+disconnected copy. Fresh screenshots demonstrate this correction.
+
+The same native session subscription emits loading/ready about every 45 seconds,
+even without changed child activity/outcome. Per-session receipts now survive
+these reloads and error phases for the subscription lifetime; unchanged cached
+records do not renew them. During incomplete coverage, retained rows are not
+current. A genuinely new subscription or changed activity/outcome establishes a
+new receipt; none of these observations establishes task progress or acceptance.
+
+The combined production native regression now passes in both profiles. A silent
+bound child expires to unknown at its original 60-second deadline despite the
+native reload, with ready/complete coverage restored. A subsequent genuine native
+turn renews that child to Running while a silent sibling remains unknown. Fresh
+rail/status/page, actual stale/unknown and renewed-child screenshots are captured;
+the earlier defective unknown image remains historical only. Parent acceptance
+and final generated-byte checks remain separate. Linux native proof is not
+Windows, installation, package or release certification.
+
 ## Historical Big Pickle attempt — capacity path abandoned
 
 The initial attempt used the already-present **free Big Pickle only**, with no

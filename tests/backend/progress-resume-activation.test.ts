@@ -29,7 +29,7 @@ after(() => {
 class Events implements AsyncIterable<any> {
   private queue: Array<{ value: any; done: ReturnType<typeof deferred> }> = [];
   private wake = deferred();
-  private closed = false;
+  closed = false;
   private previous: ReturnType<typeof deferred> | undefined;
   push(value: any) { const done = deferred(); this.queue.push({ value, done }); this.wake.resolve(); return done.promise; }
   close() { this.closed = true; this.previous?.resolve(); for (const e of this.queue) e.done.resolve(); this.wake.resolve(); }
@@ -56,26 +56,39 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
   for (const [k, v] of Object.entries({ AGENT_PROGRESS_BINDING: file, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, OPENCODE_DB: undefined, OPENCODE_CONFIG_DIR: undefined })) { saved.set(k, process.env[k]); if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   const hooks = new Map<string, any>(), tools = new Map<string, any>();
   const events = new Events();
+  const streams = new Set<Events>();
+  const subscribe = (signal?: AbortSignal) => {
+    const stream = streams.size ? new Events() : events;
+    streams.add(stream);
+    signal?.addEventListener('abort', () => stream.close(), { once: true });
+    return stream;
+  };
+  const callbacks = new Map<string,Set<any>>();
+  function installHook(key: string, callback: any) {
+    const set=callbacks.get(key)??new Set<any>();callbacks.set(key,set);set.add(callback);
+    hooks.set(key, async(event:any)=>{for(const cb of set)await cb(event);});
+    return ()=>{set.delete(callback);if(!set.size){callbacks.delete(key);hooks.delete(key);}};
+  }
   let dispose: (() => Promise<void>) | undefined;
   let clock = Date.now() + 1, sequence = 0, reads = 0, gets = 0;
   const info = (id: string): any => ({ id, agent: 'synthetic', projectID: 'fixture', location: { directory: `${root}/project` }, parentID: id === 'ses_C' || id === 'ses_sibling' ? 'ses_M' : undefined, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) } });
   const f: any = { root, store, binding, hooks, tools, events, info, lookup: async (id: string) => info(id), get reads() { return reads; }, get gets() { return gets; } };
   const hook = (domain: string) => async (name: string, callback: any) => {
     if (name === 'compaction' && options.unsupported === 'hook') throw new Error('synthetic unavailable hook');
-    const key = `${domain}:${name}`; hooks.set(key, callback);
-    return { dispose: async () => { if (hooks.get(key) === callback) hooks.delete(key); } };
+    const remove=installHook(`${domain}:${name}`,callback);
+    return { dispose: async () => { remove(); } };
   };
   const ctx: any = {
     location: { directory: `${root}/project` },
     session: { hook: hook('session'), get: async ({ sessionID }: any, request: any) => { gets++; return f.lookup(sessionID, request); } },
-    event: { subscribe: ({ signal }: any) => { if (options.unsupported === 'subscribe') throw new Error('synthetic unavailable subscription'); signal.addEventListener('abort', () => events.close(), { once: true }); if (options.unsupported === 'stream') return { async *[Symbol.asyncIterator]() { throw new Error('synthetic stream failure'); } }; return events; } },
+    event: { subscribe: ({ signal }: any) => { if (options.unsupported === 'subscribe') throw new Error('synthetic unavailable subscription'); if (options.unsupported === 'stream') return { async *[Symbol.asyncIterator]() { throw new Error('synthetic stream failure'); } }; return subscribe(signal); } },
     tool: { hook: hook('tool'), transform: async (callback: any) => callback({ namespace() {}, add(v: any) { tools.set('agent_progress_report', v); } }), list: async () => [...tools].map(([id, v]) => ({ id, ...v })) },
     skill: { transform: async (callback: any) => callback({ add() {} }) },
     permission: { assert: async () => { throw new Error('Recovery must not capture'); } },
     rpc: { register: async () => {} },
   };
   f.event = (type: string, sessionID = 'ses_M', overrides: any = {}) => ({ type: `session.compaction.${type}`, id: `evt_${++sequence}`, created: clock = Math.max(clock + 1, Date.now() + 1), durable: { aggregateID: sessionID, seq: sequence, version: 1 }, location: { directory: `${root}/project` }, data: { sessionID, reason: 'manual', ...(type === 'ended' ? { text: 'Synthetic unused summary' } : {}), ...(type === 'failed' ? { error: { type: 'synthetic', message: 'Unused error' } } : {}) }, ...overrides });
-  f.emit = (event: any) => bounded(events.push(event));
+  f.emit = (event: any) => bounded(Promise.all([...streams].filter(s=>!s.closed).map(s=>s.push(event))));
   f.compact = async (sessionID = 'ses_M', reason = 'manual') => {
     const start = f.event('started', sessionID); start.data.reason = reason; await f.emit(start);
     await f.aux('compaction', context(sessionID));
@@ -102,27 +115,27 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     } else {
       const asEffect = (action: () => Promise<any>) => Effect.tryPromise({ try: action, catch: e => e });
       const effectHook = (domain: string) => (name: string, callback: any) => Effect.sync(() => {
-        hooks.set(`${domain}:${name}`, callback);
-        return { dispose: Effect.sync(() => { hooks.delete(`${domain}:${name}`); }) };
+        const remove=installHook(`${domain}:${name}`,(event:any)=>Effect.runPromise(callback(event)));
+        return { dispose: Effect.sync(remove) };
       });
       const unused: any = new Proxy(() => {}, { get: () => unused });
       const domains: any = {
         location: ctx.location,
         session: { hook: effectHook('session'), get: (r: any) => asEffect(() => ctx.session.get(r)) },
-        event: { subscribe: () => Stream.fromAsyncIterable(events, e => e) },
+        event: { subscribe: () => Stream.fromAsyncIterable(subscribe(), e => e) },
         tool: { hook: effectHook('tool'), transform: (c: any) => Effect.sync(() => { c({ namespace() {}, add(v: any) { tools.set('agent_progress_report', v); } }); return { dispose: Effect.void }; }), list: () => asEffect(() => ctx.tool.list()) },
         skill: { transform: (c: any) => Effect.sync(() => { c({ add() {} }); return { dispose: Effect.void }; }) },
         rpc: Object.assign(() => {}, { register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }) }),
       };
       const host: any = new Proxy({}, { get: (_, name) => domains[name] ?? unused });
       const adapted = fromPromise({ ...plugin, async setup(context) { dispose = await plugin.setup(context) as () => Promise<void>; return dispose; } });
-      f.context = (e: any) => Effect.runPromise(hooks.get('session:context')(e));
-      f.aux = async (name: string, e: any) => { const h = hooks.get(`session:${name}`); if (h) await Effect.runPromise(h(e)); };
+      f.context = (e: any) => hooks.get('session:context')(e);
+      f.aux = async (name: string, e: any) => { const h = hooks.get(`session:${name}`); if (h) await h(e); };
       try { await Effect.runPromise(Effect.scoped(Effect.gen(function* () { yield* adapted.effect(host); yield* Effect.promise(() => run(f)); }))); }
       finally { dispose = undefined; } // adapter scope already disposed, including on assertion failure
     }
   } finally {
-    events.close(); await dispose?.(); Store.prototype.resumePlans = original; store.close();
+    for(const stream of streams)stream.close();events.close(); await dispose?.(); Store.prototype.resumePlans = original; store.close();
     for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     fs.rmSync(root, { recursive: true, force: true });
   }

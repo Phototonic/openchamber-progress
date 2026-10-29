@@ -1192,3 +1192,55 @@ downgrade stored data. Old probe DBs are not migrated/reset into production.
 
 Backend builds produce service/companion/setup utility entries; package assembly
 joins these with the guest bundles to produce the installable extension ZIP.
+## Declared delegation and assignment attribution (optional v2 metadata)
+
+`delegate` extends the existing report request with `plan`, fresh `oid`, expected
+`rev`, and `assign` (at most 50 unique task IDs). The trusted coordinator may
+declare its next supported delegation; an empty array cancels its pending intent
+for that plan. Declaration is not assignment, dispatch, progress or completion.
+It does not advance a plan revision, refresh report age, capture a document, or
+create a durable receipt. The response's `delegation` contains `state`
+(`pending`, `reserved`, `retired`, or `bound`), `expiresAt`, `memoryOnly: true`,
+`lostOnRestart: true`, and `requires: "supported-next-delegation"`; a bound retry
+may include the ordinary assignment `receipt`. Pending declarations and their
+retry recognition expire after five minutes and disappear on companion restart.
+Re-declare deliberately with a fresh operation ID after restart. Explicit
+`link` and assigned parent relay remain the fallback.
+Binding is evidence-gated for any installed `subagent` implementation, with no
+implementation discriminator, certification gate or policy switch. A matching
+before/completed-after hook pair, exactly agreeing one-call native census,
+matching parent/assistant-message `session.step.ended`, verified immediate child
+and complete ancestry are all required, within the declaration's lifetime and
+existing authorization/control guards. Missing or ambiguous evidence retires
+without assignment; a pending declaration promises no automatic assignment.
+These gates prove call correlation and child lineage, not that the tool actually
+created or continued that child: installed tools are trusted to report the child
+they delegated to. Slim is covered only through these same gates, not separately
+certified. The observed 2.2.25 native-tool wrapper supplies foreground/background
+signals; pre-acknowledgement resume lacks a matching result and competing calls
+are ambiguous, so those cases do not bind. Post-acknowledgement resume is untested.
+
+Current detail responses may include `items.data[].assignmentBinding`:
+
+```ts
+{
+  coordinatorSessionId: string; childSessionId: string;
+  planId: string; itemId: string; tool: 'subagent';
+  messageId: string; callId: string;
+  observedAt: string; boundAt: string;
+  boundRevision: number; validAtRevision: number;
+}
+```
+
+This bounded, server-authored metadata attributes the current assignment to a
+verified host call. It is not caller input, report attribution, a child update,
+evidence of reporting permission, or proof of completion/accepted handoff.
+`validAtRevision` must equal the enclosing plan revision; the item, plan,
+coordinator, child and current link must agree. Malformed/stale optional metadata
+is omitted without rewriting stored history. Absence means provenance unavailable,
+not absence of assignment; explicit links and older v2 writers have no such
+provenance. Current neutral writers carry only validated current provenance;
+explicit link replacement/unlink invalidates it, including a same-child relink.
+An older writer's revision cannot certify inherited provenance. The base protocol
+and SQLite schema version remain 2. Existing detail pagination and source binding
+apply; list/history routes gain no discovery or authorization semantics.

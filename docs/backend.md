@@ -749,3 +749,67 @@ updates and make no comparison claim. Both ZIPs are extracted and every declared
 file is compared to its assembled folder. Local evidence:
 `evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
+## Declared delegation correlation
+
+Any installed `subagent` implementation qualifies only through the fixed native
+identity/census/fence/ancestry/control gates below. There is no implementation
+discriminator, separate certification gate, feature flag or policy switch.
+The gates prove which call supplied the result and the child's lineage, not
+that the tool actually created or continued that child: installed tools are
+trusted to report the child they delegated to. Slim is covered through these
+same gates, not separately certified. The observed 2.2.25 stack wraps the native
+tool without rewriting its structured child identity or correlation metadata;
+foreground/background signals satisfy the gates, pre-acknowledgement resume
+lacks a matching result, and competing calls are ambiguous. The latter two cases
+fail closed; post-acknowledgement resume is untested. Explicit link and assigned
+parent relay remain available when native evidence is unavailable.
+
+`plugin/delegation.ts` owns bounded in-memory declarations and independent hook
+and native-event candidate maps. There is one pending intent per trusted parent
+in the running companion (128 intents, 256 retry records, five-minute TTL).
+There is no durable declaration, adoption, replay scan, worker registry, or
+cross-companion exclusivity guarantee. The report parser accepts `delegate`
+only with the existing request identity/revision fields and `assign`; arbitrary
+actor/source/call/provenance fields are rejected.
+
+Declaration expiry never certifies an empty in-flight census. Unresolved hook or
+native call evidence is retained in the bounded census beyond that TTL, until a
+matching terminal after-hook or message ended/failed boundary resolves it. Call
+identity includes the parent and assistant message: reusing a call ID in another
+message cannot bypass outstanding execution. If unresolved evidence exhausts the
+census capacity, observation coverage fails closed rather than evicting it; the
+running companion cannot regain binding authority merely through expiry.
+Capture-off still records this bounded, volatile hook/census metadata, including
+new before calls and terminal observations, so it neither invents an empty census
+nor strands completed calls as unresolved after re-enable. Control checks still
+retire pending intents; declarations, reservations and binding commits remain
+disabled. Re-enable never resurrects an old intent or backfills an assignment.
+
+An intent reserves synchronously at the first delegation before-hook, with no
+other delegation already in flight. A completed after-hook records only the
+structured child identity and supported output status, not result text. Hooks
+never await a closing message event. Independent native input-start/called
+identities must agree on exactly one delegation with the hook census at the
+matching parent/assistant-message `session.step.ended`. Missing pairs, unmatched
+identities/names, a second candidate, failure, expiry, subscription fault or cap
+retires authority. `session.step.failed` is terminal even if a retry reuses the
+assistant message ID. Ancestry resolution runs outside ingestion, has a one-second
+deadline and abort guard, and requires an immediate same-project/location child
+with complete acyclic ancestry (at most 32 hops). Every gate is rechecked after
+asynchronous work and immediately before committing. A tool name or plausible
+result alone is insufficient; missing native evidence retires without binding.
+
+Store commit uses the existing serialized `link` authorization, revision and
+receipt/hash guards. It unions declared IDs with that child's existing IDs;
+competing assignments or revision drift are refusal, never read/overwrite retry.
+Only the assignment, optional item-level `assignmentBinding` and ordinary commit
+receipt survive restart. Status/reporters/report age and document capture remain
+unchanged. Empty-item administrative contributions are not child progress.
+
+The additive `delegation_control` table and `delegation_capture_epoch` trigger
+track capture changes, including old writers changing `meta.enabled`. An off/on
+interval invalidates local authority even if no callback saw the disabled state;
+the generation is capture safety, not a durable declaration or parent claim.
+Partial registrations are disposed on setup failure and disposal fences late
+lookups. The existing authenticated detail route carries optional provenance
+without a new API route or wider session membership.

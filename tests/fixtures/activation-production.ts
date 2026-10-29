@@ -23,6 +23,7 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
       saved.set(name, process.env[name]); if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     const hooks = new Map<string, Callback>();
+    const listeners = new Map<string, Set<Callback>>();
     const tools = new Map<string, any>();
     const permissions: any[] = [];
     let lookupCount = 0, closed = false, cleanup: any;
@@ -30,8 +31,16 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
     const f: any = { root, binding, store, hooks, tools, permissions, info, lookup: async (id: string) => info(id), denyRead: false, get lookupCount() { return lookupCount; } };
     const registration = () => ({ dispose: Effect.void });
     const hook = (domain: string) => (name: string, callback: Callback) => Effect.gen(function* () {
-      const key = `${domain}:${name}`; hooks.set(key, callback);
-      const dispose = Effect.sync(() => { if (hooks.get(key) === callback) hooks.delete(key); });
+      // Host registrations are additive: delegation and file hints observe the
+      // same after event independently. A single-slot fake silently loses hints.
+      const key = `${domain}:${name}`;
+      const callbacks = listeners.get(key) ?? new Set<Callback>();
+      listeners.set(key, callbacks); callbacks.add(callback);
+      hooks.set(key, event => Effect.forEach([...callbacks], cb => cb(event), { discard: true }));
+      const dispose = Effect.sync(() => {
+        callbacks.delete(callback);
+        if (!callbacks.size) { listeners.delete(key); hooks.delete(key); }
+      });
       yield* Effect.addFinalizer(() => dispose); return { dispose };
     });
     const domains: Record<string, any> = {

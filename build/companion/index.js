@@ -24226,7 +24226,7 @@ var Event17 = { Updated: Updated12, Resolved, Definitions: inventory(Updated12, 
 // plugin/index.ts
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { homedir } from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 import { realpathSync as realpathSync6, readFileSync as readFileSync2 } from "node:fs";
 
 // shared/binding.ts
@@ -24555,6 +24555,7 @@ function parseRequest(value3) {
     stage: ["upload", "chunk", "items", "reopen"],
     commit: ["upload", "chunks", "title", "reopen"],
     link: ["child", "assign"],
+    delegate: ["assign"],
     bind: ["source", "confirm"],
     finish: ["outcome"]
   };
@@ -24612,6 +24613,7 @@ function parseRequest(value3) {
   requireProgress(r.op !== "stage" || !!r.upload && r.chunk !== undefined && !!r.items);
   requireProgress(r.op !== "commit" || !!r.upload && !!r.chunks);
   requireProgress(r.op !== "link" || !!r.child && !!r.assign);
+  requireProgress(r.op !== "delegate" || Array.isArray(r.assign) && r.assign.length <= 50 && new Set(r.assign).size === r.assign.length);
   requireProgress(r.op !== "bind" || !!r.source);
   requireProgress(r.op !== "finish" || !!r.outcome);
   return JSON.parse(JSON.stringify(r));
@@ -24622,7 +24624,7 @@ var REPORT_SCHEMA = {
   additionalProperties: false,
   required: ["op", "plan"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Delegate declares assign IDs for the next supported delegation; empty assign cancels. Declaration is not assignment. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
     plan: { type: "string", description: "One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
@@ -24644,7 +24646,7 @@ var REPORT_SCHEMA = {
 };
 var VALIDATION_HINTS = {
   request: "Send one request object.",
-  op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
   fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
@@ -24687,6 +24689,16 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// shared/assignment-binding.ts
+function currentBinding(value3, plan, itemId) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  const item = plan.items.find((i) => i.id === itemId);
+  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
+  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier2(b.childSessionId) && identifier2(b.messageId) && identifier2(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
+}
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -25737,6 +25749,36 @@ class Store {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
     });
   }
+  installDelegationControl() {
+    this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
+      INSERT OR IGNORE INTO delegation_control VALUES(1,0);
+      CREATE TRIGGER IF NOT EXISTS delegation_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled
+      BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
+  }
+  delegationControl() {
+    const row = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
+    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+  }
+  validateDeclaration(value3, actor) {
+    const r = parseRequest(value3);
+    requireProgress(r.op === "delegate");
+    return this.transaction(false, () => {
+      requireProgress(this.delegationControl().enabled, "disabled");
+      const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
+      requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      requireProgress(state?.state !== "archived", "closed");
+      const p = this.raw(actor.sourceId, r.plan);
+      requireProgress(p, "not-found");
+      requireProgress(p.sessionId === actor.sessionId, "assignment");
+      requireProgress(p.lifecycle === "active", "closed");
+      requireProgress(p.revision === r.rev, "conflict", p.revision);
+      assignmentIDs(p, r.assign);
+      requireProgress(p.links.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
+      return this.delegationControl().generation;
+    });
+  }
   raw(source, id2) {
     const row = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2);
     try {
@@ -25744,6 +25786,9 @@ class Store {
         return;
       const p = JSON.parse(String(row.snapshot));
       requireProgress(p.sourceId === source && p.id === id2 && Array.isArray(p.items) && Array.isArray(p.links), "corrupt");
+      for (const item of p.items)
+        if (!currentBinding(item.assignmentBinding, p, item.id))
+          delete item.assignmentBinding;
       return p;
     } catch {
       throw new ProgressError("corrupt");
@@ -25945,13 +25990,18 @@ class Store {
       return capDigest(result3);
     });
   }
-  apply(value3, actor, capture, child) {
+  apply(value3, actor, capture, child, binding) {
     const r = parseRequest(value3);
-    requireProgress(r.op !== "read");
-    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    requireProgress(r.op !== "read" && r.op !== "delegate");
+    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      if (binding) {
+        requireProgress(r.op === "link" && this.delegationControl().generation === binding.generation, "disabled");
+        requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+        requireProgress(child?.parentId === actor.sessionId && child.ancestry !== null && child.directory === actor.directory && child.projectId === actor.projectId, "assignment");
+      }
       const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
       requireProgress(cleanup2?.state !== "deleted", "not-found");
       requireProgress(cleanup2?.state !== "archived", "closed");
@@ -26011,7 +26061,8 @@ class Store {
         p.directory = actor.directory;
         p.projectId = actor.projectId;
       }
-      p.reportedAt = now3;
+      if (!binding)
+        p.reportedAt = now3;
       const structural = ["start", "revise", "commit"].includes(r.op);
       if (structural) {
         p.structuralRevision++;
@@ -26028,6 +26079,8 @@ class Store {
             const item = { ...fields2, status: i.status ?? retained?.status ?? "pending", assigneeSessionId: i.kind === "task" ? retained?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : retained?.reporterSessionId };
             if (retained?.kind === "task" && retained.status === "blocked" && item.kind === "task" && item.status === "blocked" && retained.blocker)
               item.blocker = retained.blocker;
+            if (retained?.kind === "task" && item.kind === "task" && retained.assignmentBinding)
+              item.assignmentBinding = retained.assignmentBinding;
             annotate3(item, blocker);
             return item;
           });
@@ -26063,7 +26116,10 @@ class Store {
       if (r.op === "link") {
         requireProgress(actor.verifiedSource && Boolean(source.verified), "source-unverified");
         requireProgress(child && child.sessionId === r.child && child.sourceId === actor.sourceId && child.verifiedSource && child.ancestry?.includes(actor.sessionId), "assignment");
-        requireProgress(new Set(r.assign).size === r.assign.length && r.assign.every((id2) => p.items.some((i) => i.id === id2 && i.kind === "task")));
+        assignmentIDs(p, r.assign);
+        const declared = [...r.assign];
+        if (binding)
+          r.assign = [...new Set([...p.links.find((l) => l.sessionId === r.child)?.itemIds ?? [], ...declared])];
         const other = p.links.filter((l) => l.sessionId !== r.child);
         requireProgress(other.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
         p.links = [...other, ...r.assign.length ? [{ sessionId: r.child, itemIds: r.assign }] : []];
@@ -26073,6 +26129,12 @@ class Store {
             delete item.assigneeSessionId;
           if (r.assign.includes(item.id))
             item.assigneeSessionId = r.child;
+        }
+        for (const item of p.items) {
+          if (!binding && (item.assignmentBinding?.childSessionId === r.child || r.assign.includes(item.id)))
+            delete item.assignmentBinding;
+          if (binding && declared.includes(item.id))
+            item.assignmentBinding = { coordinatorSessionId: actor.sessionId, childSessionId: r.child, planId: p.id, itemId: item.id, tool: "subagent", messageId: binding.messageId, callId: binding.callId, observedAt: binding.observedAt, boundAt: now3, boundRevision: p.revision, validAtRevision: p.revision };
         }
       }
       if (r.op === "finish") {
@@ -26087,7 +26149,7 @@ class Store {
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
-      if (p.document.path) {
+      if (p.document.path && !binding) {
         requireProgress(capture?.path === p.document.path, "binding");
         const oldHash = p.document.hash;
         p.document.state = capture.state;
@@ -26109,6 +26171,11 @@ class Store {
           p.document.checklistSynchronized = false;
       }
       for (const item of p.items) {
+        if (item.assignmentBinding) {
+          item.assignmentBinding.validAtRevision = p.revision;
+          if (!currentBinding(item.assignmentBinding, p, item.id))
+            delete item.assignmentBinding;
+        }
         if (p.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked")
           delete item.blocker;
         else if (item.blocker)
@@ -26132,6 +26199,9 @@ class Store {
       }
     });
   }
+}
+function assignmentIDs(p, ids) {
+  requireProgress(new Set(ids).size === ids.length && ids.every((id2) => p.items.some((i) => i.id === id2 && i.kind === "task")));
 }
 function validateItems(items) {
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -26645,58 +26715,458 @@ ${capsule}` : "") };
   }
 }
 
+// plugin/delegation.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+var TTL = 300000;
+var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+async function registerDelegation(ctx, options2) {
+  const { store } = options2;
+  store.installDelegationControl();
+  const now3 = options2.now ?? (() => performance.now());
+  const pending = new Map, retries = new Map, groups = new Map;
+  const calls = new Map;
+  const registrations = [];
+  const jobs = new Set;
+  const lookups = new Set;
+  const abort = new AbortController;
+  let disposed = false, healthy = false;
+  let epoch = store.delegationControl().generation;
+  let events;
+  function retire(i) {
+    if (i.state === "bound")
+      return;
+    i.state = "retired";
+    i.controller?.abort();
+    if (pending.get(i.actor.sessionId) === i)
+      pending.delete(i.actor.sessionId);
+  }
+  function fault() {
+    healthy = false;
+    for (const i of pending.values())
+      retire(i);
+  }
+  function control() {
+    if (disposed)
+      return false;
+    const c = store.delegationControl();
+    if (c.generation !== epoch || !c.enabled) {
+      for (const i of pending.values())
+        retire(i);
+      epoch = c.generation;
+    }
+    return c.enabled;
+  }
+  function prune() {
+    for (const i of pending.values())
+      if (now3() >= i.expires)
+        retire(i);
+    for (const [k, i] of retries)
+      if (now3() >= i.expires)
+        retries.delete(k);
+    for (const [k, g] of groups)
+      if (now3() >= g.expires) {
+        if (g.intent) {
+          retire(g.intent);
+          delete g.intent;
+        }
+        if (!unresolved(g))
+          groups.delete(k);
+      }
+    for (const [k, g] of calls)
+      if (now3() >= g.expires && !unresolved(g))
+        calls.delete(k);
+  }
+  function unresolved(g, except) {
+    if (g.closed)
+      return false;
+    const other = (id2) => g !== except?.group || id2 !== except.call;
+    return [...g.hooks].some(([id2, h]) => other(id2) && h.before && !h.after) || [...g.native].some(([id2, n]) => other(id2) && (n.tool === "subagent" || n.tool === "task" || !n.tool) && !g.hooks.get(id2)?.after);
+  }
+  function live(i) {
+    return control() && healthy && now3() < i.expires && pending.get(i.actor.sessionId) === i && i.state === "reserved" && !i.group?.failed;
+  }
+  function group(parent, message) {
+    const key = JSON.stringify([parent, message]);
+    let g = groups.get(key);
+    if (!g) {
+      if (groups.size >= 256) {
+        fault();
+        return;
+      }
+      g = { parent, message, expires: now3() + TTL, hooks: new Map, native: new Map, closed: false, failed: false };
+      groups.set(key, g);
+    }
+    return g;
+  }
+  function reject(g) {
+    g.failed = true;
+    if (g.intent)
+      retire(g.intent);
+  }
+  function candidate(g, map12, id2) {
+    let c = map12.get(id2);
+    if (!c) {
+      const key = JSON.stringify([g.parent, g.message, id2]);
+      if (!calls.has(key)) {
+        if (calls.size >= 256) {
+          reject(g);
+          fault();
+          return;
+        }
+        calls.set(key, g);
+      }
+      c = {};
+      map12.set(id2, c);
+    }
+    return c;
+  }
+  function unique(g, i) {
+    if (g.failed || !g.closed || g.hooks.size !== 1)
+      return false;
+    const h = g.hooks.get(i.call);
+    if ([...g.native.values()].some((c) => !c.start || !c.called || !c.tool))
+      return false;
+    const native = [...g.native].filter(([, c]) => c.tool === "subagent" || c.tool === "task");
+    return !!h?.before && !!h.after && !!h.child && h.tool === "subagent" && native.length === 1 && native[0][0] === i.call && native[0][1].tool === h.tool;
+  }
+  function launch(action) {
+    const job = action().catch(() => {
+      fault();
+    });
+    jobs.add(job);
+    job.finally(() => jobs.delete(job));
+  }
+  function finalize(g) {
+    const i = g.intent;
+    if (!i || !live(i))
+      return;
+    if (!unique(g, i)) {
+      retire(i);
+      return;
+    }
+    if (lookups.has(g.parent)) {
+      retire(i);
+      return;
+    }
+    lookups.add(g.parent);
+    const controller = new AbortController;
+    i.controller = controller;
+    const deadline = now3() + 1000;
+    const alive = () => !controller.signal.aborted && now3() < deadline && live(i) && unique(g, i);
+    launch(async () => {
+      let timer;
+      try {
+        const lookup2 = (async () => {
+          if (!alive())
+            return;
+          const child = await options2.identity(g.hooks.get(i.call).child, alive, controller.signal);
+          if (!alive())
+            return;
+          requireProgress(child.sessionId === g.hooks.get(i.call).child && child.parentId === g.parent && child.ancestry?.[0] === g.parent && child.sourceId === options2.sourceId && child.verifiedSource, "assignment");
+          requireProgress(child.directory === i.actor.directory && child.projectId === i.actor.projectId, "assignment");
+          if (!alive())
+            return;
+          i.receipt = store.apply({ op: "link", plan: i.request.plan, oid: i.oid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, i.actor, undefined, child, { generation: i.generation, messageId: g.message, callId: i.call, observedAt: i.observedAt });
+          i.state = "bound";
+          pending.delete(i.actor.sessionId);
+        })().finally(() => lookups.delete(g.parent));
+        await Promise.race([lookup2, new Promise((resolve3) => {
+          timer = setTimeout(() => {
+            retire(i);
+            resolve3();
+          }, 1000);
+        })]);
+      } catch {
+        retire(i);
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+        if (i.state !== "bound")
+          retire(i);
+      }
+    });
+  }
+  function disposition(i) {
+    return { plan: i.request.plan, rev: i.request.rev, delegation: { state: i.state, expiresAt: i.expiresAt, memoryOnly: true, lostOnRestart: true, requires: "supported-next-delegation", ...i.receipt ? { receipt: i.receipt } : {} } };
+  }
+  function declare2(value3, actor) {
+    prune();
+    requireProgress(!disposed, "binding");
+    requireProgress(control(), "disabled");
+    const r = parseRequest(value3);
+    requireProgress(r.op === "delegate");
+    requireProgress(actor.sourceId === options2.sourceId && actor.verifiedSource, "source-unverified");
+    const key = JSON.stringify([actor.sourceId, actor.sessionId, r.plan, r.oid]), hash3 = canonical(r);
+    const old = retries.get(key);
+    if (old) {
+      requireProgress(old.hash === hash3, "operation-reused");
+      return disposition(old);
+    }
+    requireProgress(healthy, "binding");
+    const current = pending.get(actor.sessionId);
+    if (current && r.assign.length) {
+      retire(current);
+      store.validateDeclaration(r, actor);
+      requireProgress(false, "conflict", r.rev);
+    }
+    const generation = store.validateDeclaration(r, actor);
+    requireProgress(retries.size < 256, "busy");
+    if (current && current.request.plan === r.plan)
+      retire(current);
+    requireProgress(pending.size < 128 || !r.assign.length, "busy");
+    const i = { request: r, actor: structuredClone(actor), generation, expires: now3() + TTL, expiresAt: new Date(Date.now() + TTL).toISOString(), state: r.assign.length ? "pending" : "retired", hash: hash3, oid: `delegation-${randomUUID3()}` };
+    retries.set(key, i);
+    if (r.assign.length)
+      pending.set(actor.sessionId, i);
+    return disposition(i);
+  }
+  async function dispose() {
+    disposed = true;
+    fault();
+    abort.abort();
+    for (const r of registrations.splice(0))
+      try {
+        await r.dispose();
+      } catch {}
+    await events;
+    pending.clear();
+    retries.clear();
+    groups.clear();
+    calls.clear();
+  }
+  try {
+    registrations.push(await ctx.tool.hook("execute.before", (event) => {
+      try {
+        if (event.tool !== "subagent" && event.tool !== "task")
+          return;
+        prune();
+        const enabled = control();
+        if (!healthy)
+          return;
+        if (!identifier2(event.sessionID) || !identifier2(event.messageID) || !identifier2(event.id)) {
+          fault();
+          return;
+        }
+        const g = group(event.sessionID, event.messageID);
+        if (!g)
+          return;
+        if (g.hooks.get(event.id)?.before && g.hooks.get(event.id)?.tool === event.tool)
+          return;
+        if (g.closed) {
+          reject(g);
+          const i2 = pending.get(event.sessionID);
+          if (i2)
+            retire(i2);
+          return;
+        }
+        const c = candidate(g, g.hooks, event.id);
+        if (!c)
+          return;
+        if (c.before) {
+          if (c.tool !== event.tool)
+            reject(g);
+          return;
+        }
+        c.tool = event.tool;
+        c.before = true;
+        if (!enabled)
+          return;
+        const i = pending.get(event.sessionID);
+        if (!i)
+          return;
+        if (i.state === "reserved") {
+          reject(g);
+          retire(i);
+          return;
+        }
+        const inFlight = [...groups.values()].some((other) => other.parent === g.parent && unresolved(other, { group: g, call: event.id }));
+        if (inFlight || g.failed || g.hooks.size !== 1 || event.tool !== "subagent") {
+          retire(i);
+          return;
+        }
+        i.state = "reserved";
+        i.group = g;
+        i.call = event.id;
+        i.observedAt = new Date().toISOString();
+        g.intent = i;
+      } catch {
+        fault();
+      }
+    }));
+    registrations.push(await ctx.tool.hook("execute.after", (event) => {
+      try {
+        if (event.tool !== "subagent" && event.tool !== "task")
+          return;
+        prune();
+        control();
+        if (!healthy)
+          return;
+        const g = group(event.sessionID, event.messageID);
+        if (!g)
+          return;
+        const c = g.hooks.get(event.id);
+        const output = event.status === "completed" && object(event.result.output) ? event.result.output : undefined;
+        const child = output?.sessionID;
+        if (c?.after && c.tool === event.tool && c.child === child && ["completed", "running"].includes(output?.status))
+          return;
+        if (g.closed || !c?.before || c.tool !== event.tool) {
+          reject(g);
+          const i = pending.get(event.sessionID);
+          if (i)
+            retire(i);
+          return;
+        }
+        if (!identifier2(child) || !["completed", "running"].includes(output?.status)) {
+          c.after = true;
+          reject(g);
+          return;
+        }
+        if (c.after && c.child !== child) {
+          reject(g);
+          return;
+        }
+        c.after = true;
+        c.child = child;
+      } catch {
+        fault();
+      }
+    }));
+    try {
+      const stream = ctx.event.subscribe({ signal: abort.signal });
+      requireProgress(stream && typeof stream[Symbol.asyncIterator] === "function", "binding");
+      healthy = true;
+      events = (async () => {
+        try {
+          for await (const event of stream) {
+            if (disposed)
+              break;
+            if (!["session.tool.input.started", "session.tool.called", "session.step.ended", "session.step.failed"].includes(event.type))
+              continue;
+            prune();
+            control();
+            if (!healthy)
+              continue;
+            const e = event, d = e.data;
+            if (!object(d) || !identifier2(d.sessionID) || !identifier2(d.assistantMessageID) || e.location?.directory !== ctx.location.directory || e.durable?.aggregateID !== d.sessionID || !Number.isSafeInteger(e.durable?.seq)) {
+              fault();
+              continue;
+            }
+            const g = group(d.sessionID, d.assistantMessageID);
+            if (!g)
+              continue;
+            if (event.type === "session.step.failed") {
+              g.closed = true;
+              reject(g);
+              continue;
+            }
+            if (event.type === "session.step.ended") {
+              if (g.closed)
+                continue;
+              g.closed = true;
+              finalize(g);
+              continue;
+            }
+            if (g.closed) {
+              const prior = g.native.get(d.id);
+              if (prior && (event.type === "session.tool.called" && prior.called || event.type === "session.tool.input.started" && prior.start && prior.tool === d.name))
+                continue;
+              reject(g);
+              continue;
+            }
+            if (!identifier2(d.id)) {
+              reject(g);
+              continue;
+            }
+            const c = candidate(g, g.native, d.id);
+            if (!c)
+              continue;
+            if (event.type === "session.tool.input.started") {
+              if (typeof d.name !== "string" || !d.name || d.name.length > 128 || c.tool && c.tool !== d.name) {
+                reject(g);
+                continue;
+              }
+              c.start = true;
+              c.tool = d.name;
+            } else
+              c.called = true;
+            if ([...g.native.values()].filter((n) => n.tool === "subagent" || n.tool === "task").length > 1 && g.intent)
+              retire(g.intent);
+          }
+        } catch {} finally {
+          fault();
+        }
+      })();
+    } catch {
+      fault();
+    }
+    return { declare: declare2, dispose, settled: async () => {
+      await Promise.all([...jobs]);
+    } };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
+
+// plugin/identity.ts
+import path7 from "node:path";
+async function sessionIdentity(ctx, source, sessionID, agent, guard) {
+  const checkpoint = () => {
+    if (guard)
+      requireProgress(guard.alive(), "binding");
+  };
+  checkpoint();
+  let s;
+  try {
+    s = await ctx.session.get({ sessionID }, guard ? { signal: guard.signal } : undefined);
+  } catch {
+    throw new ProgressError("binding");
+  }
+  checkpoint();
+  requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
+  const ancestry = [], seen = new Set([s.id]);
+  let parent = s.parentID, known = true;
+  while (parent) {
+    if (seen.has(parent) || ancestry.length >= 32) {
+      known = false;
+      break;
+    }
+    seen.add(parent);
+    ancestry.push(parent);
+    checkpoint();
+    try {
+      const ancestor = await ctx.session.get({ sessionID: parent }, guard ? { signal: guard.signal } : undefined);
+      checkpoint();
+      if (guard)
+        requireProgress(ancestor.id === parent, "binding");
+      if (guard?.sameScope)
+        requireProgress(ancestor.location.directory === s.location.directory && ancestor.projectID === s.projectID, "binding");
+      parent = ancestor.parentID;
+    } catch {
+      known = false;
+      break;
+    }
+  }
+  return { sourceId: source.id, sessionId: s.id, agent: agent === "unknown" ? s.agent ?? "unknown" : agent, directory: s.location.directory, projectId: s.projectID, parentId: s.parentID ?? null, ancestry: known ? ancestry : null, verifiedSource: source.verified };
+}
+
 // plugin/index.ts
 var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL("./progress-binding.json", import.meta.url));
-  const configRoot = path7.join(process.env.XDG_CONFIG_HOME || path7.join(homedir(), ".config"), "opencode");
-  const dataRoot = path7.join(process.env.XDG_DATA_HOME || path7.join(homedir(), ".local/share"), "opencode");
+  const configRoot = path8.join(process.env.XDG_CONFIG_HOME || path8.join(homedir(), ".config"), "opencode");
+  const dataRoot = path8.join(process.env.XDG_DATA_HOME || path8.join(homedir(), ".local/share"), "opencode");
   requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows ? platformSecurityScope(() => {
     windowsPaths([configRoot, dataRoot, b.source.configRoot, b.source.dataRoot]);
     return sameWindowsDirectory(configRoot, b.source.configRoot) && sameWindowsDirectory(dataRoot, b.source.dataRoot);
   }) : realpathSync6(configRoot) === b.source.configRoot && realpathSync6(dataRoot) === b.source.dataRoot), "binding");
   const store = new Store(b.database);
   let deactivate;
+  let delegation;
   try {
     verifyStore(store, b);
     store.bindReads(b.source.id, b.source.verified);
     async function identity3(sessionID, agent, guard) {
-      const checkpoint = () => {
-        if (guard)
-          requireProgress(guard.alive(), "binding");
-      };
-      let s;
-      checkpoint();
-      try {
-        s = await ctx.session.get({ sessionID }, guard ? { signal: guard.signal } : undefined);
-      } catch {
-        throw new ProgressError("binding");
-      }
-      checkpoint();
-      requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
-      const ancestry = [];
-      let parent = s.parentID;
-      const seen = new Set([s.id]);
-      let known = true;
-      while (parent) {
-        if (seen.has(parent) || ancestry.length >= 32) {
-          known = false;
-          break;
-        }
-        seen.add(parent);
-        ancestry.push(parent);
-        checkpoint();
-        try {
-          const ancestor = await ctx.session.get({ sessionID: parent }, guard ? { signal: guard.signal } : undefined);
-          checkpoint();
-          if (guard)
-            requireProgress(ancestor.id === parent, "binding");
-          parent = ancestor.parentID;
-        } catch {
-          known = false;
-          break;
-        }
-      }
-      return { sourceId: b.source.id, sessionId: s.id, agent: agent === "unknown" ? s.agent ?? "unknown" : agent, directory: s.location.directory, projectId: s.projectID, parentId: s.parentID ?? null, ancestry: known ? ancestry : null, verifiedSource: b.source.verified };
+      return sessionIdentity(ctx, b.source, sessionID, agent, guard);
     }
     await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
     await ctx.tool.transform((editor) => {
@@ -26713,6 +27183,10 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
             if (r.op === "read") {
               const view = store.detail(actor.sourceId, r.plan, r.page ?? 0);
               return { content: JSON.stringify(r.page === undefined ? { plan: r.plan, rev: view.plan.revision, structuralRev: view.plan.structuralRevision, lifecycle: view.plan.lifecycle, counts: view.plan.counts, documentState: view.plan.document.state, detailPageSize: 20 } : view) };
+            }
+            if (r.op === "delegate") {
+              requireProgress(delegation, "binding");
+              return { content: JSON.stringify(delegation.declare(r, actor)) };
             }
             const previous = store.get(actor.sourceId, r.plan);
             let child;
@@ -26741,6 +27215,11 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       read: (request3) => store.resumePlans(request3),
       identity: (sessionID, alive, signal) => identity3(sessionID, "unknown", { alive, signal })
     });
+    delegation = await registerDelegation(ctx, {
+      store,
+      sourceId: b.source.id,
+      identity: (sessionID, alive, signal) => sessionIdentity(ctx, b.source, sessionID, "unknown", { alive, signal, sameScope: true })
+    });
     await ctx.rpc.register(ProgressStatus, { inspect: async () => {
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
       return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
@@ -26748,13 +27227,19 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath2(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
     return async () => {
       try {
+        await delegation?.dispose();
         await deactivate?.();
       } finally {
         store.close();
       }
     };
   } catch (error) {
-    await deactivate?.();
+    try {
+      await delegation?.dispose();
+    } catch {}
+    try {
+      await deactivate?.();
+    } catch {}
     try {
       store.close();
     } catch {}
@@ -26765,7 +27250,8 @@ var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an
 \`\`\`json
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 \`\`\`
-Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
+Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
+Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50) for its next subagent delegation; empty assign cancels that plan's pending intent. Declaration is not assignment or dispatch: pending authority is memory-only, expires in five minutes and is lost on restart. Identical retries do not re-arm it. Any installed subagent implementation qualifies only with a matching hook pair, exactly agreeing native call census, matching step.ended and verified immediate child/complete ancestry; ambiguity or missing evidence retires without assignment. These gates prove call correlation and child lineage, not that the tool actually created or continued the child: installed tools are trusted to report the child they delegated to. Slim is covered through these same gates, not separate certification. Use explicit link and assigned parent relay when evidence is unavailable. After restart deliberately re-declare with a fresh oid. Binding never changes task progress, reporting permissions or accepted handoff.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.

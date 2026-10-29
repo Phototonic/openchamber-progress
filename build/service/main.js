@@ -84,6 +84,7 @@ function parseRequest(value) {
     stage: ["upload", "chunk", "items", "reopen"],
     commit: ["upload", "chunks", "title", "reopen"],
     link: ["child", "assign"],
+    delegate: ["assign"],
     bind: ["source", "confirm"],
     finish: ["outcome"]
   };
@@ -141,13 +142,14 @@ function parseRequest(value) {
   requireProgress(r.op !== "stage" || !!r.upload && r.chunk !== undefined && !!r.items);
   requireProgress(r.op !== "commit" || !!r.upload && !!r.chunks);
   requireProgress(r.op !== "link" || !!r.child && !!r.assign);
+  requireProgress(r.op !== "delegate" || Array.isArray(r.assign) && r.assign.length <= 50 && new Set(r.assign).size === r.assign.length);
   requireProgress(r.op !== "bind" || !!r.source);
   requireProgress(r.op !== "finish" || !!r.outcome);
   return JSON.parse(JSON.stringify(r));
 }
 var VALIDATION_HINTS = {
   request: "Send one request object.",
-  op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
   fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
@@ -864,6 +866,18 @@ import { timingSafeEqual } from "node:crypto";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// shared/assignment-binding.ts
+function currentBinding(value, plan, itemId) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const b = value;
+  const item = plan.items.find((i) => i.id === itemId);
+  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
+  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier(b.childSessionId) && identifier(b.messageId) && identifier(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
+}
+
+// shared/store.ts
 import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
 import path3 from "node:path";
@@ -1524,6 +1538,36 @@ class Store {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
     });
   }
+  installDelegationControl() {
+    this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
+      INSERT OR IGNORE INTO delegation_control VALUES(1,0);
+      CREATE TRIGGER IF NOT EXISTS delegation_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled
+      BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
+  }
+  delegationControl() {
+    const row = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
+    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+  }
+  validateDeclaration(value, actor) {
+    const r = parseRequest(value);
+    requireProgress(r.op === "delegate");
+    return this.transaction(false, () => {
+      requireProgress(this.delegationControl().enabled, "disabled");
+      const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
+      requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      requireProgress(state?.state !== "archived", "closed");
+      const p = this.raw(actor.sourceId, r.plan);
+      requireProgress(p, "not-found");
+      requireProgress(p.sessionId === actor.sessionId, "assignment");
+      requireProgress(p.lifecycle === "active", "closed");
+      requireProgress(p.revision === r.rev, "conflict", p.revision);
+      assignmentIDs(p, r.assign);
+      requireProgress(p.links.every((l) => l.itemIds.every((id) => !r.assign.includes(id))), "assignment");
+      return this.delegationControl().generation;
+    });
+  }
   raw(source, id) {
     const row = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id);
     try {
@@ -1531,6 +1575,9 @@ class Store {
         return;
       const p = JSON.parse(String(row.snapshot));
       requireProgress(p.sourceId === source && p.id === id && Array.isArray(p.items) && Array.isArray(p.links), "corrupt");
+      for (const item of p.items)
+        if (!currentBinding(item.assignmentBinding, p, item.id))
+          delete item.assignmentBinding;
       return p;
     } catch {
       throw new ProgressError("corrupt");
@@ -1732,13 +1779,18 @@ class Store {
       return capDigest(result);
     });
   }
-  apply(value, actor, capture, child) {
+  apply(value, actor, capture, child, binding) {
     const r = parseRequest(value);
-    requireProgress(r.op !== "read");
-    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    requireProgress(r.op !== "read" && r.op !== "delegate");
+    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      if (binding) {
+        requireProgress(r.op === "link" && this.delegationControl().generation === binding.generation, "disabled");
+        requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+        requireProgress(child?.parentId === actor.sessionId && child.ancestry !== null && child.directory === actor.directory && child.projectId === actor.projectId, "assignment");
+      }
       const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
       requireProgress(cleanup2?.state !== "deleted", "not-found");
       requireProgress(cleanup2?.state !== "archived", "closed");
@@ -1798,7 +1850,8 @@ class Store {
         p.directory = actor.directory;
         p.projectId = actor.projectId;
       }
-      p.reportedAt = now;
+      if (!binding)
+        p.reportedAt = now;
       const structural = ["start", "revise", "commit"].includes(r.op);
       if (structural) {
         p.structuralRevision++;
@@ -1815,6 +1868,8 @@ class Store {
             const item = { ...fields2, status: i.status ?? retained?.status ?? "pending", assigneeSessionId: i.kind === "task" ? retained?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : retained?.reporterSessionId };
             if (retained?.kind === "task" && retained.status === "blocked" && item.kind === "task" && item.status === "blocked" && retained.blocker)
               item.blocker = retained.blocker;
+            if (retained?.kind === "task" && item.kind === "task" && retained.assignmentBinding)
+              item.assignmentBinding = retained.assignmentBinding;
             annotate(item, blocker);
             return item;
           });
@@ -1850,7 +1905,10 @@ class Store {
       if (r.op === "link") {
         requireProgress(actor.verifiedSource && Boolean(source.verified), "source-unverified");
         requireProgress(child && child.sessionId === r.child && child.sourceId === actor.sourceId && child.verifiedSource && child.ancestry?.includes(actor.sessionId), "assignment");
-        requireProgress(new Set(r.assign).size === r.assign.length && r.assign.every((id) => p.items.some((i) => i.id === id && i.kind === "task")));
+        assignmentIDs(p, r.assign);
+        const declared = [...r.assign];
+        if (binding)
+          r.assign = [...new Set([...p.links.find((l) => l.sessionId === r.child)?.itemIds ?? [], ...declared])];
         const other = p.links.filter((l) => l.sessionId !== r.child);
         requireProgress(other.every((l) => l.itemIds.every((id) => !r.assign.includes(id))), "assignment");
         p.links = [...other, ...r.assign.length ? [{ sessionId: r.child, itemIds: r.assign }] : []];
@@ -1860,6 +1918,12 @@ class Store {
             delete item.assigneeSessionId;
           if (r.assign.includes(item.id))
             item.assigneeSessionId = r.child;
+        }
+        for (const item of p.items) {
+          if (!binding && (item.assignmentBinding?.childSessionId === r.child || r.assign.includes(item.id)))
+            delete item.assignmentBinding;
+          if (binding && declared.includes(item.id))
+            item.assignmentBinding = { coordinatorSessionId: actor.sessionId, childSessionId: r.child, planId: p.id, itemId: item.id, tool: "subagent", messageId: binding.messageId, callId: binding.callId, observedAt: binding.observedAt, boundAt: now, boundRevision: p.revision, validAtRevision: p.revision };
         }
       }
       if (r.op === "finish") {
@@ -1874,7 +1938,7 @@ class Store {
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
-      if (p.document.path) {
+      if (p.document.path && !binding) {
         requireProgress(capture?.path === p.document.path, "binding");
         const oldHash = p.document.hash;
         p.document.state = capture.state;
@@ -1896,6 +1960,11 @@ class Store {
           p.document.checklistSynchronized = false;
       }
       for (const item of p.items) {
+        if (item.assignmentBinding) {
+          item.assignmentBinding.validAtRevision = p.revision;
+          if (!currentBinding(item.assignmentBinding, p, item.id))
+            delete item.assignmentBinding;
+        }
         if (p.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked")
           delete item.blocker;
         else if (item.blocker)
@@ -1919,6 +1988,9 @@ class Store {
       }
     });
   }
+}
+function assignmentIDs(p, ids) {
+  requireProgress(new Set(ids).size === ids.length && ids.every((id) => p.items.some((i) => i.id === id && i.kind === "task")));
 }
 function validateItems(items) {
   const byId = new Map(items.map((i) => [i.id, i]));

@@ -7,6 +7,9 @@ import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared
 import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
+import { censusFor, planFacts } from '../shared/census.ts';
+import { censusBlock } from '../shared/census-view.ts';
+import { planProject } from '../shared/live.ts';
 
 type Ui = { selected: string | null; setup: SetupUi };
 const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
@@ -34,7 +37,12 @@ startView<Ui>({
     return keys.has(ui.selected ?? '') ? { selected: null } : {};
   },
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
-  wantProjects: ({ read, live, directory }) => (read ? projectsFor(read.plans, live, directory) : []),
+  // The selected session's own project first: its sub-agents need no reported plan to be listed.
+  wantProjects: ({ read, live, directory, session }) => {
+    if (!read) return [];
+    const own = session ? planProject(session.id, directory ?? '', live) : undefined;
+    return [...new Set([...(own ? [own.id] : []), ...projectsFor(read.plans, live, directory)])];
+  },
   wantDetails: (vc) => { const p = current(vc); return p ? [p] : []; },
   // Task reading belongs to the selected session's view of the plan: another session (even of the
   // same plan) or plan starts at Show all again; nothing about it is stored.
@@ -96,6 +104,13 @@ startView<Ui>({
       if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading }), cleanupBlock(vc, plan));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
+    // Observed sub-agents of the selected session, kept apart from the reported plan above.
+    const shown = current(vc);
+    const census = censusBlock({
+      surface: 'panel', census: censusFor(vc.session?.id, vc.directory, vc.live),
+      facts: planFacts(shown, shown ? vc.detail(shown) : null, env.boundSource), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
+    });
+    if (census) root.append(census);
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));
   },
 });
