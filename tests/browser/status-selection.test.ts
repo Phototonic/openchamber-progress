@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
-import { EMPTY_LIVE } from '../../ui/shared/live.ts';
+import * as liveModule from '../../ui/shared/live.ts';
+const { EMPTY_LIVE } = liveModule;
 import type { PlanView } from '../../ui/shared/model.ts';
 import * as scopeModule from '../../ui/shared/scope.ts';
 import { automaticPlan, StatusSelection } from '../../ui/status/selection.ts';
@@ -28,6 +29,7 @@ function statusSpec() {
   runInNewContext(js, { exports: {}, require: (name: string) => {
     if (name === '../shared/app.ts') return { RECENT_SCOPES: 8, startView: (value: ViewSpec<Ui>) => { spec = value; } };
     if (name === '../shared/scope.ts') return scopeModule;
+    if (name === '../shared/live.ts') return liveModule;
     if (name === './selection.ts') return { StatusSelection };
     return {}; // rendering-only imports are deliberately not executed here
   } });
@@ -110,4 +112,7 @@ test('actual Work Status details and first project enrichment follow a manual fo
   assert.equal(spec.wantDetails(vc)[0].key, plans[3].key);
   assert.equal(spec.wantProjects(vc)[0], projects[3].id);
   assert.equal(spec.maxSessionSubscriptions, 2);
+  // Sub-agents: the selected session's own project leads, even when it reported no plan there.
+  const own = { ...vc, read: { plans: [] }, directory: projects[1].directory } as unknown as ViewContext<Ui>;
+  assert.deepEqual([...spec.wantProjects(own)], [projects[1].id]);
 });

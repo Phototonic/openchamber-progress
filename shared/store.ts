@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { currentBinding } from './assignment-binding.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -116,9 +117,35 @@ export class Store {
     });
   }
   setEnabled(enabled: boolean) { this.transaction(true, () => { this.db.prepare('UPDATE meta SET enabled=? WHERE singleton=1').run(Number(enabled)); }); }
+  /** Capture generation survives even an off/on interval between observations, including old writers. */
+  installDelegationControl() {
+    this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
+      INSERT OR IGNORE INTO delegation_control VALUES(1,0);
+      CREATE TRIGGER IF NOT EXISTS delegation_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled
+      BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
+  }
+  delegationControl() {
+    const row = this.db.prepare('SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)').get()!;
+    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+  }
+  validateDeclaration(value: unknown, actor: Actor) {
+    const r = parseRequest(value); need(r.op === 'delegate');
+    return this.transaction(false, () => {
+      need(this.delegationControl().enabled, 'disabled');
+      const source = this.db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId);
+      need(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, 'source-unverified');
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db,actor.sourceId,r.plan) : undefined;
+      need(state?.state !== 'deleted','not-found'); need(state?.state !== 'archived','closed');
+      const p = this.raw(actor.sourceId,r.plan); need(p,'not-found');
+      need(p.sessionId === actor.sessionId,'assignment'); need(p.lifecycle === 'active','closed'); need(p.revision === r.rev,'conflict',p.revision);
+      assignmentIDs(p,r.assign!);
+      need(p.links.every(l => l.itemIds.every(id => !r.assign!.includes(id))), 'assignment');
+      return this.delegationControl().generation;
+    });
+  }
   private raw(source: string, id: string): StoredPlan | undefined {
     const row = this.db.prepare('SELECT snapshot FROM plans WHERE source=? AND id=?').get(source,id);
-    try { if(!row)return undefined;const p=JSON.parse(String(row.snapshot)) as StoredPlan;need(p.sourceId===source&&p.id===id&&Array.isArray(p.items)&&Array.isArray(p.links),'corrupt');return p; } catch { throw new ProgressError('corrupt'); }
+    try { if(!row)return undefined;const p=JSON.parse(String(row.snapshot)) as StoredPlan;need(p.sourceId===source&&p.id===id&&Array.isArray(p.items)&&Array.isArray(p.links),'corrupt');for(const item of p.items)if(!currentBinding(item.assignmentBinding,p,item.id))delete item.assignmentBinding;return p; } catch { throw new ProgressError('corrupt'); }
   }
   get(source: string, id: string) { return this.transaction(false, () => this.raw(source,id)); }
   cleanup(action:CleanupAction,value:unknown) {
@@ -247,12 +274,17 @@ export class Store {
       return capDigest(result);
     });
   }
-  apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor): Receipt {
-    const r = parseRequest(value); need(r.op !== 'read');
-    const hash = digest(canonical({ request:r, session:actor.sessionId, source:actor.sourceId }));
+  apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor, binding?: { generation: number; messageId: string; callId: string; observedAt: string }) : Receipt {
+    const r = parseRequest(value); need(r.op !== 'read' && r.op !== 'delegate');
+    const hash = digest(canonical({ request:r, session:actor.sessionId, source:actor.sourceId, ...(binding ? {binding} : {}) }));
     const receiptStatement = this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)');
     return this.transaction(true, () => {
       need(Boolean(this.db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()!.enabled),'disabled');
+      if (binding) {
+        need(r.op === 'link' && this.delegationControl().generation === binding.generation,'disabled');
+        need(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId,'source-unverified');
+        need(child?.parentId === actor.sessionId && child.ancestry !== null && child.directory === actor.directory && child.projectId === actor.projectId,'assignment');
+      }
       const cleanup=cleanupInstalled(this.db)?cleanupState(this.db,actor.sourceId,r.plan):undefined;
       need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
       const source = this.db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId); need(source,'binding');
@@ -293,7 +325,7 @@ export class Store {
         if (item.kind !== 'task' || item.status !== 'blocked') delete item.blocker;
       };
       if (coordinator) { p.directory = actor.directory; p.projectId = actor.projectId; }
-      p.reportedAt = now;
+      if (!binding) p.reportedAt = now;
       const structural = ['start','revise','commit'].includes(r.op);
       if (structural) {
         p.structuralRevision++;
@@ -306,6 +338,7 @@ export class Store {
             const { blocker, ...fields } = i; const retained = old.get(i.id);
             const item: Item = { ...fields, status:i.status ?? retained?.status ?? 'pending', assigneeSessionId:i.kind==='task'?retained?.assigneeSessionId:undefined,reporterSessionId:i.status!==undefined||!old.has(i.id)?actor.sessionId:retained?.reporterSessionId };
             if (retained?.kind === 'task' && retained.status === 'blocked' && item.kind === 'task' && item.status === 'blocked' && retained.blocker) item.blocker = retained.blocker;
+            if (retained?.kind === 'task' && item.kind === 'task' && retained.assignmentBinding) item.assignmentBinding = retained.assignmentBinding;
             annotate(item,blocker); return item;
           });
           validateItems(p.items);
@@ -331,11 +364,17 @@ export class Store {
       if (r.op === 'link') {
         need(actor.verifiedSource && Boolean(source.verified),'source-unverified');
         need(child && child.sessionId === r.child && child.sourceId === actor.sourceId && child.verifiedSource && child.ancestry?.includes(actor.sessionId),'assignment');
-        need(new Set(r.assign).size === r.assign!.length && r.assign!.every(id => p.items.some(i => i.id === id && i.kind === 'task')));
+        assignmentIDs(p,r.assign!);
+        const declared = [...r.assign!];
+        if (binding) r.assign = [...new Set([...p.links.find(l => l.sessionId === r.child)?.itemIds ?? [], ...declared])];
         const other = p.links.filter(l => l.sessionId !== r.child);
         need(other.every(l => l.itemIds.every(id => !r.assign!.includes(id))),'assignment');
         p.links = [...other,...(r.assign!.length ? [{sessionId:r.child!,itemIds:r.assign!}] : [])]; need(p.links.length <= 64);
         for (const item of p.items) { if (item.assigneeSessionId === r.child) delete item.assigneeSessionId; if (r.assign!.includes(item.id)) item.assigneeSessionId = r.child; }
+        for (const item of p.items) {
+          if (!binding && (item.assignmentBinding?.childSessionId === r.child || r.assign!.includes(item.id))) delete item.assignmentBinding;
+          if (binding && declared.includes(item.id)) item.assignmentBinding = { coordinatorSessionId: actor.sessionId, childSessionId: r.child!, planId: p.id, itemId: item.id, tool: 'subagent', messageId: binding.messageId, callId: binding.callId, observedAt: binding.observedAt, boundAt: now, boundRevision: p.revision, validAtRevision: p.revision };
+        }
       }
       if (r.op === 'finish') {
         if (r.outcome === 'finished') { const counts = countItems(p.items); need(counts.total > 0 && counts.remaining === 0,'unfinished'); }
@@ -346,7 +385,7 @@ export class Store {
         p.document = { ...p.document,path:capture.path,checklistSynchronized:false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
-      if (p.document.path) {
+      if (p.document.path && !binding) {
         need(capture?.path === p.document.path,'binding');
         const oldHash = p.document.hash;
         p.document.state = capture.state; p.document.checkedAt = capture.checkedAt;
@@ -360,6 +399,10 @@ export class Store {
         } else p.document.checklistSynchronized = false;
       }
       for (const item of p.items) {
+        if (item.assignmentBinding) {
+          item.assignmentBinding.validAtRevision = p.revision;
+          if (!currentBinding(item.assignmentBinding,p,item.id)) delete item.assignmentBinding;
+        }
         if (p.lifecycle !== 'active' || item.kind !== 'task' || item.status !== 'blocked') delete item.blocker;
         else if (item.blocker) item.blocker.validAtRevision = p.revision;
       }
@@ -378,6 +421,9 @@ export class Store {
       function save(receipt: Receipt) { receiptStatement.run(actor.sourceId,r.plan,r.oid!,hash,JSON.stringify(receipt)); }
     });
   }
+}
+function assignmentIDs(p: PlanState, ids: string[]) {
+  need(new Set(ids).size === ids.length && ids.every(id => p.items.some(i => i.id === id && i.kind === 'task')));
 }
 function validateItems(items: Item[]) {
   const byId = new Map(items.map(i => [i.id,i])); need(byId.size === items.length);

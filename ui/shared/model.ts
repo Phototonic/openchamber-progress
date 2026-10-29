@@ -23,7 +23,15 @@ export interface ItemView {
    * are known (never reported, cleared, stale or from an older service), never "no blocker".
    */
   reportedBlocker?: BlockerView;
+  /**
+   * Server-authored provenance of the current assignment: bound from one verified delegation call
+   * (adapter-checked, current at this revision). Absent: provenance unavailable (explicit link,
+   * older writer, stale or malformed), never "unassigned". Not a report, permission or completion.
+   */
+  delegation?: AssignmentBindingView;
 }
+
+export interface AssignmentBindingView { childSessionId: string; coordinatorSessionId: string; boundAt: string; boundRevision: number; validAtRevision: number }
 
 export type BlockerCategory = 'decision' | 'dependency' | 'review' | 'external' | 'other';
 /**

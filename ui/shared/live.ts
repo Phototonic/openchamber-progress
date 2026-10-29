@@ -13,13 +13,24 @@ export interface KnownWorktree extends LiveWorktree { status: 'ready' | 'pending
 export interface LiveSession {
   id: string; title: string; projectId: string; directory: string; parentId: string | null;
   archivedAt: number | null; worktree: LiveWorktree | null; activity: Activity; outcome: 'completed' | 'failed' | null;
+  /** Host creation time: display order only, never an activity time. */
+  createdAt?: number;
+  /**
+   * Receipt of this session's last qualifying observation in this subscription: wall time for the
+   * label, monotonic time for expiry. Only a changed activity/outcome (or the first record after
+   * subscribing) qualifies; title, other-session and unchanged callbacks keep the old receipt.
+   */
+  seenAt?: number;
+  seenMono?: number;
 }
+export interface DirectoryCoverage { directory: string; state: LoadState }
 
 export interface LiveSnapshot {
   projectsState: LoadState | 'off';
   projects: LiveProject[];
   worktrees: Map<string, { state: LoadState; records: KnownWorktree[] }>;
-  sessions: Map<string, { state: LoadState; records: LiveSession[] }>;
+  /** `coverage`: the host's per-directory session coverage; absent from older fixtures/hosts. */
+  sessions: Map<string, { state: LoadState; records: LiveSession[]; coverage?: DirectoryCoverage[] }>;
   /** Projects that wanted live coverage but were left out by the subscription cap. */
   capped: string[];
 }
@@ -103,6 +114,9 @@ export function liveLabel(c: Coverage): { label: string; tone: 'info' | 'warning
   if (c.kind === 'untracked') return { label: 'Live state unavailable', tone: 'neutral' };
   return { label: 'Not open in this window', tone: 'neutral' };
 }
+
+/** Retained receipts per session stream: the host lists at most 2,000 sessions. */
+const SEEN_LIMIT = 4000;
 
 type Unsub = () => void;
 type Subscription = { release: Promise<Unsub | null> };
@@ -231,12 +245,35 @@ export class LiveWorkspace {
       const sub: Subscription = { release: Promise.resolve(null) };
       this.subs.set(id, sub);
       this.snap.sessions.set(id, { state: 'loading', records: [] }); changed = true;
+      // Per-subscription receipts. A new subscription (restart, context change, refusal) starts with
+      // none, so a first appearance is an observation. Within one subscription only a changed
+      // activity/outcome renews a session: the host's periodic loading → ready reload, an error
+      // phase, a disappearance and an unchanged ready snapshot all keep the earlier receipt.
+      const seen = new Map<string, { sig: string; at: number; mono: number }>();
+      let lastReady: LiveSession[] | null = null;
       sub.release = this.host.onSessions(id, (s) => {
         if (this.subs.get(id) !== sub) return;
-        this.snap.sessions.set(id, {
-          state: s.state,
-          records: s.state === 'ready' ? s.sessions.map((r) => ({ id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome })) : [],
+        const coverage = Array.isArray(s.coverage) ? s.coverage.map((c) => ({ directory: c.directory, state: c.state })) : undefined;
+        if (s.state !== 'ready') {
+          // A reload keeps the last ready rows (as not current, census.ts); a failure shows none.
+          this.snap.sessions.set(id, { state: s.state, records: s.state === 'loading' && lastReady ? lastReady : [], coverage });
+          this.onChange();
+          return;
+        }
+        const at = Date.now(), mono = performance.now();
+        const current = new Set<string>();
+        const records = s.sessions.map((r): LiveSession => {
+          const sig = `${r.activity}|${r.outcome}`;
+          const before = seen.get(r.id);
+          const receipt = before && before.sig === sig ? before : { sig, at, mono };
+          seen.set(r.id, receipt); current.add(r.id);
+          return { id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome, createdAt: Number.isFinite(r.createdAt) ? r.createdAt : undefined, seenAt: receipt.at, seenMono: receipt.mono };
         });
+        // Bounded: receipts of sessions no longer listed go once the map outgrows the host's cap.
+        if (seen.size > SEEN_LIMIT) for (const key of seen.keys()) if (!current.has(key)) seen.delete(key);
+        lastReady = records;
+        // Absent coverage (an older host) cannot establish a complete census.
+        this.snap.sessions.set(id, { state: 'ready', records, coverage });
         this.onChange();
       }).catch(() => {
         if (this.subs.get(id) === sub) { this.snap.sessions.set(id, { state: 'error', records: [] }); this.onChange(); }

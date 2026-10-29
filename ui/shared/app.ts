@@ -10,7 +10,10 @@
 // - repaint only on change; focus, scroll and open disclosures survive a repaint
 // - task-reading state (filters, jump cursors, task disclosures, logical focus, reading anchor)
 //   lives for one reading identity: integration account + store/binding + view scope + plan; never stored
-// - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label
+// - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label; it also
+//   wakes at the earliest observed-activity expiry (census.ts), so a fresh label turns unknown in place.
+//   Observation currency comes only from the workspace subscriptions themselves (state, coverage,
+//   refusal, restart) and that expiry; ctx.connection is the integration link, never host transport.
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 // - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
 //   panel/status never construct it, so they start no digest read or checkpoint write
@@ -304,6 +307,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let liveSig = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
   let labelTimer: ReturnType<typeof setTimeout> | null = null;
+  let labelDue = 0;
   const official = new OfficialMainState();
   let mainTimer: ReturnType<typeof setTimeout> | null = null;
   let mainGeneration = 0;
@@ -785,13 +789,19 @@ export function startView<U>(spec: ViewSpec<U>) {
    * own anchors, so a pause loses nothing.
    */
   function planLabels() {
-    const wanted = !disposed && document.visibilityState !== 'hidden' && !!mount!.querySelector('time[data-age],time[data-elapsed]');
+    const wanted = !disposed && document.visibilityState !== 'hidden' && !!mount!.querySelector('time[data-age],time[data-elapsed],[data-expires]');
     if (!wanted) { if (labelTimer) clearTimeout(labelTimer); labelTimer = null; return; }
+    // The same single timer, woken early only for the next observed-activity expiry.
+    const expiries = [...mount!.querySelectorAll<HTMLElement>('[data-expires]')].map((n) => Number(n.dataset.expires)).filter(Number.isFinite);
+    const now = performance.now();
+    const due = now + Math.max(0, Math.min(LABEL_TICK_MS, ...expiries.map((at) => at - now + 50)));
+    if (labelTimer && due < labelDue) { clearTimeout(labelTimer); labelTimer = null; }
+    if (!labelTimer) labelDue = due;
     labelTimer ??= setTimeout(() => {
       labelTimer = null;
       if (ctx) refreshLabels(mount!, ctx.locale);
       planLabels();
-    }, LABEL_TICK_MS);
+    }, labelDue - now);
   }
 
   function schedule() {

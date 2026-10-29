@@ -5,7 +5,7 @@ import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { BLOCKER_LIMITS, identifier } from '../../shared/progress.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type {
-  BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
 
@@ -194,19 +194,36 @@ function parseBlocker(v: unknown, item: Rec, revision: number): BlockerView | un
   };
 }
 
-function parseItem(v: unknown, planId: string, revision: number): ItemView {
+function parseItem(v: unknown, planId: string, revision: number, coordinator?: string): ItemView {
   check(isRec(v) && isStr(v.id) && isStr(v.title), `Plan ${planId} has an item without an id or title.`);
   check(v.kind === 'group' || v.kind === 'task', `Item ${v.id} has an unknown kind.`);
   check(STATUSES.includes(v.status as ItemStatus), `Item ${v.id} has an unknown status.`);
   // Omitted dependencies are valid; a present but malformed list must not read as "none recorded".
   check(v.dependencies === undefined || (Array.isArray(v.dependencies) && v.dependencies.every((d) => isStr(d) && d.length > 0)), `Item ${v.id} has unreadable dependencies.`);
   const blocker = parseBlocker(v.blocker, v, revision);
+  const binding = parseBinding(v.assignmentBinding, v, planId, revision, coordinator);
   return {
     id: v.id, title: v.title, kind: v.kind, status: v.status as ItemStatus, parentId: optStr(v.parentId),
     dependencies: v.dependencies as string[] | undefined,
     assigneeSessionId: optStr(v.assigneeSessionId), reporterSessionId: optStr(v.reporterSessionId),
     ...(blocker ? { reportedBlocker: blocker } : {}),
+    ...(binding ? { delegation: binding } : {}),
   };
+}
+
+const BINDING_KEYS = new Set(['coordinatorSessionId', 'childSessionId', 'planId', 'itemId', 'tool', 'messageId', 'callId', 'observedAt', 'boundAt', 'boundRevision', 'validAtRevision']);
+/**
+ * Optional delegation provenance of a task's current assignment, re-checked here (docs/contracts.md).
+ * Anything doubtful is dropped: absence only means provenance is unavailable, so the assignment
+ * itself still shows from the assignee. Call/message identifiers are checked, not kept.
+ */
+function parseBinding(v: unknown, item: Rec, planId: string, revision: number, coordinator: string | undefined): AssignmentBindingView | undefined {
+  if (!isRec(v) || item.kind !== 'task' || !isStr(item.assigneeSessionId) || !coordinator) return undefined;
+  const ok = Object.keys(v).every((k) => BINDING_KEYS.has(k)) && v.tool === 'subagent' && v.planId === planId && v.itemId === item.id
+    && v.childSessionId === item.assigneeSessionId && v.coordinatorSessionId === coordinator && identifier(v.coordinatorSessionId) && identifier(v.childSessionId)
+    && identifier(v.messageId) && identifier(v.callId) && isoInstant(v.observedAt) && isoInstant(v.boundAt)
+    && isInt(v.boundRevision) && v.boundRevision >= 1 && v.boundRevision <= revision && v.validAtRevision === revision;
+  return ok ? { childSessionId: v.childSessionId as string, coordinatorSessionId: v.coordinatorSessionId as string, boundAt: v.boundAt as string, boundRevision: v.boundRevision as number, validAtRevision: revision } : undefined;
 }
 
 function parseContribution(v: unknown, planId: string): ContributionView {
@@ -282,7 +299,7 @@ export function parsePlanPage(body: string) {
   return {
     envelope: parseEnvelope(v),
     plan,
-    items: page(v.items, (x) => parseItem(x, plan.id, plan.revision), 'Plan items'),
+    items: page(v.items, (x) => parseItem(x, plan.id, plan.revision, plan.ownerSessionId), 'Plan items'),
     contributions: page(v.contributions, (x) => parseContribution(x, plan.id), 'Plan contributions'),
     links: (Array.isArray(v.links) ? v.links : []).map((l) => {
       check(isRec(l) && isStr(l.sessionId) && Array.isArray(l.itemIds), `Plan ${plan.id} has an unreadable assignment link.`);

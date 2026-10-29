@@ -38,7 +38,11 @@ test('failed setup closes the opened store at verification and each later bounda
       assert.equal(closeCalls,1,'exactly one setup-failure close');
       if(stage==='tool')assert.deepEqual(reached,['skill','tool'],'failure follows partial successful registration');
       if(stage==='context-hook')assert.deepEqual(reached,['skill','tool','tool-hook','context-hook','dispose-tool-hook']);
-      if(stage==='rpc'||stage==='activation'||stage==='hook-dispose-error')assert.deepEqual(reached,['skill','tool','tool-hook','context-hook','rpc','dispose-tool-hook','dispose-context-hook']);
+      if(stage==='rpc'||stage==='activation'||stage==='hook-dispose-error'){
+        assert.ok(reached.indexOf('rpc')>reached.indexOf('context-hook'));
+        assert.equal(reached.filter(x=>x==='dispose-tool-hook').length,reached.filter(x=>x==='tool-hook').length,'every successful hook registration is disposed, including delegation hooks');
+        assert.equal(reached.filter(x=>x==='dispose-context-hook').length,1);
+      }
     }finally{for(const s of opened){try{originalClose.call(s);}catch{}}f.cleanup();}
   });
 });

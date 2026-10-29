@@ -32,6 +32,22 @@ restricted-child tool policies; an explicit parent relay labels both identities.
 Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
 
+For the next `subagent` delegation, the coordinator may use `op=delegate` with
+`plan`, fresh `oid`, expected `rev` and `assign` (at most 50 unique task IDs).
+Empty `assign` cancels that plan's pending declaration. This does not dispatch a
+child or assign tasks: pending authority is memory-only, expires in five minutes
+and disappears on restart. Identical retries do not arm twice; after restart,
+deliberately re-declare with a fresh `oid`. Any installed `subagent`
+implementation qualifies only when its hook pair, native call census, closing
+step and verified immediate child/complete ancestry all agree; ambiguity or
+missing evidence retires without assignment. These gates prove call correlation
+and child lineage, not that the tool actually created or continued that child:
+installed tools are trusted to report the child they delegated to. Slim is
+covered through these same gates, not separate certification. Use explicit
+`link` and assigned parent relay when evidence is unavailable.
+Binding is attribution only, never progress, completion,
+reporting permission or accepted handoff. It never relaxes child restrictions.
+
 For a deliberately blocked task, optionally report `blocker` with only
 `category`, `reason` and `nextAction`. Categories are `decision`, `dependency`,
 `review`, `external`, `other`; each prose field must be nonblank, at most 512

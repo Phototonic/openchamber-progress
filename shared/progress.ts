@@ -21,8 +21,10 @@ export class ProgressError extends Error {
   constructor(code: Code, revision?: number, hint?: ValidationHint) { super(code); this.code = code; this.revision = revision; if(code === 'invalid') this.hint = hint; }
 }
 export function requireProgress(value: unknown, code: Code = 'invalid', revision?: number): asserts value { if (!value) throw new ProgressError(code, revision); }
-export interface Item { id: string; title: string; kind: 'task' | 'group'; status: Status; parentId?: string; dependencies?: string[]; assigneeSessionId?: string; reporterSessionId?: string; blocker?: BlockerAnnotation }
-export type ItemInput = Omit<Item, 'status' | 'assigneeSessionId' | 'reporterSessionId' | 'blocker'> & { status?: Status };
+/** Optional server-authored attribution, not a progress report or completion. */
+export interface AssignmentBinding { coordinatorSessionId: string; childSessionId: string; planId: string; itemId: string; tool: 'subagent'; messageId: string; callId: string; observedAt: string; boundAt: string; boundRevision: number; validAtRevision: number }
+export interface Item { id: string; title: string; kind: 'task' | 'group'; status: Status; parentId?: string; dependencies?: string[]; assigneeSessionId?: string; reporterSessionId?: string; blocker?: BlockerAnnotation; assignmentBinding?: AssignmentBinding }
+export type ItemInput = Omit<Item, 'status' | 'assigneeSessionId' | 'reporterSessionId' | 'blocker' | 'assignmentBinding'> & { status?: Status };
 /** Deliberate annotation input; stored provenance is never caller supplied. */
 export type BlockerItemInput = ItemInput & { blocker?: BlockerInput | null };
 export interface BlockerChangeInput { id: string; status: Status; blocker?: BlockerInput | null }
@@ -98,7 +100,7 @@ export interface SetupRead {
 export interface Receipt { plan: string; rev: number; structuralRev: number; changed?: string[]; staged?: number }
 export type Reply = Receipt | { error: Code; rev?: number; hint?: ValidationHint };
 export interface Request {
-  op: 'start' | 'read' | 'change' | 'revise' | 'stage' | 'commit' | 'link' | 'bind' | 'finish';
+  op: 'start' | 'read' | 'change' | 'revise' | 'stage' | 'commit' | 'link' | 'delegate' | 'bind' | 'finish';
   plan: string; oid?: string; rev?: number; title?: string; items?: BlockerItemInput[];
   changes?: BlockerChangeInput[]; child?: string; assign?: string[]; attributed?: string;
   source?: string; confirm?: boolean; outcome?: 'finished' | 'cancelled' | 'failed'; reopen?: boolean;
@@ -133,7 +135,7 @@ export function parseRequest(value: unknown): Request {
   const r = value as Request;
   const fields: Record<Request['op'], string[]> = {
     start: ['title','items','source'], read: ['page'], change: ['changes','attributed'], revise: ['title','items','reopen'],
-    stage: ['upload','chunk','items','reopen'], commit: ['upload','chunks','title','reopen'], link: ['child','assign'], bind: ['source','confirm'], finish: ['outcome'],
+    stage: ['upload','chunk','items','reopen'], commit: ['upload','chunks','title','reopen'], link: ['child','assign'], delegate: ['assign'], bind: ['source','confirm'], finish: ['outcome'],
   };
   validRequest(Object.hasOwn(fields, r.op), 'op');
   validRequest(identifier(r.plan), 'plan');
@@ -172,6 +174,7 @@ export function parseRequest(value: unknown): Request {
   requireProgress(r.op !== 'stage' || (!!r.upload && r.chunk !== undefined && !!r.items));
   requireProgress(r.op !== 'commit' || (!!r.upload && !!r.chunks));
   requireProgress(r.op !== 'link' || (!!r.child && !!r.assign));
+  requireProgress(r.op !== 'delegate' || (Array.isArray(r.assign) && r.assign.length <= 50 && new Set(r.assign).size === r.assign.length));
   requireProgress(r.op !== 'bind' || !!r.source);
   requireProgress(r.op !== 'finish' || !!r.outcome);
   return JSON.parse(JSON.stringify(r)) as Request;
@@ -179,7 +182,7 @@ export function parseRequest(value: unknown): Request {
 export const BLOCKER_SCHEMA = { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: false, properties: { category: { type: 'string', enum: ['decision','dependency','review','external','other'] }, reason: { type: 'string', minLength: 1, maxLength: 512 }, nextAction: { type: 'string', minLength: 1, maxLength: 512 } } }], description: 'Blocked tasks only. Optional complete replacement: category, nonblank reason and nextAction (each at most 512 JS code units, no NUL). Null clears details, not status; omit to retain only verified-current details.' } as const;
 export const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['op','plan'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail.' },
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Delegate declares assign IDs for the next supported delegation; empty assign cancels. Declaration is not assignment. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail.' },
     plan: { type: 'string', description: 'One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } }, blocker: BLOCKER_SCHEMA }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] }, blocker: BLOCKER_SCHEMA }, required: ['id','status'], additionalProperties: false } },
@@ -190,7 +193,7 @@ export const REPORT_SCHEMA = {
 /** Tool-only recovery text. Constant allowlist: never interpolate rejected input. */
 const VALIDATION_HINTS = {
   request: 'Send one request object.',
-  op: 'Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.',
+  op: 'Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.',
   plan: 'Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.',
   fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.',
   oid: 'Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.',

@@ -10,7 +10,7 @@ if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) 
   process.exit(1);
 }
 
-const excluded = ['production-runtime.test.ts', 'plugin-failure-runtime.test.ts', 'progress-activation-runtime.test.ts'];
+const excluded = ['production-runtime.test.ts', 'plugin-failure-runtime.test.ts', 'progress-activation-runtime.test.ts', 'subagent-activity-runtime.test.ts'];
 const entries = ['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md', ...['panel','status','page'].map(s=>`ui/${s}/main.js`)];
 function run(command:string, args:string[]) {
   if (spawnSync(command,args,{stdio:'inherit'}).status !== 0) throw new Error('Portable check failed');

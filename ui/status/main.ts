@@ -3,7 +3,9 @@ import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, testid } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
 import { clockTime } from '../shared/format.ts';
-import { coverageFor, liveLabel } from '../shared/live.ts';
+import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
+import { censusFor, planFacts } from '../shared/census.ts';
+import { censusBlock } from '../shared/census-view.ts';
 import { blockedWork, currentWork, LIFECYCLE_LABEL, showsLiveness, summarize } from '../shared/model.ts';
 import { officialMainLine } from '../shared/official.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
@@ -37,8 +39,11 @@ startView<Ui>({
   onContext: (vc) => { enter(vc); },
   wantProjects: (vc) => {
     const p = primary(vc);
-    // Featured plan first, even if it is the fourth/older choice. LiveWorkspace keeps the two-stream cap.
+    // The selected session's own project (its sub-agents), then the featured plan first, even if it
+    // is the fourth/older choice. LiveWorkspace keeps the two-stream cap.
+    const own = vc.session ? planProject(vc.session.id, vc.directory ?? '', vc.live) : undefined;
     return vc.read ? [...new Set([
+      ...(own ? [own.id] : []),
       ...projectsFor(p ? [p] : [], vc.live),
       ...projectsFor(vc.read.plans.slice(0, 3), vc.live, vc.directory),
     ])] : [];
@@ -63,8 +68,15 @@ startView<Ui>({
       root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
       return;
     }
+    const census = (shown: typeof plan) => censusBlock({
+      surface: 'status', census: censusFor(vc.session?.id, vc.directory, vc.live),
+      facts: planFacts(shown, shown ? vc.detail(shown) : null), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
+    });
     if (!scope.plans.length) {
       root.append(failure ? failureBlock(failure, vc.retry) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));
+      // The no-plan message is about reports; observed sub-agents stay listed below it.
+      const observed = census(null);
+      if (observed) root.append(observed);
       return;
     }
     if (!plan) return;
@@ -134,6 +146,9 @@ startView<Ui>({
       if (rest.length > 2) more.append(el('li', 'ap-note', `${rest.length - 2} more`));
       root.append(more);
     }
+    // After the featured plan and its picker, so sub-agents never displace them.
+    const observed = census(plan);
+    if (observed) root.append(observed);
     const actions = el('div', 'ap-row ap-between');
     button(actions, 'open-detail', 'Open progress', () => openRail(vc), 'ghost');
     const line = official();
