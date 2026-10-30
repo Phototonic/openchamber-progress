@@ -492,6 +492,41 @@ unreported canonical work the recipient owns or is authorized to coordinate.
 Lookup failure preserves valid independent hints. Disable/disposal and duplicate
 checks are repeated after awaited lookups; recipient flags publish synchronously.
 
+The same process-local bounded state may coalesce three advisory reasons: possible
+plan write, native dispatch and tracker mutation. At most one conditional hint is
+added to the recipient's owned context section, consumed on eligible delivery,
+not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
+Only plan writes retain the verified-direct-parent relay. Existing 128 pending
+recipient and 256 recent call caps remain; no new queues, per-tool history, plan
+lookup, source read, report or automatic progress mutation is introduced.
+
+Proxy qualification is finite and fail-closed. Exact `subagent` requires a completed
+outer event, typed native input (agent/description/prompt strings and correctly
+typed optional sessionID/model/background), structured returned bounded child ID,
+running/completed status and string output. Cancellation/error or explicit partial
+evidence cannot qualify. Exact `linear_save_issue` / `linear_save_comment` require
+a completed event and full typed returned success metadata, not an input ID,
+nonempty object, reassuring text, tool wrapper or read/list/search result.
+Issue output requires non-null typed identifier/UUID, title/status/statusType,
+creation/update timestamps, priority integer 0–4 with name, labels array, team IDs,
+URL/branch and creator metadata. Comment output requires non-null UUID/body,
+creation/update timestamps, attachments array and author ID/name. Required fields
+cannot be null; optional nullable lifecycle/context fields must have their observed
+null-or-value types when present. Body/title/worker/prompt text is never interpreted
+or echoed. Known error/partial indicators reject even otherwise entity-shaped data.
+
+The tracker metadata pin is the observed official remote-server shape dated
+2026-10-30, behaviorally replayed through native 2.2.2, not a protocol/version
+guarantee for all servers. Unknown aliases and unrecognized/version-drift shapes
+stay silent. Transport origin is not a discriminator: structuredContent and JSON
+text without outputSchema may yield identical parsed native objects. String output,
+including JSON text retained under an output schema, remains unrecognized; the
+plugin never parses content text. Code Mode inner hook names can qualify, but
+`execute` itself cannot. Shared call identity can coalesce/lose a reason rather
+than broaden history. Hints conditionally ask about unreported canonical state,
+never assert work start, review/owner approval, assignment or completion, and never
+map issue state to plan status. No receipt correlation or compliance promise exists.
+
 Recovery is an optional addition inside that same owned section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end

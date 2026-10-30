@@ -9,6 +9,15 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { Store } from '../../shared/store.ts';
 
+test('C native proxy metadata delivers actor-only hints without implicit reports, including Code Mode', { timeout: 240000 }, async () => {
+  for (const codemode of ['0', '1']) {
+    const env = { ...process.env, PROXY_ACTIVATION: '1', PROXY_TYPED_REPLAY: '1', PROXY_CODEMODE: codemode,
+      EVIDENCE: path.join(process.env.EVIDENCE || '/tmp/opencode/activation-proxy-evidence', 'proxies') };
+    const child = spawn(process.execPath, ['--experimental-strip-types', path.resolve('tests/fixtures/proxy-shape-probe.ts')], { env, stdio: 'inherit' });
+    const [status] = await once(child, 'close'); assert.equal(status, 0, `proxy runtime mode ${codemode}`);
+  }
+});
+
 test('progress resume successful host compaction reaches the next primary only', { timeout: 600000 }, async () => {
   const phase = process.env.PROGRESS_RESUME_PHASE;
   const regression = phase === 'regression';

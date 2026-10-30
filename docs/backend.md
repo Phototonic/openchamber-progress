@@ -403,6 +403,36 @@ preserve the writer hint and unrelated pending flags. Each recipient's own
 eligibility gates delivery/consumption: a restricted child's context cannot
 consume its parent's flag, and a restricted parent gets no fallback relay.
 Hints mention a possible delegated child, never paths, names or assignments.
+The same bounded recipient map coalesces plan-write, dispatch and tracker reason
+bits into one conditional hint. Proxy reasons target only the actor, never a child
+or parent; only qualifying plan writes retain the direct-parent relay. The existing
+128-recipient/256-call caps, one-shot next-context consumption and synchronous
+duplicate/disable/disposal checks apply to all reasons, with no extra queues,
+per-tool history or progress lookup. A shared inner/outer Code Mode call identity
+may conservatively lose a second reason rather than create more history.
+
+Dispatch accepts only exact `subagent` completed events with typed native input,
+bounded returned child session ID, running/completed status and string output.
+Tracker accepts only exact `linear_save_issue` / `linear_save_comment` completed
+events with the full observed typed issue/comment success metadata in parsed
+`result.output`, excluding error/partial indicators. Returned identifiers alone,
+strings, wrappers and input-supplied identifiers are insufficient. Metadata types
+are checked without interpreting prompt, body, title, worker text or state names
+as progress. Hook execution never invokes a report, scans a plan or reads a document.
+
+The tracker envelope is pinned to observed official remote-server behavior on
+2026-10-30 and native 2.2.2 normalization, not a universal connector contract.
+Issue metadata requires returned identifier/UUID, typed timestamps/status/priority,
+labels and team/author/link metadata; comments require UUID, timestamps, attachments,
+typed body and author. Required fields are non-null; supplied nullable lifecycle/
+context fields must retain their observed types. Unknown aliases, missing/mistyped
+metadata and unfamiliar/version-drift shapes remain silent. Native structuredContent
+and schema-less JSON text can normalize identically; recognition is origin-agnostic
+on the typed parsed object. JSON text with a declared output schema may stay a
+string and silently lose coverage; there is no plugin-side text-parsing fallback.
+Native Code Mode inner calls qualify by exact hook name, never by wrapper text.
+These observations are advisory, not receipts, assignments, canonical milestones
+or accepted completion; delivery and model compliance remain separate claims.
 Restart/cap eviction may lose a hint or permit an old replay; base guidance recurs.
 Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
