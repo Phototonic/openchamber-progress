@@ -148,6 +148,8 @@ function detailSnapshot(first: ReturnType<typeof parsePlanPage>): DetailSnapshot
 
 /** Store, source binding and requested plan of one detail page; every page of a read must agree. */
 const pageIdentity = (page: ReturnType<typeof parsePlanPage>) => JSON.stringify([page.envelope.storeId, page.envelope.binding.sourceId, page.envelope.binding.verified, page.plan.sourceId, page.plan.id]);
+/** Cleanup state and generation of one page (absent on older services). */
+const cleanupOf = (plan: PlanView) => `${plan.cleanup?.state ?? 'visible'}:${plan.cleanup?.revision ?? 0}`;
 
 /**
  * Full selected-plan detail. Items and contributions page with one cursor (each nested
@@ -174,7 +176,8 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
         const cursor = itemsNext ?? contribNext!;
         const next = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id, cursor })));
         if (pageIdentity(next) !== identity) throw new ContractError('The progress store changed while the plan was read.');
-        if (next.plan.revision !== first.plan.revision) { mixed = true; break; }
+        // A progress revision or cleanup generation change mid-read restarts: never a joined detail.
+        if (next.plan.revision !== first.plan.revision || cleanupOf(next.plan) !== cleanupOf(first.plan)) { mixed = true; break; }
         if (itemsNext) items.push(...next.items.data);
         if (contribNext) contributions.push(...next.contributions.data);
         itemsNext = itemsNext ? next.items.nextCursor : null;
@@ -183,7 +186,9 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
       if (mixed) continue;
       if (itemsNext || contribNext) throw new DetailReadError('page-cap', 'The plan has more pages than this view reads at once.');
       const timing = first.timing && Object.fromEntries(Object.entries(first.timing.items).map(([id, t]) => [id, { ...t, receivedAt }]));
-      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}) } };
+      // Same receipt anchor; a cached revisit keeps it, only a new reply supplies a new one.
+      const blockedTiming = first.blockedTiming && Object.fromEntries([...first.blockedTiming].map(([id, t]) => [id, { ...t, receivedAt }]));
+      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}), ...(blockedTiming ? { blockedTiming } : {}) } };
     }
     throw new DetailReadError('revision-restarts', 'The plan kept changing while it was read.');
   } catch (error) {

@@ -24226,7 +24226,7 @@ var Event17 = { Updated: Updated12, Resolved, Definitions: inventory(Updated12, 
 // plugin/index.ts
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { homedir } from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 import { realpathSync as realpathSync6, readFileSync as readFileSync2 } from "node:fs";
 
 // shared/binding.ts
@@ -24500,6 +24500,7 @@ function privatePaths(files) {
 // shared/progress.ts
 var VERSION = 2;
 var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1048576 };
+var BLOCKER_LIMITS = { textCodeUnits: 512, snapshotVisits: 128, inputBytes: 8 * 1024 * 1024, taskEntries: 1000 };
 
 class ProgressError extends Error {
   code;
@@ -24527,6 +24528,22 @@ var SEARCH_LIMITS = { plans: 64, membershipRows: 128, inputBytes: 8 * 1024 * 102
 function identifier2(value3) {
   return typeof value3 === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value3);
 }
+var BLOCKER_CATEGORIES = ["decision", "dependency", "review", "external", "other"];
+function blockerText(value3) {
+  return typeof value3 === "string" && value3.trim().length > 0 && value3.length <= BLOCKER_LIMITS.textCodeUnits && !value3.includes("\x00");
+}
+function validBlockerInput(value3) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction));
+}
+function validBlockerAnnotation(value3, revision) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  return Object.keys(b).every((k) => ["category", "reason", "nextAction", "reportedRevision", "reportedAt", "reporterSessionId", "attributedSessionId", "mode", "validAtRevision"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction)) && Number.isSafeInteger(b.reportedRevision) && Number(b.reportedRevision) > 0 && Number(b.reportedRevision) <= revision && Number.isSafeInteger(b.validAtRevision) && b.validAtRevision === revision && typeof b.reportedAt === "string" && Number.isFinite(Date.parse(b.reportedAt)) && new Date(b.reportedAt).toISOString() === b.reportedAt && identifier2(b.reporterSessionId) && identifier2(b.attributedSessionId) && (b.mode === "direct" && b.reporterSessionId === b.attributedSessionId || b.mode === "parent-relay" && b.reporterSessionId !== b.attributedSessionId);
+}
 function parseRequest(value3) {
   validRequest(value3 && typeof value3 === "object" && !Array.isArray(value3), "request");
   const r = value3;
@@ -24538,6 +24555,7 @@ function parseRequest(value3) {
     stage: ["upload", "chunk", "items", "reopen"],
     commit: ["upload", "chunks", "title", "reopen"],
     link: ["child", "assign"],
+    delegate: ["assign"],
     bind: ["source", "confirm"],
     finish: ["outcome"]
   };
@@ -24562,17 +24580,19 @@ function parseRequest(value3) {
   if (r.items !== undefined) {
     validRequest(Array.isArray(r.items) && r.items.length <= LIMITS.chunkItems, "items");
     for (const i of r.items) {
-      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
+      validRequest(i && Object.keys(i).every((k) => ["id", "title", "kind", "status", "parentId", "dependencies", "blocker"].includes(k)) && identifier2(i.id) && typeof i.title === "string" && i.title.trim().length > 0 && i.title.length <= 512 && ["task", "group"].includes(i.kind), "items");
       if (i.status !== undefined)
         validRequest(["pending", "working", "blocked", "done", "skipped"].includes(i.status), "items");
       if (i.parentId !== undefined)
         validRequest(identifier2(i.parentId), "items");
       if (i.dependencies !== undefined)
         validRequest(Array.isArray(i.dependencies) && i.dependencies.length <= 16 && i.dependencies.every(identifier2), "items");
+      if (Object.hasOwn(i, "blocker"))
+        requireProgress(i.kind === "task" && (i.blocker === null || validBlockerInput(i.blocker)) && (i.blocker === null || i.status === undefined || i.status === "blocked"));
     }
   }
   if (r.changes !== undefined)
-    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status"].includes(k)) && identifier2(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status)));
+    requireProgress(Array.isArray(r.changes) && r.changes.length > 0 && r.changes.length <= 50 && r.changes.every((c) => c && Object.keys(c).every((k) => ["id", "status", "blocker"].includes(k)) && identifier2(c.id) && ["pending", "working", "blocked", "done", "skipped"].includes(c.status) && (!Object.hasOwn(c, "blocker") || c.blocker === null || c.status === "blocked" && validBlockerInput(c.blocker))));
   if (r.child !== undefined)
     requireProgress(identifier2(r.child));
   if (r.attributed !== undefined)
@@ -24593,22 +24613,24 @@ function parseRequest(value3) {
   requireProgress(r.op !== "stage" || !!r.upload && r.chunk !== undefined && !!r.items);
   requireProgress(r.op !== "commit" || !!r.upload && !!r.chunks);
   requireProgress(r.op !== "link" || !!r.child && !!r.assign);
+  requireProgress(r.op !== "delegate" || Array.isArray(r.assign) && r.assign.length <= 50 && new Set(r.assign).size === r.assign.length);
   requireProgress(r.op !== "bind" || !!r.source);
   requireProgress(r.op !== "finish" || !!r.outcome);
   return JSON.parse(JSON.stringify(r));
 }
+var BLOCKER_SCHEMA = { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: { category: { type: "string", enum: ["decision", "dependency", "review", "external", "other"] }, reason: { type: "string", minLength: 1, maxLength: 512 }, nextAction: { type: "string", minLength: 1, maxLength: 512 } } }], description: "Blocked tasks only. Optional complete replacement: category, nonblank reason and nextAction (each at most 512 JS code units, no NUL). Null clears details, not status; omit to retain only verified-current details." };
 var REPORT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["op", "plan"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Delegate declares assign IDs for the next supported delegation; empty assign cancels. Declaration is not assignment. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
     plan: { type: "string", description: "One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
     title: { type: "string", description: "Required for start: nonempty plan title, at most 256 characters." },
-    items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } } }, required: ["id", "title", "kind"], additionalProperties: false } },
-    changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] } }, required: ["id", "status"], additionalProperties: false } },
+    items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } }, blocker: BLOCKER_SCHEMA }, required: ["id", "title", "kind"], additionalProperties: false } },
+    changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, blocker: BLOCKER_SCHEMA }, required: ["id", "status"], additionalProperties: false } },
     child: { type: "string" },
     assign: { type: "array", items: { type: "string" } },
     attributed: { type: "string" },
@@ -24624,7 +24646,7 @@ var REPORT_SCHEMA = {
 };
 var VALIDATION_HINTS = {
   request: "Send one request object.",
-  op: "Use a supported op: start, read, change, revise, stage, commit, link, bind or finish.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
   fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
@@ -24667,6 +24689,16 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// shared/assignment-binding.ts
+function currentBinding(value3, plan, itemId) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  const item = plan.items.find((i) => i.id === itemId);
+  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
+  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier2(b.childSessionId) && identifier2(b.messageId) && identifier2(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
+}
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -25437,6 +25469,108 @@ function searchState(db, binding, storeId, keys4) {
   }) };
 }
 
+// shared/progress-resume.ts
+var RESUME_LIMITS = { candidates: 3, assignments: 20, planSlots: 64, snapshotBytes: 1048576, inputBytes: 8388608, scanMs: 100 };
+function validPlan2(value3, source, id2, revision) {
+  const p = value3;
+  requireProgress(validateDigestSnapshot(value3, source, id2, revision), "corrupt");
+  requireProgress(typeof p.title === "string" && !!p.title.trim() && p.title.length <= 256 && !p.title.includes("\x00") && identifier2(p.sessionId), "corrupt");
+  requireProgress(Array.isArray(p.links) && p.links.length <= 64, "corrupt");
+  const sessions = new Set, assigned = new Map;
+  const items = new Map(p.items.map((i) => [i.id, i]));
+  for (const link2 of p.links) {
+    requireProgress(link2 && identifier2(link2.sessionId) && !sessions.has(link2.sessionId) && link2.sessionId !== p.sessionId && Array.isArray(link2.itemIds) && link2.itemIds.length <= 1000, "corrupt");
+    sessions.add(link2.sessionId);
+    for (const id3 of link2.itemIds) {
+      requireProgress(identifier2(id3) && !assigned.has(id3) && items.get(id3)?.kind === "task" && items.get(id3)?.assigneeSessionId === link2.sessionId, "corrupt");
+      assigned.set(id3, link2.sessionId);
+    }
+  }
+  for (const item of p.items)
+    if (item.assigneeSessionId !== undefined) {
+      requireProgress(identifier2(item.assigneeSessionId) && item.kind === "task" && assigned.get(item.id) === item.assigneeSessionId, "corrupt");
+    }
+  return p;
+}
+function resumeSelection(db, binding, r, now3 = () => performance.now()) {
+  if (!identifier2(r.storeId) || !identifier2(r.sourceId) || !identifier2(r.sessionId) || binding.sourceId !== r.sourceId || !binding.verified || !Array.isArray(r.ancestry) || r.ancestry.length > 32 || !r.ancestry.every(identifier2) || new Set([r.sessionId, ...r.ancestry]).size !== r.ancestry.length + 1 || (r.parentId === null ? r.ancestry.length !== 0 : !identifier2(r.parentId) || r.ancestry[0] !== r.parentId))
+    return null;
+  const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+  const source = db.prepare("SELECT verified FROM sources WHERE id=?").get(r.sourceId);
+  requireProgress(meta && identifier2(meta.store_id) && (meta.enabled === 0 || meta.enabled === 1), "corrupt");
+  if (meta.store_id !== r.storeId || meta.enabled !== 1 || source?.verified !== 1)
+    return null;
+  requireProgress(Number(db.prepare("PRAGMA busy_timeout").get().timeout) <= 1000, "binding");
+  const installed = cleanupInstalled(db);
+  const result3 = { storeId: r.storeId, sourceId: r.sourceId, sessionId: r.sessionId, candidates: [], omitted: false, incomplete: false, limit: null, work: { planSlots: 0, snapshots: 0, inputBytes: 0 } };
+  const start = now3();
+  let last = start;
+  requireProgress(Number.isFinite(start), "invalid");
+  const expired = () => {
+    const t = now3();
+    requireProgress(Number.isFinite(t) && t >= last, "invalid");
+    last = t;
+    return t - start >= RESUME_LIMITS.scanMs;
+  };
+  const stop = (limit) => {
+    result3.incomplete = true;
+    result3.limit = limit;
+    return result3;
+  };
+  let after = null;
+  while (result3.work.planSlots < RESUME_LIMITS.planSlots) {
+    if (expired())
+      return stop("time");
+    const row = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result3.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
+    result3.work.planSlots++;
+    if (!row)
+      return result3;
+    requireProgress(identifier2(row.id) && Number.isSafeInteger(row.revision) && Number(row.revision) > 0 && Number.isSafeInteger(row.bytes) && Number(row.bytes) > 0, "corrupt");
+    after = row.id;
+    requireProgress(Number(row.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
+    if (Number(row.bytes) > RESUME_LIMITS.inputBytes - result3.work.inputBytes)
+      return stop("bytes");
+    result3.work.inputBytes += Number(row.bytes);
+    result3.work.snapshots++;
+    let value3;
+    try {
+      value3 = JSON.parse(String(row.snapshot));
+    } catch {
+      throw new ProgressError("corrupt");
+    }
+    const p = validPlan2(value3, r.sourceId, row.id, Number(row.revision));
+    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row.id) : undefined;
+    if (cleanup2)
+      requireProgress(["visible", "archived", "deleted"].includes(String(cleanup2.state)) && Number.isSafeInteger(cleanup2.generation) && Number(cleanup2.generation) > 0 && cleanup2.state !== "deleted", "corrupt");
+    if (expired())
+      return stop("time");
+    if (cleanup2?.state === "archived" || p.lifecycle !== "active")
+      continue;
+    const pointer = { sourceId: r.sourceId, plan: p.id, title: p.title, revision: p.revision };
+    let candidate;
+    if (r.parentId === null) {
+      if (p.sessionId !== r.sessionId)
+        continue;
+      candidate = { ...pointer, scope: "coordinator" };
+    } else {
+      const link2 = p.links.find((l) => l.sessionId === r.sessionId);
+      if (!r.ancestry.includes(p.sessionId) || !link2?.itemIds.length)
+        continue;
+      if (link2.itemIds.length > RESUME_LIMITS.assignments) {
+        result3.omitted = true;
+        continue;
+      }
+      candidate = { ...pointer, scope: "assigned", itemIds: [...link2.itemIds] };
+    }
+    if (result3.candidates.length === RESUME_LIMITS.candidates) {
+      result3.omitted = true;
+      return stop("candidates");
+    }
+    result3.candidates.push(candidate);
+  }
+  return stop("slots");
+}
+
 // shared/store.ts
 function canonical(value3) {
   if (Array.isArray(value3))
@@ -25561,6 +25695,9 @@ class Store {
   searchState(storeId, keys4) {
     return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys4));
   }
+  resumePlans(request3, options2 = {}) {
+    return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request3, options2.now));
+  }
   observeLoaded(source, installId, fingerprint) {
     this.transaction(true, () => {
       this.db.exec("CREATE TABLE IF NOT EXISTS loaded_activation(source TEXT PRIMARY KEY REFERENCES sources(id), install_id TEXT NOT NULL, fingerprint TEXT NOT NULL)");
@@ -25612,6 +25749,36 @@ class Store {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
     });
   }
+  installDelegationControl() {
+    this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
+      INSERT OR IGNORE INTO delegation_control VALUES(1,0);
+      CREATE TRIGGER IF NOT EXISTS delegation_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled
+      BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
+  }
+  delegationControl() {
+    const row = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
+    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+  }
+  validateDeclaration(value3, actor) {
+    const r = parseRequest(value3);
+    requireProgress(r.op === "delegate");
+    return this.transaction(false, () => {
+      requireProgress(this.delegationControl().enabled, "disabled");
+      const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
+      requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      requireProgress(state?.state !== "archived", "closed");
+      const p = this.raw(actor.sourceId, r.plan);
+      requireProgress(p, "not-found");
+      requireProgress(p.sessionId === actor.sessionId, "assignment");
+      requireProgress(p.lifecycle === "active", "closed");
+      requireProgress(p.revision === r.rev, "conflict", p.revision);
+      assignmentIDs(p, r.assign);
+      requireProgress(p.links.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
+      return this.delegationControl().generation;
+    });
+  }
   raw(source, id2) {
     const row = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2);
     try {
@@ -25619,6 +25786,9 @@ class Store {
         return;
       const p = JSON.parse(String(row.snapshot));
       requireProgress(p.sourceId === source && p.id === id2 && Array.isArray(p.items) && Array.isArray(p.links), "corrupt");
+      for (const item of p.items)
+        if (!currentBinding(item.assignmentBinding, p, item.id))
+          delete item.assignmentBinding;
       return p;
     } catch {
       throw new ProgressError("corrupt");
@@ -25671,7 +25841,10 @@ class Store {
         ...this.metadata(),
         plan: this.summary(p),
         links: p.links,
-        items: { data: p.items.slice(start, start + LIMITS.pageSize), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
+        items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
+          const { blocker, ...item } = i;
+          return p.lifecycle === "active" && i.kind === "task" && i.status === "blocked" && validBlockerAnnotation(blocker, p.revision) ? { ...item, blocker } : item;
+        }), nextCursor: p.items.length > start + LIMITS.pageSize ? String(page + 1) : null },
         contributions: { data: rows.slice(0, LIMITS.pageSize).map((r) => JSON.parse(String(r.payload))), nextCursor: rows.length > LIMITS.pageSize ? String(page + 1) : null }
       };
     });
@@ -25817,13 +25990,18 @@ class Store {
       return capDigest(result3);
     });
   }
-  apply(value3, actor, capture, child) {
+  apply(value3, actor, capture, child, binding) {
     const r = parseRequest(value3);
-    requireProgress(r.op !== "read");
-    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+    requireProgress(r.op !== "read" && r.op !== "delegate");
+    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
     return this.transaction(true, () => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
+      if (binding) {
+        requireProgress(r.op === "link" && this.delegationControl().generation === binding.generation, "disabled");
+        requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+        requireProgress(child?.parentId === actor.sessionId && child.ancestry !== null && child.directory === actor.directory && child.projectId === actor.projectId, "assignment");
+      }
       const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
       requireProgress(cleanup2?.state !== "deleted", "not-found");
       requireProgress(cleanup2?.state !== "archived", "closed");
@@ -25863,13 +26041,28 @@ class Store {
       else
         requireProgress(r.op !== "start", "invalid");
       const p = previous ? structuredClone(previous) : { id: r.plan, sourceId: actor.sourceId, title: r.title, sessionId: actor.sessionId, revision: 0, structuralRevision: 0, lifecycle: "active", reportedAt: now3, directory: actor.directory, projectId: actor.projectId, items: [], links: [], document: { state: "unbound", checklistSynchronized: false, currentFile: "not-rechecked" } };
+      for (const item of p.items)
+        if (previous?.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked" || !validBlockerAnnotation(item.blocker, revision))
+          delete item.blocker;
       requireProgress(p.revision < Number.MAX_SAFE_INTEGER);
       p.revision++;
+      const annotate3 = (item, input) => {
+        if (input !== undefined) {
+          requireProgress(item.kind === "task" && (input === null || item.status === "blocked" && validBlockerInput(input)));
+          if (input === null)
+            delete item.blocker;
+          else
+            item.blocker = { ...input, reportedRevision: p.revision, reportedAt: now3, reporterSessionId: actor.sessionId, attributedSessionId: r.attributed ?? actor.sessionId, mode: r.attributed ? "parent-relay" : "direct", validAtRevision: p.revision };
+        }
+        if (item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+      };
       if (coordinator) {
         p.directory = actor.directory;
         p.projectId = actor.projectId;
       }
-      p.reportedAt = now3;
+      if (!binding)
+        p.reportedAt = now3;
       const structural = ["start", "revise", "commit"].includes(r.op);
       if (structural) {
         p.structuralRevision++;
@@ -25880,7 +26073,17 @@ class Store {
         if (items) {
           requireProgress(items.length <= LIMITS.planItems);
           const old = new Map(p.items.map((i) => [i.id, i]));
-          p.items = items.map((i) => ({ ...i, status: i.status ?? old.get(i.id)?.status ?? "pending", assigneeSessionId: i.kind === "task" ? old.get(i.id)?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : old.get(i.id)?.reporterSessionId }));
+          p.items = items.map((i) => {
+            const { blocker, ...fields2 } = i;
+            const retained = old.get(i.id);
+            const item = { ...fields2, status: i.status ?? retained?.status ?? "pending", assigneeSessionId: i.kind === "task" ? retained?.assigneeSessionId : undefined, reporterSessionId: i.status !== undefined || !old.has(i.id) ? actor.sessionId : retained?.reporterSessionId };
+            if (retained?.kind === "task" && retained.status === "blocked" && item.kind === "task" && item.status === "blocked" && retained.blocker)
+              item.blocker = retained.blocker;
+            if (retained?.kind === "task" && item.kind === "task" && retained.assignmentBinding)
+              item.assignmentBinding = retained.assignmentBinding;
+            annotate3(item, blocker);
+            return item;
+          });
           validateItems(p.items);
           const ids = new Set(p.items.filter((i) => i.kind === "task").map((i) => i.id));
           p.links = p.links.map((l) => ({ ...l, itemIds: l.itemIds.filter((id2) => ids.has(id2)) })).filter((l) => l.itemIds.length > 0);
@@ -25906,13 +26109,17 @@ class Store {
           requireProgress(item?.kind === "task");
           item.status = c.status;
           item.reporterSessionId = actor.sessionId;
+          annotate3(item, c.blocker);
         }
         changed = r.changes.map((c) => c.id);
       }
       if (r.op === "link") {
         requireProgress(actor.verifiedSource && Boolean(source.verified), "source-unverified");
         requireProgress(child && child.sessionId === r.child && child.sourceId === actor.sourceId && child.verifiedSource && child.ancestry?.includes(actor.sessionId), "assignment");
-        requireProgress(new Set(r.assign).size === r.assign.length && r.assign.every((id2) => p.items.some((i) => i.id === id2 && i.kind === "task")));
+        assignmentIDs(p, r.assign);
+        const declared = [...r.assign];
+        if (binding)
+          r.assign = [...new Set([...p.links.find((l) => l.sessionId === r.child)?.itemIds ?? [], ...declared])];
         const other = p.links.filter((l) => l.sessionId !== r.child);
         requireProgress(other.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
         p.links = [...other, ...r.assign.length ? [{ sessionId: r.child, itemIds: r.assign }] : []];
@@ -25922,6 +26129,12 @@ class Store {
             delete item.assigneeSessionId;
           if (r.assign.includes(item.id))
             item.assigneeSessionId = r.child;
+        }
+        for (const item of p.items) {
+          if (!binding && (item.assignmentBinding?.childSessionId === r.child || r.assign.includes(item.id)))
+            delete item.assignmentBinding;
+          if (binding && declared.includes(item.id))
+            item.assignmentBinding = { coordinatorSessionId: actor.sessionId, childSessionId: r.child, planId: p.id, itemId: item.id, tool: "subagent", messageId: binding.messageId, callId: binding.callId, observedAt: binding.observedAt, boundAt: now3, boundRevision: p.revision, validAtRevision: p.revision };
         }
       }
       if (r.op === "finish") {
@@ -25936,7 +26149,7 @@ class Store {
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
-      if (p.document.path) {
+      if (p.document.path && !binding) {
         requireProgress(capture?.path === p.document.path, "binding");
         const oldHash = p.document.hash;
         p.document.state = capture.state;
@@ -25957,6 +26170,17 @@ class Store {
         } else
           p.document.checklistSynchronized = false;
       }
+      for (const item of p.items) {
+        if (item.assignmentBinding) {
+          item.assignmentBinding.validAtRevision = p.revision;
+          if (!currentBinding(item.assignmentBinding, p, item.id))
+            delete item.assignmentBinding;
+        }
+        if (p.lifecycle !== "active" || item.kind !== "task" || item.status !== "blocked")
+          delete item.blocker;
+        else if (item.blocker)
+          item.blocker.validAtRevision = p.revision;
+      }
       const snapshot3 = JSON.stringify(p);
       this.db.prepare("INSERT INTO plans VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET revision=excluded.revision,snapshot=excluded.snapshot").run(actor.sourceId, r.plan, p.revision, snapshot3);
       this.db.prepare("INSERT INTO revisions VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, p.revision, snapshot3, JSON.stringify(actor));
@@ -25975,6 +26199,9 @@ class Store {
       }
     });
   }
+}
+function assignmentIDs(p, ids) {
+  requireProgress(new Set(ids).size === ids.length && ids.every((id2) => p.items.some((i) => i.id === id2 && i.kind === "task")));
 }
 function validateItems(items) {
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -26167,12 +26394,48 @@ import path6 from "node:path";
 var REPORT_TOOL = "agent_progress_report";
 var ACTIVATION_GUIDANCE = `# Agent progress (companion)
 Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
+Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
-For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work.`;
-var ACTIVATION_HINT = "A possible plan document was written or revised. If this is your plan and you have not already reported the relevant structure/change, use the progress report tool; otherwise continue your workflow.";
-var record2 = (value3) => typeof value3 === "object" && value3 !== null;
+For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
+var DISPATCH_OBSERVATION = "A dispatch ran.";
+var TRACKER_OBSERVATION = "A tracker update was observed.";
+var HINT_CONDITION = "If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.";
+var ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
+var PLAN = 1;
+var DISPATCH = 2;
+var TRACKER = 4;
+function hintText(reasons) {
+  return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? DISPATCH_OBSERVATION : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
+}
+var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
 var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
+var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
+var iso = (value3) => typeof value3 === "string" && /^\d{4}-\d\d-\d\dT/.test(value3) && Number.isFinite(Date.parse(value3));
+var strings = (value3, fields2) => fields2.every((field) => typeof value3[field] === "string");
+var nullable = (value3, fields2, valid) => fields2.every((field) => value3[field] === undefined || value3[field] === null || valid(value3[field]));
+function failureMarker(value3) {
+  return record2(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
+}
+function proxyReason(event) {
+  if (event.status !== "completed" || !record2(event.input) || !record2(event.result) || !record2(event.result.output))
+    return 0;
+  const output = event.result.output;
+  if ([event, event.result, event.result.metadata, output].some(failureMarker))
+    return 0;
+  if (event.tool === "subagent") {
+    const input = event.input;
+    return strings(input, ["agent", "description", "prompt"]) && (input.sessionID === undefined || boundedID(input.sessionID)) && (input.model === undefined || typeof input.model === "string") && (input.background === undefined || typeof input.background === "boolean") && boundedID(output.sessionID) && (output.status === "running" || output.status === "completed") && typeof output.output === "string" ? DISPATCH : 0;
+  }
+  if (event.tool === "linear_save_issue") {
+    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record2(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record2(v)) ? TRACKER : 0;
+  }
+  if (event.tool === "linear_save_comment") {
+    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record2(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record2) ? TRACKER : 0;
+  }
+  return 0;
+}
 function possiblePath(value3) {
   if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
     return false;
@@ -26203,17 +26466,72 @@ function successfulPath(event) {
   } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
     return event.input.path;
 }
-async function registerActivation(ctx, source, enabled) {
-  const pending = new Set;
+function resumeText(selection) {
+  let candidates = selection.candidates.slice(0, 3);
+  let omitted = selection.omitted || selection.candidates.length > 3;
+  while (candidates.length) {
+    const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
+    const text = [
+      unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
+      "Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.",
+      ...unconfirmed ? ["Read and confirm a target before reporting."] : [],
+      ...selection.incomplete || omitted ? ["Additional eligible candidates may exist; discovery or output is incomplete."] : [],
+      "Progress source IDs below are namespace metadata, not the tool’s document-path source argument.",
+      ...candidates.map((p) => `- source ${p.sourceId}; plan ${p.plan}; title ${JSON.stringify(p.title)}; last-known revision ${p.revision}. Read: agent_progress_report ${JSON.stringify({ op: "read", plan: p.plan })}` + (p.scope === "assigned" ? `
+  Assigned-only scope: ${JSON.stringify(p.itemIds)}. Contribute only these assigned item IDs; no broader scope is implied.` : ""))
+    ].join(`
+`);
+    if (Buffer.byteLength(text, "utf8") <= 4096)
+      return text;
+    candidates = candidates.slice(0, -1);
+    omitted = true;
+  }
+  return "";
+}
+async function registerActivation(ctx, source, enabled, recovery) {
+  const pending = new Map;
   const recent = new Set;
   const owned = Symbol("agent-progress-section");
+  function section(hint, capsule = "") {
+    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
+
+${hintText(hint)}` : "") + (capsule ? `
+
+${capsule}` : "") };
+    Object.defineProperty(part, owned, { value: { hint } });
+    return part;
+  }
   const registrations = [];
   let disposed = false;
   let disableEpoch = 0;
+  const compactions = new Map;
+  const replay = new Set;
+  let eventFloor = Date.now();
+  let binding = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+  let recoveryAvailable = false, lookupBusy = false;
+  let stopRecovery;
+  let held;
+  function retireRecovery() {
+    eventFloor = Math.max(eventFloor, Date.now());
+    for (const attempt of compactions.values())
+      eventFloor = Math.max(eventFloor, attempt.fence);
+    compactions.clear();
+    held?.abort();
+  }
   function control() {
-    if (enabled() === true)
-      return true;
+    const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+    if (current !== binding) {
+      binding = current;
+      retireRecovery();
+      pending.clear();
+      disableEpoch++;
+    }
+    try {
+      if (enabled() === true)
+        return true;
+    } catch {}
     pending.clear();
+    retireRecovery();
     disableEpoch++;
     return false;
   }
@@ -26222,7 +26540,27 @@ async function registerActivation(ctx, source, enabled) {
     if (set3.size > cap)
       set3.delete(set3.values().next().value);
   }
+  function flag(recipient, reason) {
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    if (pending.size > 128)
+      pending.delete(pending.keys().next().value);
+  }
   const key = (sessionID) => JSON.stringify([source.id, sessionID]);
+  function retain(sessionKey, attempt, created) {
+    compactions.delete(sessionKey);
+    compactions.set(sessionKey, attempt);
+    if (compactions.size > 128) {
+      const oldest = compactions.keys().next().value;
+      eventFloor = Math.max(eventFloor, created, compactions.get(oldest).fence);
+      compactions.delete(oldest);
+    }
+  }
+  function clearWindow(attempt) {
+    delete attempt.start;
+    delete attempt.firstHook;
+    delete attempt.lastHook;
+    delete attempt.ambiguous;
+  }
   async function session(sessionID) {
     const value3 = await ctx.session.get({ sessionID });
     return value3.id === sessionID && path6.isAbsolute(value3.location.directory) ? value3 : undefined;
@@ -26231,6 +26569,9 @@ async function registerActivation(ctx, source, enabled) {
     disposed = true;
     pending.clear();
     recent.clear();
+    retireRecovery();
+    replay.clear();
+    await stopRecovery?.();
     for (const registration of registrations.splice(0)) {
       try {
         await registration.dispose();
@@ -26243,17 +26584,30 @@ async function registerActivation(ctx, source, enabled) {
         if (disposed || !source.verified)
           return;
         const candidate = successfulPath(event);
-        if (!candidate || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
+        const proxy = proxyReason(event);
+        if (!candidate && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
           return;
         const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
         if (recent.has(call) || !control())
           return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || !planPath(candidate, caller.location.directory) || recent.has(call))
+        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate && !planPath(candidate, caller.location.directory) || recent.has(call))
+          return;
+        let parentID;
+        if (candidate && boundedID(caller.parentID) && caller.parentID !== caller.id) {
+          try {
+            const parent = await session(caller.parentID);
+            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path6.resolve(parent.location.directory) === path6.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
+              parentID = parent.id;
+          } catch {}
+        }
+        if (disposed || epoch !== disableEpoch || !control() || recent.has(call))
           return;
         remember(recent, call, 256);
-        remember(pending, key(event.sessionID), 128);
+        flag(key(event.sessionID), candidate ? PLAN : proxy);
+        if (parentID)
+          flag(key(parentID), PLAN);
       } catch {}
     }));
     registrations.push(await ctx.session.hook("context", async (event) => {
@@ -26263,6 +26617,10 @@ async function registerActivation(ctx, source, enabled) {
             event.system.splice(i, 1);
       };
       try {
+        for (let i = 0;i < event.system.length; i++)
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
+            event.system[i] = section(event.system[i][owned].hint);
+          }
         if (disposed) {
           removeOwned();
           return;
@@ -26270,7 +26628,15 @@ async function registerActivation(ctx, source, enabled) {
         if (!boundedID(event.sessionID))
           return;
         const sessionKey = key(event.sessionID);
-        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !control()) {
+        const active = control();
+        const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
+        const armed = attempt?.pending === true;
+        attempt.pending = false;
+        clearWindow(attempt);
+        attempt.fence = Math.max(attempt.fence, Date.now());
+        if (recovery && active)
+          retain(sessionKey, attempt, attempt.fence);
+        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
           pending.delete(sessionKey);
           removeOwned();
           return;
@@ -26286,13 +26652,59 @@ async function registerActivation(ctx, source, enabled) {
           removeOwned();
           return;
         }
-        if (event.system.some((part) => Object.prototype.hasOwnProperty.call(part, owned)))
+        let capsule = "";
+        if (armed && recovery && recoveryAvailable && !lookupBusy && compactions.get(sessionKey) === attempt) {
+          const controller = new AbortController;
+          held = controller;
+          const now3 = recovery.now ?? (() => performance.now());
+          const deadline = now3() + 1000;
+          const alive = () => !controller.signal.aborted && !disposed && recoveryAvailable && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
+          let timer;
+          lookupBusy = true;
+          const lookup2 = (async () => {
+            try {
+              if (!alive())
+                return null;
+              const identity3 = await recovery.identity(event.sessionID, alive, controller.signal);
+              return alive() ? identity3 : null;
+            } catch {
+              return null;
+            } finally {
+              lookupBusy = false;
+              if (held === controller)
+                held = undefined;
+            }
+          })();
+          try {
+            const identity3 = await Promise.race([lookup2, new Promise((resolve3) => {
+              timer = setTimeout(() => {
+                controller.abort();
+                resolve3(null);
+              }, 1000);
+            })]);
+            if (identity3 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity3.sourceId === source.id && identity3.sessionId === event.sessionID) {
+              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity3.sourceId, sessionId: identity3.sessionId, parentId: identity3.parentId, ancestry: identity3.ancestry });
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
+                capsule = resumeText(selection);
+            }
+          } catch {} finally {
+            if (timer !== undefined)
+              clearTimeout(timer);
+            controller.abort();
+          }
+        }
+        if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
+          removeOwned();
           return;
-        const section = { type: "text", text: ACTIVATION_GUIDANCE + (pending.has(sessionKey) ? `
-
-${ACTIVATION_HINT}` : "") };
-        Object.defineProperty(section, owned, { value: true });
-        event.system.push(section);
+        }
+        const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
+        if (existing !== -1) {
+          if (capsule)
+            event.system[existing] = section(event.system[existing][owned].hint, capsule);
+          return;
+        }
+        const hint = pending.get(sessionKey) ?? 0;
+        event.system.push(section(hint, capsule));
         pending.delete(sessionKey);
       } catch {
         pending.delete(key(event.sessionID));
@@ -26301,6 +26713,93 @@ ${ACTIVATION_HINT}` : "") };
         } catch {}
       }
     }));
+    if (recovery) {
+      const abort = new AbortController;
+      let registration;
+      let events;
+      stopRecovery = async () => {
+        abort.abort();
+        await events;
+      };
+      try {
+        const stream = ctx.event.subscribe({ signal: abort.signal });
+        if (!stream || typeof stream[Symbol.asyncIterator] !== "function")
+          throw new Error("unsupported");
+        registration = await ctx.session.hook("compaction", (event) => {
+          if (disposed || !control() || !source.verified || !boundedID(event.sessionID) || !identifier2(event.sessionID))
+            return;
+          const sessionKey = key(event.sessionID), observed = Date.now();
+          const attempt = { ...compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false } };
+          if (!Number.isFinite(observed) || observed <= Math.max(eventFloor, attempt.fence)) {
+            attempt.pending = false;
+            clearWindow(attempt);
+            retain(sessionKey, attempt, eventFloor);
+            return;
+          }
+          attempt.pending = false;
+          if (attempt.lastHook !== undefined && observed < attempt.lastHook)
+            attempt.ambiguous = true;
+          attempt.firstHook ??= observed;
+          attempt.lastHook = observed;
+          retain(sessionKey, attempt, observed);
+        });
+        recoveryAvailable = true;
+        events = (async () => {
+          try {
+            for await (const event of stream) {
+              if (disposed || !control() || !source.verified)
+                continue;
+              if (event.type !== "session.compaction.started" && event.type !== "session.compaction.ended" && event.type !== "session.compaction.failed")
+                continue;
+              const { sessionID, reason } = event.data;
+              if (!identifier2(sessionID) || !boundedID(event.id) || !Number.isSafeInteger(event.durable.seq) || event.durable.seq < 1 || event.durable.aggregateID !== sessionID || !Number.isFinite(event.created) || event.location?.directory !== ctx.location.directory || reason !== "auto" && reason !== "manual")
+                continue;
+              const sessionKey = key(sessionID);
+              if (event.created <= eventFloor) {
+                eventFloor = Math.max(eventFloor, compactions.get(sessionKey)?.fence ?? eventFloor);
+                compactions.delete(sessionKey);
+                continue;
+              }
+              const eventKey = JSON.stringify([sessionKey, event.id]);
+              const previous = compactions.get(sessionKey);
+              if (replay.has(eventKey) || previous && event.durable.seq <= previous.seq)
+                continue;
+              remember(replay, eventKey, 256);
+              const started = event.type === "session.compaction.started";
+              const ended = event.type === "session.compaction.ended";
+              const next = { ...previous ?? { seq: 0, fence: eventFloor, pending: false } };
+              next.seq = event.durable.seq;
+              next.pending = false;
+              if (event.created <= next.fence || event.created > Date.now()) {
+                clearWindow(next);
+              } else if (started) {
+                if (next.start)
+                  next.ambiguous = true;
+                next.start = { reason, created: event.created };
+              } else {
+                next.pending = ended && !next.ambiguous && next.start?.reason === reason && next.firstHook !== undefined && next.lastHook !== undefined && next.start.created < next.firstHook && next.firstHook <= next.lastHook && next.lastHook < event.created;
+                clearWindow(next);
+                next.fence = Math.max(next.fence, event.created);
+              }
+              retain(sessionKey, next, event.created);
+            }
+          } catch {} finally {
+            recoveryAvailable = false;
+            retireRecovery();
+            try {
+              await registration?.dispose();
+            } catch {}
+          }
+        })();
+      } catch {
+        abort.abort();
+        recoveryAvailable = false;
+        retireRecovery();
+        try {
+          await registration?.dispose();
+        } catch {}
+      }
+    }
     return dispose;
   } catch (error) {
     await dispose();
@@ -26308,54 +26807,465 @@ ${ACTIVATION_HINT}` : "") };
   }
 }
 
+// plugin/delegation.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+var TTL = 300000;
+var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+async function registerDelegation(ctx, options2) {
+  const { store } = options2;
+  store.installDelegationControl();
+  const now3 = options2.now ?? (() => performance.now());
+  const pending = new Map, retries = new Map, groups = new Map;
+  const calls = new Map;
+  const registrations = [];
+  const jobs = new Set;
+  const lookups = new Set;
+  const abort = new AbortController;
+  let disposed = false, healthy = false;
+  let epoch = store.delegationControl().generation;
+  let events;
+  function retire(i) {
+    if (i.state === "bound")
+      return;
+    i.state = "retired";
+    i.controller?.abort();
+    if (pending.get(i.actor.sessionId) === i)
+      pending.delete(i.actor.sessionId);
+  }
+  function fault() {
+    healthy = false;
+    for (const i of pending.values())
+      retire(i);
+  }
+  function control() {
+    if (disposed)
+      return false;
+    const c = store.delegationControl();
+    if (c.generation !== epoch || !c.enabled) {
+      for (const i of pending.values())
+        retire(i);
+      epoch = c.generation;
+    }
+    return c.enabled;
+  }
+  function prune() {
+    for (const i of pending.values())
+      if (now3() >= i.expires)
+        retire(i);
+    for (const [k, i] of retries)
+      if (now3() >= i.expires)
+        retries.delete(k);
+    for (const [k, g] of groups)
+      if (now3() >= g.expires) {
+        if (g.intent) {
+          retire(g.intent);
+          delete g.intent;
+        }
+        if (!unresolved(g))
+          groups.delete(k);
+      }
+    for (const [k, g] of calls)
+      if (now3() >= g.expires && !unresolved(g))
+        calls.delete(k);
+  }
+  function unresolved(g, except) {
+    if (g.closed)
+      return false;
+    const other = (id2) => g !== except?.group || id2 !== except.call;
+    return [...g.hooks].some(([id2, h]) => other(id2) && h.before && !h.after) || [...g.native].some(([id2, n]) => other(id2) && (n.tool === "subagent" || n.tool === "task" || !n.tool) && !g.hooks.get(id2)?.after);
+  }
+  function live(i) {
+    return control() && healthy && now3() < i.expires && pending.get(i.actor.sessionId) === i && i.state === "reserved" && !i.group?.failed;
+  }
+  function group(parent, message) {
+    const key = JSON.stringify([parent, message]);
+    let g = groups.get(key);
+    if (!g) {
+      if (groups.size >= 256) {
+        fault();
+        return;
+      }
+      g = { parent, message, expires: now3() + TTL, hooks: new Map, native: new Map, closed: false, failed: false };
+      groups.set(key, g);
+    }
+    return g;
+  }
+  function reject(g) {
+    g.failed = true;
+    if (g.intent)
+      retire(g.intent);
+  }
+  function candidate(g, map12, id2) {
+    let c = map12.get(id2);
+    if (!c) {
+      const key = JSON.stringify([g.parent, g.message, id2]);
+      if (!calls.has(key)) {
+        if (calls.size >= 256) {
+          reject(g);
+          fault();
+          return;
+        }
+        calls.set(key, g);
+      }
+      c = {};
+      map12.set(id2, c);
+    }
+    return c;
+  }
+  function unique(g, i) {
+    if (g.failed || !g.closed || g.hooks.size !== 1)
+      return false;
+    const h = g.hooks.get(i.call);
+    if ([...g.native.values()].some((c) => !c.start || !c.called || !c.tool))
+      return false;
+    const native = [...g.native].filter(([, c]) => c.tool === "subagent" || c.tool === "task");
+    return !!h?.before && !!h.after && !!h.child && h.tool === "subagent" && native.length === 1 && native[0][0] === i.call && native[0][1].tool === h.tool;
+  }
+  function launch(action) {
+    const job = action().catch(() => {
+      fault();
+    });
+    jobs.add(job);
+    job.finally(() => jobs.delete(job));
+  }
+  function finalize(g) {
+    const i = g.intent;
+    if (!i || !live(i))
+      return;
+    if (!unique(g, i)) {
+      retire(i);
+      return;
+    }
+    if (lookups.has(g.parent)) {
+      retire(i);
+      return;
+    }
+    lookups.add(g.parent);
+    const controller = new AbortController;
+    i.controller = controller;
+    const deadline = now3() + 1000;
+    const alive = () => !controller.signal.aborted && now3() < deadline && live(i) && unique(g, i);
+    launch(async () => {
+      let timer;
+      try {
+        const lookup2 = (async () => {
+          if (!alive())
+            return;
+          const child = await options2.identity(g.hooks.get(i.call).child, alive, controller.signal);
+          if (!alive())
+            return;
+          requireProgress(child.sessionId === g.hooks.get(i.call).child && child.parentId === g.parent && child.ancestry?.[0] === g.parent && child.sourceId === options2.sourceId && child.verifiedSource, "assignment");
+          requireProgress(child.directory === i.actor.directory && child.projectId === i.actor.projectId, "assignment");
+          if (!alive())
+            return;
+          i.receipt = store.apply({ op: "link", plan: i.request.plan, oid: i.oid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, i.actor, undefined, child, { generation: i.generation, messageId: g.message, callId: i.call, observedAt: i.observedAt });
+          i.state = "bound";
+          pending.delete(i.actor.sessionId);
+        })().finally(() => lookups.delete(g.parent));
+        await Promise.race([lookup2, new Promise((resolve3) => {
+          timer = setTimeout(() => {
+            retire(i);
+            resolve3();
+          }, 1000);
+        })]);
+      } catch {
+        retire(i);
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+        if (i.state !== "bound")
+          retire(i);
+      }
+    });
+  }
+  function disposition(i) {
+    return { plan: i.request.plan, rev: i.request.rev, delegation: { state: i.state, expiresAt: i.expiresAt, memoryOnly: true, lostOnRestart: true, requires: "supported-next-delegation", ...i.receipt ? { receipt: i.receipt } : {} } };
+  }
+  function declare2(value3, actor) {
+    prune();
+    requireProgress(!disposed, "binding");
+    requireProgress(control(), "disabled");
+    const r = parseRequest(value3);
+    requireProgress(r.op === "delegate");
+    requireProgress(actor.sourceId === options2.sourceId && actor.verifiedSource, "source-unverified");
+    const key = JSON.stringify([actor.sourceId, actor.sessionId, r.plan, r.oid]), hash3 = canonical(r);
+    const old = retries.get(key);
+    if (old) {
+      requireProgress(old.hash === hash3, "operation-reused");
+      return disposition(old);
+    }
+    requireProgress(healthy, "binding");
+    const current = pending.get(actor.sessionId);
+    if (current && r.assign.length) {
+      retire(current);
+      store.validateDeclaration(r, actor);
+      requireProgress(false, "conflict", r.rev);
+    }
+    const generation = store.validateDeclaration(r, actor);
+    requireProgress(retries.size < 256, "busy");
+    if (current && current.request.plan === r.plan)
+      retire(current);
+    requireProgress(pending.size < 128 || !r.assign.length, "busy");
+    const i = { request: r, actor: structuredClone(actor), generation, expires: now3() + TTL, expiresAt: new Date(Date.now() + TTL).toISOString(), state: r.assign.length ? "pending" : "retired", hash: hash3, oid: `delegation-${randomUUID3()}` };
+    retries.set(key, i);
+    if (r.assign.length)
+      pending.set(actor.sessionId, i);
+    return disposition(i);
+  }
+  async function dispose() {
+    disposed = true;
+    fault();
+    abort.abort();
+    for (const r of registrations.splice(0))
+      try {
+        await r.dispose();
+      } catch {}
+    await events;
+    pending.clear();
+    retries.clear();
+    groups.clear();
+    calls.clear();
+  }
+  try {
+    registrations.push(await ctx.tool.hook("execute.before", (event) => {
+      try {
+        if (event.tool !== "subagent" && event.tool !== "task")
+          return;
+        prune();
+        const enabled = control();
+        if (!healthy)
+          return;
+        if (!identifier2(event.sessionID) || !identifier2(event.messageID) || !identifier2(event.id)) {
+          fault();
+          return;
+        }
+        const g = group(event.sessionID, event.messageID);
+        if (!g)
+          return;
+        if (g.hooks.get(event.id)?.before && g.hooks.get(event.id)?.tool === event.tool)
+          return;
+        if (g.closed) {
+          reject(g);
+          const i2 = pending.get(event.sessionID);
+          if (i2)
+            retire(i2);
+          return;
+        }
+        const c = candidate(g, g.hooks, event.id);
+        if (!c)
+          return;
+        if (c.before) {
+          if (c.tool !== event.tool)
+            reject(g);
+          return;
+        }
+        c.tool = event.tool;
+        c.before = true;
+        if (!enabled)
+          return;
+        const i = pending.get(event.sessionID);
+        if (!i)
+          return;
+        if (i.state === "reserved") {
+          reject(g);
+          retire(i);
+          return;
+        }
+        const inFlight = [...groups.values()].some((other) => other.parent === g.parent && unresolved(other, { group: g, call: event.id }));
+        if (inFlight || g.failed || g.hooks.size !== 1 || event.tool !== "subagent") {
+          retire(i);
+          return;
+        }
+        i.state = "reserved";
+        i.group = g;
+        i.call = event.id;
+        i.observedAt = new Date().toISOString();
+        g.intent = i;
+      } catch {
+        fault();
+      }
+    }));
+    registrations.push(await ctx.tool.hook("execute.after", (event) => {
+      try {
+        if (event.tool !== "subagent" && event.tool !== "task")
+          return;
+        prune();
+        control();
+        if (!healthy)
+          return;
+        const g = group(event.sessionID, event.messageID);
+        if (!g)
+          return;
+        const c = g.hooks.get(event.id);
+        const output = event.status === "completed" && object(event.result.output) ? event.result.output : undefined;
+        const child = output?.sessionID;
+        if (c?.after && c.tool === event.tool && c.child === child && ["completed", "running"].includes(output?.status))
+          return;
+        if (g.closed || !c?.before || c.tool !== event.tool) {
+          reject(g);
+          const i = pending.get(event.sessionID);
+          if (i)
+            retire(i);
+          return;
+        }
+        if (!identifier2(child) || !["completed", "running"].includes(output?.status)) {
+          c.after = true;
+          reject(g);
+          return;
+        }
+        if (c.after && c.child !== child) {
+          reject(g);
+          return;
+        }
+        c.after = true;
+        c.child = child;
+      } catch {
+        fault();
+      }
+    }));
+    try {
+      const stream = ctx.event.subscribe({ signal: abort.signal });
+      requireProgress(stream && typeof stream[Symbol.asyncIterator] === "function", "binding");
+      healthy = true;
+      events = (async () => {
+        try {
+          for await (const event of stream) {
+            if (disposed)
+              break;
+            if (!["session.tool.input.started", "session.tool.called", "session.step.ended", "session.step.failed"].includes(event.type))
+              continue;
+            prune();
+            control();
+            if (!healthy)
+              continue;
+            const e = event, d = e.data;
+            if (!object(d) || !identifier2(d.sessionID) || !identifier2(d.assistantMessageID) || e.location?.directory !== ctx.location.directory || e.durable?.aggregateID !== d.sessionID || !Number.isSafeInteger(e.durable?.seq)) {
+              fault();
+              continue;
+            }
+            const g = group(d.sessionID, d.assistantMessageID);
+            if (!g)
+              continue;
+            if (event.type === "session.step.failed") {
+              g.closed = true;
+              reject(g);
+              continue;
+            }
+            if (event.type === "session.step.ended") {
+              if (g.closed)
+                continue;
+              g.closed = true;
+              finalize(g);
+              continue;
+            }
+            if (g.closed) {
+              const prior = g.native.get(d.id);
+              if (prior && (event.type === "session.tool.called" && prior.called || event.type === "session.tool.input.started" && prior.start && prior.tool === d.name))
+                continue;
+              reject(g);
+              continue;
+            }
+            if (!identifier2(d.id)) {
+              reject(g);
+              continue;
+            }
+            const c = candidate(g, g.native, d.id);
+            if (!c)
+              continue;
+            if (event.type === "session.tool.input.started") {
+              if (typeof d.name !== "string" || !d.name || d.name.length > 128 || c.tool && c.tool !== d.name) {
+                reject(g);
+                continue;
+              }
+              c.start = true;
+              c.tool = d.name;
+            } else
+              c.called = true;
+            if ([...g.native.values()].filter((n) => n.tool === "subagent" || n.tool === "task").length > 1 && g.intent)
+              retire(g.intent);
+          }
+        } catch {} finally {
+          fault();
+        }
+      })();
+    } catch {
+      fault();
+    }
+    return { declare: declare2, dispose, settled: async () => {
+      await Promise.all([...jobs]);
+    } };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
+
+// plugin/identity.ts
+import path7 from "node:path";
+async function sessionIdentity(ctx, source, sessionID, agent, guard) {
+  const checkpoint = () => {
+    if (guard)
+      requireProgress(guard.alive(), "binding");
+  };
+  checkpoint();
+  let s;
+  try {
+    s = await ctx.session.get({ sessionID }, guard ? { signal: guard.signal } : undefined);
+  } catch {
+    throw new ProgressError("binding");
+  }
+  checkpoint();
+  requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
+  const ancestry = [], seen = new Set([s.id]);
+  let parent = s.parentID, known = true;
+  while (parent) {
+    if (seen.has(parent) || ancestry.length >= 32) {
+      known = false;
+      break;
+    }
+    seen.add(parent);
+    ancestry.push(parent);
+    checkpoint();
+    try {
+      const ancestor = await ctx.session.get({ sessionID: parent }, guard ? { signal: guard.signal } : undefined);
+      checkpoint();
+      if (guard)
+        requireProgress(ancestor.id === parent, "binding");
+      if (guard?.sameScope)
+        requireProgress(ancestor.location.directory === s.location.directory && ancestor.projectID === s.projectID, "binding");
+      parent = ancestor.parentID;
+    } catch {
+      known = false;
+      break;
+    }
+  }
+  return { sourceId: source.id, sessionId: s.id, agent: agent === "unknown" ? s.agent ?? "unknown" : agent, directory: s.location.directory, projectId: s.projectID, parentId: s.parentID ?? null, ancestry: known ? ancestry : null, verifiedSource: source.verified };
+}
+
 // plugin/index.ts
 var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(ctx) {
   const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL("./progress-binding.json", import.meta.url));
-  const configRoot = path7.join(process.env.XDG_CONFIG_HOME || path7.join(homedir(), ".config"), "opencode");
-  const dataRoot = path7.join(process.env.XDG_DATA_HOME || path7.join(homedir(), ".local/share"), "opencode");
+  const configRoot = path8.join(process.env.XDG_CONFIG_HOME || path8.join(homedir(), ".config"), "opencode");
+  const dataRoot = path8.join(process.env.XDG_DATA_HOME || path8.join(homedir(), ".local/share"), "opencode");
   requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows ? platformSecurityScope(() => {
     windowsPaths([configRoot, dataRoot, b.source.configRoot, b.source.dataRoot]);
     return sameWindowsDirectory(configRoot, b.source.configRoot) && sameWindowsDirectory(dataRoot, b.source.dataRoot);
   }) : realpathSync6(configRoot) === b.source.configRoot && realpathSync6(dataRoot) === b.source.dataRoot), "binding");
   const store = new Store(b.database);
   let deactivate;
+  let delegation;
   try {
     verifyStore(store, b);
     store.bindReads(b.source.id, b.source.verified);
-    async function identity3(sessionID, agent) {
-      let s;
-      try {
-        s = await ctx.session.get({ sessionID });
-      } catch {
-        throw new ProgressError("binding");
-      }
-      requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
-      const ancestry = [];
-      let parent = s.parentID;
-      const seen = new Set([s.id]);
-      let known = true;
-      while (parent) {
-        if (seen.has(parent) || ancestry.length >= 32) {
-          known = false;
-          break;
-        }
-        seen.add(parent);
-        ancestry.push(parent);
-        try {
-          parent = (await ctx.session.get({ sessionID: parent })).parentID;
-        } catch {
-          known = false;
-          break;
-        }
-      }
-      return { sourceId: b.source.id, sessionId: s.id, agent: agent === "unknown" ? s.agent ?? "unknown" : agent, directory: s.location.directory, projectId: s.projectID, parentId: s.parentID ?? null, ancestry: known ? ancestry : null, verifiedSource: b.source.verified };
+    async function identity3(sessionID, agent, guard) {
+      return sessionIdentity(ctx, b.source, sessionID, agent, guard);
     }
     await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "agent_progress", description: "Deliberate plan progress; never inferred from activity." });
       editor.add({
         name: "report",
-        description: `Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,
+        description: `Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,
         input: REPORT_SCHEMA,
         options: { namespace: "agent_progress", codemode: false },
         execute: async (value3, caller) => {
@@ -26365,6 +27275,10 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
             if (r.op === "read") {
               const view = store.detail(actor.sourceId, r.plan, r.page ?? 0);
               return { content: JSON.stringify(r.page === undefined ? { plan: r.plan, rev: view.plan.revision, structuralRev: view.plan.structuralRevision, lifecycle: view.plan.lifecycle, counts: view.plan.counts, documentState: view.plan.document.state, detailPageSize: 20 } : view) };
+            }
+            if (r.op === "delegate") {
+              requireProgress(delegation, "binding");
+              return { content: JSON.stringify(delegation.declare(r, actor)) };
             }
             const previous = store.get(actor.sourceId, r.plan);
             let child;
@@ -26388,7 +27302,16 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
       });
     });
     const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
-    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1);
+    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1, {
+      storeId: b.storeId,
+      read: (request3) => store.resumePlans(request3),
+      identity: (sessionID, alive, signal) => identity3(sessionID, "unknown", { alive, signal })
+    });
+    delegation = await registerDelegation(ctx, {
+      store,
+      sourceId: b.source.id,
+      identity: (sessionID, alive, signal) => sessionIdentity(ctx, b.source, sessionID, "unknown", { alive, signal, sameScope: true })
+    });
     await ctx.rpc.register(ProgressStatus, { inspect: async () => {
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
       return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
@@ -26396,13 +27319,19 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath2(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
     return async () => {
       try {
+        await delegation?.dispose();
         await deactivate?.();
       } finally {
         store.close();
       }
     };
   } catch (error) {
-    await deactivate?.();
+    try {
+      await delegation?.dispose();
+    } catch {}
+    try {
+      await deactivate?.();
+    } catch {}
     try {
       store.close();
     } catch {}
@@ -26413,9 +27342,13 @@ var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an
 \`\`\`json
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 \`\`\`
-Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.`;
+Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
+Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50) for its next subagent delegation; empty assign cancels that plan's pending intent. Declaration is not assignment or dispatch: pending authority is memory-only, expires in five minutes and is lost on restart. Identical retries do not re-arm it. Any installed subagent implementation qualifies only with a matching hook pair, exactly agreeing native call census, matching step.ended and verified immediate child/complete ancestry; ambiguity or missing evidence retires without assignment. These gates prove call correlation and child lineage, not that the tool actually created or continued the child: installed tools are trusted to report the child they delegated to. Slim is covered through these same gates, not separate certification. Use explicit link and assigned parent relay when evidence is unavailable. After restart deliberately re-declare with a fresh oid. Binding never changes task progress, reporting permissions or accepted handoff.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
+Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
+Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
+Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;

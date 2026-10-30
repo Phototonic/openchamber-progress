@@ -184,6 +184,22 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-ready-dep .ap-glyph{width:12px;height:12px;font-size:8px;align-self:center;margin-top:0}
 .ap-ready-ref{overflow-wrap:anywhere;font-family:var(--oc-mono);font-size:11px}
 span.ap-ready-ref{font-family:inherit;font-size:inherit}
+/* Needs you: reported blockers lead readiness; read-only, literal text, no new controls */
+.ap-ny{padding-bottom:8px;border-bottom:1px solid var(--oc-border)}
+.ap-ny:not([data-count="0"])>.ap-ready-title{display:flex;align-items:center;gap:6px}
+.ap-ny:not([data-count="0"])>.ap-ready-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--oc-warning);flex:none}
+.ap-ny .ap-ready-list{gap:10px}
+.ap-ny-entry .ap-ready-head{grid-template-columns:18px minmax(0,1fr) auto}
+.ap-ny-cat{align-self:start;margin-top:1px;padding:0 7px;border:1px solid transparent;border-radius:999px;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap;background:color-mix(in srgb,var(--oc-warning) 16%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-ny-cat:is([data-category="unknown"],[data-category="unclassified"]){background:color-mix(in srgb,var(--oc-fg) 7%,transparent);color:var(--oc-muted)}
+.ap-ny-facts{margin:2px 0 0 27px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:12px;min-width:0}
+.ap-ny-facts>div{display:contents}
+.ap-ny-facts dt{color:var(--oc-muted)}
+.ap-ny-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
+.ap-ny-facts .ap-ny-unknown,.ap-ny-facts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
+.ap-ny-facts .ap-elapsed{color:var(--oc-fg);font-size:12px}
+@media(max-width:300px){.ap-ny-facts{grid-template-columns:minmax(0,1fr)}.ap-ny-facts dd{margin-bottom:3px}}
+@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}.ap-ny:not([data-count="0"])>.ap-ready-title::before{background:CanvasText}}
 
 /* Status glyph: shape + colour + hidden text, never colour alone */
 .ap-glyph{width:16px;height:16px;margin-top:1px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;line-height:1;flex:none}
@@ -211,6 +227,56 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-person .ap-small{grid-column:1/-1}
 .ap-link{background:none;border:0;padding:0;color:var(--oc-primary-text,var(--oc-primary));cursor:pointer;font-size:11.5px}
 .ap-link:hover{text-decoration:underline}
+
+/* Sub-agents: observed now, kept apart from reported progress. Static (no motion): activity is an
+   observation, not reported work. Nesting reads from indentation + elbows + aria-level; each state
+   has its own mark shape and words, colour only reinforces it. */
+/* The page detail pane stacks without gaps: set the live section apart from the recorded plan. */
+.ap-detail>.ap-census{margin-top:18px;padding-top:14px;border-top:1px solid var(--oc-border)}
+.ap-census-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0}
+.ap-obs-list{display:flex;flex-direction:column;min-width:0}
+.ap-obs-row{position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;padding:7px 0 7px calc(var(--depth,0) * 14px)}
+.ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}
+.ap-obs-row[data-role="child"]::before{content:"";position:absolute;left:calc(var(--depth,1) * 14px - 10px);top:6px;width:6px;height:10px;border-left:1px solid var(--oc-muted);border-bottom:1px solid var(--oc-muted);border-bottom-left-radius:3px;opacity:.55}
+.ap-obs-head{display:flex;align-items:baseline;gap:4px 8px;min-width:0}
+.ap-obs-title{flex:1 1 auto;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-obs-row[data-role="root"] .ap-obs-title{font-weight:600}
+.ap-obs-tag{flex:none;padding:0 6px;border-radius:999px;font-size:10.5px;line-height:17px;white-space:nowrap;background:var(--oc-muted-surface);color:var(--oc-muted)}
+.ap-obs-head .ap-link{flex:none;margin-left:auto}
+.ap-obs-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:11.5px;min-width:0}
+.ap-obs-facts>div{display:contents}
+.ap-obs-facts dt{color:var(--oc-muted)}
+.ap-obs-facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
+/* Inline prose, so a long stale line wraps like a sentence instead of stacking separators. */
+.ap-obs{display:inline;min-width:0}
+.ap-obs-last:empty{display:none}
+.ap-obs time,.ap-obs-last{color:var(--oc-muted)}
+.ap-obs-label{font-weight:500}
+.ap-obs-mark{display:inline-block;vertical-align:-1px;margin-right:6px;width:9px;height:9px;border-radius:50%;border:1.5px solid color-mix(in srgb,var(--oc-muted) 80%,transparent)}
+.ap-obs[data-state="active"] .ap-obs-mark{border-color:var(--oc-info);background:radial-gradient(circle,var(--oc-info) 0 2.5px,transparent 3px)}
+.ap-obs[data-state="active"] .ap-obs-label{color:var(--oc-info-text,var(--oc-info))}
+.ap-obs[data-state="waiting"] .ap-obs-mark{border-radius:1px;transform:rotate(45deg) scale(.85);border-color:var(--oc-warning)}
+.ap-obs[data-state="waiting"] .ap-obs-label{color:var(--oc-warning-text,var(--oc-warning))}
+.ap-obs[data-state="ended"] .ap-obs-mark{background:color-mix(in srgb,var(--oc-muted) 70%,transparent);border-color:transparent}
+.ap-obs[data-state="failed"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-error);background:var(--oc-error)}
+.ap-obs[data-state="failed"] .ap-obs-label{color:var(--oc-error-text,var(--oc-error))}
+.ap-obs[data-state="unknown"] .ap-obs-mark{border-style:dashed}
+.ap-obs[data-state="unknown"] .ap-obs-label{font-weight:400;color:var(--oc-muted)}
+.ap-obs-update time{color:var(--oc-muted)}
+.ap-obs-more>summary{cursor:pointer;width:fit-content;max-width:100%;min-height:24px;padding:2px 0;font-size:11.5px;color:var(--oc-muted)}
+.ap-obs-more>summary:hover{color:var(--oc-fg)}
+.ap-obs-more[open]>summary{margin-bottom:2px}
+.ap-obs-more>.ap-obs-list{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}
+.ap-census :is(button,summary):focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+/* Work Status: one line per session (name, state word), one muted line of recorded facts. */
+.ap[data-surface="status"] .ap-census{gap:4px;border-top:1px solid var(--oc-border);padding-top:6px}
+.ap[data-surface="status"] .ap-obs-row{padding-top:3px;padding-bottom:3px;gap:1px}
+.ap[data-surface="status"] .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:0}
+.ap[data-surface="status"] .ap-obs-head>.ap-obs{flex:none;margin-left:auto;font-size:11.5px;white-space:nowrap}
+.ap[data-surface="status"] .ap-obs-label{font-weight:400}
+.ap-obs-sub{display:flex;flex-wrap:wrap;gap:0 6px;font-size:11px;color:var(--oc-muted);min-width:0}
+.ap-obs-sub>*+*::before{content:"·";margin-right:6px}
+@media(forced-colors:active){.ap-obs-mark{border-color:CanvasText!important}.ap-obs[data-state=active] .ap-obs-mark,.ap-obs[data-state=failed] .ap-obs-mark,.ap-obs[data-state=ended] .ap-obs-mark{background:CanvasText}}
 
 /* Official-main notice */
 .ap-official{display:flex;flex-direction:column;gap:4px}

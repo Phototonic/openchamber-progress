@@ -3,10 +3,10 @@ import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpi
 import type { Loadable, ReadingView, SummaryView } from './app.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, plural, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
-import { assignment, readiness, type InvalidReason, type Prerequisite, type ReadinessEntry, type ReadinessGroup } from './readiness.ts';
+import { assignment, attention, blockedWait, readiness, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry, type ReadinessGroup } from './readiness.ts';
 import {
   ALL_PARTICIPANTS, blockedWork, currentWork, DOCUMENT_STATE_TEXT, elapsedAt, jumpTargets, LIFECYCLE_LABEL, nextJump, participantIndex, participants, relationsOf, showsLiveness, STATUS_LABEL, summarize, summaryText, taskMatch, taskProjection,
-  type BranchSummary, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type Relation, type StoreRead, type TaskProjection,
+  type BlockerCategory, type BranchSummary, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
@@ -79,6 +79,16 @@ export function elapsedLabel(plan: PlanView, item: ItemView, detail: PlanDetail,
  * when the label differs. Elapsed time comes from each label's anchor, not from counted ticks.
  */
 export function refreshLabels(root: ParentNode, locale: string, now = Date.now(), mono = performance.now()) {
+  // Observed activity past its freshness window turns unknown in place (census-view.ts markup).
+  for (const n of root.querySelectorAll<HTMLElement>('[data-expires]')) {
+    if (mono < Number(n.dataset.expires)) continue;
+    delete n.dataset.expires;
+    n.dataset.state = 'unknown';
+    const label = n.querySelector('.ap-obs-label'), last = n.querySelector('.ap-obs-last'), time = n.querySelector<HTMLTimeElement>('time[data-age]');
+    if (label) label.textContent = n.dataset.staleLabel ?? '';
+    if (last) last.textContent = n.dataset.staleLast ?? '';
+    if (time) time.dataset.age = ' · ';
+  }
   for (const t of root.querySelectorAll<HTMLTimeElement>('time[data-age]')) {
     const text = `${t.dataset.age ?? ''}${relativeAge(t.dateTime, now, locale)}`;
     if (t.textContent !== text) t.textContent = text;
@@ -639,13 +649,76 @@ function prerequisiteRow(plan: PlanView, p: Prerequisite) {
   return li;
 }
 
-function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compareSession: string | null) {
+const CATEGORY_LABEL: Record<BlockerCategory, string> = { decision: 'Decision', dependency: 'Dependency', review: 'Review', external: 'External', other: 'Other' };
+
+/** The reported wait category as a label, never a filter; an unrecognized one stays unknown. */
+function categoryTag(item: ItemView) {
+  const category = item.reportedBlocker?.state === 'reported' ? item.reportedBlocker.category : null;
+  const known = category && category !== 'unclassified' ? category : null;
+  const tag = testid(el('span', 'ap-ny-cat'), `needs-you-category-${item.id}`);
+  tag.dataset.category = known ?? (category === 'unclassified' ? 'unclassified' : 'unknown');
+  tag.append(el('span', 'ap-sr', 'Wait category: '), known ? CATEGORY_LABEL[known] : 'Category unknown');
+  if (category === 'unclassified') tag.title = 'The report used a category this version doesn’t recognize.';
+  return tag;
+}
+
+/**
+ * How long the task has been reported blocked, from the reply's blocked timing anchored to the
+ * service clock and advanced by the frame's label ticker (refreshLabels). Unknown and unavailable
+ * never read as zero; this is reported status, not real-world waiting or activity.
+ */
+function blockedWaitLabel(item: ItemView, detail: PlanDetail, env: Env) {
+  const w = blockedWait(detail, item);
+  if (w.kind === 'unknown' || w.kind === 'unavailable') {
+    const s = testid(el('span', 'ap-elapsed', w.kind === 'unknown' ? 'Unknown' : 'Unavailable'), `blocked-elapsed-${item.id}`);
+    s.dataset.kind = 'unknown';
+    s.dataset.timing = w.kind;
+    s.title = w.kind === 'unknown' ? 'The progress service couldn’t tell when this task was reported blocked.' : 'This progress service doesn’t report waiting times.';
+    return s;
+  }
+  const a = w.anchor;
+  const t = testid(el('time', 'ap-elapsed'), `blocked-elapsed-${item.id}`);
+  t.dateTime = a.since;
+  Object.assign(t.dataset, { kind: a.kind, timing: a.kind, elapsed: String(a.elapsedAtRead), received: String(a.receivedAt) });
+  const at = absoluteTime(a.since, env.locale);
+  t.title = a.kind === 'exact' ? `Reported blocked at ${at}. Counts reported status, not activity.` : `Already reported blocked at ${at}; the start is earlier and unknown.`;
+  t.textContent = elapsedLabelText(a.kind, elapsedAt(a, env.mono));
+  return t;
+}
+
+/** Category-independent facts of a Needs you row: reason, next action and reported wait, each explicit when unknown. */
+function needsYouFacts(item: ItemView, detail: PlanDetail, env: Env) {
+  const b = item.reportedBlocker;
+  const reported = b?.state === 'reported' ? b : null;
+  const dl = testid(el('dl', 'ap-ny-facts'), `needs-you-facts-${item.id}`);
+  dl.dataset.details = b ? b.state : 'unknown';
+  const row = (id: string, term: string, value: string | Node, unknown: boolean) => {
+    const dd = testid(el('dd', unknown ? 'ap-ny-unknown' : ''), id);
+    if (unknown) dd.dataset.unknown = '';
+    dd.append(value);
+    const pair = el('div');
+    pair.append(el('dt', '', term), dd);
+    dl.append(pair);
+  };
+  if (b?.state === 'invalid') row(`needs-you-details-${item.id}`, 'Details', 'Reported details couldn’t be read', true);
+  else {
+    row(`needs-you-reason-${item.id}`, 'Reason', reported?.reason ?? 'Unknown', !reported?.reason);
+    row(`needs-you-next-${item.id}`, 'Next action', reported?.nextAction ?? 'Unknown', !reported?.nextAction);
+  }
+  row(`needs-you-wait-${item.id}`, 'Reported wait', blockedWaitLabel(item, detail, env), false);
+  return dl;
+}
+
+function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compareSession: string | null, detail: PlanDetail) {
   const { item } = entry;
-  const li = testid(el('li', 'ap-ready-entry'), `readiness-entry-${item.id}`);
+  const needsYou = entry.group === 'blocked';
+  const li = testid(el('li', needsYou ? 'ap-ready-entry ap-ny-entry' : 'ap-ready-entry'), `readiness-entry-${item.id}`);
   Object.assign(li.dataset, { source: plan.sourceId, plan: plan.id, item: item.id, group: entry.group });
   const head = el('div', 'ap-ready-head');
   head.append(glyph(item.status), navLink(plan, item.id, item.title, `Show task: ${item.title}`));
+  if (needsYou) head.append(categoryTag(item));
   li.append(head);
+  if (needsYou) li.append(needsYouFacts(item, detail, env));
   // Labels from the current host only for the verified bound source; a foreign same-ID session
   // must not borrow this host's titles.
   const trusted = trustedSource(plan, env);
@@ -675,10 +748,25 @@ function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compare
     holder.append('Assigned to ', el('b', '', label(who.sessionId)), ` · ${state(who.sessionId)}`);
     meta.append(holder);
   }
+  // Who supplied the current details: their own server-recorded provenance, never inferred from
+  // the task's report history below (those reporters did not necessarily write this text).
+  const b = needsYou && item.reportedBlocker?.state === 'reported' ? item.reportedBlocker : null;
+  if (b) {
+    const by = testid(el('span', 'ap-ready-who'), `needs-you-source-${item.id}`);
+    by.dataset.blockerReport = b.mode;
+    if (b.mode === 'parent-relay') by.append('Details reported by ', el('b', '', label(b.reporterSessionId)), ' for ', el('b', '', label(b.attributedSessionId)));
+    else by.append('Details reported directly by ', el('b', '', label(b.reporterSessionId)));
+    meta.append(by);
+  }
   for (const r of entry.reports) {
     const text = r.mode === 'parent-relay' ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
     const span = el('span', '', text);
     span.dataset.report = r.mode;
+    meta.append(span);
+  }
+  if (needsYou && entry.reporterFallback) {
+    const span = el('span', '', `Last reported by ${label(entry.reporterFallback)} · report mode unavailable`);
+    span.dataset.report = 'reporter';
     meta.append(span);
   }
   if (meta.childNodes.length) li.append(meta);
@@ -697,7 +785,13 @@ const READINESS_GROUPS: Record<ReadinessGroup, { title: string; note?: string }>
   ready: { title: 'Ready to start' },
   waiting: { title: 'Waiting on prerequisites' },
   skipped: { title: 'Waiting — skipped prerequisite', note: 'A skipped prerequisite doesn’t count as done.' },
-  blocked: { title: 'Blocked', note: 'Reported as blocked. It stays blocked until an agent reports otherwise.' },
+  blocked: { title: 'Needs you', note: 'Reported as blocked. Each stays here until an agent reports otherwise. A wait can be for another session or person.' },
+};
+/** What an empty Needs you may claim: only a current read with capture on is "no reported blockers". */
+const NEEDS_YOU_EMPTY: Record<Extract<Attention, { state: 'ready' }>['qualifier'], string> = {
+  current: 'No reported blockers.',
+  stale: 'No reported blockers in the last successful read. This may be out of date.',
+  'capture-off': 'No reported blockers were recorded. Capture is off, so newer reports aren’t recorded.',
 };
 const INVALID_COPY: Record<InvalidReason, string> = {
   'duplicate-id': 'two tasks share an ID',
@@ -705,7 +799,7 @@ const INVALID_COPY: Record<InvalidReason, string> = {
   cycle: 'some tasks list each other as prerequisites',
 };
 
-function readinessGroup(plan: PlanView, group: ReadinessGroup, entries: ReadinessEntry[], env: Env, compareSession: string | null, heading: 'h4' | 'h5' = 'h4') {
+function readinessGroup(plan: PlanView, group: ReadinessGroup, entries: ReadinessEntry[], env: Env, compareSession: string | null, detail: PlanDetail, heading: 'h4' | 'h5' = 'h4') {
   const box = testid(el('div', `ap-ready-group${heading === 'h5' ? ' ap-ready-sub' : ''}`), `readiness-${group}`);
   box.dataset.count = String(entries.length);
   const copy = READINESS_GROUPS[group];
@@ -713,8 +807,24 @@ function readinessGroup(plan: PlanView, group: ReadinessGroup, entries: Readines
   if (copy.note && entries.length) box.append(el('p', 'ap-note', copy.note));
   if (!entries.length) { if (group === 'ready') box.append(el('p', 'ap-note', 'No tasks are ready from the recorded information.')); return box; }
   const ul = el('ul', 'ap-ready-list');
-  for (const e of entries) ul.append(readinessEntry(plan, e, env, compareSession));
+  if (group === 'blocked') ul.setAttribute('aria-label', `Reported blockers in ${plan.title}`);
+  for (const e of entries) ul.append(readinessEntry(plan, e, env, compareSession, detail));
   box.append(ul);
+  return box;
+}
+
+/**
+ * Needs you: the readiness Blocked group, renamed and always present for a ready readiness, so an
+ * active plan's blocker summary is never hidden by task filters or by an empty list. One row per
+ * reported blocked task in stored order; no new action, request or timer.
+ */
+function needsYouGroup(plan: PlanView, a: Extract<Attention, { state: 'ready' }>, env: Env, compareSession: string | null, detail: PlanDetail) {
+  const box = readinessGroup(plan, 'blocked', a.rows, env, compareSession, detail);
+  box.classList.add('ap-ny');
+  box.dataset.testid = 'needs-you';
+  box.dataset.qualifier = a.qualifier;
+  if (!a.rows.length) box.append(testid(el('p', a.qualifier === 'current' ? 'ap-note' : 'ap-doc-warn', NEEDS_YOU_EMPTY[a.qualifier]), 'needs-you-empty'));
+  else if (a.qualifier === 'capture-off') box.querySelector('.ap-ready-title')!.after(testid(el('p', 'ap-doc-warn', 'Capture is off: these are the last reported blockers, not current guidance.'), 'needs-you-qualifier'));
   return box;
 }
 
@@ -729,27 +839,30 @@ export function readinessBlock(plan: PlanView, detail: Loadable<PlanDetail> | nu
   section.dataset.state = r.state;
   section.setAttribute('aria-label', 'Task readiness');
   section.append(el('h3', 'ap-h', 'Readiness'));
-  if (r.state === 'loading') { section.append(el('p', 'ap-note', 'Readiness appears once every task has loaded.')); return section; }
-  if (r.state === 'unavailable') { section.append(el('p', 'ap-note', 'Readiness is unavailable because the tasks could not be loaded.')); return section; }
+  // No partial list and no "no reported blockers" claim until every task has loaded.
+  if (r.state === 'loading') { section.append(el('p', 'ap-note', 'Readiness and reported blockers appear once every task has loaded.')); return section; }
+  if (r.state === 'unavailable') { section.append(el('p', 'ap-note', 'Readiness and reported blockers are unavailable because the tasks could not be loaded.')); return section; }
   if (r.state === 'invalid') {
     section.dataset.reason = r.reason;
     section.append(el('p', 'ap-doc-warn', `Readiness is unavailable for this report: ${INVALID_COPY[r.reason]}. The tasks are shown below as reported.`));
     return section;
   }
-  section.append(el('p', 'ap-note', 'Based on recorded prerequisites only. Other prerequisites may not be recorded.'));
+  const value = (detail as Extract<Loadable<PlanDetail>, { state: 'ready' }>).value;
   if (!env.view.fresh) { section.dataset.stale = 'true'; section.append(el('p', 'ap-doc-warn', 'Last reported readiness. It may be out of date and isn’t a current recommendation.')); }
-  if (r.incomplete) section.append(el('p', 'ap-doc-warn', 'Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.'));
   const notice = testid(el('p', 'ap-note'), 'readiness-notice');
   notice.setAttribute('role', 'status');
-  section.append(notice, readinessGroup(plan, 'ready', r.groups.ready, env, compareSession));
+  // Needs you leads: reported blockers stay in view however long the ready list grows.
+  section.append(notice, needsYouGroup(plan, attention(r, env.view) as Extract<Attention, { state: 'ready' }>, env, compareSession, value));
+  section.append(el('p', 'ap-note', 'Based on recorded prerequisites only. Other prerequisites may not be recorded.'));
+  if (r.incomplete) section.append(el('p', 'ap-doc-warn', 'Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.'));
+  section.append(readinessGroup(plan, 'ready', r.groups.ready, env, compareSession, value));
   if (r.groups.waiting.length || r.groups.skipped.length) {
-    const waiting = readinessGroup(plan, 'waiting', r.groups.waiting, env, compareSession);
+    const waiting = readinessGroup(plan, 'waiting', r.groups.waiting, env, compareSession, value);
     waiting.querySelector('.ap-ready-title')!.textContent = `${READINESS_GROUPS.waiting.title} · ${r.groups.waiting.length + r.groups.skipped.length}`;
     waiting.dataset.count = String(r.groups.waiting.length + r.groups.skipped.length);
-    if (r.groups.skipped.length) waiting.append(readinessGroup(plan, 'skipped', r.groups.skipped, env, compareSession, 'h5'));
+    if (r.groups.skipped.length) waiting.append(readinessGroup(plan, 'skipped', r.groups.skipped, env, compareSession, value, 'h5'));
     section.append(waiting);
   }
-  if (r.groups.blocked.length) section.append(readinessGroup(plan, 'blocked', r.groups.blocked, env, compareSession));
   return section;
 }
 

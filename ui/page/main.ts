@@ -8,7 +8,9 @@ import { CaptureController } from '../shared/capture-comparison.ts';
 import { captureComparisonBlock } from '../shared/capture-comparison-view.ts';
 import { digestBlock } from '../shared/change-digest-view.ts';
 import { plural } from '../shared/format.ts';
-import { coverageFor, liveLabel } from '../shared/live.ts';
+import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
+import { censusFor, planFacts } from '../shared/census.ts';
+import { censusBlock } from '../shared/census-view.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView, type SearchHitView } from '../shared/model.ts';
 import {
   ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf, projectsFor, searchFilterOptions, type Filters, type Option,
@@ -118,7 +120,13 @@ startView<Ui>({
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
     if (scope(previous) !== scope(next)) { captures.retire(); reporting.retire(); }
   },
-  wantProjects: ({ read, live, directory, env }) => (read ? projectsFor(read.plans, live, directory, env.boundSource) : []),
+  // The selected plan's coordinator project first: its observed sub-agents (page root, never the host session).
+  wantProjects: (vc) => {
+    if (!vc.read) return [];
+    const p = selectedPlan(vc);
+    const own = p && trusted(p, vc.env) ? planProject(p.ownerSessionId, p.directory, vc.live) : undefined;
+    return [...new Set([...(own ? [own.id] : []), ...projectsFor(vc.read.plans, vc.live, vc.directory, vc.env.boundSource)])];
+  },
   wantDetails: (vc) => {
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
     const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || pendingTask?.key === p.key) ? [p] : [];
@@ -225,6 +233,8 @@ startView<Ui>({
     root.querySelector('[data-testid="plan-detail"]')?.scrollIntoView({ block: 'start' });
   },
 });
+
+const trusted = (p: PlanView, env: Env) => env.boundSource !== null && p.sourceId === env.boundSource;
 
 /** Leaves search for ordinary browsing: no run, no reveal, no typed text. */
 function endSearch() {
@@ -390,7 +400,15 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', message: `Current task from History: ${title}` }; panel.announce(`Opening the current task “${title}”…`); }));
     article.append(historyBlock(plan, vc.history(plan), env));
     detail.append(article);
-  } else detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading }));
+  } else {
+    detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading }));
+    // Rooted in this plan's verified coordinator session; a plan from another setup borrows nothing.
+    const census = trusted(plan, env) && vc.read ? censusBlock({
+      surface: 'page', census: censusFor(plan.ownerSessionId, plan.directory, vc.live),
+      facts: planFacts(plan, vc.detail(plan), env.boundSource), verified: true, captureEnabled: vc.read.captureEnabled, env,
+    }) : null;
+    if (census) detail.append(census);
+  }
   detail.append(cleanupBlock(vc, plan));
 }
 

@@ -94,13 +94,22 @@ host account isolation, long-session memory behavior or a release/install result
   lookup is bounded32, cycles/errors stay unknown. No activity/message scraping.
 - plugin/activation.ts adds advisory native primary-context/post-execute hooks.
   Verified source/session, enabled capture and effective report-tool availability
-  are required for guidance. Conditional ownership copy needs only the current
-  authoritative session, not ancestry/plan scans. A bounded single-row enabled
-  query is sampled at hook boundaries, including after awaited lookup. Reporting
-  still performs its unchanged assignment/ancestry/capture checks.
+  are required for guidance. Generic guidance/file hints need only the current
+  authoritative session for delivery. A qualifying plan write can also flag its
+  exact verified direct parent in the same project and lexically normalized
+  absolute directory, excluding immediately visible cycles. This relay performs
+  no session listing, grandparent traversal, plan scan or tool/authority change.
+  The first primary attempt after an observed successful
+  compaction may additionally resolve bounded ancestry and read `Store.resumePlans`.
+  A narrow read-only callback is the only recovery Store access, never the report
+  executor or capture path. A bounded single-row enabled query is sampled at hook
+  boundaries, including after awaited writer/parent or recovery lookups. Reporting still performs its unchanged
+  assignment/ancestry/capture checks.
 - shared/store.ts owns mutations, counts, assignment/lifecycle validation,
   immutable revision snapshots, operation receipts, source namespaces, captures
   and capture-enabled control. No await/file/network work inside transactions.
+  `shared/progress-resume.ts` supplies the internal source-bound active-plan
+  projection on this same connection/read transaction, not a public discovery API.
 - plugin/document.ts asserts caller read permission on both requested and
   canonical paths through the supported ctx.permission.assert tool-source API.
   It then opens O_NOFOLLOW/nonblocking, verifies the actual opened target via
@@ -277,6 +286,94 @@ transaction seam. The 1,000-item maximum-title history is a labelled direct SQL
 fixture for budget verification, not a claim that any one report bypasses the
 existing request/chunk limits. No wall-clock performance gate is used.
 
+### Deliberately reported blockers
+
+The additive blocker revision in `docs/contracts.md` extends schema2 JSON
+snapshots only. `parseRequest` and the registered report schema accept optional
+`blocker` on task items/changes; the real plugin executes the same parser and
+transactional Store path. `BlockerRequest` names the additive request contract.
+Only `category`, `reason`, `nextAction` are input content. Category is one of
+decision/dependency/review/external/other; prose is nonblank, NUL-free and at most
+512 JavaScript code units per field. Unknown keys and incompatible destinations
+fail atomically. Change status remains required. Existing receipt, assignment,
+source, count and lifecycle semantics remain authoritative.
+
+`Store.apply` first checks inherited annotation shape and validity against the
+previous revision, before advancing it. It retains only verified-current details
+on a continuously blocked task, applies explicit complete replacements/null
+clearing, then advances retained/new validity markers at commit. Server-only
+provenance preserves the actual annotation author, attributed session, mode,
+report revision and ISO timestamp. Status-only relay does not re-author retained
+text. Structural annotations are authored at commit, never staging. Leaving
+blocked, task-kind/removal/re-entry boundaries and closing/reopening clear
+inherited details. Explicit newly reported details can populate a reopened task.
+Failed validation, conflict, incomplete commit and replay expose no partial state.
+
+An unmodified older writer may carry unknown fields without advancing their
+validity marker, or discard them during structural replacement. The new writer
+never recertifies stale inherited data; deliberate re-reporting is required.
+`Store.detail` independently projects only valid blocked-task annotations, both
+for service pages and explicit-page tool reads, without rewriting snapshots.
+Malformed optional data (including unknown future categories) cannot certify a
+known annotation and is omitted; consumers label its parts unknown/unavailable,
+not success. Raw internal `Store.get` is not a safe public projection. The UI
+adapter must also validate markers because an older service may expose raw fields.
+There is no new table, migration, forced upgrade or history repair.
+
+`service/blocked-timing.ts` separately derives response-only `blockedTiming` on
+authenticated `GET /v1/plan`. One finite transaction on the existing Store
+connection checks store identity, the pinned detail revision, cleanup generation,
+full current snapshot and page agreement. Shared snapshot validation checks
+bounded unique items, references/cycles, identity, lifecycle and timestamps. A
+reverse point-lookup scan accepts at most128 snapshots/8MiB of text and emits at
+most1000 task entries across the whole plan. SQL tests byte length and returns
+NULL for over-budget text **before** materialization in JavaScript. No per-task
+history scan, retained handle/cache, list/history-route scan or backfill exists.
+
+Exact blocked starts require creation or a proven nonblocked/absent/non-task/
+closed boundary. Repeated/relay/neutral reports and reason-only edits do not reset;
+unblock/reblock and close/reopen do. Valid capped suffixes are lower bounds;
+gaps, corrupt/future/regressing history and mismatched identity produce unknown,
+not zero. Timing is status-history evidence, not certification of annotation
+text, real-world waiting or model activity. `readAt` is a fresh server anchor;
+the consumer advances it from monotonic receipt time on its existing ticker.
+Store/tool reads do not add timing. Working `timing` remains independent and its
+interval semantics are unchanged; its text admission is also SQL-bounded. The
+combined timing ceiling is256 snapshot visits/16MiB admitted text per detail.
+The existing1MiB complete response ceiling still applies. Consumers must restart
+detail traversal on progress **or cleanup-generation** changes between pages.
+
+Focused backend proof uses disposable SQLite stores, synthetic authoritative tool
+callers, controlled clocks and authenticated loopback HTTP:
+
+```sh
+node --experimental-strip-types --test tests/backend/needs-you.test.ts tests/backend/progress-invocation.test.ts tests/backend/production-contract.test.ts
+node --experimental-strip-types --test tests/backend/needs-you-service.test.ts tests/backend/production-storage.test.ts tests/backend/plan-cleanup.test.ts tests/backend/plan-cleanup-service.test.ts
+node --experimental-strip-types --test tests/backend/needs-you-timing.test.ts tests/backend/task-timing.test.ts
+```
+
+The compatibility test extracts the complete shared source projection from pinned
+pre-feature commit `4f582b7f3404088d01531598102833000c23cd87`, verifies extracted
+bytes and loads that **unmodified** Store separately. It exercises older unrelated,
+status and structural mutations plus unblock/reblock after annotations exist,
+then proves newer neutral writes cannot revive them. Old schema2 reports remain
+readable without rewriting snapshots/schema. Independent cleanup tests cover
+archive/restore/delete and concurrent writers; timing tests directly measure
+SQL admission, capped scans, current mismatches and the1000-task ceiling.
+
+`tests/fixtures/needs-you.ts` launches a source service, or the built service with
+`--built`, on disposable roots only. Its readiness line includes a fixture-only
+transport credential; never save that credential in evidence. P-attention has
+all five categories, missing parts, literal HTML-looking prose, group/skipped/
+prerequisite rows, explicit child C participation and enough items/contributions
+to paginate. Same-ID work in another source/plan stays isolated. P-lower and
+P-unknown provide capped and gapped timing examples; their controlled timestamps
+and history are fixture-only seeding, not production read behavior. P-finished
+is eligible for explicit cleanup checks. SIGTERM/SIGINT disposes the service and
+temporary data. No real installation/profile or source documents are involved.
+Sanitized local proof: `evidence/needs-you/` (backend, API, compatibility, timing).
+This does not replace browser/native-host or final built-artifact acceptance.
+
 ### Existing production limits
 
 -16KiB report/setup bodies;262144-byte full document cap, strict UTF-8, no binary.
@@ -300,13 +397,148 @@ characters and lexical path metadata4096. Only native2.1.4 successful single-fil
 `write`/`edit` operations on conventional plan paths qualify. No document paths,
 bodies/diffs, plan/receipt state or inferred progress are retained. A hint is
 conditional and consumed on its next eligible delivery, independent of receipts.
+Each event flags the writer and at most its verified direct parent (two keys),
+published together after disable/disposal/duplicate checks. Parent lookup errors
+preserve the writer hint and unrelated pending flags. Each recipient's own
+eligibility gates delivery/consumption: a restricted child's context cannot
+consume its parent's flag, and a restricted parent gets no fallback relay.
+Hints mention a possible delegated child, never paths, names or assignments.
+The same bounded recipient map coalesces plan-write, dispatch and tracker reason
+bits into one conditional hint. Proxy reasons target only the actor, never a child
+or parent; only qualifying plan writes retain the direct-parent relay. The existing
+128-recipient/256-call caps, one-shot next-context consumption and synchronous
+duplicate/disable/disposal checks apply to all reasons, with no extra queues,
+per-tool history or progress lookup. A shared inner/outer Code Mode call identity
+may conservatively lose a second reason rather than create more history.
+
+Dispatch accepts only exact `subagent` completed events with typed native input,
+bounded returned child session ID, running/completed status and string output.
+Tracker accepts only exact `linear_save_issue` / `linear_save_comment` completed
+events with the full observed typed issue/comment success metadata in parsed
+`result.output`, excluding error/partial indicators. Returned identifiers alone,
+strings, wrappers and input-supplied identifiers are insufficient. Metadata types
+are checked without interpreting prompt, body, title, worker text or state names
+as progress. Hook execution never invokes a report, scans a plan or reads a document.
+
+The tracker envelope is pinned to observed official remote-server behavior on
+2026-10-30 and native 2.2.2 normalization, not a universal connector contract.
+Issue metadata requires returned identifier/UUID, typed timestamps/status/priority,
+labels and team/author/link metadata; comments require UUID, timestamps, attachments,
+typed body and author. Required fields are non-null; supplied nullable lifecycle/
+context fields must retain their observed types. Unknown aliases, missing/mistyped
+metadata and unfamiliar/version-drift shapes remain silent. Native structuredContent
+and schema-less JSON text can normalize identically; recognition is origin-agnostic
+on the typed parsed object. JSON text with a declared output schema may stay a
+string and silently lose coverage; there is no plugin-side text-parsing fallback.
+Native Code Mode inner calls qualify by exact hook name, never by wrapper text.
+These observations are advisory, not receipts, assignments, canonical milestones
+or accepted completion; delivery and model compliance remain separate claims.
 Restart/cap eviction may lose a hint or permit an old replay; base guidance recurs.
 Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
 closing Store; setup failures roll back partial registrations and close Store.
-No timer, persistent reminder, new RPC or automatic progress/capture write exists.
+No persistent reminder, new RPC or automatic progress/capture write exists.
+
+Progress resume separately retains at most128 session compaction records and256
+event identities, never plan titles/revisions/assignments between requests. It
+pairs a validated start, observe-only compaction hook and increasing matching-reason
+end independently of hook/start callback delivery order. One constant-size hook
+window and open start share each record with sequence/retirement metadata; orphan
+hooks and primary tombstones share the same cap. No common attempt ID is exposed
+by the inspected hook/event surfaces. The conservative temporal fallback requires
+`start.created < firstHookTime <= lastHookTime < end.created`; timestamps reject
+ambiguous evidence, not establish authority or a unique attempt identity. Boundary
+ties, backward/inconsistent clocks, stale hooks and overlapping starts decline.
+Both start→hook→end and hook→delivered-start→end can qualify; arbitrary inversions
+of the durable stream and background/precomputed compactions are not certified.
+Terminals retire the window; failures clear pending state. The first following
+primary consumes pending and incomplete evidence before awaits, preserving a
+creation-time retirement fence against delayed stream backfill. Eviction, floor
+rejection and lifecycle clearing promote removed records' fences into the global
+event floor, even after clock rollback, conservatively declining older queued
+episodes. There is no
+per-turn recovery scan, new timer/persistence or automatic retry/backfill. Observation
+does not read summaries or alter the host's compaction system/messages/options,
+tools or result. Generic guidance/file hints remain independent.
+
+Capsule authority reuses the authoritative32-hop ancestry path with cancellation
+checkpoints before/after each await and a one-second capsule-only deadline. A
+request-scoped timer is cleared after use; there is no poller. Only one recovery
+identity lookup can be outstanding, including a host call ignoring cancellation;
+retired work cannot take another hop or inject late text. After identity, the
+synchronous bounded Store read and append introduce no further application await.
+Current control, binding and effective tool gates are rechecked at use. Observed
+disable/source/store-generation changes and disposal retire pending/held state;
+off/on transitions entirely between observations are not losslessly detected.
+
+The internal projection checks expected store/source binding, enabled control,
+active lifecycle, coordinator or current explicit assigned-child authority, and
+cleanup in the same read transaction. It admits64 source-plan slots,1MiB per
+snapshot and8MiB total JSON before materialization; validates1000 items/64 links;
+and checks a cooperative100ms scan budget between bounded steps. SQLite busy
+waits remain bounded to1s; this is not a hard100ms total-latency guarantee. No
+history/contribution/document/source-root inventory, broad list/detail envelope,
+schema/index change, persistent cache or new connection is involved.
+
+Rendering is at most3 candidates/4096 UTF-8 bytes, with whole-candidate omissions
+and explicitly unconfirmed partial coverage. A child receives at most20 complete
+assigned IDs per candidate, never task prose or sibling scope. The exact internal
+DTO, active-only eligibility, read-before-mutation instructions and generic
+fallback are frozen in [the contract](contracts.md#advisory-activation-does-not-change-the-protocol).
+
+Native guidance, inline/packaged skills and an early report-description clause
+distinguish tracker updates from reports and conditionally identify PLAN_READY,
+review approval, owner approval and actual work start as meaningful unreported
+canonical boundaries. The plugin detects none of those states. Ready is not
+review/approval/completion; dispatch is not work start; existing canonical gate/work
+items are mirrored without inventing review tasks. Already-current state needs no
+mutation, and no file or automatic per-turn report is required. Description-only
+client exposure and model compliance remain outside native delivery guarantees.
 
 ## Verification and known limits
+
+### Compaction-only progress resume
+
+Portable Store/installed-adapter checks (Node24.19.0, existing dependencies):
+
+```sh
+node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts
+bun run typecheck
+```
+
+The separately selected native `progress resume` case on OpenCode **2.2.2** loads the real production
+plugin with direct synthetic Store seeding, not an installer. It captures actual
+outgoing recovery from system parts with a credential-free scripted AISDK provider,
+fresh HOME/XDG and a rootless loopback-only network namespace. Source and built
+commands are in [compatibility](compatibility.md#progress-resume-capsule-verification).
+Proof includes a changed current revision, unconfirmed candidates, assigned child,
+unlinked/restricted child, finished-only work, failed/empty compaction, disable,
+archive/delete before delivery, and real native plugin reload. No observer emits
+recovery in regression mode; the provider does not choose or execute report tools.
+
+The plugin/client adapter remains pinned **2.1.4**, separate from the host pin.
+Source-built and verbatim emitted-companion native runs pass all21 existing
+resume scenarios, including `unique-current-r2` and one-shot consumption. Focused
+A2 activation also passes on2.2.2. Local evidence is under
+`evidence/resume-capsule-host-ordering/`. Earlier2.1.4 success remains historical,
+not a fresh rerun. Tagged [host compaction](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/core/src/session/compaction.ts)
+and [hook types](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/plugin/src/effect/session.ts)
+explain the inspected surfaces; no cross-surface delivery-order guarantee is assumed.
+
+The pinned adapter subscribes in-process, not through an HTTP event
+connection. Its event stream is explicitly volatile/live-only without replay
+controls. Host replay therefore remains unexercised, not passed; duplicate and
+sequence guards are covered by unit tests. Actual plugin reload proves that old
+completion does not re-arm and a fresh successful compaction still delivers.
+Manual compactions were triggered; automatic reasons are unit-covered only.
+This integration proof does not establish model compliance, desktop-native
+OpenChamber/AppImage behavior, or cross-version support. Historical checks below
+are not recertified by these runs.
+
+Portable CI/package checks are separate from native-host certification. The full
+`bun run check` aggregate is **blocked/not green** by an independent native
+subagent/desktop family outside this capsule fix. Passing focused and portable
+checks do not waive or certify that family, installation or a release.
 
 ### Official-main metadata checker
 
@@ -594,3 +826,67 @@ updates and make no comparison claim. Both ZIPs are extracted and every declared
 file is compared to its assembled folder. Local evidence:
 `evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
+## Declared delegation correlation
+
+Any installed `subagent` implementation qualifies only through the fixed native
+identity/census/fence/ancestry/control gates below. There is no implementation
+discriminator, separate certification gate, feature flag or policy switch.
+The gates prove which call supplied the result and the child's lineage, not
+that the tool actually created or continued that child: installed tools are
+trusted to report the child they delegated to. Slim is covered through these
+same gates, not separately certified. The observed 2.2.25 stack wraps the native
+tool without rewriting its structured child identity or correlation metadata;
+foreground/background signals satisfy the gates, pre-acknowledgement resume
+lacks a matching result, and competing calls are ambiguous. The latter two cases
+fail closed; post-acknowledgement resume is untested. Explicit link and assigned
+parent relay remain available when native evidence is unavailable.
+
+`plugin/delegation.ts` owns bounded in-memory declarations and independent hook
+and native-event candidate maps. There is one pending intent per trusted parent
+in the running companion (128 intents, 256 retry records, five-minute TTL).
+There is no durable declaration, adoption, replay scan, worker registry, or
+cross-companion exclusivity guarantee. The report parser accepts `delegate`
+only with the existing request identity/revision fields and `assign`; arbitrary
+actor/source/call/provenance fields are rejected.
+
+Declaration expiry never certifies an empty in-flight census. Unresolved hook or
+native call evidence is retained in the bounded census beyond that TTL, until a
+matching terminal after-hook or message ended/failed boundary resolves it. Call
+identity includes the parent and assistant message: reusing a call ID in another
+message cannot bypass outstanding execution. If unresolved evidence exhausts the
+census capacity, observation coverage fails closed rather than evicting it; the
+running companion cannot regain binding authority merely through expiry.
+Capture-off still records this bounded, volatile hook/census metadata, including
+new before calls and terminal observations, so it neither invents an empty census
+nor strands completed calls as unresolved after re-enable. Control checks still
+retire pending intents; declarations, reservations and binding commits remain
+disabled. Re-enable never resurrects an old intent or backfills an assignment.
+
+An intent reserves synchronously at the first delegation before-hook, with no
+other delegation already in flight. A completed after-hook records only the
+structured child identity and supported output status, not result text. Hooks
+never await a closing message event. Independent native input-start/called
+identities must agree on exactly one delegation with the hook census at the
+matching parent/assistant-message `session.step.ended`. Missing pairs, unmatched
+identities/names, a second candidate, failure, expiry, subscription fault or cap
+retires authority. `session.step.failed` is terminal even if a retry reuses the
+assistant message ID. Ancestry resolution runs outside ingestion, has a one-second
+deadline and abort guard, and requires an immediate same-project/location child
+with complete acyclic ancestry (at most 32 hops). Every gate is rechecked after
+asynchronous work and immediately before committing. A tool name or plausible
+result alone is insufficient; missing native evidence retires without binding.
+
+Store commit uses the existing serialized `link` authorization, revision and
+receipt/hash guards. It unions declared IDs with that child's existing IDs;
+competing assignments or revision drift are refusal, never read/overwrite retry.
+Only the assignment, optional item-level `assignmentBinding` and ordinary commit
+receipt survive restart. Status/reporters/report age and document capture remain
+unchanged. Empty-item administrative contributions are not child progress.
+
+The additive `delegation_control` table and `delegation_capture_epoch` trigger
+track capture changes, including old writers changing `meta.enabled`. An off/on
+interval invalidates local authority even if no callback saw the disabled state;
+the generation is capture safety, not a durable declaration or parent claim.
+Partial registrations are disposed on setup failure and disposal fences late
+lookups. The existing authenticated detail route carries optional provenance
+without a new API route or wider session membership.

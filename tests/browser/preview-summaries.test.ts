@@ -102,7 +102,7 @@ test('F3 prerequisites describe recorded facts even on invalid/closed graphs; sk
     const text = formatHandoff(await fixture(items, { lifecycle }))!;
     assert.match(text, /Skipped; does not count as done/);
     assert.match(text, /Prerequisite task unavailable/); assert.ok(!text.includes(FORBIDDEN));
-    assert.match(text, /Explicit blocker — no reason recorded — No prerequisites recorded/);
+    assert.match(text, /Explicit blocker — blocker details omitted from this summary — No prerequisites recorded/);
     assert.match(text, /No ready next step is recorded/);
   }
   const bad = await fixture([...items, { ...items[1], title: 'Duplicate reported task' }]);

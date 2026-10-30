@@ -160,6 +160,80 @@ node --experimental-strip-types --test tests/backend/progress-activation.test.ts
 node --experimental-strip-types --test tests/backend/progress-activation-runtime.test.ts tests/backend/plugin-failure-runtime.test.ts
 ```
 
+## Progress resume capsule verification
+
+The separately named `progress resume` native case verifies production activation
+and Store lookup on pinned OpenCode **2.2.2** at the actual outgoing scripted-provider
+boundary. It uses direct synthetic Store construction and local plugin loading,
+not installation. The observer records metadata and the synthetic recovery section
+from actual outgoing system parts; it never manufactures recovery in regression
+mode or retains conversation/summary text. No real model or provider credentials
+are used. The test requires Node24.19.0, existing Bun/dependencies, working rootless
+`unshare -Urn`/`ip`, and the already-present independent binary below. A missing or
+wrong-version binary fails closed; do not substitute the managed PATH launcher,
+download a runtime, or select the older installer-based native case for this check.
+
+The host pin is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
+`@openchamber/sdk` **2.5.1**. Verified independent2.2.2 archive SHA-256:
+`3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
+executable SHA-256:
+`4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
+Historical2.1.4 success below/elsewhere is not a fresh2.1.4 rerun. The exact
+selected2.2.2 source-built and verbatim-built runs pass all21 existing resume
+scenarios; local proof is `evidence/resume-capsule-host-ordering/`. Focused A2 also
+passes under2.2.2; it can be selected separately with `--test-name-pattern='^A2 '`.
+
+```sh
+export OPENCODE_BINARY=/tmp/opencode/agent-progress-probe-cli/opencode
+export EVIDENCE=evidence/resume-capsule-host-ordering/source
+node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts
+bun run typecheck
+PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
+bun run build:backend
+EVIDENCE=evidence/resume-capsule-host-ordering/built ACTIVATION_COMPANION_ENTRY=build/companion/index.js PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
+git diff --check
+```
+
+The built run copies unchanged companion bytes and sibling guidance, recording
+the tested entry's SHA-256. It does not install, package, rebuild guests or certify
+a release. Native runs own one isolated host/process group, verify zero credential
+inventory and loopback-only networking, and remove their disposable roots.
+Local-only source/built `outgoing.json`, synthetic adapter `lifecycle.json` and
+`checks.md` records distinguish source/built integration from the earlier test-only sentinel
+gate in `runtime-gate.json`.
+
+Coverage includes the current-revision pointer, two unconfirmed candidates,
+assigned-only linked child, unlinked/restricted child suppression, finished-only
+fallback, uncompacted resume, failed/empty compaction and disable/archive/delete
+before delivery. Summarization receives no recovery and its inputs/result remain
+unchanged. Scripted text proves integration, not model willingness/compliance or
+OpenChamber desktop/AppImage behavior. No new cross-version or native Windows
+capsule certification is claimed by this Linux test.
+
+Correlation retains one bounded observation window even when the compaction hook
+arrives before its streamed start. The inspected
+[2.2.2 hook types](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/plugin/src/effect/session.ts)
+expose no shared attempt token. Strict event-creation/local-observation containment,
+sequence/reason and lifecycle fences permit both observed hook/start orders without
+reading summaries. Boundary ties, clock inconsistency, stale/precompute-style hooks
+and overlapping starts conservatively omit recovery. There is no new timer,
+persistence or guarantee for background precomputation. Both delivery orders and
+retirement/replay/cap boundaries are deterministic unit/installed-adapter coverage.
+
+With the 2.2.2 native re-pin in place, the full `bun run check` aggregate passes
+on this branch: **331 passed, 0 failed, 18 Windows-only skips**, including the
+native subagent/desktop family. Earlier blocked-status statements are historical.
+This result does not claim a desktop installation.
+
+**Known replay limitation:** pinned2.1.4 event subscriptions are volatile/live-only,
+with no replay controls, and the production plugin uses the native in-process
+stream. Actual host replay cannot be exercised through that surface and is not
+reported as passed. Public native plugin reload was exercised: an old completion
+does not re-arm recovery and a fresh compaction delivers it. Duplicate/sequence
+guards are separately unit-tested. Actual runs trigger manual compaction only;
+automatic reason handling is covered at the unit layer. Historical evidence above
+remains scoped to its original artifacts and does not certify this feature.
+
 ### Future interoperability, not a required integration
 
 A cooperating vendor could deliberately report source-optional plans using the
@@ -183,9 +257,9 @@ curl -fL --max-time 90 https://opencode.ai/update/api/latest/cli/opencode/openco
 tar -xzf /tmp/opencode/agent-progress-probe-cli/cli.tar.gz -C /tmp/opencode/agent-progress-probe-cli
 ```
 
-Observed archive SHA256:
+Historical 2.1.4 archive SHA256:
 `2edaf8cf96e81dec5ee996a3196b03345cf59e5a1673d83a4599bb4afc5c5f6d`.
-`latest` is mutable: verify downloaded version again, do not assume future bytes.
+This digest describes the earlier host only, not the current native proof pin.
 
 Recovery on2026-10-24 re-downloaded the official archive: actual version2.1.4,
 same SHA256 shown above. The host restart cleared retained temporary CLI/desktop
@@ -194,6 +268,30 @@ Future desktop/UI reruns require fixture regeneration; none was performed for th
 recovery. Early live refusals and later accepted z.ai root/native/move/compaction
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
+
+### Current native proof pin — 2.2.2
+
+Verified on 2026-10-30: the official URL above now supplies an archive whose SHA-256 is
+`3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`.
+The extracted independent executable reports `opencode v2.2.2`; its SHA-256 is
+`4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
+The archive remains `cli.tar.gz` and the executable remains `opencode` in the
+disposable `/tmp/opencode/agent-progress-probe-cli` fixture directory. Native runtime
+tests now require 2.2.2; installed plugin/client SDK packages remain pinned to
+2.1.4, independently of the runtime binary. Earlier observations in this guide
+remain historical and do not certify the new host.
+
+A subsequent restart lost the temporary 2.1.4 executable. Parent recovery searches
+found no matching local copy, public release, npm package or archived snapshot;
+2.1.4 became unavailable from the searched public sources after the vendor moved
+`latest`. The owner selected 2.2.2 rather than waiving native proof. That recovery
+decision does not claim a permanent inventory of all possible private archives.
+
+`latest` is mutable: on every fetch verify the archive digest against this pin
+**before extraction/use**, then verify extracted `--version`. A changed digest or
+version fails closed; do not silently follow `latest` or download from inside an
+isolated test. Archive identity is provenance, not behavioral compatibility proof:
+all native regression families and final emitted companion runs must still pass.
 
 ## Historical CLI probe reproduction
 
@@ -291,6 +389,142 @@ remained; CDP9333 and isolated host port closed. The then-retained H contained
 generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
 clean real directories or reuse real profiles; no server restart is authorized.
+
+## Sub-agent activity — tested native and workspace signals
+
+The initial credential-free feasibility probe targets OpenCode **2.1.4**,
+`@opencode/plugin` **2.1.4**, `@openchamber/sdk` **2.5.1**, and cached
+oh-my-opencode-slim **2.2.25**. Built-in and slim profiles run separately in
+fresh private homes with loopback-only networking; neither uses an installed
+user profile or an external provider.
+
+Nine isolated probe invocations are recorded. The first failed bootstrap; a
+location-scoped readiness request fixed that. The second exposed a test transport
+marker issue. The third and fourth completed the native probe; the fourth also
+attempted a disposable OpenChamber 2.5.1 renderer. Three focused continuations
+proved slim V2 activation but not a usable Xvfb/X11 renderer. Two subsequent
+Wayland/AppRun runs mounted a metadata-only guest through direct disposable
+fixture loading and captured actual workspace SDK records. The accepted
+built-in/slim matrices were not rerun in those workspace continuations.
+No user profile was used.
+
+| Profile / mode | Native observation |
+| --- | --- |
+| Built-in foreground / background | Structured `result.output.sessionID`, verified native parent and complete ancestry; foreground returned completed, background running |
+| Built-in resume | Returned and verified the same child ID |
+| Built-in parallel / delayed second call | Two candidates share an assistant-message identity; never bind the first result optimistically |
+| Nested delegation | Refused by the native tool; separately API-created native nested records are fixture evidence, not successful nested delegation |
+| Slim 2.2.25 V2 setup: foreground / background | Activation and actual slim hooks proven; native `subagent` executor retained, structured results and verified native child ancestry observed |
+| Slim immediate resume before terminal-result acknowledgement | Slim's before hook refuses the request; no matching after hook or authoritative result. No binding. Resume after acknowledgement was not tested |
+| Slim competing calls | Both verified native child results observed, but two candidates in one spawning message are ambiguous. No binding |
+| Workspace onSessions / listSessions | Actual C1/C2 parent A and API-created N1 parent C1; ready Alpha/Beta directory coverage; unrelated B remains a root and Beta is absent from Alpha |
+| Workspace activity | Running, idle, unknown, waiting-question and failed outcome observed; unchanged lists and another child's updates do not establish a new observation of the first child |
+
+Native execution-start/succeeded/failed/interrupted events, active snapshots and
+persisted outcomes were observed. These are session/turn observations, not task
+completion or accepted handoff. A disconnected test client recovered a terminal
+outcome from a native snapshot; that is not proof of SDK replay or host recovery.
+
+The supported binding-signal boundary is: wait for the spawning assistant
+message's **`session.step.ended`**, require exactly one delegation candidate in
+that session/message group, and verify the matching structured result's native
+child and ancestry. Otherwise do not bind. `session.step.streamed` and the first
+result are not uniqueness fences. This supports the tested built-in
+foreground/background/resume and slim V2 foreground/background signal paths;
+it is not production automatic-binding or task-completion verification.
+
+Slim proof uses the cached package's unmodified V2 setup through a thin test
+observer entry. Its observed tool transforms add task-management tools but never
+add, update or remove `subagent`; actual before/after middleware executes around
+the native tool. This does not certify V1 loading, other versions or resume modes
+that the slim guard refuses.
+
+Actual workspace `GuestSessionRecord.parentId` is now proven on the pinned host;
+the separately observed selected-session context has no parentId field.
+Both native-created children were visible without progress reports. The test
+catalog contained only the enabled metadata fixture with the existing `sessions`
+grant; no folder installation/approval was needed.
+
+Two important limits apply to this host version:
+
+- A native interrupted execution produced SDK `idle` with raw outcome `completed`.
+  That SDK value cannot distinguish success from cancellation; treat the
+  unsupported end reason as unknown, never as successful completion.
+- During an observed roughly ten-second native-process outage, SDK reads still
+  returned cached `ready` coverage and `running`. Readiness is not a heartbeat or
+  proof of connection. Do not renew per-child freshness from repeated reads,
+  unchanged snapshots, title changes or another child's activity. Same-endpoint
+  restart retained IDs/parentage and yielded idle with unknown outcome, not proof
+  that the lost turn succeeded. Native last-completed outcome can also be stale.
+
+These are supported observations with cancellation/liveness limitations, not a
+new activity archive or alternate API. Explicit reporting/linking remains the
+fallback; observation never establishes assignment, task completion or acceptance.
+
+The opt-in probe entry is `tests/backend/subagent-activity-runtime.test.ts`
+(`SUBAGENT_ACTIVITY_PHASE=probe`); both Wayland workspace-only invocations passed.
+The slim subprocess passed in both focused two-profile continuations. Normal test runs
+do not silently launch the exploratory probe. All owned processes and roots
+were cleaned up. Loading/error coverage, retrying/waiting-permission activity and
+switching to a different runtime/source were not exercised by this probe. The
+bounded signal probe is complete with those limits; production integration/UI
+verification remains separate. No installed-host
+operation is authorized or certified.
+
+### Production native integration — tested with bounded freshness
+
+The isolated `SUBAGENT_ACTIVITY_PHASE=regression` now runs the real companion
+entry, report tool, delegation hooks, Store and authenticated production read API.
+It is the default phase, not an exploratory fallback or a skipped acceptance test.
+Temporary builds leave checked-in generated outputs unchanged. A supplied
+`ACTIVATION_COMPANION_ENTRY` is copied and hashed unchanged with sibling guidance;
+final generated-byte verification remains a separate gate.
+
+On OpenCode 2.1.4, both built-in-only and explicitly activated slim 2.2.25 V2
+profiles demonstrate a declared, unambiguous delegation producing exactly one
+persisted assignment with `items.data[].assignmentBinding`. Built-in same-ID
+continuation adds a declared task without replacing that child's explicit task;
+slim fresh-child delegation retains the existing other-child assignment.
+Statuses, task reporters, totals and report time stay unchanged. Restricted
+children have no report tool; a scripted report attempt does not mutate progress.
+Discovery alone adds no plan membership. Real authenticated health/list/detail/
+history reads pass, and a request without the ephemeral bearer returns 401.
+
+Competing native calls, an unknown-agent error, wrong caller, cancellation before
+the result/fence, and a labeled synthetic wrong-result identity fault remain
+unbound. The fault fixture executes the native tool but substitutes an unrelated
+native root in its structured return; it is not evidence of the unmodified tool
+returning a wrong ID. Binding trusts installed tools to identify the child they
+delegated to; correlation and lineage gates cannot independently prove that act.
+Built-in resume preserves native identity and links. Slim immediate pre-ack resume
+is refused without assignment; post-ack resume remains untested.
+
+The real production rail, Work Status and page bundles were also mounted in the
+disposable OpenChamber 2.5.1 Wayland host. Current native screenshots show a fresh
+bound child, an unassigned restricted child and API-created nested N1. A→B→draft
+retires the rail census; returning to A restores it. N1 is still an official
+native API fixture, not successful nested tool dispatch.
+
+The incorrect use of SDK integration-link state as native transport liveness has
+been corrected and verified in the disposable native host. Fresh bound and
+unassigned rows are current on all three surfaces, with ready coverage and no
+disconnected copy. Fresh screenshots demonstrate this correction.
+
+The same native session subscription emits loading/ready about every 45 seconds,
+even without changed child activity/outcome. Per-session receipts now survive
+these reloads and error phases for the subscription lifetime; unchanged cached
+records do not renew them. During incomplete coverage, retained rows are not
+current. A genuinely new subscription or changed activity/outcome establishes a
+new receipt; none of these observations establishes task progress or acceptance.
+
+The combined production native regression now passes in both profiles. A silent
+bound child expires to unknown at its original 60-second deadline despite the
+native reload, with ready/complete coverage restored. A subsequent genuine native
+turn renews that child to Running while a silent sibling remains unknown. Fresh
+rail/status/page, actual stale/unknown and renewed-child screenshots are captured;
+the earlier defective unknown image remains historical only. Parent acceptance
+and final generated-byte checks remain separate. Linux native proof is not
+Windows, installation, package or release certification.
 
 ## Historical Big Pickle attempt — capacity path abandoned
 

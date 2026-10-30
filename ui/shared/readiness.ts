@@ -1,7 +1,7 @@
 // Task readiness: a pure, read-only projection of one active plan's complete detail.
 // Only recorded direct prerequisites count. Nothing here changes item status, counts or
 // assignments, and nothing is inferred from activity, age, ancestry, titles or directories.
-import type { ContributionView, ItemStatus, ItemView, Lifecycle, PlanDetail } from './model.ts';
+import type { ContributionView, ElapsedAnchor, ItemStatus, ItemView, Lifecycle, PlanDetail } from './model.ts';
 
 export type ReadinessGroup = 'ready' | 'waiting' | 'skipped' | 'blocked';
 
@@ -39,6 +39,11 @@ export interface ReadinessEntry {
    */
   linkedSessionIds: string[];
   reports: ReportView[];
+  /**
+   * The item's recorded reporter when no contribution records a report for this task: a fallback
+   * label without a report mode, never the author of current blocker details.
+   */
+  reporterFallback: string | null;
 }
 
 export type InvalidReason = 'duplicate-id' | 'self-dependency' | 'cycle';
@@ -114,13 +119,15 @@ export function readiness(plan: { key: string; revision: number; lifecycle: Life
       : prerequisites.some((p) => p.kind === 'task' && p.status === 'skipped') ? 'skipped'
       : prerequisites.every((p) => p.kind === 'task' && p.status === 'done') ? 'ready' : 'waiting';
     incomplete ||= entryIncomplete;
+    const reports = reportsFor(item.id, d.contributions);
     groups[group].push({
       item, group, prerequisites, incomplete: entryIncomplete,
       parent: parentOf(item, byId),
       recorded: item.dependencies === undefined ? 'omitted' : item.dependencies.length ? 'listed' : 'empty',
       assigneeSessionId: item.assigneeSessionId ?? null,
       linkedSessionIds: item.assigneeSessionId ? [] : [...new Set(d.links.filter((l) => l.itemIds.includes(item.id)).map((l) => l.sessionId))],
-      reports: reportsFor(item.id, d.contributions),
+      reports,
+      reporterFallback: !reports.length && item.reporterSessionId ? item.reporterSessionId : null,
     });
   }
   return { state: 'ready', key: d.key, revision: d.revision, groups, incomplete };
@@ -141,6 +148,31 @@ export function reportsFor(itemId: string, contributions: readonly ContributionV
     out.push({ mode: c.mode, reporterSessionId: c.reporterSessionId, attributedSessionId: c.attributedSessionId });
   }
   return out;
+}
+
+/**
+ * How long a blocked task has been *reported* blocked (not real-world waiting or activity), from
+ * the detail's own blocked timing. `unavailable`: the reply carried none; `unknown`: no usable own
+ * entry. Never zero, never report age, never working time.
+ */
+export type BlockedWait = { kind: 'exact' | 'lower-bound'; anchor: ElapsedAnchor } | { kind: 'unknown' } | { kind: 'unavailable' };
+export function blockedWait(detail: Pick<PlanDetail, 'blockedTiming'>, item: Pick<ItemView, 'id' | 'kind' | 'status'>): BlockedWait {
+  if (!detail.blockedTiming) return { kind: 'unavailable' };
+  const anchor = item.kind === 'task' && item.status === 'blocked' && Object.hasOwn(detail.blockedTiming, item.id) ? detail.blockedTiming[item.id] : undefined;
+  return anchor ? { kind: anchor.kind, anchor } : { kind: 'unknown' };
+}
+
+/**
+ * Needs you: the plan's currently reported blocked tasks, one per task, in stored order (the
+ * readiness `blocked` group). Only a ready readiness has rows; an empty list is a claim only with
+ * `qualifier` `current` (last read succeeded with capture on), otherwise it is the last report.
+ */
+export type Attention =
+  | Exclude<Readiness, { state: 'ready' }>
+  | { state: 'ready'; rows: ReadinessEntry[]; qualifier: 'current' | 'stale' | 'capture-off' };
+export function attention(r: Readiness, view: { fresh: boolean; captureEnabled: boolean }): Attention {
+  if (r.state !== 'ready') return r;
+  return { state: 'ready', rows: r.groups.blocked, qualifier: !view.fresh ? 'stale' : !view.captureEnabled ? 'capture-off' : 'current' };
 }
 
 /**

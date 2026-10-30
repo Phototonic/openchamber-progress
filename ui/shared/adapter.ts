@@ -2,9 +2,10 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
+import { BLOCKER_LIMITS, identifier } from '../../shared/progress.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type {
-  ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
 
@@ -163,17 +164,66 @@ function parseSummary(v: unknown): PlanView {
   };
 }
 
-function parseItem(v: unknown, planId: string): ItemView {
+const BLOCKER_CATEGORIES: readonly BlockerCategory[] = ['decision', 'dependency', 'review', 'external', 'other'];
+const BLOCKER_KEYS = new Set(['category', 'reason', 'nextAction', 'reportedRevision', 'reportedAt', 'reporterSessionId', 'attributedSessionId', 'mode', 'validAtRevision']);
+const blockerText = (v: unknown): v is string => isStr(v) && v.trim().length > 0 && v.length <= BLOCKER_LIMITS.textCodeUnits && !v.includes('\0');
+const isoInstant = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString() === v;
+
+/**
+ * Reported blocker details, re-validated here independently of the service (Reported blockers
+ * revision 1). Undefined: nothing current is known (absent, null, or a marker from an earlier
+ * revision that an older service passed through). `invalid`: present but unusable; its text is
+ * never kept. Only a blocked task can carry details.
+ */
+function parseBlocker(v: unknown, item: Rec, revision: number): BlockerView | undefined {
+  if (v === undefined || v === null || item.kind !== 'task' || item.status !== 'blocked') return undefined;
+  if (!isRec(v)) return { state: 'invalid' };
+  // Earlier-revision markers are not current; a later one cannot exist for this snapshot.
+  if (isInt(v.validAtRevision) && v.validAtRevision >= 1 && v.validAtRevision < revision) return undefined;
+  const category = v.category === undefined ? null : !isStr(v.category) ? false : (BLOCKER_CATEGORIES as readonly string[]).includes(v.category) ? v.category as BlockerCategory : 'unclassified';
+  const ok = Object.keys(v).every((k) => BLOCKER_KEYS.has(k)) && category !== false
+    && (v.reason === undefined || blockerText(v.reason)) && (v.nextAction === undefined || blockerText(v.nextAction))
+    && v.validAtRevision === revision && isInt(v.reportedRevision) && v.reportedRevision >= 1 && v.reportedRevision <= revision && isoInstant(v.reportedAt)
+    && identifier(v.reporterSessionId) && identifier(v.attributedSessionId)
+    && (v.mode === 'direct' ? v.reporterSessionId === v.attributedSessionId : v.mode === 'parent-relay' && v.reporterSessionId !== v.attributedSessionId);
+  if (!ok) return { state: 'invalid' };
+  return {
+    state: 'reported', category: category as BlockerCategory | 'unclassified' | null, reason: (v.reason as string | undefined) ?? null, nextAction: (v.nextAction as string | undefined) ?? null,
+    reporterSessionId: v.reporterSessionId as string, attributedSessionId: v.attributedSessionId as string, mode: v.mode as 'direct' | 'parent-relay',
+    reportedRevision: v.reportedRevision as number, reportedAt: v.reportedAt as string,
+  };
+}
+
+function parseItem(v: unknown, planId: string, revision: number, coordinator?: string): ItemView {
   check(isRec(v) && isStr(v.id) && isStr(v.title), `Plan ${planId} has an item without an id or title.`);
   check(v.kind === 'group' || v.kind === 'task', `Item ${v.id} has an unknown kind.`);
   check(STATUSES.includes(v.status as ItemStatus), `Item ${v.id} has an unknown status.`);
   // Omitted dependencies are valid; a present but malformed list must not read as "none recorded".
   check(v.dependencies === undefined || (Array.isArray(v.dependencies) && v.dependencies.every((d) => isStr(d) && d.length > 0)), `Item ${v.id} has unreadable dependencies.`);
+  const blocker = parseBlocker(v.blocker, v, revision);
+  const binding = parseBinding(v.assignmentBinding, v, planId, revision, coordinator);
   return {
     id: v.id, title: v.title, kind: v.kind, status: v.status as ItemStatus, parentId: optStr(v.parentId),
     dependencies: v.dependencies as string[] | undefined,
     assigneeSessionId: optStr(v.assigneeSessionId), reporterSessionId: optStr(v.reporterSessionId),
+    ...(blocker ? { reportedBlocker: blocker } : {}),
+    ...(binding ? { delegation: binding } : {}),
   };
+}
+
+const BINDING_KEYS = new Set(['coordinatorSessionId', 'childSessionId', 'planId', 'itemId', 'tool', 'messageId', 'callId', 'observedAt', 'boundAt', 'boundRevision', 'validAtRevision']);
+/**
+ * Optional delegation provenance of a task's current assignment, re-checked here (docs/contracts.md).
+ * Anything doubtful is dropped: absence only means provenance is unavailable, so the assignment
+ * itself still shows from the assignee. Call/message identifiers are checked, not kept.
+ */
+function parseBinding(v: unknown, item: Rec, planId: string, revision: number, coordinator: string | undefined): AssignmentBindingView | undefined {
+  if (!isRec(v) || item.kind !== 'task' || !isStr(item.assigneeSessionId) || !coordinator) return undefined;
+  const ok = Object.keys(v).every((k) => BINDING_KEYS.has(k)) && v.tool === 'subagent' && v.planId === planId && v.itemId === item.id
+    && v.childSessionId === item.assigneeSessionId && v.coordinatorSessionId === coordinator && identifier(v.coordinatorSessionId) && identifier(v.childSessionId)
+    && identifier(v.messageId) && identifier(v.callId) && isoInstant(v.observedAt) && isoInstant(v.boundAt)
+    && isInt(v.boundRevision) && v.boundRevision >= 1 && v.boundRevision <= revision && v.validAtRevision === revision;
+  return ok ? { childSessionId: v.childSessionId as string, coordinatorSessionId: v.coordinatorSessionId as string, boundAt: v.boundAt as string, boundRevision: v.boundRevision as number, validAtRevision: revision } : undefined;
 }
 
 function parseContribution(v: unknown, planId: string): ContributionView {
@@ -220,6 +270,27 @@ export function parseTiming(v: unknown): TimingView | null {
   return { items };
 }
 
+/**
+ * Optional reported-blocked timing of a detail reply, kept apart from working timing. Absent,
+ * unreadable or over its entry bound gives null (waiting time unavailable). An unreadable entry,
+ * or one starting after the reply's read time, is dropped (that start is unknown). Entries are
+ * own keys only, so a task ID never matches an inherited property.
+ */
+export function parseBlockedTiming(v: unknown): Map<string, { kind: 'exact' | 'lower-bound'; since: string; elapsedAtRead: number }> | null {
+  if (!isRec(v) || !isStr(v.readAt) || !isRec(v.items)) return null;
+  const readAt = Date.parse(v.readAt);
+  const entries = Object.entries(v.items);
+  if (Number.isNaN(readAt) || entries.length > BLOCKER_LIMITS.taskEntries) return null;
+  const items = new Map<string, { kind: 'exact' | 'lower-bound'; since: string; elapsedAtRead: number }>();
+  for (const [id, e] of entries) {
+    if (!isRec(e) || !isStr(e.since) || (e.kind !== 'exact' && e.kind !== 'lower-bound')) continue;
+    const since = Date.parse(e.since);
+    if (Number.isNaN(since) || since > readAt) continue;
+    items.set(id, { kind: e.kind, since: e.since, elapsedAtRead: readAt - since });
+  }
+  return items;
+}
+
 /** GET /v1/plan: one detail page. */
 export function parsePlanPage(body: string) {
   const v: unknown = JSON.parse(body);
@@ -228,13 +299,14 @@ export function parsePlanPage(body: string) {
   return {
     envelope: parseEnvelope(v),
     plan,
-    items: page(v.items, (x) => parseItem(x, plan.id), 'Plan items'),
+    items: page(v.items, (x) => parseItem(x, plan.id, plan.revision, plan.ownerSessionId), 'Plan items'),
     contributions: page(v.contributions, (x) => parseContribution(x, plan.id), 'Plan contributions'),
     links: (Array.isArray(v.links) ? v.links : []).map((l) => {
       check(isRec(l) && isStr(l.sessionId) && Array.isArray(l.itemIds), `Plan ${plan.id} has an unreadable assignment link.`);
       return { sessionId: l.sessionId, itemIds: l.itemIds.filter(isStr) };
     }),
     timing: parseTiming(v.timing),
+    blockedTiming: parseBlockedTiming(v.blockedTiming),
   };
 }
 

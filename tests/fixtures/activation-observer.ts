@@ -1,6 +1,7 @@
 /** Separate test observer + deterministic public AISDK driver; never production ingress. */
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import { appendFileSync } from 'node:fs';
+import { Store } from '../../shared/store.ts';
 
 export default Plugin.define({ id: 'activation-observer-fixture', async setup(ctx: any) {
     const record = (value: unknown) => appendFileSync(process.env.ACTIVATION_EVENTS!, JSON.stringify(value) + '\n');
@@ -15,7 +16,11 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
       await ctx.session.hook('retry', (event: any) => { event.decision = { retry: false }; });
       await ctx.session.hook('http.request', () => { record({ type: 'unexpected-http' }); throw new Error('No HTTP provider transport allowed'); });
       await ctx.session.hook('context', (event: any) => {
-        record({ type: 'context', sessionID: event.sessionID, agent: event.agent, tools: Object.keys(event.tools), system: event.system });
+        const store = new Store(process.env.ACTIVATION_STORE!, { readOnly: true });
+        let progress;
+        try { progress = Object.fromEntries(['plans', 'revisions', 'receipts', 'sessions', 'chunks', 'captures', 'contributions'].map(table => [table, store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n])); }
+        finally { store.close(); }
+        record({ type: 'context', sessionID: event.sessionID, agent: event.agent, tools: Object.keys(event.tools), system: event.system, progress });
       });
       await ctx.tool.hook('execute.after', (event: any) => {
         // All inputs here are fixture-authored. Never ship this observer or transcript capture.
@@ -27,10 +32,13 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
         { name: 'edit', input: { path: 'docs/plans/search.md', oldString: 'Second draft', newString: 'Third draft' } },
         { name: 'write', input: { path: 'docs/plans', content: 'Cannot replace a directory' } },
         { name: 'agent_progress_report', input: { op: 'start', plan: 'native-structured', oid: 'native-start', rev: 0, title: 'Synthetic structured plan', items: [{ id: 'a', title: 'First', kind: 'task' }, { id: 'b', title: 'Second', kind: 'task' }] } },
+        undefined, // primary completes before the independently created child runs
+        { name: 'write', input: { path: 'docs/plans/delegated.md', content: '# Delegated search plan\nTwo pending tasks\n' } },
       ];
       let index = 0;
-      await ctx.aisdk.hook('sdk', (event: any) => {
+      await ctx.aisdk.hook('sdk', async (event: any) => {
         record({type:'sdk', providerID:event.model.providerID});
+        record({ type: 'registered', tools: (await ctx.tool.list()).map((t: any) => ({ id: t.id, description: t.description, input: t.input, options: t.options })) });
         if (event.model.providerID !== providerID) throw new Error('Unexpected provider');
         event.sdk = {};
       });
@@ -42,7 +50,7 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
           async doGenerate() { throw new Error('Unexpected auxiliary generation'); },
           async doStream(options: any) {
             const step = steps[index++];
-            record({ type: 'driver', index, tools: options.tools?.map((t: any) => t.name), prompt: options.prompt });
+            record({ type: 'driver', index, tools: options.tools?.map((t: any) => t.name), definitions: options.tools, prompt: options.prompt });
             const usage = { inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 0, text: 0, reasoning: 0 } };
             return { stream: new ReadableStream({ start(controller) {
               controller.enqueue({ type: 'stream-start', warnings: [] });
@@ -58,6 +66,6 @@ export default Plugin.define({ id: 'activation-observer-fixture', async setup(ct
           },
         };
       });
-      record({ type: 'registered', tools: (await ctx.tool.list()).map((t: any) => ({ id: t.id, input: t.input, options: t.options })) });
+      record({ type: 'registered', tools: (await ctx.tool.list()).map((t: any) => ({ id: t.id, description: t.description, input: t.input, options: t.options })) });
       return () => { record({ type: 'disposed' }); };
 } });

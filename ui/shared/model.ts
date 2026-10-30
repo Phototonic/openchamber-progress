@@ -18,7 +18,33 @@ export interface ItemView {
   dependencies?: string[];
   assigneeSessionId?: string;
   reporterSessionId?: string;
+  /**
+   * Reported details of a blocked task (adapter-verified, current at this revision). Absent: none
+   * are known (never reported, cleared, stale or from an older service), never "no blocker".
+   */
+  reportedBlocker?: BlockerView;
+  /**
+   * Server-authored provenance of the current assignment: bound from one verified delegation call
+   * (adapter-checked, current at this revision). Absent: provenance unavailable (explicit link,
+   * older writer, stale or malformed), never "unassigned". Not a report, permission or completion.
+   */
+  delegation?: AssignmentBindingView;
 }
+
+export interface AssignmentBindingView { childSessionId: string; coordinatorSessionId: string; boundAt: string; boundRevision: number; validAtRevision: number }
+
+export type BlockerCategory = 'decision' | 'dependency' | 'review' | 'external' | 'other';
+/**
+ * `reported`: shape, bounds, provenance and revision marker checked. A missing part is null
+ * (unknown); a category this version does not know is `unclassified`, never mapped to a known one.
+ * `invalid`: present but unusable; shown as fixed copy, never its content.
+ */
+export type BlockerView =
+  | {
+    state: 'reported'; category: BlockerCategory | 'unclassified' | null; reason: string | null; nextAction: string | null;
+    reporterSessionId: string; attributedSessionId: string; mode: 'direct' | 'parent-relay'; reportedRevision: number; reportedAt: string;
+  }
+  | { state: 'invalid' };
 
 export interface ContributionView {
   revision: number;
@@ -79,6 +105,12 @@ export interface PlanDetail {
    * task without an entry has an unknown start, never zero.
    */
   timing?: Record<string, ElapsedAnchor>;
+  /**
+   * Reported-blocked intervals by task ID, separate from working time. Absent: the service gave
+   * none (older service or unreadable), so waiting time is unavailable. A blocked task without an
+   * own entry has an unknown start, never zero.
+   */
+  blockedTiming?: Record<string, ElapsedAnchor>;
 }
 
 /**
