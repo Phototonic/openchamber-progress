@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-30
+
+### Added
+
+- A Needs-you view that surfaces reported blockers and plan-specific items needing attention (#22).
+- A bounded progress resume pointer delivered after session compaction, so plan state can be recovered without re-deriving it from history (#23).
+- Native sub-agent activity display, with observed sub-agents shown and declared delegations bound to verified child sessions (#24).
+- Explicit milestone reporting guidance on every guidance surface — including the report tool description, the only surface description-only (MCP) clients see — stating that tracker updates are not progress reports and naming PLAN_READY handoff, review approval, owner approval and actual work start as reporting boundaries; a delegated child's canonical plan write now also reminds its verified direct parent (#27).
+- Conditional, fail-closed advisory hints when a dispatch or a tracker update is observed, coalesced into a single reminder per context (#28).
+
+### Fixed
+
+- Progress resume pointer delivery on OpenCode 2.2.2 hosts: compaction events are correlated independently of delivery ordering, restoring the pointer after real compactions (#25).
+- Native verification truthfulness on current hosts: the builtin harness waits for assignment readiness before snapshotting and interacts only with genuinely actionable elements (#26).
+
+### Development
+
+- The native test host was re-pinned from OpenCode 2.1.4 (no longer obtainable from any public source) to 2.2.2, with archive provenance and mutability caveats recorded; the full validation aggregate now runs against the current host (#27).
+
 ## [0.4.0] - 2026-10-28
 
 ### Added
