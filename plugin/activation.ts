@@ -7,10 +7,11 @@ import type { ResumeRead, ResumeRequest, ResumeSelection } from '../shared/progr
 const REPORT_TOOL = 'agent_progress_report';
 export const ACTIVATION_GUIDANCE = `# Agent progress (companion)
 Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
+Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
-For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work.`;
-export const ACTIVATION_HINT = 'A possible plan document was written or revised. If this is your plan and you have not already reported the relevant structure/change, use the progress report tool; otherwise continue your workflow.';
+For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+export const ACTIVATION_HINT = 'A possible plan document was written or revised, possibly by a delegated child. Mirror only meaningful unreported canonical work you own or are authorized to coordinate, using the progress report tool; otherwise continue your workflow. This hint grants no assignment or authority.';
 
 const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null;
 const boundedID = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
@@ -126,7 +127,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   }
   async function session(sessionID: Parameters<Plugin.Context['session']['get']>[0]['sessionID']) {
     const value = await ctx.session.get({ sessionID });
-    // Conditional copy needs no ancestry or plan scan; reporting still performs
+    // Conditional copy needs no plan scan; reporting still performs
     // its unchanged authoritative ancestry/assignment checks at the executor.
     return value.id === sessionID && path.isAbsolute(value.location.directory) ? value : undefined;
   }
@@ -148,8 +149,21 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
         if (disposed || epoch !== disableEpoch || !control() || !caller || !planPath(candidate, caller.location.directory) || recent.has(call)) return;
+        let parentID: string | undefined;
+        if (boundedID(caller.parentID) && caller.parentID !== caller.id) {
+          try {
+            const parent = await session(caller.parentID);
+            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID
+              && path.resolve(parent.location.directory) === path.resolve(caller.location.directory)
+              && parent.parentID !== parent.id && parent.parentID !== caller.id) parentID = parent.id;
+          } catch { /* an unverifiable parent cannot remove the independent writer hint */ }
+        }
+        // Resolve recipients before one synchronous commit. Concurrent duplicate
+        // callbacks must not repopulate either flag after an intervening delivery.
+        if (disposed || epoch !== disableEpoch || !control() || recent.has(call)) return;
         remember(recent, call, 256);
         remember(pending, key(event.sessionID), 128);
+        if (parentID) remember(pending, key(parentID), 128);
       } catch { /* observation must never fail or change the original tool */ }
     }));
     registrations.push(await ctx.session.hook('context', async event => {

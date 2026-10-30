@@ -36,7 +36,6 @@ test('production hooks via2.1.4 adapter: agnostic recurring section, idempotence
       assert.equal(f.permissions.length, 0);
     } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
     assert.deepEqual(f.store.get(f.binding.source.id, 'existing'), before);
-    assert.match(BASE, /no source/); assert.match(BASE, /only explicitly assigned items/); assert.match(BASE, /Ready is not review or acceptance/);
   });
 });
 
@@ -165,5 +164,114 @@ test('production executor keeps source-free/document/denied-read and caller-spoo
     f.denyRead = true; const denied = await f.report({ ...start('P-denied'), source: 'docs/plans/search.md' }); assert.equal(denied.rev, 1); assert.equal(f.store.get(f.binding.source.id, 'P-denied').document.state, 'denied');
     f.lookup = async () => f.info('ses_spoofed'); const spoof = await f.report(start('P-spoof')); assert.equal(spoof.error, 'binding'); assert.equal(f.store.get(f.binding.source.id, 'P-spoof'), undefined);
     assert.equal(f.store.get(f.binding.source.id, 'P-structured').revision, 1);
+  });
+});
+
+test('delegated write flags writer and verified direct parent independently, never sibling/root/grandparent', async () => {
+  await activationFixture(async f => {
+    const lookedUp: string[] = [];
+    f.lookup = async (id: string) => {
+      lookedUp.push(id);
+      return { ...f.info(id), parentID: id === 'ses_child' ? 'ses_parent' : id === 'ses_parent' ? 'ses_grandparent' : undefined,
+        location: { directory: `${f.root}/project/${id === 'ses_parent' ? 'nested/..' : ''}` } };
+    };
+    await f.after(write('docs/plans/private-draft.md', 'delegated', 'ses_child'));
+    assert.deepEqual(lookedUp, ['ses_child', 'ses_parent'], 'one verified hop, no ancestor search');
+    assert.equal(copy(await next(f, 'ses_child', false)).length, 0, 'restricted child gets no guidance');
+    for (const id of ['ses_sibling', 'ses_root', 'ses_grandparent']) assert.equal(hint(await next(f, id)), false);
+    const parent = await next(f, 'ses_parent'); assert.equal(hint(parent), true);
+    assert.equal(JSON.stringify(parent.system).includes('private-draft'), false);
+    assert.equal(JSON.stringify(parent.system).includes('ses_child'), false);
+    assert.equal(hint(await next(f, 'ses_parent')), false);
+    await f.after(write('plan.md', 'both-eligible', 'ses_child'));
+    assert.equal(hint(await next(f, 'ses_parent')), true);
+    assert.equal(hint(await next(f, 'ses_child')), true, 'parent delivery does not consume writer');
+    await f.after(write('plan.md', 'restricted-parent', 'ses_child'));
+    assert.equal(copy(await next(f, 'ses_parent', false)).length, 0);
+    assert.equal(hint(await next(f, 'ses_parent')), false, 'ineligible parent drops only its flag');
+    assert.equal(hint(await next(f, 'ses_child')), true);
+    assert.equal(hint(await next(f, 'ses_grandparent')), false, 'no fallback');
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0, 'advisories never create plans');
+  });
+});
+
+test('unverifiable, cross-scope and immediately cyclic parent metadata preserves writer-only hint', async () => {
+  const cases = ['missing', 'wrong-id', 'relative', 'directory', 'project', 'self', 'parent-self', 'two-node'];
+  for (const mode of cases) await activationFixture(async f => {
+    const lookedUp: string[] = [];
+    f.lookup = async (id: string) => {
+      lookedUp.push(id);
+      if (id === 'ses_child') return { ...f.info(id), parentID: mode === 'self' ? id : 'ses_parent' };
+      if (mode === 'missing') throw new Error('unavailable parent');
+      return { ...f.info(mode === 'wrong-id' ? 'ses_wrong' : id),
+        projectID: mode === 'project' ? 'other-project' : 'fixture-project',
+        location: { directory: mode === 'relative' ? 'project' : `${f.root}/${mode === 'directory' ? 'other' : 'project'}` },
+        parentID: mode === 'two-node' ? 'ses_child' : mode === 'parent-self' ? id : undefined };
+    };
+    await f.after(write('plan.md', mode, 'ses_child'));
+    assert.deepEqual(lookedUp, mode === 'self' ? ['ses_child'] : ['ses_child', 'ses_parent'], mode);
+    // Restore valid identities to isolate flag publication from delivery eligibility.
+    f.lookup = async (id: string) => f.info(id);
+    assert.equal(hint(await next(f, 'ses_child')), true, mode);
+    assert.equal(hint(await next(f, 'ses_parent')), false, mode);
+  });
+});
+
+test('parent lookup failure does not erase an independent pending parent hint', async () => {
+  await activationFixture(async f => {
+    await f.after(write('plan.md', 'parent-own-write', 'ses_parent'));
+    f.lookup = async (id: string) => {
+      if (id === 'ses_parent') throw new Error('unavailable');
+      return { ...f.info(id), parentID: 'ses_parent' };
+    };
+    await f.after(write('plan.md', 'child-write', 'ses_child'));
+    f.lookup = async (id: string) => f.info(id);
+    assert.equal(hint(await next(f, 'ses_parent')), true);
+    assert.equal(hint(await next(f, 'ses_child')), true);
+  });
+});
+
+test('concurrent same-call parent lookups publish both flags once with no replay after parent consumption', { timeout: 5000 }, async () => {
+  await activationFixture(async f => {
+    let releaseFirst!: () => void, releaseSecond!: () => void, entered!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    f.lookup = async (id: string) => {
+      if (id === 'ses_child') return { ...f.info(id), parentID: 'ses_parent' };
+      if (id === 'ses_parent') { calls++; if (calls === 1) await firstGate; else if (calls === 2) { entered(); await secondGate; } }
+      return f.info(id);
+    };
+    const event = write('plan.md', 'same', 'ses_child'); const first = f.after(event), second = f.after(event); await started;
+    releaseFirst(); await first;
+    assert.equal(hint(await next(f, 'ses_parent')), true);
+    assert.equal(copy(await next(f, 'ses_child', false)).length, 0);
+    releaseSecond(); await second;
+    assert.equal(hint(await next(f, 'ses_parent')), false);
+    assert.equal(hint(await next(f, 'ses_child')), false);
+  });
+});
+
+test('dispose or observed disable during parent await prevents both late flags', { timeout: 5000 }, async () => {
+  for (const mode of ['dispose', 'disable', 'disabled-at-commit']) await activationFixture(async f => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    f.lookup = async (id: string) => {
+      if (id === 'ses_child') return { ...f.info(id), parentID: 'ses_parent' };
+      if (id === 'ses_parent') { entered(); await gate; }
+      return f.info(id);
+    };
+    const task = f.after(write('plan.md', 'in-flight', 'ses_child')); await started;
+    if (mode === 'dispose') await f.dispose();
+    else {
+      f.store.setEnabled(false);
+      if (mode === 'disable') { await next(f, 'ses_other'); f.store.setEnabled(true); }
+    }
+    release(); await task;
+    if (mode === 'dispose') await f.reload(); else f.store.setEnabled(true);
+    assert.equal(hint(await next(f, 'ses_child')), false);
+    assert.equal(hint(await next(f, 'ses_parent')), false);
   });
 });

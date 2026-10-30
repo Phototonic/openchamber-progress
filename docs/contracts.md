@@ -479,6 +479,19 @@ Unknown tools, shell/opaque patches and arbitrary/non-Markdown paths are not
 inferred as plan documents. Structured plans need no file. There is no new
 service/RPC field, durable hint state, prompt configuration or global gate.
 
+A qualifying write leaves independent writer and verified direct-parent flags,
+at most two recipients. Only that exact parent is looked up: returned ID must
+match, absolute directories must be lexically normalized-equal, project IDs must
+match, and immediately visible self/two-node cycles exclude relay. No ancestor
+search or sibling/grandparent fallback exists. Each recipient still requires a
+verified session/source, enabled capture and an effective report tool. An
+ineligible child drops only its own flag; an ineligible parent receives nothing.
+The hint says the possible document may have been written by a delegated child,
+without paths, child names or inferred assignments. It asks only for meaningful
+unreported canonical work the recipient owns or is authorized to coordinate.
+Lookup failure preserves valid independent hints. Disable/disposal and duplicate
+checks are repeated after awaited lookups; recipient flags publish synchronously.
+
 Recovery is an optional addition inside that same owned section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end
@@ -1174,6 +1187,17 @@ Read without page returns compact plan/revision/lifecycle/
 counts/documentState/detailPageSize without items; explicit 0-based page returns
 paged PlanRead+Envelope.
 Caller/source/time are supplied by plugin, never trusted from model input.
+
+The report description front-loads the same conditional rule as native and skill
+guidance: tracker updates are not Agent Progress reports; explicitly mirror
+meaningful unreported canonical state at PLAN_READY handoff, review approval,
+owner approval and actual work start, not again when already current. These are
+canonical states, not detected plugin events. PLAN_READY mirrors actionable
+structure, not implementation completion or approval. Review and owner approval
+are separate; reflect only existing canonical gate/work items, never invent review
+tasks. Dispatch is not work start. No file or automatic per-turn report is required.
+Description-only clients may omit/truncate tool descriptions; delivery does not
+guarantee reporting or model compliance.
 
 - start: title/items/source?; creates independent plan identity.
 - change: changes[{id,status}], attributed? (explicit validated parent relay).

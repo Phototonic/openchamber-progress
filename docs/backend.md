@@ -95,11 +95,15 @@ host account isolation, long-session memory behavior or a release/install result
 - plugin/activation.ts adds advisory native primary-context/post-execute hooks.
   Verified source/session, enabled capture and effective report-tool availability
   are required for guidance. Generic guidance/file hints need only the current
-  authoritative session; the first primary attempt after an observed successful
+  authoritative session for delivery. A qualifying plan write can also flag its
+  exact verified direct parent in the same project and lexically normalized
+  absolute directory, excluding immediately visible cycles. This relay performs
+  no session listing, grandparent traversal, plan scan or tool/authority change.
+  The first primary attempt after an observed successful
   compaction may additionally resolve bounded ancestry and read `Store.resumePlans`.
   A narrow read-only callback is the only recovery Store access, never the report
   executor or capture path. A bounded single-row enabled query is sampled at hook
-  boundaries, including after awaited lookup. Reporting still performs its unchanged
+  boundaries, including after awaited writer/parent or recovery lookups. Reporting still performs its unchanged
   assignment/ancestry/capture checks.
 - shared/store.ts owns mutations, counts, assignment/lifecycle validation,
   immutable revision snapshots, operation receipts, source namespaces, captures
@@ -393,6 +397,12 @@ characters and lexical path metadata4096. Only native2.1.4 successful single-fil
 `write`/`edit` operations on conventional plan paths qualify. No document paths,
 bodies/diffs, plan/receipt state or inferred progress are retained. A hint is
 conditional and consumed on its next eligible delivery, independent of receipts.
+Each event flags the writer and at most its verified direct parent (two keys),
+published together after disable/disposal/duplicate checks. Parent lookup errors
+preserve the writer hint and unrelated pending flags. Each recipient's own
+eligibility gates delivery/consumption: a restricted child's context cannot
+consume its parent's flag, and a restricted parent gets no fallback relay.
+Hints mention a possible delegated child, never paths, names or assignments.
 Restart/cap eviction may lose a hint or permit an old replay; base guidance recurs.
 Observed disable drops pending hints and invalidates in-flight lookups, with no
 backfill on re-enable. Disposal clears local state before unregistering hooks and
@@ -445,6 +455,15 @@ and explicitly unconfirmed partial coverage. A child receives at most20 complete
 assigned IDs per candidate, never task prose or sibling scope. The exact internal
 DTO, active-only eligibility, read-before-mutation instructions and generic
 fallback are frozen in [the contract](contracts.md#advisory-activation-does-not-change-the-protocol).
+
+Native guidance, inline/packaged skills and an early report-description clause
+distinguish tracker updates from reports and conditionally identify PLAN_READY,
+review approval, owner approval and actual work start as meaningful unreported
+canonical boundaries. The plugin detects none of those states. Ready is not
+review/approval/completion; dispatch is not work start; existing canonical gate/work
+items are mirrored without inventing review tasks. Already-current state needs no
+mutation, and no file or automatic per-turn report is required. Description-only
+client exposure and model compliance remain outside native delivery guarantees.
 
 ## Verification and known limits
 

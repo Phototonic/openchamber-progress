@@ -30,6 +30,7 @@ export default {...original,async setup(ctx){
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as any).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
     const env={PATH:'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,OPENCODE_PASSWORD:'synthetic-local-only',DBUS_SESSION_BUS_ADDRESS:'disabled:',PERF_FAILURE_MARKER:`${root}/fail`,PERF_FAILURE_EVENTS:`${root}/events`};
     const binary='/tmp/opencode/agent-progress-probe-cli/opencode';assert.ok(fs.existsSync(binary));
+    const version=spawnSync(binary,['--version'],{env,encoding:'utf8'});assert.equal(version.status,0);assert.equal(version.stdout.trim(),'opencode v2.2.2');
     child=spawn(binary,['serve','--hostname','127.0.0.1','--port',String(port)],{cwd:`${root}/project`,env,stdio:'ignore'});
     const headers={authorization:`Basic ${Buffer.from('opencode:synthetic-local-only').toString('base64')}`};
     const baseUrl=`http://127.0.0.1:${port}`;const client=OpenCode.make({baseUrl,headers});const location={directory:`${root}/project`};const rpc=client.rpc(ProgressStatus);

@@ -220,11 +220,10 @@ and overlapping starts conservatively omit recovery. There is no new timer,
 persistence or guarantee for background precomputation. Both delivery orders and
 retirement/replay/cap boundaries are deterministic unit/installed-adapter coverage.
 
-The full `bun run check` aggregate remains **blocked/not green** due to an independent
-native subagent/desktop family; it was not repaired or silently skipped in this fix.
-The repository-maintained portable helper separately covers portable backend,
-browser-model/automation, generated parity and package verification. Passing it and
-these selected native checks is not full native certification or a desktop install.
+With the 2.2.2 native re-pin in place, the full `bun run check` aggregate passes
+on this branch: **326 passed, 0 failed, 18 Windows-only skips**, including the
+native subagent/desktop family. Earlier blocked-status statements are historical.
+This result does not claim a desktop installation.
 
 **Known replay limitation:** pinned2.1.4 event subscriptions are volatile/live-only,
 with no replay controls, and the production plugin uses the native in-process
@@ -258,9 +257,9 @@ curl -fL --max-time 90 https://opencode.ai/update/api/latest/cli/opencode/openco
 tar -xzf /tmp/opencode/agent-progress-probe-cli/cli.tar.gz -C /tmp/opencode/agent-progress-probe-cli
 ```
 
-Observed archive SHA256:
+Historical 2.1.4 archive SHA256:
 `2edaf8cf96e81dec5ee996a3196b03345cf59e5a1673d83a4599bb4afc5c5f6d`.
-`latest` is mutable: verify downloaded version again, do not assume future bytes.
+This digest describes the earlier host only, not the current native proof pin.
 
 Recovery on2026-10-24 re-downloaded the official archive: actual version2.1.4,
 same SHA256 shown above. The host restart cleared retained temporary CLI/desktop
@@ -269,6 +268,30 @@ Future desktop/UI reruns require fixture regeneration; none was performed for th
 recovery. Early live refusals and later accepted z.ai root/native/move/compaction
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
+
+### Current native proof pin — 2.2.2
+
+Verified on 2026-10-30: the official URL above now supplies an archive whose SHA-256 is
+`3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`.
+The extracted independent executable reports `opencode v2.2.2`; its SHA-256 is
+`4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
+The archive remains `cli.tar.gz` and the executable remains `opencode` in the
+disposable `/tmp/opencode/agent-progress-probe-cli` fixture directory. Native runtime
+tests now require 2.2.2; installed plugin/client SDK packages remain pinned to
+2.1.4, independently of the runtime binary. Earlier observations in this guide
+remain historical and do not certify the new host.
+
+A subsequent restart lost the temporary 2.1.4 executable. Parent recovery searches
+found no matching local copy, public release, npm package or archived snapshot;
+2.1.4 became unavailable from the searched public sources after the vendor moved
+`latest`. The owner selected 2.2.2 rather than waiving native proof. That recovery
+decision does not claim a permanent inventory of all possible private archives.
+
+`latest` is mutable: on every fetch verify the archive digest against this pin
+**before extraction/use**, then verify extracted `--version`. A changed digest or
+version fails closed; do not silently follow `latest` or download from inside an
+isolated test. Archive identity is provenance, not behavioral compatibility proof:
+all native regression families and final emitted companion runs must still pass.
 
 ## Historical CLI probe reproduction
 
