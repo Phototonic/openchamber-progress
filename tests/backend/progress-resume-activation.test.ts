@@ -1,5 +1,5 @@
 /** Direct disposable binding, never an installer. Fake host + real production plugin/Store. */
-import { test, after } from 'node:test';
+import { test, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { Effect, DateTime, Stream } from 'effect';
@@ -70,7 +70,8 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     return ()=>{set.delete(callback);if(!set.size){callbacks.delete(key);hooks.delete(key);}};
   }
   let dispose: (() => Promise<void>) | undefined;
-  let clock = Date.now() + 1, sequence = 0, reads = 0, gets = 0;
+  let clock = 1_800_000_000_000, sequence = 0, reads = 0, gets = 0;
+  const wallClock = mock.method(Date, 'now', () => clock);
   const info = (id: string): any => ({ id, agent: 'synthetic', projectID: 'fixture', location: { directory: `${root}/project` }, parentID: id === 'ses_C' || id === 'ses_sibling' ? 'ses_M' : undefined, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) } });
   const f: any = { root, store, binding, hooks, tools, events, info, lookup: async (id: string) => info(id), get reads() { return reads; }, get gets() { return gets; } };
   const hook = (domain: string) => async (name: string, callback: any) => {
@@ -87,15 +88,19 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     permission: { assert: async () => { throw new Error('Recovery must not capture'); } },
     rpc: { register: async () => {} },
   };
-  f.event = (type: string, sessionID = 'ses_M', overrides: any = {}) => ({ type: `session.compaction.${type}`, id: `evt_${++sequence}`, created: clock = Math.max(clock + 1, Date.now() + 1), durable: { aggregateID: sessionID, seq: sequence, version: 1 }, location: { directory: `${root}/project` }, data: { sessionID, reason: 'manual', ...(type === 'ended' ? { text: 'Synthetic unused summary' } : {}), ...(type === 'failed' ? { error: { type: 'synthetic', message: 'Unused error' } } : {}) }, ...overrides });
+  f.tick = (amount = 1) => clock += amount;
+  f.time = (value: number) => clock = value;
+  f.event = (type: string, sessionID = 'ses_M', overrides: any = {}) => ({ type: `session.compaction.${type}`, id: `evt_${++sequence}`, created: clock += 2, durable: { aggregateID: sessionID, seq: sequence, version: 1 }, location: { directory: `${root}/project` }, data: { sessionID, reason: 'manual', ...(type === 'ended' ? { text: 'Synthetic unused summary' } : {}), ...(type === 'failed' ? { error: { type: 'synthetic', message: 'Unused error' } } : {}) }, ...overrides });
   f.emit = (event: any) => bounded(Promise.all([...streams].filter(s=>!s.closed).map(s=>s.push(event))));
-  f.compact = async (sessionID = 'ses_M', reason = 'manual') => {
-    const start = f.event('started', sessionID); start.data.reason = reason; await f.emit(start);
+  f.compact = async (sessionID = 'ses_M', reason = 'manual', order = 'start-first') => {
+    const start = f.event('started', sessionID); start.data.reason = reason;
+    if (order === 'start-first') await f.emit(start);
     await f.aux('compaction', context(sessionID));
+    if (order === 'hook-first') await f.emit(start);
     const end = f.event('ended', sessionID); end.data.reason = reason; await f.emit(end);
     return { start, end };
   };
-  f.next = async (sessionID = 'ses_M', available = true, system?: any[]) => { const c = context(sessionID, available); if (system) c.system = system; await f.context(c); return c; };
+  f.next = async (sessionID = 'ses_M', available = true, system?: any[]) => { f.tick(); const c = context(sessionID, available); if (system) c.system = system; await f.context(c); return c; };
   f.seed = (plan = 'P-alpha', title = 'Synthetic alpha', sessionID = 'ses_M', items = [{ id: 'I1', title: 'Private task prose', kind: 'task', status: 'pending' }]) => store.apply({ op: 'start', plan, title, oid: 'start', rev: 0, items }, { sourceId: source.id, sessionId: sessionID, parentId: sessionID === 'ses_C' ? 'ses_M' : null, ancestry: sessionID === 'ses_C' ? ['ses_M'] : [], agent: 'synthetic', directory: '/fixture/project', verifiedSource: true });
   f.report = async (value: any, sessionID = 'ses_M') => {
     const execute = tools.get('agent_progress_report').execute(value, { sessionID, agent: 'synthetic', messageID: 'msg_fixture', id: 'call_fixture', progress: () => Effect.void });
@@ -107,7 +112,7 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
   try {
     if (!options.adapter) {
       f.context = (event: any) => hooks.get('session:context')(event);
-      f.aux = async (name: string, event: any) => { await hooks.get(`session:${name}`)?.(event); };
+      f.aux = async (name: string, event: any) => { f.tick(); await hooks.get(`session:${name}`)?.(event); };
       f.after = (event: any) => hooks.get('tool:execute.after')(event);
       dispose = await plugin.setup(ctx) as () => Promise<void>;
       f.dispose = async () => { const close = dispose; dispose = undefined; await close?.(); };
@@ -130,7 +135,7 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
       const host: any = new Proxy({}, { get: (_, name) => domains[name] ?? unused });
       const adapted = fromPromise({ ...plugin, async setup(context) { dispose = await plugin.setup(context) as () => Promise<void>; return dispose; } });
       f.context = (e: any) => hooks.get('session:context')(e);
-      f.aux = async (name: string, e: any) => { const h = hooks.get(`session:${name}`); if (h) await h(e); };
+      f.aux = async (name: string, e: any) => { f.tick(); const h = hooks.get(`session:${name}`); if (h) await h(e); };
       try { await Effect.runPromise(Effect.scoped(Effect.gen(function* () { yield* adapted.effect(host); yield* Effect.promise(() => run(f)); }))); }
       finally { dispose = undefined; } // adapter scope already disposed, including on assertion failure
     }
@@ -138,13 +143,14 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     for(const stream of streams)stream.close();events.close(); await dispose?.(); Store.prototype.resumePlans = original; store.close();
     for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     fs.rmSync(root, { recursive: true, force: true });
+    wallClock.mock.restore();
   }
 }
 
 test('V1/V2 pinned 2.1.4 adapter transports paired compaction and production current Store pointer', { timeout: 10000 }, async () => {
-  await fixture(async f => {
+  for (const order of ['start-first', 'hook-first']) await fixture(async f => {
     f.seed(); assert.equal(capsule(await f.next()), ''); assert.equal(f.reads, 0);
-    await f.compact();
+    await f.compact('ses_M', 'manual', order);
     assert.equal((await f.report({ op: 'revise', plan: 'P-alpha', oid: 'revise', rev: 1, title: 'Synthetic alpha r2' })).rev, 2);
     const c = await f.next();
     samples.single = capsule(c);
@@ -202,6 +208,152 @@ test('V3 pointer versus unconfirmed list, output omissions, JSON-quoted literal 
     assert.equal((child.match(/Assigned-only scope/g) ?? []).length, 1);
     for (const id of ids) assert.ok(child.includes(JSON.stringify(id)), 'complete assigned IDs survive together');
   });
+});
+
+test('correlation declines incomplete, crossed and temporally ambiguous episodes, then accepts a clean attempt', async t => {
+  const scenarios: Record<string, (f: any) => Promise<void>> = {
+    'hook only': async f => { await f.aux('compaction', context()); },
+    'start and hook without end': async f => { await f.emit(f.event('started')); await f.aux('compaction', context()); },
+    'terminal before start delivery': async f => {
+      const start = f.event('started'); await f.aux('compaction', context());
+      await f.emit(f.event('ended')); await f.emit(start);
+    },
+    'reason mismatch': async f => {
+      await f.emit(f.event('started')); await f.aux('compaction', context());
+      const end = f.event('ended'); end.data.reason = 'auto'; await f.emit(end);
+    },
+    'orphan before a later start': async f => {
+      await f.aux('compaction', context()); await f.emit(f.event('started')); await f.emit(f.event('ended'));
+    },
+    'overlapping starts': async f => {
+      await f.emit(f.event('started')); await f.aux('compaction', context());
+      await f.emit(f.event('started')); await f.aux('compaction', context()); await f.emit(f.event('ended'));
+    },
+    'start hook tie': async f => {
+      const start = f.event('started'); await f.emit(start); f.time(start.created - 1);
+      await f.aux('compaction', context()); await f.emit(f.event('ended'));
+    },
+    'hook end tie': async f => {
+      await f.emit(f.event('started')); await f.aux('compaction', context());
+      const hookTime = Date.now(); await f.emit(f.event('ended', 'ses_M', { created: hookTime }));
+    },
+    'hook after completion creation': async f => {
+      await f.emit(f.event('started')); const end = f.event('ended');
+      await f.aux('compaction', context()); await f.emit(end);
+    },
+    'backward hook clock': async f => {
+      const start = f.event('started'); await f.emit(start); await f.aux('compaction', context());
+      f.time(start.created - 1); await f.aux('compaction', context()); await f.emit(f.event('ended'));
+    },
+    'future start creation': async f => {
+      const start = f.event('started', 'ses_M', { created: Date.now() + 20 }); await f.emit(start);
+      f.tick(30); await f.aux('compaction', context()); await f.emit(f.event('ended'));
+    },
+    'new hook after completed attempt': async f => { await f.compact(); await f.aux('compaction', context()); },
+  };
+  for (const [name, scenario] of Object.entries(scenarios)) await t.test(name, () => fixture(async f => {
+    f.seed(); await scenario(f);
+    const c = await f.next(); assert.equal(capsule(c), ''); assert.equal(parts(c)[0].text, BASE); assert.equal(f.reads, 0);
+    await f.compact('ses_M', 'auto', 'hook-first'); assert.ok(capsule(await f.next())); assert.equal(f.reads, 1);
+  }));
+});
+
+test('first primary retires incomplete windows before awaits, including missing tools; delayed parts cannot backfill', async t => {
+  for (const available of [true, false]) for (const deliveredStart of [true, false]) await t.test(`${available}/${deliveredStart}`, () => fixture(async f => {
+    f.seed(); const start = f.event('started');
+    if (deliveredStart) await f.emit(start);
+    await f.aux('compaction', context());
+    const primary = context('ses_M', available), entered = deferred(), release = deferred();
+    f.lookup = async (id: string) => { entered.resolve(); await release.promise; return f.info(id); };
+    f.tick(); const task = f.context(primary);
+    if (available) await bounded(entered.promise);
+    if (!deliveredStart) await f.emit(start);
+    await f.emit(f.event('ended'));
+    release.resolve(); await task; f.lookup = async (id: string) => f.info(id);
+    assert.equal(capsule(primary), ''); assert.equal(capsule(await f.next()), ''); assert.equal(f.reads, 0);
+    await f.compact(); assert.ok(capsule(await f.next()));
+  }));
+});
+
+for (const removal of ['eviction', 'floor rejection']) test(`primary retirement fence survives ${removal} by older-created queued events`, async () => {
+  await fixture(async f => {
+    f.seed(); const floor = Date.now();
+    // These starts were created before the primary but delivered later. None is
+    // a replay, including the target start that has never reached the stream.
+    const queued = Array.from({ length: 128 }, (_, i) => {
+      f.time(floor + 3); return f.event('started', `ses_queued${i}`);
+    });
+    f.time(floor + 18); const delayedStart = f.event('started');
+    if (removal === 'floor rejection') for (const event of queued.slice(0, 127)) await f.emit(event);
+    f.time(floor + 29); await f.aux('compaction', context());
+    f.time(floor + 39); assert.equal(capsule(await f.next()), ''); // fence = floor + 40
+    if (removal === 'eviction') {
+      for (const event of queued) await f.emit(event);
+    } else {
+      // Evict a filler, advancing the global floor only to +5 while the target
+      // tombstone remains. A floor-rejected event then removes that tombstone.
+      await f.emit(queued[127]);
+      await f.emit(f.event('failed', 'ses_M', { created: floor + 5 }));
+    }
+    await f.emit(delayedStart);
+    f.time(floor + 49); await f.aux('compaction', context());
+    f.time(floor + 58); await f.emit(f.event('ended'));
+    const primary = await f.next();
+    assert.equal(capsule(primary), '', 'a removed tombstone must not allow retired episode backfill');
+    assert.equal(parts(primary)[0].text, BASE); assert.equal(f.reads, 0);
+    await f.compact(); assert.ok(capsule(await f.next())); assert.equal(f.reads, 1);
+  });
+});
+
+test('primary retirement fence survives clock rollback and observed disable clearing', async () => {
+  await fixture(async f => {
+    f.seed(); const floor = Date.now();
+    f.time(floor + 18); const delayedStart = f.event('started');
+    f.time(floor + 39); assert.equal(capsule(await f.next()), ''); // primary fence = +40
+    f.time(floor + 9); f.store.setEnabled(false);
+    await f.next('ses_other'); // observe disable at +10, below the retained fence
+    f.store.setEnabled(true);
+    f.time(floor + 30); await f.emit(delayedStart); // first delivery, not a replay
+    f.time(floor + 49); await f.aux('compaction', context());
+    f.time(floor + 58); await f.emit(f.event('ended'));
+    const primary = await f.next();
+    assert.equal(capsule(primary), '', 'disable must not erase a newer primary fence after rollback');
+    assert.equal(parts(primary)[0].text, BASE); assert.equal(f.reads, 0);
+    await f.compact(); assert.ok(capsule(await f.next())); assert.equal(f.reads, 1);
+    assert.equal(capsule(await f.next()), ''); assert.equal(f.reads, 1);
+  });
+});
+
+test('duplicate observations coalesce without inspecting or changing compaction payloads', async () => {
+  await fixture(async f => {
+    f.seed(); const start = f.event('started');
+    const hook: any = { sessionID: 'ses_M' };
+    for (const key of ['system', 'messages', 'tools', 'options', 'result']) Object.defineProperty(hook, key, { get() { throw new Error(`compaction ${key} inspected`); } });
+    await f.aux('compaction', hook); await f.emit(start); await f.aux('compaction', hook);
+    await f.emit(f.event('ended')); assert.ok(capsule(await f.next())); assert.equal(f.reads, 1);
+    assert.equal(capsule(await f.next()), ''); assert.equal(f.reads, 1);
+    const unchanged = context(); const keys = Object.keys(unchanged), refs = { ...unchanged };
+    await f.emit(f.event('started')); await f.aux('compaction', unchanged); await f.emit(f.event('ended'));
+    assert.deepEqual(Object.keys(unchanged), keys);
+    for (const key of keys) assert.equal(unchanged[key], refs[key]);
+  });
+});
+
+test('orphan observations share session eviction bounds and retire on disable, stream failure or disposal', async t => {
+  for (const mode of ['evict', 'disable', 'stream', 'dispose']) await t.test(mode, () => fixture(async f => {
+    f.seed(); const start = f.event('started'); await f.aux('compaction', context());
+    if (mode === 'evict') {
+      for (let i = 0; i < 129; i++) await f.aux('compaction', context(`ses_orphan${i}`));
+    } else if (mode === 'disable') {
+      f.store.setEnabled(false); await f.next('ses_other'); f.store.setEnabled(true);
+    } else if (mode === 'stream') {
+      f.events.close(); await new Promise<void>(resolve => setImmediate(resolve));
+    } else await f.dispose();
+    await f.emit(start); await f.emit(f.event('ended'));
+    if (mode === 'dispose') { assert.equal(f.hooks.size, 0); assert.equal(f.reads, 0); return; }
+    assert.equal(capsule(await f.next()), ''); assert.equal(f.reads, 0);
+    if (mode !== 'stream') { await f.compact(); assert.ok(capsule(await f.next())); }
+  }));
 });
 
 test('V4 assigned child only, unlinked/sibling/restricted child fallback and missing ancestry', async () => {
@@ -307,12 +459,13 @@ test('V6/V7 equal-timestamp eviction retires retained recovery on floor-rejected
   for (const terminal of ['failed', 'ended']) await t.test(terminal, async () => {
     await fixture(async f => {
       f.seed();
-      const timestamp = Date.now() + 10_000;
+      const timestamp = f.tick(10_000);
       // Retain the target session while a different, older record is evicted.
-      for (let i = 0; i < 127; i++) await f.emit(f.event('started', `ses_fill${i}`, { created: timestamp - 3 }));
-      await f.emit(f.event('started', 'ses_M', { created: timestamp - 2 }));
+      for (let i = 0; i < 127; i++) await f.emit(f.event('started', `ses_fill${i}`, { created: timestamp - 5 }));
+      await f.emit(f.event('started', 'ses_M', { created: timestamp - 4 }));
+      f.time(timestamp - 4);
       await f.aux('compaction', context());
-      await f.emit(f.event('ended', 'ses_M', { created: timestamp - 1 }));
+      await f.emit(f.event('ended', 'ses_M', { created: timestamp - 2 }));
       await f.emit(f.event('started', 'ses_evict', { created: timestamp }));
       if (terminal === 'failed') {
         await f.emit(f.event('started', 'ses_M', { created: timestamp }));
@@ -368,6 +521,8 @@ test('V6 tool loss during ancestry declines recovery and removes generic section
 
 test('V5/V6 source and store-generation changes retire held authority even if later restored', async () => {
   for (const change of ['source', 'store']) {
+    let clock = 1_800_000_000_000;
+    const wallClock = mock.method(Date, 'now', () => clock);
     const events = new Events(), hooks = new Map<string, any>();
     const source = { id: 'source-fixture', verified: true };
     const entered = deferred(), release = deferred(); let reads = 0;
@@ -379,9 +534,14 @@ test('V5/V6 source and store-generation changes retire held authority even if la
     };
     const dispose = await registerActivation(ctx, source, () => true, recovery);
     try {
-      const created = Date.now() + 10;
-      const e = (kind: string, seq: number) => ({ type: `session.compaction.${kind}`, id: `evt_${seq}`, created: created + seq, durable: { seq, aggregateID: 'ses_M', version: 1 }, location: ctx.location, data: { sessionID: 'ses_M', reason: 'manual' } });
-      await events.push(e('started', 1)); await hooks.get('compaction')(context()); await events.push(e('ended', 2));
+      const e = (kind: string, seq: number) => ({ type: `session.compaction.${kind}`, id: `evt_${seq}`, created: clock += 2, durable: { seq, aggregateID: 'ses_M', version: 1 }, location: ctx.location, data: { sessionID: 'ses_M', reason: 'manual' } });
+      const orphanStart = e('started', 1); clock++; await hooks.get('compaction')(context());
+      if (change === 'source') source.id = 'source-other'; else recovery.storeId = 'store-other';
+      clock++; await hooks.get('context')(context('ses_other'));
+      source.id = 'source-fixture'; recovery.storeId = 'store-fixture';
+      await events.push(orphanStart); await events.push(e('ended', 2));
+      await hooks.get('context')(context()); assert.equal(reads, 0, 'generation change retires pre-start observation');
+      await events.push(e('started', 3)); clock++; await hooks.get('compaction')(context()); await events.push(e('ended', 4));
       const c = context(); const task = hooks.get('context')(c); await bounded(entered.promise);
       if (change === 'source') source.id = 'source-other'; else recovery.storeId = 'store-other';
       await hooks.get('context')(context('ses_other'));
@@ -389,7 +549,7 @@ test('V5/V6 source and store-generation changes retire held authority even if la
       release.resolve(); await task;
       assert.equal(capsule(c), ''); assert.equal(reads, 0);
       await hooks.get('context')(context()); assert.equal(reads, 0);
-    } finally { events.close(); await dispose(); }
+    } finally { events.close(); await dispose(); wallClock.mock.restore(); }
   }
 });
 

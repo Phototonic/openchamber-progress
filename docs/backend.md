@@ -401,9 +401,23 @@ No persistent reminder, new RPC or automatic progress/capture write exists.
 
 Progress resume separately retains at most128 session compaction records and256
 event identities, never plan titles/revisions/assignments between requests. It
-pairs a live start, observe-only compaction hook and increasing matching-reason
-end; failures clear pending state. It consumes on the first following primary
-attempt, with no per-turn recovery scan or automatic retry/backfill. Observation
+pairs a validated start, observe-only compaction hook and increasing matching-reason
+end independently of hook/start callback delivery order. One constant-size hook
+window and open start share each record with sequence/retirement metadata; orphan
+hooks and primary tombstones share the same cap. No common attempt ID is exposed
+by the inspected hook/event surfaces. The conservative temporal fallback requires
+`start.created < firstHookTime <= lastHookTime < end.created`; timestamps reject
+ambiguous evidence, not establish authority or a unique attempt identity. Boundary
+ties, backward/inconsistent clocks, stale hooks and overlapping starts decline.
+Both start→hook→end and hook→delivered-start→end can qualify; arbitrary inversions
+of the durable stream and background/precomputed compactions are not certified.
+Terminals retire the window; failures clear pending state. The first following
+primary consumes pending and incomplete evidence before awaits, preserving a
+creation-time retirement fence against delayed stream backfill. Eviction, floor
+rejection and lifecycle clearing promote removed records' fences into the global
+event floor, even after clock rollback, conservatively declining older queued
+episodes. There is no
+per-turn recovery scan, new timer/persistence or automatic retry/backfill. Observation
 does not read summaries or alter the host's compaction system/messages/options,
 tools or result. Generic guidance/file hints remain independent.
 
@@ -443,7 +457,7 @@ node --experimental-strip-types --test tests/backend/progress-resume-store.test.
 bun run typecheck
 ```
 
-The separately selected native `progress resume` case loads the real production
+The separately selected native `progress resume` case on OpenCode **2.2.2** loads the real production
 plugin with direct synthetic Store seeding, not an installer. It captures actual
 outgoing recovery from system parts with a credential-free scripted AISDK provider,
 fresh HOME/XDG and a rootless loopback-only network namespace. Source and built
@@ -453,7 +467,16 @@ unlinked/restricted child, finished-only work, failed/empty compaction, disable,
 archive/delete before delivery, and real native plugin reload. No observer emits
 recovery in regression mode; the provider does not choose or execute report tools.
 
-The pinned2.1.4 native adapter subscribes in-process, not through an HTTP event
+The plugin/client adapter remains pinned **2.1.4**, separate from the host pin.
+Source-built and verbatim emitted-companion native runs pass all21 existing
+resume scenarios, including `unique-current-r2` and one-shot consumption. Focused
+A2 activation also passes on2.2.2. Local evidence is under
+`evidence/resume-capsule-host-ordering/`. Earlier2.1.4 success remains historical,
+not a fresh rerun. Tagged [host compaction](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/core/src/session/compaction.ts)
+and [hook types](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/plugin/src/effect/session.ts)
+explain the inspected surfaces; no cross-surface delivery-order guarantee is assumed.
+
+The pinned adapter subscribes in-process, not through an HTTP event
 connection. Its event stream is explicitly volatile/live-only without replay
 controls. Host replay therefore remains unexercised, not passed; duplicate and
 sequence guards are covered by unit tests. Actual plugin reload proves that old
@@ -462,6 +485,11 @@ Manual compactions were triggered; automatic reasons are unit-covered only.
 This integration proof does not establish model compliance, desktop-native
 OpenChamber/AppImage behavior, or cross-version support. Historical checks below
 are not recertified by these runs.
+
+Portable CI/package checks are separate from native-host certification. The full
+`bun run check` aggregate is **blocked/not green** by an independent native
+subagent/desktop family outside this capsule fix. Passing focused and portable
+checks do not waive or certify that family, installation or a release.
 
 ### Official-main metadata checker
 

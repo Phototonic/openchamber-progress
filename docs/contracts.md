@@ -482,8 +482,17 @@ service/RPC field, durable hint state, prompt configuration or global gate.
 Recovery is an optional addition inside that same owned section, only after a
 host compaction observed during the loaded plugin lifetime: a live start, an
 observe-only compaction hook and an increasing, matching-reason successful end
-must pair for the same session/source. A start or hook alone is not success.
-The first following primary context attempt consumes the opportunity even if
+must pair for the same session/source. Hook/start callback delivery order is not
+identity: start→hook→end and hook→delivered-start→end are supported when event
+creation times strictly contain the local observation window:
+`start.created < firstHookTime <= lastHookTime < end.created`.
+No shared attempt token exists on the inspected surfaces. Equal boundaries,
+inconsistent/backward clocks, stale observations and overlapping starts decline;
+the temporal fallback is not a unique identity or a guarantee for background
+precomputation or arbitrarily inverted durable streams. A start or hook alone is not success.
+Accepted terminals retire open evidence; failure clears pending recovery.
+The first following primary context attempt consumes pending and incomplete
+evidence before awaits, retaining a creation-time fence against delayed backfill even if
 delivery safely declines. Ordinary turns and uncompacted resumes do no recovery
 lookup and retain today's eligible generic guidance. Failed compactions retire
 pending recovery; title/generate and summarization requests receive no capsule.
@@ -566,7 +575,10 @@ fit is omitted. Quoting titles treats them as literal data, not as a promise of
 prompt-injection prevention or secret redaction.
 
 Activation retains at most **128** session compaction records and **256** event
-replay identities, independently of existing file-hint bounds. Oldest eviction,
+replay identities, independently of existing file-hint bounds. Orphan hooks and
+primary retirement tombstones use that same session cap; each
+record holds at most one constant-size first/last observation window and open start.
+No new timer or persistent correlation is added. Eviction,
 reload or retirement can lose an advisory opportunity; they never reconstruct
 one from transcripts. Capsule-only authoritative identity work has a **1 s**
 deadline with cancellation checkpoints before and after each ancestry await
@@ -575,8 +587,10 @@ host lookup ignoring cancellation cannot start another hop or later inject its
 retired result. Its outstanding call can temporarily suppress further recovery.
 The request-scoped deadline timer is cleared after use; no background poller exists.
 
-Pinned **2.1.4** scripted-provider integration verifies production recovery at
+OpenCode **2.2.2** scripted-provider integration with the unchanged **2.1.4**
+plugin/client adapter verifies source-built and emitted-companion production recovery at
 the actual outgoing boundary, not model compliance or desktop-native behavior.
+Earlier2.1.4 integration evidence remains historical, not freshly recertified.
 Native plugin reload does not re-arm an old completion; a fresh compaction still
 delivers. **Host replay remains unexercised:** the pinned event stream is live-only
 and volatile, with no replay controls. Duplicate/sequence guards are unit-tested,

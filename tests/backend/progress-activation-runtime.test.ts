@@ -34,7 +34,7 @@ test('progress resume successful host compaction reaches the next primary only',
     for (const dir of ['config/opencode/plugins/companion', 'config/opencode/plugins/resume', 'data/opencode', 'home', 'cache', 'state', 'runtime', 'tmp', 'project', 'store']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
     const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, TMPDIR: `${root}/tmp`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime` };
     const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
-    assert.equal(version.status, 0); assert.equal(version.stdout.trim(), 'opencode v2.1.4');
+    assert.equal(version.status, 0); assert.equal(version.stdout.trim(), 'opencode v2.2.2');
     report.runtimeVersion = version.stdout.trim();
     report.bunVersion = spawnSync('bun', ['--version'], { encoding: 'utf8' }).stdout.trim();
     report.preflight = { freshHomeXdg: true, ancestorConfigurationAbsent: true, explicitIndependentBinary: true };
@@ -86,7 +86,7 @@ test('progress resume successful host compaction reaches the next primary only',
   }
 });
 
-test('A2 production guidance/hints reach native2.1.4 outgoing requests and real tools without external transport', { timeout: 45000 }, async () => {
+test('A2 production guidance/hints reach native2.2.2 outgoing requests and real tools without external transport', { timeout: 45000 }, async () => {
   const root = fs.mkdtempSync('/tmp/opencode/agent-progress-activation-');
   try {
     for (let dir = path.dirname(root);; dir = path.dirname(dir)) {

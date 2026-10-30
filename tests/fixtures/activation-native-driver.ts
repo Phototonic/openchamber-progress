@@ -22,7 +22,7 @@ const env = {
 fs.writeFileSync(`${root}/sdk.mjs`, 'export function createActivationFixture() { return {}; }\n');
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
-assert.equal(version.status, 0); assert.match(version.stdout, /^opencode v2\.1\.4\s*$/);
+assert.equal(version.status, 0); assert.match(version.stdout, /^opencode v2\.2\.2\s*$/);
 console.log('runtime-version', version.stdout.trim());
 const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '18765', '--print-logs', '--log-level', 'debug'], { cwd: `${root}/project`, env, stdio: ['ignore', 'pipe', 'pipe'] });
 fs.writeFileSync(`${root}/host-pid`, String(child.pid));
