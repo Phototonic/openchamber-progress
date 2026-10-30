@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { nativeActions } from './subagent-activity-harness.ts';
 
 export async function startActivityHost(root: string, baseEnv: Record<string, string>, rootSessionID?: string, production = false) {
   const diagnostics: any = {};
@@ -34,16 +35,35 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
   const frames: string[] = [];
   let next = 1;
   const pending = new Map<number, (value: any) => void>();
+  const pendingMethods = new Map<number, string>();
   const send = (method: string, params: object = {}, sessionId?: string): Promise<any> => new Promise((resolve, reject) => {
     const id = next++;
-    const timeout = setTimeout(() => { pending.delete(id); diagnostics.protocolDeadlines = (diagnostics.protocolDeadlines ?? 0) + 1; reject(new Error('CDP deadline')); }, 5000);
+    const started = performance.now();
+    // One old screenshot-phase attempt exhausted the generic 5-second budget.
+    // Allow one additional such interval for PNG readback only, never for state
+    // readiness, evaluation or input. Timings below make that bound auditable.
+    const deadlineMs = method === 'Page.captureScreenshot' ? 10000 : 5000;
+    pendingMethods.set(id, method);
+    const record = (outcome: string) => {
+      diagnostics.protocol = diagnostics.protocol ?? [];
+      diagnostics.protocol.push({ method, scope: sessionId ? 'guest' : 'host', elapsedMs: Math.round(performance.now() - started), deadlineMs, outcome });
+      if (diagnostics.protocol.length > 40) diagnostics.protocol.shift();
+    };
+    const timeout = setTimeout(() => {
+      record('deadline');
+      diagnostics.deadlineState = { method, scope: sessionId ? 'guest' : 'host', socketOpen: socket?.readyState === WebSocket.OPEN, pendingMethods: [...pendingMethods.values()] };
+      pending.delete(id); pendingMethods.delete(id); diagnostics.protocolDeadlines = (diagnostics.protocolDeadlines ?? 0) + 1;
+      reject(new Error('CDP deadline'));
+    }, deadlineMs);
     pending.set(id, m => {
       clearTimeout(timeout);
+      pendingMethods.delete(id);
       if (m.error) {
+        record('protocol-error');
         const text = m.error.message ?? '';
         diagnostics.lastProtocolError = text.includes('default execution context') ? 'default-context-unavailable' : text.includes('Session') || text.includes('Target') ? 'target-or-session-unavailable' : 'other-cdp-error';
         reject(new Error('CDP request failed'));
-      } else resolve(m.result);
+      } else { record('complete'); resolve(m.result); }
     });
     socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
@@ -134,20 +154,12 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
     diagnostics.catalog = await evaluate(`(async()=>{try{const base=window.__OPENCHAMBER_API_BASE_URL__;const url=new URL('/api/guests',base);if(url.hostname!=='127.0.0.1'&&url.hostname!=='localhost')return {blocked:'non-loopback'};const headers={...window.__OPENCHAMBER_RUNTIME_HEADERS__};if(window.__OPENCHAMBER_CLIENT_TOKEN__)headers.Authorization='Bearer '+window.__OPENCHAMBER_CLIENT_TOKEN__;const r=await fetch(url,{headers,credentials:'include'});const j=await r.json();const g=j.guests?.find(g=>g.id==='activity-probe');return {status:r.status,count:j.guests?.length??0,fixture:g?{present:true,enabled:g.enabled,entry:g.entry==='index.html',requested:g.capabilities?.requested,granted:g.capabilities?.granted}:null}}catch{return {classification:'catalog-request-failed'}}})()`);
     // The native rail is absent without an effective directory. Select the real
     // synthetic session through its own sidebar row, as native context QA does.
-    if (rootSessionID) diagnostics.rootSelected = await wait(async () => {
-      const rect = await evaluate(`(()=>{const row=document.querySelector('[data-session-row='+CSS.escape(${JSON.stringify(rootSessionID)})+']');const b=row?.querySelector('[data-session-row-main]')??row;if(!b)return null;b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return {x:r.x+Math.min(40,r.width/2),y:r.y+r.height/2}})()`).catch(() => null);
-      if (!rect) return false;
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...rect });
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...rect }); return true;
-    });
+    const actions = nativeActions({ evaluate, send, wait });
+    if (rootSessionID) { await actions.select(rootSessionID, 'initial root'); diagnostics.rootSelected = true; }
     // Open the genuine host's fixture rail button; never inject SDK/workspace state.
-    const click = await wait(async () => {
-      const rect = await evaluate(`(()=>{const b=${production ? `document.querySelector('[data-context-surface="plugin:activity-probe"]')` : `[...document.querySelectorAll('button')].find(b=>[b.title,b.getAttribute('aria-label')].some(v=>v&&v.includes('Activity probe')))`};if(!b)return null;const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`).catch(() => null);
-      if (!rect) return false;
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...rect });
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...rect }); return true;
-    }, 35000);
-    if (!click) {
+    try {
+      await actions.click(production ? `[...document.querySelectorAll('[data-context-surface="plugin:activity-probe"]')]` : `[...document.querySelectorAll('button')].filter(b=>[b.title,b.getAttribute('aria-label')].some(v=>v&&v.includes('Activity probe')))`, 'fixture rail');
+    } catch (error) {
       diagnostics.ui = await evaluate(`({sessionRows:document.querySelectorAll('[data-session-row]').length,contextSurfaces:document.querySelectorAll('[data-context-surface]').length,fixtureSurface:Boolean(document.querySelector('[data-context-surface="plugin:activity-probe"]')),fixtureText:document.body.textContent.includes('Activity probe'),welcome:document.body.textContent.includes('Welcome')})`).catch(() => ({ classification: 'ui-unavailable' }));
       throw new Error('fixture-rail-not-discovered');
     }
@@ -172,6 +184,8 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
         return collected;
       }, stop };
   } catch (error) {
+    diagnostics.controlFailure = error instanceof Error && /^(initial root|fixture rail): (non-actionable-target|host-selection-timeout)$/.test(error.message) ? error.message : 'other-native-operation';
+    if (rootSessionID) diagnostics.selectionState = await evaluate(`(()=>{const toggle=document.querySelector('[data-sidebar-toggle]');return {togglePresent:!!toggle,pressed:toggle?.getAttribute('aria-pressed'),selected:location.href.includes(${JSON.stringify(rootSessionID)}),targets:[...document.querySelectorAll('[data-session-row="${rootSessionID}"] [data-session-row-main]')].map(t=>{const s=getComputedStyle(t),r=t.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2),b=t.closest('[inert],[hidden],[disabled],[aria-disabled="true"],[aria-hidden="true"]');return {connected:t.isConnected,pointerEvents:s.pointerEvents,visibility:s.visibility,opacity:s.opacity,width:r.width,height:r.height,hitWithin:!!h&&t.contains(h),hitControlWithin:!!h?.closest('button,a,input,select,textarea,[role="button"]')&&t.contains(h.closest('button,a,input,select,textarea,[role="button"]')),blocked:b?{tag:b.tagName,inert:b.hasAttribute('inert'),hidden:b.hasAttribute('hidden'),disabled:b.hasAttribute('disabled'),ariaDisabled:b.getAttribute('aria-disabled'),ariaHidden:b.getAttribute('aria-hidden')}:null}})}})()`).catch(() => ({ unavailable: true }));
     const reason = error instanceof Error && ['native-renderer-startup', 'native-application-not-ready', 'fixture-rail-not-discovered', 'fixture-guest-not-mounted'].includes(error.message) ? error.message : 'native-host-observer-failed';
     diagnostics.hostExitCode = host.exitCode;
     await stop(); return { available: false, reason, diagnostics, read: async (_lists = true) => [], stop };
