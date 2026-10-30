@@ -163,7 +163,7 @@ node --experimental-strip-types --test tests/backend/progress-activation-runtime
 ## Progress resume capsule verification
 
 The separately named `progress resume` native case verifies production activation
-and Store lookup on pinned OpenCode2.1.4 at the actual outgoing scripted-provider
+and Store lookup on pinned OpenCode **2.2.2** at the actual outgoing scripted-provider
 boundary. It uses direct synthetic Store construction and local plugin loading,
 not installation. The observer records metadata and the synthetic recovery section
 from actual outgoing system parts; it never manufactures recovery in regression
@@ -173,14 +173,24 @@ are used. The test requires Node24.19.0, existing Bun/dependencies, working root
 wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
+The host pin is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
+`@openchamber/sdk` **2.5.1**. Verified independent2.2.2 archive SHA-256:
+`3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
+executable SHA-256:
+`4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
+Historical2.1.4 success below/elsewhere is not a fresh2.1.4 rerun. The exact
+selected2.2.2 source-built and verbatim-built runs pass all21 existing resume
+scenarios; local proof is `evidence/resume-capsule-host-ordering/`. Focused A2 also
+passes under2.2.2; it can be selected separately with `--test-name-pattern='^A2 '`.
+
 ```sh
 export OPENCODE_BINARY=/tmp/opencode/agent-progress-probe-cli/opencode
-export EVIDENCE=evidence/progress-resume-capsule
+export EVIDENCE=evidence/resume-capsule-host-ordering/source
 node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts
 bun run typecheck
 PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
 bun run build:backend
-EVIDENCE=evidence/progress-resume-capsule/built ACTIVATION_COMPANION_ENTRY=build/companion/index.js PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
+EVIDENCE=evidence/resume-capsule-host-ordering/built ACTIVATION_COMPANION_ENTRY=build/companion/index.js PROGRESS_RESUME_PHASE=regression node --experimental-strip-types --test --test-name-pattern='progress resume' tests/backend/progress-activation-runtime.test.ts
 git diff --check
 ```
 
@@ -188,8 +198,8 @@ The built run copies unchanged companion bytes and sibling guidance, recording
 the tested entry's SHA-256. It does not install, package, rebuild guests or certify
 a release. Native runs own one isolated host/process group, verify zero credential
 inventory and loopback-only networking, and remove their disposable roots.
-Local-only `outgoing.json`, appended `lifecycle.json`, `checks.json` and `built/`
-records distinguish source/built integration from the earlier test-only sentinel
+Local-only source/built `outgoing.json`, synthetic adapter `lifecycle.json` and
+`checks.md` records distinguish source/built integration from the earlier test-only sentinel
 gate in `runtime-gate.json`.
 
 Coverage includes the current-revision pointer, two unconfirmed candidates,
@@ -199,6 +209,22 @@ before delivery. Summarization receives no recovery and its inputs/result remain
 unchanged. Scripted text proves integration, not model willingness/compliance or
 OpenChamber desktop/AppImage behavior. No new cross-version or native Windows
 capsule certification is claimed by this Linux test.
+
+Correlation retains one bounded observation window even when the compaction hook
+arrives before its streamed start. The inspected
+[2.2.2 hook types](https://github.com/anomalyco/opencode/blob/v2.2.2/packages/plugin/src/effect/session.ts)
+expose no shared attempt token. Strict event-creation/local-observation containment,
+sequence/reason and lifecycle fences permit both observed hook/start orders without
+reading summaries. Boundary ties, clock inconsistency, stale/precompute-style hooks
+and overlapping starts conservatively omit recovery. There is no new timer,
+persistence or guarantee for background precomputation. Both delivery orders and
+retirement/replay/cap boundaries are deterministic unit/installed-adapter coverage.
+
+The full `bun run check` aggregate remains **blocked/not green** due to an independent
+native subagent/desktop family; it was not repaired or silently skipped in this fix.
+The repository-maintained portable helper separately covers portable backend,
+browser-model/automation, generated parity and package verification. Passing it and
+these selected native checks is not full native certification or a desktop install.
 
 **Known replay limitation:** pinned2.1.4 event subscriptions are volatile/live-only,
 with no replay controls, and the production plugin uses the native in-process

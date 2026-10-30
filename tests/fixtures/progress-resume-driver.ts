@@ -33,7 +33,7 @@ const env = {
 fs.writeFileSync(`${root}/sdk.mjs`, 'export function createResumeFixture() { return {}; }\n');
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
-assert.equal(version.status, 0); assert.equal(version.stdout.trim(), 'opencode v2.1.4');
+assert.equal(version.status, 0); assert.equal(version.stdout.trim(), 'opencode v2.2.2');
 report.runtimeVersion = version.stdout.trim();
 const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '18766'], { cwd: `${root}/project`, env, stdio: 'ignore' });
 fs.writeFileSync(`${root}/host-pid`, String(child.pid));

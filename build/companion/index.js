@@ -26476,9 +26476,11 @@ ${capsule}` : "") };
   let stopRecovery;
   let held;
   function retireRecovery() {
+    eventFloor = Math.max(eventFloor, Date.now());
+    for (const attempt of compactions.values())
+      eventFloor = Math.max(eventFloor, attempt.fence);
     compactions.clear();
     held?.abort();
-    eventFloor = Math.max(eventFloor, Date.now());
   }
   function control() {
     const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
@@ -26503,6 +26505,21 @@ ${capsule}` : "") };
       set3.delete(set3.values().next().value);
   }
   const key = (sessionID) => JSON.stringify([source.id, sessionID]);
+  function retain(sessionKey, attempt, created) {
+    compactions.delete(sessionKey);
+    compactions.set(sessionKey, attempt);
+    if (compactions.size > 128) {
+      const oldest = compactions.keys().next().value;
+      eventFloor = Math.max(eventFloor, created, compactions.get(oldest).fence);
+      compactions.delete(oldest);
+    }
+  }
+  function clearWindow(attempt) {
+    delete attempt.start;
+    delete attempt.firstHook;
+    delete attempt.lastHook;
+    delete attempt.ambiguous;
+  }
   async function session(sessionID) {
     const value3 = await ctx.session.get({ sessionID });
     return value3.id === sessionID && path6.isAbsolute(value3.location.directory) ? value3 : undefined;
@@ -26558,10 +26575,13 @@ ${capsule}` : "") };
           return;
         const sessionKey = key(event.sessionID);
         const active = control();
-        const attempt = compactions.get(sessionKey);
+        const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
         const armed = attempt?.pending === true;
-        if (attempt)
-          attempt.pending = false;
+        attempt.pending = false;
+        clearWindow(attempt);
+        attempt.fence = Math.max(attempt.fence, Date.now());
+        if (recovery && active)
+          retain(sessionKey, attempt, attempt.fence);
         if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
           pending.delete(sessionKey);
           removeOwned();
@@ -26652,11 +26672,22 @@ ${capsule}` : "") };
         if (!stream || typeof stream[Symbol.asyncIterator] !== "function")
           throw new Error("unsupported");
         registration = await ctx.session.hook("compaction", (event) => {
-          if (disposed || !control() || !source.verified)
+          if (disposed || !control() || !source.verified || !boundedID(event.sessionID) || !identifier2(event.sessionID))
             return;
-          const record3 = compactions.get(key(event.sessionID));
-          if (record3?.reason)
-            record3.live = true;
+          const sessionKey = key(event.sessionID), observed = Date.now();
+          const attempt = { ...compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false } };
+          if (!Number.isFinite(observed) || observed <= Math.max(eventFloor, attempt.fence)) {
+            attempt.pending = false;
+            clearWindow(attempt);
+            retain(sessionKey, attempt, eventFloor);
+            return;
+          }
+          attempt.pending = false;
+          if (attempt.lastHook !== undefined && observed < attempt.lastHook)
+            attempt.ambiguous = true;
+          attempt.firstHook ??= observed;
+          attempt.lastHook = observed;
+          retain(sessionKey, attempt, observed);
         });
         recoveryAvailable = true;
         events = (async () => {
@@ -26671,6 +26702,7 @@ ${capsule}` : "") };
                 continue;
               const sessionKey = key(sessionID);
               if (event.created <= eventFloor) {
+                eventFloor = Math.max(eventFloor, compactions.get(sessionKey)?.fence ?? eventFloor);
                 compactions.delete(sessionKey);
                 continue;
               }
@@ -26681,15 +26713,21 @@ ${capsule}` : "") };
               remember(replay, eventKey, 256);
               const started = event.type === "session.compaction.started";
               const ended = event.type === "session.compaction.ended";
-              const next = { seq: event.durable.seq, live: false, pending: ended && previous?.reason === reason && previous.live };
-              if (started)
-                next.reason = reason;
-              compactions.delete(sessionKey);
-              compactions.set(sessionKey, next);
-              if (compactions.size > 128) {
-                compactions.delete(compactions.keys().next().value);
-                eventFloor = Math.max(eventFloor, event.created);
+              const next = { ...previous ?? { seq: 0, fence: eventFloor, pending: false } };
+              next.seq = event.durable.seq;
+              next.pending = false;
+              if (event.created <= next.fence || event.created > Date.now()) {
+                clearWindow(next);
+              } else if (started) {
+                if (next.start)
+                  next.ambiguous = true;
+                next.start = { reason, created: event.created };
+              } else {
+                next.pending = ended && !next.ambiguous && next.start?.reason === reason && next.firstHook !== undefined && next.lastHook !== undefined && next.start.created < next.firstHook && next.firstHook <= next.lastHook && next.lastHook < event.created;
+                clearWindow(next);
+                next.fence = Math.max(next.fence, event.created);
               }
+              retain(sessionKey, next, event.created);
             }
           } catch {} finally {
             recoveryAvailable = false;

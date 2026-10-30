@@ -83,7 +83,11 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   let disposed = false;
   let disableEpoch = 0; // invalidates in-flight lookups when disable is observed
-  type Compaction = { seq: number; reason?: 'auto' | 'manual'; live: boolean; pending: boolean };
+  type Compaction = {
+    seq: number; fence: number; pending: boolean;
+    start?: { reason: 'auto' | 'manual'; created: number };
+    firstHook?: number; lastHook?: number; ambiguous?: boolean;
+  };
   const compactions = new Map<string, Compaction>(); // max128; identities only, never plan payloads
   const replay = new Set<string>(); // max256 source/session/event identities
   let eventFloor = Date.now(); // eviction/reload must not reconstruct old attempts
@@ -92,8 +96,10 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   let stopRecovery: (() => Promise<void>) | undefined;
   let held: AbortController | undefined;
   function retireRecovery() {
-    compactions.clear(); held?.abort();
     eventFloor = Math.max(eventFloor, Date.now());
+    // A clock rollback must not erase a newer retained retirement boundary.
+    for (const attempt of compactions.values()) eventFloor = Math.max(eventFloor, attempt.fence);
+    compactions.clear(); held?.abort();
   }
   function control() {
     const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
@@ -106,6 +112,18 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     if (set.size > cap) set.delete(set.values().next().value!);
   }
   const key = (sessionID: string) => JSON.stringify([source.id, sessionID]);
+  function retain(sessionKey: string, attempt: Compaction, created: number) {
+    compactions.delete(sessionKey); compactions.set(sessionKey, attempt);
+    if (compactions.size > 128) {
+      const oldest = compactions.keys().next().value!;
+      // Removing a tombstone must not erase a newer primary-retirement fence.
+      eventFloor = Math.max(eventFloor, created, compactions.get(oldest)!.fence);
+      compactions.delete(oldest);
+    }
+  }
+  function clearWindow(attempt: Compaction) {
+    delete attempt.start; delete attempt.firstHook; delete attempt.lastHook; delete attempt.ambiguous;
+  }
   async function session(sessionID: Parameters<Plugin.Context['session']['get']>[0]['sessionID']) {
     const value = await ctx.session.get({ sessionID });
     // Conditional copy needs no ancestry or plan scan; reporting still performs
@@ -147,9 +165,13 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (!boundedID(event.sessionID)) return;
         const sessionKey = key(event.sessionID);
         const active = control();
-        const attempt = compactions.get(sessionKey);
+        const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
         const armed = attempt?.pending === true;
-        if (attempt) attempt.pending = false; // first primary attempt consumes even when delivery declines
+        // Consume incomplete evidence too, before any await. Delayed stream parts
+        // created before this primary cannot backfill a later turn.
+        attempt.pending = false; clearWindow(attempt);
+        attempt.fence = Math.max(attempt.fence, Date.now());
+        if (recovery && active) retain(sessionKey, attempt, attempt.fence);
         if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
           pending.delete(sessionKey); removeOwned(); return;
         }
@@ -203,9 +225,18 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') throw new Error('unsupported');
         registration = await ctx.session.hook('compaction', event => {
           // Observe metadata only; never inspect/change summaries, messages, tools or result.
-          if (disposed || !control() || !source.verified) return;
-          const record = compactions.get(key(event.sessionID));
-          if (record?.reason) record.live = true;
+          if (disposed || !control() || !source.verified || !boundedID(event.sessionID) || !identifier(event.sessionID)) return;
+          const sessionKey = key(event.sessionID), observed = Date.now();
+          const attempt = { ...(compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false }) };
+          if (!Number.isFinite(observed) || observed <= Math.max(eventFloor, attempt.fence)) {
+            attempt.pending = false; clearWindow(attempt);
+            retain(sessionKey, attempt, eventFloor); return;
+          }
+          // A new observation after completion supersedes, never revives, it.
+          attempt.pending = false;
+          if (attempt.lastHook !== undefined && observed < attempt.lastHook) attempt.ambiguous = true;
+          attempt.firstHook ??= observed; attempt.lastHook = observed;
+          retain(sessionKey, attempt, observed);
         });
         recoveryAvailable = true;
         events = (async () => {
@@ -218,20 +249,32 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
               const sessionKey = key(sessionID);
               // Timestamps are not unique: a cap-advanced floor may also reject a
               // retained session's failure. Retire its old attempt, never arm it.
-              if (event.created <= eventFloor) { compactions.delete(sessionKey); continue; }
+              if (event.created <= eventFloor) {
+                eventFloor = Math.max(eventFloor, compactions.get(sessionKey)?.fence ?? eventFloor);
+                compactions.delete(sessionKey); continue;
+              }
               const eventKey = JSON.stringify([sessionKey, event.id]);
               const previous = compactions.get(sessionKey);
               if (replay.has(eventKey) || previous && event.durable.seq <= previous.seq) continue;
               remember(replay, eventKey, 256);
               const started = event.type === 'session.compaction.started';
               const ended = event.type === 'session.compaction.ended';
-              const next: Compaction = { seq: event.durable.seq, live: false, pending: ended && previous?.reason === reason && previous.live };
-              if (started) next.reason = reason;
-              compactions.delete(sessionKey); compactions.set(sessionKey, next);
-              if (compactions.size > 128) {
-                compactions.delete(compactions.keys().next().value!);
-                eventFloor = Math.max(eventFloor, event.created);
+              const next: Compaction = { ...(previous ?? { seq: 0, fence: eventFloor, pending: false }) };
+              next.seq = event.durable.seq;
+              next.pending = false;
+              if (event.created <= next.fence || event.created > Date.now()) {
+                clearWindow(next);
+              } else if (started) {
+                if (next.start) next.ambiguous = true; // no shared attempt token: crossed starts decline
+                next.start = { reason, created: event.created };
+              } else {
+                next.pending = ended && !next.ambiguous && next.start?.reason === reason &&
+                  next.firstHook !== undefined && next.lastHook !== undefined &&
+                  next.start.created < next.firstHook && next.firstHook <= next.lastHook && next.lastHook < event.created;
+                clearWindow(next);
+                next.fence = Math.max(next.fence, event.created);
               }
+              retain(sessionKey, next, event.created);
             }
           } catch { /* unavailable optional subscription: generic activation stays registered */ }
           finally { recoveryAvailable = false; retireRecovery(); try { await registration?.dispose(); } catch { /* optional cleanup */ } }
