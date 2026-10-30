@@ -17,13 +17,15 @@ export async function stableScreenshot<T extends { ready: boolean; signature: st
   return snapshot!;
 }
 
-/** Read in the guest after a rendering handshake; never includes text or IDs. */
-export function screenshotSection(census: string, observation: string | null) {
-  const section = document.querySelector<HTMLElement>(census);
+/** Read in the guest after a rendering handshake; never includes text or IDs. `target` is the
+ * element to clip (the sub-agents section, or the frame's main for a view that must have none). */
+export function screenshotSection(target: string, observation: string | null) {
+  const section = document.querySelector<HTMLElement>(target);
   const r = section?.getBoundingClientRect();
   const mark = observation ? section?.querySelector<HTMLElement>(observation) : null;
   const animating = section?.getAnimations({ subtree: true }).some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) ?? false;
-  return { ready: !!section && section.dataset.state === 'ready' && section.dataset.complete === 'true' &&
+  const roster = section?.dataset.testid === 'subagent-activity';
+  return { ready: !!section && (!roster || section.dataset.state === 'ready') &&
     (!observation || !!mark) && !animating && document.fonts.status === 'loaded' && document.visibilityState === 'visible',
     observationPresent: !observation || !!mark, state: mark?.dataset.state, animating,
     x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0, viewportHeight: innerHeight };
@@ -42,30 +44,45 @@ export function screenshotFrame(href: string) {
     clientWidth: frame?.clientWidth ?? 0, clientHeight: frame?.clientHeight ?? 0 };
 }
 
-/** Executed in the guest in one turn, so readiness and the asserted rows agree. */
-export function assignmentSnapshot(ids: { a: string; c2: string; bound: string }) {
+export interface RosterIds { a: string; b: string; c1: string; c2: string; bound: string; n1: string }
+/**
+ * Executed in the guest in one turn, so readiness and the asserted rows agree. Sub-agent runs
+ * revision 1: rows by run/session with their Ran/Claimed/Accepted facts. Returns session IDs (the
+ * caller maps them to roles), state tokens and booleans; never titles, handoff or task text.
+ */
+export function rosterSnapshot(ids: RosterIds) {
+  // The removed copy, exactly and case-sensitively: a dispatch description may say "unassigned".
+  const CLUTTER = /Unassigned (?:in this plan|here)|No update reported|No task recorded here|This session|Main session|seen just now|only the first \d+|may be incomplete|Unknown now/;
   const section = document.querySelector<HTMLElement>('[data-testid="subagent-activity"]');
-  const rows = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid^="observed-session-"]') ?? []).map(r => ({
-    id: r.dataset.testid!.slice(17), depth: r.dataset.depth,
-    assignment: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment,
-    assigned: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment === 'assigned',
-    unassigned: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment === 'unassigned',
+  const rows = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid^="subagent-row-"]') ?? []).map(r => ({
+    session: r.dataset.session ?? null, recorded: !!r.dataset.run, ran: r.dataset.ran ?? null, now: r.dataset.now ?? null, depth: r.dataset.depth ?? null,
+    featured: !r.closest('[data-testid="observed-more"]'),
+    facts: Array.from(r.querySelectorAll<HTMLElement>('[data-fact]')).map(f => f.dataset.fact!),
   }));
+  const summary = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid="subagent-count"] [data-kind]') ?? []).map(n => n.dataset.kind!);
+  const text = section?.textContent ?? '';
   const ready = !!document.querySelector('[data-testid="plan-plan-alpha"]') &&
     !document.querySelector('[data-testid="detail-loading"], [data-testid="failure-state"], [data-testid="setup-needed"]') &&
-    section?.dataset.state === 'ready' && section.dataset.complete === 'true' &&
-    rows.some(r => r.id === ids.a && r.depth === '0') &&
-    [ids.c2, ids.bound].every(id => rows.some(r => r.id === id && ['assigned', 'unassigned'].includes(r.assignment ?? '')));
-  return { ready, rows, overflow: document.documentElement.scrollWidth > innerWidth };
+    section?.dataset.state === 'ready' && summary.length > 0 &&
+    rows.some(r => r.session === ids.bound && r.featured && r.facts.includes('accepted'));
+  return {
+    ready, rows, summary,
+    // The owner's removed clutter, and prompt/output/raw-error canaries of the native fixture.
+    clutter: CLUTTER.test(text),
+    /** Which fixed clutter phrase matched (vocabulary only, never page text). */
+    clutterMatch: text.match(CLUTTER)?.[0] ?? null,
+    canary: /Synthetic fixed|regression input|provider failure/i.test(text),
+    overflow: document.documentElement.scrollWidth > innerWidth,
+  };
 }
 
-export async function readyAssignmentSnapshot(adapter: NativeAdapter, frame: string, ids: { a: string; c2: string; bound: string }) {
-  let snapshot: ReturnType<typeof assignmentSnapshot> | undefined;
+export async function readyRosterSnapshot(adapter: NativeAdapter, frame: string, ids: RosterIds) {
+  let snapshot: ReturnType<typeof rosterSnapshot> | undefined;
   const ready = await adapter.wait(async () => {
-    snapshot = await adapter.evaluate(`(${assignmentSnapshot.toString()})(${JSON.stringify(ids)})`, frame);
+    snapshot = await adapter.evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`, frame);
     return snapshot!.ready;
   });
-  if (!ready) throw new Error('current-plan-assignment-readiness-timeout');
+  if (!ready) throw new Error('current-plan-roster-readiness-timeout');
   return snapshot!;
 }
 

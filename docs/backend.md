@@ -828,65 +828,103 @@ file is compared to its assembled folder. Local evidence:
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
 ## Declared delegation correlation
 
-Any installed `subagent` implementation qualifies only through the fixed native
-identity/census/fence/ancestry/control gates below. There is no implementation
-discriminator, separate certification gate, feature flag or policy switch.
-The gates prove which call supplied the result and the child's lineage, not
-that the tool actually created or continued that child: installed tools are
-trusted to report the child they delegated to. Slim is covered through these
-same gates, not separately certified. The observed 2.2.25 stack wraps the native
-tool without rewriting its structured child identity or correlation metadata;
-foreground/background signals satisfy the gates, pre-acknowledgement resume
-lacks a matching result, and competing calls are ambiguous. The latter two cases
-fail closed; post-acknowledgement resume is untested. Explicit link and assigned
-parent relay remain available when native evidence is unavailable.
+`plugin/delegation.ts` owns one hook pair and event subscription, forwarding
+allowlisted run observations to its focused helper. Declarations now persist in
+the same Store and existing plan receipts. There is one pending/reserved intent
+per source/parent, with no TTL or restart re-arming. Database admission order
+reserves the first supported dispatch; result arrival order cannot steal it.
+Second nonempty declarations conflict; explicit cancellation precedes replacement.
 
-`plugin/delegation.ts` owns bounded in-memory declarations and independent hook
-and native-event candidate maps. There is one pending intent per trusted parent
-in the running companion (128 intents, 256 retry records, five-minute TTL).
-There is no durable declaration, adoption, replay scan, worker registry, or
-cross-companion exclusivity guarantee. The report parser accepts `delegate`
-only with the existing request identity/revision fields and `assign`; arbitrary
-actor/source/call/provenance fields are rejected.
+Structured returned identity and complete native same-source/project/location
+immediate-child ancestry are required. Unsupported aliases and text results do
+not bind. The old message-wide one-call census/step fence is superseded. Native
+execution evidence remains a separate run fact, never assignment authority.
+Failed/unconfirmed reserved calls retire intent. A native failed/interrupted
+parent also retires pending call authority without asserting child failure;
+later proven child metadata may still enrich the retained row, not its assignment.
 
-Declaration expiry never certifies an empty in-flight census. Unresolved hook or
-native call evidence is retained in the bounded census beyond that TTL, until a
-matching terminal after-hook or message ended/failed boundary resolves it. Call
-identity includes the parent and assistant message: reusing a call ID in another
-message cannot bypass outstanding execution. If unresolved evidence exhausts the
-census capacity, observation coverage fails closed rather than evicting it; the
-running companion cannot regain binding authority merely through expiry.
-Capture-off still records this bounded, volatile hook/census metadata, including
-new before calls and terminal observations, so it neither invents an empty census
-nor strands completed calls as unresolved after re-enable. Control checks still
-retire pending intents; declarations, reservations and binding commits remain
-disabled. Re-enable never resurrects an old intent or backfills an assignment.
+All asynchronous identity work occurs outside transactions, with one-second
+guards and physical occupancy retained when a host ignores cancellation.
+Binding rechecks generation, plan visibility/lifecycle, original revision and
+task availability. `Store.applyMutation` is the existing private mutation owner;
+an internal savepoint commits link/provenance and durable disposition in the same
+transaction, or records a fixed refusal without losing the dispatch observation.
+Assignment is unioned with the child's current IDs. Status/reporters/counts/report
+time remain unchanged; explicit `link` and restricted-child task relay are intact.
+Capture toggles and plan closure/deletion fence intent even under old writers.
+Partial registrations dispose safely, and late disposed lookups cannot publish.
 
-An intent reserves synchronously at the first delegation before-hook, with no
-other delegation already in flight. A completed after-hook records only the
-structured child identity and supported output status, not result text. Hooks
-never await a closing message event. Independent native input-start/called
-identities must agree on exactly one delegation with the hook census at the
-matching parent/assistant-message `session.step.ended`. Missing pairs, unmatched
-identities/names, a second candidate, failure, expiry, subscription fault or cap
-retires authority. `session.step.failed` is terminal even if a retry reuses the
-assistant message ID. Ancestry resolution runs outside ingestion, has a one-second
-deadline and abort guard, and requires an immediate same-project/location child
-with complete acyclic ancestry (at most 32 hops). Every gate is rechecked after
-asynchronous work and immediately before committing. A tool name or plausible
-result alone is insufficient; missing native evidence retires without binding.
+Durable intent persists caller source/session IDs only. Binding resolves those
+IDs through the existing `sessions` identity owner populated by native capture;
+it does not retain another Actor/directory snapshot. Declining an after-hook at
+the lookup cap still transactionally records an unconfirmed disposition and
+retires its reservation, so restart cannot strand next-dispatch authority.
 
-Store commit uses the existing serialized `link` authorization, revision and
-receipt/hash guards. It unions declared IDs with that child's existing IDs;
-competing assignments or revision drift are refusal, never read/overwrite retry.
-Only the assignment, optional item-level `assignmentBinding` and ordinary commit
-receipt survive restart. Status/reporters/report age and document capture remain
-unchanged. Empty-item administrative contributions are not child progress.
+Run capture may add verified native session identity to that existing identity
+owner; such metadata is not a progress report. It cannot replace an existing
+reported identity or populate a missing identity already referenced as a plan
+coordinator, linked participant or attributed contributor. This matters because
+directory-filtered plan lists join `sessions`: passive metadata must not change
+plan visibility, summaries, detail, items, history, receipts or contributions.
+Only explicit reporting may update those progress identities. The native proxy
+fixture compares every non-run table exactly except for precisely verified new
+dispatch identities, and checks nonempty list/detail/history views before/after,
+including directory and unassigned-child membership filters.
 
-The additive `delegation_control` table and `delegation_capture_epoch` trigger
-track capture changes, including old writers changing `meta.enabled`. An off/on
-interval invalidates local authority even if no callback saw the disabled state;
-the generation is capture safety, not a durable declaration or parent claim.
-Partial registrations are disposed on setup failure and disposal fences late
-lookups. The existing authenticated detail route carries optional provenance
-without a new API route or wider session membership.
+## Sub-agent run read seam
+
+`shared/subagent-runs.ts` owns the revision-1 DTO, bounds, validated additive
+schema and SQL projections. `Store` wraps every run mutation in its existing
+`BEGIN IMMEDIATE` owner, with the same SQLite busy handling and no awaits inside
+transactions. Extension initialization is explicit companion activation only;
+read-only opens, GETs and `/health` do not initialize it. Exact schema validation
+rejects incomplete, foreign and future extensions. The base user version stays 2.
+
+`plugin/subagent-runs.ts` is a focused observer called by the existing delegation
+before/after hooks and event subscription. Before capture stores only dispatch
+IDs, dispatch time, allowlisted child-agent/description and unambiguous current
+plan context. Parent/child identity is native, same-source/project/location and
+complete-ancestry checked. Identity work is outside transactions; ignored aborts
+retain physical lookup occupancy. Passive failures qualify capture loss and do
+not abort or modify native execution. After hooks never insert a missing dispatch.
+Native execution observations retain only the latest bounded interval candidate
+per child; this permits a terminal event before verified after-hook attachment.
+A proven start must follow dispatch and a unique child interval must exist.
+No prompt/result text or raw error/event is serialized. The ordinary report,
+link and task-status paths remain independent.
+
+`GET /v1/subagent-runs` is side-effect free. Authenticated reconciliation POSTs
+create/coalesce finite source/root demand in the same database. A single unref'd
+3-second companion timer checks this queue (no empty-queue host scan). The
+companion verifies root/location before a transactional claim, then calls only
+native session get/list outside transactions. List-by-parent traversal uses
+exact links, cycle/depth/page/call/record/cooperative-time limits. Commit rechecks
+request claim and persistent capture generation. A disabled capture interval
+invalidates outstanding publication even if subsequently re-enabled. Ordinary
+reads and duplicate settled requests neither re-backfill nor re-stamp records.
+No service or guest native host credentials, session proxy or transcript API is
+introduced. Stored facts stay readable with capture disabled or companion absent.
+
+The read-seam tests use a real SQLite store and authenticated HTTP server with
+the actual delegation registration and controlled native metadata replies.
+They are portable evidence, not native-runtime certification. The separate
+source/built native fixture records which host boundaries were actually exercised.
+An explicit backend-only fixture mode omits UI/browser work, never certifying it.
+
+The report router accepts a plan-free optional `handoff` only from its actual
+native child caller. It validates a safe authored one-line summary, server-stamps
+the time, stages unknown execution association separately and attaches on unique
+interval evidence. Retries and conflicts do not advance task progress. Current
+explicit task facts are projected into `accepted` at read time, bounded by row
+bytes with an omitted-item count. Plan changes invalidate run-page cursors through
+the monotonic run revision; stale stored acceptance is not resurrected.
+
+Terminal-first retention uses the same transaction owner. Protected active state
+is never evicted to admit new metadata. Unknown historical metadata is protected,
+and the last retained ancestry edge to retained descendants is not a pruning
+candidate. No parallel lineage archive is introduced. Pruned authored claims leave bounded
+receipt fences counted in the total budget; replay cannot recreate history.
+Historical continuation queues persist across companion reload and consume the
+same bounded bookkeeping budget. A producer lease qualifies restart recovery,
+not activity liveness. The timer performs no native scan for an empty queue;
+ignored cancellation still occupies a physical host slot until settlement.

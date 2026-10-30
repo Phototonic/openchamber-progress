@@ -1,19 +1,27 @@
-// Sub-agent census and observation logic over synthetic workspace snapshots (not native-host proof:
-// U1's feasibility evidence covers real SDK records; rendered behaviour is subagent-activity-qa.ts).
+// Sub-agent census, roster and run-read logic over synthetic workspace snapshots and the real-Store
+// run fixture (not native-host proof; rendered behaviour is subagent-activity-qa.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HostClient } from '@openchamber/sdk';
 import { EMPTY_LIVE, LiveWorkspace, type LiveSession, type LiveSnapshot } from '../../ui/shared/live.ts';
-import { assignmentOf, censusFor, CENSUS_LIMITS, currentFor, FRESH_MS, isComplete, observe, planFacts, updateOf, type Census } from '../../ui/shared/census.ts';
-import { parsePlanPage, parsePlansPage } from '../../ui/shared/adapter.ts';
-import { participantIndex, type PlanDetail } from '../../ui/shared/model.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { censusFor, CENSUS_LIMITS, currentFor, isComplete, observe, planFacts, type Census } from '../../ui/shared/census.ts';
+import { parsePlanPage, parsePlansPage, parseRunRead } from '../../ui/shared/adapter.ts';
+import { participantIndex, type PlanDetail, type PlanView } from '../../ui/shared/model.ts';
+import { refreshLabels } from '../../ui/shared/components.ts';
+import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
+import { ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
+import type { RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
+import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { at, planPage, plansPage, summary } from './fixtures.ts';
 
 const alpha = { id: 'proj-alpha', name: 'Alpha', directory: '/fixture/Alpha' };
 const beta = { id: 'proj-beta', name: 'Beta', directory: '/fixture/Beta' };
 const rec = (id: string, parentId: string | null, extra: Partial<LiveSession> = {}): LiveSession => ({
   id, title: `Title ${id}`, projectId: alpha.id, directory: alpha.directory, parentId, archivedAt: null, worktree: null,
-  activity: 'idle', outcome: null, seenAt: Date.parse(at(0)), seenMono: 1000, ...extra,
+  activity: 'idle', outcome: null, ...extra,
 });
 /** A in Alpha with C1/C2 and N1 under C1; unrelated root B; a Beta root with a lookalike title. */
 const ALPHA = [rec('A', null), rec('C2', 'A', { createdAt: 2 }), rec('C1', 'A', { createdAt: 1, activity: 'running' }), rec('N1', 'C1'), rec('B', null), rec('B-child', 'B')];
@@ -115,20 +123,18 @@ test('descendant identity conflicts leave out that session and its subtree', () 
   assert.deepEqual(ready(censusFor('A', alpha.directory, same)).rows.map((r) => r.id), ['C1', 'N1', 'C2']);
 });
 
-test('observation: words per state, completed turn is not success, 60 s expiry and lost currency are unknown', () => {
-  const running = observe({ activity: 'running', outcome: null, seenMono: 1000 }, 1000 + FRESH_MS - 1, true);
-  assert.deepEqual(running, { kind: 'active', label: 'Running', fresh: true, last: null, expiresAt: 1000 + FRESH_MS });
-  assert.deepEqual(observe({ activity: 'running', outcome: null, seenMono: 1000 }, 1000 + FRESH_MS, true), { kind: 'unknown', label: 'Unknown now', fresh: false, last: 'Running', expiresAt: null });
-  assert.equal(observe({ activity: 'running', outcome: null, seenMono: 1000 }, 1001, false).label, 'Unknown now');
-  assert.equal(observe({ activity: 'idle', outcome: 'completed', seenMono: 1000 }, 1001, true).label, 'Turn ended');
-  assert.equal(observe({ activity: 'idle', outcome: 'failed', seenMono: 1000 }, 1001, true).label, 'Turn failed');
-  assert.equal(observe({ activity: 'waiting-question', outcome: null, seenMono: 1000 }, 1001, true).label, 'Waiting for an answer');
-  assert.equal(observe({ activity: 'unknown', outcome: null, seenMono: 1000 }, 1001, true).label, 'State unknown');
-  assert.equal(observe({ activity: 'running', outcome: null }, 1001, true).fresh, false);
-  for (const o of [observe({ activity: 'idle', outcome: 'completed', seenMono: 0 }, 1, true)]) assert.doesNotMatch(o.label, /success|complete|done/i);
+test('observation: words per state; a completed turn is not success; no time input at all', () => {
+  assert.deepEqual(observe({ activity: 'running', outcome: null }), { kind: 'active', label: 'Running' });
+  assert.equal(observe({ activity: 'idle', outcome: 'completed' }).label, 'Turn ended');
+  assert.equal(observe({ activity: 'idle', outcome: 'failed' }).label, 'Turn failed');
+  assert.equal(observe({ activity: 'waiting-question', outcome: null }).label, 'Waiting for an answer');
+  assert.equal(observe({ activity: 'unknown', outcome: null }).label, 'State unknown');
+  assert.doesNotMatch(observe({ activity: 'idle', outcome: 'completed' }).label, /success|complete|done/i);
+  // Defect B: the projection has no clock or receipt parameter that could expire it.
+  assert.equal(observe.length, 1);
 });
 
-test('LiveWorkspace receipts: only a changed activity/outcome renews a session; restart starts again', async () => {
+test('LiveWorkspace: snapshots carry no receipt time; identical callbacks change nothing; restart starts again', async () => {
   const calls: { kind: string; id: string; cb: (s: any) => void }[] = [];
   const subscribe = (kind: string, id: string, cb: (s: any) => void) => { calls.push({ kind, id, cb }); return Promise.resolve(() => {}); };
   const host = { onProjects: (cb) => subscribe('projects', '', cb), onWorktrees: (id, cb) => subscribe('worktrees', id, cb), onSessions: (id, cb) => subscribe('sessions', id, cb) } satisfies Pick<HostClient, 'onProjects' | 'onWorktrees' | 'onSessions'>;
@@ -139,25 +145,18 @@ test('LiveWorkspace receipts: only a changed activity/outcome renews a session; 
   ws.want([alpha.id]); await flush();
   const emit = (sessions: object[]) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state: 'ready', coverage: [{ directory: alpha.directory, state: 'ready' }], sessions });
   const raw = (id: string, activity: string, extra: object = {}) => ({ id, title: id, projectId: alpha.id, directory: alpha.directory, parentId: id === 'A' ? null : 'A', createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome: null, items: [], ...extra });
-  const seen = (id: string) => ws.snapshot.sessions.get(alpha.id)!.records.find((r) => r.id === id)!.seenMono!;
-  emit([raw('A', 'idle'), raw('C1', 'running'), raw('C2', 'running')]);
-  const first = seen('C1');
+  emit([raw('A', 'idle'), raw('C1', 'running')]);
+  const first = JSON.stringify(ws.snapshot.sessions.get(alpha.id));
+  assert.ok(!/seen/i.test(first), 'no receipt fields');
   await new Promise((r) => setTimeout(r, 5));
-  emit([raw('A', 'idle'), raw('C1', 'running', { title: 'Renamed' }), raw('C2', 'running')]);
-  assert.equal(seen('C1'), first, 'a title-only update is not an observation');
-  emit([raw('A', 'idle'), raw('C1', 'running'), raw('C2', 'idle', { outcome: 'failed' })]);
-  assert.equal(seen('C1'), first, 'another child changing does not refresh C1');
-  assert.ok(seen('C2') > first);
-  emit([raw('A', 'idle'), raw('C1', 'idle', { outcome: 'completed' }), raw('C2', 'idle', { outcome: 'failed' })]);
-  assert.ok(seen('C1') > first);
-  assert.deepEqual(ws.snapshot.sessions.get(alpha.id)!.coverage, [{ directory: alpha.directory, state: 'ready' }]);
+  emit([raw('A', 'idle'), raw('C1', 'running')]);
+  assert.equal(JSON.stringify(ws.snapshot.sessions.get(alpha.id)), first, 'an identical later callback is not new evidence');
   ws.restart(); await flush();
-  assert.equal(ws.snapshot.sessions.size, 0, 'restart drops receipts until fresh host snapshots arrive');
+  assert.equal(ws.snapshot.sessions.size, 0, 'restart drops rows until fresh host snapshots arrive');
   ws.dispose();
 });
 
-test('periodic loading → ready reloads of the same subscription never renew; expiry fires at 60 s; a real change renews', async () => {
-  // Fake clocks (the native host reloads the same stream about every 45 s with unchanged values).
+test('defect B: a steady Running child stays Running past 60 s through reloads, identical, title and sibling callbacks; only a host change moves it', async () => {
   let clock = 1_000_000;
   const realNow = performance.now, realDate = Date.now;
   performance.now = () => clock; Date.now = () => clock;
@@ -170,51 +169,52 @@ test('periodic loading → ready reloads of the same subscription never renew; e
     ws.start(); await flush();
     calls.find((c) => c.kind === 'projects')!.cb({ state: 'ready', projects: [alpha] }); await flush();
     ws.want([alpha.id]); await flush();
-    const raw = (id: string, parentId: string | null, activity: string) => ({ id, title: id, projectId: alpha.id, directory: alpha.directory, parentId, createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome: null, items: [] });
+    let title = 'C1', c2 = 'idle';
+    const raw = (id: string, parentId: string | null, activity: string, t = id) => ({ id, title: t, projectId: alpha.id, directory: alpha.directory, parentId, createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome: null, items: [] });
     const ready = [{ directory: alpha.directory, state: 'ready' }];
-    const emit = (state: string, c1 = 'idle', coverage: object[] = ready) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state, coverage, sessions: state === 'ready' ? [raw('A', null, 'idle'), raw('C1', 'A', c1)] : [] });
-    const reload = (c1 = 'idle') => { emit('loading', c1, [{ directory: alpha.directory, state: 'loading' }]); emit('ready', c1); };
-    const c1Now = () => {
-      const c = censusFor('A', alpha.directory, ws.snapshot);
-      assert.equal(c.state, 'ready');
-      const r = (c as Extract<Census, { state: 'ready' }>).rows.find((x) => x.id === 'C1')!;
-      return observe(r, clock, currentFor(c));
-    };
+    const emit = (state: string, c1 = 'running', coverage: object[] = ready) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state, coverage, sessions: state === 'ready' ? [raw('A', null, 'idle'), raw('C1', 'A', c1, title), raw('C2', 'A', c2)] : [] });
+    const roster = () => rosterFor({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, ws.snapshot), runs: null, verified: true, currentSession: 'A' });
+    const c1 = () => roster()!.featured.find((e) => e.sessionId === 'C1')!.ran;
     emit('ready');
     const start = clock;
-    assert.equal(c1Now().fresh, true);
-    clock = start + 45_000; emit('loading', 'idle', [{ directory: alpha.directory, state: 'loading' }]);
-    // While the reload is loading, the rows stay listed (no flicker to "Checking…") but nothing is current.
-    assert.deepEqual(censusFor('A', alpha.directory, ws.snapshot).state, 'ready');
-    assert.equal(c1Now().fresh, false);
-    emit('ready');
-    assert.equal(ws.snapshot.sessions.get(alpha.id)!.records.find((r) => r.id === 'C1')!.seenMono, start, 'unchanged reload keeps the receipt');
-    assert.equal(c1Now().fresh, true);
-    clock = start + FRESH_MS - 1; assert.equal(c1Now().fresh, true);
-    clock = start + FRESH_MS; assert.equal(c1Now().label, 'Unknown now', 'expiry fires at 60 s despite the reload');
-    clock = start + 90_000; reload();
-    clock = start + 135_000; reload();
-    clock = start + 150_000;
-    assert.deepEqual(c1Now(), { kind: 'unknown', label: 'Unknown now', fresh: false, last: 'Idle', expiresAt: null }, 'still unknown after 150 s of reloads');
-    // An error phase on the same subscription is not an observation either.
-    emit('error'); assert.equal(censusFor('A', alpha.directory, ws.snapshot).state, 'unavailable');
-    clock = start + 155_000; emit('ready'); assert.equal(c1Now().fresh, false);
-    // A genuine change renews; a reload carrying the changed value afterwards does not renew again.
-    clock = start + 160_000; reload('running');
-    assert.equal(c1Now().label, 'Running');
-    clock = start + 200_000; reload('running');
-    clock = start + 160_000 + FRESH_MS; assert.equal(c1Now().label, 'Unknown now');
-    // A new subscription (restart / context change) observes again from its first snapshot.
+    for (const [t, step] of [[59_999, () => emit('ready')], [60_000, () => { emit('loading', 'running', [{ directory: alpha.directory, state: 'loading' }]); emit('ready'); }], [120_000, () => { title = 'Renamed'; emit('ready'); }], [180_000, () => { c2 = 'running'; emit('ready'); }]] as const) {
+      clock = start + t; step();
+      assert.deepEqual([c1().kind, c1().label], ['active', 'Running'], `still Running at ${t} ms`);
+      assert.equal(c1().time, null, 'a host-only row shows no receipt time');
+    }
+    // Re-entering the view (a new subscription) does not fabricate a start either.
     ws.restart(); await flush();
     calls.findLast((c) => c.kind === 'projects')!.cb({ state: 'ready', projects: [alpha] }); await flush();
     ws.want([alpha.id]); await flush();
-    emit('ready', 'running');
-    assert.equal(c1Now().fresh, true);
+    emit('ready');
+    assert.deepEqual([c1().label, c1().time], ['Running', null]);
+    // A genuine host change moves it at once, without touching recorded task facts.
+    emit('ready', 'waiting-permission');
+    assert.equal(c1().kind, 'waiting');
+    emit('ready', 'idle');
+    assert.equal(roster()!.featured.find((e) => e.sessionId === 'C1'), undefined, 'an idle unlinked host-only child is no longer featured');
+    // A missing snapshot or refused stream is not a transition: no host activity is claimed.
+    emit('error');
+    assert.equal(censusFor('A', alpha.directory, ws.snapshot).state, 'unavailable');
     ws.dispose();
   } finally { performance.now = realNow; Date.now = realDate; }
 });
 
-// Recorded facts from the plan shown: a frozen v2 detail with one assigned, one relayed, one bound.
+test('defect B: the label ticker moves time text only; a Running label is never rewritten by elapsed time', () => {
+  // The smallest DOM refreshLabels reads: a ran label and its real start time.
+  const label = { textContent: 'Running', dataset: { state: 'active' } };
+  const started = Date.parse(at(3));
+  const time = { dateTime: new Date(started).toISOString(), dataset: { age: ' · started ' } as Record<string, string>, textContent: ' · started 3 minutes ago' };
+  const root = { querySelectorAll: (sel: string) => (sel === 'time[data-age]' ? [time] : sel.includes('[data-expires]') ? [label] : []) } as unknown as ParentNode;
+  for (const later of [59_999, 60_000, 180_000]) {
+    refreshLabels(root, 'en', started + 180_000 + later, 1_000 + later);
+    assert.equal(label.textContent, 'Running');
+    assert.equal(label.dataset.state, 'active');
+  }
+  assert.match(time.textContent, /started 6 minutes ago/);
+});
+
+// Recorded facts from the plan shown: a frozen v2 detail with C1 assigned two tasks, C2 relayed.
 const items = [
   { id: 'task-1', title: 'Research', kind: 'task' as const, status: 'working' as const, assigneeSessionId: 'C1' },
   { id: 'task-2', title: 'Draft', kind: 'task' as const, status: 'pending' as const, assigneeSessionId: 'C1' },
@@ -227,26 +227,6 @@ function detail(itemsIn: object[]): PlanDetail {
   return { key: plan.key, revision: page.plan.revision, items: page.items.data, contributions: page.contributions.data, links: page.links };
 }
 
-test('assignment, update and observation stay separate facts; unknown detail is never unassigned', () => {
-  const d = detail([{ ...items[0], assignmentBinding: binding('task-1') }, items[1], items[2]]);
-  const facts = planFacts(plan, { state: 'ready', value: d }, plan.sourceId);
-  assert.deepEqual(assignmentOf('C1', facts), { state: 'assigned', count: 2, fromDelegation: 1 });
-  assert.deepEqual(assignmentOf('C2', facts), { state: 'unassigned' });
-  assert.deepEqual(updateOf('C2', facts), { state: 'relayed', at: at(1) });
-  assert.deepEqual(updateOf('C1', facts), { state: 'none' });
-  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'loading' }, plan.sourceId)), { state: 'unknown' });
-  assert.deepEqual(assignmentOf('C2', planFacts(plan, { state: 'ready', value: { ...d, revision: 2 } }, plan.sourceId)), { state: 'unknown' }, 'a lagging revision is not complete');
-  assert.deepEqual(assignmentOf('C2', planFacts(null, null, plan.sourceId)), { state: 'no-plan' });
-  // Another setup's plan says nothing about this host's children, even with colliding IDs.
-  for (const bound of ['other-source', null]) {
-    const foreign = planFacts(plan, { state: 'ready', value: d }, bound);
-    assert.deepEqual(assignmentOf('C1', foreign), { state: 'unknown' }, String(bound));
-    assert.deepEqual(updateOf('C2', foreign).state, updateOf('C2', planFacts(plan, { state: 'loading' }, plan.sourceId)).state, String(bound));
-  }
-  // Observation never adds a participant: the filter index is built from recorded facts only.
-  assert.deepEqual(participantIndex(plan, d).sessions, ['A', 'C1', 'C2']);
-});
-
 test('adapter keeps only current, matching delegation provenance; absence still shows the assignment', () => {
   const kept = detail([{ ...items[0], assignmentBinding: binding('task-1') }, items[1], items[2]]);
   assert.equal(kept.items[0].delegation?.childSessionId, 'C1');
@@ -255,6 +235,306 @@ test('adapter keeps only current, matching delegation provenance; absence still 
     const d = detail([{ ...items[0], assignmentBinding: bad }, items[1], items[2]]);
     assert.equal(d.items[0].delegation, undefined, JSON.stringify(bad));
     assert.equal(d.items[0].assigneeSessionId, 'C1');
-    assert.deepEqual(assignmentOf('C1', planFacts(plan, { state: 'ready', value: d }, plan.sourceId)), { state: 'assigned', count: 2, fromDelegation: 0 });
   }
+});
+
+// ---- Sub-agent runs revision 1: Ran / Claimed / Accepted, plan gating and the real-Store seam ----
+const T0 = 1_800_000_000_000;
+let n = 0;
+function run(state: RunRow['ran']['state'], extra: Partial<Omit<RunRow, 'ran'>> & { ran?: Partial<RunRow['ran']> } = {}): RunRow {
+  const id = `run-${++n}`;
+  const { ran, ...rest } = extra;
+  return {
+    id, kind: 'dispatch', source: plan.sourceId, parentSessionId: 'A', childSessionId: `K${n}`, tool: 'subagent', agent: 'explorer', description: `Synthetic job ${n}`,
+    dispatch: { messageId: `m-${n}`, callId: `c-${n}`, at: T0 }, planContext: { plan: plan.id, revision: 3, observedAt: T0 },
+    ran: { state, dispatchState: 'returned', startedAt: T0 + 100, endedAt: ['succeeded', 'failed', 'interrupted'].includes(state) ? T0 + 125_000 : null, updatedAt: T0 + 125_000, provenance: 'native-event', eventId: `e-${n}`, sequence: 2, errorType: null, interruptionReason: null, ...ran },
+    claimed: null, accepted: null, ...rest,
+  };
+}
+function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: Partial<RunRead> = {}): RunRead {
+  const c = { children: rows.length, runs: rows.length, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 };
+  for (const r of rows) c[r.ran.state]++;
+  return { protocolVersion: 2, schemaVersion: 2, storeId: 'store-1', sourceBinding: { sourceId: plan.sourceId, verified: true }, source: plan.sourceId, root: 'A', plan: plan.id, cleanupRev: 0, view: 'useful', subagentRuns: 1, runFormat: 1, availability: 'ready', readAt: T0 + 200_000, revision: 7,
+    capture: { enabled: true, state: 'last-known', loss: false }, recovery: { state: 'complete', reason: null, token: null }, counts: { ...c, ...counts },
+    coverage: { scope: 'retained', complete: true, reasons: [] }, data: rows, nextCursor: null, ...extra };
+}
+const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
+const input = (extra: Partial<RosterInput> = {}): RosterInput => ({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, snap()), runs: null, verified: true, currentSession: 'A', ...extra });
+
+test('defect A: no plan in scope means no roster at all, even with running children and run rows', () => {
+  const read = readOf([run('running'), run('succeeded')]);
+  // Two host children, one running (C1), plus recorded runs: still nothing without a plan.
+  for (const surface of ['panel', 'status', 'page'] as const) assert.equal(rosterFor(input({ surface, plan: null, runs: panel(read) })), null, surface);
+  assert.equal(rosterFor(input({ plan: null, census: censusFor('A', alpha.directory, snap()) })), null);
+  // An unverified setup shows nothing either.
+  assert.equal(rosterFor(input({ verified: false, runs: panel(read) })), null);
+  // With a plan in scope but nothing useful (no active, no task-linked, no recorded runs): no section.
+  assert.equal(rosterFor(input({ census: censusFor('C2', alpha.directory, snap()), currentSession: 'C2', runs: panel(readOf([])) })), null);
+  // With a plan in scope and a running child, the section is eligible.
+  assert.ok(rosterFor(input({ runs: panel(read) })));
+});
+
+test('ran: real host times and justified durations; failed/interrupted/historical stay distinct from finished', () => {
+  const ok = ranOf(run('succeeded'), null);
+  assert.deepEqual([ok.kind, ok.label, ok.time, ok.duration], ['finished', 'Finished', { at: T0 + 125_000, prefix: '' }, { ms: 124_900, fromDispatch: false }]);
+  assert.equal(ranOf(run('failed', { ran: { errorType: 'SyntheticFailure' } }), null).label, 'Failed: SyntheticFailure');
+  assert.equal(ranOf(run('failed', { ran: { errorType: 'unknown' } }), null).label, 'Failed');
+  for (const [reason, words] of [['user', 'stopped by the user'], ['shutdown', 'the host shut down'], ['superseded', 'replaced by a newer run'], ['inactivity', 'inactive too long'], [null, 'reason not recorded']] as const)
+    assert.equal(ranOf(run('interrupted', { ran: { interruptionReason: reason } }), null).label, `Interrupted: ${words}`);
+  // Only a dispatch time: duration says so; no start at all: no duration.
+  assert.deepEqual(ranOf(run('succeeded', { ran: { startedAt: null } }), null).duration, { ms: 125_000, fromDispatch: true });
+  const hist = ranOf(run('unknown', { kind: 'historical-session', dispatch: null, planContext: null, ran: { dispatchState: 'historical', provenance: 'native-session', startedAt: null, updatedAt: T0 - 2 * 86_400_000 } }), null);
+  assert.deepEqual([hist.label, hist.time], ['Outcome unknown', { at: T0 - 2 * 86_400_000, prefix: 'last updated ' }], 'a two-day-old session reads as two days old, never just now');
+  assert.deepEqual([ranOf(run('running'), null).label, ranOf(run('running'), null).time], ['Running', { at: T0 + 100, prefix: 'started ' }]);
+  // A host waiting report refines an open run's words without inventing an end or success.
+  const host = (activity: LiveSession['activity'], outcome: LiveSession['outcome'] = null) => ({ id: 'K', parentId: 'A', depth: 1, title: 'K', activity, outcome, archived: false });
+  assert.equal(ranOf(run('running'), host('waiting-question')).kind, 'waiting');
+  // P1: an idle/completed snapshot alone may be the cached result of the child's previous execution:
+  // a native Running row stays Running. Only an active → idle change seen in this subscription moves it.
+  for (const [activity, outcome] of [['idle', 'completed'], ['idle', 'failed'], ['idle', null], ['unknown', null]] as const) {
+    const kept = ranOf(run('running'), host(activity, outcome));
+    assert.deepEqual([kept.kind, kept.label], ['active', 'Running'], `${activity}/${outcome} snapshot without a transition`);
+  }
+  // Only an active → idle change observed after this execution's start qualifies (rosterFor decides).
+  const idle = ranOf(run('running'), host('idle', 'completed'), { idleAfterStart: true });
+  assert.deepEqual([idle.kind, idle.label, idle.duration], ['idle', 'Idle now, no outcome reported yet', null]);
+  // A host event that already ended a run is never overridden by later host activity.
+  assert.equal(ranOf(run('succeeded'), host('running')).label, 'Finished');
+  assert.equal(ranOf(run('unknown', { ran: { dispatchState: 'pending', startedAt: null } }), null).label, 'Dispatched, not confirmed yet');
+});
+
+test('three layers: a claimed-done child with a blocked task keeps both; finished run is not a finished task', () => {
+  const d = detail([items[0], items[1], items[2]]);
+  const facts = planFacts(plan, { state: 'ready', value: d }, plan.sourceId);
+  const c1 = run('succeeded', { childSessionId: 'C1', claimed: { oid: 'h-1', outcome: 'done', summary: '<b>Literal</b> handoff', reportedAt: T0 + 126_000, sessionId: 'C1', association: 'execution' } });
+  const blocked = run('succeeded', { childSessionId: 'C2', accepted: { plan: plan.id, revision: 3, items: [{ id: 'task-3', status: 'blocked' }], omittedItems: 0 } });
+  const r = rosterFor(input({ facts, runs: panel(readOf([c1, blocked])) }))!;
+  const one = r.featured.find((e) => e.sessionId === 'C1')!;
+  assert.equal(one.ran.label, 'Finished');
+  assert.equal(one.claimed?.outcome, 'done');
+  assert.equal(one.claimed?.summary, '<b>Literal</b> handoff', 'authored text stays literal data');
+  assert.deepEqual(one.accepted?.tasks.map((t) => [t.id, t.status]), [['task-1', 'working'], ['task-2', 'pending']], 'tasks keep their reported status');
+  const two = r.featured.find((e) => e.sessionId === 'C2')!;
+  assert.deepEqual(two.accepted?.tasks, [{ id: 'task-3', title: 'Review', status: 'blocked' }]);
+  assert.equal(two.duringPlan, true);
+  // Without explicit task facts there is no Accepted line at all (never "unassigned").
+  const lone = rosterFor(input({ runs: panel(readOf([run('running', { childSessionId: 'C9' })])) }))!.featured.find((e) => e.sessionId === 'C9')!;
+  assert.equal(lone.accepted, null);
+  assert.equal(lone.claimed, null);
+});
+
+test('many children: only running/waiting and task-linked are featured; the rest is counted, never a cap warning', () => {
+  n = 0;
+  const finished = Array.from({ length: 150 }, () => run('succeeded'));
+  const rows = [run('running', { childSessionId: 'C1' }), ...finished.slice(0, 49)];
+  const d = detail([items[0], items[1], items[2]]);
+  const read = readOf(rows, { running: 1, succeeded: 152, failed: 2, interrupted: 1, unknown: 0, runs: 156, children: 156 }, { nextCursor: 'next' });
+  const r = rosterFor(input({ facts: planFacts(plan, { state: 'ready', value: d }, plan.sourceId), runs: panel(read, [], { hasMore: true }) }))!;
+  assert.deepEqual(r.featured.map((e) => e.sessionId), ['C1'], 'one running child (with its tasks) is featured; finished plan-context children are not');
+  assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '152 finished', '2 failed', '1 interrupted']);
+  assert.equal(r.earlierTotal, 155);
+  assert.equal(r.canPage, true);
+  assert.ok(!r.notes.length, 'complete coverage: no warning at all');
+  // Hundreds of task-linked rows are still bounded per surface.
+  const linked = Array.from({ length: 40 }, () => run('succeeded', { accepted: { plan: plan.id, revision: 3, items: [{ id: 'task-1', status: 'done' }], omittedItems: 0 } }));
+  assert.equal(rosterFor(input({ surface: 'status', runs: panel(readOf(linked)) }))!.featured.length, 3);
+  assert.equal(rosterFor(input({ surface: 'panel', runs: panel(readOf(linked)) }))!.featured.length, 6);
+});
+
+test('P6: an unconfirmed dispatch and a new host child stay separate rows; nothing is attached without a child ID', () => {
+  const pending = run('unknown', { childSessionId: null, ran: { dispatchState: 'pending', startedAt: null }, dispatch: { messageId: 'm', callId: 'c', at: 0 } });
+  // The sole new child of the same parent, created after the dispatch, with explicitly reported tasks.
+  const host = snap([rec('A', null), rec('C1', 'A', { activity: 'running', createdAt: 5 })]);
+  const d = detail([items[0], items[1], items[2]]);
+  const r = rosterFor(input({ census: censusFor('A', alpha.directory, host), facts: planFacts(plan, { state: 'ready', value: d }, plan.sourceId), runs: panel(readOf([pending])) }))!;
+  const all = [...r.featured, ...r.earlier];
+  const dispatch = all.find((e) => e.runId === pending.id)!;
+  const child = all.find((e) => e.sessionId === 'C1')!;
+  assert.notEqual(dispatch, child, 'two rows');
+  assert.deepEqual([dispatch.sessionId, dispatch.ran.label, dispatch.accepted, dispatch.openable], [null, 'Dispatched, not confirmed yet', null, false], 'the dispatch borrows no activity, tasks or navigation');
+  assert.deepEqual([child.runId, child.ran.label, child.title], [null, 'Running', 'Title C1'], 'the host child keeps only its own facts');
+  assert.ok(!('paired' in dispatch), 'no pairing field remains');
+  assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '1 unknown']);
+});
+
+test('P1: a native Running run survives a cached idle snapshot (first in a subscription, reloads, re-entry); a seen active → idle change updates it', async () => {
+  const calls: { kind: string; cb: (s: any) => void }[] = [];
+  const subscribe = (kind: string, cb: (s: any) => void) => { calls.push({ kind, cb }); return Promise.resolve(() => {}); };
+  const hostClient = { onProjects: (cb) => subscribe('projects', cb), onWorktrees: (_id, cb) => subscribe('worktrees', cb), onSessions: (_id, cb) => subscribe('sessions', cb) } satisfies Pick<HostClient, 'onProjects' | 'onWorktrees' | 'onSessions'>;
+  const flush = async () => { for (let i = 0; i < 6; i++) await new Promise<void>((r) => setImmediate(r)); };
+  const ws = new LiveWorkspace(hostClient, 2, () => {});
+  const subscribeAll = async () => { calls.findLast((c) => c.kind === 'projects')!.cb({ state: 'ready', projects: [alpha] }); await flush(); ws.want([alpha.id]); await flush(); };
+  ws.start(); await flush(); await subscribeAll();
+  const raw = (id: string, parentId: string | null, activity: string, outcome: string | null = null) => ({ id, title: id, projectId: alpha.id, directory: alpha.directory, parentId, createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome, items: [] });
+  const emit = (state: string, activity: string, outcome: string | null = null) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state, coverage: [{ directory: alpha.directory, state }], sessions: state === 'ready' ? [raw('A', null, 'idle'), raw('K1', 'A', activity, outcome)] : [] });
+  const live = run('running', { childSessionId: 'K1' });
+  const baselines = new ExecutionBaselines();
+  const ran = () => rosterFor(input({ census: censusFor('A', alpha.directory, ws.snapshot), liveSeq: ws.snapshot.seq, runs: panel(readOf([live]), [], { baselines }) }))!.featured.find((e) => e.runId === live.id)!.ran;
+  // The previous execution's completed result arrives first: no transition, so Running stays.
+  emit('ready', 'idle', 'completed');
+  assert.equal(ran().label, 'Running');
+  emit('loading', 'idle', 'completed'); emit('ready', 'idle', 'completed');
+  assert.equal(ran().label, 'Running', 'an unchanged reload is not a transition');
+  // Seen live: running, then idle in the same subscription: newer than the running report.
+  emit('ready', 'running');
+  assert.equal(ran().label, 'Running');
+  emit('ready', 'idle', 'completed');
+  assert.deepEqual([ran().kind, ran().label], ['idle', 'Idle now, no outcome reported yet']);
+  emit('loading', 'idle', 'completed'); emit('ready', 'idle', 'completed');
+  assert.equal(ran().kind, 'idle', 'the seen transition survives a reload of the same subscription');
+  // Active again clears it; a new subscription (view re-entry) starts with no transition evidence.
+  emit('ready', 'running'); assert.equal(ran().label, 'Running');
+  emit('ready', 'idle'); assert.equal(ran().kind, 'idle');
+  ws.restart(); await flush(); await subscribeAll();
+  emit('ready', 'idle', 'completed');
+  assert.equal(ran().label, 'Running', 're-entry with a cached idle result keeps Running');
+  ws.dispose();
+});
+
+/** One subscription of child K1 under A, with the roster read through shared execution baselines. */
+async function oneSubscription() {
+  const calls: { kind: string; cb: (s: any) => void }[] = [];
+  const subscribe = (kind: string, cb: (s: any) => void) => { calls.push({ kind, cb }); return Promise.resolve(() => {}); };
+  const hostClient = { onProjects: (cb) => subscribe('projects', cb), onWorktrees: (_id, cb) => subscribe('worktrees', cb), onSessions: (_id, cb) => subscribe('sessions', cb) } satisfies Pick<HostClient, 'onProjects' | 'onWorktrees' | 'onSessions'>;
+  const flush = async () => { for (let i = 0; i < 6; i++) await new Promise<void>((r) => setImmediate(r)); };
+  const ws = new LiveWorkspace(hostClient, 2, () => {});
+  ws.start(); await flush();
+  calls.findLast((c) => c.kind === 'projects')!.cb({ state: 'ready', projects: [alpha] }); await flush(); ws.want([alpha.id]); await flush();
+  const raw = (id: string, parentId: string | null, activity: string, outcome: string | null = null) => ({ id, title: id, projectId: alpha.id, directory: alpha.directory, parentId, createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome, items: [] });
+  const emit = (activity: string, outcome: string | null = null) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state: 'ready', coverage: [{ directory: alpha.directory, state: 'ready' }], sessions: [raw('A', null, 'idle'), raw('K1', 'A', activity, outcome)] });
+  const baselines = new ExecutionBaselines();
+  const roster = (rows: RunRow[]) => rosterFor(input({ census: censusFor('A', alpha.directory, ws.snapshot), liveSeq: ws.snapshot.seq, runs: panel(readOf(rows), [], { baselines }) }))!;
+  return { ws, emit, roster };
+}
+
+test('P1: transition evidence is per execution: a previous execution\'s active → idle never ends the next one', async () => {
+  const { ws, emit, roster } = await oneSubscription();
+  const entry = (rows: RunRow[], id: string) => { const r = roster(rows); return [...r.featured, ...r.earlier].find((e) => e.runId === id)!; };
+  // Execution N, seen running then idle in this subscription.
+  const first = run('running', { childSessionId: 'K1', ran: { eventId: 'start-N' } });
+  emit('running'); assert.equal(entry([first], first.id).ran.label, 'Running');
+  emit('idle', 'completed'); assert.equal(entry([first], first.id).ran.kind, 'idle');
+  // Execution N+1 has a native start while the SDK still holds N's idle result: Running.
+  const next = run('running', { childSessionId: 'K1', ran: { eventId: 'start-N1' }, dispatch: { messageId: 'm2', callId: 'c2', at: T0 + 1_000 } });
+  const n1 = () => entry([first, next], next.id).ran;
+  assert.deepEqual([n1().kind, n1().label], ['active', 'Running'], 'the earlier execution\'s transition does not qualify');
+  emit('idle', 'completed'); assert.equal(n1().label, 'Running', 'an unchanged cached idle is still not evidence');
+  // N+1's own active → idle, observed after its start, does.
+  emit('running'); assert.equal(n1().label, 'Running');
+  emit('idle', 'completed'); assert.deepEqual([n1().kind, n1().label], ['idle', 'Idle now, no outcome reported yet']);
+  // A new start event on the same dispatch is a new execution too.
+  const resumed = { ...next, ran: { ...next.ran, eventId: 'start-N2', sequence: 3 } };
+  assert.equal(entry([first, resumed], resumed.id).ran.label, 'Running');
+  ws.dispose();
+});
+
+test('adapter: the real-Store revision-1 fixture parses; any identity drift is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'subagent-runs-ui-'));
+  try {
+    const f = seedRunReadFixture(join(dir, 'store.sqlite'));
+    const body = JSON.stringify(f.read());
+    const parsed = parseRunRead(body, f.request);
+    assert.equal(parsed.data.length >= 4, true);
+    assert.deepEqual([parsed.counts.running, parsed.counts.failed, parsed.counts.interrupted], [1, 1, 1]);
+    const states = new Map(parsed.data.map((r) => [r.description, ranOf(r, null).label]));
+    assert.equal(states.get('Synthetic work 2'), 'Failed: SyntheticFailure');
+    assert.equal(states.get('Synthetic work 3'), 'Interrupted: stopped by the user');
+    for (const drift of [{ root: 'other' }, { plan: 'other-plan' }, { storeId: 'other' }, { view: 'history' as const }, { binding: { sourceId: f.request.source, verified: false } }])
+      assert.throws(() => parseRunRead(body, { ...f.request, ...drift }), /identity/, JSON.stringify(drift));
+    assert.throws(() => parseRunRead(body.replace('"running"', '"done-ish"'), f.request));
+    f.store.close?.();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('runs controller: one visit per eligible paint; retired, hidden and held replies never repaint, page or reconcile', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'subagent-runs-ctl-'));
+  try {
+    const f = seedRunReadFixture(join(dir, 'store.sqlite'));
+    const calls: { method: string; path: string }[] = [];
+    const held: (() => void)[] = [];
+    let hold = false, visible = true, changed = 0;
+    const answer = (q: any) => {
+      if (q.path.endsWith('/reconcile')) return { status: 200, body: JSON.stringify(f.store.requestRunReconciliation(JSON.parse(q.body))) };
+      const r: RunRequest = { ...q.query, binding: JSON.parse(q.query.binding), ...(q.query.cleanupRev !== undefined ? { cleanupRev: Number(q.query.cleanupRev) } : {}) };
+      try { return { status: 200, body: JSON.stringify(f.store.subagentRuns(r, T0)) }; } catch (e: any) { return { status: e.code === 'not-found' ? 404 : 409, body: JSON.stringify({ error: e.code }) }; }
+    };
+    const host = { serviceRequest: (q: any) => { calls.push({ method: q.method, path: q.path }); return new Promise<any>((resolve) => { const go = () => resolve(answer(q)); if (hold) held.push(go); else go(); }); } };
+    const flush = async () => { for (let i = 0; i < 8; i++) await new Promise<void>((r) => setImmediate(r)); };
+    const ctl = new RunsController({ service: (current) => ({ serviceRequest: (q) => (current() ? host.serviceRequest(q) : Promise.reject(new Error('Retired read'))) }), visible: () => visible, changed: () => { changed++; } });
+    const claim = { owner: 'acct|store', request: f.request, capable: true, captureEnabled: true };
+    const paint = (eligible: boolean) => { ctl.beginPaint(); const p = eligible ? ctl.claim(claim) : null; ctl.endPaint(); return p; };
+    paint(true); await flush();
+    let p = paint(true)!;
+    assert.equal(p.state, 'ready');
+    assert.equal(calls.filter((c) => c.method === 'GET').length, 1, 'repaints read nothing');
+    // The fixture's history is complete: no automatic reconciliation request.
+    assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+    // Plan → no plan: the visit retires; a held poll reply cannot repaint.
+    hold = true; ctl.poll(); paint(false);
+    const before = changed; held.splice(0).forEach((go) => go()); await flush();
+    assert.equal(changed, before, 'held reply after retirement is dropped');
+    // Hidden: an in-flight reply is dropped too, and nothing polls while hidden.
+    hold = true; paint(true); visible = false; ctl.hidden(); const gets = calls.length; ctl.poll(); assert.equal(calls.length, gets);
+    const hiddenBefore = changed; held.splice(0).forEach((go) => go()); await flush();
+    assert.equal(changed, hiddenBefore);
+    hold = false; visible = true; ctl.poll(); await flush();
+    p = paint(true)!; assert.equal(p.state, 'ready');
+    // Not capable: unavailable, and no request at all.
+    const quiet = calls.length; ctl.retire();
+    ctl.beginPaint(); assert.equal(ctl.claim({ ...claim, capable: false }).state, 'unavailable'); ctl.endPaint(); await flush();
+    assert.equal(calls.length, quiet);
+    f.store.close?.();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('runs controller: an unreconciled root asks for history once per frame, not per repaint or poll', async () => {
+  const replies: string[] = [];
+  const base = readOf([run('succeeded')], {}, { recovery: { state: 'not-requested', reason: null, token: null }, coverage: { scope: 'retained', complete: false, reasons: ['history-not-reconciled'] } });
+  const request: RunRequest = { storeId: base.storeId, binding: base.sourceBinding, source: base.source, root: base.root, plan: base.plan!, cleanupRev: 0, view: 'useful' };
+  const host = { serviceRequest: async (q: any) => { replies.push(q.method); return { status: 200, body: JSON.stringify(q.method === 'POST' ? { state: 'pending', coalesced: false } : base) }; } };
+  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise<void>((r) => setImmediate(r)); };
+  const ctl = new RunsController({ service: () => host, visible: () => true, changed: () => {} });
+  const claim = { owner: 'o', request, capable: true, captureEnabled: true };
+  for (let i = 0; i < 4; i++) { ctl.beginPaint(); ctl.claim(claim); ctl.endPaint(); ctl.poll(); await flush(); }
+  assert.equal(replies.filter((m) => m === 'POST').length, 1);
+  // Capture off: no automatic request at all.
+  const off = new RunsController({ service: () => host, visible: () => true, changed: () => {} });
+  replies.length = 0;
+  off.beginPaint(); off.claim({ ...claim, owner: 'other', captureEnabled: false }); off.endPaint(); await flush();
+  assert.equal(replies.filter((m) => m === 'POST').length, 0);
+});
+
+test('repeat dispatches of one child: task facts sit on its latest run only; an empty fact list is no Accepted line', () => {
+  const tasks = { plan: plan.id, revision: 3, items: [{ id: 'task-1', status: 'working' as const }], omittedItems: 0 };
+  const older = run('succeeded', { childSessionId: 'C2', accepted: tasks, dispatch: { messageId: 'm', callId: 'c-old', at: T0 - 600_000 } });
+  const newer = run('succeeded', { childSessionId: 'C2', accepted: tasks, dispatch: { messageId: 'm', callId: 'c-new', at: T0 } });
+  const empty = run('succeeded', { childSessionId: 'C9', accepted: { plan: plan.id, revision: 3, items: [], omittedItems: 0 } });
+  const r = rosterFor(input({ runs: panel(readOf([older, newer, empty])) }))!;
+  const all = [...r.featured, ...r.earlier];
+  assert.deepEqual(r.featured.filter((e) => e.runId).map((e) => e.runId), [newer.id], 'one featured row per task-linked child');
+  assert.equal(all.find((e) => e.runId === older.id)!.accepted, null);
+  assert.equal(all.find((e) => e.runId === empty.id)!.accepted, null);
+});
+
+test('P2: a terminal run with the SDK still holding that execution\'s Running snapshot is not "running again"', async () => {
+  const { ws, emit, roster } = await oneSubscription();
+  const entry = (rows: RunRow[]) => { const r = roster(rows); return { r, e: [...r.featured, ...r.earlier].find((x) => x.runId === rows[0].id)! }; };
+  // The same execution: SDK running, then the native terminal event arrives first.
+  emit('running');
+  const done = run('succeeded', { childSessionId: 'K1' });
+  let { r, e } = entry([done]);
+  assert.deepEqual([e.ran.label, e.now], ['Finished', null], 'no "again" without post-terminal evidence');
+  assert.deepEqual(r.summary.map((s) => s.text), ['1 finished'], 'and not counted as running');
+  emit('running'); ({ r, e } = entry([done]));
+  assert.equal(e.now, null, 'an unchanged running callback is not a resume');
+  // The SDK catches up (idle), then a genuine idle → active change after the terminal fact: a resume.
+  emit('idle', 'completed'); ({ r, e } = entry([done])); assert.equal(e.now, null);
+  emit('running'); ({ r, e } = entry([done]));
+  assert.deepEqual([e.ran.label, e.now], ['Finished', { kind: 'active', label: 'Running' }]);
+  assert.deepEqual(r.summary.map((s) => s.text), ['1 running', '1 finished']);
+  emit('waiting-question'); ({ r } = entry([done])); assert.equal(r.summary[0].text, '1 waiting on you');
+  emit('idle'); ({ r, e } = entry([done]));
+  assert.equal(e.now, null);
+  assert.equal(r.featured.filter((x) => x.runId).length, 0, 'once idle again it folds back into the earlier list');
+  ws.dispose();
 });

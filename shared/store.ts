@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import * as runs from './subagent-runs.ts';
+import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
@@ -83,6 +85,42 @@ export class Store {
     finally{finish();}
   }
   close() { this.db.close(); }
+  installSubagentRuns() { return this.transaction(true,()=>runs.installRuns(this.db)); }
+  subagentRunsAvailable() { return this.transaction(false,()=>runs.runsInstalled(this.db)); }
+  runControl() { return this.transaction(false,()=>runs.runControl(this.db)); }
+  runCaptureUnavailable() { return this.transaction(true,()=>runs.runCaptureUnavailable(this.db)); }
+  beforeRun(key:runs.DispatchKey,actor:Actor,tool:'subagent'|'task',input:unknown,at:number) { return this.transaction(true,()=>runs.beforeRun(this.db,key,actor,tool,input,at)); }
+  afterRun(key:runs.DispatchKey,generation:number,child:Actor|undefined,disposition:'returned'|'failed-unconfirmed'|'unconfirmed') { return this.transaction(true,()=>{
+    runs.afterRun(this.db,key,generation,child,disposition);
+    const i=runs.reservedIntent(this.db,key);if(!i)return;
+    if(!child||disposition!=='returned'||!this.runControlInTransaction(i.generation)){runs.settleIntent(this.db,i,undefined,'dispatch-unconfirmed');return;}
+    this.db.exec('SAVEPOINT run_binding');
+    try{
+      need(i.caller.sourceId===key.source&&i.caller.sessionId===key.parent,'binding');
+      // Resolve through the existing identity owner populated by native before
+      // capture; intent stores IDs only, never a duplicate private Actor snapshot.
+      const stored=this.db.prepare('SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?').get(i.caller.sourceId,i.caller.sessionId);need(typeof stored?.actor==='string','binding');
+      const actor=JSON.parse(stored.actor) as Actor;need(actor.sourceId===i.caller.sourceId&&actor.sessionId===i.caller.sessionId,'binding');
+      const at=this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch!);need(Number.isSafeInteger(at?.at),'corrupt');
+      const receipt=this.applyMutation({op:'link',plan:i.request.plan,oid:i.bindOid,rev:i.request.rev,child:child.sessionId,assign:i.request.assign},actor,undefined,child,{generation:this.delegationControl().generation,messageId:key.message,callId:key.call,observedAt:new Date(Number(at!.at)).toISOString()});this.db.exec('RELEASE run_binding');runs.settleIntent(this.db,i,receipt);
+    }
+    catch(e){this.db.exec('ROLLBACK TO run_binding; RELEASE run_binding');runs.settleIntent(this.db,i,undefined,storageError(e).code);}
+  }); }
+  private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
+  declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
+  handoff(value:unknown,actor:Actor,now=Date.now()) {const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');return this.transaction(true,()=>runs.handoff(this.db,r,actor,now));}
+  observeExecution(event:runs.ExecutionObservation) { return this.transaction(true,()=>runs.observeExecution(this.db,event)); }
+  subagentRuns(request:runs.RunRequest,now?:number) { return this.transaction(false,()=>runs.readRuns(this.db,this.readBinding,request,now)); }
+  requestRunReconciliation(request:runs.ReconcileRequest) { return this.transaction(true,()=>runs.requestReconciliation(this.db,this.readBinding,request)); }
+  pendingRunRecovery(source:string) { return this.transaction(false,()=>runs.pendingRecovery(this.db,source)); }
+  pendingRunRecoveryAt(source:string,directory:string) {return this.transaction(false,()=>runs.pendingRecoveryAt(this.db,source,directory));}
+  maintainRunRecovery(source:string,directory:string,producer:string,now=Date.now()) {return this.transaction(true,()=>runs.recoveryMaintenance(this.db,source,directory,producer,now));}
+  runRecoveryWork(job:runs.RecoveryJob) {return this.transaction(false,()=>runs.recoveryWork(this.db,job));}
+  saveRunRecoveryWork(job:runs.RecoveryJob,work:runs.RecoveryWork) {return this.transaction(true,()=>runs.saveRecoveryWork(this.db,job,work));}
+  claimRunRecovery(source:string,root:string) { return this.transaction(true,()=>runs.claimRecovery(this.db,source,root)); }
+  runRecoveryAlive(job:runs.RecoveryJob) { return this.transaction(false,()=>runs.recoveryAlive(this.db,job)); }
+  publishRunHistory(job:runs.RecoveryJob,session:runs.HistoricalSession) { return this.transaction(true,()=>runs.publishHistory(this.db,job,session)); }
+  finishRunRecovery(job:runs.RecoveryJob,state:'complete'|'partial'|'failed') { return this.transaction(true,()=>runs.finishRecovery(this.db,job,state)); }
   documentCaptures(r: CaptureRequest, cursor?: string) { return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor)); }
   documentComparison(r: CaptureRequest, before: number, after: number) { return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after)); }
   search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
@@ -130,7 +168,9 @@ export class Store {
   }
   validateDeclaration(value: unknown, actor: Actor) {
     const r = parseRequest(value); need(r.op === 'delegate');
-    return this.transaction(false, () => {
+    return this.transaction(false,()=>this.validateDeclarationMutation(r,actor));
+  }
+  private validateDeclarationMutation(r:Request,actor:Actor) {
       need(this.delegationControl().enabled, 'disabled');
       const source = this.db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId);
       need(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, 'source-unverified');
@@ -141,7 +181,6 @@ export class Store {
       assignmentIDs(p,r.assign!);
       need(p.links.every(l => l.itemIds.every(id => !r.assign!.includes(id))), 'assignment');
       return this.delegationControl().generation;
-    });
   }
   private raw(source: string, id: string): StoredPlan | undefined {
     const row = this.db.prepare('SELECT snapshot FROM plans WHERE source=? AND id=?').get(source,id);
@@ -275,10 +314,13 @@ export class Store {
     });
   }
   apply(value: unknown, actor: Actor, capture?: Capture, child?: Actor, binding?: { generation: number; messageId: string; callId: string; observedAt: string }) : Receipt {
+    return this.transaction(true,()=>this.applyMutation(value,actor,capture,child,binding));
+  }
+  private applyMutation(value: unknown, actor: Actor, capture?: Capture, child?: Actor, binding?: { generation: number; messageId: string; callId: string; observedAt: string }) : Receipt {
     const r = parseRequest(value); need(r.op !== 'read' && r.op !== 'delegate');
     const hash = digest(canonical({ request:r, session:actor.sessionId, source:actor.sourceId, ...(binding ? {binding} : {}) }));
     const receiptStatement = this.db.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)');
-    return this.transaction(true, () => {
+    return (() => {
       need(Boolean(this.db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()!.enabled),'disabled');
       if (binding) {
         need(r.op === 'link' && this.delegationControl().generation === binding.generation,'disabled');
@@ -419,7 +461,7 @@ export class Store {
         save(receipt); return receipt;
       }
       function save(receipt: Receipt) { receiptStatement.run(actor.sourceId,r.plan,r.oid!,hash,JSON.stringify(receipt)); }
-    });
+    })();
   }
 }
 function assignmentIDs(p: PlanState, ids: string[]) {

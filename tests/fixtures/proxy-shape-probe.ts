@@ -67,12 +67,68 @@ if (process.argv[2] !== '--driver') {
     await wait(async () => { try { return (await client.model.list({ location })).data.length > 0; } catch { return false; } }, 'host startup');
     assert.equal((await client.credential.list()).length, 0);
     const session = await client.session.create({ location, agent: 'build', title: 'Synthetic C0', model: { providerID: 'proxy-fixture', id: 'script' }, permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    const activated = process.env.PROXY_ACTIVATION === '1';
+    let sourceID='';
+    const otherDirectory=`${root}/other-project`;
+    const baselinePlans=['baseline-root','baseline-other'];
+    const nativeActor = async (id:string) => {
+      const native=await client.session.get({sessionID:id as any});assert.equal(native.id,id);
+      const ancestry:string[]=[],seen=new Set([id]);let parent=native.parentID;
+      while(parent){assert.ok(!seen.has(parent)&&ancestry.length<32);seen.add(parent);ancestry.push(parent);const ancestor=await client.session.get({sessionID:parent});assert.equal(ancestor.id,parent);assert.equal(ancestor.location.directory,native.location.directory);assert.equal(ancestor.projectID,native.projectID);parent=ancestor.parentID;}
+      return {sourceId:sourceID,sessionId:id,agent:native.agent??'unknown',directory:native.location.directory,projectId:native.projectID,parentId:native.parentID??null,ancestry,verifiedSource:true};
+    };
+    if(activated){
+      const store=new Store(`${root}/store/progress.sqlite`);
+      try{
+        sourceID=store.list().sources[0]!.id;store.bindReads(sourceID,true);
+        // Deliberate fixture reports, not hint effects: make unchanged list,
+        // summary, item and history assertions non-vacuous in two directories.
+        const owner=await nativeActor(session.id);
+        store.apply({op:'start',plan:baselinePlans[0],oid:'baseline-start',rev:0,title:'Synthetic reported baseline',items:[{id:'baseline-task',title:'Reported task',kind:'task',status:'blocked'}]},owner);
+        store.apply({op:'start',plan:baselinePlans[1],oid:'baseline-start',rev:0,title:'Synthetic unrelated baseline',items:[{id:'other-task',title:'Unrelated task',kind:'task',status:'working'}]},{...owner,sessionId:'baseline-owner',directory:otherDirectory,projectId:'baseline-project'});
+      }finally{store.close();}
+    }
     const snapshot = () => {
       const store = new Store(`${root}/store/progress.sqlite`, { readOnly: true });
-      try { return Object.fromEntries(['plans', 'revisions', 'receipts', 'sessions', 'chunks', 'captures', 'contributions'].map(table => [table, store.db.prepare(`SELECT * FROM ${table}`).all()])); } finally { store.close(); }
+      try {
+        store.db.exec('BEGIN');
+        // Exact comparison includes every existing non-run table, including
+        // optional metadata/progress tables. Items/history live in snapshots.
+        const tables=store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'runs_*' ORDER BY name").all().map(r=>String(r.name));
+        return {tables:Object.fromEntries(tables.map(table=>[table,store.db.prepare(`SELECT * FROM "${table.replaceAll('"','""')}" ORDER BY rowid`).all()])),runs:store.db.prepare('SELECT source,parent,message,call,child FROM runs_rows ORDER BY rowid').all()};
+      } finally {store.db.exec('COMMIT');store.close();}
     };
-    const activated = process.env.PROXY_ACTIVATION === '1';
     const beforeHints = activated ? snapshot() : undefined;
+    const views = (childIDs:string[]=[]) => {
+      const store=new Store(`${root}/store/progress.sqlite`,{readOnly:true});
+      try{
+        store.bindReads(sourceID,true);
+        return {lists:[store.list(),store.list({source:sourceID}),store.list({source:sourceID,session:session.id}),store.list({source:sourceID,session:'baseline-owner'}),store.list({directory:location.directory}),store.list({directory:otherDirectory}),store.list({source:sourceID,session:session.id,directory:otherDirectory})],details:baselinePlans.map(plan=>store.detail(sourceID,plan)),histories:baselinePlans.map(plan=>store.history(sourceID,plan)),emptyMembership:store.list({source:sourceID,session:childIDs[0]??'unreported-child-probe'}),childMembership:childIDs.map(id=>store.list({source:sourceID,session:id}))};
+      }finally{store.close();}
+    };
+    const beforeViews=activated?views():undefined;
+    const assertHintState = async () => {
+      const after=snapshot(),{sessions:initialSessions,...initialProgress}=beforeHints!.tables,{sessions:actualSessions,...actualProgress}=after.tables;
+      assert.deepEqual(actualProgress,initialProgress,'hint-only native steps cannot mutate any progress table');
+      const expected=new Map(initialSessions!.map((r:any)=>[`${r.source}:${r.id}`,{source:r.source,id:r.id,actor:JSON.parse(String(r.actor))}]));
+      const events=records();
+      for(const run of after.runs){
+        assert.equal(run.source,sourceID);assert.equal(run.parent,session.id);
+        assert.ok(events.some(e=>e.type==='execute.before'&&e.tool==='subagent'&&e.sessionID===run.parent&&e.messageID===run.message&&e.id===run.call),'identity capture requires an observed native dispatch');
+        const ids=[String(run.parent)];
+        if(run.child){
+          assert.ok(events.some(e=>e.type==='execute.after'&&e.tool==='subagent'&&e.status==='completed'&&e.sessionID===run.parent&&e.messageID===run.message&&e.id===run.call&&e.result?.output?.sessionID===run.child&&['running','completed'].includes(e.result?.output?.status)),'child identity requires the matching structured native result');
+          const actor=await nativeActor(String(run.child));assert.equal(actor.parentId,run.parent);assert.deepEqual(actor.ancestry,[session.id]);ids.push(String(run.child));
+        }
+        for(const id of ids){const actor=await nativeActor(id);assert.equal(actor.directory,location.directory);assert.equal(actor.projectId,session.projectID);const k=`${sourceID}:${id}`;const value={source:sourceID,id,actor};if(expected.has(k))assert.deepEqual(value,expected.get(k),'capture must preserve existing reported identity');else expected.set(k,value);}
+      }
+      const normalized=actualSessions!.map((r:any)=>({source:r.source,id:r.id,actor:JSON.parse(String(r.actor))}));
+      const sort=(rows:any[])=>rows.sort((a,b)=>`${a.source}:${a.id}`.localeCompare(`${b.source}:${b.id}`));
+      assert.deepEqual(sort(normalized),sort([...expected.values()]),'only precisely verified dispatch identities may be added to sessions');
+      const childIDs=[...new Set(after.runs.flatMap(r=>r.child?[String(r.child)]:[]))];const afterViews=views(childIDs),{childMembership,...common}=afterViews;
+      assert.deepEqual(common,beforeViews&&(({childMembership:_,...v})=>v)(beforeViews),'identity capture cannot change plan list, directory filtering, detail, summary or history');
+      for(const membership of childMembership)assert.deepEqual(membership,beforeViews!.emptyMembership,'observed but unassigned children gain no plan-list membership');
+    };
     // SDK observation waits for MCP discovery; finish that no-tool request before
     // constructing the next request's immutable Code Mode inventory snapshot.
     await client.session.prompt({ sessionID: session.id, text: 'Synthetic catalog readiness preflight; no tool action.' });
@@ -86,7 +142,7 @@ if (process.argv[2] !== '--driver') {
       if (cancel) { await wait(() => records().filter(e => e.type === 'slow-entered').length > slowCount, 'slow child admission'); await client.session.interrupt({ sessionID: session.id, resume: false }); }
       await client.session.wait({ sessionID: session.id }, { signal: AbortSignal.timeout(30000) });
       if (activated && id !== 'explicit-report') {
-        assert.deepEqual(snapshot(), beforeHints, 'hint-only native steps cannot mutate progress');
+        await assertHintState();
         const fresh = records().slice(offset);
         const qualified = fresh.some(e => e.type === 'execute.after' && e.status === 'completed' &&
           (e.tool === 'subagent' || e.tool.startsWith('linear_save_') && e.input.mode?.startsWith('live-shape') && e.input.mode !== 'live-shape-partial' && e.input.mode !== 'live-shape-error'));
@@ -155,7 +211,7 @@ if (process.argv[2] !== '--driver') {
     }
     if (activated) {
       await prompt('explicit-report', 'agent_progress_report', { op: 'start', plan: 'native-proxy', title: 'Synthetic native proxy proof', oid: 'proxy-start', rev: 0, items: [{ id: 'task-1', title: 'Synthetic task', kind: 'task', status: 'pending' }] });
-      const after = snapshot(); assert.equal(after.plans.length, 1); assert.equal(after.receipts.length, 1); assert.equal(after.revisions.length, 1);
+      const after = snapshot().tables; assert.equal(after.plans!.length, beforeHints!.tables.plans!.length+1); assert.equal(after.receipts!.length, beforeHints!.tables.receipts!.length+1); assert.equal(after.revisions!.length, beforeHints!.tables.revisions!.length+1);
     }
     assert.equal(records().some(e => e.type === 'forbidden-http'), false);
   } finally {

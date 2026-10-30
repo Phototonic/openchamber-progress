@@ -24545,7 +24545,17 @@ function validBlockerAnnotation(value3, revision) {
   return Object.keys(b).every((k) => ["category", "reason", "nextAction", "reportedRevision", "reportedAt", "reporterSessionId", "attributedSessionId", "mode", "validAtRevision"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction)) && Number.isSafeInteger(b.reportedRevision) && Number(b.reportedRevision) > 0 && Number(b.reportedRevision) <= revision && Number.isSafeInteger(b.validAtRevision) && b.validAtRevision === revision && typeof b.reportedAt === "string" && Number.isFinite(Date.parse(b.reportedAt)) && new Date(b.reportedAt).toISOString() === b.reportedAt && identifier2(b.reporterSessionId) && identifier2(b.attributedSessionId) && (b.mode === "direct" && b.reporterSessionId === b.attributedSessionId || b.mode === "parent-relay" && b.reporterSessionId !== b.attributedSessionId);
 }
 function parseRequest(value3) {
+  const r = parseReportRequest(value3);
+  requireProgress(r.op !== "handoff");
+  return r;
+}
+function parseReportRequest(value3) {
   validRequest(value3 && typeof value3 === "object" && !Array.isArray(value3), "request");
+  if (value3.op === "handoff") {
+    const r2 = value3;
+    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome"].includes(k)) && identifier2(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
+    return { op: "handoff", oid: r2.oid, summary: r2.summary, outcome: r2.outcome };
+  }
   const r = value3;
   const fields = {
     start: ["title", "items", "source"],
@@ -24622,12 +24632,12 @@ var BLOCKER_SCHEMA = { anyOf: [{ type: "null" }, { type: "object", additionalPro
 var REPORT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["op", "plan"],
+  required: ["op"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish"], description: "New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Delegate declares assign IDs for the next supported delegation; empty assign cancels. Declaration is not assignment. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail." },
-    plan: { type: "string", description: "One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish", "handoff"], description: "Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page." },
+    plan: { type: "string", description: "Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
-    rev: { type: "integer", minimum: 0, description: "Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev." },
+    rev: { type: "integer", minimum: 0, description: "Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev." },
     title: { type: "string", description: "Required for start: nonempty plan title, at most 256 characters." },
     items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } }, blocker: BLOCKER_SCHEMA }, required: ["id", "title", "kind"], additionalProperties: false } },
     changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, blocker: BLOCKER_SCHEMA }, required: ["id", "status"], additionalProperties: false } },
@@ -24636,7 +24646,8 @@ var REPORT_SCHEMA = {
     attributed: { type: "string" },
     source: { type: "string" },
     confirm: { type: "boolean" },
-    outcome: { enum: ["finished", "cancelled", "failed"] },
+    outcome: { enum: ["finished", "cancelled", "failed", "done", "partial", "blocked"] },
+    summary: { type: "string", minLength: 1, maxLength: 200, description: "Handoff only: one safe nonblank line; no NUL/newlines. Literal rendering is not secret redaction." },
     reopen: { type: "boolean" },
     upload: { type: "string" },
     chunk: { type: "integer" },
@@ -24646,7 +24657,7 @@ var REPORT_SCHEMA = {
 };
 var VALIDATION_HINTS = {
   request: "Send one request object.",
-  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind, finish or handoff.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
   fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
@@ -24690,15 +24701,8 @@ function verifyStore(store, b) {
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
-// shared/assignment-binding.ts
-function currentBinding(value3, plan, itemId) {
-  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
-    return false;
-  const b = value3;
-  const item = plan.items.find((i) => i.id === itemId);
-  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
-  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier2(b.childSessionId) && identifier2(b.messageId) && identifier2(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
-}
+// shared/subagent-runs.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -24833,6 +24837,637 @@ function mutateCleanup(db, file, action, value3, transaction) {
         db.prepare(`DELETE FROM ${table} WHERE source=? AND ${table === "plans" ? "id" : "plan"}=?`).run(r.source, r.plan);
     return receipt;
   });
+}
+
+// shared/subagent-runs.ts
+var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
+var definitions2 = {
+  runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
+  runs_rows: "CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
+  runs_parent: "CREATE INDEX runs_parent ON runs_rows(source,parent,at)",
+  runs_child: "CREATE INDEX runs_child ON runs_rows(source,child,at)",
+  runs_candidates: "CREATE TABLE runs_candidates(source TEXT NOT NULL, child TEXT NOT NULL, generation INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), PRIMARY KEY(source,child))",
+  runs_jobs: "CREATE TABLE runs_jobs(source TEXT NOT NULL, root TEXT NOT NULL, request_id TEXT NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','running','complete','partial','failed')), claim TEXT, token TEXT, reason TEXT, PRIMARY KEY(source,root))",
+  runs_intents: "CREATE TABLE runs_intents(source TEXT NOT NULL, parent TEXT NOT NULL, plan TEXT NOT NULL, oid TEXT NOT NULL, generation INTEGER NOT NULL, dispatch TEXT, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=16384), PRIMARY KEY(source,parent))",
+  runs_claims: "CREATE TABLE runs_claims(source TEXT NOT NULL, child TEXT NOT NULL, execution INTEGER NOT NULL, oid TEXT NOT NULL, hash TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=2048), PRIMARY KEY(source,child,execution), UNIQUE(source,child,oid))",
+  runs_retired: "CREATE TABLE runs_retired(source TEXT NOT NULL, child TEXT NOT NULL, execution INTEGER NOT NULL, oid TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(source,child,oid))",
+  runs_recovery_work: "CREATE TABLE runs_recovery_work(source TEXT NOT NULL, root TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4194304), PRIMARY KEY(source,root))",
+  runs_recovery_lease: "CREATE TABLE runs_recovery_lease(source TEXT NOT NULL, location TEXT NOT NULL, producer TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(source,location))",
+  runs_capture_epoch: `CREATE TRIGGER runs_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled BEGIN UPDATE runs_format SET generation=generation+1,revision=revision+1 WHERE singleton=1; UPDATE runs_jobs SET state='failed',claim=NULL,token=lower(hex(randomblob(16))),reason='capture-disabled' WHERE state IN('pending','running'); DELETE FROM runs_candidates; UPDATE receipts SET receipt=json_set(receipt,'$.delegation.state','retired','$.delegation.reason','capture-disabled') WHERE EXISTS(SELECT 1 FROM runs_intents i WHERE i.source=receipts.source AND i.plan=receipts.plan AND i.oid=receipts.oid); DELETE FROM runs_intents; END`,
+  runs_plan_delete: "CREATE TRIGGER runs_plan_delete AFTER DELETE ON plans BEGIN UPDATE runs_rows SET payload=json_set(payload,'$.planContext',json('null'),'$.accepted',json('null')) WHERE source=OLD.source AND (json_extract(payload,'$.planContext.plan')=OLD.id OR json_extract(payload,'$.accepted.plan')=OLD.id); UPDATE runs_format SET revision=revision+1 WHERE singleton=1; END",
+  runs_intent_delete: "CREATE TRIGGER runs_intent_delete BEFORE DELETE ON plans BEGIN DELETE FROM runs_intents WHERE source=OLD.source AND plan=OLD.id; END",
+  runs_intent_close: "CREATE TRIGGER runs_intent_close AFTER UPDATE ON plans WHEN json_extract(NEW.snapshot,'$.lifecycle')!='active' BEGIN UPDATE receipts SET receipt=json_set(receipt,'$.delegation.state','retired','$.delegation.reason','closed') WHERE source=NEW.source AND plan=NEW.id AND oid IN(SELECT oid FROM runs_intents WHERE source=NEW.source AND plan=NEW.id); DELETE FROM runs_intents WHERE source=NEW.source AND plan=NEW.id; END",
+  runs_progress_change: "CREATE TRIGGER runs_progress_change AFTER UPDATE ON plans BEGIN UPDATE runs_format SET revision=revision+1 WHERE singleton=1; END"
+};
+var normalized2 = (s) => s.trim().replace(/\s+/g, " ");
+var integer = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+var obj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function runsInstalled(db) {
+  const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (!rows.length)
+    return false;
+  requireProgress(rows.length === Object.keys(definitions2).length, "schema");
+  for (const r of rows)
+    requireProgress(typeof r.name === "string" && definitions2[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(definitions2[r.name]), "schema");
+  const f = db.prepare("SELECT * FROM runs_format").all();
+  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === 1 && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
+  return true;
+}
+function installRuns(db) {
+  if (runsInstalled(db))
+    return;
+  for (const sql of Object.values(definitions2))
+    db.exec(sql);
+  db.exec("INSERT INTO runs_format VALUES(1,1,0,0,0)");
+}
+function runControl(db) {
+  requireProgress(runsInstalled(db), "schema");
+  const r = db.prepare("SELECT enabled,generation FROM meta JOIN runs_format USING(singleton)").get();
+  return { enabled: r.enabled === 1, generation: Number(r.generation) };
+}
+function bump(db) {
+  db.exec("UPDATE runs_format SET revision=revision+1 WHERE singleton=1");
+}
+function loss(db) {
+  db.exec("UPDATE runs_format SET loss=1,revision=revision+1 WHERE singleton=1");
+}
+function runCaptureUnavailable(db) {
+  if (runsInstalled(db))
+    loss(db);
+}
+function claimValue(value3) {
+  requireProgress(obj(value3) && Object.keys(value3).length === 6 && Object.keys(value3).every((k) => ["oid", "outcome", "summary", "reportedAt", "sessionId", "association"].includes(k)) && identifier2(value3.oid) && identifier2(value3.sessionId) && ["done", "partial", "blocked"].includes(value3.outcome) && typeof value3.summary === "string" && value3.summary.trim().length > 0 && value3.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(value3.summary) && integer(value3.reportedAt) && ["execution", "session-only"].includes(value3.association), "corrupt");
+  return { oid: value3.oid, outcome: value3.outcome, summary: value3.summary, reportedAt: value3.reportedAt, sessionId: value3.sessionId, association: value3.association };
+}
+function row(value3) {
+  requireProgress(typeof value3 === "string" && Buffer.byteLength(value3) <= RUN_LIMITS.dtoBytes, "corrupt");
+  let r;
+  try {
+    r = JSON.parse(value3);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(obj(r) && identifier2(r.id) && identifier2(r.source) && identifier2(r.parentSessionId) && (r.childSessionId === null || identifier2(r.childSessionId)) && obj(r.ran) && ["unknown", "running", "succeeded", "failed", "interrupted"].includes(r.ran.state), "corrupt");
+  const keys4 = (v, allowed) => obj(v) && Object.keys(v).length === allowed.length && Object.keys(v).every((k) => allowed.includes(k));
+  const time = (v) => v === null || integer(v);
+  requireProgress(keys4(r, ["id", "kind", "source", "parentSessionId", "childSessionId", "tool", "agent", "description", "dispatch", "planContext", "ran", "claimed", "accepted"]) && ["dispatch", "historical-session"].includes(r.kind) && [null, "subagent", "task"].includes(r.tool) && (r.agent === null || typeof r.agent === "string" && r.agent.length <= 80) && (r.description === null || typeof r.description === "string" && r.description.length <= 200), "corrupt");
+  requireProgress(r.dispatch === null || keys4(r.dispatch, ["messageId", "callId", "at"]) && identifier2(r.dispatch.messageId) && identifier2(r.dispatch.callId) && integer(r.dispatch.at), "corrupt");
+  requireProgress(r.planContext === null || keys4(r.planContext, ["plan", "revision", "observedAt"]) && identifier2(r.planContext.plan) && integer(r.planContext.revision) && integer(r.planContext.observedAt), "corrupt");
+  requireProgress(keys4(r.ran, ["state", "dispatchState", "startedAt", "endedAt", "updatedAt", "provenance", "eventId", "sequence", "errorType", "interruptionReason"]) && ["pending", "returned", "failed-unconfirmed", "unconfirmed", "historical"].includes(r.ran.dispatchState) && ["dispatch", "native-event", "native-session"].includes(r.ran.provenance) && time(r.ran.startedAt) && time(r.ran.endedAt) && integer(r.ran.updatedAt) && (r.ran.eventId === null || identifier2(r.ran.eventId)) && time(r.ran.sequence) && (r.ran.errorType === null || r.ran.errorType === safeErrorType(r.ran.errorType)) && [null, "user", "shutdown", "superseded", "inactivity", "unknown"].includes(r.ran.interruptionReason), "corrupt");
+  if (r.claimed)
+    claimValue(r.claimed);
+  if (r.accepted)
+    requireProgress(keys4(r.accepted, ["plan", "revision", "items", "omittedItems"]) && identifier2(r.accepted.plan) && integer(r.accepted.revision) && integer(r.accepted.omittedItems) && Array.isArray(r.accepted.items) && r.accepted.items.length <= 50 && r.accepted.items.every((i) => keys4(i, ["id", "status"]) && identifier2(i.id) && ["pending", "working", "blocked", "done", "skipped"].includes(i.status)), "corrupt");
+  return r;
+}
+function save(db, r) {
+  const text = JSON.stringify(r);
+  requireProgress(Buffer.byteLength(text) <= RUN_LIMITS.dtoBytes, "invalid");
+  row(text);
+  db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
+  bump(db);
+}
+function capacity(db, parent) {
+  const total2 = () => Number(db.prepare("SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n").get().n);
+  for (let attempts = 0;attempts < 4; attempts++) {
+    const fullParent = parent && Number(db.prepare("SELECT count(*) AS n FROM runs_rows WHERE source=? AND parent=?").get(parent.source, parent.parent).n) >= RUN_LIMITS.parent;
+    if (!fullParent && total2() < RUN_LIMITS.total)
+      return true;
+    const victim = db.prepare(`SELECT id,source,child,payload FROM runs_rows WHERE terminal=1 AND NOT EXISTS(SELECT 1 FROM runs_intents i WHERE i.dispatch=runs_rows.id)
+      AND (child IS NULL OR NOT EXISTS(SELECT 1 FROM runs_rows d WHERE d.source=runs_rows.source AND d.parent=runs_rows.child)
+        OR EXISTS(SELECT 1 FROM runs_rows edge WHERE edge.source=runs_rows.source AND edge.parent=runs_rows.parent AND edge.child=runs_rows.child AND edge.id!=runs_rows.id))
+      ${fullParent ? "AND source=? AND parent=?" : ""} ORDER BY at,id LIMIT 1`).get(...fullParent ? [parent.source, parent.parent] : []);
+    if (!victim) {
+      loss(db);
+      return false;
+    }
+    const r = row(victim.payload);
+    if (r.claimed && r.childSessionId) {
+      db.prepare("INSERT INTO runs_retired VALUES(?,?,?,?,?) ON CONFLICT(source,child,oid) DO UPDATE SET execution=max(execution,excluded.execution)").run(r.source, r.childSessionId, r.ran.sequence ?? 0, r.claimed.oid, hash2([r.claimed.outcome, r.claimed.summary]));
+    }
+    db.prepare("DELETE FROM runs_rows WHERE id=?").run(victim.id);
+    loss(db);
+  }
+  return false;
+}
+function metadataString(v, max6) {
+  return typeof v === "string" ? v.replace(/[\u0000\r\n\t\u2028\u2029]/g, " ").slice(0, max6) || null : null;
+}
+function safeErrorType(v) {
+  return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : "unknown";
+}
+function hash2(v) {
+  return createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+}
+function keyId(k) {
+  return hash2([k.source, k.parent, k.message, k.call]);
+}
+function validKey(k) {
+  requireProgress([k.source, k.parent, k.message, k.call].every(identifier2));
+}
+function captureIdentity(db, actor) {
+  if (db.prepare("SELECT 1 FROM sessions WHERE source=? AND id=?").get(actor.sourceId, actor.sessionId))
+    return;
+  const participant = db.prepare(`SELECT 1 FROM plans WHERE source=? AND (json_extract(snapshot,'$.sessionId')=?
+    OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?))
+    UNION ALL SELECT 1 FROM contributions WHERE source=? AND json_extract(payload,'$.attributedSessionId')=? LIMIT 1`).get(actor.sourceId, actor.sessionId, actor.sessionId, actor.sourceId, actor.sessionId);
+  if (!participant)
+    db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
+}
+function activeIntent(db, source, parent) {
+  const r = db.prepare("SELECT dispatch,CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload FROM runs_intents WHERE source=? AND parent=?").get(source, parent);
+  if (!r)
+    return null;
+  requireProgress(typeof r.payload === "string", "corrupt");
+  return { ...JSON.parse(r.payload), dispatch: r.dispatch };
+}
+function intentDisposition(db, i, state, reason, dispatch, receipt) {
+  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...receipt ? { receipt } : {} } };
+  db.prepare("UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?").run(JSON.stringify(reply), i.caller.sourceId, i.request.plan, i.request.oid);
+  return reply;
+}
+function declareIntent(db, r, actor, validate3) {
+  const c = runControl(db);
+  requireProgress(c.enabled, "disabled");
+  const payloadHash = hash2([r, actor.sourceId, actor.sessionId]);
+  const old = db.prepare("SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
+  if (old) {
+    requireProgress(old.payload_hash === payloadHash, "operation-reused");
+    return JSON.parse(String(old.receipt));
+  }
+  validate3();
+  const current = activeIntent(db, actor.sourceId, actor.sessionId);
+  if (r.assign.length)
+    requireProgress(!current, "conflict");
+  else if (current) {
+    intentDisposition(db, current, "retired", "cancelled", current.dispatch ?? undefined);
+    db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=?").run(actor.sourceId, actor.sessionId);
+  }
+  requireProgress(!r.assign.length || Number(db.prepare("SELECT count(*) AS n FROM runs_intents").get().n) < RUN_LIMITS.intents, "busy");
+  const i = { request: r, caller: { sourceId: actor.sourceId, sessionId: actor.sessionId }, generation: c.generation, bindOid: `binding-${randomUUID2()}`, dispatch: null };
+  db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, r.oid, payloadHash, "{}");
+  if (r.assign.length)
+    db.prepare("INSERT INTO runs_intents VALUES(?,?,?,?,?,NULL,?)").run(actor.sourceId, actor.sessionId, r.plan, r.oid, c.generation, JSON.stringify(i));
+  return intentDisposition(db, i, r.assign.length ? "pending" : "retired", r.assign.length ? undefined : "cancelled");
+}
+function reservedIntent(db, k) {
+  const i = activeIntent(db, k.source, k.parent);
+  return i?.dispatch === keyId(k) ? i : null;
+}
+function settleIntent(db, i, receipt, reason) {
+  intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
+  db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
+}
+function claimHash(r) {
+  return hash2([r.outcome, r.summary]);
+}
+function attachClaim(db, r) {
+  if (!r.childSessionId || r.ran.startedAt === null)
+    return;
+  const claims = db.prepare("SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2").all(r.source, r.childSessionId);
+  const matching = claims.filter((c) => {
+    const claim2 = JSON.parse(String(c.payload));
+    return claim2.reportedAt >= r.ran.startedAt && (r.ran.endedAt === null || claim2.reportedAt <= r.ran.endedAt) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence));
+  });
+  if (matching.length !== 1)
+    return;
+  const others = db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND id!=? AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, JSON.parse(String(matching[0].payload)).reportedAt, JSON.parse(String(matching[0].payload)).reportedAt);
+  if (others)
+    return;
+  const claim = JSON.parse(String(matching[0].payload));
+  r.claimed = { ...claim, association: "execution" };
+  save(db, r);
+  db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?").run(r.source, r.childSessionId, matching[0].execution);
+}
+function handoff(db, r, actor, now3) {
+  requireProgress(runControl(db).enabled, "disabled");
+  requireProgress(actor.verifiedSource && identifier2(actor.parentId) && actor.ancestry?.[0] === actor.parentId && actor.ancestry.length <= 32, "assignment");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId)?.verified === 1, "source-unverified");
+  const existing = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.claimed.oid')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
+  if (existing) {
+    const claim2 = row(existing.payload).claimed;
+    requireProgress(hash2([claim2.outcome, claim2.summary]) === claimHash(r), "operation-reused");
+    return { handoff: claim2 };
+  }
+  const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid);
+  if (oldClaim) {
+    requireProgress(oldClaim.hash === claimHash(r), "operation-reused");
+    requireProgress(false, "not-found");
+  }
+  const retired = db.prepare("SELECT max(execution) AS execution FROM runs_retired WHERE source=? AND child=?").get(actor.sourceId, actor.sessionId);
+  const c = candidate(db, actor.sourceId, actor.sessionId);
+  const retained = db.prepare("SELECT json_extract(payload,'$.ran.sequence') AS seq,json_extract(payload,'$.ran.startedAt') AS started_at FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.state')='running' ORDER BY at DESC LIMIT 1").get(actor.sourceId, actor.sessionId);
+  const execution = c?.start?.sequence ?? Number(retained?.seq ?? 0);
+  const staged = db.prepare("SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1").get(actor.sourceId, actor.sessionId, execution, r.oid);
+  if (staged) {
+    requireProgress(staged.oid === r.oid, "conflict");
+    requireProgress(staged.hash === claimHash(r), "operation-reused");
+    return { handoff: claimValue(JSON.parse(String(staged.payload))) };
+  }
+  const runs = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2").all(actor.sourceId, actor.sessionId).map((v) => row(v.payload));
+  const current = runs.filter((v) => v.ran.startedAt !== null && v.ran.startedAt <= now3 && (v.ran.endedAt === null || now3 <= v.ran.endedAt));
+  const currentStart = c?.start?.at ?? retained?.started_at ?? runs.find((v) => v.ran.startedAt !== null)?.ran.startedAt;
+  if (current.some((v) => v.claimed) || runs.some((v) => v.claimed && currentStart === v.ran.startedAt))
+    requireProgress(false, "conflict");
+  if (retired?.execution !== null && retired?.execution !== undefined && execution <= Number(retired.execution))
+    requireProgress(false, "not-found");
+  requireProgress(Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && capacity(db), "busy");
+  const claim = { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" };
+  db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?)").run(actor.sourceId, actor.sessionId, execution, r.oid, claimHash(r), JSON.stringify(claim));
+  if (current.length === 1) {
+    attachClaim(db, current[0]);
+    if (current[0].claimed)
+      return { handoff: current[0].claimed };
+  }
+  bump(db);
+  return { handoff: claim };
+}
+function associatedPlan(db, actor, at) {
+  const p = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active' AND
+    (json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=? AND json_array_length(json_extract(l.value,'$.itemIds'))>0)) LIMIT 3`).all(actor.sourceId, actor.sessionId, actor.sessionId);
+  const eligible = p.filter((r) => !cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(r.id))?.state)));
+  if (p.length >= 3)
+    return null;
+  const incoming = db.prepare(`SELECT json_extract(payload,'$.planContext.plan') AS plan FROM runs_rows r WHERE source=? AND child=? AND terminal=0 AND json_extract(payload,'$.ran.state')='running' AND json_extract(payload,'$.planContext.plan') IS NOT NULL
+    AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId, actor.sessionId);
+  if (incoming.length === 1) {
+    const plan = db.prepare("SELECT id,revision FROM plans WHERE source=? AND id=? AND json_extract(snapshot,'$.lifecycle')='active'").get(actor.sourceId, String(incoming[0].plan));
+    if (plan && (!cleanupInstalled(db) || !cleanupState(db, actor.sourceId, String(plan.id))))
+      eligible.push(plan);
+  }
+  const unique = new Map(eligible.map((r) => [String(r.id), r]));
+  const only = [...unique.values()][0];
+  return unique.size === 1 ? { plan: String(only.id), revision: Number(only.revision), observedAt: at } : null;
+}
+function beforeRun(db, k, actor, tool, input, at) {
+  validKey(k);
+  requireProgress(integer(at));
+  const control = runControl(db);
+  if (!control.enabled)
+    return;
+  requireProgress(actor.verifiedSource && actor.sourceId === k.source && actor.sessionId === k.parent && actor.ancestry !== null, "binding");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(k.source)?.verified === 1, "binding");
+  const id2 = keyId(k);
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE id=?").get(id2))
+    return;
+  if (!capacity(db, k))
+    return;
+  const i = obj(input) ? input : {};
+  const intent = tool === "subagent" ? activeIntent(db, k.source, k.parent) : null;
+  const r = { id: id2, kind: "dispatch", source: k.source, parentSessionId: k.parent, childSessionId: null, tool, agent: metadataString(i.agent, 80), description: metadataString(i.description ?? i.title, 200), dispatch: { messageId: k.message, callId: k.call, at }, planContext: intent && !intent.dispatch ? { plan: intent.request.plan, revision: intent.request.rev, observedAt: at } : associatedPlan(db, actor, at), ran: { state: "unknown", dispatchState: "pending", startedAt: null, endedAt: null, updatedAt: at, provenance: "dispatch", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)").run(id2, k.source, k.parent, null, k.message, k.call, control.generation, 0, at, JSON.stringify(r));
+  if (intent && !intent.dispatch) {
+    db.prepare("UPDATE runs_intents SET dispatch=? WHERE source=? AND parent=? AND dispatch IS NULL").run(id2, k.source, k.parent);
+    intentDisposition(db, intent, "reserved", undefined, id2);
+  }
+  captureIdentity(db, actor);
+  bump(db);
+}
+function candidate(db, source, child) {
+  const r = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_candidates WHERE source=? AND child=?").get(source, child);
+  if (!r)
+    return null;
+  requireProgress(typeof r.payload === "string", "corrupt");
+  return JSON.parse(r.payload);
+}
+function adopt(db, r, c) {
+  if (!r.dispatch || !r.childSessionId || !c.start || c.ambiguous || c.start.at < r.dispatch.at)
+    return;
+  if (r.ran.startedAt !== null && r.ran.startedAt !== c.start.at)
+    return;
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, c.end?.at ?? c.start.at))
+    return;
+  const competing = db.prepare("SELECT id FROM runs_rows WHERE source=? AND child=? AND id!=? AND (terminal=0 OR at>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, r.dispatch.at);
+  if (competing)
+    return;
+  if (r.ran.sequence !== null && (c.end?.sequence ?? c.start.sequence) <= r.ran.sequence) {
+    attachClaim(db, r);
+    return;
+  }
+  const e = c.end && c.end.sequence > c.start.sequence && c.end.at >= c.start.at ? c.end : c.start;
+  if (r.ran.endedAt !== null)
+    return;
+  r.ran = { ...r.ran, state: e.state, startedAt: c.start.at, endedAt: e === c.start ? null : e.at, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  save(db, r);
+  attachClaim(db, r);
+  db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(r.source, r.childSessionId);
+}
+function afterRun(db, k, generation, child, disposition) {
+  validKey(k);
+  const c = runControl(db);
+  if (!c.enabled || c.generation !== generation)
+    return;
+  const stored = db.prepare("SELECT generation,payload FROM runs_rows WHERE id=?").get(keyId(k));
+  if (!stored || stored.generation !== generation)
+    return;
+  const r = row(stored.payload);
+  if (r.ran.dispatchState !== "pending" && !(r.ran.dispatchState === "unconfirmed" && r.childSessionId === null && child)) {
+    if (child && r.childSessionId !== child.sessionId)
+      loss(db);
+    return;
+  }
+  if (child) {
+    const parent = db.prepare("SELECT actor FROM sessions WHERE source=? AND id=?").get(k.source, k.parent);
+    requireProgress(parent && typeof parent.actor === "string", "binding");
+    const actor = JSON.parse(parent.actor);
+    requireProgress(r.tool === "subagent" && child.verifiedSource && child.sourceId === k.source && identifier2(child.sessionId) && child.parentId === k.parent && child.ancestry?.[0] === k.parent && child.directory === actor.directory && child.projectId === actor.projectId, "binding");
+    r.childSessionId = child.sessionId;
+  }
+  r.ran.dispatchState = disposition;
+  save(db, r);
+  if (child)
+    captureIdentity(db, child);
+  for (const other of db.prepare("SELECT payload FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL AND terminal=0 LIMIT 1024").all(k.source, k.parent)) {
+    const r2 = row(other.payload);
+    const c2 = candidate(db, k.source, r2.childSessionId);
+    if (c2)
+      adopt(db, r2, c2);
+  }
+}
+function observeExecution(db, e) {
+  const control = runControl(db);
+  if (!control.enabled)
+    return;
+  requireProgress(identifier2(e.source) && identifier2(e.child) && identifier2(e.id) && integer(e.sequence) && integer(e.at) && ["running", "succeeded", "failed", "interrupted"].includes(e.state), "invalid");
+  if (e.state === "failed" || e.state === "interrupted") {
+    for (const pending of db.prepare("SELECT payload FROM runs_rows WHERE source=? AND parent=? AND child IS NULL AND at<=? AND json_extract(payload,'$.ran.dispatchState')='pending' LIMIT 1024").all(e.source, e.child, e.at)) {
+      const r = row(pending.payload);
+      r.ran.dispatchState = "unconfirmed";
+      save(db, r);
+      const i = activeIntent(db, e.source, e.child);
+      if (i?.dispatch === r.id)
+        settleIntent(db, i, undefined, "parent-execution-ended");
+    }
+  }
+  const known = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.sequence') IS NOT NULL ORDER BY json_extract(payload,'$.ran.sequence') DESC LIMIT 1").get(e.source, e.child);
+  const previous = known ? row(known.payload) : undefined;
+  if (previous?.ran.sequence !== null && previous?.ran.sequence !== undefined && e.sequence <= previous.ran.sequence)
+    return;
+  const retainedStart = previous?.ran.state === "running" && previous.ran.eventId && previous.ran.startedAt !== null ? { source: e.source, child: e.child, id: previous.ran.eventId, sequence: previous.ran.sequence, at: previous.ran.startedAt, state: "running", errorType: null, interruptionReason: null } : null;
+  const c = candidate(db, e.source, e.child) ?? { start: retainedStart, end: null };
+  const latest2 = Math.max(c.start?.sequence ?? -1, c.end?.sequence ?? -1);
+  if (e.sequence <= latest2 && !(e.state === "running" && !c.start && c.end && e.sequence < c.end.sequence))
+    return;
+  if (e.state === "running") {
+    if (c.start && c.end && e.sequence > c.end.sequence) {
+      c.start = e;
+      c.end = null;
+      c.ambiguous = false;
+    } else if (!c.start)
+      c.start = e;
+    else {
+      c.ambiguous = true;
+      c.start = e;
+      c.end = null;
+    }
+  } else
+    c.end = e;
+  if (!candidate(db, e.source, e.child) && Number(db.prepare("SELECT count(*) AS n FROM runs_candidates").get().n) >= RUN_LIMITS.candidates) {
+    loss(db);
+    return;
+  }
+  const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
+  const safe = { start: project(c.start), end: project(c.end), ambiguous: c.ambiguous ?? false };
+  db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(e.source, e.child, control.generation, JSON.stringify(safe));
+  const rows = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND terminal=0 LIMIT 2").all(e.source, e.child);
+  if (rows.length === 1)
+    adopt(db, row(rows[0].payload), safe);
+}
+function identity3(db, binding, r) {
+  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.root));
+  requireProgress(obj(r.binding) && Object.keys(r.binding).length === 2 && r.binding.sourceId === binding.sourceId && r.binding.verified === binding.verified && binding.sourceId === r.source && binding.verified, "conflict");
+  const m = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(m.store_id === r.storeId, "conflict");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(r.source)?.verified === 1, "binding");
+  requireProgress(db.prepare("SELECT 1 FROM sessions WHERE source=? AND id=?").get(r.source, r.root), "not-found");
+  return m;
+}
+function scopedParents(db, source, root) {
+  const ids = new Set([root]);
+  let frontier = [root], complete = true;
+  for (let depth = 0;frontier.length && depth < RUN_LIMITS.depth; depth++) {
+    const next = [];
+    for (const parent of frontier) {
+      const children = db.prepare("SELECT DISTINCT child FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL LIMIT ?").all(source, parent, RUN_LIMITS.traversal + 1);
+      for (const r of children) {
+        const id2 = String(r.child);
+        if (ids.has(id2))
+          continue;
+        if (ids.size >= RUN_LIMITS.traversal) {
+          complete = false;
+          break;
+        }
+        ids.add(id2);
+        next.push(id2);
+      }
+    }
+    frontier = next;
+    if (depth === RUN_LIMITS.depth - 1 && next.length)
+      complete = false;
+  }
+  return { ids: [...ids], complete };
+}
+function readRuns(db, binding, r, now3 = Date.now()) {
+  const m = identity3(db, binding, r);
+  requireProgress(r.view === undefined || r.view === "useful" || r.view === "history");
+  requireProgress(r.plan === undefined === (r.cleanupRev === undefined));
+  if (r.plan !== undefined) {
+    requireProgress(identifier2(r.plan) && integer(r.cleanupRev));
+    const plan = db.prepare(`SELECT json_extract(snapshot,'$.sessionId') AS owner,
+      EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?) AS linked FROM plans WHERE source=? AND id=?`).get(r.root, r.source, r.plan);
+    requireProgress(plan, "not-found");
+    const incoming = runsInstalled(db) && db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.planContext.plan')=? LIMIT 1").get(r.source, r.root, r.plan);
+    requireProgress(plan.owner === r.root || plan.linked === 1 || incoming, "not-found");
+    const state = cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined;
+    requireProgress((state?.generation ?? 0) === r.cleanupRev && state?.state !== "deleted", "conflict");
+  }
+  const installed = runsInstalled(db), f = installed ? db.prepare("SELECT revision,loss FROM runs_format").get() : undefined;
+  const job = installed ? db.prepare("SELECT state,CASE WHEN length(CAST(token AS BLOB))<=80 THEN token END AS token,CASE WHEN length(CAST(reason AS BLOB))<=80 THEN reason END AS reason,length(CAST(token AS BLOB)) AS token_bytes,length(CAST(reason AS BLOB)) AS reason_bytes FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root) : undefined;
+  if (job)
+    requireProgress(["pending", "running", "complete", "partial", "failed"].includes(String(job.state)) && (job.token_bytes === null || Number(job.token_bytes) <= 80) && (job.reason_bytes === null || Number(job.reason_bytes) <= 80) && [null, "budget", "capture-disabled", "capture-unavailable"].includes(job.reason) && (job.token === null || identifier2(job.token)), "corrupt");
+  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: installed ? 1 : null, availability: installed ? "ready" : "unavailable", readAt: now3, revision: Number(f?.revision ?? 0), capture: { enabled: m.enabled === 1, state: installed ? "last-known" : "unavailable", loss: f?.loss === 1 }, recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
+  if (!installed)
+    return out;
+  if (!job || job.state !== "complete")
+    out.coverage.reasons.push(job && ["partial", "failed"].includes(String(job.state)) ? "partial-history" : "history-not-reconciled");
+  if (f?.loss === 1)
+    out.coverage.reasons.push("capture-loss");
+  const scope4 = scopedParents(db, r.source, r.root);
+  if (!scope4.complete)
+    out.coverage.reasons.push("traversal-limit");
+  const placeholders = scope4.ids.map(() => "?").join(",");
+  const where = `source=? AND parent IN (${placeholders})`;
+  const args2 = [r.source, ...scope4.ids];
+  const counts = db.prepare(`SELECT count(DISTINCT child) AS children,sum(message IS NOT NULL) AS runs,sum(message IS NULL) AS history,
+    sum(json_extract(payload,'$.ran.state')='running') AS running,sum(json_extract(payload,'$.ran.state')='succeeded') AS succeeded,
+    sum(json_extract(payload,'$.ran.state')='failed') AS failed,sum(json_extract(payload,'$.ran.state')='interrupted') AS interrupted,sum(json_extract(payload,'$.ran.state')='unknown') AS unknown FROM runs_rows WHERE ${where}`).get(...args2);
+  for (const key of ["children", "runs", "running", "succeeded", "failed", "interrupted", "unknown"])
+    out.counts[key] = Number(counts[key] ?? 0);
+  out.counts.historicalSessions = Number(counts.history ?? 0);
+  const useful = "coalesce((json_extract(payload,'$.ran.state')='running' OR (? IS NOT NULL AND (json_extract(payload,'$.planContext.plan')=? OR json_extract(payload,'$.accepted.plan')=? OR EXISTS(SELECT 1 FROM plans p,json_each(p.snapshot,'$.links') l WHERE p.source=runs_rows.source AND p.id=? AND json_extract(l.value,'$.sessionId')=runs_rows.child)))),0)";
+  const selection = `${where} AND ${out.view === "history" ? "NOT " : ""}${useful}`;
+  const identityKey = hash2([r.storeId, binding, r.source, r.root, r.plan ?? null, r.cleanupRev ?? null, out.view]);
+  let offset = 0;
+  if (r.cursor) {
+    requireProgress(Buffer.byteLength(r.cursor) <= RUN_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(r.cursor));
+    let c;
+    try {
+      c = JSON.parse(Buffer.from(r.cursor, "base64url").toString("utf8"));
+    } catch {
+      requireProgress(false);
+    }
+    requireProgress(obj(c) && Object.keys(c).length === 3 && c.key === identityKey && c.revision === out.revision && integer(c.offset) && c.offset <= RUN_LIMITS.total, "conflict");
+    offset = c.offset;
+  }
+  const rows = db.prepare(`SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args2, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
+  out.data = rows.slice(0, RUN_LIMITS.page).map((v) => row(v.payload));
+  if (r.plan) {
+    const snapshot3 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=1048576 THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(r.source, r.plan);
+    requireProgress(typeof snapshot3?.snapshot === "string", "corrupt");
+    const p = JSON.parse(snapshot3.snapshot);
+    requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");
+    for (const run3 of out.data) {
+      const linked = p.links.find((l) => l.sessionId === run3.childSessionId);
+      if (!linked)
+        continue;
+      requireProgress(Array.isArray(linked.itemIds) && linked.itemIds.length <= 1000, "corrupt");
+      const facts = p.items.filter((i) => i.kind === "task" && i.assigneeSessionId === run3.childSessionId && linked.itemIds.includes(i.id)).map((i) => ({ id: i.id, status: i.status }));
+      run3.accepted = { plan: r.plan, revision: p.revision, items: facts.slice(0, 50), omittedItems: Math.max(0, facts.length - 50) };
+      while (run3.accepted.items.length && Buffer.byteLength(JSON.stringify(run3)) > RUN_LIMITS.dtoBytes) {
+        run3.accepted.items.pop();
+        run3.accepted.omittedItems++;
+      }
+      row(JSON.stringify(run3));
+    }
+  }
+  if (rows.length > RUN_LIMITS.page)
+    out.nextCursor = Buffer.from(JSON.stringify({ key: identityKey, revision: out.revision, offset: offset + RUN_LIMITS.page })).toString("base64url");
+  out.coverage.complete = out.coverage.reasons.length === 0;
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= RUN_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function requestReconciliation(db, binding, r) {
+  requireProgress(obj(r) && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "token"].includes(k)));
+  identity3(db, binding, r);
+  const c = runControl(db);
+  requireProgress(c.enabled, "disabled");
+  const old = db.prepare("SELECT state,token FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root);
+  if (old && !r.token)
+    return { state: String(old.state), coalesced: true };
+  if (r.token) {
+    requireProgress(identifier2(r.token) && old?.token === r.token && ["partial", "failed"].includes(String(old?.state)), "conflict");
+  }
+  requireProgress(Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) < RUN_LIMITS.jobs, "busy");
+  if (!old)
+    requireProgress(capacity(db), "busy");
+  db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(r.source, r.root, randomUUID2(), c.generation);
+  bump(db);
+  return { state: "pending", coalesced: false };
+}
+function pendingRecovery(db, source) {
+  if (!runControl(db).enabled)
+    return null;
+  return db.prepare("SELECT root FROM runs_jobs WHERE source=? AND state='pending' ORDER BY rowid LIMIT 1").get(source)?.root ?? null;
+}
+function recoveryWork(db, j) {
+  const r = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=4194304 THEN payload END AS payload FROM runs_recovery_work WHERE source=? AND root=?").get(j.source, j.root);
+  if (!r)
+    return { queue: [{ id: j.root, depth: 0 }], seen: [j.root] };
+  requireProgress(typeof r.payload === "string", "corrupt");
+  const w = JSON.parse(r.payload);
+  requireProgress(Array.isArray(w.queue) && w.queue.length <= RUN_LIMITS.total && Array.isArray(w.seen) && w.seen.length <= RUN_LIMITS.total && w.seen.every(identifier2) && w.queue.every((n) => identifier2(n.id) && integer(n.depth) && n.depth <= 32 && (n.cursor === undefined || typeof n.cursor === "string" && Buffer.byteLength(n.cursor) <= 4096)), "corrupt");
+  return w;
+}
+function saveRecoveryWork(db, j, w) {
+  if (!recoveryAlive(db, j))
+    return;
+  const payload = JSON.stringify(w);
+  requireProgress(Buffer.byteLength(payload) <= 4194304 && w.seen.length <= RUN_LIMITS.total && w.queue.length <= RUN_LIMITS.total, "busy");
+  if (!db.prepare("SELECT 1 FROM runs_recovery_work WHERE source=? AND root=?").get(j.source, j.root))
+    requireProgress(capacity(db), "busy");
+  db.prepare("INSERT INTO runs_recovery_work VALUES(?,?,?) ON CONFLICT(source,root) DO UPDATE SET payload=excluded.payload").run(j.source, j.root, payload);
+}
+function recoveryMaintenance(db, source, directory, producer, now3) {
+  if (!runControl(db).enabled)
+    return;
+  const location = hash2(directory), lease = db.prepare("SELECT producer,at FROM runs_recovery_lease WHERE source=? AND location=?").get(source, location);
+  if (lease && lease.producer !== producer && now3 - Number(lease.at) < 1e4)
+    return;
+  if (!lease && !capacity(db))
+    return;
+  if (!lease || lease.producer !== producer) {
+    db.prepare("UPDATE runs_jobs SET state='partial',claim=NULL,reason='capture-unavailable',token=? WHERE source=? AND state='running' AND root IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?)").run(randomUUID2(), source, source, directory);
+    const roots = db.prepare("SELECT DISTINCT parent FROM runs_rows WHERE source=? AND terminal=0 AND child IS NOT NULL AND parent IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?) LIMIT 64").all(source, source, directory);
+    for (const r of roots) {
+      const old = db.prepare("SELECT state FROM runs_jobs WHERE source=? AND root=?").get(source, r.parent);
+      if (old && ["pending", "running"].includes(String(old.state)))
+        continue;
+      if (Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) >= RUN_LIMITS.jobs)
+        break;
+      if (!old && !capacity(db))
+        break;
+      db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(source, r.parent, randomUUID2(), runControl(db).generation);
+    }
+  }
+  db.prepare("INSERT INTO runs_recovery_lease VALUES(?,?,?,?) ON CONFLICT(source,location) DO UPDATE SET producer=excluded.producer,at=excluded.at").run(source, location, producer, now3);
+}
+function pendingRecoveryAt(db, source, directory) {
+  if (!runControl(db).enabled)
+    return null;
+  return db.prepare("SELECT root FROM runs_jobs WHERE source=? AND state='pending' AND root IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?) ORDER BY rowid LIMIT 1").get(source, source, directory)?.root ?? null;
+}
+function claimRecovery(db, source, root) {
+  const c = runControl(db);
+  if (!c.enabled)
+    return null;
+  const r = db.prepare("SELECT request_id,generation FROM runs_jobs WHERE source=? AND root=? AND state='pending'").get(source, root);
+  if (!r || r.generation !== c.generation)
+    return null;
+  const claim = randomUUID2();
+  db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim, source, root);
+  bump(db);
+  return { source, root, generation: c.generation, claim, requestId: String(r.request_id) };
+}
+function recoveryAlive(db, j) {
+  const c = runControl(db);
+  return c.enabled && c.generation === j.generation && !!db.prepare("SELECT 1 FROM runs_jobs WHERE source=? AND root=? AND request_id=? AND claim=? AND state='running'").get(j.source, j.root, j.requestId, j.claim);
+}
+function publishHistory(db, j, s) {
+  if (!recoveryAlive(db, j))
+    return;
+  requireProgress(identifier2(s.id) && identifier2(s.parent) && integer(s.createdAt) && integer(s.updatedAt) && (s.idleAt === null || integer(s.idleAt)));
+  const recorded = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL ORDER BY at DESC LIMIT 2").all(j.source, s.id).map((v) => row(v.payload));
+  if (recorded.length) {
+    if (s.idleAt === null || s.outcome === null || recorded.some((r2) => r2.ran.endedAt === s.idleAt && r2.ran.state === s.outcome))
+      return;
+  }
+  const id2 = hash2(["history", j.source, s.id]);
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE id=?").get(id2))
+    return;
+  if (!capacity(db, { source: j.source, parent: s.parent }))
+    return;
+  const ended = s.idleAt !== null && s.idleAt >= s.createdAt ? s.idleAt : null;
+  const r = { id: id2, kind: "historical-session", source: j.source, parentSessionId: s.parent, childSessionId: s.id, tool: null, agent: metadataString(s.agent, 80), description: metadataString(s.title, 200), dispatch: null, planContext: null, ran: { state: ended !== null && ["succeeded", "failed", "interrupted"].includes(String(s.outcome)) ? s.outcome : "unknown", dispatchState: "historical", startedAt: null, endedAt: ended, updatedAt: s.updatedAt, provenance: "native-session", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)").run(id2, j.source, s.parent, s.id, j.generation, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state)), s.createdAt, JSON.stringify(r));
+  bump(db);
+}
+function finishRecovery(db, j, state) {
+  if (!recoveryAlive(db, j))
+    return;
+  db.prepare("UPDATE runs_jobs SET state=?,claim=NULL,token=?,reason=? WHERE source=? AND root=?").run(state, state === "complete" ? null : randomUUID2(), state === "partial" ? "budget" : state === "failed" ? "capture-unavailable" : null, j.source, j.root);
+  bump(db);
+  if (state === "complete")
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
+}
+
+// shared/assignment-binding.ts
+function currentBinding(value3, plan, itemId) {
+  if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
+    return false;
+  const b = value3;
+  const item = plan.items.find((i) => i.id === itemId);
+  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
+  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier2(b.childSessionId) && identifier2(b.messageId) && identifier2(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
 }
 
 // shared/document-comparison.ts
@@ -24973,41 +25608,41 @@ function compareCaptureText(before, after) {
 }
 
 // shared/document-captures.ts
-var integer = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var integer2 = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
 var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
 var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
 function head3(db, binding, r) {
-  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer(r.cleanupRev));
+  requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && integer2(r.cleanupRev));
   requireProgress(r.binding && same(binding, r.binding), "conflict");
   const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
   requireProgress(meta.store_id === r.storeId, "conflict");
-  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+  const row2 = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
       CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
     END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
-  requireProgress(row, "not-found");
-  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
-  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  requireProgress(row2, "not-found");
+  requireProgress(integer2(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row2.snapshot_id === r.plan && row2.snapshot_source === r.source && row2.snapshot_revision === row2.revision, "corrupt");
   const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
   requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
-  requireProgress(typeof row.document === "string", "corrupt");
+  requireProgress(typeof row2.document === "string", "corrupt");
   let doc;
   try {
-    doc = JSON.parse(row.document);
+    doc = JSON.parse(row2.document);
   } catch {
     requireProgress(false, "corrupt");
   }
   requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
   for (const key of ["path", "canonicalPath"])
     requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
-  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.captureId === undefined || integer2(doc.captureId, 1), "corrupt");
   requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
   return {
     identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
-    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+    current: { revision: Number(row2.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
   };
 }
 var projection = `id, revision,
@@ -25016,9 +25651,9 @@ var projection = `id, revision,
  CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
  CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
  CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
-function entry(row) {
-  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier2(row.source) && identifier2(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
-  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+function entry(row2) {
+  requireProgress(integer2(row2.id, 1) && integer2(row2.revision, 1) && identifier2(row2.source) && identifier2(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
+  return { id: row2.id, revision: row2.revision, hash: row2.hash, capturedAt: row2.captured_at, path: row2.canonical_path };
 }
 function decodeCursor(raw, r) {
   requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
@@ -25028,7 +25663,7 @@ function decodeCursor(raw, r) {
   } catch {
     requireProgress(false);
   }
-  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer2(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer2(c.revision, 1) && integer2(c.before, 1) && c.before <= c.ceiling + 1);
   const i = c.identity;
   requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
   return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
@@ -25036,15 +25671,15 @@ function decodeCursor(raw, r) {
 function captureIndex(db, binding, r, cursor) {
   const h = head3(db, binding, r);
   const max6 = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
-  requireProgress(integer(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
+  requireProgress(integer2(max6) && max6 < Number.MAX_SAFE_INTEGER, "corrupt");
   const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max6, revision: h.current.revision, before: max6 + 1 };
   requireProgress(c.revision <= h.current.revision, "conflict");
   const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
   const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
   let before = c.before;
-  for (const row of rows) {
-    const e = entry(row);
-    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+  for (const row2 of rows) {
+    const e = entry(row2);
+    const qualifies = row2.source === r.source && row2.plan === r.plan && e.revision <= c.revision;
     if (qualifies) {
       if (out.data.length === CAPTURE_LIMITS.entries) {
         out.limit = "entries";
@@ -25068,12 +25703,12 @@ function captureIndex(db, binding, r, cursor) {
   return out;
 }
 function captureComparison(db, binding, r, before, after) {
-  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  requireProgress(integer2(before, 1) && integer2(after, 1) && before <= after);
   const h = head3(db, binding, r);
   const read = (id2) => {
-    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id2, r.source, r.plan);
-    requireProgress(row, "not-found");
-    return { entry: entry(row), bytes: Number(row.bytes) };
+    const row2 = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id2, r.source, r.plan);
+    requireProgress(row2, "not-found");
+    return { entry: entry(row2), bytes: Number(row2.bytes) };
   };
   const a = read(before), b = before === after ? a : read(after);
   const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
@@ -25089,12 +25724,12 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // shared/store.ts
-import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
 import path4 from "node:path";
 
 // shared/plan-task-search.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // shared/change-digest.ts
 var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
@@ -25167,25 +25802,25 @@ function aggregatePair(result3, before, after, target) {
   for (const { id: id2, reference } of compareTasks(before, after)) {
     for (const facet of reference.facets)
       result3.summary.events[facet]++;
-    let row = result3.tasks.find((t) => t.id === id2);
-    if (!row && result3.tasks.length >= DIGEST_LIMITS.tasks) {
+    let row2 = result3.tasks.find((t) => t.id === id2);
+    if (!row2 && result3.tasks.length >= DIGEST_LIMITS.tasks) {
       result3.details.omittedTasks = true;
       result3.details.omittedTaskCount = null;
       result3.details.truncated = true;
       continue;
     }
-    if (!row) {
+    if (!row2) {
       const atTarget = target.items.find((i) => i.id === id2 && i.kind === "task");
       const latest2 = atTarget ?? reference.after ?? reference.before;
-      row = { id: id2, title: latest2.title, status: latest2.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
-      result3.tasks.push(row);
+      row2 = { id: id2, title: latest2.title, status: latest2.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result3.tasks.push(row2);
     }
     for (const facet of reference.facets)
-      row.occurrences[facet]++;
-    if (row.references.length < DIGEST_LIMITS.references)
-      row.references.push(reference);
+      row2.occurrences[facet]++;
+    if (row2.references.length < DIGEST_LIMITS.references)
+      row2.references.push(reference);
     else {
-      row.omittedReferences++;
+      row2.omittedReferences++;
       result3.details.truncated = true;
     }
   }
@@ -25258,7 +25893,7 @@ function searchMatches(tokens, title, id2) {
   return tokens.every((word) => t.includes(word) || key.includes(word));
 }
 var safe = (n, min6 = 0) => Number.isSafeInteger(n) && Number(n) >= min6;
-var hash2 = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var hash3 = (v) => createHash3("sha256").update(JSON.stringify(v)).digest("hex");
 var fields = (v, keys4) => Object.keys(v).length === keys4.length && Object.keys(v).every((k) => keys4.includes(k));
 function parseCursor(text) {
   requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
@@ -25308,12 +25943,12 @@ function searchWindow(db, binding, options2 = {}) {
     requireProgress(options2[key] === undefined || identifier2(options2[key]));
   requireProgress(options2.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options2.lifecycle));
   requireProgress(options2.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options2.status));
-  const identity3 = searchIdentity(db, binding), identityHash = hash2(identity3), fingerprint = hash2([options2.q ?? "", options2.source ?? null, options2.session ?? null, options2.lifecycle ?? null, options2.status ?? null, archived, limit]);
+  const identity4 = searchIdentity(db, binding), identityHash = hash3(identity4), fingerprint = hash3([options2.q ?? "", options2.source ?? null, options2.session ?? null, options2.lifecycle ?? null, options2.status ?? null, archived, limit]);
   const c = options2.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options2.cursor);
   requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
   requireProgress(!options2.source || (!c.after || c.after.source === options2.source) && (!c.pending || c.pending.source === options2.source));
   const installed = cleanupInstalled(db);
-  const r = { ...identity3, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const r = { ...identity4, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
   const gap = (reason) => {
     c.gapped = r.coverage.gapped = true;
     r.coverage.skippedRecords++;
@@ -25327,14 +25962,14 @@ function searchWindow(db, binding, options2 = {}) {
   let hitBytes = 0;
   while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
     const pending = c.pending;
-    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options2.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options2.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    const row2 = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options2.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options2.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
     r.work.planSlots++;
-    if (!row) {
+    if (!row2) {
       requireProgress(!pending, "conflict");
       r.exhausted = true;
       break;
     }
-    const source = String(row.source), id2 = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id2);
+    const source = String(row2.source), id2 = String(row2.id), revision = Number(row2.revision), state = cleanup(db, installed, source, id2);
     if (pending)
       requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
     requireProgress(identifier2(source) && identifier2(id2), "corrupt");
@@ -25347,7 +25982,7 @@ function searchWindow(db, binding, options2 = {}) {
       advance(source, id2);
       continue;
     }
-    const bytes2 = Number(row.bytes);
+    const bytes2 = Number(row2.bytes);
     if (bytes2 > SEARCH_LIMITS.inputBytes) {
       gap("oversized-snapshot");
       advance(source, id2);
@@ -25458,14 +26093,14 @@ function searchWindow(db, binding, options2 = {}) {
 function searchState(db, binding, storeId, keys4) {
   requireProgress(identifier2(storeId) && Array.isArray(keys4) && keys4.length > 0 && keys4.length <= SEARCH_LIMITS.stateKeys && keys4.every((k) => k && fields(k, ["source", "plan"]) && identifier2(k.source) && identifier2(k.plan)));
   requireProgress(new Set(keys4.map((k) => JSON.stringify([k.source, k.plan]))).size === keys4.length);
-  const identity3 = searchIdentity(db, binding);
-  requireProgress(identity3.storeId === storeId, "conflict");
+  const identity4 = searchIdentity(db, binding);
+  requireProgress(identity4.storeId === storeId, "conflict");
   const installed = cleanupInstalled(db);
   const captureEnabled = Boolean(db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled);
-  return { ...identity3, captureEnabled, data: keys4.map((k) => {
-    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
-    requireProgress(!row || safe(row.revision, 1), "corrupt");
-    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  return { ...identity4, captureEnabled, data: keys4.map((k) => {
+    const row2 = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row2 || safe(row2.revision, 1), "corrupt");
+    return { ...k, exists: !!row2 && state.state !== "deleted", revision: row2 ? Number(row2.revision) : null, cleanup: state };
   }) };
 }
 
@@ -25521,25 +26156,25 @@ function resumeSelection(db, binding, r, now3 = () => performance.now()) {
   while (result3.work.planSlots < RESUME_LIMITS.planSlots) {
     if (expired())
       return stop("time");
-    const row = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result3.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
+    const row2 = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result3.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
     result3.work.planSlots++;
-    if (!row)
+    if (!row2)
       return result3;
-    requireProgress(identifier2(row.id) && Number.isSafeInteger(row.revision) && Number(row.revision) > 0 && Number.isSafeInteger(row.bytes) && Number(row.bytes) > 0, "corrupt");
-    after = row.id;
-    requireProgress(Number(row.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
-    if (Number(row.bytes) > RESUME_LIMITS.inputBytes - result3.work.inputBytes)
+    requireProgress(identifier2(row2.id) && Number.isSafeInteger(row2.revision) && Number(row2.revision) > 0 && Number.isSafeInteger(row2.bytes) && Number(row2.bytes) > 0, "corrupt");
+    after = row2.id;
+    requireProgress(Number(row2.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
+    if (Number(row2.bytes) > RESUME_LIMITS.inputBytes - result3.work.inputBytes)
       return stop("bytes");
-    result3.work.inputBytes += Number(row.bytes);
+    result3.work.inputBytes += Number(row2.bytes);
     result3.work.snapshots++;
     let value3;
     try {
-      value3 = JSON.parse(String(row.snapshot));
+      value3 = JSON.parse(String(row2.snapshot));
     } catch {
       throw new ProgressError("corrupt");
     }
-    const p = validPlan2(value3, r.sourceId, row.id, Number(row.revision));
-    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row.id) : undefined;
+    const p = validPlan2(value3, r.sourceId, row2.id, Number(row2.revision));
+    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row2.id) : undefined;
     if (cleanup2)
       requireProgress(["visible", "archived", "deleted"].includes(String(cleanup2.state)) && Number.isSafeInteger(cleanup2.generation) && Number(cleanup2.generation) > 0 && cleanup2.state !== "deleted", "corrupt");
     if (expired())
@@ -25547,11 +26182,11 @@ function resumeSelection(db, binding, r, now3 = () => performance.now()) {
     if (cleanup2?.state === "archived" || p.lifecycle !== "active")
       continue;
     const pointer = { sourceId: r.sourceId, plan: p.id, title: p.title, revision: p.revision };
-    let candidate;
+    let candidate2;
     if (r.parentId === null) {
       if (p.sessionId !== r.sessionId)
         continue;
-      candidate = { ...pointer, scope: "coordinator" };
+      candidate2 = { ...pointer, scope: "coordinator" };
     } else {
       const link2 = p.links.find((l) => l.sessionId === r.sessionId);
       if (!r.ancestry.includes(p.sessionId) || !link2?.itemIds.length)
@@ -25560,13 +26195,13 @@ function resumeSelection(db, binding, r, now3 = () => performance.now()) {
         result3.omitted = true;
         continue;
       }
-      candidate = { ...pointer, scope: "assigned", itemIds: [...link2.itemIds] };
+      candidate2 = { ...pointer, scope: "assigned", itemIds: [...link2.itemIds] };
     }
     if (result3.candidates.length === RESUME_LIMITS.candidates) {
       result3.omitted = true;
       return stop("candidates");
     }
-    result3.candidates.push(candidate);
+    result3.candidates.push(candidate2);
   }
   return stop("slots");
 }
@@ -25580,7 +26215,7 @@ function canonical(value3) {
   return JSON.stringify(value3);
 }
 function digest(value3) {
-  return createHash3("sha256").update(value3).digest("hex");
+  return createHash4("sha256").update(value3).digest("hex");
 }
 function directoryFilter(value3) {
   return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
@@ -25661,7 +26296,7 @@ class Store {
         this.db.exec("BEGIN IMMEDIATE");
         try {
           this.db.exec(SCHEMA);
-          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID2());
+          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -25682,6 +26317,100 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  installSubagentRuns() {
+    return this.transaction(true, () => installRuns(this.db));
+  }
+  subagentRunsAvailable() {
+    return this.transaction(false, () => runsInstalled(this.db));
+  }
+  runControl() {
+    return this.transaction(false, () => runControl(this.db));
+  }
+  runCaptureUnavailable() {
+    return this.transaction(true, () => runCaptureUnavailable(this.db));
+  }
+  beforeRun(key, actor, tool, input, at) {
+    return this.transaction(true, () => beforeRun(this.db, key, actor, tool, input, at));
+  }
+  afterRun(key, generation, child, disposition) {
+    return this.transaction(true, () => {
+      afterRun(this.db, key, generation, child, disposition);
+      const i = reservedIntent(this.db, key);
+      if (!i)
+        return;
+      if (!child || disposition !== "returned" || !this.runControlInTransaction(i.generation)) {
+        settleIntent(this.db, i, undefined, "dispatch-unconfirmed");
+        return;
+      }
+      this.db.exec("SAVEPOINT run_binding");
+      try {
+        requireProgress(i.caller.sourceId === key.source && i.caller.sessionId === key.parent, "binding");
+        const stored = this.db.prepare("SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?").get(i.caller.sourceId, i.caller.sessionId);
+        requireProgress(typeof stored?.actor === "string", "binding");
+        const actor = JSON.parse(stored.actor);
+        requireProgress(actor.sourceId === i.caller.sourceId && actor.sessionId === i.caller.sessionId, "binding");
+        const at = this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch);
+        requireProgress(Number.isSafeInteger(at?.at), "corrupt");
+        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
+        this.db.exec("RELEASE run_binding");
+        settleIntent(this.db, i, receipt);
+      } catch (e) {
+        this.db.exec("ROLLBACK TO run_binding; RELEASE run_binding");
+        settleIntent(this.db, i, undefined, storageError(e).code);
+      }
+    });
+  }
+  runControlInTransaction(generation) {
+    const c = runControl(this.db);
+    return c.enabled && c.generation === generation;
+  }
+  declareDelegation(value3, actor) {
+    const r = parseRequest(value3);
+    requireProgress(r.op === "delegate");
+    return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
+  }
+  handoff(value3, actor, now3 = Date.now()) {
+    const r = parseReportRequest(value3);
+    requireProgress(r.op === "handoff");
+    requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+    return this.transaction(true, () => handoff(this.db, r, actor, now3));
+  }
+  observeExecution(event) {
+    return this.transaction(true, () => observeExecution(this.db, event));
+  }
+  subagentRuns(request3, now3) {
+    return this.transaction(false, () => readRuns(this.db, this.readBinding, request3, now3));
+  }
+  requestRunReconciliation(request3) {
+    return this.transaction(true, () => requestReconciliation(this.db, this.readBinding, request3));
+  }
+  pendingRunRecovery(source) {
+    return this.transaction(false, () => pendingRecovery(this.db, source));
+  }
+  pendingRunRecoveryAt(source, directory) {
+    return this.transaction(false, () => pendingRecoveryAt(this.db, source, directory));
+  }
+  maintainRunRecovery(source, directory, producer, now3 = Date.now()) {
+    return this.transaction(true, () => recoveryMaintenance(this.db, source, directory, producer, now3));
+  }
+  runRecoveryWork(job) {
+    return this.transaction(false, () => recoveryWork(this.db, job));
+  }
+  saveRunRecoveryWork(job, work) {
+    return this.transaction(true, () => saveRecoveryWork(this.db, job, work));
+  }
+  claimRunRecovery(source, root) {
+    return this.transaction(true, () => claimRecovery(this.db, source, root));
+  }
+  runRecoveryAlive(job) {
+    return this.transaction(false, () => recoveryAlive(this.db, job));
+  }
+  publishRunHistory(job, session) {
+    return this.transaction(true, () => publishHistory(this.db, job, session));
+  }
+  finishRunRecovery(job, state) {
+    return this.transaction(true, () => finishRecovery(this.db, job, state));
   }
   documentCaptures(r, cursor) {
     return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
@@ -25708,8 +26437,8 @@ class Store {
     return this.transaction(false, () => {
       if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='loaded_activation'").get())
         return null;
-      const row = this.db.prepare("SELECT fingerprint FROM loaded_activation WHERE source=? AND install_id=?").get(source, installId);
-      return row ? String(row.fingerprint) : null;
+      const row2 = this.db.prepare("SELECT fingerprint FROM loaded_activation WHERE source=? AND install_id=?").get(source, installId);
+      return row2 ? String(row2.fingerprint) : null;
     });
   }
   bindReads(sourceId, verified) {
@@ -25756,35 +26485,36 @@ class Store {
       BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
   }
   delegationControl() {
-    const row = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
-    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+    const row2 = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
+    return { enabled: row2.enabled === 1, generation: Number(row2.generation) };
   }
   validateDeclaration(value3, actor) {
     const r = parseRequest(value3);
     requireProgress(r.op === "delegate");
-    return this.transaction(false, () => {
-      requireProgress(this.delegationControl().enabled, "disabled");
-      const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
-      requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-      const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(state?.state !== "deleted", "not-found");
-      requireProgress(state?.state !== "archived", "closed");
-      const p = this.raw(actor.sourceId, r.plan);
-      requireProgress(p, "not-found");
-      requireProgress(p.sessionId === actor.sessionId, "assignment");
-      requireProgress(p.lifecycle === "active", "closed");
-      requireProgress(p.revision === r.rev, "conflict", p.revision);
-      assignmentIDs(p, r.assign);
-      requireProgress(p.links.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
-      return this.delegationControl().generation;
-    });
+    return this.transaction(false, () => this.validateDeclarationMutation(r, actor));
+  }
+  validateDeclarationMutation(r, actor) {
+    requireProgress(this.delegationControl().enabled, "disabled");
+    const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
+    requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+    const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+    requireProgress(state?.state !== "deleted", "not-found");
+    requireProgress(state?.state !== "archived", "closed");
+    const p = this.raw(actor.sourceId, r.plan);
+    requireProgress(p, "not-found");
+    requireProgress(p.sessionId === actor.sessionId, "assignment");
+    requireProgress(p.lifecycle === "active", "closed");
+    requireProgress(p.revision === r.rev, "conflict", p.revision);
+    assignmentIDs(p, r.assign);
+    requireProgress(p.links.every((l) => l.itemIds.every((id2) => !r.assign.includes(id2))), "assignment");
+    return this.delegationControl().generation;
   }
   raw(source, id2) {
-    const row = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2);
+    const row2 = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id2);
     try {
-      if (!row)
+      if (!row2)
         return;
-      const p = JSON.parse(String(row.snapshot));
+      const p = JSON.parse(String(row2.snapshot));
       requireProgress(p.sourceId === source && p.id === id2 && Array.isArray(p.items) && Array.isArray(p.links), "corrupt");
       for (const item of p.items)
         if (!currentBinding(item.assignmentBinding, p, item.id))
@@ -25923,19 +26653,19 @@ class Store {
         else
           result3.work.intervalSnapshots++;
         const remaining = DIGEST_LIMITS.bytes - result3.work.inputBytes;
-        const row = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
-        if (!row) {
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        if (!row2) {
           reason("missing-snapshot");
           return null;
         }
-        if (Number(row.bytes) > remaining) {
+        if (Number(row2.bytes) > remaining) {
           reason("byte-bound");
           return null;
         }
-        result3.work.inputBytes += Number(row.bytes);
+        result3.work.inputBytes += Number(row2.bytes);
         let p = null;
         try {
-          p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision);
+          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan, revision);
         } catch {}
         if (!p)
           reason("invalid-snapshot");
@@ -25991,11 +26721,14 @@ class Store {
     });
   }
   apply(value3, actor, capture, child, binding) {
+    return this.transaction(true, () => this.applyMutation(value3, actor, capture, child, binding));
+  }
+  applyMutation(value3, actor, capture, child, binding) {
     const r = parseRequest(value3);
     requireProgress(r.op !== "read" && r.op !== "delegate");
-    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
+    const hash4 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
-    return this.transaction(true, () => {
+    return (() => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
       if (binding) {
         requireProgress(r.op === "link" && this.delegationControl().generation === binding.generation, "disabled");
@@ -26009,7 +26742,7 @@ class Store {
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash3, "operation-reused");
+        requireProgress(replay.payload_hash === hash4, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -26191,13 +26924,13 @@ class Store {
       this.db.prepare("INSERT INTO contributions VALUES(?,?,?,?)").run(actor.sourceId, r.plan, p.revision, JSON.stringify(contribution));
       return saveReceipt({ plan: r.plan, rev: p.revision, structuralRev: p.structuralRevision, ...changed ? { changed } : {} });
       function saveReceipt(receipt) {
-        save(receipt);
+        save2(receipt);
         return receipt;
       }
-      function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash3, JSON.stringify(receipt));
+      function save2(receipt) {
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash4, JSON.stringify(receipt));
       }
-    });
+    })();
   }
 }
 function assignmentIDs(p, ids) {
@@ -26583,19 +27316,19 @@ ${capsule}` : "") };
       try {
         if (disposed || !source.verified)
           return;
-        const candidate = successfulPath(event);
+        const candidate2 = successfulPath(event);
         const proxy = proxyReason(event);
-        if (!candidate && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
+        if (!candidate2 && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
           return;
         const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
         if (recent.has(call) || !control())
           return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate && !planPath(candidate, caller.location.directory) || recent.has(call))
+        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate2 && !planPath(candidate2, caller.location.directory) || recent.has(call))
           return;
         let parentID;
-        if (candidate && boundedID(caller.parentID) && caller.parentID !== caller.id) {
+        if (candidate2 && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
             if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path6.resolve(parent.location.directory) === path6.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
@@ -26605,7 +27338,7 @@ ${capsule}` : "") };
         if (disposed || epoch !== disableEpoch || !control() || recent.has(call))
           return;
         remember(recent, call, 256);
-        flag(key(event.sessionID), candidate ? PLAN : proxy);
+        flag(key(event.sessionID), candidate2 ? PLAN : proxy);
         if (parentID)
           flag(key(parentID), PLAN);
       } catch {}
@@ -26665,8 +27398,8 @@ ${capsule}` : "") };
             try {
               if (!alive())
                 return null;
-              const identity3 = await recovery.identity(event.sessionID, alive, controller.signal);
-              return alive() ? identity3 : null;
+              const identity4 = await recovery.identity(event.sessionID, alive, controller.signal);
+              return alive() ? identity4 : null;
             } catch {
               return null;
             } finally {
@@ -26676,14 +27409,14 @@ ${capsule}` : "") };
             }
           })();
           try {
-            const identity3 = await Promise.race([lookup2, new Promise((resolve3) => {
+            const identity4 = await Promise.race([lookup2, new Promise((resolve3) => {
               timer = setTimeout(() => {
                 controller.abort();
                 resolve3(null);
               }, 1000);
             })]);
-            if (identity3 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity3.sourceId === source.id && identity3.sessionId === event.sessionID) {
-              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity3.sourceId, sessionId: identity3.sessionId, parentId: identity3.parentId, ancestry: identity3.ancestry });
+            if (identity4 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity4.sourceId === source.id && identity4.sessionId === event.sessionID) {
+              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity4.sourceId, sessionId: identity4.sessionId, parentId: identity4.parentId, ancestry: identity4.ancestry });
               if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
                 capsule = resumeText(selection);
             }
@@ -26807,396 +27540,311 @@ ${capsule}` : "") };
   }
 }
 
-// plugin/delegation.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-var TTL = 300000;
+// plugin/subagent-runs.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
 var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-async function registerDelegation(ctx, options2) {
-  const { store } = options2;
-  store.installDelegationControl();
-  const now3 = options2.now ?? (() => performance.now());
-  const pending = new Map, retries = new Map, groups = new Map;
-  const calls = new Map;
-  const registrations = [];
-  const jobs = new Set;
+function createRunCapture(ctx, options2) {
+  const { store, sourceId } = options2;
+  store.installSubagentRuns();
+  const now3 = options2.now ?? Date.now, abort = new AbortController;
+  let disposed = false, draining = false;
   const lookups = new Set;
-  const abort = new AbortController;
-  let disposed = false, healthy = false;
-  let epoch = store.delegationControl().generation;
-  let events;
-  function retire(i) {
-    if (i.state === "bound")
-      return;
-    i.state = "retired";
-    i.controller?.abort();
-    if (pending.get(i.actor.sessionId) === i)
-      pending.delete(i.actor.sessionId);
-  }
-  function fault() {
-    healthy = false;
-    for (const i of pending.values())
-      retire(i);
-  }
-  function control() {
-    if (disposed)
-      return false;
-    const c = store.delegationControl();
-    if (c.generation !== epoch || !c.enabled) {
-      for (const i of pending.values())
-        retire(i);
-      epoch = c.generation;
+  const producer = randomUUID4();
+  let physicalIdentities = 0;
+  const active = () => !disposed && !abort.signal.aborted;
+  const key = (e) => ({ source: sourceId, parent: e.sessionID, message: e.messageID, call: e.id });
+  const valid = (e) => ["subagent", "task"].includes(e.tool) && [e.sessionID, e.messageID, e.id].every(identifier2);
+  const unavailable = () => {
+    try {
+      store.runCaptureUnavailable();
+    } catch {}
+  };
+  async function identity4(id2) {
+    if (physicalIdentities >= 2)
+      throw Error("capture-unavailable");
+    const controller = new AbortController, signal = AbortSignal.any([controller.signal, abort.signal]);
+    physicalIdentities++;
+    const pending = options2.identity(id2, () => active() && !signal.aborted, signal).finally(() => {
+      physicalIdentities--;
+    });
+    let cancel = () => {};
+    const timeout3 = setTimeout(() => controller.abort(), 1000);
+    timeout3.unref();
+    try {
+      return await Promise.race([pending, new Promise((_, reject) => {
+        cancel = () => reject(Error("capture-unavailable"));
+        signal.addEventListener("abort", cancel, { once: true });
+        if (signal.aborted)
+          cancel();
+      })]);
+    } finally {
+      clearTimeout(timeout3);
+      signal.removeEventListener("abort", cancel);
+      controller.abort();
     }
-    return c.enabled;
   }
-  function prune() {
-    for (const i of pending.values())
-      if (now3() >= i.expires)
-        retire(i);
-    for (const [k, i] of retries)
-      if (now3() >= i.expires)
-        retries.delete(k);
-    for (const [k, g] of groups)
-      if (now3() >= g.expires) {
-        if (g.intent) {
-          retire(g.intent);
-          delete g.intent;
-        }
-        if (!unresolved(g))
-          groups.delete(k);
-      }
-    for (const [k, g] of calls)
-      if (now3() >= g.expires && !unresolved(g))
-        calls.delete(k);
+  async function before(e) {
+    if (!valid(e) || !active())
+      return;
+    try {
+      const c = store.runControl();
+      if (!c.enabled)
+        return;
+      const at = now3();
+      const actor = await identity4(e.sessionID);
+      if (!active() || store.runControl().generation !== c.generation)
+        return;
+      if (actor.directory !== ctx.location.directory || !actor.ancestry)
+        return;
+      store.beforeRun(key(e), actor, e.tool, e.input, at);
+    } catch {
+      unavailable();
+    }
   }
-  function unresolved(g, except) {
-    if (g.closed)
-      return false;
-    const other = (id2) => g !== except?.group || id2 !== except.call;
-    return [...g.hooks].some(([id2, h]) => other(id2) && h.before && !h.after) || [...g.native].some(([id2, n]) => other(id2) && (n.tool === "subagent" || n.tool === "task" || !n.tool) && !g.hooks.get(id2)?.after);
-  }
-  function live(i) {
-    return control() && healthy && now3() < i.expires && pending.get(i.actor.sessionId) === i && i.state === "reserved" && !i.group?.failed;
-  }
-  function group(parent, message) {
-    const key = JSON.stringify([parent, message]);
-    let g = groups.get(key);
-    if (!g) {
-      if (groups.size >= 256) {
-        fault();
+  async function resolveAfter(e) {
+    if (!valid(e) || !active())
+      return;
+    try {
+      const c = store.runControl();
+      if (!c.enabled)
+        return;
+      const output = e.status === "completed" && object(e.result?.output) ? e.result.output : undefined;
+      if (e.tool !== "subagent" || !identifier2(output?.sessionID) || !["running", "completed"].includes(output?.status)) {
+        store.afterRun(key(e), c.generation, undefined, e.status === "error" ? "failed-unconfirmed" : "unconfirmed");
         return;
       }
-      g = { parent, message, expires: now3() + TTL, hooks: new Map, native: new Map, closed: false, failed: false };
-      groups.set(key, g);
-    }
-    return g;
-  }
-  function reject(g) {
-    g.failed = true;
-    if (g.intent)
-      retire(g.intent);
-  }
-  function candidate(g, map12, id2) {
-    let c = map12.get(id2);
-    if (!c) {
-      const key = JSON.stringify([g.parent, g.message, id2]);
-      if (!calls.has(key)) {
-        if (calls.size >= 256) {
-          reject(g);
-          fault();
-          return;
-        }
-        calls.set(key, g);
-      }
-      c = {};
-      map12.set(id2, c);
-    }
-    return c;
-  }
-  function unique(g, i) {
-    if (g.failed || !g.closed || g.hooks.size !== 1)
-      return false;
-    const h = g.hooks.get(i.call);
-    if ([...g.native.values()].some((c) => !c.start || !c.called || !c.tool))
-      return false;
-    const native = [...g.native].filter(([, c]) => c.tool === "subagent" || c.tool === "task");
-    return !!h?.before && !!h.after && !!h.child && h.tool === "subagent" && native.length === 1 && native[0][0] === i.call && native[0][1].tool === h.tool;
-  }
-  function launch(action) {
-    const job = action().catch(() => {
-      fault();
-    });
-    jobs.add(job);
-    job.finally(() => jobs.delete(job));
-  }
-  function finalize(g) {
-    const i = g.intent;
-    if (!i || !live(i))
-      return;
-    if (!unique(g, i)) {
-      retire(i);
-      return;
-    }
-    if (lookups.has(g.parent)) {
-      retire(i);
-      return;
-    }
-    lookups.add(g.parent);
-    const controller = new AbortController;
-    i.controller = controller;
-    const deadline = now3() + 1000;
-    const alive = () => !controller.signal.aborted && now3() < deadline && live(i) && unique(g, i);
-    launch(async () => {
-      let timer;
+      const child = await identity4(output.sessionID);
+      if (!active())
+        return;
+      if (child.directory !== ctx.location.directory)
+        throw Error("capture-unavailable");
+      store.afterRun(key(e), c.generation, child, "returned");
+    } catch {
       try {
-        const lookup2 = (async () => {
-          if (!alive())
-            return;
-          const child = await options2.identity(g.hooks.get(i.call).child, alive, controller.signal);
-          if (!alive())
-            return;
-          requireProgress(child.sessionId === g.hooks.get(i.call).child && child.parentId === g.parent && child.ancestry?.[0] === g.parent && child.sourceId === options2.sourceId && child.verifiedSource, "assignment");
-          requireProgress(child.directory === i.actor.directory && child.projectId === i.actor.projectId, "assignment");
-          if (!alive())
-            return;
-          i.receipt = store.apply({ op: "link", plan: i.request.plan, oid: i.oid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, i.actor, undefined, child, { generation: i.generation, messageId: g.message, callId: i.call, observedAt: i.observedAt });
-          i.state = "bound";
-          pending.delete(i.actor.sessionId);
-        })().finally(() => lookups.delete(g.parent));
-        await Promise.race([lookup2, new Promise((resolve3) => {
-          timer = setTimeout(() => {
-            retire(i);
-            resolve3();
-          }, 1000);
-        })]);
+        store.afterRun(key(e), store.runControl().generation, undefined, "unconfirmed");
+      } catch {}
+      unavailable();
+    }
+  }
+  function after(e) {
+    if (!valid(e) || !active())
+      return;
+    if (lookups.size >= 2) {
+      try {
+        store.afterRun(key(e), store.runControl().generation, undefined, "unconfirmed");
+      } catch {}
+      unavailable();
+      return;
+    }
+    const job = resolveAfter(e);
+    lookups.add(job);
+    job.finally(() => lookups.delete(job));
+  }
+  function event(e) {
+    if (!active())
+      return;
+    if (e.type === "session.tool.failed") {
+      const d2 = e.data;
+      if (!object(d2) || ![d2.sessionID, d2.assistantMessageID, d2.id].every(identifier2) || e.location !== undefined && e.location?.directory !== ctx.location.directory)
+        return;
+      try {
+        store.afterRun({ source: sourceId, parent: d2.sessionID, message: d2.assistantMessageID, call: d2.id }, store.runControl().generation, undefined, "failed-unconfirmed");
       } catch {
-        retire(i);
-      } finally {
-        clearTimeout(timer);
-        controller.abort();
-        if (i.state !== "bound")
-          retire(i);
+        unavailable();
       }
-    });
-  }
-  function disposition(i) {
-    return { plan: i.request.plan, rev: i.request.rev, delegation: { state: i.state, expiresAt: i.expiresAt, memoryOnly: true, lostOnRestart: true, requires: "supported-next-delegation", ...i.receipt ? { receipt: i.receipt } : {} } };
-  }
-  function declare2(value3, actor) {
-    prune();
-    requireProgress(!disposed, "binding");
-    requireProgress(control(), "disabled");
-    const r = parseRequest(value3);
-    requireProgress(r.op === "delegate");
-    requireProgress(actor.sourceId === options2.sourceId && actor.verifiedSource, "source-unverified");
-    const key = JSON.stringify([actor.sourceId, actor.sessionId, r.plan, r.oid]), hash3 = canonical(r);
-    const old = retries.get(key);
-    if (old) {
-      requireProgress(old.hash === hash3, "operation-reused");
-      return disposition(old);
+      return;
     }
-    requireProgress(healthy, "binding");
-    const current = pending.get(actor.sessionId);
-    if (current && r.assign.length) {
-      retire(current);
-      store.validateDeclaration(r, actor);
-      requireProgress(false, "conflict", r.rev);
+    if (!e.type?.startsWith("session.execution."))
+      return;
+    const d = e.data, state = e.type.slice("session.execution.".length);
+    if (!["started", "succeeded", "failed", "interrupted"].includes(state) || !object(d) || !identifier2(d.sessionID) || !identifier2(e.id) || !Number.isSafeInteger(e.created) || e.created < 0 || !Number.isSafeInteger(e.durable?.seq) || e.durable.seq < 0 || e.durable.aggregateID !== d.sessionID || e.location !== undefined && e.location?.directory !== ctx.location.directory)
+      return;
+    const observation = { source: sourceId, child: d.sessionID, id: e.id, sequence: e.durable.seq, at: e.created, state: state === "started" ? "running" : state, errorType: state === "failed" ? safeErrorType(d.error?.type) : null, interruptionReason: state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(d.reason) ? d.reason : state === "interrupted" ? "unknown" : null };
+    try {
+      store.observeExecution(observation);
+    } catch {
+      unavailable();
     }
-    const generation = store.validateDeclaration(r, actor);
-    requireProgress(retries.size < 256, "busy");
-    if (current && current.request.plan === r.plan)
-      retire(current);
-    requireProgress(pending.size < 128 || !r.assign.length, "busy");
-    const i = { request: r, actor: structuredClone(actor), generation, expires: now3() + TTL, expiresAt: new Date(Date.now() + TTL).toISOString(), state: r.assign.length ? "pending" : "retired", hash: hash3, oid: `delegation-${randomUUID3()}` };
-    retries.set(key, i);
-    if (r.assign.length)
-      pending.set(actor.sessionId, i);
-    return disposition(i);
   }
-  async function dispose() {
+  async function drain() {
+    if (!active())
+      return;
+    try {
+      store.maintainRunRecovery(sourceId, ctx.location.directory, producer);
+    } catch {
+      unavailable();
+      return;
+    }
+    if (draining)
+      return;
+    draining = true;
+    try {
+      const root = store.pendingRunRecoveryAt(sourceId, ctx.location.directory);
+      if (!root)
+        return;
+      const started = performance.now();
+      if (physicalIdentities >= 2)
+        return;
+      physicalIdentities++;
+      let nativeRoot;
+      try {
+        nativeRoot = await ctx.session.get({ sessionID: root }, { signal: abort.signal });
+      } catch {
+        const failed = store.claimRunRecovery(sourceId, root);
+        if (failed)
+          store.finishRunRecovery(failed, "failed");
+        return;
+      } finally {
+        physicalIdentities--;
+      }
+      if (!active() || nativeRoot.id !== root || nativeRoot.location.directory !== ctx.location.directory)
+        return;
+      const job = store.claimRunRecovery(sourceId, root);
+      if (!job)
+        return;
+      const alive = () => active() && store.runRecoveryAlive(job);
+      let calls = 1, discovered = 0, partial = false;
+      const work = store.runRecoveryWork(job), queue = work.queue, seen = new Set(work.seen);
+      try {
+        while (queue.length && alive()) {
+          const parent = queue[0];
+          let cursor = parent.cursor;
+          do {
+            if (calls >= RUN_LIMITS.calls || performance.now() - started >= RUN_LIMITS.elapsedMs) {
+              partial = true;
+              break;
+            }
+            if (physicalIdentities >= 2) {
+              partial = true;
+              break;
+            }
+            calls++;
+            physicalIdentities++;
+            let page;
+            try {
+              page = await ctx.session.list({ parentID: parent.id, limit: 50, ...cursor ? { cursor } : {}, directory: ctx.location.directory }, { signal: abort.signal });
+            } finally {
+              physicalIdentities--;
+            }
+            if (!alive())
+              return;
+            if (!Array.isArray(page.data) || page.data.length > 50) {
+              partial = true;
+              break;
+            }
+            for (const s of page.data) {
+              if (discovered >= RUN_LIMITS.traversal || seen.size >= RUN_LIMITS.total) {
+                partial = true;
+                break;
+              }
+              if (!identifier2(s.id) || s.parentID !== parent.id || s.location.directory !== ctx.location.directory || s.projectID !== nativeRoot.projectID) {
+                partial = true;
+                continue;
+              }
+              if (seen.has(s.id)) {
+                continue;
+              }
+              if (parent.depth >= RUN_LIMITS.depth) {
+                partial = true;
+                continue;
+              }
+              seen.add(s.id);
+              discovered++;
+              const t = s.time;
+              if (!Number.isSafeInteger(t.created) || !Number.isSafeInteger(t.updated)) {
+                partial = true;
+                continue;
+              }
+              const projected = { id: s.id, parent: parent.id, agent: s.agent ?? null, title: s.title ?? null, createdAt: t.created, updatedAt: t.updated, idleAt: Number.isSafeInteger(t.idle) ? t.idle : null, outcome: ["succeeded", "failed", "interrupted"].includes(String(s.outcome)) ? s.outcome : null };
+              store.publishRunHistory(job, projected);
+              queue.push({ id: s.id, depth: parent.depth + 1 });
+            }
+            if (partial)
+              break;
+            const next = page.cursor?.next;
+            if (next !== null && next !== undefined && (typeof next !== "string" || Buffer.byteLength(next) > RUN_LIMITS.cursorBytes || next === cursor)) {
+              partial = true;
+              break;
+            }
+            cursor = next ?? undefined;
+            parent.cursor = cursor;
+          } while (cursor && !partial && alive());
+          if (!cursor && !partial)
+            queue.shift();
+          if (partial)
+            break;
+        }
+        if (alive()) {
+          store.saveRunRecoveryWork(job, { queue, seen: [...seen] });
+          store.finishRunRecovery(job, partial ? "partial" : "complete");
+        }
+      } catch {
+        if (alive())
+          store.finishRunRecovery(job, "failed");
+      }
+    } catch {
+      unavailable();
+    } finally {
+      draining = false;
+    }
+  }
+  const timer = setInterval(() => {
+    drain();
+  }, 3000);
+  timer.unref();
+  return { before, after, event, drain, settled: async () => {
+    await Promise.all([...lookups]);
+  }, dispose() {
     disposed = true;
-    fault();
+    abort.abort();
+    clearInterval(timer);
+  } };
+}
+
+// plugin/delegation.ts
+async function registerDelegation(ctx, options2) {
+  options2.store.installDelegationControl();
+  const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity });
+  const abort = new AbortController, registrations = [];
+  let disposed = false, events;
+  async function dispose() {
+    if (disposed)
+      return;
+    disposed = true;
+    capture.dispose();
     abort.abort();
     for (const r of registrations.splice(0))
       try {
         await r.dispose();
       } catch {}
     await events;
-    pending.clear();
-    retries.clear();
-    groups.clear();
-    calls.clear();
   }
   try {
-    registrations.push(await ctx.tool.hook("execute.before", (event) => {
-      try {
-        if (event.tool !== "subagent" && event.tool !== "task")
-          return;
-        prune();
-        const enabled = control();
-        if (!healthy)
-          return;
-        if (!identifier2(event.sessionID) || !identifier2(event.messageID) || !identifier2(event.id)) {
-          fault();
-          return;
-        }
-        const g = group(event.sessionID, event.messageID);
-        if (!g)
-          return;
-        if (g.hooks.get(event.id)?.before && g.hooks.get(event.id)?.tool === event.tool)
-          return;
-        if (g.closed) {
-          reject(g);
-          const i2 = pending.get(event.sessionID);
-          if (i2)
-            retire(i2);
-          return;
-        }
-        const c = candidate(g, g.hooks, event.id);
-        if (!c)
-          return;
-        if (c.before) {
-          if (c.tool !== event.tool)
-            reject(g);
-          return;
-        }
-        c.tool = event.tool;
-        c.before = true;
-        if (!enabled)
-          return;
-        const i = pending.get(event.sessionID);
-        if (!i)
-          return;
-        if (i.state === "reserved") {
-          reject(g);
-          retire(i);
-          return;
-        }
-        const inFlight = [...groups.values()].some((other) => other.parent === g.parent && unresolved(other, { group: g, call: event.id }));
-        if (inFlight || g.failed || g.hooks.size !== 1 || event.tool !== "subagent") {
-          retire(i);
-          return;
-        }
-        i.state = "reserved";
-        i.group = g;
-        i.call = event.id;
-        i.observedAt = new Date().toISOString();
-        g.intent = i;
-      } catch {
-        fault();
-      }
-    }));
-    registrations.push(await ctx.tool.hook("execute.after", (event) => {
-      try {
-        if (event.tool !== "subagent" && event.tool !== "task")
-          return;
-        prune();
-        control();
-        if (!healthy)
-          return;
-        const g = group(event.sessionID, event.messageID);
-        if (!g)
-          return;
-        const c = g.hooks.get(event.id);
-        const output = event.status === "completed" && object(event.result.output) ? event.result.output : undefined;
-        const child = output?.sessionID;
-        if (c?.after && c.tool === event.tool && c.child === child && ["completed", "running"].includes(output?.status))
-          return;
-        if (g.closed || !c?.before || c.tool !== event.tool) {
-          reject(g);
-          const i = pending.get(event.sessionID);
-          if (i)
-            retire(i);
-          return;
-        }
-        if (!identifier2(child) || !["completed", "running"].includes(output?.status)) {
-          c.after = true;
-          reject(g);
-          return;
-        }
-        if (c.after && c.child !== child) {
-          reject(g);
-          return;
-        }
-        c.after = true;
-        c.child = child;
-      } catch {
-        fault();
-      }
-    }));
+    registrations.push(await ctx.tool.hook("execute.before", capture.before));
+    registrations.push(await ctx.tool.hook("execute.after", capture.after));
     try {
       const stream = ctx.event.subscribe({ signal: abort.signal });
-      requireProgress(stream && typeof stream[Symbol.asyncIterator] === "function", "binding");
-      healthy = true;
       events = (async () => {
         try {
           for await (const event of stream) {
             if (disposed)
               break;
-            if (!["session.tool.input.started", "session.tool.called", "session.step.ended", "session.step.failed"].includes(event.type))
-              continue;
-            prune();
-            control();
-            if (!healthy)
-              continue;
-            const e = event, d = e.data;
-            if (!object(d) || !identifier2(d.sessionID) || !identifier2(d.assistantMessageID) || e.location?.directory !== ctx.location.directory || e.durable?.aggregateID !== d.sessionID || !Number.isSafeInteger(e.durable?.seq)) {
-              fault();
-              continue;
-            }
-            const g = group(d.sessionID, d.assistantMessageID);
-            if (!g)
-              continue;
-            if (event.type === "session.step.failed") {
-              g.closed = true;
-              reject(g);
-              continue;
-            }
-            if (event.type === "session.step.ended") {
-              if (g.closed)
-                continue;
-              g.closed = true;
-              finalize(g);
-              continue;
-            }
-            if (g.closed) {
-              const prior = g.native.get(d.id);
-              if (prior && (event.type === "session.tool.called" && prior.called || event.type === "session.tool.input.started" && prior.start && prior.tool === d.name))
-                continue;
-              reject(g);
-              continue;
-            }
-            if (!identifier2(d.id)) {
-              reject(g);
-              continue;
-            }
-            const c = candidate(g, g.native, d.id);
-            if (!c)
-              continue;
-            if (event.type === "session.tool.input.started") {
-              if (typeof d.name !== "string" || !d.name || d.name.length > 128 || c.tool && c.tool !== d.name) {
-                reject(g);
-                continue;
-              }
-              c.start = true;
-              c.tool = d.name;
-            } else
-              c.called = true;
-            if ([...g.native.values()].filter((n) => n.tool === "subagent" || n.tool === "task").length > 1 && g.intent)
-              retire(g.intent);
+            capture.event(event);
           }
         } catch {} finally {
-          fault();
+          if (!disposed)
+            try {
+              options2.store.runCaptureUnavailable();
+            } catch {}
         }
       })();
     } catch {
-      fault();
+      options2.store.runCaptureUnavailable();
     }
-    return { declare: declare2, dispose, settled: async () => {
-      await Promise.all([...jobs]);
-    } };
-  } catch (error) {
+    return { declare: (value3, actor) => options2.store.declareDelegation(value3, actor), dispose, drainRuns: capture.drain, settledRuns: capture.settled, settled: capture.settled };
+  } catch (e) {
     await dispose();
-    throw error;
+    throw e;
   }
 }
 
@@ -27257,7 +27905,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
   try {
     verifyStore(store, b);
     store.bindReads(b.source.id, b.source.verified);
-    async function identity3(sessionID, agent, guard) {
+    async function identity4(sessionID, agent, guard) {
       return sessionIdentity(ctx, b.source, sessionID, agent, guard);
     }
     await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
@@ -27270,8 +27918,12 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         options: { namespace: "agent_progress", codemode: false },
         execute: async (value3, caller) => {
           try {
-            const r = parseRequest(value3);
-            const actor = await identity3(caller.sessionID, caller.agent);
+            const r = parseReportRequest(value3);
+            const actor = await identity4(caller.sessionID, caller.agent);
+            if (r.op === "handoff") {
+              const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive: () => true, signal: new AbortController().signal, sameScope: true });
+              return { content: JSON.stringify(store.handoff(r, child2)) };
+            }
             if (r.op === "read") {
               const view = store.detail(actor.sourceId, r.plan, r.page ?? 0);
               return { content: JSON.stringify(r.page === undefined ? { plan: r.plan, rev: view.plan.revision, structuralRev: view.plan.structuralRevision, lifecycle: view.plan.lifecycle, counts: view.plan.counts, documentState: view.plan.document.state, detailPageSize: 20 } : view) };
@@ -27285,7 +27937,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
             const childID = r.child ?? r.attributed;
             if (childID) {
               try {
-                child = await identity3(childID, "unknown");
+                child = await identity4(childID, "unknown");
               } catch {
                 throw new ProgressError("assignment");
               }
@@ -27305,7 +27957,7 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1, {
       storeId: b.storeId,
       read: (request3) => store.resumePlans(request3),
-      identity: (sessionID, alive, signal) => identity3(sessionID, "unknown", { alive, signal })
+      identity: (sessionID, alive, signal) => identity4(sessionID, "unknown", { alive, signal })
     });
     delegation = await registerDelegation(ctx, {
       store,
@@ -27338,12 +27990,13 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     throw error;
   }
 } });
-var START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
+var START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
 \`\`\`json
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
-Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50) for its next subagent delegation; empty assign cancels that plan's pending intent. Declaration is not assignment or dispatch: pending authority is memory-only, expires in five minutes and is lost on restart. Identical retries do not re-arm it. Any installed subagent implementation qualifies only with a matching hook pair, exactly agreeing native call census, matching step.ended and verified immediate child/complete ancestry; ambiguity or missing evidence retires without assignment. These gates prove call correlation and child lineage, not that the tool actually created or continued the child: installed tools are trusted to report the child they delegated to. Slim is covered through these same gates, not separate certification. Use explicit link and assigned parent relay when evidence is unavailable. After restart deliberately re-declare with a fresh oid. Binding never changes task progress, reporting permissions or accepted handoff.`;
+Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50). Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions.
+A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. Handoff accepts no plan, rev, child, attributed identity or source. It is a child-authored claim, not acceptance or task progress; host completion is independent and absence is normal. Identical retries use the same oid; another claim for that execution conflicts. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
