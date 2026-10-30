@@ -19,7 +19,7 @@ export async function runNativeRegression() {
   const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   assert.equal(JSON.parse(fs.readFileSync('node_modules/@opencode/plugin/package.json', 'utf8')).version, '2.1.4');
   assert.equal(JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version, '2.5.1');
-  const result: any = { phase: 'regression', runtime: '2.1.4', node: process.version, sdk: '2.5.1', hashes: Object.fromEntries([binary, 'bun.lock', 'tests/fixtures/subagent-activity-regression.ts', 'tests/fixtures/subagent-activity-integration-driver.ts', 'tests/fixtures/subagent-activity-observer.ts', 'tests/browser/subagent-activity-native.ts', 'tests/browser/subagent-activity-host.ts', 'ui/shared/app.ts', 'ui/shared/live.ts', 'ui/shared/census.ts', 'ui/shared/census-view.ts'].map(file => [file === binary ? 'nativeRuntime' : file, hash(file)])), modes: [], pass: false };
+  const result: any = { phase: 'regression', runtime: '2.2.2', node: process.version, sdk: '2.5.1', hashes: Object.fromEntries([binary, 'bun.lock', 'tests/fixtures/subagent-activity-regression.ts', 'tests/fixtures/subagent-activity-integration-driver.ts', 'tests/fixtures/subagent-activity-observer.ts', 'tests/browser/subagent-activity-native.ts', 'tests/browser/subagent-activity-host.ts', 'ui/shared/app.ts', 'ui/shared/live.ts', 'ui/shared/census.ts', 'ui/shared/census-view.ts'].map(file => [file === binary ? 'nativeRuntime' : file, hash(file)])), modes: [], pass: false };
   const profiles = process.env.SUBAGENT_ACTIVITY_PROFILES?.split(',') ?? ['builtin', 'slim'];
   assert.ok(profiles.length && profiles.every(p => ['builtin', 'slim'].includes(p)) && new Set(profiles).size === profiles.length);
   try {
@@ -37,7 +37,7 @@ export async function runNativeRegression() {
         const socket = display && (path.isAbsolute(display) ? display : process.env.XDG_RUNTIME_DIR && path.join(process.env.XDG_RUNTIME_DIR, display));
         assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
         const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ACTIVITY_WAYLAND_SOCKET: socket, AGENT_PROGRESS_BINDING: `${root}/binding.json` };
-        assert.equal(spawnSync(binary, ['--version'], { env, encoding: 'utf8' }).stdout.trim(), 'opencode v2.1.4');
+        assert.equal(spawnSync(binary, ['--version'], { env, encoding: 'utf8' }).stdout.trim(), 'opencode v2.2.2');
         const source = { id: 'source-alpha', configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, verified: true };
         const store = new Store(`${root}/store/progress.sqlite`, { create: true });
         try { store.registerSource(source); fs.writeFileSync(`${root}/binding.json`, JSON.stringify({ protocolVersion: 2, schemaVersion: 2, installId: 'synthetic-activity', version: RELEASE, database: store.file, storeId: store.list({ limit: 1 }).storeId, source }), { mode: 0o600 }); } finally { store.close(); }
