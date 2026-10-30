@@ -10,11 +10,57 @@ Keep your canonical planner. If not already reported, deliberately mirror action
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
 For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
-export const ACTIVATION_HINT = 'A possible plan document was written or revised, possibly by a delegated child. Mirror only meaningful unreported canonical work you own or are authorized to coordinate, using the progress report tool; otherwise continue your workflow. This hint grants no assignment or authority.';
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+const PLAN_OBSERVATION = 'A possible plan document was written or revised, possibly by a delegated child.';
+export const DISPATCH_OBSERVATION = 'A dispatch ran.';
+export const TRACKER_OBSERVATION = 'A tracker update was observed.';
+const HINT_CONDITION = 'If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.';
+export const ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
+const PLAN = 1, DISPATCH = 2, TRACKER = 4;
+function hintText(reasons: number) {
+  return [reasons & PLAN ? PLAN_OBSERVATION : '', reasons & DISPATCH ? DISPATCH_OBSERVATION : '', reasons & TRACKER ? TRACKER_OBSERVATION : '', HINT_CONDITION].filter(Boolean).join(' ');
+}
 
-const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null;
+const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const boundedID = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
+const uuid = (value: unknown) => typeof value === 'string' && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value);
+const iso = (value: unknown) => typeof value === 'string' && /^\d{4}-\d\d-\d\dT/.test(value) && Number.isFinite(Date.parse(value));
+const strings = (value: Record<string, any>, fields: string[]) => fields.every(field => typeof value[field] === 'string');
+const nullable = (value: Record<string, any>, fields: string[], valid: (v: unknown) => boolean) => fields.every(field => value[field] === undefined || value[field] === null || valid(value[field]));
+function failureMarker(value: unknown): boolean {
+  return record(value) && ['error', 'isError', 'partial'].some(field => Object.hasOwn(value, field) && value[field] !== false && value[field] !== undefined && value[field] !== null);
+}
+/** Finite metadata predicates only: never inspect prompt/body/worker text or unwrap content. */
+function proxyReason(event: ToolHooks['execute.after']): number {
+  if (event.status !== 'completed' || !record(event.input) || !record(event.result) || !record(event.result.output)) return 0;
+  const output = event.result.output;
+  if ([event, event.result, event.result.metadata, output].some(failureMarker)) return 0;
+  if (event.tool === 'subagent') {
+    const input = event.input;
+    return strings(input, ['agent', 'description', 'prompt'])
+      && (input.sessionID === undefined || boundedID(input.sessionID))
+      && (input.model === undefined || typeof input.model === 'string')
+      && (input.background === undefined || typeof input.background === 'boolean')
+      && boundedID(output.sessionID) && (output.status === 'running' || output.status === 'completed') && typeof output.output === 'string' ? DISPATCH : 0;
+  }
+  if (event.tool === 'linear_save_issue') {
+    return strings(output, ['id', 'uuid', 'title', 'status', 'statusType', 'createdAt', 'updatedAt', 'team', 'teamId', 'url', 'gitBranchName', 'createdBy', 'createdById'])
+      && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt)
+      && ['unstarted', 'started', 'completed', 'canceled'].includes(output.statusType)
+      && record(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === 'string'
+      && Array.isArray(output.labels)
+      && nullable(output, ['completedAt', 'canceledAt', 'archivedAt', 'startedAt'], iso)
+      && nullable(output, ['dueDate', 'slaStartedAt', 'slaMediumRiskAt', 'slaHighRiskAt', 'slaBreachesAt'], v => typeof v === 'string')
+      && nullable(output, ['assignee', 'assigneeId', 'project', 'projectId', 'parent'], v => typeof v === 'string' || record(v)) ? TRACKER : 0;
+  }
+  if (event.tool === 'linear_save_comment') {
+    return uuid(output.id) && strings(output, ['body', 'createdAt', 'updatedAt']) && iso(output.createdAt) && iso(output.updatedAt)
+      && Array.isArray(output.attachments) && record(output.author) && strings(output.author, ['id', 'name'])
+      && nullable(output, ['parentId'], uuid) && nullable(output, ['resolvedAt', 'quotedText'], v => typeof v === 'string')
+      && nullable(output, ['onBehalfOf'], record) ? TRACKER : 0;
+  }
+  return 0;
+}
 
 // Lexical metadata only. Neither the path nor any document/diff text is retained.
 function possiblePath(value: unknown): value is string {
@@ -73,11 +119,11 @@ function resumeText(selection: ResumeSelection): string {
 
 /** Advisory only; optional bounded read projection, never executor/receipt/capture/mutation access. */
 export async function registerActivation(ctx: Plugin.Context, source: { id: string; verified: boolean }, enabled: () => boolean, recovery?: ResumeActivation) {
-  const pending = new Set<string>(); // max128 source/session flags
+  const pending = new Map<string, number>(); // max128 source/session reason bitsets
   const recent = new Set<string>(); // max256 qualifying source/session/message/call IDs
   const owned = Symbol('agent-progress-section');
-  function section(hint: boolean, capsule = '') {
-    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${ACTIVATION_HINT}` : '') + (capsule ? `\n\n${capsule}` : '') };
+  function section(hint: number, capsule = '') {
+    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${hintText(hint)}` : '') + (capsule ? `\n\n${capsule}` : '') };
     Object.defineProperty(part, owned, { value: { hint } });
     return part;
   }
@@ -112,6 +158,10 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
     set.add(key);
     if (set.size > cap) set.delete(set.values().next().value!);
   }
+  function flag(recipient: string, reason: number) {
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    if (pending.size > 128) pending.delete(pending.keys().next().value!);
+  }
   const key = (sessionID: string) => JSON.stringify([source.id, sessionID]);
   function retain(sessionKey: string, attempt: Compaction, created: number) {
     compactions.delete(sessionKey); compactions.set(sessionKey, attempt);
@@ -143,14 +193,15 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
       try {
         if (disposed || !source.verified) return;
         const candidate = successfulPath(event);
-        if (!candidate || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id)) return;
+        const proxy = proxyReason(event);
+        if ((!candidate && !proxy) || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id)) return;
         const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
         if (recent.has(call) || !control()) return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || !planPath(candidate, caller.location.directory) || recent.has(call)) return;
+        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate && !planPath(candidate, caller.location.directory) || recent.has(call)) return;
         let parentID: string | undefined;
-        if (boundedID(caller.parentID) && caller.parentID !== caller.id) {
+        if (candidate && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
             if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID
@@ -162,8 +213,8 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         // callbacks must not repopulate either flag after an intervening delivery.
         if (disposed || epoch !== disableEpoch || !control() || recent.has(call)) return;
         remember(recent, call, 256);
-        remember(pending, key(event.sessionID), 128);
-        if (parentID) remember(pending, key(parentID), 128);
+        flag(key(event.sessionID), candidate ? PLAN : proxy);
+        if (parentID) flag(key(parentID), PLAN);
       } catch { /* observation must never fail or change the original tool */ }
     }));
     registrations.push(await ctx.session.hook('context', async event => {
@@ -224,7 +275,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) { removeOwned(); return; }
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
         if (existing !== -1) { if (capsule) event.system[existing] = section((event.system[existing] as any)[owned].hint, capsule); return; }
-        const hint = pending.has(sessionKey);
+        const hint = pending.get(sessionKey) ?? 0;
         event.system.push(section(hint, capsule));
         pending.delete(sessionKey); // consume on delivery, not on a report receipt
       } catch { pending.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }

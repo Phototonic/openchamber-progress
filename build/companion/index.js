@@ -26397,10 +26397,45 @@ Keep your canonical planner. If not already reported, deliberately mirror action
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
 For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
-var ACTIVATION_HINT = "A possible plan document was written or revised, possibly by a delegated child. Mirror only meaningful unreported canonical work you own or are authorized to coordinate, using the progress report tool; otherwise continue your workflow. This hint grants no assignment or authority.";
-var record2 = (value3) => typeof value3 === "object" && value3 !== null;
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
+var DISPATCH_OBSERVATION = "A dispatch ran.";
+var TRACKER_OBSERVATION = "A tracker update was observed.";
+var HINT_CONDITION = "If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.";
+var ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
+var PLAN = 1;
+var DISPATCH = 2;
+var TRACKER = 4;
+function hintText(reasons) {
+  return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? DISPATCH_OBSERVATION : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
+}
+var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
 var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
+var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
+var iso = (value3) => typeof value3 === "string" && /^\d{4}-\d\d-\d\dT/.test(value3) && Number.isFinite(Date.parse(value3));
+var strings = (value3, fields2) => fields2.every((field) => typeof value3[field] === "string");
+var nullable = (value3, fields2, valid) => fields2.every((field) => value3[field] === undefined || value3[field] === null || valid(value3[field]));
+function failureMarker(value3) {
+  return record2(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
+}
+function proxyReason(event) {
+  if (event.status !== "completed" || !record2(event.input) || !record2(event.result) || !record2(event.result.output))
+    return 0;
+  const output = event.result.output;
+  if ([event, event.result, event.result.metadata, output].some(failureMarker))
+    return 0;
+  if (event.tool === "subagent") {
+    const input = event.input;
+    return strings(input, ["agent", "description", "prompt"]) && (input.sessionID === undefined || boundedID(input.sessionID)) && (input.model === undefined || typeof input.model === "string") && (input.background === undefined || typeof input.background === "boolean") && boundedID(output.sessionID) && (output.status === "running" || output.status === "completed") && typeof output.output === "string" ? DISPATCH : 0;
+  }
+  if (event.tool === "linear_save_issue") {
+    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record2(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record2(v)) ? TRACKER : 0;
+  }
+  if (event.tool === "linear_save_comment") {
+    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record2(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record2) ? TRACKER : 0;
+  }
+  return 0;
+}
 function possiblePath(value3) {
   if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
     return false;
@@ -26454,13 +26489,13 @@ function resumeText(selection) {
   return "";
 }
 async function registerActivation(ctx, source, enabled, recovery) {
-  const pending = new Set;
+  const pending = new Map;
   const recent = new Set;
   const owned = Symbol("agent-progress-section");
   function section(hint, capsule = "") {
     const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
 
-${ACTIVATION_HINT}` : "") + (capsule ? `
+${hintText(hint)}` : "") + (capsule ? `
 
 ${capsule}` : "") };
     Object.defineProperty(part, owned, { value: { hint } });
@@ -26505,6 +26540,11 @@ ${capsule}` : "") };
     if (set3.size > cap)
       set3.delete(set3.values().next().value);
   }
+  function flag(recipient, reason) {
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    if (pending.size > 128)
+      pending.delete(pending.keys().next().value);
+  }
   const key = (sessionID) => JSON.stringify([source.id, sessionID]);
   function retain(sessionKey, attempt, created) {
     compactions.delete(sessionKey);
@@ -26544,17 +26584,18 @@ ${capsule}` : "") };
         if (disposed || !source.verified)
           return;
         const candidate = successfulPath(event);
-        if (!candidate || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
+        const proxy = proxyReason(event);
+        if (!candidate && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
           return;
         const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
         if (recent.has(call) || !control())
           return;
         const epoch = disableEpoch;
         const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || !planPath(candidate, caller.location.directory) || recent.has(call))
+        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate && !planPath(candidate, caller.location.directory) || recent.has(call))
           return;
         let parentID;
-        if (boundedID(caller.parentID) && caller.parentID !== caller.id) {
+        if (candidate && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
             if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path6.resolve(parent.location.directory) === path6.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
@@ -26564,9 +26605,9 @@ ${capsule}` : "") };
         if (disposed || epoch !== disableEpoch || !control() || recent.has(call))
           return;
         remember(recent, call, 256);
-        remember(pending, key(event.sessionID), 128);
+        flag(key(event.sessionID), candidate ? PLAN : proxy);
         if (parentID)
-          remember(pending, key(parentID), 128);
+          flag(key(parentID), PLAN);
       } catch {}
     }));
     registrations.push(await ctx.session.hook("context", async (event) => {
@@ -26662,7 +26703,7 @@ ${capsule}` : "") };
             event.system[existing] = section(event.system[existing][owned].hint, capsule);
           return;
         }
-        const hint = pending.has(sessionKey);
+        const hint = pending.get(sessionKey) ?? 0;
         event.system.push(section(hint, capsule));
         pending.delete(sessionKey);
       } catch {
@@ -27305,6 +27346,7 @@ Read uses only op=read, one concrete plan identifier and optional 0-based page; 
 Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50) for its next subagent delegation; empty assign cancels that plan's pending intent. Declaration is not assignment or dispatch: pending authority is memory-only, expires in five minutes and is lost on restart. Identical retries do not re-arm it. Any installed subagent implementation qualifies only with a matching hook pair, exactly agreeing native call census, matching step.ended and verified immediate child/complete ancestry; ambiguity or missing evidence retires without assignment. These gates prove call correlation and child lineage, not that the tool actually created or continued the child: installed tools are trusted to report the child they delegated to. Slim is covered through these same gates, not separate certification. Use explicit link and assigned parent relay when evidence is unavailable. After restart deliberately re-declare with a fresh oid. Binding never changes task progress, reporting permissions or accepted handoff.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
+Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
 Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.

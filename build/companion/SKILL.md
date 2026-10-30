@@ -15,6 +15,10 @@ and owner approval are separate; reflect existing canonical gate/work items only
 never invent review tasks to report. Work start means actual work, not a dispatch
 having run. Never manufacture a file or report automatically on each turn.
 
+Native dispatch/tracker hints are conditional observations, not report receipts,
+assignments or evidence of work start, review, approval or completion. Already-current
+canonical state needs no mutation.
+
 Use `agent_progress_report`. Every mutation requires a fresh `oid` and expected
 `rev`; reuse an `oid` only for an identical retry. A new `start` requires `plan`,
 `title`, the complete `items` structure and `rev:0`. Minimal valid start (replace

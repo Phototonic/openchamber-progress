@@ -221,7 +221,7 @@ persistence or guarantee for background precomputation. Both delivery orders and
 retirement/replay/cap boundaries are deterministic unit/installed-adapter coverage.
 
 With the 2.2.2 native re-pin in place, the full `bun run check` aggregate passes
-on this branch: **326 passed, 0 failed, 18 Windows-only skips**, including the
+on this branch: **331 passed, 0 failed, 18 Windows-only skips**, including the
 native subagent/desktop family. Earlier blocked-status statements are historical.
 This result does not claim a desktop installation.
 
