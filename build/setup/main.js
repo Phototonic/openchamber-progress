@@ -795,7 +795,7 @@ function row(value) {
       delete r[key];
     }
   if (Object.hasOwn(r, "_refresh")) {
-    requireProgress(Array.isArray(r._refresh) && r._refresh.length === 2 && integer(r._refresh[0]) && typeof r._refresh[1] === "boolean", "corrupt");
+    requireProgress(Array.isArray(r._refresh) && r._refresh.length === 2 && integer(r._refresh[0]) && [0, 1, false, true].includes(r._refresh[1]), "corrupt");
     delete r._refresh;
   }
   const keys = (v, allowed) => obj(v) && Object.keys(v).length === allowed.length && Object.keys(v).every((k) => allowed.includes(k));
@@ -816,11 +816,35 @@ function save(db, r, retiredClaim, provenStart, evidence) {
   const start = provenStart ?? (existing?.start ? startEvent(JSON.parse(String(existing.start))) : undefined);
   const startEpochs = evidence?.start ?? (existing?.start_epochs ? epochList(JSON.parse(String(existing.start_epochs))) : undefined);
   const endEpochs = r.ran.endedAt === null ? undefined : evidence?.end ?? (existing?.event === r.ran.eventId && existing?.end_epochs ? epochList(JSON.parse(String(existing.end_epochs))) : undefined);
-  const text = JSON.stringify({ ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...existing?.refresh ? { _refresh: JSON.parse(String(existing.refresh)) } : {} });
-  requireProgress(Buffer.byteLength(text) <= RUN_LIMITS.dtoBytes, "invalid");
+  const refresh = existing?.refresh ? JSON.parse(String(existing.refresh)) : undefined;
+  const payload = { ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...refresh ? { _refresh: [refresh[0], Number(refresh[1])] } : {} };
+  let text = JSON.stringify(payload);
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    r.agent = null;
+    r.description = null;
+    r.accepted = null;
+    payload.agent = null;
+    payload.description = null;
+    payload.accepted = null;
+    loss(db);
+    text = JSON.stringify(payload);
+  }
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    if (payload._startEpochs)
+      payload._startEpochs = [];
+    if (payload._endEpochs)
+      payload._endEpochs = [];
+    runCaptureUnavailable(db);
+    text = JSON.stringify(payload);
+  }
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    runCaptureUnavailable(db);
+    return false;
+  }
   row(text);
   db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
   bump(db);
+  return true;
 }
 function retainedCount(db) {
   return Number(db.prepare("SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n").get().n);
@@ -949,7 +973,10 @@ function attachClaim(db, r) {
   if (owners.length !== 1 || owners[0].id !== r.id)
     return;
   r.claimed = { ...claim, association: "execution" };
-  save(db, r);
+  if (!save(db, r)) {
+    r.claimed = null;
+    return;
+  }
   db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?").run(r.source, r.childSessionId, matching[0].execution);
 }
 function reassociateClaims(db, source, child) {
@@ -1036,7 +1063,12 @@ function beforeRun(db, k, actor, tool, input, at, epoch = observationEpoch(db)) 
   const i = obj(input) ? input : {};
   const intent = tool === "subagent" ? activeIntent(db, k.source, k.parent) : null;
   const r = { id, kind: "dispatch", source: k.source, parentSessionId: k.parent, childSessionId: null, tool, agent: metadataString(i.agent, 80), description: metadataString(i.description ?? i.title, 200), dispatch: { messageId: k.message, callId: k.call, at }, planContext: intent && !intent.dispatch ? { plan: intent.request.plan, revision: intent.request.rev, observedAt: at } : associatedPlan(db, actor, at), ran: { state: "unknown", dispatchState: "pending", startedAt: null, endedAt: null, updatedAt: at, provenance: "dispatch", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
-  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)").run(id, k.source, k.parent, null, k.message, k.call, control.generation, 0, at, JSON.stringify({ ...r, _epoch: epoch }));
+  const payload = JSON.stringify({ ...r, _epoch: epoch });
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    runCaptureUnavailable(db);
+    return;
+  }
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)").run(id, k.source, k.parent, null, k.message, k.call, control.generation, 0, at, payload);
   if (intent && !intent.dispatch) {
     db.prepare("UPDATE runs_intents SET dispatch=? WHERE source=? AND parent=? AND dispatch IS NULL").run(id, k.source, k.parent);
     intentDisposition(db, intent, "reserved", undefined, id);
@@ -1050,6 +1082,16 @@ function candidate(db, source, child) {
     return null;
   requireProgress(typeof r.payload === "string", "corrupt");
   return JSON.parse(r.payload);
+}
+function saveCandidate(db, source, child, c, generation = runControl(db).generation) {
+  const payload = JSON.stringify(c);
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(source, child);
+    runCaptureUnavailable(db);
+    return false;
+  }
+  db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(source, child, generation, payload);
+  return true;
 }
 var verifiedRootIdentity = `json_extract(s.actor,'$.verifiedSource')=1
   AND json_extract(s.actor,'$.sourceId')=s.source AND json_extract(s.actor,'$.sessionId')=s.id
@@ -1084,8 +1126,7 @@ function adopt(db, r, c) {
     attachClaim(db, r);
     return false;
   }
-  recomputeInterval(db, r, c.start, e === c.start ? null : e, { start: eventEpochs(c, "start"), end: eventEpochs(c, "end") });
-  return true;
+  return recomputeInterval(db, r, c.start, e === c.start ? null : e, { start: eventEpochs(c, "start"), end: eventEpochs(c, "end") }).saved ? "saved" : "dropped";
 }
 function recomputeInterval(db, r, start, end, evidence) {
   const next = nextStart(db, start);
@@ -1101,6 +1142,7 @@ function recomputeInterval(db, r, start, end, evidence) {
   r.ran = { ...r.ran, state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
   let retiredClaim;
   let restaged = false;
+  const detachedClaim = r.claimed;
   if (r.claimed && !claimFits(db, r, r.claimed, start)) {
     const claim = { ...r.claimed, association: "session-only" };
     const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
@@ -1111,11 +1153,15 @@ function recomputeInterval(db, r, start, end, evidence) {
     }
     r.claimed = null;
   }
-  save(db, r, retiredClaim, [start.id, start.sequence], evidence);
+  if (!save(db, r, retiredClaim, [start.id, start.sequence], evidence)) {
+    if (restaged)
+      db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?").run(r.source, start.child, detachedClaim.oid);
+    return { saved: false, displaced: null };
+  }
   attachClaim(db, r);
   if (restaged)
     reassociateClaims(db, r.source, start.child);
-  return displaced;
+  return { saved: true, displaced };
 }
 function provenStart(db, r) {
   const stored = db.prepare("SELECT json_extract(payload,'$._startEvent') AS start FROM runs_rows WHERE id=?").get(r.id);
@@ -1180,7 +1226,8 @@ function routeTerminal(db, e, observed) {
     return { handled: false };
   }
   const priorEpochs = prior ? runEventEpochs(db, r, "end") : undefined;
-  return adopt(db, r, { start, end: e, startEpochs, endEpochs: observed }) ? { handled: true, ...prior ? { displaced: prior, displacedEpochs: priorEpochs } : {} } : { handled: false };
+  const applied = adopt(db, r, { start, end: e, startEpochs, endEpochs: observed });
+  return applied ? { handled: true, ...applied === "saved" && prior ? { displaced: prior, displacedEpochs: priorEpochs } : {} } : { handled: false };
 }
 function correlate(db, source, child) {
   const c = candidate(db, source, child);
@@ -1206,7 +1253,7 @@ function correlate(db, source, child) {
   if (!candidateStarts(c).length && !c.end)
     db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(source, child);
   else
-    db.prepare("UPDATE runs_candidates SET payload=? WHERE source=? AND child=?").run(JSON.stringify(c), source, child);
+    saveCandidate(db, source, child, c);
 }
 function afterRun(db, k, generation, child, disposition) {
   validKey(k);
@@ -1230,7 +1277,8 @@ function afterRun(db, k, generation, child, disposition) {
     r.childSessionId = child.sessionId;
   }
   r.ran.dispatchState = disposition;
-  save(db, r);
+  if (!save(db, r))
+    return;
   if (child)
     captureIdentity(db, child);
   for (const other of db.prepare("SELECT DISTINCT child FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL AND terminal=0 LIMIT 1024").all(k.source, k.parent))
@@ -1387,15 +1435,17 @@ function observeExecution(db, e, epoch = observationEpoch(db)) {
   }
   const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
   const safe = { start: project(c.start), end: project(c.end), startEpochs: c.start ? eventEpochs(c, "start") : undefined, endEpochs: c.end ? eventEpochs(c, "end") : undefined, startEvidence: c.startEvidence ? Object.fromEntries(Object.entries(c.startEvidence).map(([id, s]) => [id, { event: project(s.event), epochs: epochList(s.epochs), ambiguous: s.ambiguous ?? false }])) : undefined, ambiguous: c.ambiguous ?? false };
-  if (Buffer.byteLength(JSON.stringify(safe)) > RUN_LIMITS.dtoBytes) {
-    runCaptureUnavailable(db);
+  if (!saveCandidate(db, e.source, e.child, safe, control.generation))
     return observationEpoch(db);
-  }
-  db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(e.source, e.child, control.generation, JSON.stringify(safe));
   if (refine) {
     const start = provenStart(db, refine);
     const endEpochs = runEventEpochs(db, refine, "end");
-    const displaced = recomputeInterval(db, refine, start, provenEnd(refine));
+    const refined = recomputeInterval(db, refine, start, provenEnd(refine));
+    if (!refined.saved) {
+      db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
+      return observationEpoch(db);
+    }
+    const displaced = refined.displaced;
     if (displaced) {
       const held = candidate(db, e.source, e.child);
       if (!held.end || displaced.sequence > held.end.sequence) {
@@ -1404,7 +1454,8 @@ function observeExecution(db, e, epoch = observationEpoch(db)) {
         held.endEpoch = undefined;
       } else if (displaced.sequence !== held.end.sequence)
         loss(db);
-      db.prepare("UPDATE runs_candidates SET payload=? WHERE source=? AND child=?").run(JSON.stringify(held), e.source, e.child);
+      if (!saveCandidate(db, e.source, e.child, held))
+        return observationEpoch(db);
     }
   }
   correlate(db, e.source, e.child);
@@ -1574,7 +1625,7 @@ function refreshGapOutcome(db, r, e) {
   const previous = db.prepare("SELECT json_extract(payload,'$._refresh[0]') AS sequence FROM runs_rows WHERE id=?").get(r.id);
   if (integer(previous?.sequence) && previous.sequence >= e.sequence)
     return;
-  const marker = JSON.stringify([e.sequence, true]);
+  const marker = JSON.stringify([e.sequence, 1]);
   if (Number(db.prepare("SELECT length(CAST(json_set(payload,'$._refresh',json(?)) AS BLOB)) AS bytes FROM runs_rows WHERE id=?").get(marker, r.id).bytes) > RUN_LIMITS.dtoBytes)
     return;
   const old = db.prepare("SELECT state FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.parentSessionId);
@@ -1630,7 +1681,7 @@ function claimRecovery(db, source, root) {
     return null;
   const claim = randomUUID2();
   db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim, source, root);
-  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',json('false')) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source, root);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',0) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source, root);
   bump(db);
   return { source, root, generation: c.generation, claim, requestId: String(r.request_id) };
 }
@@ -1660,7 +1711,12 @@ function publishHistory(db, j, s) {
     return;
   const ended = s.idleAt !== null && s.idleAt >= s.createdAt ? s.idleAt : null;
   const r = { id, kind: "historical-session", source: j.source, parentSessionId: s.parent, childSessionId: s.id, tool: null, agent: metadataString(s.agent, 80), description: metadataString(s.title, 200), dispatch: null, planContext: null, ran: { state: ended !== null && ["succeeded", "failed", "interrupted"].includes(String(s.outcome)) ? s.outcome : "unknown", dispatchState: "historical", startedAt: null, endedAt: ended, updatedAt: s.updatedAt, provenance: "native-session", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
-  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)").run(id, j.source, s.parent, s.id, j.generation, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state)), s.createdAt, JSON.stringify(r));
+  const payload = JSON.stringify(r);
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    loss(db);
+    return;
+  }
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)").run(id, j.source, s.parent, s.id, j.generation, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state)), s.createdAt, payload);
   bump(db);
 }
 function finishRecovery(db, j, state) {

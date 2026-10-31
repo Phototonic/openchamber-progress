@@ -160,7 +160,7 @@ function row(value:unknown):RunRow {
   if(Object.hasOwn(r,'_startEvent')){need(r.childSessionId!==null&&r.ran.startedAt!==null,'corrupt');startEvent(r._startEvent);delete r._startEvent;}
   if(Object.hasOwn(r,'_epoch')){need(integer(r._epoch),'corrupt');delete r._epoch;}
   for(const key of ['_startEpochs','_endEpochs'] as const)if(Object.hasOwn(r,key)){epochList(r[key]);delete r[key];}
-  if(Object.hasOwn(r,'_refresh')){need(Array.isArray(r._refresh)&&r._refresh.length===2&&integer(r._refresh[0])&&typeof r._refresh[1]==='boolean','corrupt');delete r._refresh;}
+  if(Object.hasOwn(r,'_refresh')){need(Array.isArray(r._refresh)&&r._refresh.length===2&&integer(r._refresh[0])&&[0,1,false,true].includes(r._refresh[1]),'corrupt');delete r._refresh;}
   const keys=(v:unknown,allowed:string[])=>obj(v)&&Object.keys(v).length===allowed.length&&Object.keys(v).every(k=>allowed.includes(k));
   const time=(v:unknown)=>v===null||integer(v);
   need(keys(r,['id','kind','source','parentSessionId','childSessionId','tool','agent','description','dispatch','planContext','ran','claimed','accepted'])&&['dispatch','historical-session'].includes(r.kind)&&[null,'subagent','task'].includes(r.tool)&&(r.agent===null||typeof r.agent==='string'&&r.agent.length<=80)&&(r.description===null||typeof r.description==='string'&&r.description.length<=200),'corrupt');
@@ -177,9 +177,27 @@ function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:Sta
   const start=provenStart??(existing?.start?startEvent(JSON.parse(String(existing.start))):undefined);
   const startEpochs=evidence?.start??(existing?.start_epochs?epochList(JSON.parse(String(existing.start_epochs))):undefined);
   const endEpochs=r.ran.endedAt===null?undefined:evidence?.end??(existing?.event===r.ran.eventId&&existing?.end_epochs?epochList(JSON.parse(String(existing.end_epochs))):undefined);
-  const text=JSON.stringify({...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{}),...(startEpochs?{_startEpochs:startEpochs}:{}),...(endEpochs?{_endEpochs:endEpochs}:{}),...(existing?.refresh?{_refresh:JSON.parse(String(existing.refresh))}:{})});need(Buffer.byteLength(text)<=RUN_LIMITS.dtoBytes,'invalid');
+  const refresh=existing?.refresh?JSON.parse(String(existing.refresh)) as [number,boolean|number]:undefined;
+  const payload={...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{}),...(startEpochs?{_startEpochs:startEpochs}:{}),...(endEpochs?{_endEpochs:endEpochs}:{}),...(refresh?{_refresh:[refresh[0],Number(refresh[1])]}:{})};
+  let text=JSON.stringify(payload);
+  if(Buffer.byteLength(text)>RUN_LIMITS.dtoBytes){
+    // Display hints and a cached accepted projection cannot block host facts or
+    // durable claim fences. The read seam can re-project current accepted tasks.
+    r.agent=null;r.description=null;r.accepted=null;
+    payload.agent=null;payload.description=null;payload.accepted=null;loss(db);
+    text=JSON.stringify(payload);
+  }
+  if(Buffer.byteLength(text)>RUN_LIMITS.dtoBytes){
+    // Empty evidence sets mean no epoch proof, never fallback to an invented
+    // observer. Keep native start identity, authored claims and retirement fences.
+    if(payload._startEpochs)payload._startEpochs=[];
+    if(payload._endEpochs)payload._endEpochs=[];
+    runCaptureUnavailable(db);text=JSON.stringify(payload);
+  }
+  if(Buffer.byteLength(text)>RUN_LIMITS.dtoBytes){runCaptureUnavailable(db);return false;}
   row(text);
   db.prepare('UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?').run(r.childSessionId,Number(['succeeded','failed','interrupted'].includes(r.ran.state)||r.ran.dispatchState==='failed-unconfirmed'||r.ran.dispatchState==='unconfirmed'&&r.childSessionId===null),text,r.id);bump(db);
+  return true;
 }
 function retainedCount(db:DatabaseSync):number {
   return Number(db.prepare('SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n').get()!.n);
@@ -268,7 +286,9 @@ function attachClaim(db:DatabaseSync,r:RunRow) {
   if(matching.length!==1)return;
   const claim=claimValue(JSON.parse(String(matching[0]!.payload))),owners=claimOwners(db,r.source,r.childSessionId,claim);
   if(owners.length!==1||owners[0]!.id!==r.id)return;
-  r.claimed={...claim,association:'execution'};save(db,r);db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?').run(r.source,r.childSessionId,matching[0]!.execution!);
+  r.claimed={...claim,association:'execution'};
+  if(!save(db,r)){r.claimed=null;return;}
+  db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?').run(r.source,r.childSessionId,matching[0]!.execution!);
 }
 function reassociateClaims(db:DatabaseSync,source:string,child:string) {
   for(const staged of db.prepare('SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?').all(source,child,RUN_LIMITS.claims)){
@@ -323,7 +343,9 @@ export function beforeRun(db:DatabaseSync,k:DispatchKey,actor:Actor,tool:'subage
   const i=obj(input)?input:{};
   const intent=tool==='subagent'?activeIntent(db,k.source,k.parent):null;
   const r:RunRow={id,kind:'dispatch',source:k.source,parentSessionId:k.parent,childSessionId:null,tool,agent:metadataString(i.agent,80),description:metadataString(i.description??i.title,200),dispatch:{messageId:k.message,callId:k.call,at},planContext:intent&&!intent.dispatch?{plan:intent.request.plan,revision:intent.request.rev!,observedAt:at}:associatedPlan(db,actor,at),ran:{state:'unknown',dispatchState:'pending',startedAt:null,endedAt:null,updatedAt:at,provenance:'dispatch',eventId:null,sequence:null,errorType:null,interruptionReason:null},claimed:null,accepted:null};
-  db.prepare('INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,k.source,k.parent,null,k.message,k.call,control.generation,0,at,JSON.stringify({...r,_epoch:epoch}));
+  const payload=JSON.stringify({...r,_epoch:epoch});
+  if(Buffer.byteLength(payload)>RUN_LIMITS.dtoBytes){runCaptureUnavailable(db);return;}
+  db.prepare('INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,k.source,k.parent,null,k.message,k.call,control.generation,0,at,payload);
   if(intent&&!intent.dispatch){db.prepare('UPDATE runs_intents SET dispatch=? WHERE source=? AND parent=? AND dispatch IS NULL').run(id,k.source,k.parent);intentDisposition(db,intent,'reserved',undefined,id);}
   // Use the existing session owner, without exposing the filesystem location in DTOs.
   captureIdentity(db,actor);bump(db);
@@ -331,6 +353,15 @@ export function beforeRun(db:DatabaseSync,k:DispatchKey,actor:Actor,tool:'subage
 function candidate(db:DatabaseSync,source:string,child:string):Candidate|null {
   const r=db.prepare('SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_candidates WHERE source=? AND child=?').get(source,child);
   if(!r)return null;need(typeof r.payload==='string','corrupt');return JSON.parse(r.payload) as Candidate;
+}
+function saveCandidate(db:DatabaseSync,source:string,child:string,c:Candidate,generation=runControl(db).generation):boolean {
+  const payload=JSON.stringify(c);
+  if(Buffer.byteLength(payload)>RUN_LIMITS.dtoBytes){
+    db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(source,child);
+    runCaptureUnavailable(db);return false;
+  }
+  db.prepare('INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload').run(source,child,generation,payload);
+  return true;
 }
 // Missing/unverified identity is not evidence of root status: early child
 // events must still be staged before the after hook verifies their ancestry.
@@ -362,10 +393,10 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
   const e=c.end&&c.end.sequence>c.start.sequence&&c.end.at>=c.start.at?c.end:c.start;
   if(r.ran.endedAt!==null){if(e===c.start||e.sequence>=Number(r.ran.sequence))return false;}
   else if(r.ran.sequence!==null&&e.sequence<=r.ran.sequence){attachClaim(db,r);return false;}
-  recomputeInterval(db,r,c.start,e===c.start?null:e,{start:eventEpochs(c,'start'),end:eventEpochs(c,'end')});return true;
+  return recomputeInterval(db,r,c.start,e===c.start?null:e,{start:eventEpochs(c,'start'),end:eventEpochs(c,'end')}).saved?'saved':'dropped';
 }
 /** The only writer of interval bounds: validate host chronology and claims together. */
-function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,end:ExecutionObservation|null,evidence?:{start?:number[];end?:number[]}):ExecutionObservation|null {
+function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,end:ExecutionObservation|null,evidence?:{start?:number[];end?:number[]}):{saved:boolean;displaced:ExecutionObservation|null} {
   const next=nextStart(db,start);
   const wrongOwner=end&&(end.sequence<=start.sequence||next&&end.sequence>=next.sequence);
   const badClock=next&&next.at<start.at||end&&(end.at<start.at||!wrongOwner&&next&&end.at>next.at);
@@ -379,6 +410,7 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
   r.ran={...r.ran,state,startedAt:start.at,endedAt:end?.at??null,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
   let retiredClaim:ClaimFence|undefined;
   let restaged=false;
+  const detachedClaim=r.claimed;
   if(r.claimed&&!claimFits(db,r,r.claimed,start)){
     // Host terminal facts take priority over an invalid claim association.
     // Restage only in spare capacity; never prune runs or reject the terminal
@@ -394,9 +426,13 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
     }
     r.claimed=null;
   }
-  save(db,r,retiredClaim,[start.id,start.sequence],evidence);attachClaim(db,r);
+  if(!save(db,r,retiredClaim,[start.id,start.sequence],evidence)){
+    if(restaged)db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?').run(r.source,start.child,detachedClaim!.oid);
+    return {saved:false,displaced:null};
+  }
+  attachClaim(db,r);
   if(restaged)reassociateClaims(db,r.source,start.child);
-  return displaced;
+  return {saved:true,displaced};
 }
 
 function provenStart(db:DatabaseSync,r:RunRow):ExecutionObservation|null {
@@ -444,7 +480,8 @@ function routeTerminal(db:DatabaseSync,e:ExecutionObservation,observed:number[])
     loss(db);return {handled:false};
   }
   const priorEpochs=prior?runEventEpochs(db,r,'end'):undefined;
-  return adopt(db,r,{start,end:e,startEpochs,endEpochs:observed})?{handled:true,...(prior?{displaced:prior,displacedEpochs:priorEpochs}:{})}:{handled:false};
+  const applied=adopt(db,r,{start,end:e,startEpochs,endEpochs:observed});
+  return applied?{handled:true,...(applied==='saved'&&prior?{displaced:prior,displacedEpochs:priorEpochs}:{})}:{handled:false};
 }
 function correlate(db:DatabaseSync,source:string,child:string) {
   const c=candidate(db,source,child);if(!c)return;
@@ -457,7 +494,7 @@ function correlate(db:DatabaseSync,source:string,child:string) {
   }
   while(c.end){const routed=routeTerminal(db,c.end,eventEpochs(c,'end'));if(!routed.handled)break;c.end=routed.displaced??null;c.endEpochs=routed.displacedEpochs;c.endEpoch=undefined;}
   if(!candidateStarts(c).length&&!c.end)db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(source,child);
-  else db.prepare('UPDATE runs_candidates SET payload=? WHERE source=? AND child=?').run(JSON.stringify(c),source,child);
+  else saveCandidate(db,source,child,c);
 }
 export function afterRun(db:DatabaseSync,k:DispatchKey,generation:number,child:Actor|undefined,disposition:'returned'|'failed-unconfirmed'|'unconfirmed') {
   validKey(k);const c=runControl(db);if(!c.enabled||c.generation!==generation)return;
@@ -467,7 +504,7 @@ export function afterRun(db:DatabaseSync,k:DispatchKey,generation:number,child:A
     const parent=db.prepare('SELECT actor FROM sessions WHERE source=? AND id=?').get(k.source,k.parent);need(parent&&typeof parent.actor==='string','binding');const actor=JSON.parse(parent.actor) as Actor;
     need(r.tool==='subagent'&&child.verifiedSource&&child.sourceId===k.source&&identifier(child.sessionId)&&child.parentId===k.parent&&child.ancestry?.[0]===k.parent&&child.directory===actor.directory&&child.projectId===actor.projectId,'binding');r.childSessionId=child.sessionId;
   }
-  r.ran.dispatchState=disposition;save(db,r);
+  r.ran.dispatchState=disposition;if(!save(db,r))return;
   if(child)captureIdentity(db,child);
   for(const other of db.prepare('SELECT DISTINCT child FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL AND terminal=0 LIMIT 1024').all(k.source,k.parent))correlate(db,k.source,String(other.child));
 }
@@ -567,17 +604,18 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation,epoch=ob
   // Re-project even typed callers: never serialize a host event or error object.
   const project=(v:ExecutionObservation|null)=>v?{source:e.source,child:e.child,id:v.id,sequence:v.sequence,at:v.at,state:v.state,errorType:v.state==='failed'?safeErrorType(v.errorType):null,interruptionReason:v.state==='interrupted'&&['user','shutdown','superseded','inactivity'].includes(String(v.interruptionReason))?v.interruptionReason:v.state==='interrupted'?'unknown':null}:null;
   const safe={start:project(c.start),end:project(c.end),startEpochs:c.start?eventEpochs(c,'start'):undefined,endEpochs:c.end?eventEpochs(c,'end'):undefined,startEvidence:c.startEvidence?Object.fromEntries(Object.entries(c.startEvidence).map(([id,s])=>[id,{event:project(s.event),epochs:epochList(s.epochs),ambiguous:s.ambiguous??false}])):undefined,ambiguous:c.ambiguous??false} as Candidate;
-  if(Buffer.byteLength(JSON.stringify(safe))>RUN_LIMITS.dtoBytes){runCaptureUnavailable(db);return observationEpoch(db);}
-  db.prepare('INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload').run(e.source,e.child,control.generation,JSON.stringify(safe));
+  if(!saveCandidate(db,e.source,e.child,safe,control.generation))return observationEpoch(db);
   if(refine){
     const start=provenStart(db,refine)!;
     const endEpochs=runEventEpochs(db,refine,'end');
-    const displaced=recomputeInterval(db,refine,start,provenEnd(refine));
+    const refined=recomputeInterval(db,refine,start,provenEnd(refine));
+    if(!refined.saved){db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(e.source,e.child);return observationEpoch(db);}
+    const displaced=refined.displaced;
     if(displaced){
       const held=candidate(db,e.source,e.child)!;
       if(!held.end||displaced.sequence>held.end.sequence){held.end=displaced;held.endEpochs=endEpochs;held.endEpoch=undefined;}
       else if(displaced.sequence!==held.end.sequence)loss(db);
-      db.prepare('UPDATE runs_candidates SET payload=? WHERE source=? AND child=?').run(JSON.stringify(held),e.source,e.child);
+      if(!saveCandidate(db,e.source,e.child,held))return observationEpoch(db);
     }
   }
   correlate(db,e.source,e.child);
@@ -692,7 +730,7 @@ export function saveRecoveryWork(db:DatabaseSync,j:RecoveryJob,w:RecoveryWork) {
 function refreshGapOutcome(db:DatabaseSync,r:RunRow,e:ExecutionObservation) {
   const previous=db.prepare("SELECT json_extract(payload,'$._refresh[0]') AS sequence FROM runs_rows WHERE id=?").get(r.id);
   if(integer(previous?.sequence)&&previous.sequence>=e.sequence)return;
-  const marker=JSON.stringify([e.sequence,true]);
+  const marker=JSON.stringify([e.sequence,1]);
   if(Number(db.prepare("SELECT length(CAST(json_set(payload,'$._refresh',json(?)) AS BLOB)) AS bytes FROM runs_rows WHERE id=?").get(marker,r.id)!.bytes)>RUN_LIMITS.dtoBytes)return;
   const old=db.prepare('SELECT state FROM runs_jobs WHERE source=? AND root=?').get(r.source,r.parentSessionId);
   if(!old||!['pending','running'].includes(String(old.state))){
@@ -737,7 +775,7 @@ export function claimRecovery(db:DatabaseSync,source:string,root:string):Recover
   const c=runControl(db);if(!c.enabled)return null;
   const r=db.prepare("SELECT request_id,generation FROM runs_jobs WHERE source=? AND root=? AND state='pending'").get(source,root);if(!r||r.generation!==c.generation)return null;
   const claim=randomUUID();db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim,source,root);
-  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',json('false')) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source,root);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',0) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source,root);
   bump(db);return {source,root,generation:c.generation,claim,requestId:String(r.request_id)};
 }
 export function recoveryAlive(db:DatabaseSync,j:RecoveryJob) {
@@ -764,7 +802,8 @@ export function publishHistory(db:DatabaseSync,j:RecoveryJob,s:HistoricalSession
   if(!capacity(db,{source:j.source,parent:s.parent}))return;
   const ended=s.idleAt!==null&&s.idleAt>=s.createdAt?s.idleAt:null;
   const r:RunRow={id,kind:'historical-session',source:j.source,parentSessionId:s.parent,childSessionId:s.id,tool:null,agent:metadataString(s.agent,80),description:metadataString(s.title,200),dispatch:null,planContext:null,ran:{state:ended!==null&&['succeeded','failed','interrupted'].includes(String(s.outcome))?s.outcome!:'unknown',dispatchState:'historical',startedAt:null,endedAt:ended,updatedAt:s.updatedAt,provenance:'native-session',eventId:null,sequence:null,errorType:null,interruptionReason:null},claimed:null,accepted:null};
-  db.prepare('INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)').run(id,j.source,s.parent,s.id,j.generation,Number(['succeeded','failed','interrupted'].includes(r.ran.state)),s.createdAt,JSON.stringify(r));bump(db);
+  const payload=JSON.stringify(r);if(Buffer.byteLength(payload)>RUN_LIMITS.dtoBytes){loss(db);return;}
+  db.prepare('INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)').run(id,j.source,s.parent,s.id,j.generation,Number(['succeeded','failed','interrupted'].includes(r.ran.state)),s.createdAt,payload);bump(db);
 }
 export function finishRecovery(db:DatabaseSync,j:RecoveryJob,state:'complete'|'partial'|'failed') {
   if(!recoveryAlive(db,j))return;

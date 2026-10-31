@@ -972,6 +972,16 @@ candidate, including earlier starts when one observer runs ahead through a resum
 Initial association cannot skip an earlier still-unassociated start that could
 belong to the dispatch. A delayed owner duplicate can therefore prove the original
 start; it cannot make the old dispatch adopt the later independent resume.
+Every private payload update is checked against the same 4 KiB UTF-8 limit,
+including correlation and displaced-terminal staging after interval refinement.
+An oversized candidate is discarded with observation loss/epoch invalidation,
+not left as permanently unwritable pending work. Row growth first drops optional
+agent/description hints and a cached accepted-task projection (reads can re-project
+current assignments). If needed it also empties optional observer-epoch proof
+sets, disclosing the continuity loss; empty sets prove no observer continuity.
+Native start identity, the immutable dispatch epoch, authored claims and retirement
+fences are preserved. An observation that still cannot fit is dropped/disclosed,
+without retrying the same failed payload or certifying an unstored outcome.
 Pending childless calls compete only when admitted in the same generation and epoch at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
@@ -1027,6 +1037,10 @@ or another observer's duplicate notification from creating a refresh loop. The
 existing job, storage and traversal bounds still apply; unavailable admission
 leaves the dispatch unknown with capture loss disclosed and permits a later retry.
 Refresh results remain separate `native-session` history, never dispatch outcomes.
+The private refresh marker uses numeric `0`/`1` states of equal serialized width,
+so claiming work cannot exceed the size checked at admission. Earlier boolean
+markers remain readable and shrink when claimed or re-saved; no growing boolean
+transition can strand an admitted recovery job at the row-byte limit.
 
 `GET /v1/subagent-runs` is side-effect free. Authenticated reconciliation POSTs
 create/coalesce finite source/root demand in the same database. A single unref'd
