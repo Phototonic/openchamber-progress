@@ -3687,7 +3687,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "0.5.0";
+var RELEASE = "0.6.0";
 
 // setup/cli.ts
 try {
