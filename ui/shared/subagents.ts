@@ -7,7 +7,7 @@
 // - Running never decays with time: only a host terminal event or a different host activity changes it
 // - a finished run is not a finished task, and a claim is not acceptance
 import type { RunRow } from '../../shared/subagent-runs.ts';
-import { observe, type Census, type ObservedRow, type PlanFacts } from './census.ts';
+import { currentFor, observe, type Census, type ObservedRow, type PlanFacts } from './census.ts';
 import type { ItemStatus, PlanView } from './model.ts';
 import type { RunsPanel } from './runs.ts';
 
@@ -49,7 +49,7 @@ export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'faile
 export type RosterNote =
   | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' } | { kind: 'capture-loss' }
   | { kind: 'history-loading' } | { kind: 'history-partial'; token: string | null } | { kind: 'history-failed'; token: string | null }
-  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' };
+  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-activity-unavailable' };
 export interface Roster {
   /** Featured rows: running/waiting first, then task-linked, bounded per surface. */
   featured: SubagentEntry[];
@@ -173,7 +173,12 @@ export function rosterFor(v: RosterInput): Roster | null {
   const runRows = runs?.state === 'ready' ? [...runs.featured, ...runs.more] : [];
   const featuredIds = new Set(runs?.state === 'ready' ? runs.featured.map((r) => r.id) : []);
   const census = v.census.state === 'ready' ? v.census : null;
-  const host = new Map((census?.rows ?? []).map((r) => [r.id, r] as const));
+  // Identity (titles, depth, navigation) may come from retained rows; current activity may not.
+  // While the stream reloads or its directory coverage is incomplete, every host word (waiting,
+  // idle now, running again, host-only running) is withheld; recorded run facts stand as they are.
+  const listed = new Map((census?.rows ?? []).map((r) => [r.id, r] as const));
+  const current = currentFor(v.census);
+  const host = current ? listed : new Map<string, ObservedRow>();
   const titles = new Map<string, string>([...(census ? [[census.root.id, census.root.title] as const] : []), ...(census?.rows ?? []).map((r) => [r.id, r.title] as const)]);
   for (const r of runRows) if (r.childSessionId && r.description && !titles.has(r.childSessionId)) titles.set(r.childSessionId, r.description);
   const rootId = census?.rootId ?? null;
@@ -188,7 +193,7 @@ export function rosterFor(v: RosterInput): Roster | null {
   // baselines nothing qualifies.
   const baselines = runs?.baselines ?? null, seq = v.liveSeq ?? 0;
   const after = (key: string, mark: number | undefined) => !!baselines && baselines.baseline(key, seq) < (mark ?? -1);
-  const openable = (id: string | null) => !!id && host.has(id) && id !== v.currentSession;
+  const openable = (id: string | null) => !!id && listed.has(id) && id !== v.currentSession;
   const entries: SubagentEntry[] = runRows.map((r) => {
     const sessionId = r.childSessionId;
     const isLatest = !!sessionId && latest.get(sessionId) === r;
@@ -206,7 +211,7 @@ export function rosterFor(v: RosterInput): Roster | null {
     const now = resumed && o && (o.kind === 'active' || o.kind === 'waiting') ? { kind: o.kind, label: o.label } : null;
     return {
       key: r.id, runId: r.id, sessionId, title: r.description || (sessionId ? titles.get(sessionId) : null) || r.agent || (sessionId ? `Session ${shortId(sessionId)}` : 'Sub-agent'),
-      agent: r.agent, depth: h?.depth ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? `Session ${shortId(r.parentSessionId)}` : null,
+      agent: r.agent, depth: (sessionId ? listed.get(sessionId)?.depth : undefined) ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? `Session ${shortId(r.parentSessionId)}` : null,
       ran, now, claimed: r.claimed, accepted: isLatest || !sessionId ? acceptedOf(r, sessionId, plan, v.facts) : null, duringPlan: r.planContext?.plan === plan.id,
       historical: r.kind === 'historical-session', openable: v.verified && openable(sessionId),
     };
@@ -214,9 +219,11 @@ export function rosterFor(v: RosterInput): Roster | null {
   // Children the host lists now without a run record: only when they are active, waiting, or hold
   // explicitly reported tasks of this plan. Idle unlinked ones are history the run read owns.
   const hostOnly: SubagentEntry[] = [];
-  for (const h of host.values()) {
+  for (const h of listed.values()) {
     if (covered.has(h.id)) continue;
-    const ran = hostRan(h), accepted = acceptedOf(null, h.id, plan, v.facts);
+    const accepted = acceptedOf(null, h.id, plan, v.facts);
+    // Without current coverage only a task-linked child keeps its row, and without a current word.
+    const ran: Ran = current ? hostRan(h) : { kind: 'unknown', label: 'Current activity unavailable', time: null, duration: null, source: 'host' };
     if (ran.kind !== 'active' && ran.kind !== 'waiting' && !accepted) continue;
     hostOnly.push({ key: `host-${h.id}`, runId: null, sessionId: h.id, title: h.title.trim() || `Session ${shortId(h.id)}`, agent: null, depth: h.depth,
       parentTitle: h.depth > 1 && h.parentId ? titles.get(h.parentId) ?? null : null, ran, now: null, claimed: null, accepted, duringPlan: false, historical: false, openable: v.verified && openable(h.id) });
@@ -264,6 +271,8 @@ export function rosterFor(v: RosterInput): Roster | null {
     if (read.coverage.reasons.includes('traversal-limit')) notes.push({ kind: 'traversal-limit' });
   }
   if (census && census.gaps.some((g) => g === 'conflict' || g === 'cycle' || g === 'records' || g === 'depth')) notes.push({ kind: 'host-gaps' });
+  // Disclosed only when the gate withheld something: retained rows that would have shown a current word.
+  if (census && !current && [...listed.values()].some((r) => { const k = observe(r).kind; return k === 'active' || k === 'waiting' || r.idleSeq !== undefined; })) notes.push({ kind: 'host-activity-unavailable' });
 
   const total = read ? read.counts.runs + read.counts.historicalSessions : 0;
   const featuredRuns = featured.filter((e) => e.runId).length;

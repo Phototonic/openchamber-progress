@@ -24840,7 +24840,7 @@ function mutateCleanup(db, file, action, value3, transaction) {
 }
 
 // shared/subagent-runs.ts
-var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
+var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
 var definitions2 = {
   runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
   runs_rows: "CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
@@ -25130,6 +25130,10 @@ function candidate(db, source, child) {
   requireProgress(typeof r.payload === "string", "corrupt");
   return JSON.parse(r.payload);
 }
+var verifiedRootIdentity = `json_extract(s.actor,'$.verifiedSource')=1
+  AND json_extract(s.actor,'$.sourceId')=s.source AND json_extract(s.actor,'$.sessionId')=s.id
+  AND json_type(s.actor,'$.parentId')='null' AND json_type(s.actor,'$.ancestry')='array'
+  AND json_array_length(s.actor,'$.ancestry')=0`;
 function adopt(db, r, c) {
   if (!r.dispatch || !r.childSessionId || !c.start || c.ambiguous || c.start.at < r.dispatch.at)
     return;
@@ -25137,7 +25141,7 @@ function adopt(db, r, c) {
     return;
   if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, c.end?.at ?? c.start.at))
     return;
-  const competing = db.prepare("SELECT id FROM runs_rows WHERE source=? AND child=? AND id!=? AND (terminal=0 OR at>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, r.dispatch.at);
+  const competing = db.prepare("SELECT id FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=? AND (terminal=0 OR at>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, r.dispatch.at);
   if (competing)
     return;
   if (r.ran.sequence !== null && (c.end?.sequence ?? c.start.sequence) <= r.ran.sequence) {
@@ -25199,6 +25203,10 @@ function observeExecution(db, e) {
         settleIntent(db, i, undefined, "parent-execution-ended");
     }
   }
+  if (db.prepare(`SELECT 1 FROM sessions s WHERE s.source=? AND s.id=? AND ${verifiedRootIdentity}`).get(e.source, e.child)) {
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
+    return;
+  }
   const known = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.sequence') IS NOT NULL ORDER BY json_extract(payload,'$.ran.sequence') DESC LIMIT 1").get(e.source, e.child);
   const previous = known ? row(known.payload) : undefined;
   if (previous?.ran.sequence !== null && previous?.ran.sequence !== undefined && e.sequence <= previous.ran.sequence)
@@ -25223,13 +25231,24 @@ function observeExecution(db, e) {
   } else
     c.end = e;
   if (!candidate(db, e.source, e.child) && Number(db.prepare("SELECT count(*) AS n FROM runs_candidates").get().n) >= RUN_LIMITS.candidates) {
-    loss(db);
-    return;
+    const victim = db.prepare(`SELECT c.source,c.child,coalesce((${verifiedRootIdentity}),0) AS root,
+      coalesce((c.source=? AND json_extract(c.payload,'$.end.state') IN ('succeeded','failed','interrupted')
+        AND json_type(c.payload,'$.end.at')='integer' AND json_extract(c.payload,'$.end.at')<?),0) AS stale
+      FROM runs_candidates c LEFT JOIN sessions s ON s.source=c.source AND s.id=c.child WHERE NOT EXISTS
+      (SELECT 1 FROM runs_rows r WHERE r.source=c.source AND r.child=c.child AND r.message IS NOT NULL AND r.terminal=0)
+      ORDER BY root DESC,stale DESC,c.rowid LIMIT 1`).get(e.source, e.at - RUN_LIMITS.candidateAdoptionMs);
+    if (!victim) {
+      loss(db);
+      return;
+    }
+    if (!victim.root && !victim.stale)
+      loss(db);
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(victim.source, victim.child);
   }
   const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
   const safe = { start: project(c.start), end: project(c.end), ambiguous: c.ambiguous ?? false };
   db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(e.source, e.child, control.generation, JSON.stringify(safe));
-  const rows = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND terminal=0 LIMIT 2").all(e.source, e.child);
+  const rows = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND terminal=0 LIMIT 2").all(e.source, e.child);
   if (rows.length === 1)
     adopt(db, row(rows[0].payload), safe);
 }
@@ -25322,7 +25341,12 @@ function readRuns(db, binding, r, now3 = Date.now()) {
   const rows = db.prepare(`SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args2, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
   out.data = rows.slice(0, RUN_LIMITS.page).map((v) => row(v.payload));
   if (r.plan) {
-    const snapshot3 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=1048576 THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(r.source, r.plan);
+    const snapshot3 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
+      AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
+      json_object('revision',json_extract(snapshot,'$.revision'),'links',json_extract(snapshot,'$.links'),
+        'items',json((SELECT json_group_array(json_object('id',json_extract(i.value,'$.id'),'kind',json_extract(i.value,'$.kind'),
+          'status',json_extract(i.value,'$.status'),'assigneeSessionId',json_extract(i.value,'$.assigneeSessionId')))
+          FROM json_each(snapshot,'$.items') i))) END AS snapshot FROM plans WHERE source=? AND id=?`).get(r.source, r.plan);
     requireProgress(typeof snapshot3?.snapshot === "string", "corrupt");
     const p = JSON.parse(snapshot3.snapshot);
     requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");

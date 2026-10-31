@@ -142,6 +142,7 @@ const NOTE: Record<RosterNote['kind'], string> = {
   'history-unavailable': 'Older history can’t be loaded until the companion is running.',
   'traversal-limit': 'There are more nested sub-agents than are counted here.',
   'host-gaps': 'Some sessions couldn’t be verified as sub-agents of this session, so they’re left out.',
+  'host-activity-unavailable': 'OpenChamber’s session list is reloading or incomplete, so current activity (waiting, running again, idle now) isn’t shown; recorded runs are unchanged.',
 };
 
 function summaryNode(r: Roster) {
@@ -163,8 +164,11 @@ function notesNode(r: Roster, runs: RunsPanel | null, compact: boolean) {
   const notes = r.notes;
   if (compact) {
     // One short line for genuine unavailability only; detail lives in the rail.
-    const n = notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss');
-    return n ? testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : 'Run records unavailable.'), 'subagent-coverage') : null;
+    const n = notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable');
+    if (!n) return null;
+    const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : 'Run records unavailable.'), 'subagent-coverage');
+    p.dataset.notes = n.kind;
+    return p;
   }
   if (!notes.length) return null;
   const d = testid(el('details', 'ap-obs-more ap-sub-about'), 'subagent-about');

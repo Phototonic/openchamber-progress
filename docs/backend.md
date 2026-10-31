@@ -889,7 +889,37 @@ retain physical lookup occupancy. Passive failures qualify capture loss and do
 not abort or modify native execution. After hooks never insert a missing dispatch.
 Native execution observations retain only the latest bounded interval candidate
 per child; this permits a terminal event before verified after-hook attachment.
+Verified root identities (explicit null parent and empty verified ancestry) are
+not staged as child execution candidates. Root failure/interruption still retires
+pending dispatch authority. At the 256-candidate cap, admission prefers these
+unprotected victims in order: verified roots, candidates whose terminal event is
+older than the five-minute adoption window, then the oldest remaining candidate.
+The first two classes are reclaimed silently; the last records possible capture
+loss. Candidates referenced by an unresolved verified dispatch remain protected;
+if every slot is protected, the new observation is declined with loss.
+
+The five-minute window is measured from the stored terminal event to an incoming
+event from the same source, using native host timestamps, not wall-clock receipt
+age. Out-of-order/older incoming events cannot age candidates forward; another
+source's clock cannot expire them. A terminal exactly five minutes old remains
+eligible. Start-only candidates never silently expire: a foreground child can
+run for hours. Unknown identity alone is not proof of a root.
+
+Foreground subagent calls return when the child ends; background calls return at
+dispatch. The registered after hook starts child-identity resolution immediately,
+with a one-second identity guard, then attaches/adopts in the Store. Existing
+native and controlled regressions establish terminal-before-after ordering. Five
+minutes is a generous bounded allowance for that terminal/after-hook race, not
+a claim that the host guarantees a delivery deadline. Under capacity pressure,
+unassociated completed intervals outside this window may be discarded rather
+than treated as lost runs; a callback delayed beyond the allowance may therefore
+remain unknown. This bounds staging for ordinary completed, unreported sessions
+without falsely latching capture loss, while preserving fresh terminal races,
+long-running starts and unresolved verified dispatches across restart.
 A proven start must follow dispatch and a unique child interval must exist.
+Historical session summaries are not competing dispatches. They remain separate
+history (and in historical/state counts and normal eviction protection); a later
+proven execution does not certify or replace an unknown earlier session summary.
 No prompt/result text or raw error/event is serialized. The ordinary report,
 link and task-status paths remain independent.
 
@@ -904,6 +934,11 @@ invalidates outstanding publication even if subsequently re-enabled. Ordinary
 reads and duplicate settled requests neither re-backfill nor re-stamp records.
 No service or guest native host credentials, session proxy or transcript API is
 introduced. Stored facts stay readable with capture disabled or companion absent.
+Plan-scoped accepted-task projection reads only task identity/status/assignee and
+link facts, not blocker details or the full stored plan. Valid snapshots may grow
+beyond 1 MiB through bounded writes; that response limit is not a stored-plan
+size invariant. The existing 1,000-item/64-link structural bounds and run DTO,
+accepted-item and response bounds still apply.
 
 The read-seam tests use a real SQLite store and authenticated HTTP server with
 the actual delegation registration and controlled native metadata replies.

@@ -312,6 +312,29 @@ try {
   check('recovery unavailable: says so inside the compact disclosure', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('until the companion is running'));
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
 
+  // Incomplete host coverage: retained rows give no current activity; recorded Running stays; disclosed.
+  await guest('panel', `const a=d.querySelector('[data-testid="subagent-about"]');if(a)a.open=false;return true`);
+  check('full coverage: N1 waiting on you, no coverage note', (await sectionText('panel')).includes('waiting on you') && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-activity-unavailable')`)));
+  // The host's periodic reload of that complete snapshot: still current, no note, no flicker.
+  await evaluate(`qa.reloadStart();true`);
+  await settle(600);
+  check('periodic reload of a complete snapshot: "waiting on you" kept, no coverage note', (await sectionText('panel')).includes('waiting on you') && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-activity-unavailable')`)));
+  await evaluate(`qa.push('sessions');true`);
+  await settle(300);
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'loading'}];qa.push('sessions');true`);
+  await wait('panel', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-activity-unavailable')`, 'coverage gap disclosed');
+  check('incomplete ready coverage: no "waiting on you"; recorded Running stays', !(await sectionText('panel')).includes('waiting on you') && (await text('panel', `${fact('N1', 'ran')} .ap-obs-label`)) === 'Running' && (await text('panel', `${fact('C1', 'ran')} .ap-obs-label`)) === 'Running');
+  await show('status', 280);
+  await wait('status', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='host-activity-unavailable'`, 'status short line');
+  check('incomplete coverage: Work Status says so in one short line', (await text('status', '[data-testid="subagent-coverage"]')) === 'Current activity unavailable.' && !(await sectionText('status')).includes('waiting on you'));
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'error'}];qa.push('sessions');true`);
+  await settle(500);
+  check('failed coverage: still withheld, with the short line', (await text('status', '[data-testid="subagent-coverage"]')) === 'Current activity unavailable.' && !(await sectionText('status')).includes('waiting on you'));
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'ready'}];qa.push('sessions');true`);
+  await wait('status', `!d.querySelector('[data-testid="subagent-coverage"]') && d.querySelector('[data-testid="subagent-count"]')?.textContent.includes('waiting on you')`, 'coverage restored on the card');
+  await show('panel');
+  await wait('panel', `d.querySelector('${row('N1')}')?.dataset.ran==='waiting'`, 'coverage restored on the rail');
+
   // 9. Narrow + dark + reduced motion; 200% reflow equivalents without horizontal overflow.
   await evaluate(`qa.dark();true`);
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

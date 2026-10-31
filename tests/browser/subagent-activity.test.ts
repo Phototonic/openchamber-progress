@@ -401,7 +401,8 @@ async function oneSubscription() {
   ws.start(); await flush();
   calls.findLast((c) => c.kind === 'projects')!.cb({ state: 'ready', projects: [alpha] }); await flush(); ws.want([alpha.id]); await flush();
   const raw = (id: string, parentId: string | null, activity: string, outcome: string | null = null) => ({ id, title: id, projectId: alpha.id, directory: alpha.directory, parentId, createdAt: 1, updatedAt: 1, archivedAt: null, worktree: null, activity, outcome, items: [] });
-  const emit = (activity: string, outcome: string | null = null) => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state: 'ready', coverage: [{ directory: alpha.directory, state: 'ready' }], sessions: [raw('A', null, 'idle'), raw('K1', 'A', activity, outcome)] });
+  /** `state`: the stream state; `coverage`: this snapshot's directory coverage. A loading snapshot carries no rows. */
+  const emit = (activity: string, outcome: string | null = null, state = 'ready', coverage = state === 'ready' ? 'ready' : 'loading') => calls.findLast((c) => c.kind === 'sessions')!.cb({ kind: 'sessions', projectId: alpha.id, state, coverage: [{ directory: alpha.directory, state: coverage }], sessions: state === 'ready' ? [raw('A', null, 'idle'), raw('K1', 'A', activity, outcome)] : [] });
   const baselines = new ExecutionBaselines();
   const roster = (rows: RunRow[]) => rosterFor(input({ census: censusFor('A', alpha.directory, ws.snapshot), liveSeq: ws.snapshot.seq, runs: panel(readOf(rows), [], { baselines }) }))!;
   return { ws, emit, roster };
@@ -536,5 +537,90 @@ test('P2: a terminal run with the SDK still holding that execution\'s Running sn
   emit('idle'); ({ r, e } = entry([done]));
   assert.equal(e.now, null);
   assert.equal(r.featured.filter((x) => x.runId).length, 0, 'once idle again it folds back into the earlier list');
+  ws.dispose();
+});
+
+test('coverage gate: retained host rows during a reload or incomplete coverage give no current activity; recorded Running stays', async () => {
+  const records = [rec('A', null), rec('W1', 'A', { activity: 'waiting-permission' }), rec('H1', 'A', { activity: 'running' }), rec('K1', 'A', { activity: 'waiting-question' })];
+  const live = run('running', { childSessionId: 'K1' });
+  const d = detail([items[0], items[1], items[2]]);
+  const facts = planFacts(plan, { state: 'ready', value: d }, plan.sourceId);
+  const roster = (coverage: { directory: string; state: 'ready' | 'loading' | 'error' }[] | null) =>
+    rosterFor(input({ facts, census: censusFor('A', alpha.directory, snap(records, {}, coverage)), runs: panel(readOf([live])) }))!;
+  // Full coverage: the host words are current.
+  const full = roster([{ directory: alpha.directory, state: 'ready' }]);
+  assert.deepEqual(full.summary.map((s) => s.text), ['2 waiting on you', '1 running']);
+  assert.ok(!full.notes.some((n) => n.kind === 'host-activity-unavailable'), 'no note in the normal state');
+  for (const coverage of [[{ directory: alpha.directory, state: 'loading' as const }], [{ directory: alpha.directory, state: 'error' as const }], null]) {
+    const r = roster(coverage);
+    const all = [...r.featured, ...r.earlier];
+    assert.ok(!r.summary.some((s) => s.kind === 'waiting'), `no "waiting on you" from retained rows (${JSON.stringify(coverage)})`);
+    assert.deepEqual(r.summary.map((s) => s.text), ['1 running'], 'only the recorded Running fact is counted');
+    const k1 = all.find((e) => e.runId === live.id)!;
+    assert.deepEqual([k1.ran.kind, k1.ran.label], ['active', 'Running'], 'the recorded Running fact does not expire');
+    assert.equal(all.find((e) => e.sessionId === 'W1'), undefined, 'a host-only waiting child is not shown as current');
+    assert.equal(all.find((e) => e.sessionId === 'H1'), undefined, 'a host-only running child is not shown as current');
+    assert.ok(r.notes.some((n) => n.kind === 'host-activity-unavailable'), 'withheld activity is disclosed');
+    // Identity stays: navigation to a listed child is unaffected.
+    assert.equal(k1.openable, true);
+  }
+});
+
+test('coverage gate: idle-now and running-again need current coverage too; a task-linked host-only child stays, without a current word', async () => {
+  const { ws, emit, roster } = await oneSubscription();
+  const done = run('succeeded', { childSessionId: 'K1' });
+  emit('idle'); roster([done]);
+  emit('running'); assert.ok(roster([done]).featured.find((e) => e.runId === done.id)?.now, 'resumed with coverage');
+  // A periodic reload of that complete snapshot keeps it current: still running again.
+  emit('running', null, 'loading');
+  assert.ok(roster([done]).featured.find((e) => e.runId === done.id)?.now, 'kept through a reload of a complete snapshot');
+  // Genuine loss (failed coverage) withholds it: no "again", not counted running.
+  emit('running', null, 'ready', 'error');
+  const r = roster([done]);
+  assert.equal([...r.featured, ...r.earlier].find((e) => e.runId === done.id)!.now, null);
+  assert.ok(!r.summary.some((s) => s.kind === 'running'));
+  ws.dispose();
+  // A host-only child with explicitly reported tasks keeps its row (identity, tasks) but no current word.
+  const d = detail([items[0], items[1], items[2]]);
+  const host = censusFor('A', alpha.directory, snap([rec('A', null), rec('C1', 'A', { activity: 'running' })], {}, [{ directory: alpha.directory, state: 'loading' }]));
+  const c1 = rosterFor(input({ census: host, facts: planFacts(plan, { state: 'ready', value: d }, plan.sourceId), runs: panel(readOf([])) }))!.featured.find((e) => e.sessionId === 'C1')!;
+  assert.deepEqual([c1.ran.kind, c1.ran.label, c1.accepted?.tasks.length], ['unknown', 'Current activity unavailable', 2]);
+});
+
+test('coverage gate: a same-subscription reload of a complete snapshot stays current; loss, incomplete retained rows and failed reload coverage do not', async () => {
+  const { ws, emit, roster } = await oneSubscription();
+  const live = run('running', { childSessionId: 'K1' });
+  const look = () => { const r = roster([live]); return { waiting: r.summary.some((x) => x.kind === 'waiting'), note: r.notes.some((n) => n.kind === 'host-activity-unavailable'), ran: [...r.featured, ...r.earlier].find((e) => e.runId === live.id)!.ran }; };
+  emit('waiting-question');
+  assert.deepEqual([look().waiting, look().note], [true, false]);
+  // The host's periodic loading → ready reload of the same subscription: rows kept from a complete
+  // ready snapshot stay current, with no note; then the ready snapshot arrives as usual.
+  emit('waiting-question', null, 'loading');
+  assert.deepEqual([look().waiting, look().note, look().ran.label], [true, false, 'Waiting for an answer'], 'no flicker on a periodic reload');
+  emit('waiting-question');
+  assert.deepEqual([look().waiting, look().note], [true, false]);
+  // A reload reporting a failed directory is loss: withheld and disclosed; recorded Running stays.
+  emit('waiting-question', null, 'loading', 'error');
+  assert.deepEqual([look().waiting, look().note, look().ran.label], [false, true, 'Running']);
+  // A ready snapshot that is itself incomplete, and a reload of it, are gated too.
+  emit('waiting-question', null, 'ready', 'loading');
+  assert.deepEqual([look().waiting, look().note], [false, true]);
+  emit('waiting-question', null, 'loading');
+  assert.deepEqual([look().waiting, look().note], [false, true], 'retained rows of an incomplete snapshot are not current');
+  // A refused stream shows no rows at all, so nothing current.
+  emit('waiting-question', null, 'error', 'error');
+  assert.equal(look().waiting, false);
+  ws.dispose();
+});
+
+test('coverage gate: a new subscription has no current activity until its first complete ready snapshot', async () => {
+  const { ws, emit, roster } = await oneSubscription();
+  const live = run('running', { childSessionId: 'K1' });
+  emit('waiting-question', null, 'loading');
+  const r = roster([live]);
+  assert.ok(!r.summary.some((x) => x.kind === 'waiting'));
+  assert.equal([...r.featured, ...r.earlier].find((e) => e.runId === live.id)!.ran.label, 'Running');
+  emit('waiting-question');
+  assert.ok(roster([live]).summary.some((x) => x.kind === 'waiting'));
   ws.dispose();
 });

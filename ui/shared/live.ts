@@ -32,8 +32,13 @@ export interface LiveSnapshot {
   projectsState: LoadState | 'off';
   projects: LiveProject[];
   worktrees: Map<string, { state: LoadState; records: KnownWorktree[] }>;
-  /** `coverage`: the host's per-directory session coverage; absent from older fixtures/hosts. */
-  sessions: Map<string, { state: LoadState; records: LiveSession[]; coverage?: DirectoryCoverage[] }>;
+  /**
+   * `coverage`: the host's per-directory session coverage of this snapshot; absent from older
+   * fixtures/hosts. `reload`: present only while a loading snapshot of the same subscription keeps
+   * the rows of its last ready snapshot; `complete` says whether that ready snapshot had complete
+   * coverage (census.ts decides whether the retained rows are still current).
+   */
+  sessions: Map<string, { state: LoadState; records: LiveSession[]; coverage?: DirectoryCoverage[]; reload?: { complete: boolean } }>;
   /** Projects that wanted live coverage but were left out by the subscription cap. */
   capped: string[];
   /** Monotonic count of host activity transitions this workspace observed (never reset by restart). */
@@ -259,12 +264,14 @@ export class LiveWorkspace {
       // sequence numbers of transitions seen here (bounded like the host's own session cap).
       const seen = new Map<string, { activity: Activity; idleSeq?: number; activeSeq?: number }>();
       let lastReady: LiveSession[] | null = null;
+      let lastReadyComplete = false;
       sub.release = this.host.onSessions(id, (s) => {
         if (this.subs.get(id) !== sub) return;
         const coverage = Array.isArray(s.coverage) ? s.coverage.map((c) => ({ directory: c.directory, state: c.state })) : undefined;
         if (s.state !== 'ready') {
           // A reload keeps the last ready rows (as not current, census.ts); a failure shows none.
-          this.snap.sessions.set(id, { state: s.state, records: s.state === 'loading' && lastReady ? lastReady : [], coverage });
+          const reload = s.state === 'loading' && lastReady !== null;
+          this.snap.sessions.set(id, { state: s.state, records: reload ? lastReady! : [], coverage, ...(reload ? { reload: { complete: lastReadyComplete } } : {}) });
           this.onChange();
           return;
         }
@@ -278,6 +285,7 @@ export class LiveWorkspace {
         });
         if (seen.size > SEEN_LIMIT) { const listed = new Set(s.sessions.map((r) => r.id)); for (const id of seen.keys()) if (!listed.has(id)) seen.delete(id); }
         lastReady = records;
+        lastReadyComplete = !!coverage && coverage.every((c) => c.state === 'ready');
         // Absent coverage (an older host) cannot establish a complete census.
         this.snap.sessions.set(id, { state: 'ready', records, coverage });
         this.snap.seq = this.seq;

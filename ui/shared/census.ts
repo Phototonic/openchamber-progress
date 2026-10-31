@@ -72,12 +72,16 @@ export function censusFor(rootId: string | null | undefined, directory: string |
   if (!project) return { state: 'unavailable', rootId, reason: 'no-project' };
   if (live.capped.includes(project.id)) return { state: 'unavailable', rootId, reason: 'not-watched' };
   const entry = live.sessions.get(project.id);
-  // A loading stream with retained rows is the host reloading the same subscription (live.ts):
-  // the rows stay listed, but as partial coverage, so nothing in them is current meanwhile.
+  // A loading stream with retained rows is the host reloading the same subscription (live.ts): the
+  // rows stay listed, and stay current only if their ready snapshot was complete (below).
   if (!entry || (entry.state === 'loading' && !entry.records.length)) return { state: 'loading', rootId };
   if (entry.state === 'error') return { state: 'unavailable', rootId, reason: 'error' };
   const gaps = new Set<CensusGap>();
-  if (entry.state !== 'ready' || !entry.coverage || entry.coverage.some((c) => c.state !== 'ready')) gaps.add('coverage');
+  // Current: a ready snapshot with complete coverage, or the host's periodic loading → ready reload
+  // of the same subscription keeping rows of such a snapshot, while no directory reports failure.
+  // A failed or absent coverage, an incomplete retained snapshot or a refused stream is a gap.
+  const reloadOfComplete = entry.state === 'loading' && entry.reload?.complete === true && !!entry.coverage && !entry.coverage.some((c) => c.state === 'error');
+  if (!reloadOfComplete && (entry.state !== 'ready' || !entry.coverage || entry.coverage.some((c) => c.state !== 'ready'))) gaps.add('coverage');
   let records = entry.records;
   if (records.length > CENSUS_LIMITS.records) { gaps.add('records'); records = records.slice(0, CENSUS_LIMITS.records); }
   const byId = new Map<string, LiveSession | null>();

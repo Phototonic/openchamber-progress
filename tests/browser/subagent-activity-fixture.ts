@@ -93,6 +93,8 @@ const snapshot=q=>q.kind==='projects'?{kind:'projects',state:qa.ws.projectsState
 qa.push=(kind)=>{for(const x of qa.subs.values())if(!kind||x.query.kind===kind)send(x.surface,{type:'workspace',payload:{subscriptionId:x.id,snapshot:snapshot(x.query)}});return qa.subs.size};
 // The native host's periodic reload of the same subscription: loading, then ready with unchanged values.
 qa.reload=()=>{for(const x of qa.subs.values())if(x.query.kind==='sessions'){send(x.surface,{type:'workspace',payload:{subscriptionId:x.id,snapshot:{kind:'sessions',projectId:x.query.projectId,state:'loading',coverage:(qa.ws.coverage[x.query.projectId]||[]).map(c=>({...c,state:'loading'})),sessions:[]}}});send(x.surface,{type:'workspace',payload:{subscriptionId:x.id,snapshot:snapshot(x.query)}});}return true};
+// The loading half of that reload only (the ready half follows with qa.push('sessions')).
+qa.reloadStart=()=>{for(const x of qa.subs.values())if(x.query.kind==='sessions')send(x.surface,{type:'workspace',payload:{subscriptionId:x.id,snapshot:{kind:'sessions',projectId:x.query.projectId,state:'loading',coverage:(qa.ws.coverage[x.query.projectId]||[]).map(c=>({...c,state:'loading'})),sessions:[]}}});return true};
 qa.set=(id,patch)=>{for(const list of Object.values(qa.ws.sessions)){const r=list.find(x=>x.id===id);if(r)Object.assign(r,patch)}qa.push('sessions');return true};
 qa.context=(id,directory='/fixture/Alpha')=>{qa.session=id;qa.directory=directory;for(const s of surfaces){ready(s);send(s,{type:'directory',payload:{directory}});send(s,{type:'session',payload:{session:id?{id}:null}});}};
 qa.connection=(connected)=>{qa.connected=connected;for(const s of surfaces)send(s,{type:'connection',payload:{connection:conn()}});return true};
