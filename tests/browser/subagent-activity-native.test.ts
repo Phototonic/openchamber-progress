@@ -252,3 +252,11 @@ test('actual frame reader rejects a hidden or transitioning frame', () => {
   animation = true; assert.equal(read().ready, false);
   animation = false; blocked = true; assert.equal(read().ready, false);
 });
+
+test('runtime failures keep only the harness\'s own fixed messages; anything else is a generic code', async () => {
+  const { runtimeFailure } = await import('./subagent-activity-harness.ts');
+  for (const kept of ['select B: non-actionable-target', 'select B: host-selection-timeout', 'select B: reveal sessions: non-actionable-target', 'return A: host-selection-timeout', 'work-status open: non-actionable-target', 'native-screenshot-state-not-stable', 'current-plan-roster-readiness-timeout', 'CDP deadline', 'CDP request failed', 'CDP evaluation failed'])
+    assert.equal(runtimeFailure(new Error(kept)), kept, kept);
+  for (const other of [new Error('ENOENT: /home/someone/private/file'), new Error('select B: something else'), new Error('Synthetic fixed response.'), new TypeError('x is not a function'), 'a string', null, { message: 'CDP deadline' }])
+    assert.equal(runtimeFailure(other), 'other-runtime-failure', String((other as any)?.message ?? other));
+});

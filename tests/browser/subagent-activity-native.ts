@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startActivityHost } from './subagent-activity-host.ts';
-import { nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type RosterIds } from './subagent-activity-harness.ts';
+import { nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, runtimeFailure, screenshotFrame, screenshotSection, stableScreenshot, type RosterIds } from './subagent-activity-harness.ts';
 
 export async function nativeProductionViews(root: string, env: Record<string, string>, ids: RosterIds, evidence: any, activity: { start(): Promise<void>; stop(): Promise<void> }) {
   const host = await startActivityHost(root, env, ids.a, true);
@@ -200,6 +200,8 @@ export async function nativeProductionViews(root: string, env: Record<string, st
   } catch (error) {
     // This module's own fixed assertion text (no page text or IDs), so a failure names its check.
     if (error instanceof assert.AssertionError) evidence.assertion = error.message;
+    // Other failures: the harness's own fixed message only (allowlist), else a generic code.
+    else evidence.runtimeFailure = runtimeFailure(error);
     for (const f of frames) { const t = await evaluate('window.__u4ObservationTrace??null', f).catch(() => null); if (t) evidence.observationTrace = t; }
     for (const f of frames) evidence.boundRows = await evaluate(`[...document.querySelectorAll(${JSON.stringify(`[data-testid="subagent-activity"] [data-session="${ids.bound}"]`)})].map(r=>({ran:r.dataset.ran,now:r.dataset.now??null,featured:!r.closest('[data-testid="observed-more"]')}))`, f).then((v: any) => [...(evidence.boundRows ?? []), { surface: 'frame', rows: v }]).catch(() => evidence.boundRows);
     throw error;

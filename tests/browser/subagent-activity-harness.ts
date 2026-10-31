@@ -162,3 +162,17 @@ export function nativeActions(adapter: NativeAdapter) {
   };
   return { click, select, selected, actionable: (targets: string) => point(targets, false) };
 }
+
+/**
+ * Evidence text for a non-assertion failure: only this harness's own fixed messages are kept
+ * (they carry no page text, IDs or paths); anything else is a generic code.
+ */
+const RUNTIME_PLAIN = new Set(['CDP connection deadline', 'CDP deadline', 'CDP evaluation failed', 'CDP request failed', 'CDP unavailable',
+  'current-plan-roster-readiness-timeout', 'native-screenshot-state-not-stable', 'native-renderer-startup', 'native-application-not-ready',
+  'fixture-rail-not-discovered', 'fixture-guest-not-mounted']);
+const RUNTIME_LABELS = ['select B', 'return A', 'draft selection', 'work-status open', 'native page open', 'reopen native rail', 'initial root', 'fixture rail'];
+const RUNTIME_LABELLED = new Set(RUNTIME_LABELS.flatMap((label) => ['', ': reveal sessions'].flatMap((via) => ['non-actionable-target', 'host-selection-timeout'].map((code) => `${label}${via}: ${code}`))));
+export function runtimeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : null;
+  return message !== null && (RUNTIME_PLAIN.has(message) || RUNTIME_LABELLED.has(message)) ? message : 'other-runtime-failure';
+}
