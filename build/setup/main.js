@@ -358,7 +358,17 @@ function validBlockerAnnotation(value, revision) {
   return Object.keys(b).every((k) => ["category", "reason", "nextAction", "reportedRevision", "reportedAt", "reporterSessionId", "attributedSessionId", "mode", "validAtRevision"].includes(k)) && (b.category === undefined || typeof b.category === "string" && BLOCKER_CATEGORIES.includes(b.category)) && (b.reason === undefined || blockerText(b.reason)) && (b.nextAction === undefined || blockerText(b.nextAction)) && Number.isSafeInteger(b.reportedRevision) && Number(b.reportedRevision) > 0 && Number(b.reportedRevision) <= revision && Number.isSafeInteger(b.validAtRevision) && b.validAtRevision === revision && typeof b.reportedAt === "string" && Number.isFinite(Date.parse(b.reportedAt)) && new Date(b.reportedAt).toISOString() === b.reportedAt && identifier(b.reporterSessionId) && identifier(b.attributedSessionId) && (b.mode === "direct" && b.reporterSessionId === b.attributedSessionId || b.mode === "parent-relay" && b.reporterSessionId !== b.attributedSessionId);
 }
 function parseRequest(value) {
+  const r = parseReportRequest(value);
+  requireProgress(r.op !== "handoff");
+  return r;
+}
+function parseReportRequest(value) {
   validRequest(value && typeof value === "object" && !Array.isArray(value), "request");
+  if (value.op === "handoff") {
+    const r2 = value;
+    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome"].includes(k)) && identifier(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
+    return { op: "handoff", oid: r2.oid, summary: r2.summary, outcome: r2.outcome };
+  }
   const r = value;
   const fields = {
     start: ["title", "items", "source"],
@@ -433,7 +443,7 @@ function parseRequest(value) {
 }
 var VALIDATION_HINTS = {
   request: "Send one request object.",
-  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.",
+  op: "Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind, finish or handoff.",
   plan: "Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.",
   fields: "Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.",
   oid: "Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.",
@@ -475,22 +485,15 @@ function verifyStore(store, b) {
 }
 
 // setup/lifecycle.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync } from "node:fs";
 import path5 from "node:path";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
-// shared/assignment-binding.ts
-function currentBinding(value, plan, itemId) {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const b = value;
-  const item = plan.items.find((i) => i.id === itemId);
-  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
-  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier(b.childSessionId) && identifier(b.messageId) && identifier(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
-}
+// shared/subagent-runs.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -625,6 +628,1179 @@ function mutateCleanup(db, file, action, value, transaction) {
         db.prepare(`DELETE FROM ${table} WHERE source=? AND ${table === "plans" ? "id" : "plan"}=?`).run(r.source, r.plan);
     return receipt;
   });
+}
+
+// shared/canonical.ts
+function canonical(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+// shared/subagent-runs.ts
+var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, observationEpochs: 32, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
+var definitions2 = {
+  runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
+  runs_observation_epoch: "CREATE TABLE runs_observation_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch INTEGER NOT NULL, invalid_through INTEGER NOT NULL)",
+  runs_rows: "CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
+  runs_parent: "CREATE INDEX runs_parent ON runs_rows(source,parent,at)",
+  runs_child: "CREATE INDEX runs_child ON runs_rows(source,child,at)",
+  runs_candidates: "CREATE TABLE runs_candidates(source TEXT NOT NULL, child TEXT NOT NULL, generation INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), PRIMARY KEY(source,child))",
+  runs_jobs: "CREATE TABLE runs_jobs(source TEXT NOT NULL, root TEXT NOT NULL, request_id TEXT NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','running','complete','partial','failed')), claim TEXT, token TEXT, reason TEXT, PRIMARY KEY(source,root))",
+  runs_intents: "CREATE TABLE runs_intents(source TEXT NOT NULL, parent TEXT NOT NULL, plan TEXT NOT NULL, oid TEXT NOT NULL, generation INTEGER NOT NULL, dispatch TEXT, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=16384), PRIMARY KEY(source,parent))",
+  runs_claims: "CREATE TABLE runs_claims(source TEXT NOT NULL, child TEXT NOT NULL, execution INTEGER NOT NULL, oid TEXT NOT NULL, hash TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=2048), PRIMARY KEY(source,child,execution), UNIQUE(source,child,oid))",
+  runs_retired: "CREATE TABLE runs_retired(source TEXT NOT NULL, child TEXT NOT NULL, execution INTEGER NOT NULL, oid TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(source,child,oid))",
+  runs_recovery_work: "CREATE TABLE runs_recovery_work(source TEXT NOT NULL, root TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4194304), PRIMARY KEY(source,root))",
+  runs_recovery_lease: "CREATE TABLE runs_recovery_lease(source TEXT NOT NULL, location TEXT NOT NULL, producer TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(source,location))",
+  runs_capture_epoch: `CREATE TRIGGER runs_capture_epoch AFTER UPDATE OF enabled ON meta WHEN NEW.enabled != OLD.enabled BEGIN UPDATE runs_format SET generation=generation+1,revision=revision+1 WHERE singleton=1; UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1; UPDATE runs_jobs SET state='failed',claim=NULL,token=lower(hex(randomblob(16))),reason='capture-disabled' WHERE state IN('pending','running'); DELETE FROM runs_candidates; UPDATE receipts SET receipt=json_set(receipt,'$.delegation.state','retired','$.delegation.reason','capture-disabled') WHERE EXISTS(SELECT 1 FROM runs_intents i WHERE i.source=receipts.source AND i.plan=receipts.plan AND i.oid=receipts.oid); DELETE FROM runs_intents; END`,
+  runs_plan_delete: "CREATE TRIGGER runs_plan_delete AFTER DELETE ON plans BEGIN UPDATE runs_rows SET payload=json_set(payload,'$.planContext',json('null'),'$.accepted',json('null')) WHERE source=OLD.source AND (json_extract(payload,'$.planContext.plan')=OLD.id OR json_extract(payload,'$.accepted.plan')=OLD.id); UPDATE runs_format SET revision=revision+1 WHERE singleton=1; END",
+  runs_intent_delete: "CREATE TRIGGER runs_intent_delete BEFORE DELETE ON plans BEGIN DELETE FROM runs_intents WHERE source=OLD.source AND plan=OLD.id; END",
+  runs_intent_close: "CREATE TRIGGER runs_intent_close AFTER UPDATE ON plans WHEN json_extract(NEW.snapshot,'$.lifecycle')!='active' BEGIN UPDATE receipts SET receipt=json_set(receipt,'$.delegation.state','retired','$.delegation.reason','closed') WHERE source=NEW.source AND plan=NEW.id AND oid IN(SELECT oid FROM runs_intents WHERE source=NEW.source AND plan=NEW.id); DELETE FROM runs_intents WHERE source=NEW.source AND plan=NEW.id; END",
+  runs_progress_change: "CREATE TRIGGER runs_progress_change AFTER UPDATE ON plans BEGIN UPDATE runs_format SET revision=revision+1 WHERE singleton=1; END"
+};
+var normalized2 = (s) => s.trim().replace(/\s+/g, " ");
+var integer = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
+var obj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function runsInstalled(db) {
+  const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (!rows.length)
+    return false;
+  requireProgress(rows.length === Object.keys(definitions2).length, "schema");
+  for (const r of rows)
+    requireProgress(typeof r.name === "string" && definitions2[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(definitions2[r.name]), "schema");
+  const f = db.prepare("SELECT * FROM runs_format").all();
+  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === 1 && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
+  const epochs = db.prepare("SELECT * FROM runs_observation_epoch").all();
+  requireProgress(epochs.length === 1 && epochs[0].singleton === 1 && integer(epochs[0].epoch) && integer(epochs[0].invalid_through) && Number(epochs[0].invalid_through) <= Number(epochs[0].epoch), "schema");
+  return true;
+}
+function installRuns(db) {
+  const installed = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (installed.length && !installed.some((r) => r.name === "runs_observation_epoch")) {
+    const prior = { ...definitions2 };
+    delete prior.runs_observation_epoch;
+    prior.runs_capture_epoch = prior.runs_capture_epoch.replace(" UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;", "");
+    requireProgress(installed.length === Object.keys(prior).length && installed.every((r) => typeof r.name === "string" && prior[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(prior[r.name])), "schema");
+    db.exec(definitions2.runs_observation_epoch);
+    db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+    db.exec("DROP TRIGGER runs_capture_epoch");
+    db.exec(definitions2.runs_capture_epoch);
+  }
+  if (runsInstalled(db))
+    return;
+  for (const sql of Object.values(definitions2))
+    db.exec(sql);
+  db.exec("INSERT INTO runs_format VALUES(1,1,0,0,0)");
+  db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+}
+function runControl(db) {
+  requireProgress(runsInstalled(db), "schema");
+  const r = db.prepare("SELECT enabled,generation FROM meta JOIN runs_format USING(singleton)").get();
+  return { enabled: r.enabled === 1, generation: Number(r.generation) };
+}
+function bump(db) {
+  db.exec("UPDATE runs_format SET revision=revision+1 WHERE singleton=1");
+}
+function loss(db) {
+  db.exec("UPDATE runs_format SET loss=1,revision=revision+1 WHERE singleton=1");
+}
+function observationEpoch(db) {
+  return Number(db.prepare("SELECT epoch FROM runs_observation_epoch WHERE singleton=1").get().epoch);
+}
+function observationInterrupted(db, epoch) {
+  return epoch <= Number(db.prepare("SELECT invalid_through FROM runs_observation_epoch WHERE singleton=1").get().invalid_through);
+}
+function beginObservation(db) {
+  db.exec("UPDATE runs_observation_epoch SET epoch=epoch+1 WHERE singleton=1");
+  bump(db);
+  return observationEpoch(db);
+}
+function runCaptureUnavailable(db) {
+  if (runsInstalled(db)) {
+    db.exec("UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1");
+    loss(db);
+  }
+}
+function claimValue(value) {
+  requireProgress(obj(value) && Object.keys(value).length === 6 && Object.keys(value).every((k) => ["oid", "outcome", "summary", "reportedAt", "sessionId", "association"].includes(k)) && identifier(value.oid) && identifier(value.sessionId) && ["done", "partial", "blocked"].includes(value.outcome) && typeof value.summary === "string" && value.summary.trim().length > 0 && value.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(value.summary) && integer(value.reportedAt) && ["execution", "session-only"].includes(value.association), "corrupt");
+  return { oid: value.oid, outcome: value.outcome, summary: value.summary, reportedAt: value.reportedAt, sessionId: value.sessionId, association: value.association };
+}
+function startEvent(value) {
+  requireProgress(Array.isArray(value) && value.length === 2 && identifier(value[0]) && integer(value[1]), "corrupt");
+  return value;
+}
+function epochList(value) {
+  requireProgress(Array.isArray(value) && value.length <= RUN_LIMITS.observationEpochs && value.every(integer) && new Set(value).size === value.length, "corrupt");
+  return value;
+}
+function factContinuity(startEpochs, factEpochs, startSequence, factSequence) {
+  return factEpochs.some((epoch) => startEpochs.includes(epoch)) || startSequence !== undefined && factSequence === startSequence + 1;
+}
+function stagedClaim(value) {
+  const { _epochs, ...claim } = JSON.parse(value);
+  return { claim: claimValue(claim), epochs: _epochs === undefined ? [] : epochList(_epochs) };
+}
+function claimEpochs(db, r) {
+  const value = db.prepare("SELECT json_extract(payload,'$._claimEpochs') AS epochs FROM runs_rows WHERE id=?").get(r.id);
+  return value?.epochs ? epochList(JSON.parse(String(value.epochs))) : [];
+}
+function eventEpochs(c, kind) {
+  const list = c[kind === "start" ? "startEpochs" : "endEpochs"], single = c[kind === "start" ? "startEpoch" : "endEpoch"];
+  return list !== undefined ? epochList(list) : single !== undefined ? epochList([single]) : [];
+}
+function candidateStarts(c) {
+  return [...Object.values(c.startEvidence ?? {}), ...c.start ? [{ event: c.start, epochs: eventEpochs(c, "start"), ambiguous: c.ambiguous }] : []].sort((a, b) => a.event.sequence - b.event.sequence);
+}
+function dropCandidateStart(c, id) {
+  if (c.start?.id === id) {
+    c.start = null;
+    c.ambiguous = false;
+  }
+  if (c.startEvidence)
+    delete c.startEvidence[id];
+}
+function mergeEpochs(db, known, observed) {
+  const merged = [...new Set([...known, ...observed])];
+  if (merged.length > RUN_LIMITS.observationEpochs) {
+    runCaptureUnavailable(db);
+    return known;
+  }
+  return merged;
+}
+function runEventEpochs(db, r, kind) {
+  const value = db.prepare(`SELECT json_extract(payload,'$._${kind}Epochs') AS epochs,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?`).get(r.id);
+  return value?.epochs ? epochList(JSON.parse(String(value.epochs))) : integer(value?.epoch) ? [Number(value.epoch)] : [];
+}
+function claimFence(value) {
+  requireProgress(Array.isArray(value) && value.length === 2 && identifier(value[0]) && typeof value[1] === "string" && /^[a-f0-9]{64}$/.test(value[1]), "corrupt");
+  return value;
+}
+function row(value) {
+  requireProgress(typeof value === "string" && Buffer.byteLength(value) <= RUN_LIMITS.dtoBytes, "corrupt");
+  let r;
+  try {
+    r = JSON.parse(value);
+  } catch {
+    requireProgress(false, "corrupt");
+  }
+  requireProgress(obj(r) && identifier(r.id) && identifier(r.source) && identifier(r.parentSessionId) && (r.childSessionId === null || identifier(r.childSessionId)) && obj(r.ran) && ["unknown", "running", "succeeded", "failed", "interrupted"].includes(r.ran.state), "corrupt");
+  if (Object.hasOwn(r, "_retiredClaim")) {
+    requireProgress(r.childSessionId !== null, "corrupt");
+    claimFence(r._retiredClaim);
+    delete r._retiredClaim;
+  }
+  if (Object.hasOwn(r, "_startEvent")) {
+    requireProgress(r.childSessionId !== null && r.ran.startedAt !== null, "corrupt");
+    startEvent(r._startEvent);
+    delete r._startEvent;
+  }
+  if (Object.hasOwn(r, "_epoch")) {
+    requireProgress(integer(r._epoch), "corrupt");
+    delete r._epoch;
+  }
+  for (const key of ["_startEpochs", "_endEpochs", "_claimEpochs"])
+    if (Object.hasOwn(r, key)) {
+      epochList(r[key]);
+      delete r[key];
+    }
+  if (Object.hasOwn(r, "_refresh")) {
+    requireProgress(Array.isArray(r._refresh) && r._refresh.length === 2 && integer(r._refresh[0]) && [0, 1, false, true].includes(r._refresh[1]), "corrupt");
+    delete r._refresh;
+  }
+  const keys = (v, allowed) => obj(v) && Object.keys(v).length === allowed.length && Object.keys(v).every((k) => allowed.includes(k));
+  const time = (v) => v === null || integer(v);
+  requireProgress(keys(r, ["id", "kind", "source", "parentSessionId", "childSessionId", "tool", "agent", "description", "dispatch", "planContext", "ran", "claimed", "accepted"]) && ["dispatch", "historical-session"].includes(r.kind) && [null, "subagent", "task"].includes(r.tool) && (r.agent === null || typeof r.agent === "string" && r.agent.length <= 80) && (r.description === null || typeof r.description === "string" && r.description.length <= 200), "corrupt");
+  requireProgress(r.dispatch === null || keys(r.dispatch, ["messageId", "callId", "at"]) && identifier(r.dispatch.messageId) && identifier(r.dispatch.callId) && integer(r.dispatch.at), "corrupt");
+  requireProgress(r.planContext === null || keys(r.planContext, ["plan", "revision", "observedAt"]) && identifier(r.planContext.plan) && integer(r.planContext.revision) && integer(r.planContext.observedAt), "corrupt");
+  requireProgress(keys(r.ran, ["state", "dispatchState", "startedAt", "endedAt", "updatedAt", "provenance", "eventId", "sequence", "errorType", "interruptionReason"]) && ["pending", "returned", "failed-unconfirmed", "unconfirmed", "historical"].includes(r.ran.dispatchState) && ["dispatch", "native-event", "native-session"].includes(r.ran.provenance) && time(r.ran.startedAt) && time(r.ran.endedAt) && integer(r.ran.updatedAt) && (r.ran.eventId === null || identifier(r.ran.eventId)) && time(r.ran.sequence) && (r.ran.errorType === null || r.ran.errorType === safeErrorType(r.ran.errorType)) && [null, "user", "shutdown", "superseded", "inactivity", "unknown"].includes(r.ran.interruptionReason), "corrupt");
+  if (r.claimed)
+    claimValue(r.claimed);
+  if (r.accepted)
+    requireProgress(keys(r.accepted, ["plan", "revision", "items", "omittedItems"]) && identifier(r.accepted.plan) && integer(r.accepted.revision) && integer(r.accepted.omittedItems) && Array.isArray(r.accepted.items) && r.accepted.items.length <= 50 && r.accepted.items.every((i) => keys(i, ["id", "status"]) && identifier(i.id) && ["pending", "working", "blocked", "done", "skipped"].includes(i.status)), "corrupt");
+  return r;
+}
+function save(db, r, retiredClaim, provenStart, evidence) {
+  const existing = db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$._startEpochs') AS start_epochs,json_extract(payload,'$._endEpochs') AS end_epochs,json_extract(payload,'$.ran.eventId') AS event,json_extract(payload,'$._refresh') AS refresh FROM runs_rows WHERE id=?").get(r.id);
+  const fence = retiredClaim ?? (existing?.fence ? claimFence(JSON.parse(String(existing.fence))) : undefined);
+  const start = provenStart ?? (existing?.start ? startEvent(JSON.parse(String(existing.start))) : undefined);
+  const startEpochs = evidence?.start ?? (existing?.start_epochs ? epochList(JSON.parse(String(existing.start_epochs))) : undefined);
+  const endEpochs = r.ran.endedAt === null ? undefined : evidence?.end ?? (existing?.event === r.ran.eventId && existing?.end_epochs ? epochList(JSON.parse(String(existing.end_epochs))) : undefined);
+  const refresh = existing?.refresh ? JSON.parse(String(existing.refresh)) : undefined;
+  const claims = r.claimed ? evidence?.claim ?? claimEpochs(db, r) : undefined;
+  const payload = { ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...claims ? { _claimEpochs: claims } : {}, ...refresh ? { _refresh: [refresh[0], Number(refresh[1])] } : {} };
+  let text = JSON.stringify(payload);
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    r.agent = null;
+    r.description = null;
+    r.accepted = null;
+    payload.agent = null;
+    payload.description = null;
+    payload.accepted = null;
+    loss(db);
+    text = JSON.stringify(payload);
+  }
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    const proof = claims?.find((epoch) => startEpochs?.includes(epoch));
+    if (payload._startEpochs)
+      payload._startEpochs = proof === undefined ? [] : [proof];
+    if (payload._claimEpochs)
+      payload._claimEpochs = proof === undefined ? [] : [proof];
+    if (payload._endEpochs)
+      payload._endEpochs = [];
+    runCaptureUnavailable(db);
+    text = JSON.stringify(payload);
+  }
+  if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    runCaptureUnavailable(db);
+    return false;
+  }
+  row(text);
+  db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
+  bump(db);
+  return true;
+}
+function retainedCount(db) {
+  return Number(db.prepare("SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n").get().n);
+}
+function capacity(db, parent) {
+  for (let attempts = 0;attempts < 4; attempts++) {
+    const fullParent = parent && Number(db.prepare("SELECT count(*) AS n FROM runs_rows WHERE source=? AND parent=?").get(parent.source, parent.parent).n) >= RUN_LIMITS.parent;
+    if (!fullParent && retainedCount(db) < RUN_LIMITS.total)
+      return true;
+    const victim = db.prepare(`SELECT id,source,child,payload FROM runs_rows WHERE terminal=1 AND NOT EXISTS(SELECT 1 FROM runs_intents i WHERE i.dispatch=runs_rows.id)
+      AND (child IS NULL OR NOT EXISTS(SELECT 1 FROM runs_rows d WHERE d.source=runs_rows.source AND d.parent=runs_rows.child)
+        OR EXISTS(SELECT 1 FROM runs_rows edge WHERE edge.source=runs_rows.source AND edge.parent=runs_rows.parent AND edge.child=runs_rows.child AND edge.id!=runs_rows.id))
+      ${fullParent ? "AND source=? AND parent=?" : ""} ORDER BY at,id LIMIT 1`).get(...fullParent ? [parent.source, parent.parent] : []);
+    if (!victim) {
+      loss(db);
+      return false;
+    }
+    const r = row(victim.payload);
+    const dropped = JSON.parse(String(victim.payload))._retiredClaim;
+    if ((r.claimed || dropped) && r.childSessionId) {
+      const fences = new Map(dropped ? [dropped] : []);
+      if (r.claimed)
+        fences.set(r.claimed.oid, hash([r.claimed.outcome, r.claimed.summary]));
+      if (retainedCount(db) + fences.size - 1 > RUN_LIMITS.total) {
+        loss(db);
+        return false;
+      }
+      for (const [oid, digest] of fences)
+        db.prepare("INSERT INTO runs_retired VALUES(?,?,?,?,?) ON CONFLICT(source,child,oid) DO UPDATE SET execution=max(execution,excluded.execution)").run(r.source, r.childSessionId, r.ran.sequence ?? 0, oid, digest);
+    }
+    db.prepare("DELETE FROM runs_rows WHERE id=?").run(victim.id);
+    loss(db);
+  }
+  return false;
+}
+function metadataString(v, max) {
+  return typeof v === "string" ? v.replace(/[\u0000\r\n\t\u2028\u2029]/g, " ").slice(0, max) || null : null;
+}
+function safeErrorType(v) {
+  return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : "unknown";
+}
+function hash(v) {
+  return createHash2("sha256").update(canonical(v)).digest("hex");
+}
+function keyId(k) {
+  return hash([k.source, k.parent, k.message, k.call]);
+}
+function validKey(k) {
+  requireProgress([k.source, k.parent, k.message, k.call].every(identifier));
+}
+function captureIdentity(db, actor) {
+  if (db.prepare("SELECT 1 FROM sessions WHERE source=? AND id=?").get(actor.sourceId, actor.sessionId))
+    return;
+  const participant = db.prepare(`SELECT 1 FROM plans WHERE source=? AND (json_extract(snapshot,'$.sessionId')=?
+    OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?))
+    UNION ALL SELECT 1 FROM contributions WHERE source=? AND json_extract(payload,'$.attributedSessionId')=? LIMIT 1`).get(actor.sourceId, actor.sessionId, actor.sessionId, actor.sourceId, actor.sessionId);
+  if (!participant)
+    db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(actor.sourceId, actor.sessionId, JSON.stringify(actor));
+}
+function activeIntent(db, source, parent) {
+  const r = db.prepare("SELECT dispatch,CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload FROM runs_intents WHERE source=? AND parent=?").get(source, parent);
+  if (!r)
+    return null;
+  requireProgress(typeof r.payload === "string", "corrupt");
+  return { ...JSON.parse(r.payload), dispatch: r.dispatch };
+}
+function intentDisposition(db, i, state, reason, dispatch, receipt) {
+  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...receipt ? { receipt } : {} } };
+  db.prepare("UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?").run(JSON.stringify(reply), i.caller.sourceId, i.request.plan, i.request.oid);
+  return reply;
+}
+function declareIntent(db, r, actor, validate) {
+  const c = runControl(db);
+  requireProgress(c.enabled, "disabled");
+  const payloadHash = hash([r, actor.sourceId, actor.sessionId]);
+  const old = db.prepare("SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
+  if (old) {
+    requireProgress(old.payload_hash === payloadHash, "operation-reused");
+    return JSON.parse(String(old.receipt));
+  }
+  validate();
+  const current = activeIntent(db, actor.sourceId, actor.sessionId);
+  if (r.assign.length)
+    requireProgress(!current, "conflict");
+  else if (current) {
+    intentDisposition(db, current, "retired", "cancelled", current.dispatch ?? undefined);
+    db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=?").run(actor.sourceId, actor.sessionId);
+  }
+  requireProgress(!r.assign.length || Number(db.prepare("SELECT count(*) AS n FROM runs_intents").get().n) < RUN_LIMITS.intents, "busy");
+  const i = { request: r, caller: { sourceId: actor.sourceId, sessionId: actor.sessionId }, generation: c.generation, bindOid: `binding-${randomUUID2()}`, dispatch: null };
+  db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)").run(actor.sourceId, r.plan, r.oid, payloadHash, "{}");
+  if (r.assign.length)
+    db.prepare("INSERT INTO runs_intents VALUES(?,?,?,?,?,NULL,?)").run(actor.sourceId, actor.sessionId, r.plan, r.oid, c.generation, JSON.stringify(i));
+  return intentDisposition(db, i, r.assign.length ? "pending" : "retired", r.assign.length ? undefined : "cancelled");
+}
+function reservedIntent(db, k) {
+  const i = activeIntent(db, k.source, k.parent);
+  return i?.dispatch === keyId(k) ? i : null;
+}
+function settleIntent(db, i, receipt, reason) {
+  intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
+  db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
+}
+function claimHash(r) {
+  return hash([r.outcome, r.summary]);
+}
+function claimFits(db, r, claim, epochs = claimEpochs(db, r), start = provenStart(db, r)) {
+  if (!start || claim.reportedAt < start.at || r.ran.endedAt !== null && claim.reportedAt > r.ran.endedAt)
+    return false;
+  if (r.ran.state === "unknown" || !factContinuity(runEventEpochs(db, r, "start"), epochs)) {
+    loss(db);
+    return false;
+  }
+  const next = nextStart(db, start);
+  return !next || next.at >= start.at && claim.reportedAt < next.at;
+}
+function claimOwners(db, source, child, claim, epochs) {
+  return db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
+    AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?)
+    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source, child, claim.reportedAt, claim.reportedAt).map((v) => row(v.payload)).filter((r) => claimFits(db, r, claim, epochs));
+}
+function attachClaim(db, r) {
+  if (!r.childSessionId || r.ran.startedAt === null || r.claimed)
+    return;
+  const claims = db.prepare("SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2").all(r.source, r.childSessionId);
+  const matching = claims.filter((c) => {
+    const { claim: claim2, epochs: epochs2 } = stagedClaim(String(c.payload));
+    return claimFits(db, r, claim2, epochs2) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence));
+  });
+  if (matching.length !== 1)
+    return;
+  const { claim, epochs } = stagedClaim(String(matching[0].payload)), owners = claimOwners(db, r.source, r.childSessionId, claim, epochs);
+  if (owners.length !== 1 || owners[0].id !== r.id)
+    return;
+  r.claimed = { ...claim, association: "execution" };
+  if (!save(db, r, undefined, undefined, { claim: epochs })) {
+    r.claimed = null;
+    return;
+  }
+  db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?").run(r.source, r.childSessionId, matching[0].execution);
+}
+function reassociateClaims(db, source, child) {
+  for (const staged of db.prepare("SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?").all(source, child, RUN_LIMITS.claims)) {
+    const { claim, epochs } = stagedClaim(String(staged.payload));
+    const owners = claimOwners(db, source, child, claim, epochs);
+    if (owners.length === 1)
+      attachClaim(db, owners[0]);
+  }
+}
+function handoff(db, r, actor, now, epoch = observationEpoch(db)) {
+  requireProgress(runControl(db).enabled, "disabled");
+  requireProgress(actor.verifiedSource && identifier(actor.parentId) && actor.ancestry?.[0] === actor.parentId && actor.ancestry.length <= 32, "assignment");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId)?.verified === 1, "source-unverified");
+  const existing = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.claimed.oid')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
+  if (existing) {
+    const owner = row(existing.payload), claim2 = owner.claimed;
+    requireProgress(hash([claim2.outcome, claim2.summary]) === claimHash(r), "operation-reused");
+    if (claimFits(db, owner, claim2))
+      return { handoff: claim2 };
+    loss(db);
+    if (!saveFacts(db, owner, provenStart(db, owner)))
+      return { error: "busy" };
+  }
+  const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid) ?? db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
+  if (oldClaim)
+    return { error: oldClaim.hash === claimHash(r) ? "not-found" : "operation-reused" };
+  const retired = db.prepare("SELECT max(execution) AS execution FROM runs_retired WHERE source=? AND child=?").get(actor.sourceId, actor.sessionId);
+  const c = candidate(db, actor.sourceId, actor.sessionId);
+  const retained = db.prepare("SELECT json_extract(payload,'$.ran.sequence') AS seq,json_extract(payload,'$.ran.startedAt') AS started_at FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.state')='running' ORDER BY at DESC LIMIT 1").get(actor.sourceId, actor.sessionId);
+  const execution = c?.start?.sequence ?? Number(retained?.seq ?? 0);
+  const staged = db.prepare("SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1").get(actor.sourceId, actor.sessionId, execution, r.oid);
+  if (staged) {
+    if (staged.oid !== r.oid)
+      return { error: "conflict" };
+    if (staged.hash !== claimHash(r))
+      return { error: "operation-reused" };
+    return { handoff: stagedClaim(String(staged.payload)).claim };
+  }
+  const runs = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2").all(actor.sourceId, actor.sessionId).map((v) => row(v.payload));
+  if (!integer(epoch))
+    return { error: "invalid" };
+  const epochs = observationInterrupted(db, epoch) ? [] : [epoch];
+  const current = claimOwners(db, actor.sourceId, actor.sessionId, { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now, sessionId: actor.sessionId, association: "session-only" }, epochs);
+  const currentStart = c?.start?.at ?? retained?.started_at ?? runs.find((v) => v.ran.startedAt !== null)?.ran.startedAt;
+  if (current.some((v) => v.claimed) || runs.some((v) => v.claimed && currentStart === v.ran.startedAt))
+    return { error: "conflict" };
+  if (retired?.execution !== null && retired?.execution !== undefined && execution <= Number(retired.execution))
+    return { error: "not-found" };
+  if (Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) >= RUN_LIMITS.claims || !capacity(db))
+    return { error: "busy" };
+  const claim = { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now, sessionId: actor.sessionId, association: "session-only" };
+  db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?)").run(actor.sourceId, actor.sessionId, execution, r.oid, claimHash(r), JSON.stringify({ ...claim, _epochs: epochs }));
+  if (current.length === 1) {
+    attachClaim(db, current[0]);
+    if (current[0].claimed)
+      return { handoff: current[0].claimed };
+  }
+  if (runs.some((v) => v.ran.startedAt !== null))
+    loss(db);
+  bump(db);
+  return { handoff: claim };
+}
+function associatedPlan(db, actor, at) {
+  const p = db.prepare(`SELECT id,revision FROM plans WHERE source=? AND json_extract(snapshot,'$.lifecycle')='active' AND
+    (json_extract(snapshot,'$.sessionId')=? OR EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=? AND json_array_length(json_extract(l.value,'$.itemIds'))>0)) LIMIT 3`).all(actor.sourceId, actor.sessionId, actor.sessionId);
+  const eligible = p.filter((r) => !cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(r.id))?.state)));
+  if (p.length >= 3)
+    return null;
+  const incoming = db.prepare(`SELECT json_extract(payload,'$.planContext.plan') AS plan FROM runs_rows r WHERE source=? AND child=? AND terminal=0 AND json_extract(payload,'$.ran.state')='running' AND json_extract(payload,'$.planContext.plan') IS NOT NULL
+    AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId, actor.sessionId);
+  if (incoming.length === 1) {
+    const plan = db.prepare("SELECT id,revision FROM plans WHERE source=? AND id=? AND json_extract(snapshot,'$.lifecycle')='active'").get(actor.sourceId, String(incoming[0].plan));
+    if (plan && (!cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(plan.id))?.state))))
+      eligible.push(plan);
+  }
+  const unique = new Map(eligible.map((r) => [String(r.id), r]));
+  const only = [...unique.values()][0];
+  return unique.size === 1 ? { plan: String(only.id), revision: Number(only.revision), observedAt: at } : null;
+}
+function beforeRun(db, k, actor, tool, input, at, epoch = observationEpoch(db)) {
+  validKey(k);
+  requireProgress(integer(at) && integer(epoch));
+  const control = runControl(db);
+  if (!control.enabled)
+    return;
+  requireProgress(actor.verifiedSource && actor.sourceId === k.source && actor.sessionId === k.parent && actor.ancestry !== null, "binding");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(k.source)?.verified === 1, "binding");
+  const id = keyId(k);
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE id=?").get(id))
+    return;
+  if (!capacity(db, k))
+    return;
+  const i = obj(input) ? input : {};
+  const intent = tool === "subagent" ? activeIntent(db, k.source, k.parent) : null;
+  const r = { id, kind: "dispatch", source: k.source, parentSessionId: k.parent, childSessionId: null, tool, agent: metadataString(i.agent, 80), description: metadataString(i.description ?? i.title, 200), dispatch: { messageId: k.message, callId: k.call, at }, planContext: intent && !intent.dispatch ? { plan: intent.request.plan, revision: intent.request.rev, observedAt: at } : associatedPlan(db, actor, at), ran: { state: "unknown", dispatchState: "pending", startedAt: null, endedAt: null, updatedAt: at, provenance: "dispatch", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
+  const payload = JSON.stringify({ ...r, _epoch: epoch });
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    runCaptureUnavailable(db);
+    return;
+  }
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,?,?,?,?,?,?)").run(id, k.source, k.parent, null, k.message, k.call, control.generation, 0, at, payload);
+  if (intent && !intent.dispatch) {
+    db.prepare("UPDATE runs_intents SET dispatch=? WHERE source=? AND parent=? AND dispatch IS NULL").run(id, k.source, k.parent);
+    intentDisposition(db, intent, "reserved", undefined, id);
+  }
+  captureIdentity(db, actor);
+  bump(db);
+}
+function candidate(db, source, child) {
+  const r = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_candidates WHERE source=? AND child=?").get(source, child);
+  if (!r)
+    return null;
+  requireProgress(typeof r.payload === "string", "corrupt");
+  return JSON.parse(r.payload);
+}
+function saveCandidate(db, source, child, c, generation = runControl(db).generation) {
+  const payload = JSON.stringify(c);
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(source, child);
+    runCaptureUnavailable(db);
+    return false;
+  }
+  db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(source, child, generation, payload);
+  return true;
+}
+var verifiedRootIdentity = `json_extract(s.actor,'$.verifiedSource')=1
+  AND json_extract(s.actor,'$.sourceId')=s.source AND json_extract(s.actor,'$.sessionId')=s.id
+  AND json_type(s.actor,'$.parentId')='null' AND json_type(s.actor,'$.ancestry')='array'
+  AND json_array_length(s.actor,'$.ancestry')=0`;
+function adopt(db, r, c) {
+  if (!r.dispatch || !r.childSessionId || !c.start || c.ambiguous || c.start.at < r.dispatch.at)
+    return false;
+  if (r.ran.startedAt !== null && r.ran.startedAt !== c.start.at)
+    return false;
+  if (r.ran.startedAt === null) {
+    const generation = runControl(db).generation;
+    const stored = db.prepare("SELECT generation,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
+    if (stored?.generation !== generation || !integer(stored.epoch) || !factContinuity([stored.epoch], eventEpochs(c, "start")))
+      return false;
+    const staged = candidate(db, r.source, r.childSessionId);
+    if (staged && candidateStarts(staged).some((s) => s.event.sequence < c.start.sequence && s.event.at >= r.dispatch.at && !db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._startEvent[0]')=? LIMIT 1").get(r.source, r.childSessionId, s.event.id)))
+      return false;
+    if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, generation, stored.epoch, c.start.at))
+      return false;
+    if (db.prepare(`SELECT 1 FROM (SELECT terminal,at,generation,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$.ran.startedAt') AS started,
+      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+      FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=?)
+       WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source, r.childSessionId, r.id, generation, stored.epoch, c.start.at, c.start.sequence, c.start.sequence, c.start.at, c.start.sequence, c.start.at))
+      return false;
+  }
+  const e = c.end && c.end.sequence > c.start.sequence && c.end.at >= c.start.at ? c.end : c.start;
+  if (e !== c.start && !factContinuity(eventEpochs(c, "start"), eventEpochs(c, "end"), c.start.sequence, e.sequence)) {
+    loss(db);
+    return false;
+  }
+  if (r.ran.endedAt !== null) {
+    if (e === c.start || e.sequence >= Number(r.ran.sequence))
+      return false;
+  } else if (r.ran.sequence !== null && e.sequence <= r.ran.sequence) {
+    attachClaim(db, r);
+    return false;
+  }
+  return recomputeInterval(db, r, c.start, e === c.start ? null : e, { start: eventEpochs(c, "start"), end: eventEpochs(c, "end") }).saved ? "saved" : "dropped";
+}
+function recomputeInterval(db, r, start, end, evidence) {
+  const next = nextStart(db, start);
+  const wrongOwner = end && (end.sequence <= start.sequence || next && end.sequence >= next.sequence);
+  const badClock = next && next.at < start.at || end && (end.at < start.at || !wrongOwner && next && end.at > next.at);
+  if (badClock)
+    loss(db);
+  const displaced = end && (wrongOwner || badClock) ? end : null;
+  if (displaced)
+    end = null;
+  const e = end ?? start;
+  const state = !end && r.ran.startedAt !== null && r.ran.state === "unknown" ? "unknown" : e.state;
+  r.ran = { ...r.ran, state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  return { saved: saveFacts(db, r, start, evidence), displaced };
+}
+function saveFacts(db, r, start, evidence) {
+  let retiredClaim;
+  let restaged = false;
+  const detachedClaim = r.claimed;
+  if (r.claimed && !claimFits(db, r, r.claimed, claimEpochs(db, r), start)) {
+    const claim = { ...r.claimed, association: "session-only" };
+    const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
+    restaged = room && Boolean(db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash([claim.outcome, claim.summary]), JSON.stringify({ ...claim, _epochs: claimEpochs(db, r) })).changes);
+    if (!restaged) {
+      retiredClaim = [claim.oid, hash([claim.outcome, claim.summary])];
+      loss(db);
+    }
+    r.claimed = null;
+  }
+  if (!save(db, r, retiredClaim, start ? [start.id, start.sequence] : undefined, evidence)) {
+    if (restaged)
+      db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?").run(r.source, r.childSessionId, detachedClaim.oid);
+    return false;
+  }
+  attachClaim(db, r);
+  if (restaged && r.childSessionId)
+    reassociateClaims(db, r.source, r.childSessionId);
+  return true;
+}
+function provenStart(db, r) {
+  const stored = db.prepare("SELECT json_extract(payload,'$._startEvent') AS start FROM runs_rows WHERE id=?").get(r.id);
+  const proof = stored?.start ? startEvent(JSON.parse(String(stored.start))) : r.ran.state === "running" && r.ran.eventId && r.ran.sequence !== null ? [r.ran.eventId, r.ran.sequence] : null;
+  return proof && r.childSessionId && r.ran.startedAt !== null ? { source: r.source, child: r.childSessionId, id: proof[0], sequence: proof[1], at: r.ran.startedAt, state: "running", errorType: null, interruptionReason: null } : null;
+}
+function provenEnd(r) {
+  return r.childSessionId && r.ran.endedAt !== null && r.ran.eventId && r.ran.sequence !== null && ["succeeded", "failed", "interrupted"].includes(r.ran.state) ? { source: r.source, child: r.childSessionId, id: r.ran.eventId, sequence: r.ran.sequence, at: r.ran.endedAt, state: r.ran.state, errorType: r.ran.errorType, interruptionReason: r.ran.interruptionReason } : null;
+}
+function nextStart(db, start) {
+  const stored = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence>? ORDER BY sequence LIMIT 1`).get(start.source, start.child, start.sequence);
+  const known = stored ? provenStart(db, row(stored.payload)) : null, c = candidate(db, start.source, start.child), pending = c && candidateStarts(c).find((s) => s.event.sequence > start.sequence)?.event;
+  return pending && pending.sequence > start.sequence && (!known || pending.sequence < known.sequence) ? pending : known;
+}
+function routeTerminal(db, e, observed) {
+  const rows = db.prepare(`SELECT payload,generation,json_extract(payload,'$._epoch') AS epoch,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
+  const r = rows[0] && row(rows[0].payload), start = r && provenStart(db, r);
+  if (!r || !start)
+    return { handled: false };
+  if (rows[1]?.sequence === start.sequence) {
+    loss(db);
+    return { handled: false };
+  }
+  const pending = candidate(db, e.source, e.child)?.start;
+  if (pending && pending.sequence > start.sequence && pending.sequence < e.sequence) {
+    if (pending.at > e.at)
+      loss(db);
+    return { handled: false };
+  }
+  const next = nextStart(db, start);
+  if (next && next.sequence <= e.sequence) {
+    loss(db);
+    return { handled: false };
+  }
+  if (e.at < start.at || next && (next.at < start.at || e.at > next.at)) {
+    loss(db);
+    return { handled: false };
+  }
+  const prior = provenEnd(r);
+  if (prior?.sequence === e.sequence) {
+    if (prior.id !== e.id) {
+      loss(db);
+      return { handled: false };
+    }
+    const known = runEventEpochs(db, r, "end"), merged = mergeEpochs(db, known, observed);
+    if (merged.length !== known.length)
+      save(db, r, undefined, undefined, { end: merged });
+    return { handled: true };
+  }
+  if (prior && prior.sequence < e.sequence)
+    return { handled: false };
+  const startEpochs = runEventEpochs(db, r, "start");
+  if (!factContinuity(rows[0].generation === runControl(db).generation ? startEpochs : [], observed, start.sequence, e.sequence)) {
+    if (r.ran.endedAt === null && r.ran.state !== "unknown") {
+      r.ran.state = "unknown";
+      saveFacts(db, r, start);
+    }
+    refreshGapOutcome(db, r, e);
+    loss(db);
+    return { handled: false };
+  }
+  const priorEpochs = prior ? runEventEpochs(db, r, "end") : undefined;
+  const applied = adopt(db, r, { start, end: e, startEpochs, endEpochs: observed });
+  return applied ? { handled: true, ...applied === "saved" && prior ? { displaced: prior, displacedEpochs: priorEpochs } : {} } : { handled: false };
+}
+function correlate(db, source, child) {
+  const c = candidate(db, source, child);
+  if (!c)
+    return;
+  for (const evidence of candidateStarts(c)) {
+    const { event: start, epochs } = evidence;
+    if (evidence.ambiguous)
+      continue;
+    const owners = epochs.length ? db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND json_extract(payload,'$._epoch') IN (${epochs.map(() => "?").join(",")}) AND message IS NOT NULL AND terminal=0
+      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source, child, runControl(db).generation, ...epochs, start.at) : [];
+    if (owners.length === 1 && adopt(db, row(owners[0].payload), { start, end: null, startEpochs: epochs }))
+      dropCandidateStart(c, start.id);
+  }
+  while (c.end) {
+    const routed = routeTerminal(db, c.end, eventEpochs(c, "end"));
+    if (!routed.handled)
+      break;
+    c.end = routed.displaced ?? null;
+    c.endEpochs = routed.displacedEpochs;
+    c.endEpoch = undefined;
+  }
+  if (!candidateStarts(c).length && !c.end)
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(source, child);
+  else
+    saveCandidate(db, source, child, c);
+}
+function afterRun(db, k, generation, child, disposition) {
+  validKey(k);
+  const c = runControl(db);
+  if (!c.enabled || c.generation !== generation)
+    return;
+  const stored = db.prepare("SELECT generation,payload FROM runs_rows WHERE id=?").get(keyId(k));
+  if (!stored || stored.generation !== generation)
+    return;
+  const r = row(stored.payload);
+  if (r.ran.dispatchState !== "pending" && !(r.ran.dispatchState === "unconfirmed" && r.childSessionId === null && child)) {
+    if (child && r.childSessionId !== child.sessionId)
+      loss(db);
+    return;
+  }
+  if (child) {
+    const parent = db.prepare("SELECT actor FROM sessions WHERE source=? AND id=?").get(k.source, k.parent);
+    requireProgress(parent && typeof parent.actor === "string", "binding");
+    const actor = JSON.parse(parent.actor);
+    requireProgress(r.tool === "subagent" && child.verifiedSource && child.sourceId === k.source && identifier(child.sessionId) && child.parentId === k.parent && child.ancestry?.[0] === k.parent && child.directory === actor.directory && child.projectId === actor.projectId, "binding");
+    r.childSessionId = child.sessionId;
+  }
+  r.ran.dispatchState = disposition;
+  if (!save(db, r))
+    return;
+  if (child)
+    captureIdentity(db, child);
+  for (const other of db.prepare("SELECT DISTINCT child FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL AND terminal=0 LIMIT 1024").all(k.source, k.parent))
+    correlate(db, k.source, String(other.child));
+}
+function observeExecution(db, e, epoch = observationEpoch(db)) {
+  const control = runControl(db);
+  if (!control.enabled)
+    return;
+  requireProgress(integer(epoch) && identifier(e.source) && identifier(e.child) && identifier(e.id) && integer(e.sequence) && integer(e.at) && ["running", "succeeded", "failed", "interrupted"].includes(e.state), "invalid");
+  e = { source: e.source, child: e.child, id: e.id, sequence: e.sequence, at: e.at, state: e.state, errorType: e.state === "failed" ? safeErrorType(e.errorType) : null, interruptionReason: e.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(e.interruptionReason)) ? e.interruptionReason : e.state === "interrupted" ? "unknown" : null };
+  if (e.state === "failed" || e.state === "interrupted") {
+    for (const pending of db.prepare("SELECT payload FROM runs_rows WHERE source=? AND parent=? AND child IS NULL AND at<=? AND json_extract(payload,'$.ran.dispatchState')='pending' LIMIT 1024").all(e.source, e.child, e.at)) {
+      const r = row(pending.payload);
+      r.ran.dispatchState = "unconfirmed";
+      save(db, r);
+      const i = activeIntent(db, e.source, e.child);
+      if (i?.dispatch === r.id)
+        settleIntent(db, i, undefined, "parent-execution-ended");
+    }
+  }
+  if (db.prepare(`SELECT 1 FROM sessions s WHERE s.source=? AND s.id=? AND ${verifiedRootIdentity}`).get(e.source, e.child)) {
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
+    return;
+  }
+  const c = candidate(db, e.source, e.child) ?? { start: null, end: null };
+  let refine;
+  let routed = false;
+  if (e.state !== "running") {
+    const result = routeTerminal(db, e, [epoch]);
+    routed = result.handled;
+    if (routed) {
+      if (c.end?.sequence === e.sequence)
+        c.end = null;
+      if (result.displaced && (!c.end || result.displaced.sequence > c.end.sequence)) {
+        c.end = result.displaced;
+        c.endEpochs = result.displacedEpochs;
+        c.endEpoch = undefined;
+      }
+    }
+  } else {
+    const retained = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
+      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source, e.child, e.sequence);
+    if (retained) {
+      const r = row(retained.payload), proof = provenStart(db, r);
+      if (proof.id !== e.id || proof.at !== e.at) {
+        loss(db);
+        return;
+      }
+      const known = runEventEpochs(db, r, "start"), merged = mergeEpochs(db, known, [epoch]);
+      if (merged.length !== known.length)
+        save(db, r, undefined, undefined, { start: merged });
+      correlate(db, e.source, e.child);
+      return;
+    }
+    const previous = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+      FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
+    if (previous[0] && previous[1]?.sequence !== previous[0].sequence)
+      refine = row(previous[0].payload);
+    else if (previous.length > 1)
+      loss(db);
+    if (!refine && db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.startedAt')>?
+      AND coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)>? LIMIT 1`).get(e.source, e.child, e.at, e.sequence) && !db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND terminal=0 AND at<=? AND json_extract(payload,'$.ran.startedAt') IS NULL
+        AND (child=? OR (child IS NULL AND json_extract(payload,'$.tool')='subagent')) LIMIT 1`).get(e.source, e.at, e.child)) {
+      correlate(db, e.source, e.child);
+      return;
+    }
+  }
+  if (!routed) {
+    const archived = e.state === "running" && c.startEvidence && Object.hasOwn(c.startEvidence, e.id) ? c.startEvidence[e.id] : undefined;
+    const duplicate = e.state === "running" ? c.start?.id === e.id || !!archived : c.end?.id === e.id;
+    if (duplicate) {
+      const stored = e.state === "running" ? archived?.event ?? c.start : c.end;
+      if (stored.sequence !== e.sequence || stored.at !== e.at || stored.state !== e.state) {
+        loss(db);
+        return;
+      }
+      if (archived)
+        archived.epochs = mergeEpochs(db, archived.epochs, [epoch]);
+      else if (e.state === "running")
+        c.startEpochs = mergeEpochs(db, eventEpochs(c, "start"), [epoch]);
+      else
+        c.endEpochs = mergeEpochs(db, eventEpochs(c, "end"), [epoch]);
+    } else {
+      const latest = Math.max(c.start?.sequence ?? -1, c.end?.sequence ?? -1);
+      if (e.state !== "running" && e.sequence <= latest)
+        return;
+      if (e.state === "running") {
+        if (c.start && e.sequence < c.start.sequence) {
+          c.startEvidence ??= Object.create(null);
+          c.startEvidence[e.id] = { event: e, epochs: [epoch] };
+        } else {
+          if (c.start) {
+            c.startEvidence ??= Object.create(null);
+            c.startEvidence[c.start.id] = { event: c.start, epochs: eventEpochs(c, "start"), ambiguous: c.ambiguous };
+          }
+          if (c.start && !eventEpochs(c, "start").includes(epoch)) {
+            c.start = e;
+            c.end = c.end && c.end.sequence > e.sequence ? c.end : null;
+            c.ambiguous = false;
+            loss(db);
+          } else if (c.start && c.end) {
+            if (e.sequence > c.end.sequence)
+              c.end = null;
+            c.start = e;
+            c.ambiguous = false;
+          } else if (!c.start)
+            c.start = e;
+          else {
+            c.ambiguous = true;
+            if (c.startEvidence)
+              for (const s of Object.values(c.startEvidence))
+                s.ambiguous = true;
+            c.start = e;
+            c.end = null;
+          }
+          c.startEpoch = epoch;
+          c.startEpochs = [epoch];
+        }
+      } else {
+        c.end = e;
+        c.endEpoch = epoch;
+        c.endEpochs = [epoch];
+      }
+    }
+  }
+  if (!candidateStarts(c).length && !c.end) {
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
+    return;
+  }
+  if (!candidate(db, e.source, e.child) && Number(db.prepare("SELECT count(*) AS n FROM runs_candidates").get().n) >= RUN_LIMITS.candidates) {
+    const victim = db.prepare(`SELECT c.source,c.child,coalesce((${verifiedRootIdentity}),0) AS root,
+      coalesce((c.source=? AND json_extract(c.payload,'$.end.state') IN ('succeeded','failed','interrupted')
+        AND json_type(c.payload,'$.end.at')='integer' AND json_extract(c.payload,'$.end.at')<?),0) AS stale
+      FROM runs_candidates c LEFT JOIN sessions s ON s.source=c.source AND s.id=c.child WHERE NOT EXISTS
+      (SELECT 1 FROM runs_rows r WHERE r.source=c.source AND r.child=c.child AND r.message IS NOT NULL AND r.terminal=0)
+      ORDER BY root DESC,stale DESC,c.rowid LIMIT 1`).get(e.source, e.at - RUN_LIMITS.candidateAdoptionMs);
+    if (!victim) {
+      runCaptureUnavailable(db);
+      return observationEpoch(db);
+    }
+    if (!victim.root && !victim.stale) {
+      runCaptureUnavailable(db);
+      epoch = observationEpoch(db);
+      if (e.state === "running") {
+        c.startEpoch = epoch;
+        c.startEpochs = [epoch];
+      } else {
+        c.endEpoch = epoch;
+        c.endEpochs = [epoch];
+      }
+    }
+    db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(victim.source, victim.child);
+  }
+  const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
+  const safe = { start: project(c.start), end: project(c.end), startEpochs: c.start ? eventEpochs(c, "start") : undefined, endEpochs: c.end ? eventEpochs(c, "end") : undefined, startEvidence: c.startEvidence ? Object.fromEntries(Object.entries(c.startEvidence).map(([id, s]) => [id, { event: project(s.event), epochs: epochList(s.epochs), ambiguous: s.ambiguous ?? false }])) : undefined, ambiguous: c.ambiguous ?? false };
+  if (!saveCandidate(db, e.source, e.child, safe, control.generation))
+    return observationEpoch(db);
+  if (refine) {
+    const start = provenStart(db, refine);
+    const endEpochs = runEventEpochs(db, refine, "end");
+    const refined = recomputeInterval(db, refine, start, provenEnd(refine));
+    if (!refined.saved) {
+      db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
+      return observationEpoch(db);
+    }
+    const displaced = refined.displaced;
+    if (displaced) {
+      const held = candidate(db, e.source, e.child);
+      if (!held.end || displaced.sequence > held.end.sequence) {
+        held.end = displaced;
+        held.endEpochs = endEpochs;
+        held.endEpoch = undefined;
+      } else if (displaced.sequence !== held.end.sequence)
+        loss(db);
+      if (!saveCandidate(db, e.source, e.child, held))
+        return observationEpoch(db);
+    }
+  }
+  correlate(db, e.source, e.child);
+  return epoch;
+}
+function identity(db, binding, r) {
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.root));
+  requireProgress(obj(r.binding) && Object.keys(r.binding).length === 2 && r.binding.sourceId === binding.sourceId && r.binding.verified === binding.verified && binding.sourceId === r.source && binding.verified, "conflict");
+  const m = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+  requireProgress(m.store_id === r.storeId, "conflict");
+  requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(r.source)?.verified === 1, "binding");
+  requireProgress(db.prepare("SELECT 1 FROM sessions WHERE source=? AND id=?").get(r.source, r.root), "not-found");
+  return m;
+}
+function scopedParents(db, source, root) {
+  const ids = new Set([root]);
+  let frontier = [root], complete = true;
+  for (let depth = 0;frontier.length && depth < RUN_LIMITS.depth; depth++) {
+    const next = [];
+    for (const parent of frontier) {
+      const children = db.prepare("SELECT DISTINCT child FROM runs_rows WHERE source=? AND parent=? AND child IS NOT NULL LIMIT ?").all(source, parent, RUN_LIMITS.traversal + 1);
+      for (const r of children) {
+        const id = String(r.child);
+        if (ids.has(id))
+          continue;
+        if (ids.size >= RUN_LIMITS.traversal) {
+          complete = false;
+          break;
+        }
+        ids.add(id);
+        next.push(id);
+      }
+    }
+    frontier = next;
+    if (depth === RUN_LIMITS.depth - 1 && next.length)
+      complete = false;
+  }
+  return { ids: [...ids], complete };
+}
+function budgetReadRow(run) {
+  const fits = () => Buffer.byteLength(JSON.stringify(run)) <= RUN_LIMITS.dtoBytes;
+  if (!fits()) {
+    run.agent = null;
+    run.description = null;
+  }
+  while (run.accepted?.items.length && !fits()) {
+    run.accepted.items.pop();
+    run.accepted.omittedItems++;
+  }
+  if (!fits())
+    run.accepted = null;
+  const { latestForChild, ...stored } = run;
+  row(JSON.stringify(stored));
+  requireProgress(typeof latestForChild === "boolean" && fits(), "corrupt");
+}
+function readRuns(db, binding, r, now = Date.now()) {
+  const m = identity(db, binding, r);
+  requireProgress(r.view === undefined || r.view === "useful" || r.view === "history");
+  requireProgress(r.plan === undefined === (r.cleanupRev === undefined));
+  if (r.plan !== undefined) {
+    requireProgress(identifier(r.plan) && integer(r.cleanupRev));
+    const plan = db.prepare(`SELECT json_extract(snapshot,'$.sessionId') AS owner,
+      EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?) AS linked FROM plans WHERE source=? AND id=?`).get(r.root, r.source, r.plan);
+    requireProgress(plan, "not-found");
+    const incoming = runsInstalled(db) && db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.planContext.plan')=? LIMIT 1").get(r.source, r.root, r.plan);
+    const contributed = db.prepare("SELECT 1 FROM contributions WHERE source=? AND plan=? AND json_extract(payload,'$.attributedSessionId')=? LIMIT 1").get(r.source, r.plan, r.root);
+    requireProgress(plan.owner === r.root || plan.linked === 1 || incoming || contributed, "not-found");
+    const state = cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined;
+    requireProgress((state?.generation ?? 0) === r.cleanupRev && state?.state !== "deleted", "conflict");
+  }
+  const installed = runsInstalled(db), f = installed ? db.prepare("SELECT revision,loss FROM runs_format").get() : undefined;
+  const job = installed ? db.prepare("SELECT state,CASE WHEN length(CAST(token AS BLOB))<=80 THEN token END AS token,CASE WHEN length(CAST(reason AS BLOB))<=80 THEN reason END AS reason,length(CAST(token AS BLOB)) AS token_bytes,length(CAST(reason AS BLOB)) AS reason_bytes FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root) : undefined;
+  if (job)
+    requireProgress(["pending", "running", "complete", "partial", "failed"].includes(String(job.state)) && (job.token_bytes === null || Number(job.token_bytes) <= 80) && (job.reason_bytes === null || Number(job.reason_bytes) <= 80) && [null, "budget", "capture-disabled", "capture-unavailable"].includes(job.reason) && (job.token === null || identifier(job.token)), "corrupt");
+  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: installed ? 1 : null, availability: installed ? "ready" : "unavailable", readAt: now, revision: Number(f?.revision ?? 0), capture: { enabled: m.enabled === 1, state: installed ? "last-known" : "unavailable", loss: f?.loss === 1 }, recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
+  if (!installed)
+    return out;
+  if (!job || job.state !== "complete")
+    out.coverage.reasons.push(job && ["partial", "failed"].includes(String(job.state)) ? "partial-history" : "history-not-reconciled");
+  if (f?.loss === 1)
+    out.coverage.reasons.push("capture-loss");
+  const scope2 = scopedParents(db, r.source, r.root);
+  if (!scope2.complete)
+    out.coverage.reasons.push("traversal-limit");
+  const placeholders = scope2.ids.map(() => "?").join(",");
+  const where = `source=? AND parent IN (${placeholders})`;
+  const args = [r.source, ...scope2.ids];
+  const counts = db.prepare(`SELECT count(DISTINCT child) AS children,sum(message IS NOT NULL) AS runs,sum(message IS NULL) AS history,
+    sum(json_extract(payload,'$.ran.state')='running') AS running,sum(json_extract(payload,'$.ran.state')='succeeded') AS succeeded,
+    sum(json_extract(payload,'$.ran.state')='failed') AS failed,sum(json_extract(payload,'$.ran.state')='interrupted') AS interrupted,sum(json_extract(payload,'$.ran.state')='unknown') AS unknown FROM runs_rows WHERE ${where}`).get(...args);
+  for (const key of ["children", "runs", "running", "succeeded", "failed", "interrupted", "unknown"])
+    out.counts[key] = Number(counts[key] ?? 0);
+  out.counts.historicalSessions = Number(counts.history ?? 0);
+  const useful = "coalesce((json_extract(payload,'$.ran.state')='running' OR (? IS NOT NULL AND (json_extract(payload,'$.planContext.plan')=? OR json_extract(payload,'$.accepted.plan')=? OR EXISTS(SELECT 1 FROM plans p,json_each(p.snapshot,'$.links') l WHERE p.source=runs_rows.source AND p.id=? AND json_extract(l.value,'$.sessionId')=runs_rows.child)))),0)";
+  const selection = `${out.view === "history" ? "NOT " : ""}${useful}`;
+  const identityKey = hash([r.storeId, binding, r.source, r.root, r.plan ?? null, r.cleanupRev ?? null, out.view]);
+  let offset = 0;
+  if (r.cursor) {
+    requireProgress(Buffer.byteLength(r.cursor) <= RUN_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(r.cursor));
+    let c;
+    try {
+      c = JSON.parse(Buffer.from(r.cursor, "base64url").toString("utf8"));
+    } catch {
+      requireProgress(false);
+    }
+    requireProgress(obj(c) && Object.keys(c).length === 3 && c.key === identityKey && c.revision === out.revision && integer(c.offset) && c.offset <= RUN_LIMITS.total, "conflict");
+    offset = c.offset;
+  }
+  const rows = db.prepare(`WITH ranked AS (SELECT *,row_number() OVER (PARTITION BY child ORDER BY
+      (message IS NOT NULL) DESC,
+      CASE WHEN message IS NOT NULL THEN coalesce(json_extract(payload,'$.ran.startedAt'),at) ELSE coalesce(json_extract(payload,'$.ran.endedAt'),json_extract(payload,'$.ran.updatedAt')) END DESC,
+      CASE WHEN message IS NOT NULL THEN at ELSE 0 END DESC,
+      CASE WHEN message IS NOT NULL THEN coalesce(json_extract(payload,'$.ran.sequence'),-1) ELSE -1 END DESC,
+      (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id) AS child_rank FROM runs_rows WHERE ${where})
+    SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload,child IS NOT NULL AND child_rank=1 AS latest
+    FROM ranked AS runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
+  out.data = rows.slice(0, RUN_LIMITS.page).map((v) => ({ ...row(v.payload), latestForChild: v.latest === 1 }));
+  if (r.plan) {
+    const snapshot2 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
+      AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
+      json_object('revision',json_extract(snapshot,'$.revision'),'links',json_extract(snapshot,'$.links'),
+        'items',json((SELECT json_group_array(json_object('id',json_extract(i.value,'$.id'),'kind',json_extract(i.value,'$.kind'),
+          'status',json_extract(i.value,'$.status'),'assigneeSessionId',json_extract(i.value,'$.assigneeSessionId')))
+          FROM json_each(snapshot,'$.items') i))) END AS snapshot FROM plans WHERE source=? AND id=?`).get(r.source, r.plan);
+    requireProgress(typeof snapshot2?.snapshot === "string", "corrupt");
+    const p = JSON.parse(snapshot2.snapshot);
+    requireProgress(Array.isArray(p.items) && p.items.length <= 1000 && Array.isArray(p.links) && p.links.length <= 64, "corrupt");
+    for (const run of out.data) {
+      const linked = p.links.find((l) => l.sessionId === run.childSessionId);
+      if (!linked)
+        continue;
+      requireProgress(Array.isArray(linked.itemIds) && linked.itemIds.length <= 1000, "corrupt");
+      const facts = p.items.filter((i) => i.kind === "task" && i.assigneeSessionId === run.childSessionId && linked.itemIds.includes(i.id)).map((i) => ({ id: i.id, status: i.status }));
+      run.accepted = { plan: r.plan, revision: p.revision, items: facts.slice(0, 50), omittedItems: Math.max(0, facts.length - 50) };
+    }
+  }
+  for (const run of out.data)
+    budgetReadRow(run);
+  if (rows.length > RUN_LIMITS.page)
+    out.nextCursor = Buffer.from(JSON.stringify({ key: identityKey, revision: out.revision, offset: offset + RUN_LIMITS.page })).toString("base64url");
+  out.coverage.complete = out.coverage.reasons.length === 0;
+  requireProgress(Buffer.byteLength(JSON.stringify(out)) <= RUN_LIMITS.responseBytes, "corrupt");
+  return out;
+}
+function requestReconciliation(db, binding, r) {
+  requireProgress(obj(r) && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "token"].includes(k)));
+  identity(db, binding, r);
+  const c = runControl(db);
+  requireProgress(c.enabled, "disabled");
+  const old = db.prepare("SELECT state,token FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root);
+  if (old && !r.token)
+    return { state: String(old.state), coalesced: true };
+  if (r.token) {
+    requireProgress(identifier(r.token) && old?.token === r.token && ["partial", "failed"].includes(String(old?.state)), "conflict");
+  }
+  requireProgress(Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) < RUN_LIMITS.jobs, "busy");
+  if (!old)
+    requireProgress(capacity(db), "busy");
+  db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(r.source, r.root, randomUUID2(), c.generation);
+  bump(db);
+  return { state: "pending", coalesced: false };
+}
+function pendingRecovery(db, source) {
+  if (!runControl(db).enabled)
+    return null;
+  return db.prepare("SELECT root FROM runs_jobs WHERE source=? AND state='pending' ORDER BY rowid LIMIT 1").get(source)?.root ?? null;
+}
+function recoveryWork(db, j) {
+  const r = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=4194304 THEN payload END AS payload FROM runs_recovery_work WHERE source=? AND root=?").get(j.source, j.root);
+  if (!r)
+    return { queue: [{ id: j.root, depth: 0 }], seen: [j.root] };
+  requireProgress(typeof r.payload === "string", "corrupt");
+  const w = JSON.parse(r.payload);
+  requireProgress(Array.isArray(w.queue) && w.queue.length <= RUN_LIMITS.total && Array.isArray(w.seen) && w.seen.length <= RUN_LIMITS.total && w.seen.every(identifier) && w.queue.every((n) => identifier(n.id) && integer(n.depth) && n.depth <= 32 && (n.cursor === undefined || typeof n.cursor === "string" && Buffer.byteLength(n.cursor) <= 4096)), "corrupt");
+  return w;
+}
+function saveRecoveryWork(db, j, w) {
+  if (!recoveryAlive(db, j))
+    return;
+  const payload = JSON.stringify(w);
+  requireProgress(Buffer.byteLength(payload) <= 4194304 && w.seen.length <= RUN_LIMITS.total && w.queue.length <= RUN_LIMITS.total, "busy");
+  if (!db.prepare("SELECT 1 FROM runs_recovery_work WHERE source=? AND root=?").get(j.source, j.root))
+    requireProgress(capacity(db), "busy");
+  db.prepare("INSERT INTO runs_recovery_work VALUES(?,?,?) ON CONFLICT(source,root) DO UPDATE SET payload=excluded.payload").run(j.source, j.root, payload);
+}
+function refreshGapOutcome(db, r, e) {
+  const previous = db.prepare("SELECT json_extract(payload,'$._refresh[0]') AS sequence FROM runs_rows WHERE id=?").get(r.id);
+  if (integer(previous?.sequence) && previous.sequence >= e.sequence)
+    return;
+  const marker = JSON.stringify([e.sequence, 1]);
+  if (Number(db.prepare("SELECT length(CAST(json_set(payload,'$._refresh',json(?)) AS BLOB)) AS bytes FROM runs_rows WHERE id=?").get(marker, r.id).bytes) > RUN_LIMITS.dtoBytes)
+    return;
+  const old = db.prepare("SELECT state FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.parentSessionId);
+  if (!old || !["pending", "running"].includes(String(old.state))) {
+    if (Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) >= RUN_LIMITS.jobs)
+      return;
+    if (!old && !capacity(db))
+      return;
+    db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(r.source, r.parentSessionId, randomUUID2(), runControl(db).generation);
+  }
+  if (old?.state !== "running")
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(r.source, r.parentSessionId);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh',json(?)) WHERE id=?").run(marker, r.id);
+  bump(db);
+}
+function recoveryMaintenance(db, source, directory, producer, now) {
+  if (!runControl(db).enabled)
+    return;
+  const location = hash(directory), lease = db.prepare("SELECT producer,at FROM runs_recovery_lease WHERE source=? AND location=?").get(source, location);
+  if (lease && lease.producer !== producer && now - Number(lease.at) < 1e4)
+    return;
+  if (!lease && !capacity(db))
+    return;
+  if (!lease || lease.producer !== producer) {
+    db.prepare("UPDATE runs_jobs SET state='partial',claim=NULL,reason='capture-unavailable',token=? WHERE source=? AND state='running' AND root IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?)").run(randomUUID2(), source, source, directory);
+    const roots = db.prepare("SELECT DISTINCT parent FROM runs_rows WHERE source=? AND terminal=0 AND child IS NOT NULL AND parent IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?) LIMIT 64").all(source, source, directory);
+    for (const r of roots) {
+      const old = db.prepare("SELECT state FROM runs_jobs WHERE source=? AND root=?").get(source, r.parent);
+      if (old && ["pending", "running"].includes(String(old.state)))
+        continue;
+      if (Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) >= RUN_LIMITS.jobs)
+        break;
+      if (!old && !capacity(db))
+        break;
+      if (old)
+        db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(source, r.parent);
+      db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(source, r.parent, randomUUID2(), runControl(db).generation);
+    }
+  }
+  db.prepare("INSERT INTO runs_recovery_lease VALUES(?,?,?,?) ON CONFLICT(source,location) DO UPDATE SET producer=excluded.producer,at=excluded.at").run(source, location, producer, now);
+}
+function pendingRecoveryAt(db, source, directory) {
+  if (!runControl(db).enabled)
+    return null;
+  return db.prepare("SELECT root FROM runs_jobs WHERE source=? AND state='pending' AND root IN(SELECT id FROM sessions WHERE source=? AND json_extract(actor,'$.directory')=?) ORDER BY rowid LIMIT 1").get(source, source, directory)?.root ?? null;
+}
+function claimRecovery(db, source, root) {
+  const c = runControl(db);
+  if (!c.enabled)
+    return null;
+  const r = db.prepare("SELECT request_id,generation FROM runs_jobs WHERE source=? AND root=? AND state='pending'").get(source, root);
+  if (!r || r.generation !== c.generation)
+    return null;
+  const claim = randomUUID2();
+  db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim, source, root);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',0) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source, root);
+  bump(db);
+  return { source, root, generation: c.generation, claim, requestId: String(r.request_id) };
+}
+function recoveryAlive(db, j) {
+  const c = runControl(db);
+  return c.enabled && c.generation === j.generation && !!db.prepare("SELECT 1 FROM runs_jobs WHERE source=? AND root=? AND request_id=? AND claim=? AND state='running'").get(j.source, j.root, j.requestId, j.claim);
+}
+function publishHistory(db, j, s) {
+  if (!recoveryAlive(db, j))
+    return;
+  requireProgress(identifier(s.id) && identifier(s.parent) && integer(s.createdAt) && integer(s.updatedAt) && (s.idleAt === null || integer(s.idleAt)));
+  const recorded = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL ORDER BY at DESC LIMIT 2").all(j.source, s.id).map((v) => row(v.payload));
+  if (recorded.length) {
+    if (s.idleAt === null || s.outcome === null || recorded.some((r2) => r2.ran.endedAt === s.idleAt && r2.ran.state === s.outcome))
+      return;
+  }
+  const id = hash(["history", j.source, s.id]), existing = db.prepare("SELECT at,payload FROM runs_rows WHERE id=?").get(id);
+  if (existing) {
+    const previous = row(existing.payload);
+    if (previous.parentSessionId !== s.parent || existing.at !== s.createdAt || s.updatedAt <= previous.ran.updatedAt || s.idleAt === null || s.idleAt < s.createdAt || s.idleAt > s.updatedAt || s.idleAt < (previous.ran.endedAt ?? 0) || !["succeeded", "failed", "interrupted"].includes(String(s.outcome)))
+      return;
+    previous.ran = { ...previous.ran, state: s.outcome, endedAt: s.idleAt, updatedAt: s.updatedAt };
+    save(db, previous);
+    return;
+  }
+  if (!capacity(db, { source: j.source, parent: s.parent }))
+    return;
+  const ended = s.idleAt !== null && s.idleAt >= s.createdAt ? s.idleAt : null;
+  const r = { id, kind: "historical-session", source: j.source, parentSessionId: s.parent, childSessionId: s.id, tool: null, agent: metadataString(s.agent, 80), description: metadataString(s.title, 200), dispatch: null, planContext: null, ran: { state: ended !== null && ["succeeded", "failed", "interrupted"].includes(String(s.outcome)) ? s.outcome : "unknown", dispatchState: "historical", startedAt: null, endedAt: ended, updatedAt: s.updatedAt, provenance: "native-session", eventId: null, sequence: null, errorType: null, interruptionReason: null }, claimed: null, accepted: null };
+  const payload = JSON.stringify(r);
+  if (Buffer.byteLength(payload) > RUN_LIMITS.dtoBytes) {
+    loss(db);
+    return;
+  }
+  db.prepare("INSERT INTO runs_rows VALUES(?,?,?,?,NULL,NULL,?,?,?,?)").run(id, j.source, s.parent, s.id, j.generation, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state)), s.createdAt, payload);
+  bump(db);
+}
+function finishRecovery(db, j, state) {
+  if (!recoveryAlive(db, j))
+    return;
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1 LIMIT 1").get(j.source, j.root)) {
+    db.prepare("UPDATE runs_jobs SET request_id=?,state='pending',claim=NULL,token=NULL,reason=NULL WHERE source=? AND root=?").run(randomUUID2(), j.source, j.root);
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
+    bump(db);
+    return;
+  }
+  db.prepare("UPDATE runs_jobs SET state=?,claim=NULL,token=?,reason=? WHERE source=? AND root=?").run(state, state === "complete" ? null : randomUUID2(), state === "partial" ? "budget" : state === "failed" ? "capture-unavailable" : null, j.source, j.root);
+  bump(db);
+  if (state === "complete")
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
+}
+
+// shared/assignment-binding.ts
+function currentBinding(value, plan, itemId) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const b = value;
+  const item = plan.items.find((i) => i.id === itemId);
+  const time = (s) => typeof s === "string" && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s;
+  return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier(b.childSessionId) && identifier(b.messageId) && identifier(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
 }
 
 // shared/document-comparison.ts
@@ -765,41 +1941,41 @@ function compareCaptureText(before, after) {
 }
 
 // shared/document-captures.ts
-var integer = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var integer2 = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
 var same = (a, b) => a.sourceId === b.sourceId && a.verified === b.verified;
 var validTime = (v) => typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
 function head(db, binding, r) {
-  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer(r.cleanupRev));
+  requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && integer2(r.cleanupRev));
   requireProgress(r.binding && same(binding, r.binding), "conflict");
   const meta = db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id,enabled FROM meta WHERE singleton=1").get();
   requireProgress(meta.store_id === r.storeId, "conflict");
-  const row = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
+  const row2 = db.prepare(`SELECT revision, length(CAST(snapshot AS BLOB)) AS bytes,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.id')='text' THEN substr(json_extract(snapshot,'$.id'),1,81) END AS snapshot_id,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.sourceId')='text' THEN substr(json_extract(snapshot,'$.sourceId'),1,81) END AS snapshot_source,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? AND json_type(snapshot,'$.revision')='integer' THEN json_extract(snapshot,'$.revision') END AS snapshot_revision,
     CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN
       CASE WHEN length(CAST(json_extract(snapshot,'$.document') AS BLOB))<=32768 THEN json_extract(snapshot,'$.document') END
     END AS document FROM plans WHERE source=? AND id=?`).get(CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, CAPTURE_LIMITS.snapshotBytes, r.source, r.plan);
-  requireProgress(row, "not-found");
-  requireProgress(integer(row.revision, 1) && Number(row.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
-  requireProgress(row.snapshot_id === r.plan && row.snapshot_source === r.source && row.snapshot_revision === row.revision, "corrupt");
+  requireProgress(row2, "not-found");
+  requireProgress(integer2(row2.revision, 1) && Number(row2.bytes) <= CAPTURE_LIMITS.snapshotBytes, "corrupt");
+  requireProgress(row2.snapshot_id === r.plan && row2.snapshot_source === r.source && row2.snapshot_revision === row2.revision, "corrupt");
   const cleanup = (cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined) ?? { generation: 0, state: "visible" };
   requireProgress(Number(cleanup.generation) === r.cleanupRev && cleanup.state !== "deleted", "conflict");
-  requireProgress(typeof row.document === "string", "corrupt");
+  requireProgress(typeof row2.document === "string", "corrupt");
   let doc;
   try {
-    doc = JSON.parse(row.document);
+    doc = JSON.parse(row2.document);
   } catch {
     requireProgress(false, "corrupt");
   }
   requireProgress(doc && typeof doc === "object" && !Array.isArray(doc) && ["unbound", "captured", "denied", "missing", "moved", "oversized", "non-text", "unavailable", "changed-during-read"].includes(String(doc.state)) && typeof doc.checklistSynchronized === "boolean", "corrupt");
   for (const key of ["path", "canonicalPath"])
     requireProgress(doc[key] === undefined || typeof doc[key] === "string" && doc[key].length <= 4096, "corrupt");
-  requireProgress(doc.captureId === undefined || integer(doc.captureId, 1), "corrupt");
+  requireProgress(doc.captureId === undefined || integer2(doc.captureId, 1), "corrupt");
   requireProgress(doc.checkedAt === undefined || validTime(doc.checkedAt), "corrupt");
   return {
     identity: { ...r, binding: { ...binding }, protocolVersion: 2, schemaVersion: 2, documentCaptureComparison: 1, sourceBinding: { ...binding } },
-    current: { revision: Number(row.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
+    current: { revision: Number(row2.revision), captureId: doc.captureId ?? null, state: String(doc.state), checklistSynchronized: doc.checklistSynchronized, checkedAt: doc.checkedAt ?? null, path: doc.path ?? null, currentFile: "not-rechecked", captureEnabled: Boolean(meta.enabled) }
   };
 }
 var projection = `id, revision,
@@ -808,9 +1984,9 @@ var projection = `id, revision,
  CASE WHEN length(CAST(hash AS BLOB))=64 THEN hash END AS hash,
  CASE WHEN length(CAST(captured_at AS BLOB))<=40 THEN captured_at END AS captured_at,
  CASE WHEN length(CAST(canonical_path AS BLOB))<=16384 THEN substr(canonical_path,1,4097) END AS canonical_path`;
-function entry(row) {
-  requireProgress(integer(row.id, 1) && integer(row.revision, 1) && identifier(row.source) && identifier(row.plan) && typeof row.hash === "string" && /^[a-f0-9]{64}$/.test(row.hash) && validTime(row.captured_at) && typeof row.canonical_path === "string" && row.canonical_path.length <= 4096 && !row.canonical_path.includes("\x00"), "corrupt");
-  return { id: row.id, revision: row.revision, hash: row.hash, capturedAt: row.captured_at, path: row.canonical_path };
+function entry(row2) {
+  requireProgress(integer2(row2.id, 1) && integer2(row2.revision, 1) && identifier(row2.source) && identifier(row2.plan) && typeof row2.hash === "string" && /^[a-f0-9]{64}$/.test(row2.hash) && validTime(row2.captured_at) && typeof row2.canonical_path === "string" && row2.canonical_path.length <= 4096 && !row2.canonical_path.includes("\x00"), "corrupt");
+  return { id: row2.id, revision: row2.revision, hash: row2.hash, capturedAt: row2.captured_at, path: row2.canonical_path };
 }
 function decodeCursor(raw, r) {
   requireProgress(Buffer.byteLength(raw) <= CAPTURE_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(raw));
@@ -820,7 +1996,7 @@ function decodeCursor(raw, r) {
   } catch {
     requireProgress(false);
   }
-  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer(c.revision, 1) && integer(c.before, 1) && c.before <= c.ceiling + 1);
+  requireProgress(c && typeof c === "object" && Object.keys(c).length === 4 && integer2(c.ceiling) && c.ceiling < Number.MAX_SAFE_INTEGER && integer2(c.revision, 1) && integer2(c.before, 1) && c.before <= c.ceiling + 1);
   const i = c.identity;
   requireProgress(i && i.storeId === r.storeId && i.source === r.source && i.plan === r.plan && i.cleanupRev === r.cleanupRev && i.binding && same(i.binding, r.binding), "conflict");
   return { identity: r, ceiling: c.ceiling, revision: c.revision, before: c.before };
@@ -828,15 +2004,15 @@ function decodeCursor(raw, r) {
 function captureIndex(db, binding, r, cursor) {
   const h = head(db, binding, r);
   const max = Number(db.prepare("SELECT coalesce(max(id),0) AS id FROM captures").get().id);
-  requireProgress(integer(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
+  requireProgress(integer2(max) && max < Number.MAX_SAFE_INTEGER, "corrupt");
   const c = cursor !== undefined ? decodeCursor(cursor, r) : { identity: r, ceiling: max, revision: h.current.revision, before: max + 1 };
   requireProgress(c.revision <= h.current.revision, "conflict");
   const rows = db.prepare(`SELECT ${projection} FROM captures WHERE id<? AND id<=? ORDER BY id DESC LIMIT ?`).all(c.before, c.ceiling, CAPTURE_LIMITS.rows);
   const out = { ...h.identity, data: [], nextCursor: null, exhausted: false, scanned: 0, revision: c.revision, limit: null };
   let before = c.before;
-  for (const row of rows) {
-    const e = entry(row);
-    const qualifies = row.source === r.source && row.plan === r.plan && e.revision <= c.revision;
+  for (const row2 of rows) {
+    const e = entry(row2);
+    const qualifies = row2.source === r.source && row2.plan === r.plan && e.revision <= c.revision;
     if (qualifies) {
       if (out.data.length === CAPTURE_LIMITS.entries) {
         out.limit = "entries";
@@ -860,12 +2036,12 @@ function captureIndex(db, binding, r, cursor) {
   return out;
 }
 function captureComparison(db, binding, r, before, after) {
-  requireProgress(integer(before, 1) && integer(after, 1) && before <= after);
+  requireProgress(integer2(before, 1) && integer2(after, 1) && before <= after);
   const h = head(db, binding, r);
   const read = (id) => {
-    const row = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id, r.source, r.plan);
-    requireProgress(row, "not-found");
-    return { entry: entry(row), bytes: Number(row.bytes) };
+    const row2 = db.prepare(`SELECT ${projection},length(CAST(text AS BLOB)) AS bytes FROM captures WHERE id=? AND source=? AND plan=?`).get(id, r.source, r.plan);
+    requireProgress(row2, "not-found");
+    return { entry: entry(row2), bytes: Number(row2.bytes) };
   };
   const a = read(before), b = before === after ? a : read(after);
   const out = { ...h.identity, before: a.entry, after: b.entry, current: h.current, result: { state: "limited", reason: "bytes" } };
@@ -881,12 +2057,12 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // shared/store.ts
-import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
 import path4 from "node:path";
 
 // shared/plan-task-search.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // shared/change-digest.ts
 var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
@@ -959,25 +2135,25 @@ function aggregatePair(result, before, after, target) {
   for (const { id, reference } of compareTasks(before, after)) {
     for (const facet of reference.facets)
       result.summary.events[facet]++;
-    let row = result.tasks.find((t) => t.id === id);
-    if (!row && result.tasks.length >= DIGEST_LIMITS.tasks) {
+    let row2 = result.tasks.find((t) => t.id === id);
+    if (!row2 && result.tasks.length >= DIGEST_LIMITS.tasks) {
       result.details.omittedTasks = true;
       result.details.omittedTaskCount = null;
       result.details.truncated = true;
       continue;
     }
-    if (!row) {
+    if (!row2) {
       const atTarget = target.items.find((i) => i.id === id && i.kind === "task");
       const latest = atTarget ?? reference.after ?? reference.before;
-      row = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
-      result.tasks.push(row);
+      row2 = { id, title: latest.title, status: latest.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result.tasks.push(row2);
     }
     for (const facet of reference.facets)
-      row.occurrences[facet]++;
-    if (row.references.length < DIGEST_LIMITS.references)
-      row.references.push(reference);
+      row2.occurrences[facet]++;
+    if (row2.references.length < DIGEST_LIMITS.references)
+      row2.references.push(reference);
     else {
-      row.omittedReferences++;
+      row2.omittedReferences++;
       result.details.truncated = true;
     }
   }
@@ -1050,7 +2226,7 @@ function searchMatches(tokens, title, id) {
   return tokens.every((word) => t.includes(word) || key.includes(word));
 }
 var safe = (n, min = 0) => Number.isSafeInteger(n) && Number(n) >= min;
-var hash = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var hash2 = (v) => createHash3("sha256").update(JSON.stringify(v)).digest("hex");
 var fields = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
 function parseCursor(text) {
   requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
@@ -1100,12 +2276,12 @@ function searchWindow(db, binding, options = {}) {
     requireProgress(options[key] === undefined || identifier(options[key]));
   requireProgress(options.lifecycle === undefined || ["active", "finished", "cancelled", "failed"].includes(options.lifecycle));
   requireProgress(options.status === undefined || ["pending", "working", "blocked", "done", "skipped"].includes(options.status));
-  const identity = searchIdentity(db, binding), identityHash = hash(identity), fingerprint = hash([options.q ?? "", options.source ?? null, options.session ?? null, options.lifecycle ?? null, options.status ?? null, archived, limit]);
+  const identity2 = searchIdentity(db, binding), identityHash = hash2(identity2), fingerprint = hash2([options.q ?? "", options.source ?? null, options.session ?? null, options.lifecycle ?? null, options.status ?? null, archived, limit]);
   const c = options.cursor === undefined ? { v: 1, identity: identityHash, fingerprint, after: null, pending: null, gapped: false } : parseCursor(options.cursor);
   requireProgress(c.identity === identityHash && c.fingerprint === fingerprint, "conflict");
   requireProgress(!options.source || (!c.after || c.after.source === options.source) && (!c.pending || c.pending.source === options.source));
   const installed = cleanupInstalled(db);
-  const r = { ...identity, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
+  const r = { ...identity2, fingerprint, hits: [], counts: { matchedPlans: 0, matchingTasks: 0 }, nextCursor: null, exhausted: false, coverage: { kind: "recorded-current", asSearched: true, gapped: c.gapped, skippedRecords: 0, reasons: [] }, work: { planSlots: 0, inspectedItems: 0, membershipRows: 0, inputBytes: 0, outputHits: 0, outputBytes: 0 } };
   const gap = (reason) => {
     c.gapped = r.coverage.gapped = true;
     r.coverage.skippedRecords++;
@@ -1119,14 +2295,14 @@ function searchWindow(db, binding, options = {}) {
   let hitBytes = 0;
   while (r.work.planSlots < SEARCH_LIMITS.plans && r.hits.length < limit) {
     const pending = c.pending;
-    const row = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
+    const row2 = pending ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(pending.source, pending.plan) : options.source ? db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(options.source, c.after?.plan ?? "") : db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1").get(c.after?.source ?? "", c.after?.plan ?? "");
     r.work.planSlots++;
-    if (!row) {
+    if (!row2) {
       requireProgress(!pending, "conflict");
       r.exhausted = true;
       break;
     }
-    const source = String(row.source), id = String(row.id), revision = Number(row.revision), state = cleanup(db, installed, source, id);
+    const source = String(row2.source), id = String(row2.id), revision = Number(row2.revision), state = cleanup(db, installed, source, id);
     if (pending)
       requireProgress(pending.revision === revision && pending.cleanup === state.revision && state.state !== "deleted", "conflict");
     requireProgress(identifier(source) && identifier(id), "corrupt");
@@ -1139,7 +2315,7 @@ function searchWindow(db, binding, options = {}) {
       advance(source, id);
       continue;
     }
-    const bytes = Number(row.bytes);
+    const bytes = Number(row2.bytes);
     if (bytes > SEARCH_LIMITS.inputBytes) {
       gap("oversized-snapshot");
       advance(source, id);
@@ -1250,14 +2426,14 @@ function searchWindow(db, binding, options = {}) {
 function searchState(db, binding, storeId, keys) {
   requireProgress(identifier(storeId) && Array.isArray(keys) && keys.length > 0 && keys.length <= SEARCH_LIMITS.stateKeys && keys.every((k) => k && fields(k, ["source", "plan"]) && identifier(k.source) && identifier(k.plan)));
   requireProgress(new Set(keys.map((k) => JSON.stringify([k.source, k.plan]))).size === keys.length);
-  const identity = searchIdentity(db, binding);
-  requireProgress(identity.storeId === storeId, "conflict");
+  const identity2 = searchIdentity(db, binding);
+  requireProgress(identity2.storeId === storeId, "conflict");
   const installed = cleanupInstalled(db);
   const captureEnabled = Boolean(db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled);
-  return { ...identity, captureEnabled, data: keys.map((k) => {
-    const row = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
-    requireProgress(!row || safe(row.revision, 1), "corrupt");
-    return { ...k, exists: !!row && state.state !== "deleted", revision: row ? Number(row.revision) : null, cleanup: state };
+  return { ...identity2, captureEnabled, data: keys.map((k) => {
+    const row2 = db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(k.source, k.plan), state = cleanup(db, installed, k.source, k.plan);
+    requireProgress(!row2 || safe(row2.revision, 1), "corrupt");
+    return { ...k, exists: !!row2 && state.state !== "deleted", revision: row2 ? Number(row2.revision) : null, cleanup: state };
   }) };
 }
 
@@ -1313,25 +2489,25 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
   while (result.work.planSlots < RESUME_LIMITS.planSlots) {
     if (expired())
       return stop("time");
-    const row = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
+    const row2 = db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM plans WHERE source=?" + (after === null ? "" : " AND id>?") + " ORDER BY id LIMIT 1").get(Math.min(RESUME_LIMITS.snapshotBytes, RESUME_LIMITS.inputBytes - result.work.inputBytes), r.sourceId, ...after === null ? [] : [after]);
     result.work.planSlots++;
-    if (!row)
+    if (!row2)
       return result;
-    requireProgress(identifier(row.id) && Number.isSafeInteger(row.revision) && Number(row.revision) > 0 && Number.isSafeInteger(row.bytes) && Number(row.bytes) > 0, "corrupt");
-    after = row.id;
-    requireProgress(Number(row.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
-    if (Number(row.bytes) > RESUME_LIMITS.inputBytes - result.work.inputBytes)
+    requireProgress(identifier(row2.id) && Number.isSafeInteger(row2.revision) && Number(row2.revision) > 0 && Number.isSafeInteger(row2.bytes) && Number(row2.bytes) > 0, "corrupt");
+    after = row2.id;
+    requireProgress(Number(row2.bytes) <= RESUME_LIMITS.snapshotBytes, "corrupt");
+    if (Number(row2.bytes) > RESUME_LIMITS.inputBytes - result.work.inputBytes)
       return stop("bytes");
-    result.work.inputBytes += Number(row.bytes);
+    result.work.inputBytes += Number(row2.bytes);
     result.work.snapshots++;
     let value;
     try {
-      value = JSON.parse(String(row.snapshot));
+      value = JSON.parse(String(row2.snapshot));
     } catch {
       throw new ProgressError("corrupt");
     }
-    const p = validPlan2(value, r.sourceId, row.id, Number(row.revision));
-    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row.id) : undefined;
+    const p = validPlan2(value, r.sourceId, row2.id, Number(row2.revision));
+    const cleanup2 = installed ? db.prepare("SELECT state,generation FROM cleanup_state WHERE source=? AND plan=?").get(r.sourceId, row2.id) : undefined;
     if (cleanup2)
       requireProgress(["visible", "archived", "deleted"].includes(String(cleanup2.state)) && Number.isSafeInteger(cleanup2.generation) && Number(cleanup2.generation) > 0 && cleanup2.state !== "deleted", "corrupt");
     if (expired())
@@ -1339,11 +2515,11 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
     if (cleanup2?.state === "archived" || p.lifecycle !== "active")
       continue;
     const pointer = { sourceId: r.sourceId, plan: p.id, title: p.title, revision: p.revision };
-    let candidate;
+    let candidate2;
     if (r.parentId === null) {
       if (p.sessionId !== r.sessionId)
         continue;
-      candidate = { ...pointer, scope: "coordinator" };
+      candidate2 = { ...pointer, scope: "coordinator" };
     } else {
       const link = p.links.find((l) => l.sessionId === r.sessionId);
       if (!r.ancestry.includes(p.sessionId) || !link?.itemIds.length)
@@ -1352,27 +2528,20 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
         result.omitted = true;
         continue;
       }
-      candidate = { ...pointer, scope: "assigned", itemIds: [...link.itemIds] };
+      candidate2 = { ...pointer, scope: "assigned", itemIds: [...link.itemIds] };
     }
     if (result.candidates.length === RESUME_LIMITS.candidates) {
       result.omitted = true;
       return stop("candidates");
     }
-    result.candidates.push(candidate);
+    result.candidates.push(candidate2);
   }
   return stop("slots");
 }
 
 // shared/store.ts
-function canonical(value) {
-  if (Array.isArray(value))
-    return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
-  return JSON.stringify(value);
-}
 function digest(value) {
-  return createHash3("sha256").update(value).digest("hex");
+  return createHash4("sha256").update(value).digest("hex");
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -1453,7 +2622,7 @@ class Store {
         this.db.exec("BEGIN IMMEDIATE");
         try {
           this.db.exec(SCHEMA);
-          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID2());
+          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -1474,6 +2643,115 @@ class Store {
   }
   close() {
     this.db.close();
+  }
+  installSubagentRuns() {
+    return this.transaction(true, () => installRuns(this.db));
+  }
+  subagentRunsAvailable() {
+    return this.transaction(false, () => runsInstalled(this.db));
+  }
+  runControl() {
+    return this.transaction(false, () => runControl(this.db));
+  }
+  beginRunObservation() {
+    return this.transaction(true, () => beginObservation(this.db));
+  }
+  runObservationEpoch() {
+    return this.transaction(false, () => observationEpoch(this.db));
+  }
+  runObservationInterrupted(epoch) {
+    return this.transaction(false, () => observationInterrupted(this.db, epoch));
+  }
+  runCaptureUnavailable() {
+    return this.transaction(true, () => runCaptureUnavailable(this.db));
+  }
+  beforeRun(key, actor, tool, input, at, epoch) {
+    return this.transaction(true, () => beforeRun(this.db, key, actor, tool, input, at, epoch));
+  }
+  afterRun(key, generation, child, disposition) {
+    return this.transaction(true, () => {
+      afterRun(this.db, key, generation, child, disposition);
+      const i = reservedIntent(this.db, key);
+      if (!i)
+        return;
+      if (!child || disposition !== "returned" || !this.runControlInTransaction(i.generation)) {
+        settleIntent(this.db, i, undefined, "dispatch-unconfirmed");
+        return;
+      }
+      this.db.exec("SAVEPOINT run_binding");
+      try {
+        requireProgress(i.caller.sourceId === key.source && i.caller.sessionId === key.parent, "binding");
+        const stored = this.db.prepare("SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?").get(i.caller.sourceId, i.caller.sessionId);
+        requireProgress(typeof stored?.actor === "string", "binding");
+        const actor = JSON.parse(stored.actor);
+        requireProgress(actor.sourceId === i.caller.sourceId && actor.sessionId === i.caller.sessionId, "binding");
+        const at = this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch);
+        requireProgress(Number.isSafeInteger(at?.at), "corrupt");
+        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
+        this.db.exec("RELEASE run_binding");
+        settleIntent(this.db, i, receipt);
+      } catch (e) {
+        this.db.exec("ROLLBACK TO run_binding; RELEASE run_binding");
+        settleIntent(this.db, i, undefined, storageError(e).code);
+      }
+    });
+  }
+  runControlInTransaction(generation) {
+    const c = runControl(this.db);
+    return c.enabled && c.generation === generation;
+  }
+  declareDelegation(value, actor) {
+    const r = parseRequest(value);
+    requireProgress(r.op === "delegate");
+    return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
+  }
+  handoff(value, actor, now = Date.now(), epoch) {
+    const r = parseReportRequest(value);
+    requireProgress(r.op === "handoff");
+    requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+    const result = this.transaction(true, () => handoff(this.db, r, actor, now, epoch));
+    if ("error" in result)
+      requireProgress(false, result.error);
+    return result;
+  }
+  observeExecution(event, epoch) {
+    return this.transaction(true, () => {
+      const observed = epoch === undefined ? observationEpoch(this.db) : observationInterrupted(this.db, epoch) ? beginObservation(this.db) : epoch;
+      return observeExecution(this.db, event, observed) ?? observed;
+    });
+  }
+  subagentRuns(request, now) {
+    return this.transaction(false, () => readRuns(this.db, this.readBinding, request, now));
+  }
+  requestRunReconciliation(request) {
+    return this.transaction(true, () => requestReconciliation(this.db, this.readBinding, request));
+  }
+  pendingRunRecovery(source) {
+    return this.transaction(false, () => pendingRecovery(this.db, source));
+  }
+  pendingRunRecoveryAt(source, directory) {
+    return this.transaction(false, () => pendingRecoveryAt(this.db, source, directory));
+  }
+  maintainRunRecovery(source, directory, producer, now = Date.now()) {
+    return this.transaction(true, () => recoveryMaintenance(this.db, source, directory, producer, now));
+  }
+  runRecoveryWork(job) {
+    return this.transaction(false, () => recoveryWork(this.db, job));
+  }
+  saveRunRecoveryWork(job, work) {
+    return this.transaction(true, () => saveRecoveryWork(this.db, job, work));
+  }
+  claimRunRecovery(source, root) {
+    return this.transaction(true, () => claimRecovery(this.db, source, root));
+  }
+  runRecoveryAlive(job) {
+    return this.transaction(false, () => recoveryAlive(this.db, job));
+  }
+  publishRunHistory(job, session) {
+    return this.transaction(true, () => publishHistory(this.db, job, session));
+  }
+  finishRunRecovery(job, state) {
+    return this.transaction(true, () => finishRecovery(this.db, job, state));
   }
   documentCaptures(r, cursor) {
     return this.transaction(false, () => captureIndex(this.db, this.readBinding, r, cursor));
@@ -1500,8 +2778,8 @@ class Store {
     return this.transaction(false, () => {
       if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='loaded_activation'").get())
         return null;
-      const row = this.db.prepare("SELECT fingerprint FROM loaded_activation WHERE source=? AND install_id=?").get(source, installId);
-      return row ? String(row.fingerprint) : null;
+      const row2 = this.db.prepare("SELECT fingerprint FROM loaded_activation WHERE source=? AND install_id=?").get(source, installId);
+      return row2 ? String(row2.fingerprint) : null;
     });
   }
   bindReads(sourceId, verified) {
@@ -1548,35 +2826,36 @@ class Store {
       BEGIN UPDATE delegation_control SET generation=generation+1 WHERE singleton=1; END;`));
   }
   delegationControl() {
-    const row = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
-    return { enabled: row.enabled === 1, generation: Number(row.generation) };
+    const row2 = this.db.prepare("SELECT enabled,generation FROM meta JOIN delegation_control USING(singleton)").get();
+    return { enabled: row2.enabled === 1, generation: Number(row2.generation) };
   }
   validateDeclaration(value, actor) {
     const r = parseRequest(value);
     requireProgress(r.op === "delegate");
-    return this.transaction(false, () => {
-      requireProgress(this.delegationControl().enabled, "disabled");
-      const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
-      requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-      const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
-      requireProgress(state?.state !== "deleted", "not-found");
-      requireProgress(state?.state !== "archived", "closed");
-      const p = this.raw(actor.sourceId, r.plan);
-      requireProgress(p, "not-found");
-      requireProgress(p.sessionId === actor.sessionId, "assignment");
-      requireProgress(p.lifecycle === "active", "closed");
-      requireProgress(p.revision === r.rev, "conflict", p.revision);
-      assignmentIDs(p, r.assign);
-      requireProgress(p.links.every((l) => l.itemIds.every((id) => !r.assign.includes(id))), "assignment");
-      return this.delegationControl().generation;
-    });
+    return this.transaction(false, () => this.validateDeclarationMutation(r, actor));
+  }
+  validateDeclarationMutation(r, actor) {
+    requireProgress(this.delegationControl().enabled, "disabled");
+    const source = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId);
+    requireProgress(actor.verifiedSource && source?.verified === 1 && this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
+    const state = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.plan) : undefined;
+    requireProgress(state?.state !== "deleted", "not-found");
+    requireProgress(state?.state !== "archived", "closed");
+    const p = this.raw(actor.sourceId, r.plan);
+    requireProgress(p, "not-found");
+    requireProgress(p.sessionId === actor.sessionId, "assignment");
+    requireProgress(p.lifecycle === "active", "closed");
+    requireProgress(p.revision === r.rev, "conflict", p.revision);
+    assignmentIDs(p, r.assign);
+    requireProgress(p.links.every((l) => l.itemIds.every((id) => !r.assign.includes(id))), "assignment");
+    return this.delegationControl().generation;
   }
   raw(source, id) {
-    const row = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id);
+    const row2 = this.db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(source, id);
     try {
-      if (!row)
+      if (!row2)
         return;
-      const p = JSON.parse(String(row.snapshot));
+      const p = JSON.parse(String(row2.snapshot));
       requireProgress(p.sourceId === source && p.id === id && Array.isArray(p.items) && Array.isArray(p.links), "corrupt");
       for (const item of p.items)
         if (!currentBinding(item.assignmentBinding, p, item.id))
@@ -1715,19 +2994,19 @@ class Store {
         else
           result.work.intervalSnapshots++;
         const remaining = DIGEST_LIMITS.bytes - result.work.inputBytes;
-        const row = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
-        if (!row) {
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        if (!row2) {
           reason("missing-snapshot");
           return null;
         }
-        if (Number(row.bytes) > remaining) {
+        if (Number(row2.bytes) > remaining) {
           reason("byte-bound");
           return null;
         }
-        result.work.inputBytes += Number(row.bytes);
+        result.work.inputBytes += Number(row2.bytes);
         let p = null;
         try {
-          p = validateDigestSnapshot(JSON.parse(String(row.snapshot)), source, plan, revision);
+          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan, revision);
         } catch {}
         if (!p)
           reason("invalid-snapshot");
@@ -1783,11 +3062,14 @@ class Store {
     });
   }
   apply(value, actor, capture, child, binding) {
+    return this.transaction(true, () => this.applyMutation(value, actor, capture, child, binding));
+  }
+  applyMutation(value, actor, capture, child, binding) {
     const r = parseRequest(value);
     requireProgress(r.op !== "read" && r.op !== "delegate");
-    const hash2 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
+    const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId, ...binding ? { binding } : {} }));
     const receiptStatement = this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?)");
-    return this.transaction(true, () => {
+    return (() => {
       requireProgress(Boolean(this.db.prepare("SELECT enabled FROM meta WHERE singleton=1").get().enabled), "disabled");
       if (binding) {
         requireProgress(r.op === "link" && this.delegationControl().generation === binding.generation, "disabled");
@@ -1801,7 +3083,7 @@ class Store {
       requireProgress(source, "binding");
       const replay = this.db.prepare("SELECT * FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, r.plan, r.oid);
       if (replay) {
-        requireProgress(replay.payload_hash === hash2, "operation-reused");
+        requireProgress(replay.payload_hash === hash3, "operation-reused");
         return JSON.parse(String(replay.receipt));
       }
       const previous = this.raw(actor.sourceId, r.plan);
@@ -1983,13 +3265,13 @@ class Store {
       this.db.prepare("INSERT INTO contributions VALUES(?,?,?,?)").run(actor.sourceId, r.plan, p.revision, JSON.stringify(contribution));
       return saveReceipt({ plan: r.plan, rev: p.revision, structuralRev: p.structuralRevision, ...changed ? { changed } : {} });
       function saveReceipt(receipt) {
-        save(receipt);
+        save2(receipt);
         return receipt;
       }
-      function save(receipt) {
-        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash2, JSON.stringify(receipt));
+      function save2(receipt) {
+        receiptStatement.run(actor.sourceId, r.plan, r.oid, hash3, JSON.stringify(receipt));
       }
-    });
+    })();
   }
 }
 function assignmentIDs(p, ids) {
@@ -2089,7 +3371,7 @@ function fsyncDir(dir) {
 function atomic(file, content, stagingRoot) {
   if (windows)
     stagingRoot = path5.dirname(file);
-  const tmp = path5.join(stagingRoot, `.agent-progress-activation-${randomUUID3()}`);
+  const tmp = path5.join(stagingRoot, `.agent-progress-activation-${randomUUID4()}`);
   try {
     writeFileSync(tmp, content, { mode: 384, flag: "wx" });
     syncFile(tmp);
@@ -2167,13 +3449,13 @@ function verifyFiles(root, expected, extras = []) {
     const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash2] of Object.entries(expected)) {
+  for (const [name, hash3] of Object.entries(expected)) {
     const file = path5.join(root, name);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
       safe2(file);
     const st = lstatSync5(file);
-    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash2, "modified-owned-files");
+    need(st.isFile() && (windows || st.uid === process.getuid?.() && (st.mode & 511) === 384) && digest(readFileSync2(file)) === hash3, "modified-owned-files");
   }
 }
 function inspect(targets) {
@@ -2352,9 +3634,9 @@ function lifecycleInner(action, targets, payload, testBoundary) {
       binding = { ...old.binding, version: payload.version };
       verifyStore(store, binding);
     } else {
-      const source = store.list({ limit: 1 }).sources.find((s) => matchesRetainedSource(s, targets)) ?? { id: randomUUID3(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
+      const source = store.list({ limit: 1 }).sources.find((s) => matchesRetainedSource(s, targets)) ?? { id: randomUUID4(), configRoot: targets.configRoot, dataRoot: targets.dataRoot, verified: true };
       store.registerSource(source);
-      binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID3(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
+      binding = { protocolVersion: VERSION, schemaVersion: VERSION, installId: randomUUID4(), version: payload.version, database: store.file, storeId: store.list({ limit: 1 }).storeId, source };
     }
   } finally {
     store.close();
@@ -2367,7 +3649,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   if (existsSync4(releaseRoot))
     verifyFiles(releaseRoot, releaseHash);
   else {
-    const stage = path5.join(payloadRoot, `.staged-${randomUUID3()}`);
+    const stage = path5.join(payloadRoot, `.staged-${randomUUID4()}`);
     writeFiles(stage, files);
     testBoundary?.("release-staged");
     renameSync(stage, releaseRoot);
@@ -2384,7 +3666,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
     safe2(plugins, true);
     if (windows && !existsSync4(plugins))
       privateDirectory(plugins, true);
-    const stage = path5.join(windows ? plugins : targets.configRoot, `.agent-progress-stage-${randomUUID3()}`);
+    const stage = path5.join(windows ? plugins : targets.configRoot, `.agent-progress-stage-${randomUUID4()}`);
     writeFiles(stage, { ...rootFiles, ".ownership.json": JSON.stringify(manifest) });
     testBoundary?.("before-activation");
     if (!windows)

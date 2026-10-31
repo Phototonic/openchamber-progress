@@ -4,6 +4,7 @@
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { BLOCKER_LIMITS, identifier } from '../../shared/progress.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
+import type { ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
   AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
@@ -51,7 +52,7 @@ export function parseHealth(body: string): HealthView {
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}) };
+  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
 }
 
 export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {
@@ -613,4 +614,57 @@ export function parseCleanupReceipt(body: string, request: CleanupRequest, actio
   const state = action === 'archive' ? 'archived' : action === 'restore' ? 'visible' : 'deleted';
   check(isRec(v) && v.storeId === request.storeId && v.source === request.source && v.plan === request.plan && v.oid === request.oid && isRec(v.cleanup) && v.cleanup.state === state && v.cleanup.revision === request.cleanupRev + 1, 'The cleanup receipt does not match this action.');
   return { state, revision: request.cleanupRev + 1 };
+}
+
+/**
+ * Sub-agent runs revision 1 (docs/contracts.md): a bounded, identity-checked read. Ran, Claimed and
+ * Accepted stay separate facts; none of them is task-report authority.
+ */
+export const RUN_ROUTES = { read: '/v1/subagent-runs', reconcile: '/v1/subagent-runs/reconcile' } as const;
+/** Mirrors RUN_LIMITS (shared/subagent-runs.ts) without importing its storage code into a guest. */
+export const RUN_READ_LIMITS = { page: 50, responseBytes: 262144, cursorBytes: 4096, text: 200, token: 80 } as const;
+export function runQuery(r: RunRequest, cursor?: string) {
+  return query({ storeId: r.storeId, binding: JSON.stringify(r.binding), source: r.source, root: r.root, plan: r.plan, cleanupRev: r.plan === undefined ? undefined : r.cleanupRev, view: r.view, cursor })!;
+}
+export function reconcileBody(r: ReconcileRequest) {
+  return JSON.stringify({ storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: r.source, root: r.root, ...(r.token ? { token: r.token } : {}) });
+}
+const RUN_STATES = ['unknown', 'running', 'succeeded', 'failed', 'interrupted'];
+const DISPATCH_STATES = ['pending', 'returned', 'failed-unconfirmed', 'unconfirmed', 'historical'];
+const RECOVERY_STATES = ['not-requested', 'pending', 'running', 'complete', 'partial', 'failed', 'unavailable'];
+const COVERAGE_REASONS = ['legacy-unavailable', 'history-not-reconciled', 'partial-history', 'capture-loss', 'traversal-limit'];
+const runTime = (v: unknown): v is number => isInt(v) && v >= 0;
+const runText = (v: unknown, max: number = RUN_READ_LIMITS.text) => v === null || (isStr(v) && v.length <= max);
+function runRow(v: unknown): RunRow {
+  check(isRec(v) && isStr(v.id) && identifier(v.id) && (v.kind === 'dispatch' || v.kind === 'historical-session') && isStr(v.source) && isStr(v.parentSessionId) && identifier(v.parentSessionId)
+    && (v.childSessionId === null || isStr(v.childSessionId) && identifier(v.childSessionId)) && [null, 'subagent', 'task'].includes(v.tool as null)
+    && runText(v.agent, RUN_READ_LIMITS.token) && runText(v.description), 'Unreadable sub-agent run.');
+  const d = v.dispatch, p = v.planContext, r = v.ran, c = v.claimed, a = v.accepted;
+  check(d === null || isRec(d) && isStr(d.messageId) && isStr(d.callId) && runTime(d.at), 'Unreadable dispatch.');
+  check(p === null || isRec(p) && isStr(p.plan) && identifier(p.plan) && runTime(p.revision) && runTime(p.observedAt), 'Unreadable plan context.');
+  check(isRec(r) && RUN_STATES.includes(String(r.state)) && DISPATCH_STATES.includes(String(r.dispatchState)) && (r.startedAt === null || runTime(r.startedAt)) && (r.endedAt === null || runTime(r.endedAt)) && runTime(r.updatedAt)
+    && ['dispatch', 'native-event', 'native-session'].includes(String(r.provenance)) && runText(r.errorType, RUN_READ_LIMITS.token) && [null, 'user', 'shutdown', 'superseded', 'inactivity', 'unknown'].includes(r.interruptionReason as null), 'Unreadable run state.');
+  check(c === null || isRec(c) && isStr(c.oid) && ['done', 'partial', 'blocked'].includes(String(c.outcome)) && isStr(c.summary) && c.summary.length <= RUN_READ_LIMITS.text && runTime(c.reportedAt) && isStr(c.sessionId) && ['execution', 'session-only'].includes(String(c.association)), 'Unreadable child claim.');
+  check(a === null || isRec(a) && isStr(a.plan) && runTime(a.revision) && Array.isArray(a.items) && a.items.length <= RUN_READ_LIMITS.page && a.items.every((i) => isRec(i) && isStr(i.id) && STATUSES.includes(i.status as ItemStatus)) && runTime(a.omittedItems), 'Unreadable accepted task facts.');
+  // The service's per-child latest mark (full retained scope). Absent from older services: left
+  // absent, and the roster then withholds per-child refinements. Never true on a childless row.
+  check(v.latestForChild === undefined || typeof v.latestForChild === 'boolean' && (v.childSessionId !== null || v.latestForChild === false), 'Unreadable latest-run mark.');
+  return v as unknown as RunRow;
+}
+export function parseRunRead(body: string, r: RunRequest): RunRead {
+  check(body.length <= RUN_READ_LIMITS.responseBytes && new TextEncoder().encode(body).length <= RUN_READ_LIMITS.responseBytes, 'The sub-agent run reply exceeds its limit.');
+  const v: unknown = JSON.parse(body); check(isRec(v), 'Unreadable sub-agent run reply.'); versions(v);
+  const b = v.sourceBinding;
+  check(v.storeId === r.storeId && v.source === r.source && v.root === r.root && v.plan === (r.plan ?? null) && v.cleanupRev === (r.plan === undefined ? null : r.cleanupRev ?? null) && v.view === (r.view ?? 'useful')
+    && isRec(b) && b.sourceId === r.binding.sourceId && b.verified === r.binding.verified, 'The sub-agent run reading identity changed.');
+  check(['ready', 'unavailable'].includes(String(v.availability)) && (v.subagentRuns === 1) === (v.availability === 'ready') && runTime(v.readAt) && runTime(v.revision), 'Unreadable sub-agent run availability.');
+  const cap = v.capture, rec = v.recovery, counts = v.counts, cov = v.coverage;
+  check(isRec(cap) && typeof cap.enabled === 'boolean' && ['last-known', 'unavailable'].includes(String(cap.state)) && typeof cap.loss === 'boolean', 'Unreadable capture state.');
+  check(isRec(rec) && RECOVERY_STATES.includes(String(rec.state)) && [null, 'budget', 'capture-disabled', 'capture-unavailable'].includes(rec.reason as null) && (rec.token === null || isStr(rec.token) && identifier(rec.token)), 'Unreadable recovery state.');
+  check(isRec(counts) && ['children', 'runs', 'historicalSessions', 'running', 'succeeded', 'failed', 'interrupted', 'unknown'].every((k) => runTime(counts[k])), 'Unreadable run counts.');
+  check(isRec(cov) && cov.scope === 'retained' && typeof cov.complete === 'boolean' && Array.isArray(cov.reasons) && cov.reasons.every((x) => COVERAGE_REASONS.includes(String(x))) && cov.complete === (cov.reasons.length === 0), 'Unreadable run coverage.');
+  check(Array.isArray(v.data) && v.data.length <= RUN_READ_LIMITS.page && (v.nextCursor === null || isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= RUN_READ_LIMITS.cursorBytes), 'Unreadable run page.');
+  const data = v.data.map(runRow);
+  check(new Set(data.map((x) => x.id)).size === data.length && data.every((x) => x.source === r.source), 'A run row does not belong to this reading.');
+  return { ...(v as unknown as RunRead), data };
 }

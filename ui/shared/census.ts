@@ -5,16 +5,16 @@
 // - observation is not progress: activity says what the host last observed for that session, never
 //   that a task advanced, finished or was accepted. A completed turn is "turn ended", not success
 //   (native interruption also reports completed).
-// - freshness: activity is current for 60 s after its last qualifying receipt (live.ts), and unknown
-//   at once when the stream or its coverage is no longer ready. Only the workspace subscription says
-//   that; the ready context's `connection` is the integration link, not host transport. No heartbeat
-//   exists, so a cached ready snapshot during an outage turns unknown only through this expiry.
+// - no expiry: activity is the host's last reported value and stays until the host reports another
+//   one. Silence, elapsed time, unchanged callbacks and resubscription are not state transitions, so a
+//   steady Running child stays Running. Only the workspace subscription says whether the stream is
+//   ready; the ready context's `connection` is the integration link, not host transport.
+// - no receipt times: when this window received a snapshot is never shown as activity time.
 // - bounds (A5): 2,000 records visited, depth 32, 128 retained rows; any cap is a visible gap.
 import { directoryKey } from './path.ts';
 import { planProject, type Activity, type LiveProject, type LiveSession, type LiveSnapshot } from './live.ts';
-import type { ItemView, PlanDetail, PlanView } from './model.ts';
+import type { PlanDetail, PlanView } from './model.ts';
 
-export const FRESH_MS = 60_000;
 export const CENSUS_LIMITS = { records: 2000, depth: 32, rows: 128 } as const;
 
 /**
@@ -35,8 +35,11 @@ export interface ObservedRow {
   activity: Activity;
   outcome: 'completed' | 'failed' | null;
   archived: boolean;
-  seenAt?: number;
-  seenMono?: number;
+  /** Host creation time (ms), display order only; never an activity time. */
+  createdAt?: number;
+  /** Transition sequence numbers seen in this subscription (live.ts); never a time. */
+  idleSeq?: number;
+  activeSeq?: number;
 }
 
 export type Census =
@@ -54,7 +57,7 @@ export const isComplete = (c: Census) => c.state === 'ready' && c.gaps.length ==
 
 const row = (r: LiveSession, depth: number): ObservedRow => ({
   id: r.id, parentId: r.parentId, depth, title: r.title, activity: r.activity, outcome: r.outcome,
-  archived: r.archivedAt !== null, seenAt: r.seenAt, seenMono: r.seenMono,
+  archived: r.archivedAt !== null, createdAt: r.createdAt, idleSeq: r.idleSeq, activeSeq: r.activeSeq,
 });
 
 /**
@@ -69,12 +72,16 @@ export function censusFor(rootId: string | null | undefined, directory: string |
   if (!project) return { state: 'unavailable', rootId, reason: 'no-project' };
   if (live.capped.includes(project.id)) return { state: 'unavailable', rootId, reason: 'not-watched' };
   const entry = live.sessions.get(project.id);
-  // A loading stream with retained rows is the host reloading the same subscription (live.ts):
-  // the rows stay listed, but as partial coverage, so nothing in them is current meanwhile.
+  // A loading stream with retained rows is the host reloading the same subscription (live.ts): the
+  // rows stay listed, and stay current only if their ready snapshot was complete (below).
   if (!entry || (entry.state === 'loading' && !entry.records.length)) return { state: 'loading', rootId };
   if (entry.state === 'error') return { state: 'unavailable', rootId, reason: 'error' };
   const gaps = new Set<CensusGap>();
-  if (entry.state !== 'ready' || !entry.coverage || entry.coverage.some((c) => c.state !== 'ready')) gaps.add('coverage');
+  // Current: a ready snapshot with complete coverage, or the host's periodic loading → ready reload
+  // of the same subscription keeping rows of such a snapshot, while no directory reports failure.
+  // A failed or absent coverage, an incomplete retained snapshot or a refused stream is a gap.
+  const reloadOfComplete = entry.state === 'loading' && entry.reload?.complete === true && !!entry.coverage && !entry.coverage.some((c) => c.state === 'error');
+  if (!reloadOfComplete && (entry.state !== 'ready' || !entry.coverage || entry.coverage.some((c) => c.state !== 'ready'))) gaps.add('coverage');
   let records = entry.records;
   if (records.length > CENSUS_LIMITS.records) { gaps.add('records'); records = records.slice(0, CENSUS_LIMITS.records); }
   const byId = new Map<string, LiveSession | null>();
@@ -121,14 +128,13 @@ export function censusFor(rootId: string | null | undefined, directory: string |
 }
 
 /**
- * What the host last observed for one session. `kind` gives the shape/word, never colour alone.
- * `fresh` false: current activity is unknown; `last` keeps the last observed words for context.
- * `expiresAt` (monotonic): when a fresh label must turn unknown without a repaint.
+ * What the host last reported for one session. `kind` gives the shape/word, never colour alone. It
+ * has no freshness window: it changes only when the host reports a different activity/outcome.
  */
 export type ObservationKind = 'active' | 'waiting' | 'idle' | 'ended' | 'failed' | 'unknown';
-export interface Observation { kind: ObservationKind; label: string; fresh: boolean; last: string | null; expiresAt: number | null }
+export interface Observation { kind: ObservationKind; label: string }
 
-const BASE: Record<Activity, { kind: ObservationKind; label: string }> = {
+const BASE: Record<Activity, Observation> = {
   running: { kind: 'active', label: 'Running' },
   retrying: { kind: 'active', label: 'Retrying' },
   'waiting-permission': { kind: 'waiting', label: 'Waiting for permission' },
@@ -137,20 +143,11 @@ const BASE: Record<Activity, { kind: ObservationKind; label: string }> = {
   unknown: { kind: 'unknown', label: 'State unknown' },
 };
 
-function base(r: Pick<ObservedRow, 'activity' | 'outcome'>) {
+export function observe(r: Pick<ObservedRow, 'activity' | 'outcome'>): Observation {
   // A finished turn is all the host can tell: cancellation also reports "completed".
-  if (r.activity === 'idle' && r.outcome === 'failed') return { kind: 'failed' as const, label: 'Turn failed' };
-  if (r.activity === 'idle' && r.outcome === 'completed') return { kind: 'ended' as const, label: 'Turn ended' };
+  if (r.activity === 'idle' && r.outcome === 'failed') return { kind: 'failed', label: 'Turn failed' };
+  if (r.activity === 'idle' && r.outcome === 'completed') return { kind: 'ended', label: 'Turn ended' };
   return BASE[r.activity] ?? BASE.unknown;
-}
-
-export const UNKNOWN_NOW = 'Unknown now';
-
-export function observe(r: Pick<ObservedRow, 'activity' | 'outcome' | 'seenMono'>, mono: number, current: boolean): Observation {
-  const b = base(r);
-  if (b.kind === 'unknown') return { ...b, fresh: false, last: null, expiresAt: null };
-  if (!current || r.seenMono === undefined || mono - r.seenMono >= FRESH_MS) return { kind: 'unknown', label: UNKNOWN_NOW, fresh: false, last: b.label, expiresAt: null };
-  return { ...b, fresh: true, last: null, expiresAt: r.seenMono + FRESH_MS };
 }
 
 /** Rows whose activity may be shown as current: the census stream is ready and fully covered. */
@@ -170,39 +167,3 @@ export type PlanFacts =
   | { kind: 'no-plan' }
   | { kind: 'unknown'; plan: PlanView }
   | { kind: 'complete'; plan: PlanView; detail: PlanDetail };
-
-export type AssignmentFact =
-  | { state: 'assigned'; count: number; fromDelegation: number }
-  | { state: 'unassigned' }
-  | { state: 'unknown' }
-  | { state: 'no-plan' };
-export type UpdateFact = { state: 'direct' | 'relayed'; at: string | null } | { state: 'none' } | { state: 'unknown' };
-
-/**
- * Assignment from current recorded task facts only (assignee of a task in this plan), with the
- * count bound from a delegation (validated current provenance). Missing or partial detail is
- * unknown, never unassigned; no plan in scope claims nothing about other plans.
- */
-export function assignmentOf(sessionId: string, facts: PlanFacts): AssignmentFact {
-  if (facts.kind === 'no-plan') return { state: 'no-plan' };
-  if (facts.kind === 'unknown') return { state: 'unknown' };
-  const tasks = facts.detail.items.filter((i) => i.kind === 'task' && i.assigneeSessionId === sessionId);
-  if (!tasks.length) return { state: 'unassigned' };
-  return { state: 'assigned', count: tasks.length, fromDelegation: tasks.filter((i) => delegated(i, sessionId, facts.detail.revision)).length };
-}
-
-const delegated = (i: ItemView, sessionId: string, revision: number) => !!i.delegation && i.delegation.childSessionId === sessionId && i.delegation.validAtRevision === revision;
-
-/** Report attribution for this session in this plan: its latest direct or parent-relayed update. */
-export function updateOf(sessionId: string, facts: PlanFacts): UpdateFact {
-  if (facts.kind !== 'complete') return { state: facts.kind === 'no-plan' ? 'none' : 'unknown' };
-  let latest: { mode: 'direct' | 'parent-relay'; revision: number; at: string | null } | null = null;
-  for (const c of facts.detail.contributions) {
-    if (c.attributedSessionId !== sessionId) continue;
-    if (!latest || c.revision >= latest.revision) latest = { mode: c.mode, revision: c.revision, at: c.reportedAt ?? null };
-  }
-  if (latest) return { state: latest.mode === 'parent-relay' ? 'relayed' : 'direct', at: latest.at };
-  // A recorded reporter without a contribution still reported directly; its time is unknown.
-  if (facts.detail.items.some((i) => i.kind === 'task' && i.reporterSessionId === sessionId)) return { state: 'direct', at: null };
-  return { state: 'none' };
-}

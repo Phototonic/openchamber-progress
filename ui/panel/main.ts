@@ -8,7 +8,7 @@ import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
-import { censusBlock } from '../shared/census-view.ts';
+import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { planProject } from '../shared/live.ts';
 
 type Ui = { selected: string | null; setup: SetupUi };
@@ -104,13 +104,16 @@ startView<Ui>({
       if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading }), cleanupBlock(vc, plan));
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
-    // Observed sub-agents of the selected session, kept apart from the reported plan above.
+    // Sub-agents of the selected session, only with a plan in scope, kept apart from the plan above.
     const shown = current(vc);
-    const census = censusBlock({
-      surface: 'panel', census: censusFor(vc.session?.id, vc.directory, vc.live),
-      facts: planFacts(shown, shown ? vc.detail(shown) : null, env.boundSource), verified: read.binding.verified, captureEnabled: read.captureEnabled, env,
-    });
-    if (census) root.append(census);
+    const session = vc.session?.id;
+    if (shown && session && read.binding.verified && shown.sourceId === env.boundSource) {
+      const census = subagentsBlock({
+        surface: 'panel', plan: shown, census: censusFor(session, vc.directory, vc.live), facts: planFacts(shown, vc.detail(shown), env.boundSource),
+        runs: vc.runs(runClaim(read, session, shown)), verified: true, currentSession: session, liveSeq: vc.live.seq, env,
+      });
+      if (census) root.append(census);
+    }
     root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));
   },
 });

@@ -14,12 +14,12 @@ test('built-in-shaped and slim-wrapped-shaped evidence use the same fixed bindin
     const r=f.request();f.declare(r);await f.native();await f.before();await f.after('call-1','message-1','C1',status);await f.close();
     assert.equal(f.plan().revision,2,`${implementation} ${status}`);assert.equal(f.declare(r).delegation.state,'bound');
   });
-  await fixture(async f=>{f.declare();await f.before();await f.after();await f.close();assert.equal(f.plan().revision,1,'binding is never hook-only');});
+  await fixture(async f=>{f.declare();await f.before();await f.after();await f.close();assert.equal(f.plan().revision,2,'structured return and verified ancestry no longer require a message-wide census');});
 });
 
 test('registered production entry declares without document permission, routes caller authority, and binds gate-complete evidence', {timeout:5000},async t=>{
-  const committed=deferred();const originalApply=Store.prototype.apply;
-  t.mock.method(Store.prototype,'apply',function(this:Store,...args:Parameters<Store['apply']>){const receipt=originalApply.apply(this,args);if(args[4])committed.resolve();return receipt;});
+  const committed=deferred();const originalAfter=Store.prototype.afterRun;
+  t.mock.method(Store.prototype,'afterRun',function(this:Store,...args:Parameters<Store['afterRun']>){const result=originalAfter.apply(this,args);if(this.get('source-alpha','plan-alpha')?.revision===2)committed.resolve();return result;});
   const root=fs.mkdtempSync('/tmp/opencode/subagent-entry-');
   for(const p of ['config/opencode','data/opencode','store','project'])fs.mkdirSync(`${root}/${p}`,{recursive:true,mode:0o700});
   const source={id:'source-alpha',verified:true,configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`};
@@ -57,16 +57,16 @@ test('registered production entry declares without document permission, routes c
   } finally {for(const s of streams)s.close();await dispose?.();store.close();for(const[k,v]of saved){if(v===undefined)delete process.env[k];else process.env[k]=v;}fs.rmSync(root,{recursive:true,force:true});}
 });
 
-test('declaration is volatile, authorized, bounded, non-reporting and single-use; empty assignment cancels',async()=>{
+test('declaration is durable, authorized, non-reporting and single-use; second declaration conflicts without replacing',async()=>{
   await fixture(async f=>{
     const before=f.plan(),r=f.request();
-    const reply=f.declare(r);assert.equal(reply.delegation.state,'pending');assert.equal(reply.delegation.lostOnRestart,true);
-    assert.deepEqual(f.plan(),before);assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM receipts').get()!.n,1);
+    const reply=f.declare(r);assert.equal(reply.delegation.state,'pending');assert.equal(reply.delegation.lostOnRestart,false);
+    assert.deepEqual(f.plan(),before);assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM receipts').get()!.n,2);
     assert.deepEqual(f.declare(r),reply);
     assert.throws(()=>f.declare({...r,assign:['task-2']}),/operation-reused/);
     assert.throws(()=>f.declare(f.request({oid:'different'})),/conflict/);
-    assert.equal(f.declare(r).delegation.state,'retired');
-    f.declare(f.request({oid:'fresh'}));f.declare(f.request({oid:'cancel',assign:[]}));
+    assert.equal(f.declare(r).delegation.state,'pending');
+    f.declare(f.request({oid:'cancel',assign:[]}));f.declare(f.request({oid:'fresh'}));f.declare(f.request({oid:'cancel-again',assign:[]}));
     await f.complete();assert.equal(f.plan().revision,1);
     assert.throws(()=>f.declare(f.request({oid:'child'}),f.actor('C1')),/assignment/);
     for(const assign of [['missing'],['group'],['task-1','task-1'],Array(51).fill('task-1')])assert.throws(()=>f.declare(f.request({oid:'invalid',assign})));
@@ -76,35 +76,31 @@ test('declaration is volatile, authorized, bounded, non-reporting and single-use
   });
 });
 
-test('declaration expiry and capture off/on retire authority, including old writer control changes',async()=>{
-  for(const invalidate of ['ttl','control','dispose'])await fixture(async f=>{
+test('no TTL expiry; capture off/on fences durable authority, including old writer control changes',async()=>{
+  for(const invalidate of ['ttl','control'])await fixture(async f=>{
     const r=f.request();f.declare(r);await f.native();await f.before();await f.after();
     if(invalidate==='ttl')f.advance(300_000);
     if(invalidate==='control'){f.store.db.exec('UPDATE meta SET enabled=0;UPDATE meta SET enabled=1');}
-    if(invalidate==='dispose')await f.restart();
-    await f.close();assert.equal(f.plan().revision,1);
+    await f.close();assert.equal(f.plan().revision,invalidate==='ttl'?2:1);
     if(invalidate==='control')assert.equal(f.declare(r).delegation.state,'retired');
   });
 });
 
-test('retained declaration retry cap refuses without arming; other-plan declaration retires instead of replacing',async()=>{
+test('durable receipt retries do not expire or replace another plan intent',async()=>{
   await fixture(async f=>{
     f.seed('plan-beta');f.declare();
     assert.throws(()=>f.declare({op:'delegate',plan:'plan-beta',rev:1,oid:'other',assign:['task-2']}),/conflict/);
-    await f.complete();assert.equal(f.plan().revision,1);
-    for(let n=0;n<255;n++)f.declare(f.request({oid:`cancel-${n}`,assign:[]}));
-    assert.throws(()=>f.declare(f.request({oid:'over-cap'})),/busy/);
-    await f.complete('C1','message-2');assert.equal(f.plan().revision,1);
-    f.advance(300_000);assert.equal(f.declare(f.request({oid:'fresh'})).delegation.state,'pending');
+    await f.complete();assert.equal(f.plan().revision,2);
+    for(let n=0;n<10;n++)f.declare(f.request({oid:`cancel-${n}`,assign:[]}));
+    f.advance(300_000);assert.equal(f.declare(f.request({oid:'fresh',assign:['task-2']})).delegation.state,'pending');
   });
 });
 
-test('restart loses declarations and retry recognition; no old result or failed-message retry can bind',async()=>{
+test('restart retains pending declaration and retry recognition without rearming a bound receipt',async()=>{
   await fixture(async f=>{
     const r=f.request();f.declare(r);await f.native();await f.before();await f.after();
-    await f.reload();await f.close();assert.equal(f.plan().revision,1);
-    await f.after();await f.close();assert.equal(f.plan().revision,1);
-    f.declare(f.request({oid:'redeclared'}));await f.complete('C1','message-fresh');assert.equal(f.plan().revision,2);
+    await f.binding.settled();await f.reload();await f.close();assert.equal(f.plan().revision,2);
+    await f.after();await f.close();assert.equal(f.plan().revision,2);
     await f.reload();assert.equal(f.plan().items[0]!.assignmentBinding!.childSessionId,'C1');
   });
 });
