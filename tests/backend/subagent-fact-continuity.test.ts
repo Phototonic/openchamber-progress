@@ -95,3 +95,49 @@ test('fact continuity never invents provenance for legacy staged or attached cla
     assert.equal(read(f).data[0]!.claimed,null);
   });
 });
+
+test('fact continuity legacy retry commits detachment and retirement even when full staging rejects the report',async()=>{
+  for(const full of [true,false])await fixture(async f=>{
+    seed(f);const claim=f.store.handoff(report,f.actor('C1'),2500).handoff;
+    f.store.db.prepare("UPDATE runs_rows SET payload=json_remove(payload,'$._claimEpochs')").run();
+    if(full)f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(claim));
+    else f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'other-claim','synthetic',JSON.stringify({...claim,oid:'other-claim',association:'session-only'}));
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),5000),/not-found/);
+    assert.equal(read(f).data[0]!.claimed,null,'caller rejection must not restore an unsupported association');
+    const stored=JSON.parse(String(f.store.db.prepare('SELECT payload FROM runs_rows WHERE call=?').get(key.call)!.payload));
+    assert.equal(stored._retiredClaim[0],report.oid);assert.equal(read(f).capture.loss,true);
+    await f.reload();
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),6000),/not-found/);
+    assert.throws(()=>f.store.handoff({...report,summary:'Changed result'},f.actor('C1'),6000),/operation-reused/);
+    assert.equal(read(f).data[0]!.claimed,null);
+  });
+});
+
+test('fact continuity busy or conflicting handoffs commit continuity-loss disclosure without accepting the report',async()=>{
+  for(const refusal of ['busy','conflict'])await fixture(async f=>{
+    seed(f);
+    if(refusal==='busy')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_object('oid','staged-'||i,'outcome','partial','summary','Synthetic result','reportedAt',2500,'sessionId','staged-'||i,'association','session-only') FROM n`).run();
+    else f.store.handoff({...report,oid:'existing-claim'},f.actor('C1'),2500);
+    const epoch=f.store.beginRunObservation();assert.equal(read(f).capture.loss,false);
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),5000,epoch),new RegExp(refusal));
+    assert.equal(read(f).capture.loss,true,'expected refusal must not roll back observation-loss disclosure');
+    assert.equal(read(f).data[0]!.claimed?.oid??null,refusal==='conflict'?'existing-claim':null);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM runs_claims WHERE oid=?').get(report.oid),undefined);
+  });
+});
+
+test('fact continuity storage faults still roll back claim correction and restaging atomically',async()=>{
+  await fixture(async f=>{
+    seed(f);const claim=f.store.handoff(report,f.actor('C1'),2500).handoff;
+    f.store.db.prepare("UPDATE runs_rows SET payload=json_remove(payload,'$._claimEpochs')").run();
+    f.store.db.exec("CREATE TRIGGER synthetic_claim_fault BEFORE UPDATE ON runs_rows BEGIN SELECT RAISE(ABORT,'Synthetic write failure'); END");
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),5000),/storage/);
+    assert.deepEqual(read(f).data[0]!.claimed,claim);
+    assert.equal(read(f).capture.loss,false);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n,0,'a failed row correction must not leave a staged duplicate');
+  });
+});

@@ -979,6 +979,13 @@ An epoch-break terminal that makes an open interval unknown revalidates its clai
 through the same restage/retirement-fence handling as interval refinement. An
 unknown interval cannot own a claim. Unassociated claims remain session-only,
 with loss disclosed when a retained execution cannot safely own the report.
+Expected handoff refusals are returned internally as dispositions, committed,
+then mapped to the existing caller errors outside the transaction. A rejected
+legacy retry therefore cannot restore an unsupported association by rolling back
+its detachment/retirement fence, nor erase continuity-loss disclosure or bounded
+capacity handling. Authentication, corrupt state and storage faults still fail
+within the transaction and roll back; the public handoff reply/error shapes do
+not change.
 Unresolved starts remain keyed by event ID inside the same 4 KiB per-child
 candidate, including earlier starts when one observer runs ahead through a resume.
 Initial association cannot skip an earlier still-unassociated start that could

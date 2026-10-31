@@ -25229,33 +25229,36 @@ function handoff(db, r, actor, now3, epoch = observationEpoch(db)) {
     if (claimFits(db, owner, claim2))
       return { handoff: claim2 };
     loss(db);
-    requireProgress(saveFacts(db, owner, provenStart(db, owner)), "busy");
+    if (!saveFacts(db, owner, provenStart(db, owner)))
+      return { error: "busy" };
   }
   const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid) ?? db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
-  if (oldClaim) {
-    requireProgress(oldClaim.hash === claimHash(r), "operation-reused");
-    requireProgress(false, "not-found");
-  }
+  if (oldClaim)
+    return { error: oldClaim.hash === claimHash(r) ? "not-found" : "operation-reused" };
   const retired = db.prepare("SELECT max(execution) AS execution FROM runs_retired WHERE source=? AND child=?").get(actor.sourceId, actor.sessionId);
   const c = candidate(db, actor.sourceId, actor.sessionId);
   const retained = db.prepare("SELECT json_extract(payload,'$.ran.sequence') AS seq,json_extract(payload,'$.ran.startedAt') AS started_at FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.state')='running' ORDER BY at DESC LIMIT 1").get(actor.sourceId, actor.sessionId);
   const execution = c?.start?.sequence ?? Number(retained?.seq ?? 0);
   const staged = db.prepare("SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1").get(actor.sourceId, actor.sessionId, execution, r.oid);
   if (staged) {
-    requireProgress(staged.oid === r.oid, "conflict");
-    requireProgress(staged.hash === claimHash(r), "operation-reused");
+    if (staged.oid !== r.oid)
+      return { error: "conflict" };
+    if (staged.hash !== claimHash(r))
+      return { error: "operation-reused" };
     return { handoff: stagedClaim(String(staged.payload)).claim };
   }
   const runs = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2").all(actor.sourceId, actor.sessionId).map((v) => row(v.payload));
-  requireProgress(integer(epoch), "invalid");
+  if (!integer(epoch))
+    return { error: "invalid" };
   const epochs = observationInterrupted(db, epoch) ? [] : [epoch];
   const current = claimOwners(db, actor.sourceId, actor.sessionId, { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" }, epochs);
   const currentStart = c?.start?.at ?? retained?.started_at ?? runs.find((v) => v.ran.startedAt !== null)?.ran.startedAt;
   if (current.some((v) => v.claimed) || runs.some((v) => v.claimed && currentStart === v.ran.startedAt))
-    requireProgress(false, "conflict");
+    return { error: "conflict" };
   if (retired?.execution !== null && retired?.execution !== undefined && execution <= Number(retired.execution))
-    requireProgress(false, "not-found");
-  requireProgress(Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && capacity(db), "busy");
+    return { error: "not-found" };
+  if (Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) >= RUN_LIMITS.claims || !capacity(db))
+    return { error: "busy" };
   const claim = { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" };
   db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?)").run(actor.sourceId, actor.sessionId, execution, r.oid, claimHash(r), JSON.stringify({ ...claim, _epochs: epochs }));
   if (current.length === 1) {
@@ -26895,7 +26898,10 @@ class Store {
     const r = parseReportRequest(value3);
     requireProgress(r.op === "handoff");
     requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-    return this.transaction(true, () => handoff(this.db, r, actor, now3, epoch));
+    const result3 = this.transaction(true, () => handoff(this.db, r, actor, now3, epoch));
+    if ("error" in result3)
+      requireProgress(false, result3.error);
+    return result3;
   }
   observeExecution(event, epoch) {
     return this.transaction(true, () => {

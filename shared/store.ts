@@ -108,7 +108,14 @@ export class Store {
   }); }
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
-  handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number) {const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');return this.transaction(true,()=>runs.handoff(this.db,r,actor,now,epoch));}
+  handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number) {
+    const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');
+    const result=this.transaction(true,()=>runs.handoff(this.db,r,actor,now,epoch));
+    // A rejected retry can still have corrected an unsupported association.
+    // Only expected caller refusals cross this boundary; storage faults roll back.
+    if('error' in result)need(false,result.error);
+    return result;
+  }
   observeExecution(event:runs.ExecutionObservation,epoch?:number) { return this.transaction(true,()=>{
     const observed=epoch===undefined?runs.observationEpoch(this.db):runs.observationInterrupted(this.db,epoch)?runs.beginObservation(this.db):epoch;
     return runs.observeExecution(this.db,event,observed)??observed;

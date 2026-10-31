@@ -313,32 +313,38 @@ function reassociateClaims(db:DatabaseSync,source:string,child:string) {
     if(owners.length===1)attachClaim(db,owners[0]!);
   }
 }
-export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number,epoch=observationEpoch(db)) {
+type HandoffDisposition={handoff:NonNullable<RunRow['claimed']>}|{error:'not-found'|'operation-reused'|'busy'|'conflict'|'invalid'};
+/** Expected refusals are mapped after commit so corrections and loss survive. */
+export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number,epoch=observationEpoch(db)):HandoffDisposition {
   need(runControl(db).enabled,'disabled');need(actor.verifiedSource&&identifier(actor.parentId)&&actor.ancestry?.[0]===actor.parentId&&actor.ancestry.length<=32,'assignment');
   need(db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId)?.verified===1,'source-unverified');
   const existing=db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.claimed.oid')=? LIMIT 1").get(actor.sourceId,actor.sessionId,r.oid);
   if(existing){
     const owner=row(existing.payload),claim=owner.claimed!;need(hash([claim.outcome,claim.summary])===claimHash(r),'operation-reused');
     if(claimFits(db,owner,claim))return {handoff:claim};
-    loss(db);need(saveFacts(db,owner,provenStart(db,owner)),'busy');
+    loss(db);if(!saveFacts(db,owner,provenStart(db,owner)))return {error:'busy'};
   }
   const oldClaim=db.prepare('SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?').get(actor.sourceId,actor.sessionId,r.oid)
     ??db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId,actor.sessionId,r.oid);
-  if(oldClaim){need(oldClaim.hash===claimHash(r),'operation-reused');need(false,'not-found');}
+  if(oldClaim)return {error:oldClaim.hash===claimHash(r)?'not-found':'operation-reused'};
   const retired=db.prepare('SELECT max(execution) AS execution FROM runs_retired WHERE source=? AND child=?').get(actor.sourceId,actor.sessionId);
   const c=candidate(db,actor.sourceId,actor.sessionId);
   const retained=db.prepare("SELECT json_extract(payload,'$.ran.sequence') AS seq,json_extract(payload,'$.ran.startedAt') AS started_at FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.state')='running' ORDER BY at DESC LIMIT 1").get(actor.sourceId,actor.sessionId);
   const execution=c?.start?.sequence??Number(retained?.seq??0);
   const staged=db.prepare('SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1').get(actor.sourceId,actor.sessionId,execution,r.oid);
-  if(staged){need(staged.oid===r.oid,'conflict');need(staged.hash===claimHash(r),'operation-reused');return {handoff:stagedClaim(String(staged.payload)).claim};}
+  if(staged){
+    if(staged.oid!==r.oid)return {error:'conflict'};
+    if(staged.hash!==claimHash(r))return {error:'operation-reused'};
+    return {handoff:stagedClaim(String(staged.payload)).claim};
+  }
   const runs=db.prepare('SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2').all(actor.sourceId,actor.sessionId).map(v=>row(v.payload));
-  need(integer(epoch),'invalid');
+  if(!integer(epoch))return {error:'invalid'};
   const epochs=observationInterrupted(db,epoch)?[]:[epoch];
   const current=claimOwners(db,actor.sourceId,actor.sessionId,{oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'},epochs);
   const currentStart=c?.start?.at??retained?.started_at??runs.find(v=>v.ran.startedAt!==null)?.ran.startedAt;
-  if(current.some(v=>v.claimed)||runs.some(v=>v.claimed&&currentStart===v.ran.startedAt))need(false,'conflict');
-  if(retired?.execution!==null&&retired?.execution!==undefined&&execution<=Number(retired.execution))need(false,'not-found');
-  need(Number(db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n)<RUN_LIMITS.claims&&capacity(db),'busy');
+  if(current.some(v=>v.claimed)||runs.some(v=>v.claimed&&currentStart===v.ran.startedAt))return {error:'conflict'};
+  if(retired?.execution!==null&&retired?.execution!==undefined&&execution<=Number(retired.execution))return {error:'not-found'};
+  if(Number(db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n)>=RUN_LIMITS.claims||!capacity(db))return {error:'busy'};
   const claim:NonNullable<RunRow['claimed']>={oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'};
   db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(actor.sourceId,actor.sessionId,execution,r.oid,claimHash(r),JSON.stringify({...claim,_epochs:epochs}));
   if(current.length===1){attachClaim(db,current[0]!);if(current[0]!.claimed)return {handoff:current[0]!.claimed};}
