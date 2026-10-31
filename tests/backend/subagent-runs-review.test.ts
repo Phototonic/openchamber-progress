@@ -8,6 +8,64 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review terminal after an unobserved finish and resume cannot close the pre-gap execution',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.setEnabled(false);
+    f.store.observeExecution({...start,id:'unobserved-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.observeExecution({...start,id:'unobserved-resume',sequence:12,at:5000});
+    f.store.setEnabled(true);
+    const terminal={...start,id:'resumed-failure',sequence:13,at:6000,state:'failed' as const,errorType:'SyntheticError'};
+    f.store.observeExecution(terminal);
+    const result=read(f),run=result.data[0]!;
+    assert.equal(run.ran.state,'unknown');assert.equal(run.ran.startedAt,2000);assert.equal(run.ran.endedAt,null);
+    assert.equal(run.ran.eventId,start.id);assert.equal(run.ran.sequence,start.sequence);assert.equal(run.ran.errorType,null);
+    assert.equal(result.counts.failed,0);assert.equal(result.counts.unknown,1);
+    assert.equal(result.capture.loss,true);assert.ok(result.coverage.reasons.includes('capture-loss'));
+    assert.equal(result.capture.enabled,true);assert.equal(result.availability,'ready');
+    f.store.observeExecution(terminal);assert.deepEqual(read(f).data,result.data,'replay cannot certify the wrong execution');
+    const next={...key,call:'current-generation-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},7000);f.store.afterRun(next,f.store.runControl().generation,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'current-generation-start',sequence:14,at:8000});
+    assert.equal(read(f).data.find((r:RunRow)=>r.dispatch?.callId===key.call)!.ran.state,'unknown','later interval refinement cannot clear capture-gap uncertainty');
+  });
+});
+
+test('review execution spanning a capture toggle accepts only contiguous terminal sequence evidence',async()=>{
+  for(const sequence of [11,13])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.setEnabled(false);f.store.setEnabled(true);
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      reopened.observeExecution({...start,id:'spanning-terminal',sequence,at:6000,state:'succeeded'});
+      const result=read({...f,store:reopened}),run=result.data[0]!,contiguous=sequence===11;
+      assert.equal(run.ran.state,contiguous?'succeeded':'unknown');assert.equal(run.ran.startedAt,2000);
+      assert.equal(run.ran.endedAt,contiguous?6000:null);assert.equal(run.ran.eventId,contiguous?'spanning-terminal':start.id);
+      assert.equal(result.capture.loss,!contiguous);
+      if(!contiguous){
+        // A later-delivered contiguous terminal supplies the missing proof;
+        // the rejected later event must not prevent correction of the old run.
+        reopened.observeExecution({...start,id:'late-contiguous-terminal',sequence:11,at:3000,state:'succeeded'});
+        const corrected=read({...f,store:reopened}).data[0]!;
+        assert.equal(corrected.ran.state,'succeeded');assert.equal(corrected.ran.endedAt,3000);
+      }
+    }finally{reopened.close();}
+  });
+});
+
+test('review delayed non-contiguous terminals remain attributable within one capture generation',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      reopened.observeExecution({...start,id:'delayed-same-generation-terminal',sequence:13,at:600000,state:'succeeded'});
+      const result=read({...f,store:reopened}),run=result.data[0]!;
+      assert.equal(run.ran.state,'succeeded');assert.equal(run.ran.endedAt,600000);
+      assert.equal(run.ran.eventId,'delayed-same-generation-terminal');assert.equal(result.capture.loss,false);
+    }finally{reopened.close();}
+  });
+});
+
 test('review capture generations fence unproven dispatches but preserve proven terminal routing',async()=>{
   for(const proven of [false,true])await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');

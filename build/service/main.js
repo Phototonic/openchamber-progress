@@ -1037,7 +1037,8 @@ function recomputeInterval(db, r, start, end) {
   if (displaced)
     end = null;
   const e = end ?? start;
-  r.ran = { ...r.ran, state: e.state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  const state = !end && r.ran.startedAt !== null && r.ran.state === "unknown" ? "unknown" : e.state;
+  r.ran = { ...r.ran, state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
   let retiredClaim;
   let restaged = false;
   if (r.claimed && !claimFits(db, r, r.claimed, start)) {
@@ -1071,7 +1072,7 @@ function nextStart(db, start) {
   return pending && pending.sequence > start.sequence && (!known || pending.sequence < known.sequence) ? pending : known;
 }
 function routeTerminal(db, e) {
-  const rows = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+  const rows = db.prepare(`SELECT payload,generation,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
   const r = rows[0] && row(rows[0].payload), start = r && provenStart(db, r);
   if (!r || !start)
@@ -1100,6 +1101,14 @@ function routeTerminal(db, e) {
     return { handled: true };
   if (prior && prior.sequence < e.sequence)
     return { handled: false };
+  if (rows[0].generation !== runControl(db).generation && e.sequence !== start.sequence + 1) {
+    if (r.ran.endedAt === null && r.ran.state !== "unknown") {
+      r.ran.state = "unknown";
+      save(db, r);
+    }
+    loss(db);
+    return { handled: false };
+  }
   return adopt(db, r, { start, end: e }) ? { handled: true, ...prior ? { displaced: prior } : {} } : { handled: false };
 }
 function correlate(db, source, child) {

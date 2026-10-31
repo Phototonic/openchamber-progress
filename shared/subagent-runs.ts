@@ -299,7 +299,7 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
   if(r.ran.startedAt===null){
     const generation=runControl(db).generation;
     // Capture gaps cannot prove which later execution belongs to an old call.
-    // Proven starts still route their terminals across generation changes.
+    // Terminal routing separately requires continuity across generation changes.
     if(db.prepare('SELECT generation FROM runs_rows WHERE id=?').get(r.id)?.generation!==generation)return false;
     if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,generation,c.start.at))return false;
     // Only still-unassociated calls can compete for a new start. A proven
@@ -323,7 +323,10 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
   const displaced=end&&(wrongOwner||badClock)?end:null;
   if(displaced)end=null;
   const e=end??start;
-  r.ran={...r.ran,state:e.state,startedAt:start.at,endedAt:end?.at??null,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
+  // Refining bounds cannot clear an unresolved capture-gap outcome. Only a
+  // terminal with proven ownership may replace it with a known outcome.
+  const state=!end&&r.ran.startedAt!==null&&r.ran.state==='unknown'?'unknown':e.state;
+  r.ran={...r.ran,state,startedAt:start.at,endedAt:end?.at??null,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
   let retiredClaim:ClaimFence|undefined;
   let restaged=false;
   if(r.claimed&&!claimFits(db,r,r.claimed,start)){
@@ -361,7 +364,7 @@ function nextStart(db:DatabaseSync,start:ExecutionObservation):ExecutionObservat
   return pending&&pending.sequence>start.sequence&&(!known||pending.sequence<known.sequence)?pending:known;
 }
 function routeTerminal(db:DatabaseSync,e:ExecutionObservation):{handled:boolean;displaced?:ExecutionObservation} {
-  const rows=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+  const rows=db.prepare(`SELECT payload,generation,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source,e.child,e.sequence);
   const r=rows[0]&&row(rows[0].payload),start=r&&provenStart(db,r);
   if(!r||!start)return {handled:false};
@@ -376,6 +379,13 @@ function routeTerminal(db:DatabaseSync,e:ExecutionObservation):{handled:boolean;
   const prior=provenEnd(r);
   if(prior?.sequence===e.sequence)return {handled:true};
   if(prior&&prior.sequence<e.sequence)return {handled:false};
+  // A capture gap may hide a terminal and another start. The dispatch generation
+  // is also its proven start's generation (initial adoption fences them together).
+  // Adjacent durable sequence numbers positively rule out intervening events.
+  if(rows[0]!.generation!==runControl(db).generation&&e.sequence!==start.sequence+1){
+    if(r.ran.endedAt===null&&r.ran.state!=='unknown'){r.ran.state='unknown';save(db,r);}
+    loss(db);return {handled:false};
+  }
   return adopt(db,r,{start,end:e})?{handled:true,...(prior?{displaced:prior}:{})}:{handled:false};
 }
 function correlate(db:DatabaseSync,source:string,child:string) {

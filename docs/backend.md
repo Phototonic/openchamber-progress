@@ -932,8 +932,19 @@ A proven start must follow dispatch and a unique child interval must exist.
 Initial association requires the dispatch's capture generation to match the
 observed start's current generation. A dispatch with no proven start before a
 capture gap stays unknown; a later independent resume cannot fill that gap.
-Such stale dispatches do not compete with new-generation calls. Already-proven
-starts still accept matching terminals after capture is re-enabled.
+Such stale dispatches do not compete with new-generation calls. Terminal
+ownership also requires capture continuity: the proven start must share the
+current capture generation, or the terminal's durable sequence must immediately
+follow that start's sequence. The latter positively rules out an unobserved finish
+and resume during a capture gap. Otherwise the terminal stays unassociated with
+capture loss disclosed; an unresolved old run becomes unknown, retaining its
+start evidence but no invented end time, error or outcome. Later interval
+refinement alone cannot clear this uncertainty; a terminal with proven ownership
+can. Already-proven outcomes and their duplicate terminals remain valid.
+Within one generation, delayed/non-contiguous terminals still use the ordinary
+sequence interval checks, with no receipt-time expiry. A real execution spanning
+a capture toggle may remain unknown without contiguous evidence; this is a
+disclosed evidence gap, not an inferred failure or success.
 Pending childless calls compete only when admitted in the same generation at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
