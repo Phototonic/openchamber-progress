@@ -129,5 +129,5 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
     }catch{unavailable();}finally{draining=false;}
   }
   const timer=setInterval(()=>{void drain();},3000);timer.unref();
-  return {before,after,event,drain,observationStarted,unavailable,settled:async()=>{await Promise.all([...lookups]);},dispose(){if(disposed)return;disposed=true;try{store.beginRunObservation();}catch{}abort.abort();clearInterval(timer);}};
+  return {before,after,event,drain,currentEpoch,observationStarted,unavailable,settled:async()=>{await Promise.all([...lookups]);},dispose(){if(disposed)return;disposed=true;try{store.beginRunObservation();}catch{}abort.abort();clearInterval(timer);}};
 }

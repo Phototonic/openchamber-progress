@@ -967,6 +967,18 @@ create another execution nor make the interval ambiguous. Initial association
 matches the dispatch's own epoch, while terminal continuity requires a shared
 observed epoch between that exact start and terminal. Evidence overflow breaks
 observation continuity with loss disclosed rather than permitting a later guess.
+One shared continuity predicate governs dispatch/start association, terminal
+ownership and handoff eligibility: facts need a common observed epoch with their
+execution start, or explicit adjacent native sequences. Handoffs have no native
+sequence and cannot infer contiguity from report time. The reporting companion
+captures its own epoch and report time before asynchronous identity resolution;
+another companion's newer allocator token is not observation evidence.
+Private claim provenance survives staging, attachment, retries and restaging;
+legacy claims without it remain session-only rather than acquiring current proof.
+An epoch-break terminal that makes an open interval unknown revalidates its claim
+through the same restage/retirement-fence handling as interval refinement. An
+unknown interval cannot own a claim. Unassociated claims remain session-only,
+with loss disclosed when a retained execution cannot safely own the report.
 Unresolved starts remain keyed by event ID inside the same 4 KiB per-child
 candidate, including earlier starts when one observer runs ahead through a resume.
 Initial association cannot skip an earlier still-unassociated start that could
@@ -979,6 +991,8 @@ not left as permanently unwritable pending work. Row growth first drops optional
 agent/description hints and a cached accepted-task projection (reads can re-project
 current assignments). If needed it also empties optional observer-epoch proof
 sets, disclosing the continuity loss; empty sets prove no observer continuity.
+An attached claim retains at least its common start/claim epoch proof even under
+byte pressure; pruning optional proof cannot leave an unsupported association.
 Native start identity, the immutable dispatch epoch, authored claims and retirement
 fences are preserved. An observation that still cannot fit is dropped/disclosed,
 without retrying the same failed payload or certifying an unstored outcome.

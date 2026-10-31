@@ -24944,6 +24944,17 @@ function epochList(value3) {
   requireProgress(Array.isArray(value3) && value3.length <= RUN_LIMITS.observationEpochs && value3.every(integer) && new Set(value3).size === value3.length, "corrupt");
   return value3;
 }
+function factContinuity(startEpochs, factEpochs, startSequence, factSequence) {
+  return factEpochs.some((epoch) => startEpochs.includes(epoch)) || startSequence !== undefined && factSequence === startSequence + 1;
+}
+function stagedClaim(value3) {
+  const { _epochs, ...claim } = JSON.parse(value3);
+  return { claim: claimValue(claim), epochs: _epochs === undefined ? [] : epochList(_epochs) };
+}
+function claimEpochs(db, r) {
+  const value3 = db.prepare("SELECT json_extract(payload,'$._claimEpochs') AS epochs FROM runs_rows WHERE id=?").get(r.id);
+  return value3?.epochs ? epochList(JSON.parse(String(value3.epochs))) : [];
+}
 function eventEpochs(c, kind) {
   const list = c[kind === "start" ? "startEpochs" : "endEpochs"], single = c[kind === "start" ? "startEpoch" : "endEpoch"];
   return list !== undefined ? epochList(list) : single !== undefined ? epochList([single]) : [];
@@ -24998,7 +25009,7 @@ function row(value3) {
     requireProgress(integer(r._epoch), "corrupt");
     delete r._epoch;
   }
-  for (const key of ["_startEpochs", "_endEpochs"])
+  for (const key of ["_startEpochs", "_endEpochs", "_claimEpochs"])
     if (Object.hasOwn(r, key)) {
       epochList(r[key]);
       delete r[key];
@@ -25026,7 +25037,8 @@ function save(db, r, retiredClaim, provenStart, evidence) {
   const startEpochs = evidence?.start ?? (existing?.start_epochs ? epochList(JSON.parse(String(existing.start_epochs))) : undefined);
   const endEpochs = r.ran.endedAt === null ? undefined : evidence?.end ?? (existing?.event === r.ran.eventId && existing?.end_epochs ? epochList(JSON.parse(String(existing.end_epochs))) : undefined);
   const refresh = existing?.refresh ? JSON.parse(String(existing.refresh)) : undefined;
-  const payload = { ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...refresh ? { _refresh: [refresh[0], Number(refresh[1])] } : {} };
+  const claims = r.claimed ? evidence?.claim ?? claimEpochs(db, r) : undefined;
+  const payload = { ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...claims ? { _claimEpochs: claims } : {}, ...refresh ? { _refresh: [refresh[0], Number(refresh[1])] } : {} };
   let text = JSON.stringify(payload);
   if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
     r.agent = null;
@@ -25039,8 +25051,11 @@ function save(db, r, retiredClaim, provenStart, evidence) {
     text = JSON.stringify(payload);
   }
   if (Buffer.byteLength(text) > RUN_LIMITS.dtoBytes) {
+    const proof = claims?.find((epoch) => startEpochs?.includes(epoch));
     if (payload._startEpochs)
-      payload._startEpochs = [];
+      payload._startEpochs = proof === undefined ? [] : [proof];
+    if (payload._claimEpochs)
+      payload._claimEpochs = proof === undefined ? [] : [proof];
     if (payload._endEpochs)
       payload._endEpochs = [];
     runCaptureUnavailable(db);
@@ -25160,29 +25175,36 @@ function settleIntent(db, i, receipt, reason) {
 function claimHash(r) {
   return hash2([r.outcome, r.summary]);
 }
-function claimFits(db, r, claim, start = provenStart(db, r)) {
+function claimFits(db, r, claim, epochs = claimEpochs(db, r), start = provenStart(db, r)) {
   if (!start || claim.reportedAt < start.at || r.ran.endedAt !== null && claim.reportedAt > r.ran.endedAt)
     return false;
+  if (r.ran.state === "unknown" || !factContinuity(runEventEpochs(db, r, "start"), epochs)) {
+    loss(db);
+    return false;
+  }
   const next = nextStart(db, start);
   return !next || next.at >= start.at && claim.reportedAt < next.at;
 }
-function claimOwners(db, source, child, claim) {
+function claimOwners(db, source, child, claim, epochs) {
   return db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
     AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?)
-    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source, child, claim.reportedAt, claim.reportedAt).map((v) => row(v.payload)).filter((r) => claimFits(db, r, claim));
+    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source, child, claim.reportedAt, claim.reportedAt).map((v) => row(v.payload)).filter((r) => claimFits(db, r, claim, epochs));
 }
 function attachClaim(db, r) {
   if (!r.childSessionId || r.ran.startedAt === null || r.claimed)
     return;
   const claims = db.prepare("SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2").all(r.source, r.childSessionId);
-  const matching = claims.filter((c) => claimFits(db, r, claimValue(JSON.parse(String(c.payload)))) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence)));
+  const matching = claims.filter((c) => {
+    const { claim: claim2, epochs: epochs2 } = stagedClaim(String(c.payload));
+    return claimFits(db, r, claim2, epochs2) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence));
+  });
   if (matching.length !== 1)
     return;
-  const claim = claimValue(JSON.parse(String(matching[0].payload))), owners = claimOwners(db, r.source, r.childSessionId, claim);
+  const { claim, epochs } = stagedClaim(String(matching[0].payload)), owners = claimOwners(db, r.source, r.childSessionId, claim, epochs);
   if (owners.length !== 1 || owners[0].id !== r.id)
     return;
   r.claimed = { ...claim, association: "execution" };
-  if (!save(db, r)) {
+  if (!save(db, r, undefined, undefined, { claim: epochs })) {
     r.claimed = null;
     return;
   }
@@ -25190,21 +25212,24 @@ function attachClaim(db, r) {
 }
 function reassociateClaims(db, source, child) {
   for (const staged of db.prepare("SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?").all(source, child, RUN_LIMITS.claims)) {
-    const claim = claimValue(JSON.parse(String(staged.payload)));
-    const owners = claimOwners(db, source, child, claim);
+    const { claim, epochs } = stagedClaim(String(staged.payload));
+    const owners = claimOwners(db, source, child, claim, epochs);
     if (owners.length === 1)
       attachClaim(db, owners[0]);
   }
 }
-function handoff(db, r, actor, now3) {
+function handoff(db, r, actor, now3, epoch = observationEpoch(db)) {
   requireProgress(runControl(db).enabled, "disabled");
   requireProgress(actor.verifiedSource && identifier2(actor.parentId) && actor.ancestry?.[0] === actor.parentId && actor.ancestry.length <= 32, "assignment");
   requireProgress(db.prepare("SELECT verified FROM sources WHERE id=?").get(actor.sourceId)?.verified === 1, "source-unverified");
   const existing = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.claimed.oid')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
   if (existing) {
-    const claim2 = row(existing.payload).claimed;
+    const owner = row(existing.payload), claim2 = owner.claimed;
     requireProgress(hash2([claim2.outcome, claim2.summary]) === claimHash(r), "operation-reused");
-    return { handoff: claim2 };
+    if (claimFits(db, owner, claim2))
+      return { handoff: claim2 };
+    loss(db);
+    requireProgress(saveFacts(db, owner, provenStart(db, owner)), "busy");
   }
   const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid) ?? db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
   if (oldClaim) {
@@ -25219,10 +25244,12 @@ function handoff(db, r, actor, now3) {
   if (staged) {
     requireProgress(staged.oid === r.oid, "conflict");
     requireProgress(staged.hash === claimHash(r), "operation-reused");
-    return { handoff: claimValue(JSON.parse(String(staged.payload))) };
+    return { handoff: stagedClaim(String(staged.payload)).claim };
   }
   const runs = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2").all(actor.sourceId, actor.sessionId).map((v) => row(v.payload));
-  const current = claimOwners(db, actor.sourceId, actor.sessionId, { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" });
+  requireProgress(integer(epoch), "invalid");
+  const epochs = observationInterrupted(db, epoch) ? [] : [epoch];
+  const current = claimOwners(db, actor.sourceId, actor.sessionId, { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" }, epochs);
   const currentStart = c?.start?.at ?? retained?.started_at ?? runs.find((v) => v.ran.startedAt !== null)?.ran.startedAt;
   if (current.some((v) => v.claimed) || runs.some((v) => v.claimed && currentStart === v.ran.startedAt))
     requireProgress(false, "conflict");
@@ -25230,12 +25257,14 @@ function handoff(db, r, actor, now3) {
     requireProgress(false, "not-found");
   requireProgress(Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && capacity(db), "busy");
   const claim = { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" };
-  db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?)").run(actor.sourceId, actor.sessionId, execution, r.oid, claimHash(r), JSON.stringify(claim));
+  db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?)").run(actor.sourceId, actor.sessionId, execution, r.oid, claimHash(r), JSON.stringify({ ...claim, _epochs: epochs }));
   if (current.length === 1) {
     attachClaim(db, current[0]);
     if (current[0].claimed)
       return { handoff: current[0].claimed };
   }
+  if (runs.some((v) => v.ran.startedAt !== null))
+    loss(db);
   bump(db);
   return { handoff: claim };
 }
@@ -25314,7 +25343,7 @@ function adopt(db, r, c) {
   if (r.ran.startedAt === null) {
     const generation = runControl(db).generation;
     const stored = db.prepare("SELECT generation,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
-    if (stored?.generation !== generation || !integer(stored.epoch) || !eventEpochs(c, "start").includes(stored.epoch))
+    if (stored?.generation !== generation || !integer(stored.epoch) || !factContinuity([stored.epoch], eventEpochs(c, "start")))
       return false;
     const staged = candidate(db, r.source, r.childSessionId);
     if (staged && candidateStarts(staged).some((s) => s.event.sequence < c.start.sequence && s.event.at >= r.dispatch.at && !db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._startEvent[0]')=? LIMIT 1").get(r.source, r.childSessionId, s.event.id)))
@@ -25328,6 +25357,10 @@ function adopt(db, r, c) {
       return false;
   }
   const e = c.end && c.end.sequence > c.start.sequence && c.end.at >= c.start.at ? c.end : c.start;
+  if (e !== c.start && !factContinuity(eventEpochs(c, "start"), eventEpochs(c, "end"), c.start.sequence, e.sequence)) {
+    loss(db);
+    return false;
+  }
   if (r.ran.endedAt !== null) {
     if (e === c.start || e.sequence >= Number(r.ran.sequence))
       return false;
@@ -25349,28 +25382,31 @@ function recomputeInterval(db, r, start, end, evidence) {
   const e = end ?? start;
   const state = !end && r.ran.startedAt !== null && r.ran.state === "unknown" ? "unknown" : e.state;
   r.ran = { ...r.ran, state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  return { saved: saveFacts(db, r, start, evidence), displaced };
+}
+function saveFacts(db, r, start, evidence) {
   let retiredClaim;
   let restaged = false;
   const detachedClaim = r.claimed;
-  if (r.claimed && !claimFits(db, r, r.claimed, start)) {
+  if (r.claimed && !claimFits(db, r, r.claimed, claimEpochs(db, r), start)) {
     const claim = { ...r.claimed, association: "session-only" };
     const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
-    restaged = room && Boolean(db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash2([claim.outcome, claim.summary]), JSON.stringify(claim)).changes);
+    restaged = room && Boolean(db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash2([claim.outcome, claim.summary]), JSON.stringify({ ...claim, _epochs: claimEpochs(db, r) })).changes);
     if (!restaged) {
       retiredClaim = [claim.oid, hash2([claim.outcome, claim.summary])];
       loss(db);
     }
     r.claimed = null;
   }
-  if (!save(db, r, retiredClaim, [start.id, start.sequence], evidence)) {
+  if (!save(db, r, retiredClaim, start ? [start.id, start.sequence] : undefined, evidence)) {
     if (restaged)
-      db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?").run(r.source, start.child, detachedClaim.oid);
-    return { saved: false, displaced: null };
+      db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?").run(r.source, r.childSessionId, detachedClaim.oid);
+    return false;
   }
   attachClaim(db, r);
-  if (restaged)
-    reassociateClaims(db, r.source, start.child);
-  return { saved: true, displaced };
+  if (restaged && r.childSessionId)
+    reassociateClaims(db, r.source, r.childSessionId);
+  return true;
 }
 function provenStart(db, r) {
   const stored = db.prepare("SELECT json_extract(payload,'$._startEvent') AS start FROM runs_rows WHERE id=?").get(r.id);
@@ -25425,10 +25461,10 @@ function routeTerminal(db, e, observed) {
   if (prior && prior.sequence < e.sequence)
     return { handled: false };
   const startEpochs = runEventEpochs(db, r, "start");
-  if ((rows[0].generation !== runControl(db).generation || !observed.some((epoch) => startEpochs.includes(epoch))) && e.sequence !== start.sequence + 1) {
+  if (!factContinuity(rows[0].generation === runControl(db).generation ? startEpochs : [], observed, start.sequence, e.sequence)) {
     if (r.ran.endedAt === null && r.ran.state !== "unknown") {
       r.ran.state = "unknown";
-      save(db, r);
+      saveFacts(db, r, start);
     }
     refreshGapOutcome(db, r, e);
     loss(db);
@@ -26855,11 +26891,11 @@ class Store {
     requireProgress(r.op === "delegate");
     return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
   }
-  handoff(value3, actor, now3 = Date.now()) {
+  handoff(value3, actor, now3 = Date.now(), epoch) {
     const r = parseReportRequest(value3);
     requireProgress(r.op === "handoff");
     requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-    return this.transaction(true, () => handoff(this.db, r, actor, now3));
+    return this.transaction(true, () => handoff(this.db, r, actor, now3, epoch));
   }
   observeExecution(event, epoch) {
     return this.transaction(true, () => {
@@ -28293,7 +28329,7 @@ function createRunCapture(ctx, options2) {
     drain();
   }, 3000);
   timer.unref();
-  return { before, after, event, drain, observationStarted, unavailable, settled: async () => {
+  return { before, after, event, drain, currentEpoch, observationStarted, unavailable, settled: async () => {
     await Promise.all([...lookups]);
   }, dispose() {
     if (disposed)
@@ -28346,7 +28382,7 @@ async function registerDelegation(ctx, options2) {
     } catch {
       capture.unavailable();
     }
-    return { declare: (value3, actor) => options2.store.declareDelegation(value3, actor), dispose, drainRuns: capture.drain, settledRuns: capture.settled, settled: capture.settled };
+    return { declare: (value3, actor) => options2.store.declareDelegation(value3, actor), dispose, currentEpoch: capture.currentEpoch, drainRuns: capture.drain, settledRuns: capture.settled, settled: capture.settled };
   } catch (e) {
     await dispose();
     throw e;
@@ -28424,10 +28460,11 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         execute: async (value3, caller) => {
           try {
             const r = parseReportRequest(value3);
+            const observedAt = Date.now(), observedEpoch = r.op === "handoff" ? delegation.currentEpoch() : undefined;
             const actor = await identity4(caller.sessionID, caller.agent);
             if (r.op === "handoff") {
               const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive: () => true, signal: new AbortController().signal, sameScope: true });
-              return { content: JSON.stringify(store.handoff(r, child2)) };
+              return { content: JSON.stringify(store.handoff(r, child2, observedAt, observedEpoch)) };
             }
             if (r.op === "read") {
               const view = store.detail(actor.sourceId, r.plan, r.page ?? 0);

@@ -320,7 +320,7 @@ test('review delayed terminal detaches an out-of-interval handoff and reattaches
     assert.equal(f.store.handoff(report,f.actor('C1'),4000).handoff.association,'execution');
     f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
     assert.equal(read(f).data[0]!.ran.state,'succeeded');assert.equal(read(f).data[0]!.claimed,null,'a closed execution cannot retain a later report');
-    const staged=JSON.parse(String(f.store.db.prepare("SELECT payload FROM runs_claims WHERE child='C1'").get()!.payload));
+    const {_epochs,...staged}=JSON.parse(String(f.store.db.prepare("SELECT payload FROM runs_claims WHERE child='C1'").get()!.payload));
     assert.equal(staged.oid,report.oid);assert.equal(staged.association,'session-only');assert.equal(staged.reportedAt,4000);
     assert.equal(f.store.handoff(report,f.actor('C1'),4100).handoff.association,'session-only');
     assert.throws(()=>f.store.handoff({...report,oid:'duplicate-report'},f.actor('C1'),4100),/conflict/);

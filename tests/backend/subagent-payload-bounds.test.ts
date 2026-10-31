@@ -72,7 +72,7 @@ test('payload-bound epoch overflow drops continuity proof without losing authore
     const result=load();assert.equal(result.ran.state,'failed');assert.equal(result.claimed.summary,report.summary);
     assert.deepEqual(result._retiredClaim,value._retiredClaim);assert.deepEqual(result._startEvent,value._startEvent);
     assert.equal(result._epoch,epoch);assert.ok(bytes(result)<=RUN_LIMITS.dtoBytes);
-    assert.deepEqual(result._startEpochs,[]);assert.deepEqual(result._endEpochs,[]);
+    assert.ok(result._startEpochs.some((epoch:number)=>result._claimEpochs.includes(epoch)),'an execution claim retains minimum continuity proof');assert.deepEqual(result._endEpochs,[]);
     const response=f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:source.id,verified:true},source:source.id,root:rootId,plan,cleanupRev:0});
     assert.equal(response.capture.loss,true);
   });

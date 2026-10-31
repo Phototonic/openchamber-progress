@@ -33,10 +33,10 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
     editor.add({ name:'report',description:`Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,input:REPORT_SCHEMA,options:{namespace:'agent_progress',codemode:false},
       execute: async (value,caller) => {
         try {
-           const r = parseReportRequest(value); const actor = await identity(caller.sessionID,caller.agent);
+           const r = parseReportRequest(value); const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);
            if(r.op==='handoff') {
              const child=await sessionIdentity(ctx,b.source,caller.sessionID,caller.agent,{alive:()=>true,signal:new AbortController().signal,sameScope:true});
-             return {content:JSON.stringify(store.handoff(r,child))};
+             return {content:JSON.stringify(store.handoff(r,child,observedAt,observedEpoch))};
            }
           if (r.op === 'read') {
             const view=store.detail(actor.sourceId,r.plan,r.page??0);

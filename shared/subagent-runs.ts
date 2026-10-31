@@ -128,6 +128,18 @@ function startEvent(value:unknown):StartEvent {
 function epochList(value:unknown):number[] {
   need(Array.isArray(value)&&value.length<=RUN_LIMITS.observationEpochs&&value.every(integer)&&new Set(value).size===value.length,'corrupt');return value as number[];
 }
+/** Every execution fact needs common observation provenance or positive adjacency. */
+function factContinuity(startEpochs:number[],factEpochs:number[],startSequence?:number,factSequence?:number):boolean {
+  return factEpochs.some(epoch=>startEpochs.includes(epoch))||startSequence!==undefined&&factSequence===startSequence+1;
+}
+function stagedClaim(value:string) {
+  const {_epochs,...claim}=JSON.parse(value);
+  return {claim:claimValue(claim),epochs:_epochs===undefined?[]:epochList(_epochs)};
+}
+function claimEpochs(db:DatabaseSync,r:RunRow):number[] {
+  const value=db.prepare("SELECT json_extract(payload,'$._claimEpochs') AS epochs FROM runs_rows WHERE id=?").get(r.id);
+  return value?.epochs?epochList(JSON.parse(String(value.epochs))):[];
+}
 function eventEpochs(c:Candidate,kind:'start'|'end'):number[] {
   const list=c[kind==='start'?'startEpochs':'endEpochs'],single=c[kind==='start'?'startEpoch':'endEpoch'];
   return list!==undefined?epochList(list):single!==undefined?epochList([single]):[];
@@ -154,12 +166,12 @@ function claimFence(value:unknown):ClaimFence {
 }
 function row(value:unknown):RunRow {
   need(typeof value==='string'&&Buffer.byteLength(value)<=RUN_LIMITS.dtoBytes,'corrupt');
-  let r:RunRow&{_retiredClaim?:unknown;_startEvent?:unknown;_epoch?:unknown;_startEpochs?:unknown;_endEpochs?:unknown;_refresh?:unknown};try{r=JSON.parse(value);}catch{need(false,'corrupt');}
+  let r:RunRow&{_retiredClaim?:unknown;_startEvent?:unknown;_epoch?:unknown;_startEpochs?:unknown;_endEpochs?:unknown;_claimEpochs?:unknown;_refresh?:unknown};try{r=JSON.parse(value);}catch{need(false,'corrupt');}
   need(obj(r!)&&identifier(r.id)&&identifier(r.source)&&identifier(r.parentSessionId)&&(r.childSessionId===null||identifier(r.childSessionId))&&obj(r.ran)&&['unknown','running','succeeded','failed','interrupted'].includes(r.ran.state),'corrupt');
   if(Object.hasOwn(r,'_retiredClaim')){need(r.childSessionId!==null,'corrupt');claimFence(r._retiredClaim);delete r._retiredClaim;}
   if(Object.hasOwn(r,'_startEvent')){need(r.childSessionId!==null&&r.ran.startedAt!==null,'corrupt');startEvent(r._startEvent);delete r._startEvent;}
   if(Object.hasOwn(r,'_epoch')){need(integer(r._epoch),'corrupt');delete r._epoch;}
-  for(const key of ['_startEpochs','_endEpochs'] as const)if(Object.hasOwn(r,key)){epochList(r[key]);delete r[key];}
+  for(const key of ['_startEpochs','_endEpochs','_claimEpochs'] as const)if(Object.hasOwn(r,key)){epochList(r[key]);delete r[key];}
   if(Object.hasOwn(r,'_refresh')){need(Array.isArray(r._refresh)&&r._refresh.length===2&&integer(r._refresh[0])&&[0,1,false,true].includes(r._refresh[1]),'corrupt');delete r._refresh;}
   const keys=(v:unknown,allowed:string[])=>obj(v)&&Object.keys(v).length===allowed.length&&Object.keys(v).every(k=>allowed.includes(k));
   const time=(v:unknown)=>v===null||integer(v);
@@ -171,14 +183,15 @@ function row(value:unknown):RunRow {
   if(r.accepted)need(keys(r.accepted,['plan','revision','items','omittedItems'])&&identifier(r.accepted.plan)&&integer(r.accepted.revision)&&integer(r.accepted.omittedItems)&&Array.isArray(r.accepted.items)&&r.accepted.items.length<=50&&r.accepted.items.every(i=>keys(i,['id','status'])&&identifier(i.id)&&['pending','working','blocked','done','skipped'].includes(i.status)),'corrupt');
   return r;
 }
-function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:StartEvent,evidence?:{start?:number[];end?:number[]}) {
+function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:StartEvent,evidence?:{start?:number[];end?:number[];claim?:number[]}) {
   const existing=db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$._startEpochs') AS start_epochs,json_extract(payload,'$._endEpochs') AS end_epochs,json_extract(payload,'$.ran.eventId') AS event,json_extract(payload,'$._refresh') AS refresh FROM runs_rows WHERE id=?").get(r.id);
   const fence=retiredClaim??(existing?.fence?claimFence(JSON.parse(String(existing.fence))):undefined);
   const start=provenStart??(existing?.start?startEvent(JSON.parse(String(existing.start))):undefined);
   const startEpochs=evidence?.start??(existing?.start_epochs?epochList(JSON.parse(String(existing.start_epochs))):undefined);
   const endEpochs=r.ran.endedAt===null?undefined:evidence?.end??(existing?.event===r.ran.eventId&&existing?.end_epochs?epochList(JSON.parse(String(existing.end_epochs))):undefined);
   const refresh=existing?.refresh?JSON.parse(String(existing.refresh)) as [number,boolean|number]:undefined;
-  const payload={...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{}),...(startEpochs?{_startEpochs:startEpochs}:{}),...(endEpochs?{_endEpochs:endEpochs}:{}),...(refresh?{_refresh:[refresh[0],Number(refresh[1])]}:{})};
+  const claims=r.claimed?(evidence?.claim??claimEpochs(db,r)):undefined;
+  const payload={...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{}),...(startEpochs?{_startEpochs:startEpochs}:{}),...(endEpochs?{_endEpochs:endEpochs}:{}),...(claims?{_claimEpochs:claims}:{}),...(refresh?{_refresh:[refresh[0],Number(refresh[1])]}:{})};
   let text=JSON.stringify(payload);
   if(Buffer.byteLength(text)>RUN_LIMITS.dtoBytes){
     // Display hints and a cached accepted projection cannot block host facts or
@@ -190,7 +203,9 @@ function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:Sta
   if(Buffer.byteLength(text)>RUN_LIMITS.dtoBytes){
     // Empty evidence sets mean no epoch proof, never fallback to an invented
     // observer. Keep native start identity, authored claims and retirement fences.
-    if(payload._startEpochs)payload._startEpochs=[];
+    const proof=claims?.find(epoch=>startEpochs?.includes(epoch));
+    if(payload._startEpochs)payload._startEpochs=proof===undefined?[]:[proof];
+    if(payload._claimEpochs)payload._claimEpochs=proof===undefined?[]:[proof];
     if(payload._endEpochs)payload._endEpochs=[];
     runCaptureUnavailable(db);text=JSON.stringify(payload);
   }
@@ -269,39 +284,44 @@ export function settleIntent(db:DatabaseSync,i:DurableIntent,receipt?:Receipt,re
   intentDisposition(db,i,receipt?'bound':'retired',reason,i.dispatch??undefined,receipt);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?').run(i.caller.sourceId,i.caller.sessionId,i.dispatch!);
 }
 function claimHash(r:HandoffRequest){return hash([r.outcome,r.summary]);}
-function claimFits(db:DatabaseSync,r:RunRow,claim:NonNullable<RunRow['claimed']>,start=provenStart(db,r)) {
+function claimFits(db:DatabaseSync,r:RunRow,claim:NonNullable<RunRow['claimed']>,epochs=claimEpochs(db,r),start=provenStart(db,r)) {
   if(!start||claim.reportedAt<start.at||r.ran.endedAt!==null&&claim.reportedAt>r.ran.endedAt)return false;
+  if(r.ran.state==='unknown'||!factContinuity(runEventEpochs(db,r,'start'),epochs)){loss(db);return false;}
   const next=nextStart(db,start);
   return !next||next.at>=start.at&&claim.reportedAt<next.at;
 }
-function claimOwners(db:DatabaseSync,source:string,child:string,claim:NonNullable<RunRow['claimed']>) {
+function claimOwners(db:DatabaseSync,source:string,child:string,claim:NonNullable<RunRow['claimed']>,epochs:number[]) {
   return db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
     AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?)
-    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source,child,claim.reportedAt,claim.reportedAt).map(v=>row(v.payload)).filter(r=>claimFits(db,r,claim));
+    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source,child,claim.reportedAt,claim.reportedAt).map(v=>row(v.payload)).filter(r=>claimFits(db,r,claim,epochs));
 }
 function attachClaim(db:DatabaseSync,r:RunRow) {
   if(!r.childSessionId||r.ran.startedAt===null||r.claimed)return;
   const claims=db.prepare('SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2').all(r.source,r.childSessionId);
-  const matching=claims.filter(c=>claimFits(db,r,claimValue(JSON.parse(String(c.payload))))&&(Number(c.execution)===0||Number(c.execution)<=Number(r.ran.sequence)));
+  const matching=claims.filter(c=>{const {claim,epochs}=stagedClaim(String(c.payload));return claimFits(db,r,claim,epochs)&&(Number(c.execution)===0||Number(c.execution)<=Number(r.ran.sequence));});
   if(matching.length!==1)return;
-  const claim=claimValue(JSON.parse(String(matching[0]!.payload))),owners=claimOwners(db,r.source,r.childSessionId,claim);
+  const {claim,epochs}=stagedClaim(String(matching[0]!.payload)),owners=claimOwners(db,r.source,r.childSessionId,claim,epochs);
   if(owners.length!==1||owners[0]!.id!==r.id)return;
   r.claimed={...claim,association:'execution'};
-  if(!save(db,r)){r.claimed=null;return;}
+  if(!save(db,r,undefined,undefined,{claim:epochs})){r.claimed=null;return;}
   db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?').run(r.source,r.childSessionId,matching[0]!.execution!);
 }
 function reassociateClaims(db:DatabaseSync,source:string,child:string) {
   for(const staged of db.prepare('SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?').all(source,child,RUN_LIMITS.claims)){
-    const claim=claimValue(JSON.parse(String(staged.payload)));
-    const owners=claimOwners(db,source,child,claim);
+    const {claim,epochs}=stagedClaim(String(staged.payload));
+    const owners=claimOwners(db,source,child,claim,epochs);
     if(owners.length===1)attachClaim(db,owners[0]!);
   }
 }
-export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number) {
+export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number,epoch=observationEpoch(db)) {
   need(runControl(db).enabled,'disabled');need(actor.verifiedSource&&identifier(actor.parentId)&&actor.ancestry?.[0]===actor.parentId&&actor.ancestry.length<=32,'assignment');
   need(db.prepare('SELECT verified FROM sources WHERE id=?').get(actor.sourceId)?.verified===1,'source-unverified');
   const existing=db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.claimed.oid')=? LIMIT 1").get(actor.sourceId,actor.sessionId,r.oid);
-  if(existing){const claim=row(existing.payload).claimed!;need(hash([claim.outcome,claim.summary])===claimHash(r),'operation-reused');return {handoff:claim};}
+  if(existing){
+    const owner=row(existing.payload),claim=owner.claimed!;need(hash([claim.outcome,claim.summary])===claimHash(r),'operation-reused');
+    if(claimFits(db,owner,claim))return {handoff:claim};
+    loss(db);need(saveFacts(db,owner,provenStart(db,owner)),'busy');
+  }
   const oldClaim=db.prepare('SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?').get(actor.sourceId,actor.sessionId,r.oid)
     ??db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId,actor.sessionId,r.oid);
   if(oldClaim){need(oldClaim.hash===claimHash(r),'operation-reused');need(false,'not-found');}
@@ -310,16 +330,19 @@ export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number)
   const retained=db.prepare("SELECT json_extract(payload,'$.ran.sequence') AS seq,json_extract(payload,'$.ran.startedAt') AS started_at FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.state')='running' ORDER BY at DESC LIMIT 1").get(actor.sourceId,actor.sessionId);
   const execution=c?.start?.sequence??Number(retained?.seq??0);
   const staged=db.prepare('SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1').get(actor.sourceId,actor.sessionId,execution,r.oid);
-  if(staged){need(staged.oid===r.oid,'conflict');need(staged.hash===claimHash(r),'operation-reused');return {handoff:claimValue(JSON.parse(String(staged.payload)))};}
+  if(staged){need(staged.oid===r.oid,'conflict');need(staged.hash===claimHash(r),'operation-reused');return {handoff:stagedClaim(String(staged.payload)).claim};}
   const runs=db.prepare('SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2').all(actor.sourceId,actor.sessionId).map(v=>row(v.payload));
-  const current=claimOwners(db,actor.sourceId,actor.sessionId,{oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'});
+  need(integer(epoch),'invalid');
+  const epochs=observationInterrupted(db,epoch)?[]:[epoch];
+  const current=claimOwners(db,actor.sourceId,actor.sessionId,{oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'},epochs);
   const currentStart=c?.start?.at??retained?.started_at??runs.find(v=>v.ran.startedAt!==null)?.ran.startedAt;
   if(current.some(v=>v.claimed)||runs.some(v=>v.claimed&&currentStart===v.ran.startedAt))need(false,'conflict');
   if(retired?.execution!==null&&retired?.execution!==undefined&&execution<=Number(retired.execution))need(false,'not-found');
   need(Number(db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n)<RUN_LIMITS.claims&&capacity(db),'busy');
   const claim:NonNullable<RunRow['claimed']>={oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'};
-  db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(actor.sourceId,actor.sessionId,execution,r.oid,claimHash(r),JSON.stringify(claim));
+  db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(actor.sourceId,actor.sessionId,execution,r.oid,claimHash(r),JSON.stringify({...claim,_epochs:epochs}));
   if(current.length===1){attachClaim(db,current[0]!);if(current[0]!.claimed)return {handoff:current[0]!.claimed};}
+  if(runs.some(v=>v.ran.startedAt!==null))loss(db);
   bump(db);return {handoff:claim};
 }
 function associatedPlan(db:DatabaseSync,actor:Actor,at:number):RunRow['planContext'] {
@@ -379,7 +402,7 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
     // Capture gaps cannot prove which later execution belongs to an old call.
     // Terminal routing separately requires continuity across generation changes.
     const stored=db.prepare("SELECT generation,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
-    if(stored?.generation!==generation||!integer(stored.epoch)||!eventEpochs(c,'start').includes(stored.epoch))return false;
+    if(stored?.generation!==generation||!integer(stored.epoch)||!factContinuity([stored.epoch],eventEpochs(c,'start')))return false;
     const staged=candidate(db,r.source,r.childSessionId);
     if(staged&&candidateStarts(staged).some(s=>s.event.sequence<c.start!.sequence&&s.event.at>=r.dispatch!.at&&!db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._startEvent[0]')=? LIMIT 1").get(r.source,r.childSessionId,s.event.id)))return false;
     if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,generation,stored.epoch!,c.start.at))return false;
@@ -391,6 +414,7 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
        WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source,r.childSessionId,r.id,generation,stored.epoch!,c.start.at,c.start.sequence,c.start.sequence,c.start.at,c.start.sequence,c.start.at))return false;
   }
   const e=c.end&&c.end.sequence>c.start.sequence&&c.end.at>=c.start.at?c.end:c.start;
+  if(e!==c.start&&!factContinuity(eventEpochs(c,'start'),eventEpochs(c,'end'),c.start.sequence,e.sequence)){loss(db);return false;}
   if(r.ran.endedAt!==null){if(e===c.start||e.sequence>=Number(r.ran.sequence))return false;}
   else if(r.ran.sequence!==null&&e.sequence<=r.ran.sequence){attachClaim(db,r);return false;}
   return recomputeInterval(db,r,c.start,e===c.start?null:e,{start:eventEpochs(c,'start'),end:eventEpochs(c,'end')}).saved?'saved':'dropped';
@@ -408,17 +432,21 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
   // terminal with proven ownership may replace it with a known outcome.
   const state=!end&&r.ran.startedAt!==null&&r.ran.state==='unknown'?'unknown':e.state;
   r.ran={...r.ran,state,startedAt:start.at,endedAt:end?.at??null,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
+  return {saved:saveFacts(db,r,start,evidence),displaced};
+}
+/** Interval uncertainty and refinement share claim detachment and retry fencing. */
+function saveFacts(db:DatabaseSync,r:RunRow,start:ExecutionObservation|null,evidence?:{start?:number[];end?:number[]}):boolean {
   let retiredClaim:ClaimFence|undefined;
   let restaged=false;
   const detachedClaim=r.claimed;
-  if(r.claimed&&!claimFits(db,r,r.claimed,start)){
+  if(r.claimed&&!claimFits(db,r,r.claimed,claimEpochs(db,r),start)){
     // Host terminal facts take priority over an invalid claim association.
     // Restage only in spare capacity; never prune runs or reject the terminal
     // to retain this lower-priority claim. Slot/operation conflicts also lose
     // only this claim, with the existing bounded capture-loss disclosure.
     const claim={...r.claimed,association:'session-only' as const};
     const room=Number(db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n)<RUN_LIMITS.claims&&retainedCount(db)<RUN_LIMITS.total;
-    restaged=room&&Boolean(db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING').run(r.source,r.childSessionId,0,claim.oid,hash([claim.outcome,claim.summary]),JSON.stringify(claim)).changes);
+    restaged=room&&Boolean(db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING').run(r.source,r.childSessionId,0,claim.oid,hash([claim.outcome,claim.summary]),JSON.stringify({...claim,_epochs:claimEpochs(db,r)})).changes);
     if(!restaged){
       // Reuse the affected row's storage: one compact fence is smaller than
       // the removed claim and requires no free bookkeeping slot.
@@ -426,13 +454,13 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
     }
     r.claimed=null;
   }
-  if(!save(db,r,retiredClaim,[start.id,start.sequence],evidence)){
-    if(restaged)db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?').run(r.source,start.child,detachedClaim!.oid);
-    return {saved:false,displaced:null};
+  if(!save(db,r,retiredClaim,start?[start.id,start.sequence]:undefined,evidence)){
+    if(restaged)db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=0 AND oid=?').run(r.source,r.childSessionId,detachedClaim!.oid);
+    return false;
   }
   attachClaim(db,r);
-  if(restaged)reassociateClaims(db,r.source,start.child);
-  return {saved:true,displaced};
+  if(restaged&&r.childSessionId)reassociateClaims(db,r.source,r.childSessionId);
+  return true;
 }
 
 function provenStart(db:DatabaseSync,r:RunRow):ExecutionObservation|null {
@@ -474,8 +502,8 @@ function routeTerminal(db:DatabaseSync,e:ExecutionObservation,observed:number[])
   // or subscription loss. Adjacent durable sequence numbers are positive proof;
   // ordinary session events also consume sequence, so never assume adjacency.
   const startEpochs=runEventEpochs(db,r,'start');
-  if((rows[0]!.generation!==runControl(db).generation||!observed.some(epoch=>startEpochs.includes(epoch)))&&e.sequence!==start.sequence+1){
-    if(r.ran.endedAt===null&&r.ran.state!=='unknown'){r.ran.state='unknown';save(db,r);}
+  if(!factContinuity(rows[0]!.generation===runControl(db).generation?startEpochs:[],observed,start.sequence,e.sequence)){
+    if(r.ran.endedAt===null&&r.ran.state!=='unknown'){r.ran.state='unknown';saveFacts(db,r,start);}
     refreshGapOutcome(db,r,e);
     loss(db);return {handled:false};
   }
