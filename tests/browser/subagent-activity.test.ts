@@ -12,7 +12,8 @@ import { parsePlanPage, parsePlansPage, parseRunRead } from '../../ui/shared/ada
 import { participantIndex, type PlanDetail, type PlanView } from '../../ui/shared/model.ts';
 import { refreshLabels } from '../../ui/shared/components.ts';
 import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
-import { ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
+import { EARLIER_STEP, ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
+import { earlierPager } from '../../ui/shared/census-view.ts';
 import type { RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { at, planPage, plansPage, summary } from './fixtures.ts';
@@ -259,7 +260,7 @@ function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: 
     capture: { enabled: true, state: 'last-known', loss: false }, recovery: { state: 'complete', reason: null, token: null }, counts: { ...c, ...counts },
     coverage: { scope: 'retained', complete: true, reasons: [] }, data: rows, nextCursor: null, ...extra };
 }
-const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
+const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, continuation: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
 const input = (extra: Partial<RosterInput> = {}): RosterInput => ({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, snap()), runs: null, verified: true, currentSession: 'A', ...extra });
 
 test('defect A: no plan in scope means no roster at all, even with running children and run rows', () => {
@@ -697,7 +698,7 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   // First page only: K50 is recorded but not loaded, so the host row must not add a 52nd.
   const first = rosterFor(input({ census: census('running'), runs: panel(read, [], { hasMore: true }) }))!;
   assert.deepEqual(texts(first), ['51 running']);
-  // Loading the remaining row changes nothing, because no activity changed.
+  // Loading the remaining row changes nothing: K50 was already in the recorded total.
   assert.deepEqual(texts(rosterFor(input({ census: census('running'), runs: panel(read, [rows[50]]) }))), ['51 running']);
   // Waiting on an unloaded child: listed (waiting first) but not counted twice; once loaded it is
   // counted once, as waiting, and not also as running.
@@ -708,4 +709,35 @@ test('summary: a host-listed child that may be an unpaged recorded child is neve
   // Every recorded child loaded: a host-only child really is unrecorded and is counted (once).
   const extra = censusFor('A', alpha.directory, snap([rec('A', null), rec('K0', 'A', { activity: 'running' }), rec('X1', 'A', { activity: 'running' }), rec('X2', 'A', { activity: 'waiting-permission' })]));
   assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting on you', '2 running']);
+});
+
+test('host row limit: a truncated host census is disclosed and host-only counts are not presented as complete', () => {
+  const kids = (n: number, last: LiveSession['activity']) => [rec('A', null), ...Array.from({ length: n }, (_, i) => rec(`H${i}`, 'A', { createdAt: i, activity: i === n - 1 ? last : 'running' }))];
+  const empty = readOf([]);
+  const over = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids(129, 'waiting-question'))), runs: panel(empty) }))!;
+  assert.ok(over.notes.some((n) => n.kind === 'host-truncated'), 'the row limit is disclosed');
+  assert.equal(over.hostTruncated, true, 'host-only counts are marked incomplete');
+  // At the limit exactly: nothing truncated, nothing said.
+  const at = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids(128, 'waiting-question'))), runs: panel(empty) }))!;
+  assert.ok(!at.notes.some((n) => n.kind === 'host-truncated'));
+  assert.equal(at.hostTruncated, false);
+  assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting on you', '127 running']);
+});
+
+test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {
+  const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
+  const rows = kids.map((k) => run('running', { childSessionId: k }));
+  const read = readOf(rows.slice(0, 50), { running: 51, runs: 51, children: 51 }, { nextCursor: 'next' });
+  const census = censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k) => rec(k, 'A', { activity: 'running' }))]));
+  for (const surface of ['panel', 'status', 'page'] as const) {
+    const runs = panel(read, [], { hasMore: true, continuation: true });
+    const r = rosterFor(input({ surface, census, runs }))!;
+    const all = r.earlier.length;
+    // Everything loaded is visible: the 51st record exists only behind the cursor.
+    assert.ok(earlierPager(r, runs, all, EARLIER_STEP[surface]), `${surface}: pager offered while the cursor exists`);
+    // Once nothing more can be read and everything loaded is shown, no pager.
+    const done = panel(read, [rows[50]], { hasMore: false, continuation: false });
+    const rd = rosterFor(input({ surface, census, runs: done }))!;
+    assert.equal(earlierPager(rd, done, rd.earlier.length, EARLIER_STEP[surface]), null, `${surface}: no pager when exhausted`);
+  }
 });

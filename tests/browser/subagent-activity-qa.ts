@@ -353,6 +353,34 @@ try {
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
   await wait('panel', `!d.querySelector('[data-testid="subagent-about"]')`, 'history complete again');
 
+  // Host row limit: more than 128 host-listed descendants are disclosed, never shown as complete.
+  await evaluate(`qa.context('M');for(let i=0;i<129;i++)qa.ws.sessions['proj-alpha'].push({id:'T'+i,title:'Host worker '+i,projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:100+i,updatedAt:0,archivedAt:null,worktree:null,activity:i===128?'waiting-question':'running',outcome:null,items:[]});qa.push('sessions');true`);
+  await show('panel');
+  await wait('panel', `d.querySelector('[data-testid="subagent-truncated"]') && d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-truncated')`, 'host row limit disclosed');
+  check('host row limit: summary marked incomplete and About explains it', (await text('panel', '[data-testid="subagent-truncated"]')) === 'more not checked' && (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('more sub-agents than this view checks'));
+  await show('status', 280);
+  await wait('status', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='host-truncated'`, 'status truncation line');
+  check('host row limit: Work Status short line', (await text('status', '[data-testid="subagent-coverage"]')) === 'Not every sub-agent is checked.');
+  await evaluate(`qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>!/^T\\d+$/.test(s.id));qa.push('sessions');true`);
+  await wait('status', `!d.querySelector('[data-testid="subagent-truncated"]') && !d.querySelector('[data-testid="subagent-coverage"]')`, 'quiet below the limit');
+  check('below the limit: no truncation note', true);
+
+  // Pager while a continuation cursor exists: 51 recorded running children, all host-listed.
+  // M-live (unrecorded in this swapped run set) is idled so only the 51 recorded children are in play.
+  await evaluate(`qa.set('M-live',{activity:'idle'});qa.runs.M.saved=qa.runs.M.useful;n=900;qa.runs.M.useful=Array.from({length:51},(_,i)=>run('M','P'+i,'running',{ago:1+i,plan:'plan-many',description:'Parallel batch '+i,agent:'migrator'}));for(let i=0;i<51;i++)qa.ws.sessions['proj-alpha'].push({id:'P'+i,title:'Parallel batch '+i,projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:300+i,updatedAt:0,archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]});qa.bump();qa.push('sessions');true`);
+  await show('panel');
+  await wait('panel', `d.querySelector('[data-testid="subagent-count"]')?.textContent.includes('51 running') && d.querySelector('[data-testid="observed-more"]')`, '51 running children');
+  await guest('panel', `d.querySelector('[data-testid="observed-more"]').open=true;return true`);
+  for (let i = 0; i < 8 && !(await has('panel', `${sec} [data-session="P50"][data-run]`)); i++) {
+    if (!(await has('panel', '[data-testid="subagent-more"]'))) break;
+    await click('panel', '[data-testid="subagent-more"]');
+    await settle(500);
+  }
+  const pagerFacts = await guest('panel', `const m=d.querySelector('[data-testid="observed-more"]');return {open:m?.open,earlier:m?.querySelectorAll('li').length,summary:m?.querySelector('summary')?.textContent,pager:d.querySelector('[data-testid="subagent-more"]')?.textContent??null,p50:[...d.querySelectorAll('${sec} [data-session="P50"]')].map(n=>n.dataset.run?'run':'host'),count:d.querySelector('[data-testid="subagent-count"]')?.textContent,cursorReads:qa.requests.filter(q=>q.query?.root==='M'&&q.query?.cursor).length}`);
+  check('pager kept while the cursor exists: the 51st record loads', await has('panel', `${sec} [data-session="P50"][data-run]`) && (await text('panel', '[data-testid="subagent-count"]'))!.includes('51 running'), pagerFacts);
+  await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>!/^P\\d+$/.test(s.id));qa.bump();qa.push('sessions');qa.context('A');true`);
+  await wait('panel', `d.querySelector('${row('C1')}')`, 'back to A');
+
   // 9. Narrow + dark + reduced motion; 200% reflow equivalents without horizontal overflow.
   await evaluate(`qa.dark();true`);
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

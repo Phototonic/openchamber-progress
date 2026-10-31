@@ -49,7 +49,7 @@ export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'faile
 export type RosterNote =
   | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' } | { kind: 'capture-loss' }
   | { kind: 'history-loading' } | { kind: 'history-partial'; token: string | null } | { kind: 'history-failed'; token: string | null }
-  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'history-request-failed' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-activity-unavailable' };
+  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'history-request-failed' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-truncated' } | { kind: 'host-activity-unavailable' };
 export interface Roster {
   /** Featured rows: running/waiting first, then task-linked, bounded per surface. */
   featured: SubagentEntry[];
@@ -62,6 +62,11 @@ export interface Roster {
   recorded: boolean;
   /** History reconciliation is still running or incomplete, so counts may grow. */
   soFar: boolean;
+  /**
+   * The host census hit a row, record or depth limit (census.ts), so host-listed children beyond it
+   * are not checked: host-only counts and current activity are not complete.
+   */
+  hostTruncated: boolean;
   notes: RosterNote[];
   canPage: boolean;
 }
@@ -276,7 +281,11 @@ export function rosterFor(v: RosterInput): Roster | null {
     else if (rec.state === 'unavailable') notes.push({ kind: 'history-unavailable' });
     if (read.coverage.reasons.includes('traversal-limit')) notes.push({ kind: 'traversal-limit' });
   }
-  if (census && census.gaps.some((g) => g === 'conflict' || g === 'cycle' || g === 'records' || g === 'depth')) notes.push({ kind: 'host-gaps' });
+  if (census && census.gaps.some((g) => g === 'conflict' || g === 'cycle')) notes.push({ kind: 'host-gaps' });
+  // Census order is stable (creation time, then ID), so which children fall past a limit never depends
+  // on activity; the truncation is disclosed instead, only when a limit is actually hit.
+  const hostTruncated = !!census && census.gaps.some((g) => g === 'rows' || g === 'records' || g === 'depth');
+  if (hostTruncated) notes.push({ kind: 'host-truncated' });
   // Disclosed only when the gate withheld something: retained rows that would have shown a current word.
   if (census && !current && [...listed.values()].some((r) => { const k = observe(r).kind; return k === 'active' || k === 'waiting' || r.idleSeq !== undefined; })) notes.push({ kind: 'host-activity-unavailable' });
 
@@ -287,5 +296,5 @@ export function rosterFor(v: RosterInput): Roster | null {
   // loading, an unavailable read) never make one appear.
   if (!featured.length && !earlierTotal && !summary.length) return null;
   const soFar = !!read && (read.recovery.state === 'pending' || read.recovery.state === 'running' || !!runs?.reconciling);
-  return { featured, earlier, earlierTotal, summary, recorded: !!read, soFar, notes, canPage: !!runs?.hasMore };
+  return { featured, earlier, earlierTotal, summary, recorded: !!read, soFar, hostTruncated, notes, canPage: !!runs?.hasMore };
 }

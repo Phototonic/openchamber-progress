@@ -27,6 +27,8 @@ export interface RunsPanel {
   more: RunRow[];
   /** More rows can be read on request. */
   hasMore: boolean;
+  /** A continuation cursor is held: the service has said more rows exist beyond those loaded. */
+  continuation: boolean;
   paging: boolean;
   pageError: boolean;
   /** Earlier rows the reader asked to see (0: the default amount); kept across repaints. */
@@ -84,7 +86,7 @@ export class RunsController {
     const live = () => this.visit === v && this.host.visible();
     return {
       state: v.state, read: v.read, featured: v.read?.data ?? [], more: v.more,
-      hasMore: v.state === 'ready' && v.phase !== 'done', paging: v.paging, pageError: v.pageError, shown: v.shown,
+      hasMore: v.state === 'ready' && v.phase !== 'done', continuation: v.state === 'ready' && v.phase !== 'done' && v.cursor !== null, paging: v.paging, pageError: v.pageError, shown: v.shown,
       reconciling: v.reconciling, failure: v.failure, baselines: v.baselines,
       historyRequestFailed: this.asked.get(this.rootKey(v) ?? '')?.state === 'failed',
       showMore: (visible, loaded, step) => {

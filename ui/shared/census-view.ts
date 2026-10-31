@@ -143,6 +143,7 @@ const NOTE: Record<RosterNote['kind'], string> = {
   'history-unavailable': 'Older history can’t be loaded until the companion is running.',
   'traversal-limit': 'There are more nested sub-agents than are counted here.',
   'host-gaps': 'Some sessions couldn’t be verified as sub-agents of this session, so they’re left out.',
+  'host-truncated': 'OpenChamber lists more sub-agents than this view checks (128 rows, 2,000 sessions, 32 levels), so some current activity — including a child waiting on you — may not be shown or counted. Recorded runs are unaffected.',
   'host-activity-unavailable': 'OpenChamber’s session list is reloading or incomplete, so current activity (waiting, running again, idle now) isn’t shown; recorded runs are unchanged.',
 };
 
@@ -158,6 +159,8 @@ function summaryNode(r: Roster) {
     p.append(part);
   }
   if (r.soFar) p.append(el('span', 'ap-sub-part ap-muted', 'so far'));
+  // Counts from host-listed children stop at the census limit: never shown as complete.
+  if (r.hostTruncated) p.append(testid(el('span', 'ap-sub-part ap-muted', 'more not checked'), 'subagent-truncated'));
   return p;
 }
 
@@ -165,9 +168,9 @@ function notesNode(r: Roster, runs: RunsPanel | null, compact: boolean) {
   const notes = r.notes;
   if (compact) {
     // One short line for genuine unavailability only; detail lives in the rail.
-    const n = notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable');
+    const n = notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
     if (!n) return null;
-    const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : 'Run records unavailable.'), 'subagent-coverage');
+    const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : n.kind === 'host-truncated' ? 'Not every sub-agent is checked.' : 'Run records unavailable.'), 'subagent-coverage');
     p.dataset.notes = n.kind;
     return p;
   }
@@ -191,6 +194,18 @@ function notesNode(r: Roster, runs: RunsPanel | null, compact: boolean) {
   return d;
 }
 
+/**
+ * The earlier list's pager: its label, or null when there is nothing more to show or read. A held
+ * continuation cursor always keeps it: the estimated remainder can be wrong (a host-only row may
+ * stand in for an unloaded record), and only reading the next page settles it.
+ */
+export function earlierPager(r: Pick<Roster, 'earlier' | 'earlierTotal' | 'canPage'>, runs: Pick<RunsPanel, 'paging' | 'continuation'> | null, visible: number, step: number): string | null {
+  const loaded = r.earlier.length;
+  const left = r.earlierTotal - Math.min(visible, loaded);
+  if (!runs || !((visible < loaded || r.canPage) && left > 0) && !runs.continuation) return null;
+  return runs.paging ? 'Loading…' : left > 0 ? `Show ${Math.min(step, left)} more` : 'Show more';
+}
+
 function earlierNode(r: Roster, v: SubagentsView, compact: boolean) {
   if (!r.earlierTotal) return null;
   const step = EARLIER_STEP[v.surface];
@@ -203,9 +218,9 @@ function earlierNode(r: Roster, v: SubagentsView, compact: boolean) {
   if (list.childElementCount) more.append(list);
   const runs = v.runs;
   const loaded = r.earlier.length;
-  const left = r.earlierTotal - Math.min(visible, loaded);
-  if (runs && (visible < loaded || r.canPage) && left > 0) {
-    const b = testid(el('button', 'ap-link ap-sub-page', runs.paging ? 'Loading…' : `Show ${Math.min(step, left)} more`), 'subagent-more');
+  const label = earlierPager(r, runs, visible, step);
+  if (runs && label) {
+    const b = testid(el('button', 'ap-link ap-sub-page', label), 'subagent-more');
     b.type = 'button';
     // Not `disabled`: a disabled button drops keyboard focus mid-read. The controller ignores repeats.
     if (runs.paging) b.setAttribute('aria-disabled', 'true');

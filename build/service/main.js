@@ -736,11 +736,13 @@ function save(db, r) {
   db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
   bump(db);
 }
+function retainedCount(db) {
+  return Number(db.prepare("SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n").get().n);
+}
 function capacity(db, parent) {
-  const total = () => Number(db.prepare("SELECT (SELECT count(*) FROM runs_rows)+(SELECT count(*) FROM runs_jobs)+(SELECT count(*) FROM runs_retired)+(SELECT count(*) FROM runs_recovery_lease)+(SELECT count(*) FROM runs_claims)+(SELECT count(*) FROM runs_recovery_work) AS n").get().n);
   for (let attempts = 0;attempts < 4; attempts++) {
     const fullParent = parent && Number(db.prepare("SELECT count(*) AS n FROM runs_rows WHERE source=? AND parent=?").get(parent.source, parent.parent).n) >= RUN_LIMITS.parent;
-    if (!fullParent && total() < RUN_LIMITS.total)
+    if (!fullParent && retainedCount(db) < RUN_LIMITS.total)
       return true;
     const victim = db.prepare(`SELECT id,source,child,payload FROM runs_rows WHERE terminal=1 AND NOT EXISTS(SELECT 1 FROM runs_intents i WHERE i.dispatch=runs_rows.id)
       AND (child IS NULL OR NOT EXISTS(SELECT 1 FROM runs_rows d WHERE d.source=runs_rows.source AND d.parent=runs_rows.child)
@@ -831,7 +833,7 @@ function claimHash(r) {
   return hash([r.outcome, r.summary]);
 }
 function attachClaim(db, r) {
-  if (!r.childSessionId || r.ran.startedAt === null)
+  if (!r.childSessionId || r.ran.startedAt === null || r.claimed)
     return;
   const claims = db.prepare("SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2").all(r.source, r.childSessionId);
   const matching = claims.filter((c) => {
@@ -961,6 +963,13 @@ function adopt(db, r, c) {
   if (r.ran.endedAt !== null)
     return;
   r.ran = { ...r.ran, state: e.state, startedAt: c.start.at, endedAt: e === c.start ? null : e.at, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  if (r.claimed && r.ran.endedAt !== null && (r.claimed.reportedAt < r.ran.startedAt || r.claimed.reportedAt > r.ran.endedAt)) {
+    const claim = { ...r.claimed, association: "session-only" };
+    const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
+    if (!room || !db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash([claim.outcome, claim.summary]), JSON.stringify(claim)).changes)
+      loss(db);
+    r.claimed = null;
+  }
   save(db, r);
   attachClaim(db, r);
   db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(r.source, r.childSessionId);

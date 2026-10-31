@@ -8,6 +8,54 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review delayed terminal detaches an out-of-interval handoff and reattaches it to the proven resumed execution',async()=>{
+  await fixture(async f=>{
+    const progress=f.store.detail(f.source.id,'plan-alpha');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'resumed-report',summary:'Resumed result',outcome:'done'};
+    assert.equal(f.store.handoff(report,f.actor('C1'),4000).handoff.association,'execution');
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    assert.equal(read(f).data[0]!.ran.state,'succeeded');assert.equal(read(f).data[0]!.claimed,null,'a closed execution cannot retain a later report');
+    const staged=JSON.parse(String(f.store.db.prepare("SELECT payload FROM runs_claims WHERE child='C1'").get()!.payload));
+    assert.equal(staged.oid,report.oid);assert.equal(staged.association,'session-only');assert.equal(staged.reportedAt,4000);
+    assert.equal(f.store.handoff(report,f.actor('C1'),4100).handoff.association,'session-only');
+    assert.throws(()=>f.store.handoff({...report,oid:'duplicate-report'},f.actor('C1'),4100),/conflict/);
+    assert.throws(()=>f.store.handoff({...report,summary:'Changed result'},f.actor('C1'),4100),/operation-reused/);
+    const resumed={...key,message:'resumed-message',call:'resumed-call'};
+    f.store.beforeRun(resumed,f.actor(),'subagent',{},3200);f.store.afterRun(resumed,0,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'resumed-start',sequence:12,at:3500});
+    f.store.observeExecution({...start,id:'resumed-end',sequence:13,at:5000,state:'succeeded'});
+    const runs=f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',view:'history'}).data;
+    assert.equal(runs.find(r=>r.dispatch?.callId===key.call)!.claimed,null);
+    assert.deepEqual(runs.find(r=>r.dispatch?.callId===resumed.call)!.claimed,{...staged,association:'execution'});
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_claims WHERE child='C1'").get()!.n,0);
+    assert.equal(f.store.handoff(report,f.actor('C1'),5100).handoff.association,'execution');
+    assert.deepEqual(f.store.detail(f.source.id,'plan-alpha'),progress);
+  });
+});
+
+test('review delayed terminal applies through live capture when claim restaging is unavailable',async()=>{
+  for(const bound of ['full','slot-conflict','total'] as const)await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'held-report',summary:'Retained result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    if(bound==='full')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(attached));
+    if(bound==='slot-conflict')f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'existing-report','synthetic',JSON.stringify({...attached,oid:'existing-report',reportedAt:1000,association:'session-only'}));
+    if(bound==='total')f.store.db.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16383)
+      INSERT INTO runs_retired SELECT 'source-alpha','retired-'||i,0,'retired-'||i,'synthetic' FROM n`);
+    await f.emit('execution.succeeded',{sessionID:'C1'},{id:'delayed-end',created:3000,durable:{aggregateID:'C1',seq:11}});
+    const result=read(f);
+    assert.equal(result.data[0]!.ran.state,'succeeded');assert.equal(result.data[0]!.ran.endedAt,3000);
+    assert.equal(result.data[0]!.claimed,null,'host outcome wins over an unstageable out-of-interval report');
+    assert.equal(result.capture.loss,true);assert.equal(result.capture.enabled,true);assert.equal(result.availability,'ready');
+    assert.equal(f.store.runControl().enabled,true);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_claims').get()!.n,bound==='full'?256:bound==='slot-conflict'?1:0);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_claims WHERE oid='held-report'").get()!.n,0);
+  });
+});
+
 test('review restored and reopened plans retain inherited context for an unassigned nested dispatch',async()=>{
   await fixture(async f=>{
     const plan='plan-alpha';

@@ -957,8 +957,16 @@ An explicit backend-only fixture mode omits UI/browser work, never certifying it
 The report router accepts a plan-free optional `handoff` only from its actual
 native child caller. It validates a safe authored one-line summary, server-stamps
 the time, stages unknown execution association separately and attaches on unique
-interval evidence. Retries and conflicts do not advance task progress. Current
-explicit task facts are projected into `accepted` at read time, bounded by row
+interval evidence. Retries and conflicts do not advance task progress.
+Closing an interval revalidates an already attached report: one outside the proven
+start/end bounds returns atomically to session-only staging, preserving its authored
+fields and operation identity for retry or later resumed-execution association.
+Valid attached claims are not overwritten by other staged reports. Host terminal
+facts take priority: if claim staging or total storage has no spare capacity, or
+the unknown-execution slot conflicts, the invalid claim is detached and dropped
+with `capture.loss` disclosed. The terminal still applies; capture stays enabled
+and available. Restaging never prunes host runs to retain the lower-priority claim.
+Current explicit task facts are projected into `accepted` at read time, bounded by row
 bytes with an omitted-item count. Plan changes invalidate run-page cursors through
 the monotonic run revision; stale stored acceptance is not resurrected.
 
