@@ -42,6 +42,29 @@ test('authenticated GET and narrow POST → real registered companion → persis
   });
 });
 
+test('latestForChild covers unloaded pages and both views rather than promoting an older running execution',async()=>{
+  await serverFixture(async f=>{
+    const seed=(childId:string,call:string,at:number,sequence:number,finished=false)=>{
+      const key={source:f.source.id,parent:'A',message:call,call},child={...f.actor('C1'),sessionId:childId};
+      f.store.beforeRun(key,f.actor(),'subagent',{},at);f.store.afterRun(key,0,child,'returned');
+      const start={source:f.source.id,child:childId,id:`${call}-start`,sequence,at:at+1,state:'running',errorType:null,interruptionReason:null};
+      f.store.observeExecution(start);if(finished)f.store.observeExecution({...start,id:`${call}-end`,sequence:sequence+1,at:at+2,state:'succeeded'});
+    };
+    seed('C1','old-running',1000,10);
+    for(let i=0;i<50;i++)seed(`filler-${i}`,`filler-${i}`,100+i,1);
+    seed('C1','new-finished',4000,30,true);
+    const first=await (await f.get({plan:'plan-alpha',cleanupRev:'0'})).json();
+    assert.equal(first.data.length,50);assert.ok(first.nextCursor);
+    const old=first.data.find((r:any)=>r.dispatch.callId==='old-running');assert.ok(old);assert.equal(old.latestForChild,false);
+    assert.ok(!first.data.some((r:any)=>r.dispatch.callId==='new-finished'));
+    const next=await (await f.get({plan:'plan-alpha',cleanupRev:'0',cursor:first.nextCursor})).json();
+    assert.equal(next.data.find((r:any)=>r.dispatch.callId==='new-finished').latestForChild,true);
+    const useful=await (await f.get()).json(),history=await (await f.get({view:'history'})).json();
+    assert.equal(useful.data.find((r:any)=>r.dispatch.callId==='old-running').latestForChild,false);
+    assert.equal(history.data.find((r:any)=>r.dispatch.callId==='new-finished').latestForChild,true);
+  });
+});
+
 test('read/control endpoints reject identity mismatch, unknown/duplicate fields, bodies and methods',async()=>{
   await serverFixture(async f=>{
     for(const override of [{storeId:'other'},{source:'other'},{binding:JSON.stringify({sourceId:f.source.id,verified:false})}])assert.equal((await f.get(override)).status,409);

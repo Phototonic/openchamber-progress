@@ -1362,11 +1362,27 @@ read using real Store operations (mixed runs and a separate historical session).
   execution success. `ran` records native execution state/start/end/update,
   event identity/sequence, safe error type and interruption enum independently.
   A historical session has no fabricated dispatch or execution start.
+- Every returned `RunRow` additionally has `latestForChild: boolean` (required,
+  read-only, never persisted). It is true for the single latest retained row for
+  its non-null child in the proven root/source scope, computed before view
+  filtering and pagination; childless rows are false. A newer row on an unloaded
+  page or in the other view therefore prevents an older row being marked latest.
+  Any dispatch outranks historical summaries. Dispatches compare descending
+  proven start (else dispatch time), dispatch time, then native sequence (missing
+  is -1). History compares end (else update time). Exact evidence ties use the
+  normal page order (running first, creation time descending, stable ID ascending).
+  This is retained-scope metadata, not a promise of complete native history;
+  existing coverage/traversal disclosures still apply.
 - `planContext` means **dispatched during this plan**, not assignment.
   `claimed` is reserved for an optional explicitly authored child report;
   `accepted` is reserved for existing explicitly reported task facts. Both are
-  nullable; their absence is ordinary. Accepted items fit the row byte budget;
-  `omittedItems` explicitly counts any undisplayed task facts. Neither run completion nor elapsed time
+  nullable; their absence is ordinary. The entire enriched row, including
+  `latestForChild` and the fixed accepted envelope, fits the row byte budget.
+  Optional agent/description hints are dropped first under read-time pressure,
+  then accepted items are omitted with `omittedItems` counting undisplayed facts;
+  if even the minimum envelope cannot fit, `accepted` is null. Stored records,
+  claim text, plan context and native facts are not changed by this projection.
+  Neither run completion nor elapsed time
   changes task status/count, plan lifecycle/revision, report age or permission.
   Running and terminal facts have no age expiry. Connectivity is not promised
   by a retained last-known fact. Current host membership still gates navigation.

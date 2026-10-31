@@ -24,5 +24,8 @@ export function seedRunReadFixture(file:string) {
   const job=store.claimRunRecovery(source.id,actor.sessionId)!;
   store.publishRunHistory(job,{id:'historical-child',parent:actor.sessionId,agent:'explorer',title:'Historical session',createdAt:base-200000,updatedAt:base-100000,idleAt:base-110000,outcome:'succeeded'});
   store.finishRunRecovery(job,'complete');
-  return {store,request,read:()=>store.subagentRuns(request,base+180000)};
+  // Each representative child has one retained row, so each must be marked
+  // latest even when its row is in the other view. The flag is read-only.
+  const latestChildIds=['child-0','child-1','child-2','child-3','historical-child'];
+  return {store,request,latestChildIds,read:()=>store.subagentRuns(request,base+180000)};
 }

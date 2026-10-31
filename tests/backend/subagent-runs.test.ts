@@ -20,10 +20,31 @@ test('real Store fixture freezes bounded distinct run/session counts and native 
     assert.deepEqual(view.counts,{children:5,runs:4,historicalSessions:1,running:1,succeeded:2,failed:1,interrupted:1,unknown:0});
     assert.equal(view.data.length,4);assert.equal(view.data[0]!.ran.state,'running');assert.equal(view.coverage.complete,true);
     const history=f.store.subagentRuns({...f.request,view:'history'});assert.equal(history.data.length,1);assert.equal(history.data[0]!.kind,'historical-session');assert.equal(history.data[0]!.dispatch,null);assert.equal(history.data[0]!.ran.startedAt,null);
+    const all=[...view.data,...history.data];assert.ok(all.every(r=>r.latestForChild===true));assert.deepEqual(all.map(r=>r.childSessionId).sort(),f.latestChildIds.slice().sort());
+    assert.ok(f.store.db.prepare('SELECT payload FROM runs_rows').all().every(v=>!Object.hasOwn(JSON.parse(String(v.payload)),'latestForChild')),'latest selection is never persisted');
     assert.ok(view.data.every(r=>Buffer.byteLength(JSON.stringify(r))<=RUN_LIMITS.dtoBytes));assert.ok(Buffer.byteLength(JSON.stringify(view))<=RUN_LIMITS.responseBytes);
     assert.equal(f.store.get('source-fixture','plan-fixture')!.items[0]!.status,'blocked');
     const reopened=new Store(f.store.file,{readOnly:true});try{reopened.bindReads('source-fixture',true);assert.deepEqual(reopened.subagentRuns(f.request).data,view.data);}finally{reopened.close();}
   }finally{f.store.close();fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('latestForChild prefers dispatch evidence to newer session summaries and leaves childless rows false',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    f.store.observeExecution(start);f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});
+    const newer={...key,call:'newer-unproven'};
+    f.store.beforeRun(newer,f.actor(),'subagent',{},4000);f.store.afterRun(newer,0,f.actor('C1'),'returned');
+    f.store.beforeRun({...key,call:'childless'},f.actor(),'subagent',{},10000);
+    const {plan,cleanupRev,...r}=request(f);
+    f.store.requestRunReconciliation(r);const job=f.store.claimRunRecovery(f.source.id,'A')!;
+    for(const id of ['C1','C2'])f.store.publishRunHistory(job,{id,parent:'A',agent:'explorer',title:'Synthetic history',createdAt:500,updatedAt:9000,idleAt:8000,outcome:'succeeded'});
+    f.store.finishRunRecovery(job,'complete');
+    const all=[...f.store.subagentRuns(r).data,...f.store.subagentRuns({...r,view:'history'}).data];
+    assert.equal(all.find(row=>row.dispatch?.callId==='childless')!.latestForChild,false);
+    const c1=all.filter(row=>row.childSessionId==='C1');assert.equal(c1.length,3);
+    assert.deepEqual(c1.filter(row=>row.latestForChild).map(row=>row.dispatch?.callId),['newer-unproven']);
+    assert.equal(all.find(row=>row.childSessionId==='C2')!.latestForChild,true);
+  });
 });
 
 test('terminal before after adopts only the verified interval; replay does not alter plan facts',async()=>{

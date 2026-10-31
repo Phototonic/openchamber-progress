@@ -986,6 +986,22 @@ its detachment/retirement fence, nor erase continuity-loss disclosure or bounded
 capacity handling. Authentication, corrupt state and storage faults still fail
 within the transaction and roll back; the public handoff reply/error shapes do
 not change.
+Read projection budgets the whole 4 KiB row after all enrichment, including the
+fixed accepted-task envelope and `latestForChild: boolean`. Optional agent and
+description hints are nulled first, then task entries are removed with their
+count added to `omittedItems`; if necessary the entire accepted envelope becomes
+null. A valid stored row must not fail a read because its optional enrichment
+does not fit. Projection preserves claimed text, plan context and native facts,
+and never writes this degradation back to storage.
+`latestForChild` is required on every returned row, read-only and not stored. SQL
+ranks the full proven retained root/source scope before useful/history selection
+and paging. Childless rows are false; exactly one row per retained child wins.
+Dispatch rows outrank session history, then compare proven start (else dispatch
+time), dispatch time and native sequence descending (missing sequence is -1).
+History compares end (else update time). Exact ties follow page order: running
+first, creation time descending, then stable ID ascending. A latest row outside
+the loaded page or selected view still prevents an older row from receiving the
+flag. Existing incomplete-history/traversal disclosures qualify the scope.
 Unresolved starts remain keyed by event ID inside the same 4 KiB per-child
 candidate, including earlier starts when one observer runs ahead through a resume.
 Initial association cannot skip an earlier still-unassociated start that could

@@ -25743,6 +25743,22 @@ function scopedParents(db, source, root) {
   }
   return { ids: [...ids], complete };
 }
+function budgetReadRow(run3) {
+  const fits = () => Buffer.byteLength(JSON.stringify(run3)) <= RUN_LIMITS.dtoBytes;
+  if (!fits()) {
+    run3.agent = null;
+    run3.description = null;
+  }
+  while (run3.accepted?.items.length && !fits()) {
+    run3.accepted.items.pop();
+    run3.accepted.omittedItems++;
+  }
+  if (!fits())
+    run3.accepted = null;
+  const { latestForChild, ...stored } = run3;
+  row(JSON.stringify(stored));
+  requireProgress(typeof latestForChild === "boolean" && fits(), "corrupt");
+}
 function readRuns(db, binding, r, now3 = Date.now()) {
   const m = identity3(db, binding, r);
   requireProgress(r.view === undefined || r.view === "useful" || r.view === "history");
@@ -25782,7 +25798,7 @@ function readRuns(db, binding, r, now3 = Date.now()) {
     out.counts[key] = Number(counts[key] ?? 0);
   out.counts.historicalSessions = Number(counts.history ?? 0);
   const useful = "coalesce((json_extract(payload,'$.ran.state')='running' OR (? IS NOT NULL AND (json_extract(payload,'$.planContext.plan')=? OR json_extract(payload,'$.accepted.plan')=? OR EXISTS(SELECT 1 FROM plans p,json_each(p.snapshot,'$.links') l WHERE p.source=runs_rows.source AND p.id=? AND json_extract(l.value,'$.sessionId')=runs_rows.child)))),0)";
-  const selection = `${where} AND ${out.view === "history" ? "NOT " : ""}${useful}`;
+  const selection = `${out.view === "history" ? "NOT " : ""}${useful}`;
   const identityKey = hash2([r.storeId, binding, r.source, r.root, r.plan ?? null, r.cleanupRev ?? null, out.view]);
   let offset = 0;
   if (r.cursor) {
@@ -25796,8 +25812,15 @@ function readRuns(db, binding, r, now3 = Date.now()) {
     requireProgress(obj(c) && Object.keys(c).length === 3 && c.key === identityKey && c.revision === out.revision && integer(c.offset) && c.offset <= RUN_LIMITS.total, "conflict");
     offset = c.offset;
   }
-  const rows = db.prepare(`SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload FROM runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args2, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
-  out.data = rows.slice(0, RUN_LIMITS.page).map((v) => row(v.payload));
+  const rows = db.prepare(`WITH ranked AS (SELECT *,row_number() OVER (PARTITION BY child ORDER BY
+      (message IS NOT NULL) DESC,
+      CASE WHEN message IS NOT NULL THEN coalesce(json_extract(payload,'$.ran.startedAt'),at) ELSE coalesce(json_extract(payload,'$.ran.endedAt'),json_extract(payload,'$.ran.updatedAt')) END DESC,
+      CASE WHEN message IS NOT NULL THEN at ELSE 0 END DESC,
+      CASE WHEN message IS NOT NULL THEN coalesce(json_extract(payload,'$.ran.sequence'),-1) ELSE -1 END DESC,
+      (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id) AS child_rank FROM runs_rows WHERE ${where})
+    SELECT CASE WHEN length(CAST(payload AS BLOB))<=4096 THEN payload END AS payload,child IS NOT NULL AND child_rank=1 AS latest
+    FROM ranked AS runs_rows WHERE ${selection} ORDER BY (json_extract(payload,'$.ran.state')='running') DESC,at DESC,id LIMIT ? OFFSET ?`).all(...args2, r.plan ?? null, r.plan ?? null, r.plan ?? null, r.plan ?? null, RUN_LIMITS.page + 1, offset);
+  out.data = rows.slice(0, RUN_LIMITS.page).map((v) => ({ ...row(v.payload), latestForChild: v.latest === 1 }));
   if (r.plan) {
     const snapshot3 = db.prepare(`SELECT CASE WHEN json_type(snapshot,'$.items')='array' AND json_array_length(snapshot,'$.items')<=1000
       AND json_type(snapshot,'$.links')='array' AND json_array_length(snapshot,'$.links')<=64 THEN
@@ -25815,13 +25838,10 @@ function readRuns(db, binding, r, now3 = Date.now()) {
       requireProgress(Array.isArray(linked.itemIds) && linked.itemIds.length <= 1000, "corrupt");
       const facts = p.items.filter((i) => i.kind === "task" && i.assigneeSessionId === run3.childSessionId && linked.itemIds.includes(i.id)).map((i) => ({ id: i.id, status: i.status }));
       run3.accepted = { plan: r.plan, revision: p.revision, items: facts.slice(0, 50), omittedItems: Math.max(0, facts.length - 50) };
-      while (run3.accepted.items.length && Buffer.byteLength(JSON.stringify(run3)) > RUN_LIMITS.dtoBytes) {
-        run3.accepted.items.pop();
-        run3.accepted.omittedItems++;
-      }
-      row(JSON.stringify(run3));
     }
   }
+  for (const run3 of out.data)
+    budgetReadRow(run3);
   if (rows.length > RUN_LIMITS.page)
     out.nextCursor = Buffer.from(JSON.stringify({ key: identityKey, revision: out.revision, offset: offset + RUN_LIMITS.page })).toString("base64url");
   out.coverage.complete = out.coverage.reasons.length === 0;
