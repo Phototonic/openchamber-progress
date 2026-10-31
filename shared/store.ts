@@ -15,11 +15,8 @@ import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, v
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
-export function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
-  return JSON.stringify(value);
-}
+import { canonical } from './canonical.ts';
+export { canonical } from './canonical.ts';
 export function digest(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
 /** Presentation-only Windows spelling equivalence; never case-fold directory names. */
 function directoryFilter(value:string|undefined) {return windows?value?.replaceAll('\\','/').replace(/^[a-z]:/i,drive=>drive.toUpperCase()):value;}

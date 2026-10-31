@@ -854,6 +854,15 @@ time remain unchanged; explicit `link` and restricted-child task relay are intac
 Capture toggles and plan closure/deletion fence intent even under old writers.
 Partial registrations dispose safely, and late disposed lookups cannot publish.
 
+Run identity hashes use the same canonical JSON serialization as plan mutations;
+object property order does not distinguish declaration retries or read cursors.
+Dispatch/history IDs, handoff claims and retirement fences hash fixed arrays of
+primitive fields, so their existing digests are unchanged. Intent fingerprints
+and cursor keys containing objects change from the earlier development format.
+This extension is unreleased and ships companion/service together; no released
+stored hashes require migration, and development-only intent receipts/cursors
+are not migrated.
+
 Durable intent persists caller source/session IDs only. Binding resolves those
 IDs through the existing `sessions` identity owner populated by native capture;
 it does not retain another Actor/directory snapshot. Declining an after-hook at
@@ -920,7 +929,12 @@ remain unknown. This bounds staging for ordinary completed, unreported sessions
 without falsely latching capture loss, while preserving fresh terminal races,
 long-running starts and unresolved verified dispatches across restart.
 A proven start must follow dispatch and a unique child interval must exist.
-Pending childless calls compete only when admitted at or before an unassociated
+Initial association requires the dispatch's capture generation to match the
+observed start's current generation. A dispatch with no proven start before a
+capture gap stays unknown; a later independent resume cannot fill that gap.
+Such stale dispatches do not compete with new-generation calls. Already-proven
+starts still accept matching terminals after capture is re-enabled.
+Pending childless calls compete only when admitted in the same generation at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
 callback from the later call is required, even when the resumed call has already
@@ -969,6 +983,10 @@ invalidates outstanding publication even if subsequently re-enabled. Ordinary
 reads and duplicate settled requests neither re-backfill nor re-stamp records.
 No service or guest native host credentials, session proxy or transcript API is
 introduced. Stored facts stay readable with capture disabled or companion absent.
+Plan-scoped run reads admit the root session's recorded attributed contribution,
+as session-scoped plan lists do, even after its explicit link is removed. This is
+read scope only: past contributions grant neither assignment/report authority nor
+inherited dispatch plan context.
 Plan-scoped accepted-task projection reads only task identity/status/assignee and
 link facts, not blocker details or the full stored plan. Valid snapshots may grow
 beyond 1 MiB through bounded writes; that response limit is not a stored-plan

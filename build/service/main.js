@@ -610,6 +610,15 @@ function mutateCleanup(db, file, action, value, transaction) {
   });
 }
 
+// shared/canonical.ts
+function canonical(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
 // shared/subagent-runs.ts
 var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
 function parseReconcileBody(text) {
@@ -798,7 +807,7 @@ function safeErrorType(v) {
   return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : "unknown";
 }
 function hash(v) {
-  return createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+  return createHash2("sha256").update(canonical(v)).digest("hex");
 }
 function keyId(k) {
   return hash([k.source, k.parent, k.message, k.call]);
@@ -996,12 +1005,15 @@ function adopt(db, r, c) {
   if (r.ran.startedAt !== null && r.ran.startedAt !== c.start.at)
     return false;
   if (r.ran.startedAt === null) {
-    if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, c.start.at))
+    const generation = runControl(db).generation;
+    if (db.prepare("SELECT generation FROM runs_rows WHERE id=?").get(r.id)?.generation !== generation)
       return false;
-    if (db.prepare(`SELECT 1 FROM (SELECT terminal,at,json_extract(payload,'$.ran.startedAt') AS started,
+    if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, generation, c.start.at))
+      return false;
+    if (db.prepare(`SELECT 1 FROM (SELECT terminal,at,generation,json_extract(payload,'$.ran.startedAt') AS started,
       coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
       FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=?)
-      WHERE (terminal=0 AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source, r.childSessionId, r.id, c.start.at, c.start.sequence, c.start.sequence, c.start.at, c.start.sequence, c.start.at))
+       WHERE (terminal=0 AND generation=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source, r.childSessionId, r.id, generation, c.start.at, c.start.sequence, c.start.sequence, c.start.at, c.start.sequence, c.start.at))
       return false;
   }
   const e = c.end && c.end.sequence > c.start.sequence && c.end.at >= c.start.at ? c.end : c.start;
@@ -1095,8 +1107,8 @@ function correlate(db, source, child) {
   if (!c)
     return;
   if (c.start && !c.ambiguous) {
-    const owners = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND terminal=0
-      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source, child, c.start.at);
+    const owners = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND message IS NOT NULL AND terminal=0
+      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source, child, runControl(db).generation, c.start.at);
     if (owners.length === 1 && adopt(db, row(owners[0].payload), { start: c.start, end: null }))
       c.start = null;
   }
@@ -1289,7 +1301,8 @@ function readRuns(db, binding, r, now = Date.now()) {
       EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?) AS linked FROM plans WHERE source=? AND id=?`).get(r.root, r.source, r.plan);
     requireProgress(plan, "not-found");
     const incoming = runsInstalled(db) && db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.planContext.plan')=? LIMIT 1").get(r.source, r.root, r.plan);
-    requireProgress(plan.owner === r.root || plan.linked === 1 || incoming, "not-found");
+    const contributed = db.prepare("SELECT 1 FROM contributions WHERE source=? AND plan=? AND json_extract(payload,'$.attributedSessionId')=? LIMIT 1").get(r.source, r.plan, r.root);
+    requireProgress(plan.owner === r.root || plan.linked === 1 || incoming || contributed, "not-found");
     const state = cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined;
     requireProgress((state?.generation ?? 0) === r.cleanupRev && state?.state !== "deleted", "conflict");
   }
@@ -2241,13 +2254,6 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
 }
 
 // shared/store.ts
-function canonical(value) {
-  if (Array.isArray(value))
-    return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
-  return JSON.stringify(value);
-}
 function digest(value) {
   return createHash4("sha256").update(value).digest("hex");
 }

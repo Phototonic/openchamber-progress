@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { identifier, requireProgress as need, type Actor, type Request, type HandoffRequest, type Receipt } from './progress.ts';
 import { cleanupInstalled, cleanupState } from './cleanup.ts';
+import { canonical } from './canonical.ts';
 
 /** Sub-agent runs revision 1. Neither a run nor a claim is task-report authority. */
 export const RUN_LIMITS = Object.freeze({ parent:1024, total:16384, candidates:256, candidateAdoptionMs:300000, jobs:64, claims:256, intents:128, page:50, dtoBytes:4096, responseBytes:262144, queryBytes:16384, cursorBytes:4096, traversal:2000, depth:32, calls:64, elapsedMs:10000 });
@@ -163,7 +164,7 @@ function capacity(db:DatabaseSync,parent?:{source:string;parent:string}):boolean
 }
 export function metadataString(v:unknown,max:number):string|null { return typeof v==='string'?v.replace(/[\u0000\r\n\t\u2028\u2029]/g,' ').slice(0,max)||null:null; }
 export function safeErrorType(v:unknown):string { return typeof v==='string'&&/^[A-Za-z0-9_.:-]{1,80}$/.test(v)?v:'unknown'; }
-function hash(v:unknown) {return createHash('sha256').update(JSON.stringify(v)).digest('hex');}
+function hash(v:unknown) {return createHash('sha256').update(canonical(v)).digest('hex');}
 function keyId(k:DispatchKey){return hash([k.source,k.parent,k.message,k.call]);}
 function validKey(k:DispatchKey){need([k.source,k.parent,k.message,k.call].every(identifier));}
 function captureIdentity(db:DatabaseSync,actor:Actor) {
@@ -296,13 +297,17 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
   // Only calls admitted by the candidate's start could own an unassociated
   // interval. Once its start is proven, later pending calls cannot block its end.
   if(r.ran.startedAt===null){
-    if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,c.start.at))return false;
+    const generation=runControl(db).generation;
+    // Capture gaps cannot prove which later execution belongs to an old call.
+    // Proven starts still route their terminals across generation changes.
+    if(db.prepare('SELECT generation FROM runs_rows WHERE id=?').get(r.id)?.generation!==generation)return false;
+    if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,generation,c.start.at))return false;
     // Only still-unassociated calls can compete for a new start. A proven
     // earlier interval is not a competitor, nor can a start be reused.
-    if(db.prepare(`SELECT 1 FROM (SELECT terminal,at,json_extract(payload,'$.ran.startedAt') AS started,
+    if(db.prepare(`SELECT 1 FROM (SELECT terminal,at,generation,json_extract(payload,'$.ran.startedAt') AS started,
       coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
       FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=?)
-      WHERE (terminal=0 AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source,r.childSessionId,r.id,c.start.at,c.start.sequence,c.start.sequence,c.start.at,c.start.sequence,c.start.at))return false;
+       WHERE (terminal=0 AND generation=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source,r.childSessionId,r.id,generation,c.start.at,c.start.sequence,c.start.sequence,c.start.at,c.start.sequence,c.start.at))return false;
   }
   const e=c.end&&c.end.sequence>c.start.sequence&&c.end.at>=c.start.at?c.end:c.start;
   if(r.ran.endedAt!==null){if(e===c.start||e.sequence>=Number(r.ran.sequence))return false;}
@@ -376,8 +381,8 @@ function routeTerminal(db:DatabaseSync,e:ExecutionObservation):{handled:boolean;
 function correlate(db:DatabaseSync,source:string,child:string) {
   const c=candidate(db,source,child);if(!c)return;
   if(c.start&&!c.ambiguous){
-    const owners=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND terminal=0
-      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source,child,c.start.at);
+    const owners=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND message IS NOT NULL AND terminal=0
+      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source,child,runControl(db).generation,c.start.at);
     if(owners.length===1&&adopt(db,row(owners[0]!.payload),{start:c.start,end:null}))c.start=null;
   }
   while(c.end){const routed=routeTerminal(db,c.end);if(!routed.handled)break;c.end=routed.displaced??null;}
@@ -502,7 +507,8 @@ export function readRuns(db:DatabaseSync,binding:RunBinding,r:RunRequest,now=Dat
     const plan=db.prepare(`SELECT json_extract(snapshot,'$.sessionId') AS owner,
       EXISTS(SELECT 1 FROM json_each(snapshot,'$.links') l WHERE json_extract(l.value,'$.sessionId')=?) AS linked FROM plans WHERE source=? AND id=?`).get(r.root,r.source,r.plan);
     need(plan,'not-found');const incoming=runsInstalled(db)&&db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.planContext.plan')=? LIMIT 1").get(r.source,r.root,r.plan);
-    need(plan.owner===r.root||plan.linked===1||incoming,'not-found');
+    const contributed=db.prepare("SELECT 1 FROM contributions WHERE source=? AND plan=? AND json_extract(payload,'$.attributedSessionId')=? LIMIT 1").get(r.source,r.plan,r.root);
+    need(plan.owner===r.root||plan.linked===1||incoming||contributed,'not-found');
     const state=cleanupInstalled(db)?cleanupState(db,r.source,r.plan):undefined;need((state?.generation??0)===r.cleanupRev&&state?.state!=='deleted','conflict');
   }
   const installed=runsInstalled(db),f=installed?db.prepare('SELECT revision,loss FROM runs_format').get():undefined;

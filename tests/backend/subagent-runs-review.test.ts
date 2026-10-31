@@ -8,6 +8,92 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review capture generations fence unproven dispatches but preserve proven terminal routing',async()=>{
+  for(const proven of [false,true])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    if(proven)f.store.observeExecution(start);
+    f.store.setEnabled(false);
+    if(!proven)f.store.observeExecution(start);
+    f.store.observeExecution({...start,id:'off-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.setEnabled(true);
+    if(proven){
+      f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+      assert.equal(read(f).data[0]!.ran.endedAt,3000,'a proven start still accepts its delayed terminal');
+    }
+    f.store.observeExecution({...start,id:'resumed-start',sequence:12,at:5000});
+    f.store.observeExecution({...start,id:'resumed-end',sequence:13,at:6000,state:'succeeded'});
+    const first=read(f).data[0]!;
+    assert.equal(first.ran.state,proven?'succeeded':'unknown');
+    assert.equal(first.ran.startedAt,proven?2000:null);assert.equal(first.ran.endedAt,proven?3000:null);
+    assert.equal(first.ran.eventId,proven?'delayed-end':null);
+    if(!proven)assert.equal(read(f).counts.unknown,1);
+  });
+});
+
+test('review stale-generation pending and verified dispatches cannot block a fresh association',async()=>{
+  for(const verified of [false,true])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    if(verified)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    f.store.setEnabled(false);f.store.setEnabled(true);
+    const next={...key,call:'fresh-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);
+    f.store.observeExecution({...start,id:'fresh-start',sequence:12,at:5000});
+    f.store.afterRun(next,f.store.runControl().generation,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'fresh-end',sequence:13,at:6000,state:'succeeded'});
+    const rows=read(f).data;
+    assert.equal(rows.find((r:RunRow)=>r.dispatch?.callId===key.call)!.ran.state,'unknown');
+    const fresh=rows.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    assert.equal(fresh.ran.state,'succeeded');assert.equal(fresh.ran.eventId,'fresh-end');
+  });
+});
+
+test('review contribution-retained plan scopes nested runs after unlink without granting context or authority',async()=>{
+  await fixture(async f=>{
+    f.store.apply({op:'link',plan:'plan-alpha',oid:'manual-link',rev:1,child:'C1',assign:['task-1']},f.actor(),undefined,f.actor('C1'));
+    f.store.apply({op:'change',plan:'plan-alpha',oid:'child-report',rev:2,changes:[{id:'task-1',status:'working'}]},f.actor('C1'));
+    f.store.apply({op:'link',plan:'plan-alpha',oid:'unlink',rev:3,child:'C1',assign:[]},f.actor(),undefined,f.actor('C1'));
+    assert.ok(f.store.list({session:'C1'}).data.some(p=>p.id==='plan-alpha'));
+    const nested={...key,parent:'C1'};
+    f.store.beforeRun(nested,f.actor('C1'),'subagent',{},1000);
+    f.store.afterRun(nested,0,{...f.actor('N1'),parentId:'C1',ancestry:['C1','A']},'returned');
+    f.store.observeExecution({...start,child:'N1'});
+    const result=f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'C1',plan:'plan-alpha',cleanupRev:0});
+    assert.equal(result.data.length,1);assert.equal(result.data[0]!.ran.state,'running');
+    assert.equal(result.data[0]!.planContext,null);assert.equal(result.data[0]!.accepted,null);
+    assert.throws(()=>f.store.apply({op:'change',plan:'plan-alpha',oid:'unassigned-report',rev:4,changes:[{id:'task-1',status:'done'}]},f.actor('C1')),/assignment/);
+    assert.throws(()=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'N1',plan:'plan-alpha',cleanupRev:0}),/not-found/);
+  });
+});
+
+test('review delegation retries canonicalize caller property order and still reject changed payloads',async()=>{
+  await fixture(async f=>{
+    const request=f.request(),receipt=f.store.declareDelegation(request,f.actor());
+    const reordered=Object.fromEntries(Object.entries(request).reverse()) as typeof request;
+    assert.deepEqual(f.store.declareDelegation(reordered,f.actor()),receipt);
+    const reopened=new Store(f.store.file);
+    try{assert.deepEqual(reopened.declareDelegation(reordered,f.actor()),receipt);}finally{reopened.close();}
+    assert.throws(()=>f.store.declareDelegation({...reordered,assign:['task-2']},f.actor()),/operation-reused/);
+  });
+});
+
+test('review reordered handoff retries preserve staged attached and retired claim identity',async()=>{
+  await fixture(async f=>{
+    const report={op:'handoff',oid:'ordered-report',summary:'Synthetic result',outcome:'partial'};
+    const reordered=Object.fromEntries(Object.entries(report).reverse());
+    const staged=f.store.handoff(report,f.actor('C1'),2500);
+    assert.deepEqual(f.store.handoff(reordered,f.actor('C1'),2600),staged);
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const attached=f.store.handoff(reordered,f.actor('C1'),2600);
+    assert.equal(attached.handoff.association,'execution');assert.equal(attached.handoff.reportedAt,2500);
+    assert.throws(()=>f.store.handoff({...reordered,summary:'Changed result'},f.actor('C1'),2600),/operation-reused/);
+    f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'occupied-slot','synthetic',JSON.stringify({...staged.handoff,oid:'occupied-slot'}));
+    f.store.observeExecution({...start,id:'earlier-terminal',sequence:11,at:2400,state:'succeeded'});
+    assert.equal(read(f).data[0]!.claimed,null);
+    assert.throws(()=>f.store.handoff(reordered,f.actor('C1'),2700),/not-found/);
+    assert.throws(()=>f.store.handoff({...reordered,summary:'Changed result'},f.actor('C1'),2700),/operation-reused/);
+  });
+});
+
 test('review terminal ownership follows native sequence and never falls back on contradictory timestamps',async()=>{
   for(const event of [{sequence:13,at:4500},{sequence:11,at:5500}])await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
