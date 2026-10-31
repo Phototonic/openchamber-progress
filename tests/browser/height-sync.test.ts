@@ -4,19 +4,33 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HeightSync, HEIGHT_RETRY_FRAMES } from '../../ui/shared/height.ts';
 
-/** A host frame at `frame` px; `apply(call, h)` decides what the host does with each request. */
+/**
+ * A host frame at `frame` px; `apply(call, h)` decides what the host does with each request. The
+ * scheduler RETAINS every queued callback until it runs or is explicitly cancelled, as
+ * requestAnimationFrame does, so leaked chains are visible.
+ */
 function harness(apply: (call: number, h: number) => number | null, frame = 24) {
   const sent: number[] = [];
   const waits: number[] = [];
-  let pending: (() => void) | null = null;
+  const queue: { fn: () => void; live: boolean }[] = [];
+  let shown = true;
   const sync = new HeightSync({
     send: async (h) => { sent.push(h); const next = apply(sent.length, h); if (next !== null) frame = next; },
     actual: () => frame,
-    afterFrames: (n, fn) => { waits.push(n); pending = fn; },
+    visible: () => shown,
+    afterFrames: (n, fn) => { waits.push(n); const job = { fn, live: true }; queue.push(job); return () => { job.live = false; }; },
   });
-  /** Runs scheduled checks until none is pending (bounded by the helper itself). */
-  const settle = async () => { for (let i = 0; i < 20 && pending; i++) { const fn = pending; pending = null; await Promise.resolve(); fn(); await Promise.resolve(); } };
-  return { sync, sent, waits, settle, frame: () => frame };
+  /** Runs live queued checks in order until none is left (bounded). Paused while hidden, like rAF. */
+  const settle = async () => {
+    for (let i = 0; i < 20 && shown; i++) {
+      const job = queue.find((j) => j.live);
+      if (!job) break;
+      job.live = false; await Promise.resolve(); job.fn(); await Promise.resolve();
+    }
+  };
+  const pending = () => queue.filter((j) => j.live).length;
+  const setVisible = (v: boolean) => { shown = v; if (v) sync.visible(); else sync.hidden(); };
+  return { sync, sent, waits, settle, pending, setVisible, frame: () => frame };
 }
 
 test('height: a host that drops the first request gets it again and the frame recovers', async () => {
@@ -84,4 +98,55 @@ test('height: a newer request replaces the pending check; an unchanged height se
   h.sync.request(364);
   await h.settle();
   assert.deepEqual(h.sent, [149, 364, 364], 'a paint still reports its height once (as before)');
+});
+
+test('height: many visible paints keep at most one pending check chain', () => {
+  const h = harness(() => null);
+  for (let i = 0; i < 50; i++) { h.sync.request(100 + i); assert.ok(h.pending() <= 1); }
+  assert.equal(h.pending(), 1);
+});
+
+test('height: paints while hidden send and schedule nothing; on return only the latest height is sent and checked once', async () => {
+  const h = harness((_call, height) => height, 31);
+  h.setVisible(false);
+  for (let i = 0; i < 50; i++) h.sync.request(100 + i);
+  assert.deepEqual(h.sent, [], 'nothing sent while hidden');
+  assert.equal(h.pending(), 0, 'nothing queued while hidden');
+  h.setVisible(true);
+  assert.deepEqual(h.sent, [149], 'the latest height, once');
+  assert.equal(h.pending(), 1, 'one check for it');
+  await h.settle();
+  assert.deepEqual(h.sent, [149]);
+  assert.equal(h.pending(), 0);
+  assert.equal(h.frame(), 149);
+});
+
+test('height: hiding cancels a pending check; on return the latest height is re-sent and checked once', async () => {
+  const h = harness((call, height) => (call === 1 ? null : height));
+  h.sync.request(200);
+  assert.equal(h.pending(), 1);
+  h.setVisible(false);
+  assert.equal(h.pending(), 0, 'the queued check is cancelled on hide');
+  h.sync.request(250); h.sync.request(300);
+  assert.deepEqual(h.sent, [200]);
+  h.setVisible(true);
+  assert.deepEqual(h.sent, [200, 300]);
+  assert.equal(h.pending(), 1);
+  await h.settle();
+  assert.equal(h.frame(), 300);
+  assert.equal(h.pending(), 0);
+  // Nothing unverified: becoming visible again sends nothing.
+  h.setVisible(false); h.setVisible(true);
+  assert.deepEqual(h.sent, [200, 300]);
+});
+
+test('height: dispose cancels pending work and nothing runs or sends afterwards', async () => {
+  const h = harness(() => null);
+  h.sync.request(200);
+  h.sync.dispose();
+  assert.equal(h.pending(), 0);
+  h.sync.request(300); h.setVisible(false); h.setVisible(true);
+  await h.settle();
+  assert.deepEqual(h.sent, [200]);
+  assert.equal(h.pending(), 0);
 });

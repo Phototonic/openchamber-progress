@@ -159,7 +159,11 @@ startView<Ui>({
   },
   afterPaint(root, vc) {
     // Asked once per paint; re-sent a bounded number of times if the host leaves the frame unchanged.
-    heights ??= new HeightSync({ send: (h) => vc.host.setHeight(h), actual: () => innerHeight, afterFrames: afterAnimationFrames });
+    if (!heights) {
+      const sync = heights = new HeightSync({ send: (h) => vc.host.setHeight(h), actual: () => innerHeight, visible: () => document.visibilityState !== 'hidden', afterFrames: afterAnimationFrames });
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') sync.hidden(); else sync.visible(); });
+      addEventListener('pagehide', () => sync.dispose());
+    }
     heights.request(Math.ceil(root.getBoundingClientRect().height));
   },
 });
