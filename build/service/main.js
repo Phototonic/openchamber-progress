@@ -708,6 +708,10 @@ function claimValue(value) {
   requireProgress(obj(value) && Object.keys(value).length === 6 && Object.keys(value).every((k) => ["oid", "outcome", "summary", "reportedAt", "sessionId", "association"].includes(k)) && identifier(value.oid) && identifier(value.sessionId) && ["done", "partial", "blocked"].includes(value.outcome) && typeof value.summary === "string" && value.summary.trim().length > 0 && value.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(value.summary) && integer(value.reportedAt) && ["execution", "session-only"].includes(value.association), "corrupt");
   return { oid: value.oid, outcome: value.outcome, summary: value.summary, reportedAt: value.reportedAt, sessionId: value.sessionId, association: value.association };
 }
+function claimFence(value) {
+  requireProgress(Array.isArray(value) && value.length === 2 && identifier(value[0]) && typeof value[1] === "string" && /^[a-f0-9]{64}$/.test(value[1]), "corrupt");
+  return value;
+}
 function row(value) {
   requireProgress(typeof value === "string" && Buffer.byteLength(value) <= RUN_LIMITS.dtoBytes, "corrupt");
   let r;
@@ -717,6 +721,11 @@ function row(value) {
     requireProgress(false, "corrupt");
   }
   requireProgress(obj(r) && identifier(r.id) && identifier(r.source) && identifier(r.parentSessionId) && (r.childSessionId === null || identifier(r.childSessionId)) && obj(r.ran) && ["unknown", "running", "succeeded", "failed", "interrupted"].includes(r.ran.state), "corrupt");
+  if (Object.hasOwn(r, "_retiredClaim")) {
+    requireProgress(r.childSessionId !== null, "corrupt");
+    claimFence(r._retiredClaim);
+    delete r._retiredClaim;
+  }
   const keys = (v, allowed) => obj(v) && Object.keys(v).length === allowed.length && Object.keys(v).every((k) => allowed.includes(k));
   const time = (v) => v === null || integer(v);
   requireProgress(keys(r, ["id", "kind", "source", "parentSessionId", "childSessionId", "tool", "agent", "description", "dispatch", "planContext", "ran", "claimed", "accepted"]) && ["dispatch", "historical-session"].includes(r.kind) && [null, "subagent", "task"].includes(r.tool) && (r.agent === null || typeof r.agent === "string" && r.agent.length <= 80) && (r.description === null || typeof r.description === "string" && r.description.length <= 200), "corrupt");
@@ -729,8 +738,10 @@ function row(value) {
     requireProgress(keys(r.accepted, ["plan", "revision", "items", "omittedItems"]) && identifier(r.accepted.plan) && integer(r.accepted.revision) && integer(r.accepted.omittedItems) && Array.isArray(r.accepted.items) && r.accepted.items.length <= 50 && r.accepted.items.every((i) => keys(i, ["id", "status"]) && identifier(i.id) && ["pending", "working", "blocked", "done", "skipped"].includes(i.status)), "corrupt");
   return r;
 }
-function save(db, r) {
-  const text = JSON.stringify(r);
+function save(db, r, retiredClaim) {
+  const existing = db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence FROM runs_rows WHERE id=?").get(r.id);
+  const fence = retiredClaim ?? (existing?.fence ? claimFence(JSON.parse(String(existing.fence))) : undefined);
+  const text = JSON.stringify(fence ? { ...r, _retiredClaim: fence } : r);
   requireProgress(Buffer.byteLength(text) <= RUN_LIMITS.dtoBytes, "invalid");
   row(text);
   db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
@@ -753,8 +764,17 @@ function capacity(db, parent) {
       return false;
     }
     const r = row(victim.payload);
-    if (r.claimed && r.childSessionId) {
-      db.prepare("INSERT INTO runs_retired VALUES(?,?,?,?,?) ON CONFLICT(source,child,oid) DO UPDATE SET execution=max(execution,excluded.execution)").run(r.source, r.childSessionId, r.ran.sequence ?? 0, r.claimed.oid, hash([r.claimed.outcome, r.claimed.summary]));
+    const dropped = JSON.parse(String(victim.payload))._retiredClaim;
+    if ((r.claimed || dropped) && r.childSessionId) {
+      const fences = new Map(dropped ? [dropped] : []);
+      if (r.claimed)
+        fences.set(r.claimed.oid, hash([r.claimed.outcome, r.claimed.summary]));
+      if (retainedCount(db) + fences.size - 1 > RUN_LIMITS.total) {
+        loss(db);
+        return false;
+      }
+      for (const [oid, digest] of fences)
+        db.prepare("INSERT INTO runs_retired VALUES(?,?,?,?,?) ON CONFLICT(source,child,oid) DO UPDATE SET execution=max(execution,excluded.execution)").run(r.source, r.childSessionId, r.ran.sequence ?? 0, oid, digest);
     }
     db.prepare("DELETE FROM runs_rows WHERE id=?").run(victim.id);
     loss(db);
@@ -860,7 +880,7 @@ function handoff(db, r, actor, now) {
     requireProgress(hash([claim2.outcome, claim2.summary]) === claimHash(r), "operation-reused");
     return { handoff: claim2 };
   }
-  const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid);
+  const oldClaim = db.prepare("SELECT hash FROM runs_retired WHERE source=? AND child=? AND oid=?").get(actor.sourceId, actor.sessionId, r.oid) ?? db.prepare("SELECT json_extract(payload,'$._retiredClaim[1]') AS hash FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._retiredClaim[0]')=? LIMIT 1").get(actor.sourceId, actor.sessionId, r.oid);
   if (oldClaim) {
     requireProgress(oldClaim.hash === claimHash(r), "operation-reused");
     requireProgress(false, "not-found");
@@ -963,14 +983,17 @@ function adopt(db, r, c) {
   if (r.ran.endedAt !== null)
     return;
   r.ran = { ...r.ran, state: e.state, startedAt: c.start.at, endedAt: e === c.start ? null : e.at, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  let retiredClaim;
   if (r.claimed && r.ran.endedAt !== null && (r.claimed.reportedAt < r.ran.startedAt || r.claimed.reportedAt > r.ran.endedAt)) {
     const claim = { ...r.claimed, association: "session-only" };
     const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
-    if (!room || !db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash([claim.outcome, claim.summary]), JSON.stringify(claim)).changes)
+    if (!room || !db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash([claim.outcome, claim.summary]), JSON.stringify(claim)).changes) {
+      retiredClaim = [claim.oid, hash([claim.outcome, claim.summary])];
       loss(db);
+    }
     r.claimed = null;
   }
-  save(db, r);
+  save(db, r, retiredClaim);
   attachClaim(db, r);
   db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(r.source, r.childSessionId);
 }

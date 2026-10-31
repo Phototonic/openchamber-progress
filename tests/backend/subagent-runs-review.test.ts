@@ -8,6 +8,57 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review dropped handoff retries stay retired across reopen and a later execution without spare storage',async()=>{
+  for(const bound of ['claims','total'] as const)await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'discarded-operation',summary:'Discarded old result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    if(bound==='claims')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(attached));
+    else f.store.db.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16383)
+      INSERT INTO runs_retired SELECT 'source-alpha','synthetic-'||i,0,'synthetic-'||i,'synthetic' FROM n`);
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    assert.equal(read(f).data[0]!.ran.state,'succeeded');assert.equal(read(f).data[0]!.claimed,null);
+    assert.equal(read(f).capture.enabled,true);assert.equal(read(f).availability,'ready');
+    assert.ok(!String(f.store.db.prepare('SELECT payload FROM runs_rows').get()!.payload).includes(report.summary),'discarded claim text is not retained');
+    if(bound==='claims')f.store.db.exec('DELETE FROM runs_claims');else f.store.db.exec('DELETE FROM runs_retired');
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      const later={...key,message:'later-execution',call:'later-execution'};
+      reopened.beforeRun(later,f.actor(),'subagent',{},5500);reopened.afterRun(later,0,f.actor('C1'),'returned');
+      reopened.observeExecution({...start,id:'later-start',sequence:12,at:6000});
+      assert.throws(()=>reopened.handoff(report,f.actor('C1'),7000),e=>['conflict','not-found'].includes((e as any).code));
+      assert.throws(()=>reopened.handoff({...report,summary:'Changed old result'},f.actor('C1'),7000),/operation-reused/);
+      const fresh=reopened.handoff({...report,oid:'fresh-operation',summary:'New result'},f.actor('C1'),7100).handoff;
+      assert.equal(fresh.association,'execution');assert.equal(fresh.reportedAt,7100);
+      const rows=read({...f,store:reopened}).data;
+      assert.ok(rows.every((r:RunRow)=>!Object.hasOwn(r,'_retiredClaim')),'private fences never extend read DTOs');
+      assert.equal(rows.find((r:RunRow)=>r.dispatch?.callId==='later-execution')!.claimed!.oid,'fresh-operation');
+    }finally{reopened.close();}
+  });
+});
+
+test('review eviction preserves a dropped handoff retirement fence without retaining its text',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'discarded-operation',summary:'Discarded old result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'other-operation','synthetic',JSON.stringify({...attached,oid:'other-operation',reportedAt:1000,association:'session-only'}));
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.beforeRun({...key,call:'seed'},f.actor(),'subagent',{},5000);
+    const template=f.store.db.prepare("SELECT payload FROM runs_rows WHERE call='seed'").get()!.payload;
+    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1022)
+      INSERT INTO runs_rows SELECT 'pressure-'||i,'source-alpha','A',NULL,'message','pressure-'||i,0,0,5000,
+      json_set(?,'$.id','pressure-'||i,'$.dispatch.callId','pressure-'||i) FROM n`).run(template);
+    f.store.beforeRun({...key,call:'pressure-new'},f.actor(),'subagent',{},6000);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE call='call'").get()!.n,0,'completed row is evicted by ordinary parent capacity');
+    assert.ok(f.store.db.prepare('SELECT 1 FROM runs_retired WHERE source=? AND child=? AND oid=?').get(f.source.id,'C1',report.oid));
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),7000),/not-found/);
+    assert.throws(()=>f.store.handoff({...report,summary:'Changed old result'},f.actor('C1'),7000),/operation-reused/);
+  });
+});
+
 test('review delayed terminal detaches an out-of-interval handoff and reattaches it to the proven resumed execution',async()=>{
   await fixture(async f=>{
     const progress=f.store.detail(f.source.id,'plan-alpha');

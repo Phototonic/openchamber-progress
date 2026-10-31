@@ -966,6 +966,15 @@ facts take priority: if claim staging or total storage has no spare capacity, or
 the unknown-execution slot conflicts, the invalid claim is detached and dropped
 with `capture.loss` disclosed. The terminal still applies; capture stays enabled
 and available. Restaging never prunes host runs to retain the lower-priority claim.
+A dropped claim leaves one private operation-ID/hash fence in the affected run's
+stored payload, replacing the removed claim without allocating a bookkeeping row.
+It retains no authored text and is stripped from every run read DTO. An identical
+retry is refused with the existing retired-operation response; altered payloads
+still fail operation reuse, while a fresh operation ID remains usable. Saves
+preserve the fence across restart and later updates. Ordinary eviction transfers
+it to `runs_retired`, under the same total budget and no-fence-loss retention rule;
+if a row also carries another claim, admission must have room to retain both
+fences. This retention check affects eviction, never terminal persistence.
 Current explicit task facts are projected into `accepted` at read time, bounded by row
 bytes with an omitted-item count. Plan changes invalidate run-page cursors through
 the monotonic run revision; stale stored acceptance is not resurrected.
