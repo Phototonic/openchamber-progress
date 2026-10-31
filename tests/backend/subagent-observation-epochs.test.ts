@@ -3,13 +3,112 @@ import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { Store } from '../../shared/store.ts';
 import { createRunCapture } from '../../plugin/subagent-runs.ts';
-import { fixture } from './subagent-test-support.ts';
+import { fixture, deferred } from './subagent-test-support.ts';
 
 const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const terminal={...start,id:'resumed-end',sequence:40,at:6000,state:'failed' as const,errorType:'SyntheticError'};
 const read=(f:any,view:'useful'|'history'='useful')=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0,view});
 const seed=(f:any)=>{f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);};
+
+test('observation both companions preserve one start event with each observer epoch in either delivery order',async()=>{
+  for(const ownerFirst of [false,true])for(const ownerEndFirst of [false,true])for(const attachFirst of [false,true])await fixture(async f=>{
+    const secondStore=new Store(f.store.file);secondStore.bindReads(f.source.id,true);
+    const options={sourceId:f.source.id,identity:async(id:string)=>f.actor(id),now:()=>1000};
+    const owner=createRunCapture(f.ctx,{...options,store:f.store}),other=createRunCapture(f.ctx,{...options,store:secondStore});
+    try{
+      const hook={id:key.call,messageID:key.message,sessionID:'A',tool:'subagent'};
+      const after=async()=>{owner.after({...hook,status:'completed',result:{output:{sessionID:'C1',status:'completed'}}});await owner.settled();};
+      const event=(e:any)=>({type:`session.execution.${e.state==='running'?'started':e.state}`,id:e.id,created:e.at,durable:{aggregateID:'C1',seq:e.sequence},data:{sessionID:'C1',error:{type:e.errorType}}});
+      await owner.before(hook);if(attachFirst)await after();
+      for(const observer of ownerFirst?[owner,other]:[other,owner])observer.event(event(start));
+      if(!attachFirst)await after();
+      assert.equal(read(f).data[0]!.ran.state,'running','the dispatch owner observed the same start, even if another epoch staged it first');
+      assert.equal(read(f).counts.runs,1,'one event seen twice is not two executions');
+      const end={...start,id:'original-end',sequence:20,at:3000,state:'succeeded'};
+      for(const observer of ownerEndFirst?[owner,other]:[other,owner]){
+        observer.event(event(end));assert.equal(read(f).data[0]!.ran.state,'succeeded','either observer has positive start evidence');
+      }
+      assert.equal(read(f).capture.loss,false,'valid duplicate observations do not invent capture loss');
+      for(const observer of [other,owner])observer.event(event({...start,id:'independent-resume',sequence:30,at:5000}));
+      for(const observer of [owner,other])observer.event(event(terminal));
+      const original=read(f).data.find((r:any)=>r.dispatch?.callId===key.call);
+      assert.equal(original.ran.startedAt,2000);assert.equal(original.ran.endedAt,3000);assert.equal(original.ran.eventId,'original-end');
+    }finally{owner.dispose();other.dispose();secondStore.close();}
+  });
+});
+
+test('observation a late rejected terminal coalesces metadata refresh after or during restart recovery',async()=>{
+  for(const phase of ['complete','running'])await fixture(async f=>{
+    seed(f);await f.reload();
+    let ended=false,calls=0;const entered=deferred(),release=deferred();
+    const page=(input:any,complete:boolean)=>({data:input.parentID==='A'?[{...f.records.get('C1'),time:{created:1000,updated:complete?6000:4000,...(complete?{idle:6000}:{})},...(complete?{outcome:'failed'}:{})}]:[],cursor:{next:null}});
+    f.ctx.session.list=async(input:any)=>{calls++;const snapshot=page(input,ended);if(phase==='running'&&calls===1){entered.resolve();await release.promise;}return snapshot;};
+    const initial=f.binding.drainRuns();
+    try{
+      if(phase==='running')await entered.promise;else await initial;
+      ended=true;
+      await f.emit('execution.failed',{sessionID:'C1',error:{type:'SyntheticError'}},{id:terminal.id,created:6000,durable:{aggregateID:'C1',seq:40}});
+      assert.equal(read(f).data[0]!.ran.state,'unknown','the terminal is not native proof for the old dispatch');
+      await f.emit('execution.failed',{sessionID:'C1',error:{type:'SyntheticError'}},{id:terminal.id,created:6000,durable:{aggregateID:'C1',seq:40}});
+      release.resolve();await initial;
+      assert.equal(read(f).recovery.state,'pending','the later terminal demands one fresh metadata scan');
+      await f.binding.drainRuns();
+      const history=read(f,'history').data.find((r:any)=>r.kind==='historical-session');
+      assert.ok(history);assert.equal(history.ran.state,'failed');assert.equal(history.ran.endedAt,6000);assert.equal(history.ran.provenance,'native-session');
+      assert.equal(read(f).data[0]!.ran.state,'unknown');
+      const settledCalls=calls;
+      await f.emit('execution.failed',{sessionID:'C1',error:{type:'SyntheticError'}},{id:terminal.id,created:6000,durable:{aggregateID:'C1',seq:40}});
+      await f.binding.drainRuns();assert.equal(calls,settledCalls,'duplicate terminal observations cannot create a refresh loop');
+      assert.equal(read(f).recovery.state,'complete');
+    }finally{release.resolve();await initial;}
+  });
+});
+
+test('observation staged duplicate start and terminal identities retain both epoch proofs before attachment',async()=>{
+  await fixture(async f=>{
+    const ownerEpoch=f.store.beginRunObservation(),otherEpoch=f.store.beginRunObservation();
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000,ownerEpoch);
+    f.store.observeExecution(start,otherEpoch);
+    const end={...start,id:'shared-end',sequence:20,at:3000,state:'succeeded' as const};
+    f.store.observeExecution(end,otherEpoch);f.store.observeExecution(end,ownerEpoch);
+    f.store.observeExecution(start,ownerEpoch);
+    f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f);assert.equal(result.counts.runs,1);assert.equal(result.data[0]!.ran.state,'succeeded');
+    assert.equal(result.data[0]!.ran.startedAt,2000);assert.equal(result.data[0]!.ran.endedAt,3000);assert.equal(result.capture.loss,false);
+    for(const field of ['_epoch','_startEpochs','_endEpochs','_refresh'])assert.ok(!Object.hasOwn(result.data[0]!,field));
+  });
+});
+
+test('observation one companion running ahead cannot make the owner adopt an unrelated resume',async()=>{
+  for(const terminalBeforeResume of [false,true])await fixture(async f=>{
+    const options={store:f.store,sourceId:f.source.id,identity:async(id:string)=>f.actor(id),now:()=>1000};
+    const owner=createRunCapture(f.ctx,options),other=createRunCapture(f.ctx,options);
+    try{
+      const hook={id:key.call,messageID:key.message,sessionID:'A',tool:'subagent'};
+      await owner.before(hook);owner.after({...hook,status:'completed',result:{output:{sessionID:'C1',status:'completed'}}});await owner.settled();
+      const events=[start,{...start,id:'original-end',sequence:20,at:3000,state:'succeeded'},{...start,id:'independent-resume',sequence:30,at:5000},terminal];
+      for(const observer of [other,owner])for(const e of observer===other&&terminalBeforeResume?[events[0]!,events[1]!,events[3]!,events[2]!]:events)observer.event({type:`session.execution.${e.state==='running'?'started':e.state}`,id:e.id,created:e.at,durable:{aggregateID:'C1',seq:e.sequence},data:{sessionID:'C1',error:{type:e.errorType}}});
+      const original=read(f).data.find((r:any)=>r.dispatch?.callId===key.call);
+      assert.equal(original.ran.startedAt,2000);assert.equal(original.ran.endedAt,3000);assert.equal(original.ran.eventId,'original-end');
+    }finally{owner.dispose();other.dispose();}
+  });
+});
+
+test('observation rejected-terminal refresh obeys job capacity without blocking unknown disclosure',async()=>{
+  await fixture(async f=>{
+    seed(f);await f.reload();
+    f.store.db.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<64)
+      INSERT INTO runs_jobs SELECT 'source-alpha','pressure-root-'||i,'pressure-request-'||i,0,'pending',NULL,NULL,NULL FROM n`);
+    f.store.observeExecution(terminal);
+    assert.equal(read(f).data[0]!.ran.state,'unknown');assert.equal(read(f).capture.loss,true);
+    assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get()!.n,64);
+    assert.equal(f.store.db.prepare("SELECT 1 FROM runs_jobs WHERE root='A'").get(),undefined);
+    f.store.db.exec("DELETE FROM runs_jobs WHERE root='pressure-root-1'");
+    f.store.observeExecution(terminal);
+    assert.equal(read(f).recovery.state,'pending','a refused admission must not fence a later bounded retry');
+  });
+});
 
 test('observation restart gap cannot route a resumed terminal to the retained start',async()=>{
   await fixture(async f=>{

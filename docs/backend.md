@@ -902,7 +902,7 @@ Parent/child identity is native, same-source/project/location and
 complete-ancestry checked. Identity work is outside transactions; ignored aborts
 retain physical lookup occupancy. Passive failures qualify capture loss and do
 not abort or modify native execution. After hooks never insert a missing dispatch.
-Native execution observations retain only the latest bounded unassociated interval candidate
+Native execution observations retain one bounded unassociated interval candidate
 per child; this permits a terminal event before verified after-hook attachment.
 Verified root identities (explicit null parent and empty verified ancestry) are
 not staged as child execution candidates. Root failure/interruption still retires
@@ -958,6 +958,20 @@ not invalidate an uninterrupted stream. Lost candidate admission/unsafe eviction
 breaks continuity too. Captured dispatches, proven starts and staged start/end
 events retain their observation token privately; reads strip it from frozen DTOs.
 Candidate staging cannot relabel pre-gap evidence as observed after a restart.
+Event identity is independent of observer identity: a start/end event delivered
+by several companions is one event, deduplicated by its native event ID, with a
+bounded set of epochs that actually observed it. Staged and retained proof keeps
+up to 32 observation epochs per event. Duplicate starts can add the dispatch
+owner's epoch even after another observer staged that event first; they neither
+create another execution nor make the interval ambiguous. Initial association
+matches the dispatch's own epoch, while terminal continuity requires a shared
+observed epoch between that exact start and terminal. Evidence overflow breaks
+observation continuity with loss disclosed rather than permitting a later guess.
+Unresolved starts remain keyed by event ID inside the same 4 KiB per-child
+candidate, including earlier starts when one observer runs ahead through a resume.
+Initial association cannot skip an earlier still-unassociated start that could
+belong to the dispatch. A delayed owner duplicate can therefore prove the original
+start; it cannot make the old dispatch adopt the later independent resume.
 Pending childless calls compete only when admitted in the same generation and epoch at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
@@ -1004,6 +1018,15 @@ stay separate `historical-session` rows with `native-session` provenance, no
 execution ID and no invented start. They do not certify the unknown dispatch:
 session metadata cannot distinguish an original execution from an unseen resume.
 Recovery remains lease/budget fenced, with no transcript access or retry loop.
+A terminal rejected for an epoch break also requests one bounded metadata refresh
+for its child through the existing parent recovery job, even if restart recovery
+already completed while the child was still running. Pending requests coalesce;
+an in-flight scan retains one follow-up demand so a child already visited is
+scanned again after completion. A private terminal-sequence fence prevents replay
+or another observer's duplicate notification from creating a refresh loop. The
+existing job, storage and traversal bounds still apply; unavailable admission
+leaves the dispatch unknown with capture loss disclosed and permits a later retry.
+Refresh results remain separate `native-session` history, never dispatch outcomes.
 
 `GET /v1/subagent-runs` is side-effect free. Authenticated reconciliation POSTs
 create/coalesce finite source/root demand in the same database. A single unref'd

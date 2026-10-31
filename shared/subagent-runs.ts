@@ -5,7 +5,7 @@ import { cleanupInstalled, cleanupState } from './cleanup.ts';
 import { canonical } from './canonical.ts';
 
 /** Sub-agent runs revision 1. Neither a run nor a claim is task-report authority. */
-export const RUN_LIMITS = Object.freeze({ parent:1024, total:16384, candidates:256, candidateAdoptionMs:300000, jobs:64, claims:256, intents:128, page:50, dtoBytes:4096, responseBytes:262144, queryBytes:16384, cursorBytes:4096, traversal:2000, depth:32, calls:64, elapsedMs:10000 });
+export const RUN_LIMITS = Object.freeze({ parent:1024, total:16384, candidates:256, candidateAdoptionMs:300000, observationEpochs:32, jobs:64, claims:256, intents:128, page:50, dtoBytes:4096, responseBytes:262144, queryBytes:16384, cursorBytes:4096, traversal:2000, depth:32, calls:64, elapsedMs:10000 });
 export type RunBinding = { sourceId:string|null; verified:boolean };
 export type RunState = 'unknown'|'running'|'succeeded'|'failed'|'interrupted';
 export type RunReason = 'user'|'shutdown'|'superseded'|'inactivity'|'unknown';
@@ -50,7 +50,8 @@ export interface RunRead {
 }
 export interface DispatchKey { source:string; parent:string; message:string; call:string }
 export interface ExecutionObservation { source:string; child:string; id:string; sequence:number; at:number; state:Exclude<RunState,'unknown'>; errorType:string|null; interruptionReason:RunReason|null }
-interface Candidate { start:ExecutionObservation|null; end:ExecutionObservation|null; startEpoch?:number; endEpoch?:number; ambiguous?:boolean }
+interface StartEvidence { event:ExecutionObservation; epochs:number[]; ambiguous?:boolean }
+interface Candidate { start:ExecutionObservation|null; end:ExecutionObservation|null; startEpoch?:number; endEpoch?:number; startEpochs?:number[]; endEpochs?:number[]; startEvidence?:Record<string,StartEvidence>; ambiguous?:boolean }
 export interface RecoveryJob { source:string; root:string; generation:number; claim:string; requestId:string }
 
 const definitions:Record<string,string> = {
@@ -124,17 +125,42 @@ type StartEvent=[string,number];
 function startEvent(value:unknown):StartEvent {
   need(Array.isArray(value)&&value.length===2&&identifier(value[0])&&integer(value[1]),'corrupt');return value as StartEvent;
 }
+function epochList(value:unknown):number[] {
+  need(Array.isArray(value)&&value.length<=RUN_LIMITS.observationEpochs&&value.every(integer)&&new Set(value).size===value.length,'corrupt');return value as number[];
+}
+function eventEpochs(c:Candidate,kind:'start'|'end'):number[] {
+  const list=c[kind==='start'?'startEpochs':'endEpochs'],single=c[kind==='start'?'startEpoch':'endEpoch'];
+  return list!==undefined?epochList(list):single!==undefined?epochList([single]):[];
+}
+function candidateStarts(c:Candidate):StartEvidence[] {
+  return [...Object.values(c.startEvidence??{}),...(c.start?[{event:c.start,epochs:eventEpochs(c,'start'),ambiguous:c.ambiguous}]:[])].sort((a,b)=>a.event.sequence-b.event.sequence);
+}
+function dropCandidateStart(c:Candidate,id:string) {
+  if(c.start?.id===id){c.start=null;c.ambiguous=false;}
+  if(c.startEvidence)delete c.startEvidence[id];
+}
+function mergeEpochs(db:DatabaseSync,known:number[],observed:number[]):number[] {
+  const merged=[...new Set([...known,...observed])];
+  if(merged.length>RUN_LIMITS.observationEpochs){runCaptureUnavailable(db);return known;}
+  return merged;
+}
+function runEventEpochs(db:DatabaseSync,r:RunRow,kind:'start'|'end'):number[] {
+  const value=db.prepare(`SELECT json_extract(payload,'$._${kind}Epochs') AS epochs,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?`).get(r.id);
+  return value?.epochs?epochList(JSON.parse(String(value.epochs))):integer(value?.epoch)?[Number(value.epoch)]:[];
+}
 function claimFence(value:unknown):ClaimFence {
   need(Array.isArray(value)&&value.length===2&&identifier(value[0])&&typeof value[1]==='string'&&/^[a-f0-9]{64}$/.test(value[1]),'corrupt');
   return value as ClaimFence;
 }
 function row(value:unknown):RunRow {
   need(typeof value==='string'&&Buffer.byteLength(value)<=RUN_LIMITS.dtoBytes,'corrupt');
-  let r:RunRow&{_retiredClaim?:unknown;_startEvent?:unknown;_epoch?:unknown};try{r=JSON.parse(value);}catch{need(false,'corrupt');}
+  let r:RunRow&{_retiredClaim?:unknown;_startEvent?:unknown;_epoch?:unknown;_startEpochs?:unknown;_endEpochs?:unknown;_refresh?:unknown};try{r=JSON.parse(value);}catch{need(false,'corrupt');}
   need(obj(r!)&&identifier(r.id)&&identifier(r.source)&&identifier(r.parentSessionId)&&(r.childSessionId===null||identifier(r.childSessionId))&&obj(r.ran)&&['unknown','running','succeeded','failed','interrupted'].includes(r.ran.state),'corrupt');
   if(Object.hasOwn(r,'_retiredClaim')){need(r.childSessionId!==null,'corrupt');claimFence(r._retiredClaim);delete r._retiredClaim;}
   if(Object.hasOwn(r,'_startEvent')){need(r.childSessionId!==null&&r.ran.startedAt!==null,'corrupt');startEvent(r._startEvent);delete r._startEvent;}
   if(Object.hasOwn(r,'_epoch')){need(integer(r._epoch),'corrupt');delete r._epoch;}
+  for(const key of ['_startEpochs','_endEpochs'] as const)if(Object.hasOwn(r,key)){epochList(r[key]);delete r[key];}
+  if(Object.hasOwn(r,'_refresh')){need(Array.isArray(r._refresh)&&r._refresh.length===2&&integer(r._refresh[0])&&typeof r._refresh[1]==='boolean','corrupt');delete r._refresh;}
   const keys=(v:unknown,allowed:string[])=>obj(v)&&Object.keys(v).length===allowed.length&&Object.keys(v).every(k=>allowed.includes(k));
   const time=(v:unknown)=>v===null||integer(v);
   need(keys(r,['id','kind','source','parentSessionId','childSessionId','tool','agent','description','dispatch','planContext','ran','claimed','accepted'])&&['dispatch','historical-session'].includes(r.kind)&&[null,'subagent','task'].includes(r.tool)&&(r.agent===null||typeof r.agent==='string'&&r.agent.length<=80)&&(r.description===null||typeof r.description==='string'&&r.description.length<=200),'corrupt');
@@ -145,11 +171,13 @@ function row(value:unknown):RunRow {
   if(r.accepted)need(keys(r.accepted,['plan','revision','items','omittedItems'])&&identifier(r.accepted.plan)&&integer(r.accepted.revision)&&integer(r.accepted.omittedItems)&&Array.isArray(r.accepted.items)&&r.accepted.items.length<=50&&r.accepted.items.every(i=>keys(i,['id','status'])&&identifier(i.id)&&['pending','working','blocked','done','skipped'].includes(i.status)),'corrupt');
   return r;
 }
-function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:StartEvent) {
-  const existing=db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
+function save(db:DatabaseSync,r:RunRow,retiredClaim?:ClaimFence,provenStart?:StartEvent,evidence?:{start?:number[];end?:number[]}) {
+  const existing=db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$._startEpochs') AS start_epochs,json_extract(payload,'$._endEpochs') AS end_epochs,json_extract(payload,'$.ran.eventId') AS event,json_extract(payload,'$._refresh') AS refresh FROM runs_rows WHERE id=?").get(r.id);
   const fence=retiredClaim??(existing?.fence?claimFence(JSON.parse(String(existing.fence))):undefined);
   const start=provenStart??(existing?.start?startEvent(JSON.parse(String(existing.start))):undefined);
-  const text=JSON.stringify({...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{})});need(Buffer.byteLength(text)<=RUN_LIMITS.dtoBytes,'invalid');
+  const startEpochs=evidence?.start??(existing?.start_epochs?epochList(JSON.parse(String(existing.start_epochs))):undefined);
+  const endEpochs=r.ran.endedAt===null?undefined:evidence?.end??(existing?.event===r.ran.eventId&&existing?.end_epochs?epochList(JSON.parse(String(existing.end_epochs))):undefined);
+  const text=JSON.stringify({...r,...(fence?{_retiredClaim:fence}:{}),...(start?{_startEvent:start}:{}),...(existing?.epoch!==null&&existing?.epoch!==undefined?{_epoch:existing.epoch}:{}),...(startEpochs?{_startEpochs:startEpochs}:{}),...(endEpochs?{_endEpochs:endEpochs}:{}),...(existing?.refresh?{_refresh:JSON.parse(String(existing.refresh))}:{})});need(Buffer.byteLength(text)<=RUN_LIMITS.dtoBytes,'invalid');
   row(text);
   db.prepare('UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?').run(r.childSessionId,Number(['succeeded','failed','interrupted'].includes(r.ran.state)||r.ran.dispatchState==='failed-unconfirmed'||r.ran.dispatchState==='unconfirmed'&&r.childSessionId===null),text,r.id);bump(db);
 }
@@ -320,22 +348,24 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
     // Capture gaps cannot prove which later execution belongs to an old call.
     // Terminal routing separately requires continuity across generation changes.
     const stored=db.prepare("SELECT generation,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
-    if(stored?.generation!==generation||stored.epoch!==c.startEpoch)return false;
-    if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,generation,c.startEpoch!,c.start.at))return false;
+    if(stored?.generation!==generation||!integer(stored.epoch)||!eventEpochs(c,'start').includes(stored.epoch))return false;
+    const staged=candidate(db,r.source,r.childSessionId);
+    if(staged&&candidateStarts(staged).some(s=>s.event.sequence<c.start!.sequence&&s.event.at>=r.dispatch!.at&&!db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._startEvent[0]')=? LIMIT 1").get(r.source,r.childSessionId,s.event.id)))return false;
+    if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,generation,stored.epoch!,c.start.at))return false;
     // Only still-unassociated calls can compete for a new start. A proven
     // earlier interval is not a competitor, nor can a start be reused.
     if(db.prepare(`SELECT 1 FROM (SELECT terminal,at,generation,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$.ran.startedAt') AS started,
       coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
       FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=?)
-       WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source,r.childSessionId,r.id,generation,c.startEpoch!,c.start.at,c.start.sequence,c.start.sequence,c.start.at,c.start.sequence,c.start.at))return false;
+       WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source,r.childSessionId,r.id,generation,stored.epoch!,c.start.at,c.start.sequence,c.start.sequence,c.start.at,c.start.sequence,c.start.at))return false;
   }
   const e=c.end&&c.end.sequence>c.start.sequence&&c.end.at>=c.start.at?c.end:c.start;
   if(r.ran.endedAt!==null){if(e===c.start||e.sequence>=Number(r.ran.sequence))return false;}
   else if(r.ran.sequence!==null&&e.sequence<=r.ran.sequence){attachClaim(db,r);return false;}
-  recomputeInterval(db,r,c.start,e===c.start?null:e);return true;
+  recomputeInterval(db,r,c.start,e===c.start?null:e,{start:eventEpochs(c,'start'),end:eventEpochs(c,'end')});return true;
 }
 /** The only writer of interval bounds: validate host chronology and claims together. */
-function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,end:ExecutionObservation|null):ExecutionObservation|null {
+function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,end:ExecutionObservation|null,evidence?:{start?:number[];end?:number[]}):ExecutionObservation|null {
   const next=nextStart(db,start);
   const wrongOwner=end&&(end.sequence<=start.sequence||next&&end.sequence>=next.sequence);
   const badClock=next&&next.at<start.at||end&&(end.at<start.at||!wrongOwner&&next&&end.at>next.at);
@@ -364,7 +394,7 @@ function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,e
     }
     r.claimed=null;
   }
-  save(db,r,retiredClaim,[start.id,start.sequence]);attachClaim(db,r);
+  save(db,r,retiredClaim,[start.id,start.sequence],evidence);attachClaim(db,r);
   if(restaged)reassociateClaims(db,r.source,start.child);
   return displaced;
 }
@@ -380,10 +410,10 @@ function provenEnd(r:RunRow):ExecutionObservation|null {
 function nextStart(db:DatabaseSync,start:ExecutionObservation):ExecutionObservation|null {
   const stored=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence>? ORDER BY sequence LIMIT 1`).get(start.source,start.child,start.sequence);
-  const known=stored?provenStart(db,row(stored.payload)):null,pending=candidate(db,start.source,start.child)?.start;
+  const known=stored?provenStart(db,row(stored.payload)):null,c=candidate(db,start.source,start.child),pending=c&&candidateStarts(c).find(s=>s.event.sequence>start.sequence)?.event;
   return pending&&pending.sequence>start.sequence&&(!known||pending.sequence<known.sequence)?pending:known;
 }
-function routeTerminal(db:DatabaseSync,e:ExecutionObservation,epoch:number|undefined):{handled:boolean;displaced?:ExecutionObservation;displacedEpoch?:number} {
+function routeTerminal(db:DatabaseSync,e:ExecutionObservation,observed:number[]):{handled:boolean;displaced?:ExecutionObservation;displacedEpochs?:number[]} {
   const rows=db.prepare(`SELECT payload,generation,json_extract(payload,'$._epoch') AS epoch,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source,e.child,e.sequence);
   const r=rows[0]&&row(rows[0].payload),start=r&&provenStart(db,r);
@@ -397,26 +427,36 @@ function routeTerminal(db:DatabaseSync,e:ExecutionObservation,epoch:number|undef
   if(next&&next.sequence<=e.sequence){loss(db);return {handled:false};}
   if(e.at<start.at||next&&(next.at<start.at||e.at>next.at)){loss(db);return {handled:false};}
   const prior=provenEnd(r);
-  if(prior?.sequence===e.sequence)return {handled:true};
+  if(prior?.sequence===e.sequence){
+    if(prior.id!==e.id){loss(db);return {handled:false};}
+    const known=runEventEpochs(db,r,'end'),merged=mergeEpochs(db,known,observed);
+    if(merged.length!==known.length)save(db,r,undefined,undefined,{end:merged});
+    return {handled:true};
+  }
   if(prior&&prior.sequence<e.sequence)return {handled:false};
   // Capture settings alone do not prove observation continuity across a reload
   // or subscription loss. Adjacent durable sequence numbers are positive proof;
   // ordinary session events also consume sequence, so never assume adjacency.
-  if((rows[0]!.generation!==runControl(db).generation||epoch===undefined||rows[0]!.epoch!==epoch)&&e.sequence!==start.sequence+1){
+  const startEpochs=runEventEpochs(db,r,'start');
+  if((rows[0]!.generation!==runControl(db).generation||!observed.some(epoch=>startEpochs.includes(epoch)))&&e.sequence!==start.sequence+1){
     if(r.ran.endedAt===null&&r.ran.state!=='unknown'){r.ran.state='unknown';save(db,r);}
+    refreshGapOutcome(db,r,e);
     loss(db);return {handled:false};
   }
-  return adopt(db,r,{start,end:e,startEpoch:Number(rows[0]!.epoch),endEpoch:epoch})?{handled:true,...(prior?{displaced:prior,displacedEpoch:Number(rows[0]!.epoch)}:{})}:{handled:false};
+  const priorEpochs=prior?runEventEpochs(db,r,'end'):undefined;
+  return adopt(db,r,{start,end:e,startEpochs,endEpochs:observed})?{handled:true,...(prior?{displaced:prior,displacedEpochs:priorEpochs}:{})}:{handled:false};
 }
 function correlate(db:DatabaseSync,source:string,child:string) {
   const c=candidate(db,source,child);if(!c)return;
-  if(c.start&&!c.ambiguous){
-    const owners=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND json_extract(payload,'$._epoch')=? AND message IS NOT NULL AND terminal=0
-      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source,child,runControl(db).generation,c.startEpoch??-1,c.start.at);
-    if(owners.length===1&&adopt(db,row(owners[0]!.payload),{start:c.start,end:null,startEpoch:c.startEpoch}))c.start=null;
+  for(const evidence of candidateStarts(c)){
+    const start=evidence.event,epochs=evidence.epochs;
+    if(evidence.ambiguous)continue;
+    const owners=epochs.length?db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND json_extract(payload,'$._epoch') IN (${epochs.map(()=>'?').join(',')}) AND message IS NOT NULL AND terminal=0
+      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source,child,runControl(db).generation,...epochs,start.at):[];
+    if(owners.length===1&&adopt(db,row(owners[0]!.payload),{start,end:null,startEpochs:epochs}))dropCandidateStart(c,start.id);
   }
-  while(c.end){const routed=routeTerminal(db,c.end,c.endEpoch);if(!routed.handled)break;c.end=routed.displaced??null;c.endEpoch=routed.displacedEpoch;}
-  if(!c.start&&!c.end)db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(source,child);
+  while(c.end){const routed=routeTerminal(db,c.end,eventEpochs(c,'end'));if(!routed.handled)break;c.end=routed.displaced??null;c.endEpochs=routed.displacedEpochs;c.endEpoch=undefined;}
+  if(!candidateStarts(c).length&&!c.end)db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(source,child);
   else db.prepare('UPDATE runs_candidates SET payload=? WHERE source=? AND child=?').run(JSON.stringify(c),source,child);
 }
 export function afterRun(db:DatabaseSync,k:DispatchKey,generation:number,child:Actor|undefined,disposition:'returned'|'failed-unconfirmed'|'unconfirmed') {
@@ -450,11 +490,18 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation,epoch=ob
   let refine:RunRow|undefined;
   let routed=false;
   if(e.state!=='running'){
-    const result=routeTerminal(db,e,epoch);routed=result.handled;
-    if(routed){if(c.end?.sequence===e.sequence)c.end=null;if(result.displaced&&(!c.end||result.displaced.sequence>c.end.sequence)){c.end=result.displaced;c.endEpoch=result.displacedEpoch;}}
+    const result=routeTerminal(db,e,[epoch]);routed=result.handled;
+    if(routed){if(c.end?.sequence===e.sequence)c.end=null;if(result.displaced&&(!c.end||result.displaced.sequence>c.end.sequence)){c.end=result.displaced;c.endEpochs=result.displacedEpochs;c.endEpoch=undefined;}}
   }else{
-    if(db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
-      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source,e.child,e.sequence)){correlate(db,e.source,e.child);return;}
+    const retained=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
+      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source,e.child,e.sequence);
+    if(retained){
+      const r=row(retained.payload),proof=provenStart(db,r)!;
+      if(proof.id!==e.id||proof.at!==e.at){loss(db);return;}
+      const known=runEventEpochs(db,r,'start'),merged=mergeEpochs(db,known,[epoch]);
+      if(merged.length!==known.length)save(db,r,undefined,undefined,{start:merged});
+      correlate(db,e.source,e.child);return;
+    }
     // Every new start refines the previous sequence interval, regardless of
     // timestamp ordering or whether that interval has a terminal yet.
     const previous=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
@@ -469,17 +516,37 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation,epoch=ob
         AND (child=? OR (child IS NULL AND json_extract(payload,'$.tool')='subagent')) LIMIT 1`).get(e.source,e.at,e.child)){correlate(db,e.source,e.child);return;}
   }
   if(!routed){
+    const archived=e.state==='running'&&c.startEvidence&&Object.hasOwn(c.startEvidence,e.id)?c.startEvidence[e.id]:undefined;
+    const duplicate=e.state==='running'?c.start?.id===e.id||!!archived:c.end?.id===e.id;
+    if(duplicate){
+      const stored=e.state==='running'?archived?.event??c.start!:c.end!;
+      if(stored.sequence!==e.sequence||stored.at!==e.at||stored.state!==e.state){loss(db);return;}
+      if(archived)archived.epochs=mergeEpochs(db,archived.epochs,[epoch]);
+      else if(e.state==='running')c.startEpochs=mergeEpochs(db,eventEpochs(c,'start'),[epoch]);
+      else c.endEpochs=mergeEpochs(db,eventEpochs(c,'end'),[epoch]);
+    }else{
     const latest=Math.max(c.start?.sequence??-1,c.end?.sequence??-1);
-    if(e.sequence<=latest&&!(e.state==='running'&&!c.start&&c.end&&e.sequence<c.end.sequence))return;
+    if(e.state!=='running'&&e.sequence<=latest)return;
     if(e.state==='running'){
-      if(c.start&&c.startEpoch!==epoch){c.start=e;c.end=c.end&&c.end.sequence>e.sequence?c.end:null;c.ambiguous=false;loss(db);}
-      else if(c.start&&c.end&&e.sequence>c.end.sequence){c.start=e;c.end=null;c.ambiguous=false;}
+      if(c.start&&e.sequence<c.start.sequence){
+        c.startEvidence??=Object.create(null) as Record<string,StartEvidence>;
+        c.startEvidence[e.id]={event:e,epochs:[epoch]};
+      }else{
+      if(c.start){
+        c.startEvidence??=Object.create(null) as Record<string,StartEvidence>;
+        c.startEvidence[c.start.id]={event:c.start,epochs:eventEpochs(c,'start'),ambiguous:c.ambiguous};
+      }
+      if(c.start&&!eventEpochs(c,'start').includes(epoch)){c.start=e;c.end=c.end&&c.end.sequence>e.sequence?c.end:null;c.ambiguous=false;loss(db);}
+      else if(c.start&&c.end){if(e.sequence>c.end.sequence)c.end=null;c.start=e;c.ambiguous=false;}
       else if(!c.start)c.start=e;
-      else {c.ambiguous=true;c.start=e;c.end=null;}
+      else {c.ambiguous=true;if(c.startEvidence)for(const s of Object.values(c.startEvidence))s.ambiguous=true;c.start=e;c.end=null;}
       c.startEpoch=epoch;
-    }else {c.end=e;c.endEpoch=epoch;}
+      c.startEpochs=[epoch];
+      }
+    }else {c.end=e;c.endEpoch=epoch;c.endEpochs=[epoch];}
+    }
   }
-  if(!c.start&&!c.end){db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(e.source,e.child);return;}
+  if(!candidateStarts(c).length&&!c.end){db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(e.source,e.child);return;}
   if(!candidate(db,e.source,e.child)&&Number(db.prepare('SELECT count(*) AS n FROM runs_candidates').get()!.n)>=RUN_LIMITS.candidates){
     // Root candidates and expired completed staging are silent victims.
     // Compare same-source host event times, not receipt/wall-clock age; never
@@ -493,20 +560,22 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation,epoch=ob
     if(!victim){runCaptureUnavailable(db);return observationEpoch(db);}
     if(!victim.root&&!victim.stale){
       runCaptureUnavailable(db);epoch=observationEpoch(db);
-      if(e.state==='running')c.startEpoch=epoch;else c.endEpoch=epoch;
+      if(e.state==='running'){c.startEpoch=epoch;c.startEpochs=[epoch];}else {c.endEpoch=epoch;c.endEpochs=[epoch];}
     }
     db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(victim.source!,victim.child!);
   }
   // Re-project even typed callers: never serialize a host event or error object.
   const project=(v:ExecutionObservation|null)=>v?{source:e.source,child:e.child,id:v.id,sequence:v.sequence,at:v.at,state:v.state,errorType:v.state==='failed'?safeErrorType(v.errorType):null,interruptionReason:v.state==='interrupted'&&['user','shutdown','superseded','inactivity'].includes(String(v.interruptionReason))?v.interruptionReason:v.state==='interrupted'?'unknown':null}:null;
-  const safe={start:project(c.start),end:project(c.end),startEpoch:c.startEpoch,endEpoch:c.endEpoch,ambiguous:c.ambiguous??false} as Candidate;
+  const safe={start:project(c.start),end:project(c.end),startEpochs:c.start?eventEpochs(c,'start'):undefined,endEpochs:c.end?eventEpochs(c,'end'):undefined,startEvidence:c.startEvidence?Object.fromEntries(Object.entries(c.startEvidence).map(([id,s])=>[id,{event:project(s.event),epochs:epochList(s.epochs),ambiguous:s.ambiguous??false}])):undefined,ambiguous:c.ambiguous??false} as Candidate;
+  if(Buffer.byteLength(JSON.stringify(safe))>RUN_LIMITS.dtoBytes){runCaptureUnavailable(db);return observationEpoch(db);}
   db.prepare('INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload').run(e.source,e.child,control.generation,JSON.stringify(safe));
   if(refine){
     const start=provenStart(db,refine)!;
+    const endEpochs=runEventEpochs(db,refine,'end');
     const displaced=recomputeInterval(db,refine,start,provenEnd(refine));
     if(displaced){
       const held=candidate(db,e.source,e.child)!;
-      if(!held.end||displaced.sequence>held.end.sequence){held.end=displaced;held.endEpoch=Number(db.prepare("SELECT json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(refine.id)!.epoch);}
+      if(!held.end||displaced.sequence>held.end.sequence){held.end=displaced;held.endEpochs=endEpochs;held.endEpoch=undefined;}
       else if(displaced.sequence!==held.end.sequence)loss(db);
       db.prepare('UPDATE runs_candidates SET payload=? WHERE source=? AND child=?').run(JSON.stringify(held),e.source,e.child);
     }
@@ -619,6 +688,24 @@ export function saveRecoveryWork(db:DatabaseSync,j:RecoveryJob,w:RecoveryWork) {
   if(!db.prepare('SELECT 1 FROM runs_recovery_work WHERE source=? AND root=?').get(j.source,j.root))need(capacity(db),'busy');
   db.prepare('INSERT INTO runs_recovery_work VALUES(?,?,?) ON CONFLICT(source,root) DO UPDATE SET payload=excluded.payload').run(j.source,j.root,payload);
 }
+/** One demand per new rejected terminal; reuse the bounded parent recovery job. */
+function refreshGapOutcome(db:DatabaseSync,r:RunRow,e:ExecutionObservation) {
+  const previous=db.prepare("SELECT json_extract(payload,'$._refresh[0]') AS sequence FROM runs_rows WHERE id=?").get(r.id);
+  if(integer(previous?.sequence)&&previous.sequence>=e.sequence)return;
+  const marker=JSON.stringify([e.sequence,true]);
+  if(Number(db.prepare("SELECT length(CAST(json_set(payload,'$._refresh',json(?)) AS BLOB)) AS bytes FROM runs_rows WHERE id=?").get(marker,r.id)!.bytes)>RUN_LIMITS.dtoBytes)return;
+  const old=db.prepare('SELECT state FROM runs_jobs WHERE source=? AND root=?').get(r.source,r.parentSessionId);
+  if(!old||!['pending','running'].includes(String(old.state))){
+    if(Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get()!.n)>=RUN_LIMITS.jobs)return;
+    if(!old&&!capacity(db))return;
+    db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(r.source,r.parentSessionId,randomUUID(),runControl(db).generation);
+  }
+  // A pending job has not begun its new metadata scan. A running job might have
+  // already visited this child: retain the demand until it finishes, then do one
+  // fresh follow-up. The per-run marker survives replay and completed recovery.
+  if(old?.state!=='running')db.prepare('DELETE FROM runs_recovery_work WHERE source=? AND root=?').run(r.source,r.parentSessionId);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh',json(?)) WHERE id=?").run(marker,r.id);bump(db);
+}
 export function recoveryMaintenance(db:DatabaseSync,source:string,directory:string,producer:string,now:number) {
   if(!runControl(db).enabled)return;
   const location=hash(directory),lease=db.prepare('SELECT producer,at FROM runs_recovery_lease WHERE source=? AND location=?').get(source,location);
@@ -649,7 +736,9 @@ export function pendingRecoveryAt(db:DatabaseSync,source:string,directory:string
 export function claimRecovery(db:DatabaseSync,source:string,root:string):RecoveryJob|null {
   const c=runControl(db);if(!c.enabled)return null;
   const r=db.prepare("SELECT request_id,generation FROM runs_jobs WHERE source=? AND root=? AND state='pending'").get(source,root);if(!r||r.generation!==c.generation)return null;
-  const claim=randomUUID();db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim,source,root);bump(db);return {source,root,generation:c.generation,claim,requestId:String(r.request_id)};
+  const claim=randomUUID();db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim,source,root);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',json('false')) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source,root);
+  bump(db);return {source,root,generation:c.generation,claim,requestId:String(r.request_id)};
 }
 export function recoveryAlive(db:DatabaseSync,j:RecoveryJob) {
   const c=runControl(db);return c.enabled&&c.generation===j.generation&&!!db.prepare("SELECT 1 FROM runs_jobs WHERE source=? AND root=? AND request_id=? AND claim=? AND state='running'").get(j.source,j.root,j.requestId,j.claim);
@@ -679,6 +768,10 @@ export function publishHistory(db:DatabaseSync,j:RecoveryJob,s:HistoricalSession
 }
 export function finishRecovery(db:DatabaseSync,j:RecoveryJob,state:'complete'|'partial'|'failed') {
   if(!recoveryAlive(db,j))return;
+  if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1 LIMIT 1").get(j.source,j.root)){
+    db.prepare("UPDATE runs_jobs SET request_id=?,state='pending',claim=NULL,token=NULL,reason=NULL WHERE source=? AND root=?").run(randomUUID(),j.source,j.root);
+    db.prepare('DELETE FROM runs_recovery_work WHERE source=? AND root=?').run(j.source,j.root);bump(db);return;
+  }
   db.prepare('UPDATE runs_jobs SET state=?,claim=NULL,token=?,reason=? WHERE source=? AND root=?').run(state,state==='complete'?null:randomUUID(),state==='partial'?'budget':state==='failed'?'capture-unavailable':null,j.source,j.root);bump(db);
   if(state==='complete')db.prepare('DELETE FROM runs_recovery_work WHERE source=? AND root=?').run(j.source,j.root);
 }

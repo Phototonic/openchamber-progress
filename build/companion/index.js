@@ -24849,7 +24849,7 @@ function canonical(value3) {
 }
 
 // shared/subagent-runs.ts
-var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
+var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, observationEpochs: 32, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
 var definitions2 = {
   runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
   runs_observation_epoch: "CREATE TABLE runs_observation_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch INTEGER NOT NULL, invalid_through INTEGER NOT NULL)",
@@ -24940,6 +24940,37 @@ function startEvent(value3) {
   requireProgress(Array.isArray(value3) && value3.length === 2 && identifier2(value3[0]) && integer(value3[1]), "corrupt");
   return value3;
 }
+function epochList(value3) {
+  requireProgress(Array.isArray(value3) && value3.length <= RUN_LIMITS.observationEpochs && value3.every(integer) && new Set(value3).size === value3.length, "corrupt");
+  return value3;
+}
+function eventEpochs(c, kind) {
+  const list = c[kind === "start" ? "startEpochs" : "endEpochs"], single = c[kind === "start" ? "startEpoch" : "endEpoch"];
+  return list !== undefined ? epochList(list) : single !== undefined ? epochList([single]) : [];
+}
+function candidateStarts(c) {
+  return [...Object.values(c.startEvidence ?? {}), ...c.start ? [{ event: c.start, epochs: eventEpochs(c, "start"), ambiguous: c.ambiguous }] : []].sort((a, b) => a.event.sequence - b.event.sequence);
+}
+function dropCandidateStart(c, id2) {
+  if (c.start?.id === id2) {
+    c.start = null;
+    c.ambiguous = false;
+  }
+  if (c.startEvidence)
+    delete c.startEvidence[id2];
+}
+function mergeEpochs(db, known, observed) {
+  const merged = [...new Set([...known, ...observed])];
+  if (merged.length > RUN_LIMITS.observationEpochs) {
+    runCaptureUnavailable(db);
+    return known;
+  }
+  return merged;
+}
+function runEventEpochs(db, r, kind) {
+  const value3 = db.prepare(`SELECT json_extract(payload,'$._${kind}Epochs') AS epochs,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?`).get(r.id);
+  return value3?.epochs ? epochList(JSON.parse(String(value3.epochs))) : integer(value3?.epoch) ? [Number(value3.epoch)] : [];
+}
 function claimFence(value3) {
   requireProgress(Array.isArray(value3) && value3.length === 2 && identifier2(value3[0]) && typeof value3[1] === "string" && /^[a-f0-9]{64}$/.test(value3[1]), "corrupt");
   return value3;
@@ -24967,6 +24998,15 @@ function row(value3) {
     requireProgress(integer(r._epoch), "corrupt");
     delete r._epoch;
   }
+  for (const key of ["_startEpochs", "_endEpochs"])
+    if (Object.hasOwn(r, key)) {
+      epochList(r[key]);
+      delete r[key];
+    }
+  if (Object.hasOwn(r, "_refresh")) {
+    requireProgress(Array.isArray(r._refresh) && r._refresh.length === 2 && integer(r._refresh[0]) && typeof r._refresh[1] === "boolean", "corrupt");
+    delete r._refresh;
+  }
   const keys4 = (v, allowed) => obj(v) && Object.keys(v).length === allowed.length && Object.keys(v).every((k) => allowed.includes(k));
   const time = (v) => v === null || integer(v);
   requireProgress(keys4(r, ["id", "kind", "source", "parentSessionId", "childSessionId", "tool", "agent", "description", "dispatch", "planContext", "ran", "claimed", "accepted"]) && ["dispatch", "historical-session"].includes(r.kind) && [null, "subagent", "task"].includes(r.tool) && (r.agent === null || typeof r.agent === "string" && r.agent.length <= 80) && (r.description === null || typeof r.description === "string" && r.description.length <= 200), "corrupt");
@@ -24979,11 +25019,13 @@ function row(value3) {
     requireProgress(keys4(r.accepted, ["plan", "revision", "items", "omittedItems"]) && identifier2(r.accepted.plan) && integer(r.accepted.revision) && integer(r.accepted.omittedItems) && Array.isArray(r.accepted.items) && r.accepted.items.length <= 50 && r.accepted.items.every((i) => keys4(i, ["id", "status"]) && identifier2(i.id) && ["pending", "working", "blocked", "done", "skipped"].includes(i.status)), "corrupt");
   return r;
 }
-function save(db, r, retiredClaim, provenStart) {
-  const existing = db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
+function save(db, r, retiredClaim, provenStart, evidence) {
+  const existing = db.prepare("SELECT json_extract(payload,'$._retiredClaim') AS fence,json_extract(payload,'$._startEvent') AS start,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$._startEpochs') AS start_epochs,json_extract(payload,'$._endEpochs') AS end_epochs,json_extract(payload,'$.ran.eventId') AS event,json_extract(payload,'$._refresh') AS refresh FROM runs_rows WHERE id=?").get(r.id);
   const fence = retiredClaim ?? (existing?.fence ? claimFence(JSON.parse(String(existing.fence))) : undefined);
   const start = provenStart ?? (existing?.start ? startEvent(JSON.parse(String(existing.start))) : undefined);
-  const text = JSON.stringify({ ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {} });
+  const startEpochs = evidence?.start ?? (existing?.start_epochs ? epochList(JSON.parse(String(existing.start_epochs))) : undefined);
+  const endEpochs = r.ran.endedAt === null ? undefined : evidence?.end ?? (existing?.event === r.ran.eventId && existing?.end_epochs ? epochList(JSON.parse(String(existing.end_epochs))) : undefined);
+  const text = JSON.stringify({ ...r, ...fence ? { _retiredClaim: fence } : {}, ...start ? { _startEvent: start } : {}, ...existing?.epoch !== null && existing?.epoch !== undefined ? { _epoch: existing.epoch } : {}, ...startEpochs ? { _startEpochs: startEpochs } : {}, ...endEpochs ? { _endEpochs: endEpochs } : {}, ...existing?.refresh ? { _refresh: JSON.parse(String(existing.refresh)) } : {} });
   requireProgress(Buffer.byteLength(text) <= RUN_LIMITS.dtoBytes, "invalid");
   row(text);
   db.prepare("UPDATE runs_rows SET child=?,terminal=?,payload=? WHERE id=?").run(r.childSessionId, Number(["succeeded", "failed", "interrupted"].includes(r.ran.state) || r.ran.dispatchState === "failed-unconfirmed" || r.ran.dispatchState === "unconfirmed" && r.childSessionId === null), text, r.id);
@@ -25230,14 +25272,17 @@ function adopt(db, r, c) {
   if (r.ran.startedAt === null) {
     const generation = runControl(db).generation;
     const stored = db.prepare("SELECT generation,json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(r.id);
-    if (stored?.generation !== generation || stored.epoch !== c.startEpoch)
+    if (stored?.generation !== generation || !integer(stored.epoch) || !eventEpochs(c, "start").includes(stored.epoch))
       return false;
-    if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, generation, c.startEpoch, c.start.at))
+    const staged = candidate(db, r.source, r.childSessionId);
+    if (staged && candidateStarts(staged).some((s) => s.event.sequence < c.start.sequence && s.event.at >= r.dispatch.at && !db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$._startEvent[0]')=? LIMIT 1").get(r.source, r.childSessionId, s.event.id)))
+      return false;
+    if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND generation=? AND json_extract(payload,'$._epoch')=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, generation, stored.epoch, c.start.at))
       return false;
     if (db.prepare(`SELECT 1 FROM (SELECT terminal,at,generation,json_extract(payload,'$._epoch') AS epoch,json_extract(payload,'$.ran.startedAt') AS started,
       coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
       FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=?)
-       WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source, r.childSessionId, r.id, generation, c.startEpoch, c.start.at, c.start.sequence, c.start.sequence, c.start.at, c.start.sequence, c.start.at))
+       WHERE (terminal=0 AND generation=? AND epoch=? AND started IS NULL AND at<=?) OR sequence=? OR (sequence>? AND started<?) OR (sequence<? AND started>?) LIMIT 1`).get(r.source, r.childSessionId, r.id, generation, stored.epoch, c.start.at, c.start.sequence, c.start.sequence, c.start.at, c.start.sequence, c.start.at))
       return false;
   }
   const e = c.end && c.end.sequence > c.start.sequence && c.end.at >= c.start.at ? c.end : c.start;
@@ -25248,10 +25293,10 @@ function adopt(db, r, c) {
     attachClaim(db, r);
     return false;
   }
-  recomputeInterval(db, r, c.start, e === c.start ? null : e);
+  recomputeInterval(db, r, c.start, e === c.start ? null : e, { start: eventEpochs(c, "start"), end: eventEpochs(c, "end") });
   return true;
 }
-function recomputeInterval(db, r, start, end) {
+function recomputeInterval(db, r, start, end, evidence) {
   const next = nextStart(db, start);
   const wrongOwner = end && (end.sequence <= start.sequence || next && end.sequence >= next.sequence);
   const badClock = next && next.at < start.at || end && (end.at < start.at || !wrongOwner && next && end.at > next.at);
@@ -25275,7 +25320,7 @@ function recomputeInterval(db, r, start, end) {
     }
     r.claimed = null;
   }
-  save(db, r, retiredClaim, [start.id, start.sequence]);
+  save(db, r, retiredClaim, [start.id, start.sequence], evidence);
   attachClaim(db, r);
   if (restaged)
     reassociateClaims(db, r.source, start.child);
@@ -25292,10 +25337,10 @@ function provenEnd(r) {
 function nextStart(db, start) {
   const stored = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence>? ORDER BY sequence LIMIT 1`).get(start.source, start.child, start.sequence);
-  const known = stored ? provenStart(db, row(stored.payload)) : null, pending = candidate(db, start.source, start.child)?.start;
+  const known = stored ? provenStart(db, row(stored.payload)) : null, c = candidate(db, start.source, start.child), pending = c && candidateStarts(c).find((s) => s.event.sequence > start.sequence)?.event;
   return pending && pending.sequence > start.sequence && (!known || pending.sequence < known.sequence) ? pending : known;
 }
-function routeTerminal(db, e, epoch) {
+function routeTerminal(db, e, observed) {
   const rows = db.prepare(`SELECT payload,generation,json_extract(payload,'$._epoch') AS epoch,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
     FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
   const r = rows[0] && row(rows[0].payload), start = r && provenStart(db, r);
@@ -25321,38 +25366,53 @@ function routeTerminal(db, e, epoch) {
     return { handled: false };
   }
   const prior = provenEnd(r);
-  if (prior?.sequence === e.sequence)
+  if (prior?.sequence === e.sequence) {
+    if (prior.id !== e.id) {
+      loss(db);
+      return { handled: false };
+    }
+    const known = runEventEpochs(db, r, "end"), merged = mergeEpochs(db, known, observed);
+    if (merged.length !== known.length)
+      save(db, r, undefined, undefined, { end: merged });
     return { handled: true };
+  }
   if (prior && prior.sequence < e.sequence)
     return { handled: false };
-  if ((rows[0].generation !== runControl(db).generation || epoch === undefined || rows[0].epoch !== epoch) && e.sequence !== start.sequence + 1) {
+  const startEpochs = runEventEpochs(db, r, "start");
+  if ((rows[0].generation !== runControl(db).generation || !observed.some((epoch) => startEpochs.includes(epoch))) && e.sequence !== start.sequence + 1) {
     if (r.ran.endedAt === null && r.ran.state !== "unknown") {
       r.ran.state = "unknown";
       save(db, r);
     }
+    refreshGapOutcome(db, r, e);
     loss(db);
     return { handled: false };
   }
-  return adopt(db, r, { start, end: e, startEpoch: Number(rows[0].epoch), endEpoch: epoch }) ? { handled: true, ...prior ? { displaced: prior, displacedEpoch: Number(rows[0].epoch) } : {} } : { handled: false };
+  const priorEpochs = prior ? runEventEpochs(db, r, "end") : undefined;
+  return adopt(db, r, { start, end: e, startEpochs, endEpochs: observed }) ? { handled: true, ...prior ? { displaced: prior, displacedEpochs: priorEpochs } : {} } : { handled: false };
 }
 function correlate(db, source, child) {
   const c = candidate(db, source, child);
   if (!c)
     return;
-  if (c.start && !c.ambiguous) {
-    const owners = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND json_extract(payload,'$._epoch')=? AND message IS NOT NULL AND terminal=0
-      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source, child, runControl(db).generation, c.startEpoch ?? -1, c.start.at);
-    if (owners.length === 1 && adopt(db, row(owners[0].payload), { start: c.start, end: null, startEpoch: c.startEpoch }))
-      c.start = null;
+  for (const evidence of candidateStarts(c)) {
+    const { event: start, epochs } = evidence;
+    if (evidence.ambiguous)
+      continue;
+    const owners = epochs.length ? db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND generation=? AND json_extract(payload,'$._epoch') IN (${epochs.map(() => "?").join(",")}) AND message IS NOT NULL AND terminal=0
+      AND json_extract(payload,'$.ran.startedAt') IS NULL AND at<=? LIMIT 2`).all(source, child, runControl(db).generation, ...epochs, start.at) : [];
+    if (owners.length === 1 && adopt(db, row(owners[0].payload), { start, end: null, startEpochs: epochs }))
+      dropCandidateStart(c, start.id);
   }
   while (c.end) {
-    const routed = routeTerminal(db, c.end, c.endEpoch);
+    const routed = routeTerminal(db, c.end, eventEpochs(c, "end"));
     if (!routed.handled)
       break;
     c.end = routed.displaced ?? null;
-    c.endEpoch = routed.displacedEpoch;
+    c.endEpochs = routed.displacedEpochs;
+    c.endEpoch = undefined;
   }
-  if (!c.start && !c.end)
+  if (!candidateStarts(c).length && !c.end)
     db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(source, child);
   else
     db.prepare("UPDATE runs_candidates SET payload=? WHERE source=? AND child=?").run(JSON.stringify(c), source, child);
@@ -25409,19 +25469,29 @@ function observeExecution(db, e, epoch = observationEpoch(db)) {
   let refine2;
   let routed = false;
   if (e.state !== "running") {
-    const result3 = routeTerminal(db, e, epoch);
+    const result3 = routeTerminal(db, e, [epoch]);
     routed = result3.handled;
     if (routed) {
       if (c.end?.sequence === e.sequence)
         c.end = null;
       if (result3.displaced && (!c.end || result3.displaced.sequence > c.end.sequence)) {
         c.end = result3.displaced;
-        c.endEpoch = result3.displacedEpoch;
+        c.endEpochs = result3.displacedEpochs;
+        c.endEpoch = undefined;
       }
     }
   } else {
-    if (db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
-      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source, e.child, e.sequence)) {
+    const retained = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
+      coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source, e.child, e.sequence);
+    if (retained) {
+      const r = row(retained.payload), proof = provenStart(db, r);
+      if (proof.id !== e.id || proof.at !== e.at) {
+        loss(db);
+        return;
+      }
+      const known = runEventEpochs(db, r, "start"), merged = mergeEpochs(db, known, [epoch]);
+      if (merged.length !== known.length)
+        save(db, r, undefined, undefined, { start: merged });
       correlate(db, e.source, e.child);
       return;
     }
@@ -25439,33 +25509,64 @@ function observeExecution(db, e, epoch = observationEpoch(db)) {
     }
   }
   if (!routed) {
-    const latest2 = Math.max(c.start?.sequence ?? -1, c.end?.sequence ?? -1);
-    if (e.sequence <= latest2 && !(e.state === "running" && !c.start && c.end && e.sequence < c.end.sequence))
-      return;
-    if (e.state === "running") {
-      if (c.start && c.startEpoch !== epoch) {
-        c.start = e;
-        c.end = c.end && c.end.sequence > e.sequence ? c.end : null;
-        c.ambiguous = false;
+    const archived = e.state === "running" && c.startEvidence && Object.hasOwn(c.startEvidence, e.id) ? c.startEvidence[e.id] : undefined;
+    const duplicate = e.state === "running" ? c.start?.id === e.id || !!archived : c.end?.id === e.id;
+    if (duplicate) {
+      const stored = e.state === "running" ? archived?.event ?? c.start : c.end;
+      if (stored.sequence !== e.sequence || stored.at !== e.at || stored.state !== e.state) {
         loss(db);
-      } else if (c.start && c.end && e.sequence > c.end.sequence) {
-        c.start = e;
-        c.end = null;
-        c.ambiguous = false;
-      } else if (!c.start)
-        c.start = e;
-      else {
-        c.ambiguous = true;
-        c.start = e;
-        c.end = null;
+        return;
       }
-      c.startEpoch = epoch;
+      if (archived)
+        archived.epochs = mergeEpochs(db, archived.epochs, [epoch]);
+      else if (e.state === "running")
+        c.startEpochs = mergeEpochs(db, eventEpochs(c, "start"), [epoch]);
+      else
+        c.endEpochs = mergeEpochs(db, eventEpochs(c, "end"), [epoch]);
     } else {
-      c.end = e;
-      c.endEpoch = epoch;
+      const latest2 = Math.max(c.start?.sequence ?? -1, c.end?.sequence ?? -1);
+      if (e.state !== "running" && e.sequence <= latest2)
+        return;
+      if (e.state === "running") {
+        if (c.start && e.sequence < c.start.sequence) {
+          c.startEvidence ??= Object.create(null);
+          c.startEvidence[e.id] = { event: e, epochs: [epoch] };
+        } else {
+          if (c.start) {
+            c.startEvidence ??= Object.create(null);
+            c.startEvidence[c.start.id] = { event: c.start, epochs: eventEpochs(c, "start"), ambiguous: c.ambiguous };
+          }
+          if (c.start && !eventEpochs(c, "start").includes(epoch)) {
+            c.start = e;
+            c.end = c.end && c.end.sequence > e.sequence ? c.end : null;
+            c.ambiguous = false;
+            loss(db);
+          } else if (c.start && c.end) {
+            if (e.sequence > c.end.sequence)
+              c.end = null;
+            c.start = e;
+            c.ambiguous = false;
+          } else if (!c.start)
+            c.start = e;
+          else {
+            c.ambiguous = true;
+            if (c.startEvidence)
+              for (const s of Object.values(c.startEvidence))
+                s.ambiguous = true;
+            c.start = e;
+            c.end = null;
+          }
+          c.startEpoch = epoch;
+          c.startEpochs = [epoch];
+        }
+      } else {
+        c.end = e;
+        c.endEpoch = epoch;
+        c.endEpochs = [epoch];
+      }
     }
   }
-  if (!c.start && !c.end) {
+  if (!candidateStarts(c).length && !c.end) {
     db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(e.source, e.child);
     return;
   }
@@ -25483,24 +25584,33 @@ function observeExecution(db, e, epoch = observationEpoch(db)) {
     if (!victim.root && !victim.stale) {
       runCaptureUnavailable(db);
       epoch = observationEpoch(db);
-      if (e.state === "running")
+      if (e.state === "running") {
         c.startEpoch = epoch;
-      else
+        c.startEpochs = [epoch];
+      } else {
         c.endEpoch = epoch;
+        c.endEpochs = [epoch];
+      }
     }
     db.prepare("DELETE FROM runs_candidates WHERE source=? AND child=?").run(victim.source, victim.child);
   }
   const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
-  const safe = { start: project(c.start), end: project(c.end), startEpoch: c.startEpoch, endEpoch: c.endEpoch, ambiguous: c.ambiguous ?? false };
+  const safe = { start: project(c.start), end: project(c.end), startEpochs: c.start ? eventEpochs(c, "start") : undefined, endEpochs: c.end ? eventEpochs(c, "end") : undefined, startEvidence: c.startEvidence ? Object.fromEntries(Object.entries(c.startEvidence).map(([id2, s]) => [id2, { event: project(s.event), epochs: epochList(s.epochs), ambiguous: s.ambiguous ?? false }])) : undefined, ambiguous: c.ambiguous ?? false };
+  if (Buffer.byteLength(JSON.stringify(safe)) > RUN_LIMITS.dtoBytes) {
+    runCaptureUnavailable(db);
+    return observationEpoch(db);
+  }
   db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(e.source, e.child, control.generation, JSON.stringify(safe));
   if (refine2) {
     const start = provenStart(db, refine2);
+    const endEpochs = runEventEpochs(db, refine2, "end");
     const displaced = recomputeInterval(db, refine2, start, provenEnd(refine2));
     if (displaced) {
       const held = candidate(db, e.source, e.child);
       if (!held.end || displaced.sequence > held.end.sequence) {
         held.end = displaced;
-        held.endEpoch = Number(db.prepare("SELECT json_extract(payload,'$._epoch') AS epoch FROM runs_rows WHERE id=?").get(refine2.id).epoch);
+        held.endEpochs = endEpochs;
+        held.endEpoch = undefined;
       } else if (displaced.sequence !== held.end.sequence)
         loss(db);
       db.prepare("UPDATE runs_candidates SET payload=? WHERE source=? AND child=?").run(JSON.stringify(held), e.source, e.child);
@@ -25669,6 +25779,26 @@ function saveRecoveryWork(db, j, w) {
     requireProgress(capacity(db), "busy");
   db.prepare("INSERT INTO runs_recovery_work VALUES(?,?,?) ON CONFLICT(source,root) DO UPDATE SET payload=excluded.payload").run(j.source, j.root, payload);
 }
+function refreshGapOutcome(db, r, e) {
+  const previous = db.prepare("SELECT json_extract(payload,'$._refresh[0]') AS sequence FROM runs_rows WHERE id=?").get(r.id);
+  if (integer(previous?.sequence) && previous.sequence >= e.sequence)
+    return;
+  const marker = JSON.stringify([e.sequence, true]);
+  if (Number(db.prepare("SELECT length(CAST(json_set(payload,'$._refresh',json(?)) AS BLOB)) AS bytes FROM runs_rows WHERE id=?").get(marker, r.id).bytes) > RUN_LIMITS.dtoBytes)
+    return;
+  const old = db.prepare("SELECT state FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.parentSessionId);
+  if (!old || !["pending", "running"].includes(String(old.state))) {
+    if (Number(db.prepare("SELECT count(*) AS n FROM runs_jobs WHERE state IN('pending','running')").get().n) >= RUN_LIMITS.jobs)
+      return;
+    if (!old && !capacity(db))
+      return;
+    db.prepare("INSERT INTO runs_jobs VALUES(?,?,?,?,'pending',NULL,NULL,NULL) ON CONFLICT(source,root) DO UPDATE SET request_id=excluded.request_id,generation=excluded.generation,state='pending',claim=NULL,token=NULL,reason=NULL").run(r.source, r.parentSessionId, randomUUID2(), runControl(db).generation);
+  }
+  if (old?.state !== "running")
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(r.source, r.parentSessionId);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh',json(?)) WHERE id=?").run(marker, r.id);
+  bump(db);
+}
 function recoveryMaintenance(db, source, directory, producer, now3) {
   if (!runControl(db).enabled)
     return;
@@ -25709,6 +25839,7 @@ function claimRecovery(db, source, root) {
     return null;
   const claim = randomUUID2();
   db.prepare("UPDATE runs_jobs SET state='running',claim=? WHERE source=? AND root=?").run(claim, source, root);
+  db.prepare("UPDATE runs_rows SET payload=json_set(payload,'$._refresh[1]',json('false')) WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1").run(source, root);
   bump(db);
   return { source, root, generation: c.generation, claim, requestId: String(r.request_id) };
 }
@@ -25744,6 +25875,12 @@ function publishHistory(db, j, s) {
 function finishRecovery(db, j, state) {
   if (!recoveryAlive(db, j))
     return;
+  if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND json_extract(payload,'$._refresh[1]')=1 LIMIT 1").get(j.source, j.root)) {
+    db.prepare("UPDATE runs_jobs SET request_id=?,state='pending',claim=NULL,token=NULL,reason=NULL WHERE source=? AND root=?").run(randomUUID2(), j.source, j.root);
+    db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
+    bump(db);
+    return;
+  }
   db.prepare("UPDATE runs_jobs SET state=?,claim=NULL,token=?,reason=? WHERE source=? AND root=?").run(state, state === "complete" ? null : randomUUID2(), state === "partial" ? "budget" : state === "failed" ? "capture-unavailable" : null, j.source, j.root);
   bump(db);
   if (state === "complete")
