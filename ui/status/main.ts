@@ -10,8 +10,10 @@ import { blockedWork, currentWork, LIFECYCLE_LABEL, showsLiveness, summarize } f
 import { officialMainLine } from '../shared/official.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
 import { StatusSelection } from './selection.ts';
+import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
 
 type Ui = { selection: StatusSelection };
+let heights: HeightSync | null = null;
 
 const enter = (vc: ViewContext<Ui>) => vc.ui.selection.enter(
   JSON.stringify([vc.ctx.connection?.account ?? '', vc.identity]), vc.session?.id ?? null, vc.directory,
@@ -156,6 +158,8 @@ startView<Ui>({
     root.append(actions);
   },
   afterPaint(root, vc) {
-    void vc.host.setHeight(Math.ceil(root.getBoundingClientRect().height)).catch(() => {});
+    // Asked once per paint; re-sent a bounded number of times if the host leaves the frame unchanged.
+    heights ??= new HeightSync({ send: (h) => vc.host.setHeight(h), actual: () => innerHeight, afterFrames: afterAnimationFrames });
+    heights.request(Math.ceil(root.getBoundingClientRect().height));
   },
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { actionablePoint, nativeActions, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type NativeAdapter } from './subagent-activity-harness.ts';
+import { actionablePoint, nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type NativeAdapter } from './subagent-activity-harness.ts';
 
 const ids = { a: 'A', b: 'B', c1: 'C1', c2: 'C2', bound: 'C1', n1: 'N1' };
 /** The smallest guest DOM rosterSnapshot reads: section, rows with facts, summary parts, plan state. */
@@ -220,6 +220,25 @@ test('actual section reader requires a recorded roster, the requested mark and f
   const main = { ...section, dataset: {} };
   const plain = runInNewContext(`(${screenshotSection.toString()})('main',null)`, { document: { querySelector: () => main, visibilityState: 'visible', fonts: { status: 'loaded' } }, innerHeight: 800 });
   assert.equal(plain.ready, true);
+});
+
+test('section reader: a section the frame has not grown to fit is not ready, and names a partial capture', () => {
+  let viewport = 24;
+  const section = { dataset: { state: 'ready', testid: 'subagent-activity' }, querySelector: () => null, getBoundingClientRect: () => ({ x: 3, y: 117, width: 270, height: 204 }), getAnimations: () => [] };
+  const read = () => runInNewContext(`(${screenshotSection.toString()})('roster',null)`, { document: { querySelector: () => section, visibilityState: 'visible', fonts: { status: 'loaded' } }, innerHeight: viewport });
+  // The failing native run: a 24 px frame around a fully painted 204 px section.
+  const small = read();
+  assert.deepEqual([small.ready, small.settled, small.fits], [false, true, false]);
+  assert.equal(partialCapture('native-status-roster', small), 'native-status-roster: partial capture (frame 24 px, section ends at 321 px)');
+  // Once the host grows the frame to fit, it is ready and nothing is reported.
+  viewport = 320;
+  const grown = read();
+  assert.deepEqual([grown.ready, grown.fits], [true, true]);
+  assert.equal(partialCapture('native-status-roster', grown, 204, 204), null);
+  // A clip shorter than the section (host-side frame smaller than the guest says) also fails.
+  assert.match(partialCapture('native-status-roster', grown, 24, 204)!, /partial capture \(clip 24 of 204 px\)/);
+  // Not settled yet (still loading): not a partial capture, the wait simply goes on.
+  assert.equal(partialCapture('x', { ...small, settled: false }), null);
 });
 
 test('actual frame reader rejects a hidden or transitioning frame', () => {

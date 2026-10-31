@@ -381,6 +381,29 @@ try {
   await evaluate(`qa.set('M-live',{activity:'running'});qa.runs.M.useful=qa.runs.M.saved;qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>!/^P\\d+$/.test(s.id));qa.bump();qa.push('sessions');qa.context('A');true`);
   await wait('panel', `d.querySelector('${row('C1')}')`, 'back to A');
 
+  // Work Status height: a dropped resize request is re-sent and the frame recovers; a steady card sends none.
+  await show('status', 280);
+  await wait('status', `d.querySelector('${sec}')`, 'status card');
+  await settle(1500);
+  const quiet = await evaluate<number>(`qa.resizes.length`);
+  await settle(1200);
+  check('steady Work Status: no further height requests', (await evaluate<number>(`qa.resizes.length`)) === quiet);
+  const fits = `(()=>{const f=frame('status'),m=f.contentDocument.querySelector('main');return !!m&&f.clientHeight===Math.ceil(m.getBoundingClientRect().height)})()`;
+  await evaluate(`qa.context('M');true`);
+  await wait('status', `d.querySelector('[data-testid="plan-plan-many"]')`, 'status switched');
+  await evaluate(`(async()=>{let n=-1;for(let i=0;i<40;i++){if(qa.resizes.length===n)return true;n=qa.resizes.length;await new Promise(r=>setTimeout(r,250))}return false})()`);
+  // One repaint that grows the card (a new running host child), whose single height request is dropped.
+  await evaluate(`qa.resizes=[];qa.dropResize=1;qa.ws.sessions['proj-alpha'].push({id:'Q1',title:'Late helper',projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:900,updatedAt:0,archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]});qa.push('sessions');true`);
+  const recovered = await evaluate<boolean>(`(async()=>{for(let i=0;i<60;i++){if(qa.resizes.some(x=>x.dropped)&&${fits})return true;await new Promise(r=>setTimeout(r,50))}return false})()`);
+  const resizes = await evaluate<{ h: number; dropped: boolean }[]>(`qa.resizes`);
+  const dropped = resizes.find((x) => x.dropped);
+  check('dropped Work Status height: re-sent once and the frame recovers', recovered && !!dropped && resizes.filter((x) => x.h === dropped.h && !x.dropped).length === 1, { recovered, resizes: resizes.map((x) => `${x.h}${x.dropped ? '(dropped)' : ''}`) });
+  await evaluate(`qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(x=>x.id!=='Q1');qa.push('sessions');true`);
+  await evaluate(`qa.context('A');true`);
+  await wait('status', `d.querySelector('${row('C1')}')`, 'status back on A');
+  await show('panel');
+  await wait('panel', `d.querySelector('${row('C1')}')`, 'rail back on A');
+
   // 9. Narrow + dark + reduced motion; 200% reflow equivalents without horizontal overflow.
   await evaluate(`qa.dark();true`);
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

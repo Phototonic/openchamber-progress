@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startActivityHost } from './subagent-activity-host.ts';
-import { nativeActions, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type RosterIds } from './subagent-activity-harness.ts';
+import { nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type RosterIds } from './subagent-activity-harness.ts';
 
 export async function nativeProductionViews(root: string, env: Record<string, string>, ids: RosterIds, evidence: any, activity: { start(): Promise<void>; stop(): Promise<void> }) {
   const host = await startActivityHost(root, env, ids.a, true);
@@ -71,6 +71,8 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       const href = await evaluate('location.href', frame);
       await evaluate(`document.querySelectorAll('iframe').forEach(f=>{if(f.src===${JSON.stringify(href)})f.scrollIntoView({block:'center',behavior:'instant'})})`);
       attempt.phase = 'state-and-paint';
+      // Same bounded wait as every other state (host wait default); a frame that never fits becomes
+      // an explicit "partial capture" failure instead of a clipped screenshot or a vague timeout.
       const sample = await stableScreenshot(host.controls, async () => {
         // After foregrounding/scrolling, require both renderer turns to paint.
         await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
@@ -84,8 +86,14 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       }, sample => {
         attempt.samples.push({ elapsedMs: Math.round(performance.now() - started), ...sample });
         if (attempt.samples.length > 8) attempt.samples.shift();
+      }).catch((error) => {
+        const partial = partialCapture(name, attempt.samples.at(-1)?.inner);
+        if (partial) { attempt.failure = 'partial-capture'; throw new assert.AssertionError({ message: partial }); }
+        throw error;
       });
       const { clip, inner, sx, sy } = sample;
+      const partial = partialCapture(name, inner, clip.height, inner.height * sy);
+      if (partial) { attempt.failure = 'partial-capture'; throw new assert.AssertionError({ message: partial }); }
       attempt.phase = 'capture';
       attempt.readyMs = Math.round(performance.now() - started);
       const captureStarted = performance.now();

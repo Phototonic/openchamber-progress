@@ -70,7 +70,7 @@ const alphaHistory=()=>[history('A','OLD1',{description:'Earlier planning helper
 const manyRuns=()=>{const r=[run('M','M-live','running',{ago:6,plan:'plan-many',description:'Table batch 214',agent:'migrator'})];
   for(let i=0;i<212;i++){const st=i<4?'failed':i<6?'interrupted':i<7?'unknown':'succeeded';const x=run('M','Y'+(n+1),st,{ago:20+i*13,took:2+i%5,plan:'plan-many',description:'Table batch '+(213-i),agent:'migrator',errorType:st==='failed'?'SyntheticTimeout':null,reason:st==='interrupted'?'superseded':null});if(st==='unknown'){x.ran.endedAt=null;x.ran.dispatchState='unconfirmed';}r.push(x);}
   return r;};
-window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,connected:false,hold:false,held:[],requests:[],opened:[],subs:new Map(),
+window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,connected:false,hold:false,held:[],requests:[],opened:[],subs:new Map(),resizes:[],dropResize:0,
   runs:{A:{useful:alphaRuns(),history:alphaHistory(),recovery:{state:'complete',reason:null,token:null},loss:false},M:{useful:manyRuns(),history:[],recovery:{state:'complete',reason:null,token:null},loss:false}},
   ws:{projectsState:'ready',projects:[{id:'proj-alpha',name:'Alpha',directory:'/fixture/Alpha'},{id:'proj-beta',name:'Beta',directory:'/fixture/Beta'}],
   sessions:${JSON.stringify(sessions)},state:{'proj-alpha':'ready','proj-beta':'ready'},coverage:{'proj-alpha':[{directory:'/fixture/Alpha',state:'ready'}],'proj-beta':[{directory:'/fixture/Beta',state:'ready'}]}}};
@@ -124,7 +124,7 @@ addEventListener('message',e=>{const f=[...document.querySelectorAll('iframe')].
   else if(q.path==='/v1/subagent-runs/reconcile'){const r=JSON.parse(q.body),root=qa.runs[r.root];if(root){root.recovery={state:'pending',reason:null,token:null};revision++;body={state:'pending',coalesced:false};}}
   const reply=()=>result({status:body?200:404,body:JSON.stringify(body||{error:'not-found'})});
   if(qa.hold&&q.path.startsWith('/v1/subagent-runs'))qa.held.push(reply);else reply();
- }else{if(m.type==='resize'&&s==='status'&&m.payload.height>0)f.style.height=m.payload.height+'px';if(m.id)result();}
+ }else{if(m.type==='resize'&&s==='status'&&m.payload.height>0){const drop=qa.dropResize>0;qa.resizes.push({at:Date.now(),h:m.payload.height,dropped:drop});if(drop)qa.dropResize--;else f.style.height=m.payload.height+'px';}if(m.id)result();}
 });`;
 const server = createServer((req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;

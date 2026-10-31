@@ -25,10 +25,24 @@ export function screenshotSection(target: string, observation: string | null) {
   const mark = observation ? section?.querySelector<HTMLElement>(observation) : null;
   const animating = section?.getAnimations({ subtree: true }).some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) ?? false;
   const roster = section?.dataset.testid === 'subagent-activity';
-  return { ready: !!section && (!roster || section.dataset.state === 'ready') &&
-    (!observation || !!mark) && !animating && document.fonts.status === 'loaded' && document.visibilityState === 'visible',
+  const settled = !!section && (!roster || section.dataset.state === 'ready') &&
+    (!observation || !!mark) && !animating && document.fonts.status === 'loaded' && document.visibilityState === 'visible';
+  // The whole section must be inside the frame: a frame the host has not grown yet (or left small)
+  // would otherwise be captured as a clipped strip.
+  const fits = !!r && r.y >= -1 && r.y + r.height <= innerHeight + 1;
+  return { ready: settled && fits, settled, fits,
     observationPresent: !observation || !!mark, state: mark?.dataset.state, animating,
     x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0, viewportHeight: innerHeight };
+}
+
+/**
+ * Why a screenshot would not show its whole section, or null when it would. `inner` is the last
+ * screenshotSection() sample; `clipHeight`/`sectionHeight` are host-page pixels.
+ */
+export function partialCapture(name: string, inner: { settled?: boolean; fits?: boolean; y: number; height: number; viewportHeight: number } | undefined, clipHeight?: number, sectionHeight?: number) {
+  if (inner?.settled && inner.fits === false) return `${name}: partial capture (frame ${Math.round(inner.viewportHeight)} px, section ends at ${Math.round(inner.y + inner.height)} px)`;
+  if (clipHeight !== undefined && sectionHeight !== undefined && clipHeight < sectionHeight - 1) return `${name}: partial capture (clip ${Math.round(clipHeight)} of ${Math.round(sectionHeight)} px)`;
+  return null;
 }
 
 /** Host-side frame geometry/transition readiness, without reading its URL back. */
