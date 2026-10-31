@@ -203,21 +203,30 @@ export function settleIntent(db:DatabaseSync,i:DurableIntent,receipt?:Receipt,re
   intentDisposition(db,i,receipt?'bound':'retired',reason,i.dispatch??undefined,receipt);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?').run(i.caller.sourceId,i.caller.sessionId,i.dispatch!);
 }
 function claimHash(r:HandoffRequest){return hash([r.outcome,r.summary]);}
+function claimFits(db:DatabaseSync,r:RunRow,claim:NonNullable<RunRow['claimed']>,start=provenStart(db,r)) {
+  if(!start||claim.reportedAt<start.at||r.ran.endedAt!==null&&claim.reportedAt>r.ran.endedAt)return false;
+  const next=nextStart(db,start);
+  return !next||next.at>=start.at&&claim.reportedAt<next.at;
+}
+function claimOwners(db:DatabaseSync,source:string,child:string,claim:NonNullable<RunRow['claimed']>) {
+  return db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
+    AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?)
+    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source,child,claim.reportedAt,claim.reportedAt).map(v=>row(v.payload)).filter(r=>claimFits(db,r,claim));
+}
 function attachClaim(db:DatabaseSync,r:RunRow) {
   if(!r.childSessionId||r.ran.startedAt===null||r.claimed)return;
   const claims=db.prepare('SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2').all(r.source,r.childSessionId);
-  const matching=claims.filter(c=>{const claim=JSON.parse(String(c.payload));return claim.reportedAt>=r.ran.startedAt!&&(r.ran.endedAt===null||claim.reportedAt<=r.ran.endedAt)&& (Number(c.execution)===0||Number(c.execution)<=Number(r.ran.sequence));});
+  const matching=claims.filter(c=>claimFits(db,r,claimValue(JSON.parse(String(c.payload))))&&(Number(c.execution)===0||Number(c.execution)<=Number(r.ran.sequence)));
   if(matching.length!==1)return;
-  const others=db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND id!=? AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?) LIMIT 1").get(r.source,r.childSessionId,r.id,JSON.parse(String(matching[0]!.payload)).reportedAt,JSON.parse(String(matching[0]!.payload)).reportedAt);
-  if(others)return;
-  const claim=JSON.parse(String(matching[0]!.payload));r.claimed={...claim,association:'execution'};save(db,r);db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?').run(r.source,r.childSessionId,matching[0]!.execution!);
+  const claim=claimValue(JSON.parse(String(matching[0]!.payload))),owners=claimOwners(db,r.source,r.childSessionId,claim);
+  if(owners.length!==1||owners[0]!.id!==r.id)return;
+  r.claimed={...claim,association:'execution'};save(db,r);db.prepare('DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?').run(r.source,r.childSessionId,matching[0]!.execution!);
 }
 function reassociateClaims(db:DatabaseSync,source:string,child:string) {
   for(const staged of db.prepare('SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?').all(source,child,RUN_LIMITS.claims)){
     const claim=claimValue(JSON.parse(String(staged.payload)));
-    const owners=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-      AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?) LIMIT 2`).all(source,child,claim.reportedAt,claim.reportedAt);
-    if(owners.length===1)attachClaim(db,row(owners[0]!.payload));
+    const owners=claimOwners(db,source,child,claim);
+    if(owners.length===1)attachClaim(db,owners[0]!);
   }
 }
 export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number) {
@@ -235,7 +244,7 @@ export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number)
   const staged=db.prepare('SELECT oid,hash,payload FROM runs_claims WHERE source=? AND child=? AND (execution=? OR oid=?) LIMIT 1').get(actor.sourceId,actor.sessionId,execution,r.oid);
   if(staged){need(staged.oid===r.oid,'conflict');need(staged.hash===claimHash(r),'operation-reused');return {handoff:claimValue(JSON.parse(String(staged.payload)))};}
   const runs=db.prepare('SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2').all(actor.sourceId,actor.sessionId).map(v=>row(v.payload));
-  const current=runs.filter(v=>v.ran.startedAt!==null&&v.ran.startedAt<=now&&(v.ran.endedAt===null||now<=v.ran.endedAt));
+  const current=claimOwners(db,actor.sourceId,actor.sessionId,{oid:r.oid,outcome:r.outcome,summary:r.summary,reportedAt:now,sessionId:actor.sessionId,association:'session-only'});
   const currentStart=c?.start?.at??retained?.started_at??runs.find(v=>v.ran.startedAt!==null)?.ran.startedAt;
   if(current.some(v=>v.claimed)||runs.some(v=>v.claimed&&currentStart===v.ran.startedAt))need(false,'conflict');
   if(retired?.execution!==null&&retired?.execution!==undefined&&execution<=Number(retired.execution))need(false,'not-found');
@@ -298,10 +307,21 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
   const e=c.end&&c.end.sequence>c.start.sequence&&c.end.at>=c.start.at?c.end:c.start;
   if(r.ran.endedAt!==null){if(e===c.start||e.sequence>=Number(r.ran.sequence))return false;}
   else if(r.ran.sequence!==null&&e.sequence<=r.ran.sequence){attachClaim(db,r);return false;}
-  r.ran={...r.ran,state:e.state,startedAt:c.start.at,endedAt:e===c.start?null:e.at,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
+  recomputeInterval(db,r,c.start,e===c.start?null:e);return true;
+}
+/** The only writer of interval bounds: validate host chronology and claims together. */
+function recomputeInterval(db:DatabaseSync,r:RunRow,start:ExecutionObservation,end:ExecutionObservation|null):ExecutionObservation|null {
+  const next=nextStart(db,start);
+  const wrongOwner=end&&(end.sequence<=start.sequence||next&&end.sequence>=next.sequence);
+  const badClock=next&&next.at<start.at||end&&(end.at<start.at||!wrongOwner&&next&&end.at>next.at);
+  if(badClock)loss(db);
+  const displaced=end&&(wrongOwner||badClock)?end:null;
+  if(displaced)end=null;
+  const e=end??start;
+  r.ran={...r.ran,state:e.state,startedAt:start.at,endedAt:end?.at??null,updatedAt:e.at,provenance:'native-event',eventId:e.id,sequence:e.sequence,errorType:e.errorType,interruptionReason:e.interruptionReason};
   let retiredClaim:ClaimFence|undefined;
   let restaged=false;
-  if(r.claimed&&r.ran.endedAt!==null&&(r.claimed.reportedAt<r.ran.startedAt!||r.claimed.reportedAt>r.ran.endedAt)){
+  if(r.claimed&&!claimFits(db,r,r.claimed,start)){
     // Host terminal facts take priority over an invalid claim association.
     // Restage only in spare capacity; never prune runs or reject the terminal
     // to retain this lower-priority claim. Slot/operation conflicts also lose
@@ -316,9 +336,9 @@ function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
     }
     r.claimed=null;
   }
-  save(db,r,retiredClaim,[c.start.id,c.start.sequence]);attachClaim(db,r);
-  if(restaged)reassociateClaims(db,r.source,r.childSessionId);
-  return true;
+  save(db,r,retiredClaim,[start.id,start.sequence]);attachClaim(db,r);
+  if(restaged)reassociateClaims(db,r.source,start.child);
+  return displaced;
 }
 
 function provenStart(db:DatabaseSync,r:RunRow):ExecutionObservation|null {
@@ -329,16 +349,25 @@ function provenStart(db:DatabaseSync,r:RunRow):ExecutionObservation|null {
 function provenEnd(r:RunRow):ExecutionObservation|null {
   return r.childSessionId&&r.ran.endedAt!==null&&r.ran.eventId&&r.ran.sequence!==null&&['succeeded','failed','interrupted'].includes(r.ran.state)?{source:r.source,child:r.childSessionId,id:r.ran.eventId,sequence:r.ran.sequence,at:r.ran.endedAt,state:r.ran.state as ExecutionObservation['state'],errorType:r.ran.errorType,interruptionReason:r.ran.interruptionReason}:null;
 }
+function nextStart(db:DatabaseSync,start:ExecutionObservation):ExecutionObservation|null {
+  const stored=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence>? ORDER BY sequence LIMIT 1`).get(start.source,start.child,start.sequence);
+  const known=stored?provenStart(db,row(stored.payload)):null,pending=candidate(db,start.source,start.child)?.start;
+  return pending&&pending.sequence>start.sequence&&(!known||pending.sequence<known.sequence)?pending:known;
+}
 function routeTerminal(db:DatabaseSync,e:ExecutionObservation):{handled:boolean;displaced?:ExecutionObservation} {
-  const rows=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-    AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$._startEvent') IS NOT NULL OR json_extract(payload,'$.ran.state')='running')
-    ORDER BY json_extract(payload,'$.ran.startedAt') DESC LIMIT 2`).all(e.source,e.child,e.at).map(v=>row(v.payload));
-  const r=rows[0],start=r&&provenStart(db,r);
-  if(!r||!start||start.sequence>=e.sequence||rows[1]?.ran.startedAt===r.ran.startedAt)return {handled:false};
+  const rows=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source,e.child,e.sequence);
+  const r=rows[0]&&row(rows[0].payload),start=r&&provenStart(db,r);
+  if(!r||!start)return {handled:false};
+  if(rows[1]?.sequence===start.sequence){loss(db);return {handled:false};}
   // An observed later start is an interval boundary even while its dispatch
   // identity is unresolved. A later dispatch alone is not execution evidence.
   const pending=candidate(db,e.source,e.child)?.start;
-  if(pending&&pending.at>start.at&&pending.at<=e.at)return {handled:false};
+  if(pending&&pending.sequence>start.sequence&&pending.sequence<e.sequence){if(pending.at>e.at)loss(db);return {handled:false};}
+  const next=nextStart(db,start);
+  if(next&&next.sequence<=e.sequence){loss(db);return {handled:false};}
+  if(e.at<start.at||next&&(next.at<start.at||e.at>next.at)){loss(db);return {handled:false};}
   const prior=provenEnd(r);
   if(prior?.sequence===e.sequence)return {handled:true};
   if(prior&&prior.sequence<e.sequence)return {handled:false};
@@ -383,7 +412,7 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation) {
     db.prepare('DELETE FROM runs_candidates WHERE source=? AND child=?').run(e.source,e.child);return;
   }
   const c=candidate(db,e.source,e.child)??{start:null,end:null};
-  let reopen:RunRow|undefined;
+  let refine:RunRow|undefined;
   let routed=false;
   if(e.state!=='running'){
     const result=routeTerminal(db,e);routed=result.handled;
@@ -391,15 +420,15 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation) {
   }else{
     if(db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND
       coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)=? LIMIT 1`).get(e.source,e.child,e.sequence)){correlate(db,e.source,e.child);return;}
-    // A start delivered after a later terminal proves that terminal belongs to
-    // another interval. Restore the earlier start and re-route the displaced end.
-    const crossed=db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-      AND json_extract(payload,'$.ran.startedAt')<? AND json_extract(payload,'$.ran.endedAt')>=?
-      AND json_extract(payload,'$._startEvent[1]')<? AND json_extract(payload,'$.ran.sequence')>? LIMIT 2`).all(e.source,e.child,e.at,e.at,e.sequence,e.sequence);
-    if(crossed.length===1){reopen=row(crossed[0]!.payload);const displaced=provenEnd(reopen);if(displaced&&(!c.end||displaced.sequence>c.end.sequence))c.end=displaced;}
+    // Every new start refines the previous sequence interval, regardless of
+    // timestamp ordering or whether that interval has a terminal yet.
+    const previous=db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+      FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source,e.child,e.sequence);
+    if(previous[0]&&previous[1]?.sequence!==previous[0].sequence)refine=row(previous[0].payload);
+    else if(previous.length>1)loss(db);
     // Old orphan starts that precede retained proof and every possible call
     // cannot own an interval here, and must not poison a future fresh start.
-    if(!reopen&&db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.startedAt')>?
+    if(!refine&&db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.startedAt')>?
       AND coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)>? LIMIT 1`).get(e.source,e.child,e.at,e.sequence)
       &&!db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND terminal=0 AND at<=? AND json_extract(payload,'$.ran.startedAt') IS NULL
         AND (child=? OR (child IS NULL AND json_extract(payload,'$.tool')='subagent')) LIMIT 1`).get(e.source,e.at,e.child)){correlate(db,e.source,e.child);return;}
@@ -431,10 +460,15 @@ export function observeExecution(db:DatabaseSync,e:ExecutionObservation) {
   const project=(v:ExecutionObservation|null)=>v?{source:e.source,child:e.child,id:v.id,sequence:v.sequence,at:v.at,state:v.state,errorType:v.state==='failed'?safeErrorType(v.errorType):null,interruptionReason:v.state==='interrupted'&&['user','shutdown','superseded','inactivity'].includes(String(v.interruptionReason))?v.interruptionReason:v.state==='interrupted'?'unknown':null}:null;
   const safe={start:project(c.start),end:project(c.end),ambiguous:c.ambiguous??false} as Candidate;
   db.prepare('INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload').run(e.source,e.child,control.generation,JSON.stringify(safe));
-  if(reopen){
-    const start=provenStart(db,reopen)!;
-    reopen.ran={...reopen.ran,state:'running',endedAt:null,updatedAt:start.at,eventId:start.id,sequence:start.sequence,errorType:null,interruptionReason:null};
-    save(db,reopen,undefined,[start.id,start.sequence]);
+  if(refine){
+    const start=provenStart(db,refine)!;
+    const displaced=recomputeInterval(db,refine,start,provenEnd(refine));
+    if(displaced){
+      const held=candidate(db,e.source,e.child)!;
+      if(!held.end||displaced.sequence>held.end.sequence)held.end=displaced;
+      else if(displaced.sequence!==held.end.sequence)loss(db);
+      db.prepare('UPDATE runs_candidates SET payload=? WHERE source=? AND child=?').run(JSON.stringify(held),e.source,e.child);
+    }
   }
   correlate(db,e.source,e.child);
 }

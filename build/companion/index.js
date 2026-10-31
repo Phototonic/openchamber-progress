@@ -25053,20 +25053,27 @@ function settleIntent(db, i, receipt, reason) {
 function claimHash(r) {
   return hash2([r.outcome, r.summary]);
 }
+function claimFits(db, r, claim, start = provenStart(db, r)) {
+  if (!start || claim.reportedAt < start.at || r.ran.endedAt !== null && claim.reportedAt > r.ran.endedAt)
+    return false;
+  const next = nextStart(db, start);
+  return !next || next.at >= start.at && claim.reportedAt < next.at;
+}
+function claimOwners(db, source, child, claim) {
+  return db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
+    AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?)
+    ORDER BY coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) DESC LIMIT 2`).all(source, child, claim.reportedAt, claim.reportedAt).map((v) => row(v.payload)).filter((r) => claimFits(db, r, claim));
+}
 function attachClaim(db, r) {
   if (!r.childSessionId || r.ran.startedAt === null || r.claimed)
     return;
   const claims = db.prepare("SELECT * FROM runs_claims WHERE source=? AND child=? LIMIT 2").all(r.source, r.childSessionId);
-  const matching = claims.filter((c) => {
-    const claim2 = JSON.parse(String(c.payload));
-    return claim2.reportedAt >= r.ran.startedAt && (r.ran.endedAt === null || claim2.reportedAt <= r.ran.endedAt) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence));
-  });
+  const matching = claims.filter((c) => claimFits(db, r, claimValue(JSON.parse(String(c.payload)))) && (Number(c.execution) === 0 || Number(c.execution) <= Number(r.ran.sequence)));
   if (matching.length !== 1)
     return;
-  const others = db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND id!=? AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, JSON.parse(String(matching[0].payload)).reportedAt, JSON.parse(String(matching[0].payload)).reportedAt);
-  if (others)
+  const claim = claimValue(JSON.parse(String(matching[0].payload))), owners = claimOwners(db, r.source, r.childSessionId, claim);
+  if (owners.length !== 1 || owners[0].id !== r.id)
     return;
-  const claim = JSON.parse(String(matching[0].payload));
   r.claimed = { ...claim, association: "execution" };
   save(db, r);
   db.prepare("DELETE FROM runs_claims WHERE source=? AND child=? AND execution=?").run(r.source, r.childSessionId, matching[0].execution);
@@ -25074,10 +25081,9 @@ function attachClaim(db, r) {
 function reassociateClaims(db, source, child) {
   for (const staged of db.prepare("SELECT payload FROM runs_claims WHERE source=? AND child=? LIMIT ?").all(source, child, RUN_LIMITS.claims)) {
     const claim = claimValue(JSON.parse(String(staged.payload)));
-    const owners = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-      AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$.ran.endedAt') IS NULL OR json_extract(payload,'$.ran.endedAt')>=?) LIMIT 2`).all(source, child, claim.reportedAt, claim.reportedAt);
+    const owners = claimOwners(db, source, child, claim);
     if (owners.length === 1)
-      attachClaim(db, row(owners[0].payload));
+      attachClaim(db, owners[0]);
   }
 }
 function handoff(db, r, actor, now3) {
@@ -25106,7 +25112,7 @@ function handoff(db, r, actor, now3) {
     return { handoff: claimValue(JSON.parse(String(staged.payload))) };
   }
   const runs = db.prepare("SELECT payload FROM runs_rows WHERE source=? AND child=? ORDER BY at DESC LIMIT 2").all(actor.sourceId, actor.sessionId).map((v) => row(v.payload));
-  const current = runs.filter((v) => v.ran.startedAt !== null && v.ran.startedAt <= now3 && (v.ran.endedAt === null || now3 <= v.ran.endedAt));
+  const current = claimOwners(db, actor.sourceId, actor.sessionId, { oid: r.oid, outcome: r.outcome, summary: r.summary, reportedAt: now3, sessionId: actor.sessionId, association: "session-only" });
   const currentStart = c?.start?.at ?? retained?.started_at ?? runs.find((v) => v.ran.startedAt !== null)?.ran.startedAt;
   if (current.some((v) => v.claimed) || runs.some((v) => v.claimed && currentStart === v.ran.startedAt))
     requireProgress(false, "conflict");
@@ -25197,10 +25203,23 @@ function adopt(db, r, c) {
     attachClaim(db, r);
     return false;
   }
-  r.ran = { ...r.ran, state: e.state, startedAt: c.start.at, endedAt: e === c.start ? null : e.at, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
+  recomputeInterval(db, r, c.start, e === c.start ? null : e);
+  return true;
+}
+function recomputeInterval(db, r, start, end) {
+  const next = nextStart(db, start);
+  const wrongOwner = end && (end.sequence <= start.sequence || next && end.sequence >= next.sequence);
+  const badClock = next && next.at < start.at || end && (end.at < start.at || !wrongOwner && next && end.at > next.at);
+  if (badClock)
+    loss(db);
+  const displaced = end && (wrongOwner || badClock) ? end : null;
+  if (displaced)
+    end = null;
+  const e = end ?? start;
+  r.ran = { ...r.ran, state: e.state, startedAt: start.at, endedAt: end?.at ?? null, updatedAt: e.at, provenance: "native-event", eventId: e.id, sequence: e.sequence, errorType: e.errorType, interruptionReason: e.interruptionReason };
   let retiredClaim;
   let restaged = false;
-  if (r.claimed && r.ran.endedAt !== null && (r.claimed.reportedAt < r.ran.startedAt || r.claimed.reportedAt > r.ran.endedAt)) {
+  if (r.claimed && !claimFits(db, r, r.claimed, start)) {
     const claim = { ...r.claimed, association: "session-only" };
     const room = Number(db.prepare("SELECT count(*) AS n FROM runs_claims").get().n) < RUN_LIMITS.claims && retainedCount(db) < RUN_LIMITS.total;
     restaged = room && Boolean(db.prepare("INSERT INTO runs_claims VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING").run(r.source, r.childSessionId, 0, claim.oid, hash2([claim.outcome, claim.summary]), JSON.stringify(claim)).changes);
@@ -25210,11 +25229,11 @@ function adopt(db, r, c) {
     }
     r.claimed = null;
   }
-  save(db, r, retiredClaim, [c.start.id, c.start.sequence]);
+  save(db, r, retiredClaim, [start.id, start.sequence]);
   attachClaim(db, r);
   if (restaged)
-    reassociateClaims(db, r.source, r.childSessionId);
-  return true;
+    reassociateClaims(db, r.source, start.child);
+  return displaced;
 }
 function provenStart(db, r) {
   const stored = db.prepare("SELECT json_extract(payload,'$._startEvent') AS start FROM runs_rows WHERE id=?").get(r.id);
@@ -25224,16 +25243,37 @@ function provenStart(db, r) {
 function provenEnd(r) {
   return r.childSessionId && r.ran.endedAt !== null && r.ran.eventId && r.ran.sequence !== null && ["succeeded", "failed", "interrupted"].includes(r.ran.state) ? { source: r.source, child: r.childSessionId, id: r.ran.eventId, sequence: r.ran.sequence, at: r.ran.endedAt, state: r.ran.state, errorType: r.ran.errorType, interruptionReason: r.ran.interruptionReason } : null;
 }
+function nextStart(db, start) {
+  const stored = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence>? ORDER BY sequence LIMIT 1`).get(start.source, start.child, start.sequence);
+  const known = stored ? provenStart(db, row(stored.payload)) : null, pending = candidate(db, start.source, start.child)?.start;
+  return pending && pending.sequence > start.sequence && (!known || pending.sequence < known.sequence) ? pending : known;
+}
 function routeTerminal(db, e) {
-  const rows = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-    AND json_extract(payload,'$.ran.startedAt')<=? AND (json_extract(payload,'$._startEvent') IS NOT NULL OR json_extract(payload,'$.ran.state')='running')
-    ORDER BY json_extract(payload,'$.ran.startedAt') DESC LIMIT 2`).all(e.source, e.child, e.at).map((v) => row(v.payload));
-  const r = rows[0], start = r && provenStart(db, r);
-  if (!r || !start || start.sequence >= e.sequence || rows[1]?.ran.startedAt === r.ran.startedAt)
+  const rows = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+    FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
+  const r = rows[0] && row(rows[0].payload), start = r && provenStart(db, r);
+  if (!r || !start)
     return { handled: false };
+  if (rows[1]?.sequence === start.sequence) {
+    loss(db);
+    return { handled: false };
+  }
   const pending = candidate(db, e.source, e.child)?.start;
-  if (pending && pending.at > start.at && pending.at <= e.at)
+  if (pending && pending.sequence > start.sequence && pending.sequence < e.sequence) {
+    if (pending.at > e.at)
+      loss(db);
     return { handled: false };
+  }
+  const next = nextStart(db, start);
+  if (next && next.sequence <= e.sequence) {
+    loss(db);
+    return { handled: false };
+  }
+  if (e.at < start.at || next && (next.at < start.at || e.at > next.at)) {
+    loss(db);
+    return { handled: false };
+  }
   const prior = provenEnd(r);
   if (prior?.sequence === e.sequence)
     return { handled: true };
@@ -25311,7 +25351,7 @@ function observeExecution(db, e) {
     return;
   }
   const c = candidate(db, e.source, e.child) ?? { start: null, end: null };
-  let reopen;
+  let refine2;
   let routed = false;
   if (e.state !== "running") {
     const result3 = routeTerminal(db, e);
@@ -25328,16 +25368,13 @@ function observeExecution(db, e) {
       correlate(db, e.source, e.child);
       return;
     }
-    const crossed = db.prepare(`SELECT payload FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL
-      AND json_extract(payload,'$.ran.startedAt')<? AND json_extract(payload,'$.ran.endedAt')>=?
-      AND json_extract(payload,'$._startEvent[1]')<? AND json_extract(payload,'$.ran.sequence')>? LIMIT 2`).all(e.source, e.child, e.at, e.at, e.sequence, e.sequence);
-    if (crossed.length === 1) {
-      reopen = row(crossed[0].payload);
-      const displaced = provenEnd(reopen);
-      if (displaced && (!c.end || displaced.sequence > c.end.sequence))
-        c.end = displaced;
-    }
-    if (!reopen && db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.startedAt')>?
+    const previous = db.prepare(`SELECT payload,coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END) AS sequence
+      FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND sequence<? ORDER BY sequence DESC LIMIT 2`).all(e.source, e.child, e.sequence);
+    if (previous[0] && previous[1]?.sequence !== previous[0].sequence)
+      refine2 = row(previous[0].payload);
+    else if (previous.length > 1)
+      loss(db);
+    if (!refine2 && db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND child=? AND json_extract(payload,'$.ran.startedAt')>?
       AND coalesce(json_extract(payload,'$._startEvent[1]'),CASE WHEN json_extract(payload,'$.ran.state')='running' THEN json_extract(payload,'$.ran.sequence') END)>? LIMIT 1`).get(e.source, e.child, e.at, e.sequence) && !db.prepare(`SELECT 1 FROM runs_rows WHERE source=? AND terminal=0 AND at<=? AND json_extract(payload,'$.ran.startedAt') IS NULL
         AND (child=? OR (child IS NULL AND json_extract(payload,'$.tool')='subagent')) LIMIT 1`).get(e.source, e.at, e.child)) {
       correlate(db, e.source, e.child);
@@ -25385,10 +25422,17 @@ function observeExecution(db, e) {
   const project = (v) => v ? { source: e.source, child: e.child, id: v.id, sequence: v.sequence, at: v.at, state: v.state, errorType: v.state === "failed" ? safeErrorType(v.errorType) : null, interruptionReason: v.state === "interrupted" && ["user", "shutdown", "superseded", "inactivity"].includes(String(v.interruptionReason)) ? v.interruptionReason : v.state === "interrupted" ? "unknown" : null } : null;
   const safe = { start: project(c.start), end: project(c.end), ambiguous: c.ambiguous ?? false };
   db.prepare("INSERT INTO runs_candidates VALUES(?,?,?,?) ON CONFLICT(source,child) DO UPDATE SET generation=excluded.generation,payload=excluded.payload").run(e.source, e.child, control.generation, JSON.stringify(safe));
-  if (reopen) {
-    const start = provenStart(db, reopen);
-    reopen.ran = { ...reopen.ran, state: "running", endedAt: null, updatedAt: start.at, eventId: start.id, sequence: start.sequence, errorType: null, interruptionReason: null };
-    save(db, reopen, undefined, [start.id, start.sequence]);
+  if (refine2) {
+    const start = provenStart(db, refine2);
+    const displaced = recomputeInterval(db, refine2, start, provenEnd(refine2));
+    if (displaced) {
+      const held = candidate(db, e.source, e.child);
+      if (!held.end || displaced.sequence > held.end.sequence)
+        held.end = displaced;
+      else if (displaced.sequence !== held.end.sequence)
+        loss(db);
+      db.prepare("UPDATE runs_candidates SET payload=? WHERE source=? AND child=?").run(JSON.stringify(held), e.source, e.child);
+    }
   }
   correlate(db, e.source, e.child);
 }

@@ -925,8 +925,13 @@ candidate's start. Once that start is proven for a dispatch, a later pending cal
 cannot prevent its matching terminal event from completing the execution; no
 callback from the later call is required, even when the resumed call has already
 verified the same child. Terminal routing precedes initial-association competition:
-ownership is determined by proven start boundaries and compatible native sequence
-ordering, never by the latest dispatch or the latest event seen for the child.
+ownership is determined first by the host's per-session durable sequence: the
+greatest start sequence below the terminal, with no intervening observed start.
+It is never selected by timestamp, latest dispatch or latest event arrival.
+Timestamps must then be consistent with that sequence interval, including the
+next start boundary. A contradiction leaves the terminal unassociated with
+capture loss disclosed; it never falls back to an older execution. Equal host
+timestamps are permitted when native sequence establishes the order.
 One event can belong to at most one run. Two unassociated calls that could own
 the same start still refuse association; an earlier proven interval does not
 compete for a distinct later start. Clock/sequence contradictions cannot certify
@@ -941,7 +946,10 @@ with the older interval, the newly observed start refines the boundary: the olde
 start is restored and the displaced terminal is routed/staged for its own interval.
 This is correction from native evidence, not time-based Running expiry. Deferred
 events are reconsidered after start/after-hook association without a history scan
-or another event source. Corrected claims are also reconsidered against already
+or another event source. Every interval-bound update uses the same interval and
+claim revalidation owner, including restoring an older interval to Running. An
+attached report must precede the next start boundary even if its own terminal is
+still missing. Corrected claims are also reconsidered against already
 proven resumed intervals, including ones that have already completed; full staging
 still drops only the claim with its existing retirement fence and loss disclosure.
 Historical session summaries are not competing dispatches. They remain separate
@@ -977,8 +985,8 @@ The report router accepts a plan-free optional `handoff` only from its actual
 native child caller. It validates a safe authored one-line summary, server-stamps
 the time, stages unknown execution association separately and attaches on unique
 interval evidence. Retries and conflicts do not advance task progress.
-Closing an interval revalidates an already attached report: one outside the proven
-start/end bounds returns atomically to session-only staging, preserving its authored
+Changing an interval revalidates an already attached report: one outside its
+start/end or next-start bounds returns atomically to session-only staging, preserving its authored
 fields and operation identity for retry or later resumed-execution association.
 Valid attached claims are not overwritten by other staged reports. Host terminal
 facts take priority: if claim staging or total storage has no spare capacity, or
