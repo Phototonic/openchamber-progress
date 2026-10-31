@@ -187,18 +187,29 @@ export function rosterFor(v: RosterInput): Roster | null {
   const titles = new Map<string, string>([...(census ? [[census.root.id, census.root.title] as const] : []), ...(census?.rows ?? []).map((r) => [r.id, r.title] as const)]);
   for (const r of runRows) if (r.childSessionId && r.description && !titles.has(r.childSessionId)) titles.set(r.childSessionId, r.description);
   const rootId = census?.rootId ?? null;
-  // Host activity, task facts and "running again" belong to the child's latest run only, chosen by
-  // execution evidence: any dispatch record outranks a historical session summary (whose update time
-  // is session-wide metadata, not an execution); between dispatches the proven start (else the
-  // dispatch time), then the dispatch time, then the native sequence decide; a historical row wins
-  // only when the child has no dispatch record.
+  // Host activity, task facts and "running again" belong to the child's latest run only. The service
+  // marks it (`latestForChild`) across the full retained scope, so a newer record on an unloaded page
+  // still counts. Its order, mirrored here only as a consistency check: any dispatch record outranks a
+  // historical session summary (whose update time is session-wide metadata, not an execution);
+  // between dispatches the proven start (else the dispatch time), then the dispatch time, then the
+  // native sequence. When the marked row is not loaded, the mark is missing (older service) or the
+  // marks disagree, no loaded row of that child gets any per-child refinement: none is guessed.
   const evidence = (r: RunRow): number[] => r.dispatch ? [1, r.ran.startedAt ?? r.dispatch.at, r.dispatch.at, r.ran.sequence ?? -1] : [0, r.ran.endedAt ?? r.ran.updatedAt, 0, -1];
   const newer = (a: RunRow, b: RunRow) => { const x = evidence(a), y = evidence(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+  const byChild = new Map<string, RunRow[]>();
+  for (const r of runRows) if (r.childSessionId) byChild.set(r.childSessionId, [...(byChild.get(r.childSessionId) ?? []), r]);
   const latest = new Map<string, RunRow>();
-  for (const r of runRows) if (r.childSessionId) { const l = latest.get(r.childSessionId); if (!l || newer(r, l) > 0) latest.set(r.childSessionId, r); }
+  for (const [child, rows] of byChild) {
+    if (rows.some((r) => typeof r.latestForChild !== 'boolean')) continue;
+    const marked = rows.filter((r) => r.latestForChild);
+    if (marked.length !== 1) continue;
+    if (rows.some((r) => r !== marked[0] && newer(r, marked[0]) > 0)) continue;
+    latest.set(child, marked[0]);
+  }
   // Only a child ID on the record correlates a run with a host session. A dispatch without one
-  // and a new host child stay separate rows, however likely they look like the same work.
-  const covered = new Set(latest.keys());
+  // and a new host child stay separate rows, however likely they look like the same work. A child
+  // with any loaded record is recorded, never also a host-only row.
+  const covered = new Set(byChild.keys());
   // Execution-scoped evidence: a host transition counts for an execution only if numbered after the
   // sequence current when this window first displayed that execution's start (or its end). Without
   // baselines nothing qualifies.

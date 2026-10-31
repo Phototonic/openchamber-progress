@@ -77,7 +77,12 @@ window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,con
 let revision=1;qa.bump=()=>{revision++;return revision};
 const runRead=(q)=>{const binding=JSON.parse(q.binding),root=qa.runs[q.root];if(!root)return null;
   const all=[...root.useful,...root.history],count=k=>all.filter(r=>r.ran.state===k).length;
-  const pool=q.view==='history'?root.history:root.useful,offset=Number(q.cursor||0),data=pool.slice(offset,offset+50);
+  // As the service: rank each child's rows across the whole root scope before view/page filtering
+  // (dispatch over historical; start-or-dispatch, dispatch time, sequence); childless rows false.
+  const key=r=>r.dispatch?[1,r.ran.startedAt??r.dispatch.at,r.dispatch.at,r.ran.sequence??-1]:[0,r.ran.endedAt??r.ran.updatedAt,0,-1];
+  const later=(a,b)=>{const x=key(a),y=key(b);for(let i=0;i<x.length;i++)if(x[i]!==y[i])return x[i]>y[i];return false;};
+  const best=new Map();for(const r of all)if(r.childSessionId){const b=best.get(r.childSessionId);if(!b||later(r,b))best.set(r.childSessionId,r);}
+  const pool=q.view==='history'?root.history:root.useful,offset=Number(q.cursor||0),data=pool.slice(offset,offset+50).map(r=>({...r,latestForChild:!!r.childSessionId&&best.get(r.childSessionId)===r}));
   return {protocolVersion:2,schemaVersion:2,storeId:q.storeId,sourceBinding:binding,source:q.source,root:q.root,plan:q.plan??null,cleanupRev:q.plan?Number(q.cleanupRev):null,view:q.view??'useful',subagentRuns:1,runFormat:1,availability:'ready',readAt:Date.now(),revision,
    capture:{enabled:qa.capture,state:'last-known',loss:root.loss},recovery:root.recovery,
    counts:{children:new Set(all.map(r=>r.childSessionId).filter(Boolean)).size,runs:root.useful.length,historicalSessions:root.history.length,running:count('running'),succeeded:count('succeeded'),failed:count('failed'),interrupted:count('interrupted'),unknown:count('unknown')},

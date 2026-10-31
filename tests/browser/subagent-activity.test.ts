@@ -250,9 +250,22 @@ function run(state: RunRow['ran']['state'], extra: Partial<Omit<RunRow, 'ran'>> 
     dispatch: { messageId: `m-${n}`, callId: `c-${n}`, at: T0 }, planContext: { plan: plan.id, revision: 3, observedAt: T0 },
     ran: { state, dispatchState: 'returned', startedAt: T0 + 100, endedAt: ['succeeded', 'failed', 'interrupted'].includes(state) ? T0 + 125_000 : null, updatedAt: T0 + 125_000, provenance: 'native-event', eventId: `e-${n}`, sequence: 2, errorType: null, interruptionReason: null, ...ran },
     claimed: null, accepted: null, ...rest,
-  };
+  } as RunRow; // `latestForChild` stays unset unless given; readOf marks it as the service would.
+}
+/**
+ * Returns copies with `latestForChild` set where it is unset, as the service marks its retained scope
+ * (here: the rows given): one row per child by dispatch over historical, start-or-dispatch, dispatch
+ * time, sequence; childless rows false. An explicit mark is kept.
+ */
+function markLatest(rows: RunRow[]): RunRow[] {
+  const key = (r: RunRow) => r.dispatch ? [1, r.ran.startedAt ?? r.dispatch.at, r.dispatch.at, r.ran.sequence ?? -1] : [0, r.ran.endedAt ?? r.ran.updatedAt, 0, -1];
+  const cmp = (a: RunRow, b: RunRow) => { const x = key(a), y = key(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+  const best = new Map<string, RunRow>();
+  for (const r of rows) if (r.childSessionId) { const b = best.get(r.childSessionId); if (!b || cmp(r, b) > 0) best.set(r.childSessionId, r); }
+  return rows.map((r) => r.latestForChild === undefined ? { ...r, latestForChild: !!r.childSessionId && best.get(r.childSessionId) === r } : r);
 }
 function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: Partial<RunRead> = {}): RunRead {
+  rows = markLatest(rows);
   // As the service counts them: distinct non-null child IDs (a dispatch without one is no child yet).
   const c = { children: new Set(rows.map((r) => r.childSessionId).filter(Boolean)).size, runs: rows.length, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 };
   for (const r of rows) c[r.ran.state]++;
@@ -691,7 +704,7 @@ test('history request: bounded automatic retries, then the manual Retry; a non-t
 
 test('summary: a host-listed child that may be an unpaged recorded child is never counted again', () => {
   const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
-  const rows = kids.map((k) => run('running', { childSessionId: k }));
+  const rows = markLatest(kids.map((k) => run('running', { childSessionId: k })));
   const read = readOf(rows.slice(0, 50), { running: 51, runs: 51, children: 51 }, { nextCursor: 'next' });
   const census = (last: LiveSession['activity']) => censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k, i) => rec(k, 'A', { activity: i === 50 ? last : 'running' }))]));
   const texts = (r: ReturnType<typeof rosterFor>) => r!.summary.map((s) => s.text);
@@ -726,7 +739,7 @@ test('host row limit: a truncated host census is disclosed and host-only counts 
 
 test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {
   const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
-  const rows = kids.map((k) => run('running', { childSessionId: k }));
+  const rows = markLatest(kids.map((k) => run('running', { childSessionId: k })));
   const read = readOf(rows.slice(0, 50), { running: 51, runs: 51, children: 51 }, { nextCursor: 'next' });
   const census = censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k) => rec(k, 'A', { activity: 'running' }))]));
   for (const surface of ['panel', 'status', 'page'] as const) {
@@ -768,4 +781,40 @@ test('latest run per child: a historical summary\'s later session update never d
   const jr = rosterFor(input({ census: censusFor('A', alpha.directory, snap([rec('A', null), rec('J', 'A', { activity: 'idle' })])), runs: panel(readOf([a, b])) }))!;
   const ja = [...jr.featured, ...jr.earlier];
   assert.ok(ja.find((e) => e.runId === a.id)!.accepted && !ja.find((e) => e.runId === b.id)!.accepted, 'the run with the latest execution evidence is the child\'s latest');
+});
+
+test('latest run per child: the service\'s latestForChild decides, also when the latest row is on an unloaded page', () => {
+  // 50 running records on page 1; a newer succeeded dispatch for K0 sits on page 2. K0 is
+  // host-listed waiting for an answer. The service marks rows across the full retained scope.
+  const tasks = { plan: plan.id, revision: 3, items: [{ id: 'task-1', status: 'working' as const }], omittedItems: 0 };
+  const page1 = Array.from({ length: 50 }, (_, i) => run('running', { childSessionId: `K${i}`, dispatch: { messageId: `m${i}`, callId: `c${i}`, at: 1000 }, accepted: i === 0 ? tasks : null, ran: { startedAt: 1100, endedAt: null, updatedAt: 1100 }, latestForChild: i !== 0 }));
+  const newer = run('succeeded', { childSessionId: 'K0', dispatch: { messageId: 'mz', callId: 'cz', at: 5000 }, accepted: tasks, ran: { startedAt: 5100, endedAt: 6000, updatedAt: 6000 }, latestForChild: true });
+  const read = readOf(page1, { running: 50, succeeded: 1, runs: 51, children: 50 }, { nextCursor: 'next' });
+  const census = censusFor('A', alpha.directory, snap([rec('A', null), ...page1.map((r, i) => rec(r.childSessionId!, 'A', { activity: i === 0 ? 'waiting-question' : 'running' }))]));
+  const texts = (p: RunsPanel) => rosterFor(input({ census, runs: p }))!.summary.map((s) => s.text);
+  const k0 = (p: RunsPanel) => [...rosterFor(input({ census, runs: p }))!.featured, ...rosterFor(input({ census, runs: p }))!.earlier].filter((e) => e.sessionId === 'K0');
+  // Page 1 only: K0's latest is not loaded, so no loaded K0 row gets its host word or tasks.
+  const first = panel(read, [], { hasMore: true, continuation: true });
+  assert.deepEqual(texts(first), ['50 running', '1 finished'], 'no "waiting on you" from a stale record');
+  assert.ok(k0(first).every((e) => e.ran.kind !== 'waiting' && e.accepted === null && e.now === null));
+  // Loading page 2 changes nothing at a glance: the summary is the same, and K0's tasks sit on its latest row.
+  const both = panel(read, [newer]);
+  assert.deepEqual(texts(both), ['50 running', '1 finished']);
+  const rows = k0(both);
+  assert.ok(rows.find((e) => e.runId === newer.id)!.accepted, 'tasks on the latest row once loaded');
+  assert.equal(rows.find((e) => e.runId === page1[0].id)!.accepted, null);
+});
+
+test('latest run per child: a payload without latestForChild withholds per-child refinements instead of guessing', () => {
+  const tasks = { plan: plan.id, revision: 3, items: [{ id: 'task-1', status: 'working' as const }], omittedItems: 0 };
+  // Passed as data directly, past readOf's marking: an older service's row without the field.
+  const older = run('running', { childSessionId: 'K', accepted: tasks });
+  const r = rosterFor(input({ census: censusFor('A', alpha.directory, snap([rec('A', null), rec('K', 'A', { activity: 'waiting-question' })])), runs: panel({ ...readOf([]), data: [older], counts: { ...readOf([]).counts, running: 1, runs: 1, children: 1 } }) }))!;
+  const e = [...r.featured, ...r.earlier].find((x) => x.runId === older.id)!;
+  assert.deepEqual([e.ran.kind, e.ran.label, e.accepted], ['active', 'Running', null], 'recorded Running stays; no host word or tasks without the field');
+  assert.deepEqual(r.summary.map((s) => s.text), ['1 running']);
+  // An inconsistent payload (two rows marked latest for one child) is treated the same way.
+  const a = run('running', { childSessionId: 'J', latestForChild: true, accepted: tasks }), b = run('succeeded', { childSessionId: 'J', latestForChild: true, accepted: tasks });
+  const rj = rosterFor(input({ census: censusFor('A', alpha.directory, snap([rec('A', null), rec('J', 'A', { activity: 'waiting-question' })])), runs: panel(readOf([a, b])) }))!;
+  assert.ok([...rj.featured, ...rj.earlier].filter((x) => x.sessionId === 'J').every((x) => x.accepted === null && x.ran.kind !== 'waiting'));
 });

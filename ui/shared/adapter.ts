@@ -646,6 +646,9 @@ function runRow(v: unknown): RunRow {
     && ['dispatch', 'native-event', 'native-session'].includes(String(r.provenance)) && runText(r.errorType, RUN_READ_LIMITS.token) && [null, 'user', 'shutdown', 'superseded', 'inactivity', 'unknown'].includes(r.interruptionReason as null), 'Unreadable run state.');
   check(c === null || isRec(c) && isStr(c.oid) && ['done', 'partial', 'blocked'].includes(String(c.outcome)) && isStr(c.summary) && c.summary.length <= RUN_READ_LIMITS.text && runTime(c.reportedAt) && isStr(c.sessionId) && ['execution', 'session-only'].includes(String(c.association)), 'Unreadable child claim.');
   check(a === null || isRec(a) && isStr(a.plan) && runTime(a.revision) && Array.isArray(a.items) && a.items.length <= RUN_READ_LIMITS.page && a.items.every((i) => isRec(i) && isStr(i.id) && STATUSES.includes(i.status as ItemStatus)) && runTime(a.omittedItems), 'Unreadable accepted task facts.');
+  // The service's per-child latest mark (full retained scope). Absent from older services: left
+  // absent, and the roster then withholds per-child refinements. Never true on a childless row.
+  check(v.latestForChild === undefined || typeof v.latestForChild === 'boolean' && (v.childSessionId !== null || v.latestForChild === false), 'Unreadable latest-run mark.');
   return v as unknown as RunRow;
 }
 export function parseRunRead(body: string, r: RunRequest): RunRead {
