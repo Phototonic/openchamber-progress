@@ -252,7 +252,8 @@ function run(state: RunRow['ran']['state'], extra: Partial<Omit<RunRow, 'ran'>> 
   };
 }
 function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: Partial<RunRead> = {}): RunRead {
-  const c = { children: rows.length, runs: rows.length, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 };
+  // As the service counts them: distinct non-null child IDs (a dispatch without one is no child yet).
+  const c = { children: new Set(rows.map((r) => r.childSessionId).filter(Boolean)).size, runs: rows.length, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 };
   for (const r of rows) c[r.ran.state]++;
   return { protocolVersion: 2, schemaVersion: 2, storeId: 'store-1', sourceBinding: { sourceId: plan.sourceId, verified: true }, source: plan.sourceId, root: 'A', plan: plan.id, cleanupRev: 0, view: 'useful', subagentRuns: 1, runFormat: 1, availability: 'ready', readAt: T0 + 200_000, revision: 7,
     capture: { enabled: true, state: 'last-known', loss: false }, recovery: { state: 'complete', reason: null, token: null }, counts: { ...c, ...counts },
@@ -685,4 +686,26 @@ test('history request: bounded automatic retries, then the manual Retry; a non-t
   p = once.paint(); p.retryHistory(); await once.flush();
   assert.equal(once.posted(), 2);
   assert.ok(!notesOf(once.paint()).includes('history-request-failed'));
+});
+
+test('summary: a host-listed child that may be an unpaged recorded child is never counted again', () => {
+  const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
+  const rows = kids.map((k) => run('running', { childSessionId: k }));
+  const read = readOf(rows.slice(0, 50), { running: 51, runs: 51, children: 51 }, { nextCursor: 'next' });
+  const census = (last: LiveSession['activity']) => censusFor('A', alpha.directory, snap([rec('A', null), ...kids.map((k, i) => rec(k, 'A', { activity: i === 50 ? last : 'running' }))]));
+  const texts = (r: ReturnType<typeof rosterFor>) => r!.summary.map((s) => s.text);
+  // First page only: K50 is recorded but not loaded, so the host row must not add a 52nd.
+  const first = rosterFor(input({ census: census('running'), runs: panel(read, [], { hasMore: true }) }))!;
+  assert.deepEqual(texts(first), ['51 running']);
+  // Loading the remaining row changes nothing, because no activity changed.
+  assert.deepEqual(texts(rosterFor(input({ census: census('running'), runs: panel(read, [rows[50]]) }))), ['51 running']);
+  // Waiting on an unloaded child: listed (waiting first) but not counted twice; once loaded it is
+  // counted once, as waiting, and not also as running.
+  const unloaded = rosterFor(input({ census: census('waiting-question'), runs: panel(read, [], { hasMore: true }) }))!;
+  assert.equal(unloaded.featured[0].sessionId, 'K50', 'still shown, first');
+  assert.deepEqual(texts(unloaded), ['51 running'], 'not added to any count while it may be recorded');
+  assert.deepEqual(texts(rosterFor(input({ census: census('waiting-question'), runs: panel(read, [rows[50]]) }))), ['1 waiting on you', '50 running']);
+  // Every recorded child loaded: a host-only child really is unrecorded and is counted (once).
+  const extra = censusFor('A', alpha.directory, snap([rec('A', null), rec('K0', 'A', { activity: 'running' }), rec('X1', 'A', { activity: 'running' }), rec('X2', 'A', { activity: 'waiting-permission' })]));
+  assert.deepEqual(texts(rosterFor(input({ census: extra, runs: panel(readOf([rows[0]])) }))), ['1 waiting on you', '2 running']);
 });

@@ -237,8 +237,13 @@ export function rosterFor(v: RosterInput): Roster | null {
   const earlier = [...lead.slice(cap), ...entries.filter((e) => !shown.has(e.key) && !lead.includes(e))];
 
   const read = runs?.state === 'ready' ? runs.read : null;
-  const waiting = [...featured, ...earlier].filter((e) => liveKind(e) === 'waiting');
-  const activeHost = [...entries, ...hostOnly].filter((e) => liveKind(e) !== null && (!e.runId || runRows.find((r) => r.id === e.runId)?.ran.state !== 'running'));
+  // Recorded counts already cover every recorded child, loaded or not. While some recorded child is
+  // not loaded, a host-only row may be one of them: it is listed but adds to no count, so paging
+  // never changes a total. Each counted child lands in exactly one part.
+  const loadedChildren = new Set(runRows.map((r) => r.childSessionId).filter((id): id is string => !!id)).size;
+  const countable = (e: SubagentEntry) => e.runId !== null || !read || read.counts.children <= loadedChildren;
+  const waiting = [...featured, ...earlier].filter((e) => liveKind(e) === 'waiting' && countable(e));
+  const activeHost = [...entries, ...hostOnly].filter((e) => liveKind(e) !== null && countable(e) && (!e.runId || runRows.find((r) => r.id === e.runId)?.ran.state !== 'running'));
   const pendingShown = [...entries].filter((e) => (e.ran.kind === 'active' || e.ran.kind === 'waiting') && runRows.find((r) => r.id === e.runId)?.ran.state === 'unknown').length;
   const summary: SummaryPart[] = [];
   const add = (kind: SummaryPart['kind'], count: number, text: string) => { if (count > 0) summary.push({ kind, count, text }); };

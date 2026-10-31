@@ -901,7 +901,7 @@ function associatedPlan(db, actor, at) {
     AND (SELECT loss FROM runs_format)=0 AND NOT EXISTS(SELECT 1 FROM runs_candidates c WHERE c.source=r.source AND c.child=r.child AND json_extract(c.payload,'$.start.at')!=json_extract(r.payload,'$.ran.startedAt')) LIMIT 2`).all(actor.sourceId, actor.sessionId);
   if (incoming.length === 1) {
     const plan = db.prepare("SELECT id,revision FROM plans WHERE source=? AND id=? AND json_extract(snapshot,'$.lifecycle')='active'").get(actor.sourceId, String(incoming[0].plan));
-    if (plan && (!cleanupInstalled(db) || !cleanupState(db, actor.sourceId, String(plan.id))))
+    if (plan && (!cleanupInstalled(db) || !["archived", "deleted"].includes(String(cleanupState(db, actor.sourceId, String(plan.id))?.state))))
       eligible.push(plan);
   }
   const unique = new Map(eligible.map((r) => [String(r.id), r]));

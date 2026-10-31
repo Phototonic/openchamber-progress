@@ -80,7 +80,7 @@ const runRead=(q)=>{const binding=JSON.parse(q.binding),root=qa.runs[q.root];if(
   const pool=q.view==='history'?root.history:root.useful,offset=Number(q.cursor||0),data=pool.slice(offset,offset+50);
   return {protocolVersion:2,schemaVersion:2,storeId:q.storeId,sourceBinding:binding,source:q.source,root:q.root,plan:q.plan??null,cleanupRev:q.plan?Number(q.cleanupRev):null,view:q.view??'useful',subagentRuns:1,runFormat:1,availability:'ready',readAt:Date.now(),revision,
    capture:{enabled:qa.capture,state:'last-known',loss:root.loss},recovery:root.recovery,
-   counts:{children:new Set(all.map(r=>r.childSessionId||r.id)).size,runs:root.useful.length,historicalSessions:root.history.length,running:count('running'),succeeded:count('succeeded'),failed:count('failed'),interrupted:count('interrupted'),unknown:count('unknown')},
+   counts:{children:new Set(all.map(r=>r.childSessionId).filter(Boolean)).size,runs:root.useful.length,historicalSessions:root.history.length,running:count('running'),succeeded:count('succeeded'),failed:count('failed'),interrupted:count('interrupted'),unknown:count('unknown')},
    coverage:{scope:'retained',complete:root.recovery.state==='complete'&&!root.loss,reasons:[...(root.recovery.state==='complete'?[]:['history-not-reconciled']),...(root.loss?['capture-loss']:[])]},
    data,nextCursor:offset+50<pool.length?String(offset+50):null};};
 // Realistic ready context: no integration account is linked (connection is integration link state,

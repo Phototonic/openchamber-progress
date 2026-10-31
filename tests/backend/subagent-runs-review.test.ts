@@ -8,6 +8,26 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review restored and reopened plans retain inherited context for an unassigned nested dispatch',async()=>{
+  await fixture(async f=>{
+    const plan='plan-alpha';
+    f.store.apply({op:'change',plan,oid:'complete-tasks',rev:1,changes:[{id:'task-1',status:'done'},{id:'task-2',status:'done'}]},f.actor());
+    f.store.apply({op:'finish',plan,oid:'finish',rev:2,outcome:'finished'},f.actor());
+    const cleanup={storeId:f.store.list().storeId,source:f.source.id,plan,rev:3};
+    f.store.cleanup('archive',{...cleanup,cleanupRev:0,oid:'archive'});
+    f.store.cleanup('restore',{...cleanup,cleanupRev:1,oid:'restore'});
+    f.store.apply({op:'revise',plan,oid:'reopen',rev:3,reopen:true,title:'Reopened plan'},f.actor());
+    assert.equal(f.store.db.prepare('SELECT state FROM cleanup_state WHERE source=? AND plan=?').get(f.source.id,plan)!.state,'visible');
+    const request={storeId:cleanup.storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A'};
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    assert.equal(f.store.subagentRuns(request).data[0]!.planContext!.plan,plan);
+    f.store.beforeRun({...key,parent:'C1',message:'nested-message',call:'nested-call'},f.actor('C1'),'subagent',{},2500);
+    const nested=f.store.subagentRuns({...request,view:'history'}).data.find(r=>r.dispatch?.callId==='nested-call')!;
+    assert.deepEqual(nested.planContext,{plan,revision:4,observedAt:2500});
+    assert.deepEqual(f.plan().links,[],'inherited context does not assign the child');
+  });
+});
+
 test('review a proven execution completes while a later dispatch remains pending',async()=>{
   for(const adopted of [true,false])await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);

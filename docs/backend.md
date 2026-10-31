@@ -883,7 +883,10 @@ rejects incomplete, foreign and future extensions. The base user version stays 2
 `plugin/subagent-runs.ts` is a focused observer called by the existing delegation
 before/after hooks and event subscription. Before capture stores only dispatch
 IDs, dispatch time, allowlisted child-agent/description and unambiguous current
-plan context. Parent/child identity is native, same-source/project/location and
+plan context. Inherited context uses the same cleanup-state eligibility as direct context:
+archived/deleted plans are excluded, but a restored `visible` record does not
+exclude an explicitly reopened active plan.
+Parent/child identity is native, same-source/project/location and
 complete-ancestry checked. Identity work is outside transactions; ignored aborts
 retain physical lookup occupancy. Passive failures qualify capture loss and do
 not abort or modify native execution. After hooks never insert a missing dispatch.
