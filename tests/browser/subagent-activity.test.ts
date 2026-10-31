@@ -258,7 +258,7 @@ function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: 
     capture: { enabled: true, state: 'last-known', loss: false }, recovery: { state: 'complete', reason: null, token: null }, counts: { ...c, ...counts },
     coverage: { scope: 'retained', complete: true, reasons: [] }, data: rows, nextCursor: null, ...extra };
 }
-const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
+const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
 const input = (extra: Partial<RosterInput> = {}): RosterInput => ({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, snap()), runs: null, verified: true, currentSession: 'A', ...extra });
 
 test('defect A: no plan in scope means no roster at all, even with running children and run rows', () => {
@@ -623,4 +623,66 @@ test('coverage gate: a new subscription has no current activity until its first 
   emit('waiting-question');
   assert.ok(roster([live]).summary.some((x) => x.kind === 'waiting'));
   ws.dispose();
+});
+
+/** A controller over a fake service whose reconcile POSTs answer from `posts` (last one repeats). */
+function historyHarness(posts: { status: number; error?: string }[]) {
+  const sent: string[] = [];
+  const base = readOf([run('succeeded')], {}, { recovery: { state: 'not-requested', reason: null, token: null }, coverage: { scope: 'retained', complete: false, reasons: ['history-not-reconciled'] } });
+  const request: RunRequest = { storeId: base.storeId, binding: base.sourceBinding, source: base.source, root: base.root, plan: base.plan!, cleanupRev: 0, view: 'useful' };
+  let i = 0;
+  const host = { serviceRequest: async (q: any) => {
+    sent.push(q.method);
+    if (q.method !== 'POST') return { status: 200, body: JSON.stringify(base) };
+    const p = posts[Math.min(i++, posts.length - 1)];
+    return p.status === 200 ? { status: 200, body: JSON.stringify({ state: 'pending', coalesced: false }) } : { status: p.status, body: JSON.stringify({ error: p.error }) };
+  } };
+  const flush = async () => { for (let k = 0; k < 8; k++) await new Promise<void>((r) => setImmediate(r)); };
+  const ctl = new RunsController({ service: () => host, visible: () => true, changed: () => {} });
+  const claim = { owner: 'o', request, capable: true, captureEnabled: true };
+  const paint = () => { ctl.beginPaint(); const p = ctl.claim(claim); ctl.endPaint(); return p; };
+  const poll = async () => { ctl.poll(); await flush(); };
+  const posted = () => sent.filter((m) => m === 'POST').length;
+  return { paint, poll, posted, flush };
+}
+const notesOf = (p: RunsPanel) => rosterFor(input({ runs: p }))!.notes.map((n) => n.kind);
+
+test('history request: a transient failure of the automatic request is retried on later polls (backed off), then never repeated', async () => {
+  const h = historyHarness([{ status: 503, error: 'busy' }, { status: 200 }]);
+  h.paint(); await h.flush();
+  assert.equal(h.posted(), 1, 'the first automatic request');
+  await h.poll();
+  assert.equal(h.posted(), 1, 'backed off: not on the very next poll');
+  await h.poll();
+  assert.equal(h.posted(), 2, 'retried on a later poll');
+  for (let k = 0; k < 6; k++) await h.poll();
+  assert.equal(h.posted(), 2, 'a successful retry is never repeated, even while the server still says not requested');
+  assert.ok(!notesOf(h.paint()).includes('history-request-failed'));
+});
+
+test('history request: bounded automatic retries, then the manual Retry; a non-transient failure surfaces it at once', async () => {
+  const busy = historyHarness([{ status: 503, error: 'busy' }]);
+  busy.paint(); await busy.flush();
+  for (let k = 0; k < 20; k++) await busy.poll();
+  assert.equal(busy.posted(), 3, 'at most three automatic attempts');
+  let p = busy.paint();
+  assert.ok(notesOf(p).includes('history-request-failed'), 'exhausted: the manual Retry is offered');
+  p.retryHistory(); await busy.flush();
+  assert.equal(busy.posted(), 4, 'Retry sends exactly one request');
+  for (let k = 0; k < 6; k++) await busy.poll();
+  assert.equal(busy.posted(), 4, 'no automatic requests after exhaustion');
+  assert.ok(notesOf(busy.paint()).includes('history-request-failed'), 'a failed Retry keeps it available');
+
+  const invalid = historyHarness([{ status: 400, error: 'invalid' }]);
+  invalid.paint(); await invalid.flush();
+  for (let k = 0; k < 6; k++) await invalid.poll();
+  assert.equal(invalid.posted(), 1, 'no automatic retry of a non-transient failure');
+  assert.ok(notesOf(invalid.paint()).includes('history-request-failed'));
+
+  // A successful manual Retry clears the offer.
+  const once = historyHarness([{ status: 400, error: 'invalid' }, { status: 200 }]);
+  once.paint(); await once.flush();
+  p = once.paint(); p.retryHistory(); await once.flush();
+  assert.equal(once.posted(), 2);
+  assert.ok(!notesOf(once.paint()).includes('history-request-failed'));
 });

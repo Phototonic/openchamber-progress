@@ -138,6 +138,7 @@ const NOTE: Record<RosterNote['kind'], string> = {
   'history-loading': 'Loading older sub-agent history…',
   'history-partial': 'Older history was only partly loaded; counts may be low.',
   'history-failed': 'Older history couldn’t be loaded.',
+  'history-request-failed': 'Older history couldn’t be requested.',
   'history-off': 'Older history isn’t loaded while capture is off.',
   'history-unavailable': 'Older history can’t be loaded until the companion is running.',
   'traversal-limit': 'There are more nested sub-agents than are counted here.',
@@ -177,7 +178,7 @@ function notesNode(r: Roster, runs: RunsPanel | null, compact: boolean) {
   list.dataset.notes = notes.map((n) => n.kind).join(' ');
   for (const n of notes) {
     const li = el('li', '', NOTE[n.kind]);
-    if ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token && runs) {
+    if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
       const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? 'Load more history' : 'Retry history'), 'subagent-retry-history');
       b.type = 'button';
       b.disabled = runs.reconciling;

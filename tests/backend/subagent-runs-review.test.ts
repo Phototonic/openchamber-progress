@@ -8,6 +8,22 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review a proven execution completes while a later dispatch remains pending',async()=>{
+  for(const adopted of [true,false])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    if(adopted)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    f.store.observeExecution(start);
+    if(adopted)assert.equal(read(f).data[0]!.ran.state,'running');
+    const later={...key,message:'later-message',call:'later-call'};
+    f.store.beforeRun(later,f.actor(),'subagent',{},2500);
+    f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});
+    if(!adopted)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f),completed=result.data.find((r:RunRow)=>r.childSessionId==='C1')!;
+    assert.equal(completed.ran.state,'succeeded');assert.equal(completed.ran.startedAt,2000);assert.equal(completed.ran.endedAt,3000);
+    assert.equal(result.data.find((r:RunRow)=>r.dispatch?.callId==='later-call')!.ran.dispatchState,'pending','no later callback is needed to finish the proven execution');
+  });
+});
+
 test('review large valid accumulated snapshots still project accepted tasks',async()=>{
   await fixture(async f=>{
     const plan='large-plan',items=Array.from({length:350},(_,i)=>({id:`task-${i}`,title:'Task',kind:'task' as const}));

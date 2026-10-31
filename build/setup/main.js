@@ -930,7 +930,7 @@ function adopt(db, r, c) {
     return;
   if (r.ran.startedAt !== null && r.ran.startedAt !== c.start.at)
     return;
-  if (db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, c.end?.at ?? c.start.at))
+  if (r.ran.startedAt === null && db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source, r.parentSessionId, r.id, c.start.at))
     return;
   const competing = db.prepare("SELECT id FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=? AND (terminal=0 OR at>=?) LIMIT 1").get(r.source, r.childSessionId, r.id, r.dispatch.at);
   if (competing)

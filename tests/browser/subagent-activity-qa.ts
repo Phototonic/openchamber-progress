@@ -335,6 +335,24 @@ try {
   await show('panel');
   await wait('panel', `d.querySelector('${row('N1')}')?.dataset.ran==='waiting'`, 'coverage restored on the rail');
 
+  // A failed initial history request: bounded automatic retries on later polls, then the manual Retry.
+  const posts = () => evaluate<number>(`qa.requests.filter(q=>q.surface==='panel'&&q.method==='POST'&&q.query===undefined&&q.path.endsWith('/reconcile')).length`);
+  const postsBefore = await posts();
+  await evaluate(`qa.reconcileError='busy';qa.runs.A.recovery={state:'not-requested',reason:null,token:null};qa.bump();true`);
+  await wait('panel', `d.querySelector('[data-testid="subagent-retry-history"]')`, 'Retry offered after bounded automatic attempts', 45_000);
+  check('busy history request: retried automatically, bounded to three attempts, then Retry offered', (await posts()) - postsBefore === 3 && (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('couldn’t be requested'), { attempts: (await posts()) - postsBefore });
+  await evaluate(`qa.reconcileError=null;true`);
+  await guest('panel', `d.querySelector('[data-testid="subagent-about"]').open=true;return true`);
+  await click('panel', '[data-testid="subagent-retry-history"]');
+  await wait('panel', `!d.querySelector('[data-testid="subagent-retry-history"]')`, 'manual Retry started');
+  // The button gives way to "Loading older history…" as the request starts; wait for the service to record it.
+  await evaluate(`(async()=>{const want=${postsBefore + 4};for(let i=0;i<100;i++){if(qa.requests.filter(q=>q.surface==='panel'&&q.method==='POST'&&q.query===undefined&&q.path.endsWith('/reconcile')).length>=want)return true;await new Promise(r=>setTimeout(r,50))}return false})()`);
+  await settle(500);
+  const retried = (await posts()) - postsBefore;
+  check('manual Retry sends one request and clears the offer', retried === 4 && !(await has('panel', '[data-testid="subagent-retry-history"]')), { attempts: retried, all: await evaluate(`qa.requests.filter(q=>q.path.endsWith('/reconcile')).map(q=>q.surface+':'+q.method+':'+(q.query===undefined))`) });
+  await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await wait('panel', `!d.querySelector('[data-testid="subagent-about"]')`, 'history complete again');
+
   // 9. Narrow + dark + reduced motion; 200% reflow equivalents without horizontal overflow.
   await evaluate(`qa.dark();true`);
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

@@ -255,7 +255,9 @@ const verifiedRootIdentity=`json_extract(s.actor,'$.verifiedSource')=1
 function adopt(db:DatabaseSync,r:RunRow,c:Candidate) {
   if(!r.dispatch||!r.childSessionId||!c.start||c.ambiguous||c.start.at<r.dispatch.at)return;
   if(r.ran.startedAt!==null&&r.ran.startedAt!==c.start.at)return;
-  if(db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,c.end?.at??c.start.at))return;
+  // Only calls admitted by the candidate's start could own an unassociated
+  // interval. Once its start is proven, later pending calls cannot block its end.
+  if(r.ran.startedAt===null&&db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND parent=? AND id!=? AND child IS NULL AND json_extract(payload,'$.tool')='subagent' AND json_extract(payload,'$.ran.dispatchState')='pending' AND at<=? LIMIT 1").get(r.source,r.parentSessionId,r.id,c.start.at))return;
   // Competing dispatches are not disambiguated from a shared child ID alone.
   const competing=db.prepare("SELECT id FROM runs_rows WHERE source=? AND child=? AND message IS NOT NULL AND id!=? AND (terminal=0 OR at>=?) LIMIT 1").get(r.source,r.childSessionId,r.id,r.dispatch.at);
   if(competing)return;

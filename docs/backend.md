@@ -917,6 +917,11 @@ remain unknown. This bounds staging for ordinary completed, unreported sessions
 without falsely latching capture loss, while preserving fresh terminal races,
 long-running starts and unresolved verified dispatches across restart.
 A proven start must follow dispatch and a unique child interval must exist.
+Pending childless calls compete only when admitted at or before an unassociated
+candidate's start. Once that start is proven for a dispatch, a later pending call
+cannot prevent its matching terminal event from completing the execution; no
+callback from the later call is required. Same-child execution ambiguity checks
+remain independent.
 Historical session summaries are not competing dispatches. They remain separate
 history (and in historical/state counts and normal eviction protection); a later
 proven execution does not certify or replace an unknown earlier session summary.

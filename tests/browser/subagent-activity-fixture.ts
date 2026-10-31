@@ -120,6 +120,7 @@ addEventListener('message',e=>{const f=[...document.querySelectorAll('iframe')].
   else if(q.path==='/v1/document')body={...env,document:${JSON.stringify(docRef())},text:'# Release preparation\\n\\nSynthetic example.',nextCursor:null};
   else if(q.path==='/v1/history')body={...env,data:[1,2,3,4].map(r=>({revision:r,structuralRevision:1,lifecycle:'active',reportedAt:plans[0].reportedAt})),nextCursor:null};
   else if(q.path==='/v1/subagent-runs')body=runRead(q.query);
+  else if(q.path==='/v1/subagent-runs/reconcile'&&qa.reconcileError){result({status:503,body:JSON.stringify({error:qa.reconcileError})});return;}
   else if(q.path==='/v1/subagent-runs/reconcile'){const r=JSON.parse(q.body),root=qa.runs[r.root];if(root){root.recovery={state:'pending',reason:null,token:null};revision++;body={state:'pending',coalesced:false};}}
   const reply=()=>result({status:body?200:404,body:JSON.stringify(body||{error:'not-found'})});
   if(qa.hold&&q.path.startsWith('/v1/subagent-runs'))qa.held.push(reply);else reply();

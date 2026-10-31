@@ -33,6 +33,11 @@ export interface RunsPanel {
   shown: number;
   reconciling: boolean;
   failure: ReadFailure | null;
+  /**
+   * The automatic history request of this root failed and will not be repeated automatically
+   * (attempts exhausted, or a non-transient failure): offer the manual Retry.
+   */
+  historyRequestFailed: boolean;
   /** Per-visit execution baselines (subagents.ts); a new visit starts fresh, which is stricter. */
   baselines: ExecutionBaselines;
   /** Shows `step` more of the earlier list, reading further pages only when `loaded` runs out. */
@@ -46,11 +51,17 @@ interface Visit {
 }
 /** Roots whose automatic history pass this frame already asked for (bounded; the service coalesces too). */
 const ASKED_LIMIT = 64;
+/** Automatic history requests per root and frame; failures back off over the existing poll (1, then 2 polls). */
+const AUTO_ATTEMPTS = 3;
+/** Failures worth asking again: the service or link was busy or briefly unavailable. */
+const TRANSIENT = new Set(['busy', 'unavailable', 'disconnected', 'paused']);
+/** `skip`: polls to wait before the next automatic attempt; `failed`: no more automatic attempts. */
+interface Asked { state: 'pending' | 'done' | 'waiting' | 'failed'; attempts: number; skip: number }
 
 export class RunsController {
   private visit: Visit | null = null;
   private claimed = false;
-  private readonly asked: string[] = [];
+  private readonly asked = new Map<string, Asked>();
   private readonly host: RunsHost;
   constructor(host: RunsHost) { this.host = host; }
   beginPaint() { this.claimed = false; }
@@ -75,6 +86,7 @@ export class RunsController {
       state: v.state, read: v.read, featured: v.read?.data ?? [], more: v.more,
       hasMore: v.state === 'ready' && v.phase !== 'done', paging: v.paging, pageError: v.pageError, shown: v.shown,
       reconciling: v.reconciling, failure: v.failure, baselines: v.baselines,
+      historyRequestFailed: this.asked.get(this.rootKey(v) ?? '')?.state === 'failed',
       showMore: (visible, loaded, step) => {
         if (!live()) return;
         v.shown = visible + step;
@@ -82,7 +94,7 @@ export class RunsController {
         if (v.shown > loaded && v.phase !== 'done' && !v.paging) void this.page(v, v.shown - loaded);
         else this.host.changed();
       },
-      retryHistory: () => { if (live()) void this.reconcile(v, v.read?.recovery.token ?? undefined); },
+      retryHistory: () => { if (live()) void this.reconcile(v, v.read?.recovery.token ?? undefined, true); },
     };
   }
 
@@ -112,24 +124,39 @@ export class RunsController {
     this.autoReconcile(v);
   }
 
-  /** One automatic metadata-only history pass per root and frame, only with capture on. */
+  private rootKey(v: Visit) { const r = v.read; return r ? JSON.stringify([v.claim.owner, r.storeId, r.source, r.root]) : null; }
+
+  /**
+   * One automatic metadata-only history pass per root and frame, only with capture on. A transient
+   * failure is asked again on a later visible poll (backed off, at most AUTO_ATTEMPTS in all); once
+   * those are spent, or after a non-transient failure, the manual Retry is offered instead.
+   */
   private autoReconcile(v: Visit) {
     const r = v.read;
     if (!r || r.availability !== 'ready' || r.recovery.state !== 'not-requested' || !r.capture.enabled || !v.claim.captureEnabled) return;
-    const root = JSON.stringify([v.claim.owner, r.storeId, r.source, r.root]);
-    if (this.asked.includes(root)) return;
-    this.asked.push(root);
-    if (this.asked.length > ASKED_LIMIT) this.asked.shift();
+    const root = this.rootKey(v)!;
+    const a = this.asked.get(root);
+    if (a && a.state !== 'waiting') return;
+    if (a && a.skip > 0) { a.skip--; return; }
+    if (!a) { this.asked.set(root, { state: 'pending', attempts: 0, skip: 0 }); if (this.asked.size > ASKED_LIMIT) this.asked.delete(this.asked.keys().next().value!); }
     void this.reconcile(v);
   }
 
-  private async reconcile(v: Visit, token?: string) {
+  private async reconcile(v: Visit, token?: string, manual = false) {
     if (v.reconciling || !v.read) return;
+    const root = this.rootKey(v)!;
+    const a = this.asked.get(root) ?? { state: 'pending' as const, attempts: 0, skip: 0 };
+    a.state = 'pending'; if (!manual) a.attempts++;
+    this.asked.set(root, a);
     const q = v.claim.request;
     const body: ReconcileRequest = { storeId: q.storeId, binding: q.binding, source: q.source, root: q.root, ...(token ? { token } : {}) };
     v.reconciling = true; this.host.changed();
     const own = () => this.visit === v && this.host.visible();
     const r = await requestReconcile(this.host.service(own), body);
+    // The outcome belongs to the root, even when this visit has meanwhile retired.
+    if (r.ok) a.state = 'done';
+    else if (manual || !TRANSIENT.has(r.failure.kind) || a.attempts >= AUTO_ATTEMPTS) a.state = 'failed';
+    else { a.state = 'waiting'; a.skip = 2 ** (a.attempts - 1); }
     if (!own()) return;
     v.reconciling = false;
     if (r.ok) void this.load(v); else this.host.changed();

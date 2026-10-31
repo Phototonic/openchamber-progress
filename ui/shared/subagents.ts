@@ -49,7 +49,7 @@ export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'faile
 export type RosterNote =
   | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' } | { kind: 'capture-loss' }
   | { kind: 'history-loading' } | { kind: 'history-partial'; token: string | null } | { kind: 'history-failed'; token: string | null }
-  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-activity-unavailable' };
+  | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'history-request-failed' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-activity-unavailable' };
 export interface Roster {
   /** Featured rows: running/waiting first, then task-linked, bounded per surface. */
   featured: SubagentEntry[];
@@ -267,6 +267,7 @@ export function rosterFor(v: RosterInput): Roster | null {
     else if (rec.state === 'partial') notes.push({ kind: 'history-partial', token: rec.token });
     else if (rec.state === 'failed') notes.push(rec.reason === 'capture-disabled' ? { kind: 'history-off' } : { kind: 'history-failed', token: rec.token });
     else if (rec.state === 'not-requested' && !read.capture.enabled) notes.push({ kind: 'history-off' });
+    else if (rec.state === 'not-requested' && runs?.historyRequestFailed) notes.push({ kind: 'history-request-failed' });
     else if (rec.state === 'unavailable') notes.push({ kind: 'history-unavailable' });
     if (read.coverage.reasons.includes('traversal-limit')) notes.push({ kind: 'traversal-limit' });
   }
