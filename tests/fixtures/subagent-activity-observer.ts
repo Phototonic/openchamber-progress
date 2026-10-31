@@ -1,6 +1,7 @@
 /** Disposable native probe. Records allowlisted metadata, never tool/conversation content. */
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import fs from 'node:fs';
+import { identifier } from '../../shared/progress.ts';
 
 export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
   const root = process.env.ACTIVITY_ROOT!;
@@ -91,6 +92,7 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
         if (!event.type.startsWith('session.') && !['form.created', 'form.cancelled'].includes(event.type)) continue;
         const e = event as any;
+        if(e.type.startsWith('session.execution.'))record({type:'native-shape',kind:e.type,idValid:identifier(e.id),createdType:typeof e.created,createdInteger:Number.isSafeInteger(e.created),sameDirectory:e.location?.directory===ctx.location.directory,aggregateMatches:e.durable?.aggregateID===e.data?.sessionID,sequenceInteger:Number.isSafeInteger(e.durable?.seq)});
         // Kind/identity/state only. No messages, errors, outputs or titles are retained.
         record({ type: 'event', kind: e.type, sessionID: e.data?.sessionID ?? e.data?.form?.sessionID,
           messageID: e.data?.assistantMessageID,
@@ -120,9 +122,15 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
       const key = `${identity}:${job?.generation ?? 'initial'}`;
       let calls = !seen.has(key) ? job?.calls : undefined;
       if (!seen.has(key) && session.agent === 'nested-worker') calls = [{ id: 'nested', input: { agent: 'restricted-worker', description: 'Synthetic nested child', prompt: 'Synthetic fixed probe.' } }];
+      if(!seen.has(key)&&session.agent==='reporting-worker')calls=[{id:'child-handoff',tool:'agent_progress_report',input:{op:'handoff',oid:'native-claim',summary:'Synthetic child reports its bounded work complete.',outcome:'done'}}];
       seen.add(key);
       record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], hold: job?.hold === true, fault: job?.fault === true });
       if (job?.fault) throw new Error('Synthetic provider failure');
+      if(session.agent==='failing-worker'){
+        const deadline=Date.now()+15000;
+        while(!fs.existsSync(`${root}/release-failure`)&&!options.abortSignal?.aborted&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+        throw new Error('Synthetic provider failure');
+      }
       if (job?.hold || session.agent === 'slow-worker') {
         const deadline = Date.now() + 15000;
         while (!fs.existsSync(`${root}/release`) && !options.abortSignal?.aborted && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));

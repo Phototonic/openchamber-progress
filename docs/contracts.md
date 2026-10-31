@@ -1271,27 +1271,30 @@ joins these with the guest bundles to produce the installable extension ZIP.
 `rev`, and `assign` (at most 50 unique task IDs). The trusted coordinator may
 declare its next supported delegation; an empty array cancels its pending intent
 for that plan. Declaration is not assignment, dispatch, progress or completion.
-It does not advance a plan revision, refresh report age, capture a document, or
-create a durable receipt. The response's `delegation` contains `state`
-(`pending`, `reserved`, `retired`, or `bound`), `expiresAt`, `memoryOnly: true`,
-`lostOnRestart: true`, and `requires: "supported-next-delegation"`; a bound retry
-may include the ordinary assignment `receipt`. Pending declarations and their
-retry recognition expire after five minutes and disappear on companion restart.
-Re-declare deliberately with a fresh operation ID after restart. Explicit
-`link` and assigned parent relay remain the fallback.
-Binding is evidence-gated for any installed `subagent` implementation, with no
-implementation discriminator, certification gate or policy switch. A matching
-before/completed-after hook pair, exactly agreeing one-call native census,
-matching parent/assistant-message `session.step.ended`, verified immediate child
-and complete ancestry are all required, within the declaration's lifetime and
-existing authorization/control guards. Missing or ambiguous evidence retires
-without assignment; a pending declaration promises no automatic assignment.
-These gates prove call correlation and child lineage, not that the tool actually
-created or continued that child: installed tools are trusted to report the child
-they delegated to. Slim is covered only through these same gates, not separately
-certified. The observed 2.2.25 native-tool wrapper supplies foreground/background
-signals; pre-acknowledgement resume lacks a matching result and competing calls
-are ambiguous, so those cases do not bind. Post-acknowledgement resume is untested.
+It does not advance a plan revision, refresh report age or capture a document.
+Declaration and disposition use the existing plan receipt lifecycle. The response's
+`delegation` contains `state` (`pending`, `reserved`, `retired`, `bound`),
+`memoryOnly:false`, `lostOnRestart:false` and `requires:"supported-next-delegation"`;
+reservation includes a dispatch ID, retirement a fixed reason, and binding an
+ordinary assignment `receipt`. There is no five-minute expiry. Identical retries
+never re-arm consumed intent. A second nonempty declaration conflicts without
+replacing the first; an empty assignment cancels before deliberate re-declaration.
+
+One intent per source/parent (128/store) reserves the first subsequently admitted
+supported `subagent` dispatch atomically in database order, not result-arrival
+order or a one-call-per-message census. It remains reserved after a crash and
+cannot transfer to a later call. A failed/unconfirmed reserved call consumes it.
+Native failure/interruption of the parent retires an unresolved reservation; it
+does not prove child failure. Matching structured child identity, verified source,
+immediate parent, project/location and complete acyclic ancestry are required.
+Installed tools are trusted to identify the child they delegated to; hook caller
+agent, result text and unsupported `task` aliases are not child identity proof.
+At binding, capture generation, active/visible plan, original expected revision
+and still-available task IDs are revalidated. Revision drift yields durable
+conflict, never rebasing. The existing link mutation unions that child's current
+assignment and commits assignment/provenance with the disposition atomically.
+Task statuses, reporters, counts and report time remain unchanged. Explicit
+`link` and restricted-child parent relay remain separate fallbacks.
 
 Current detail responses may include `items.data[].assignmentBinding`:
 
@@ -1317,3 +1320,128 @@ explicit link replacement/unlink invalidates it, including a same-child relink.
 An older writer's revision cannot certify inherited provenance. The base protocol
 and SQLite schema version remain 2. Existing detail pagination and source binding
 apply; list/history routes gain no discovery or authorization semantics.
+
+## Sub-agent runs revision 1 — read seam
+
+The optional additive run-format 1 extension leaves base schema/protocol 2 and
+all progress snapshots unchanged. Only companion activation initializes it, in
+one validated transaction. Missing extension means **unavailable**, not zero
+certified runs. Partial, foreign or future definitions fail closed without repair.
+`/health` advertises `subagentRuns:1` only for a valid supported extension.
+
+The authoritative TypeScript read contract is `shared/subagent-runs.ts`:
+`RunRequest`, `ReconcileRequest`, `RunRow`, `RunRead`, and `RUN_LIMITS`.
+`tests/fixtures/subagent-activity-runs.ts` builds a deterministic representative
+read using real Store operations (mixed runs and a separate historical session).
+
+- Authenticated, no-store `GET /v1/subagent-runs` requires `storeId`, JSON
+  `binding:{sourceId,verified}`, `source`, and `root`. Optional `plan` requires
+  `cleanupRev`; `view` is `useful` (default) or `history`; `cursor` is opaque.
+  The root must already be known to the verified source's session owner.
+- Authenticated `POST /v1/subagent-runs/reconcile` accepts only `storeId`,
+  `binding`, `source`, `root`, and an offered optional `token`. Unknown/duplicate
+  fields, GET bodies, unsupported methods and identity mismatch are refused.
+  No guest endpoint accepts a host outcome. POST returns `{state,coalesced}`;
+  repeated automatic requests coalesce, including after completed recovery.
+- `RunRead` echoes store/source/root, source binding, selected plan/cleanup
+  generation and view. It supplies capability/format, availability, server
+  `readAt`, monotonic run-data `revision`, capture/recovery state, retained scope
+  counts, coverage reasons, at most 50 `data` rows and `nextCursor`.
+  Millisecond timestamps refer to their stated native/dispatch provenance;
+  `readAt` never refreshes activity or execution time. Cursor identity and
+  revision must still agree; consumers restart a window on conflict.
+- Counts distinguish distinct child sessions, dispatch runs and historical
+  session observations. State counts include both retained observation kinds;
+  they are not lifetime execution counts or plan-task counts. Useful rows are
+  running or associated with the selected plan; history contains the remainder.
+  Ordering is running first, then descending dispatch/session creation time,
+  then stable ID. Summaries cover the bounded proven retained subtree, not only
+  the page. Incomplete history/traversal or capture loss is explicit.
+- A row distinguishes dispatch identity `(source,parent,message,call)` from its
+  optional verified child. Structured after-hook disposition does not imply
+  execution success. `ran` records native execution state/start/end/update,
+  event identity/sequence, safe error type and interruption enum independently.
+  A historical session has no fabricated dispatch or execution start.
+- Every returned `RunRow` additionally has `latestForChild: boolean` (required,
+  read-only, never persisted). It is true for the single latest retained row for
+  its non-null child in the proven root/source scope, computed before view
+  filtering and pagination; childless rows are false. A newer row on an unloaded
+  page or in the other view therefore prevents an older row being marked latest.
+  Any dispatch outranks historical summaries. Dispatches compare descending
+  proven start (else dispatch time), dispatch time, then native sequence (missing
+  is -1). History compares end (else update time). Exact evidence ties use the
+  normal page order (running first, creation time descending, stable ID ascending).
+  This is retained-scope metadata, not a promise of complete native history;
+  existing coverage/traversal disclosures still apply.
+- `planContext` means **dispatched during this plan**, not assignment.
+  `claimed` is reserved for an optional explicitly authored child report;
+  `accepted` is reserved for existing explicitly reported task facts. Both are
+  nullable; their absence is ordinary. The entire enriched row, including
+  `latestForChild` and the fixed accepted envelope, fits the row byte budget.
+  Optional agent/description hints are dropped first under read-time pressure,
+  then accepted items are omitted with `omittedItems` counting undisplayed facts;
+  if even the minimum envelope cannot fit, `accepted` is null. Stored records,
+  claim text, plan context and native facts are not changed by this projection.
+  Neither run completion nor elapsed time
+  changes task status/count, plan lifecycle/revision, report age or permission.
+  Running and terminal facts have no age expiry. Connectivity is not promised
+  by a retained last-known fact. Current host membership still gates navigation.
+
+Bounds are 1,024 retained rows per immediate parent, 16,384 per store, 256
+constant-size unmatched child intervals, 64 pending/running recovery jobs,
+50 rows/page, 4 KiB/row and cursor, 16 KiB/query or reconciliation request and
+256 KiB/response. Recovery traverses at most 2,000 discovered records, depth 32,
+64 native calls and 10 seconds cooperative elapsed per attempt; native list
+pages are at most 50. Metadata descriptions/titles are flattened and capped at
+200 JavaScript code units, child agent metadata at 80. Error types are safe
+80-character tokens or `unknown`. No prompts, transcripts, outputs, raw events,
+error messages/bodies or non-allowlisted metadata are serialized by capture.
+These are field allowlists, not secret redaction of deliberately supplied prose.
+
+### Optional authored child handoff
+
+The existing report tool accepts `op:"handoff"`, `oid`, `summary` and
+`outcome:"done"|"partial"|"blocked"`, without plan/revision, child, task,
+attributed identity or source. Summary is a nonblank single line, at most 200
+JavaScript code units, with no NUL or line separators. Oversized/malformed input
+is rejected, not truncated. The report router handles this branch separately
+from the strict plan-request parser. The host's actual invocation session and
+verified native parentage authenticate the author; a parent cannot relay it.
+Host policy still controls whether the tool is available.
+
+One claim per proven child execution is allowed; identical retry returns its
+original authored facts, altered oid reuse fails and another claim conflicts.
+Before parent after-hook identity, a bounded session-attributed claim may be
+staged separately (256/store). It attaches only on a unique proven execution
+interval containing its server report time, never every run of that session.
+No dispatch or task is invented to hold it. A pruned claim's retry is unavailable
+or conflicts and never recreates history. Missing handoff is ordinary; native
+completion and explicitly reported task progress remain independent.
+
+### Retention and recovery publication
+
+Admission prunes oldest terminal/unambiguously inactive run-only observations
+first, together with their annotations. Unresolved/running rows, reserved intent
+and claims awaiting identity are protected. Historical unknown outcome/idle is
+not inactivity proof and remains protected. A row's verified parent/child edge
+is also protected when it is the last retained copy needed to reach retained
+descendants; redundant copies may still be pruned. Necessary pruned-claim replay fences,
+completed recovery markers and bounded recovery work count toward 16,384/store;
+if safety fences consume the budget, new capture refuses rather than evicting
+authority. There is no age expiry, unlimited event archive or arbitrary old
+before-hook replay guarantee. Missing late after/terminal callbacks never insert
+a dispatch. Pruning exposes capture/retention loss; counts describe retained facts.
+
+Recovery persists bounded continuation work (at most 16,384 remembered identities
+and queued parents, within 4 MiB per root; bookkeeping counts in the store row
+budget). Each attempt still admits at most 2,000 records/64 calls/10 seconds.
+A page interrupted by the budget retains its cursor, so continuation deduplicates
+the accepted prefix without dropping the unconsumed tail. Only an offered explicit token
+advances partial/failed history. A local producer lease fences abandoned claims;
+its 10-second takeover threshold is queue ownership, not model liveness or a
+Running-state expiry. Unresolved retained runs get one metadata recovery attempt
+per producer generation. Recovered native idle/outcome cannot identify an unseen
+resumed execution: ambiguous evidence is a separate historical session observation,
+never dispatch success. Ordinary GETs and settled automatic POSTs do not repeat
+recovery or update recorded times. Deleting a plan removes association/intent
+without erasing independent run/claim facts or promising secure erasure.

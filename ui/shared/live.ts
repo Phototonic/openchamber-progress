@@ -16,12 +16,15 @@ export interface LiveSession {
   /** Host creation time: display order only, never an activity time. */
   createdAt?: number;
   /**
-   * Receipt of this session's last qualifying observation in this subscription: wall time for the
-   * label, monotonic time for expiry. Only a changed activity/outcome (or the first record after
-   * subscribing) qualifies; title, other-session and unchanged callbacks keep the old receipt.
+   * Transition evidence, numbered by the workspace's monotonic sequence (`LiveSnapshot.seq`):
+   * `idleSeq` when this subscription itself saw the session go from active (running, retrying,
+   * waiting) to idle, while it stays idle; `activeSeq` when it saw idle → active, while it stays
+   * active. A first snapshot, an unchanged callback or a reload never sets either (a cached value
+   * may describe an earlier execution); a new subscription starts without them. Callers compare a
+   * number with the sequence current when they first displayed an execution (subagents.ts).
    */
-  seenAt?: number;
-  seenMono?: number;
+  idleSeq?: number;
+  activeSeq?: number;
 }
 export interface DirectoryCoverage { directory: string; state: LoadState }
 
@@ -29,10 +32,17 @@ export interface LiveSnapshot {
   projectsState: LoadState | 'off';
   projects: LiveProject[];
   worktrees: Map<string, { state: LoadState; records: KnownWorktree[] }>;
-  /** `coverage`: the host's per-directory session coverage; absent from older fixtures/hosts. */
-  sessions: Map<string, { state: LoadState; records: LiveSession[]; coverage?: DirectoryCoverage[] }>;
+  /**
+   * `coverage`: the host's per-directory session coverage of this snapshot; absent from older
+   * fixtures/hosts. `reload`: present only while a loading snapshot of the same subscription keeps
+   * the rows of its last ready snapshot; `complete` says whether that ready snapshot had complete
+   * coverage (census.ts decides whether the retained rows are still current).
+   */
+  sessions: Map<string, { state: LoadState; records: LiveSession[]; coverage?: DirectoryCoverage[]; reload?: { complete: boolean } }>;
   /** Projects that wanted live coverage but were left out by the subscription cap. */
   capped: string[];
+  /** Monotonic count of host activity transitions this workspace observed (never reset by restart). */
+  seq?: number;
 }
 
 export const EMPTY_LIVE: LiveSnapshot = { projectsState: 'off', projects: [], worktrees: new Map(), sessions: new Map(), capped: [] };
@@ -115,7 +125,8 @@ export function liveLabel(c: Coverage): { label: string; tone: 'info' | 'warning
   return { label: 'Not open in this window', tone: 'neutral' };
 }
 
-/** Retained receipts per session stream: the host lists at most 2,000 sessions. */
+const ACTIVE = new Set<Activity>(['running', 'retrying', 'waiting-permission', 'waiting-question']);
+/** Transition records per session stream: the host lists at most 2,000 sessions. */
 const SEEN_LIMIT = 4000;
 
 type Unsub = () => void;
@@ -129,6 +140,8 @@ type WorkspaceHost = Pick<HostClient, 'onProjects' | 'onWorktrees' | 'onSessions
  */
 export class LiveWorkspace {
   private snap: LiveSnapshot = { ...EMPTY_LIVE, worktrees: new Map(), sessions: new Map() };
+  /** Host activity transitions observed; monotonic across restarts so old numbers never qualify. */
+  private seq = 0;
   private projectsSub: Subscription | null = null;
   private subs = new Map<string, Subscription>();
   private trees = new Map<string, Subscription>();
@@ -245,35 +258,37 @@ export class LiveWorkspace {
       const sub: Subscription = { release: Promise.resolve(null) };
       this.subs.set(id, sub);
       this.snap.sessions.set(id, { state: 'loading', records: [] }); changed = true;
-      // Per-subscription receipts. A new subscription (restart, context change, refusal) starts with
-      // none, so a first appearance is an observation. Within one subscription only a changed
-      // activity/outcome renews a session: the host's periodic loading → ready reload, an error
-      // phase, a disappearance and an unchanged ready snapshot all keep the earlier receipt.
-      const seen = new Map<string, { sig: string; at: number; mono: number }>();
+      // No receipt times: a snapshot's arrival (first one after subscribing, a periodic loading →
+      // ready reload, an unchanged callback) is not activity, so nothing here is stamped "now".
+      // Transition evidence only: per session, its last activity in this subscription and the
+      // sequence numbers of transitions seen here (bounded like the host's own session cap).
+      const seen = new Map<string, { activity: Activity; idleSeq?: number; activeSeq?: number }>();
       let lastReady: LiveSession[] | null = null;
+      let lastReadyComplete = false;
       sub.release = this.host.onSessions(id, (s) => {
         if (this.subs.get(id) !== sub) return;
         const coverage = Array.isArray(s.coverage) ? s.coverage.map((c) => ({ directory: c.directory, state: c.state })) : undefined;
         if (s.state !== 'ready') {
           // A reload keeps the last ready rows (as not current, census.ts); a failure shows none.
-          this.snap.sessions.set(id, { state: s.state, records: s.state === 'loading' && lastReady ? lastReady : [], coverage });
+          const reload = s.state === 'loading' && lastReady !== null;
+          this.snap.sessions.set(id, { state: s.state, records: reload ? lastReady! : [], coverage, ...(reload ? { reload: { complete: lastReadyComplete } } : {}) });
           this.onChange();
           return;
         }
-        const at = Date.now(), mono = performance.now();
-        const current = new Set<string>();
         const records = s.sessions.map((r): LiveSession => {
-          const sig = `${r.activity}|${r.outcome}`;
           const before = seen.get(r.id);
-          const receipt = before && before.sig === sig ? before : { sig, at, mono };
-          seen.set(r.id, receipt); current.add(r.id);
-          return { id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome, createdAt: Number.isFinite(r.createdAt) ? r.createdAt : undefined, seenAt: receipt.at, seenMono: receipt.mono };
+          let idleSeq: number | undefined, activeSeq: number | undefined;
+          if (r.activity === 'idle') idleSeq = before && ACTIVE.has(before.activity) ? ++this.seq : before?.activity === 'idle' ? before.idleSeq : undefined;
+          else if (ACTIVE.has(r.activity)) activeSeq = before?.activity === 'idle' ? ++this.seq : before && ACTIVE.has(before.activity) ? before.activeSeq : undefined;
+          seen.set(r.id, { activity: r.activity, idleSeq, activeSeq });
+          return { id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome, createdAt: Number.isFinite(r.createdAt) ? r.createdAt : undefined, ...(idleSeq !== undefined ? { idleSeq } : {}), ...(activeSeq !== undefined ? { activeSeq } : {}) };
         });
-        // Bounded: receipts of sessions no longer listed go once the map outgrows the host's cap.
-        if (seen.size > SEEN_LIMIT) for (const key of seen.keys()) if (!current.has(key)) seen.delete(key);
+        if (seen.size > SEEN_LIMIT) { const listed = new Set(s.sessions.map((r) => r.id)); for (const id of seen.keys()) if (!listed.has(id)) seen.delete(id); }
         lastReady = records;
+        lastReadyComplete = !!coverage && coverage.every((c) => c.state === 'ready');
         // Absent coverage (an older host) cannot establish a complete census.
         this.snap.sessions.set(id, { state: 'ready', records, coverage });
+        this.snap.seq = this.seq;
         this.onChange();
       }).catch(() => {
         if (this.subs.get(id) === sub) { this.snap.sessions.set(id, { state: 'error', records: [] }); this.onChange(); }
@@ -307,7 +322,7 @@ export class LiveWorkspace {
     for (const id of new Set([...this.subs.keys(), ...this.trees.keys()])) this.drop(id);
     if (this.projectsSub) this.release(this.projectsSub);
     this.projectsSub = null;
-    this.snap = { ...EMPTY_LIVE, worktrees: new Map(), sessions: new Map() };
+    this.snap = { ...EMPTY_LIVE, worktrees: new Map(), sessions: new Map(), seq: this.seq };
   }
 
   dispose() {

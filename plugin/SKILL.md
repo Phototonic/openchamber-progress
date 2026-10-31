@@ -19,7 +19,7 @@ Native dispatch/tracker hints are conditional observations, not report receipts,
 assignments or evidence of work start, review, approval or completion. Already-current
 canonical state needs no mutation.
 
-Use `agent_progress_report`. Every mutation requires a fresh `oid` and expected
+Use `agent_progress_report`. Every plan mutation requires a fresh `oid` and expected
 `rev`; reuse an `oid` only for an identical retry. A new `start` requires `plan`,
 `title`, the complete `items` structure and `rev:0`. Minimal valid start (replace
 synthetic IDs/title/items with the real plan):
@@ -47,19 +47,31 @@ completion from turn outcomes, idle state or report age.
 
 For the next `subagent` delegation, the coordinator may use `op=delegate` with
 `plan`, fresh `oid`, expected `rev` and `assign` (at most 50 unique task IDs).
-Empty `assign` cancels that plan's pending declaration. This does not dispatch a
-child or assign tasks: pending authority is memory-only, expires in five minutes
-and disappears on restart. Identical retries do not arm twice; after restart,
-deliberately re-declare with a fresh `oid`. Any installed `subagent`
-implementation qualifies only when its hook pair, native call census, closing
-step and verified immediate child/complete ancestry all agree; ambiguity or
-missing evidence retires without assignment. These gates prove call correlation
-and child lineage, not that the tool actually created or continued that child:
-installed tools are trusted to report the child they delegated to. Slim is
-covered through these same gates, not separate certification. Use explicit
-`link` and assigned parent relay when evidence is unavailable.
+Empty `assign` explicitly cancels the parent's pending declaration. This does not
+dispatch a child or assign tasks. Intent persists across restart without a
+five-minute expiry and atomically reserves the first subsequently admitted
+supported dispatch in database order. A second nonempty declaration conflicts;
+cancel before re-declaring. Identical retries do not re-arm consumed intent.
+Verified immediate child/source/project/location and complete ancestry are
+required; installed `subagent` tools are trusted to report their structured child
+identity. No native message-wide one-call census is required. `task` aliases and
+result text do not prove child identity. An unconfirmed reserved dispatch consumes
+intent rather than passing it to the next call. Intervening plan changes produce
+a conflict, not silent rebasing. Use explicit `link` and assigned parent relay
+when evidence is unavailable.
 Binding is attribution only, never progress, completion,
 reporting permission or accepted handoff. It never relaxes child restrictions.
+
+A permitted child may optionally send one safe final claim, without a plan:
+`op:"handoff"`, fresh `oid`, `summary` and `outcome:"done"|"partial"|"blocked"`.
+Summary must be a nonblank single line, at most 200 JavaScript code units, with
+no NUL/newlines. No plan, revision, source, task, child or attributed identity is
+accepted. Identical retries use the same oid; a second claim for that execution
+conflicts. Do not expose a tool hidden by host policy or relay another child's
+handoff. Supply purpose-written safe prose, never prompts, outputs or secrets;
+bounds/literal rendering are not redaction. Absence is ordinary, host completion
+is independent, and a claimed done run can still have explicitly blocked tasks.
+Only deliberate task reporting changes task progress.
 
 For a deliberately blocked task, optionally report `blocker` with only
 `category`, `reason` and `nextAction`. Categories are `decision`, `dependency`,

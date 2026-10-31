@@ -10,10 +10,10 @@
 // - repaint only on change; focus, scroll and open disclosures survive a repaint
 // - task-reading state (filters, jump cursors, task disclosures, logical focus, reading anchor)
 //   lives for one reading identity: integration account + store/binding + view scope + plan; never stored
-// - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label; it also
-//   wakes at the earliest observed-activity expiry (census.ts), so a fresh label turns unknown in place.
-//   Observation currency comes only from the workspace subscriptions themselves (state, coverage,
-//   refusal, restart) and that expiry; ctx.connection is the integration link, never host transport.
+// - one in-place 30 s label ticker (ages, elapsed) while visible and showing such a label; it moves
+//   time text only and never expires activity or run state (census.ts). Observation currency comes
+//   only from the workspace subscriptions themselves; ctx.connection is the integration link.
+// - sub-agent runs (runs.ts): one visit per eligible section; the same visible list poll re-reads it
 // - official-main version check: at host readiness, then when due (coarse), visible frames only
 // - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
 //   panel/status never construct it, so they start no digest read or checkpoint write
@@ -30,6 +30,7 @@ import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDeta
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
+import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
 import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
@@ -113,6 +114,11 @@ export interface ViewContext<U> {
   service: (current: () => boolean) => ServiceHost;
   /** Plan metadata of the last complete detail read of this key, or null (not read, loading, failed). */
   detailPlan: (plan: PlanView) => PlanView | null;
+  /**
+   * Sub-agent runs of one root with a plan in scope (runs.ts). Call it only while painting an eligible
+   * section; a paint without a call retires the visit and any held reply. Null without a store read.
+   */
+  runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
 }
 
 /** One poll's bounded freshness read in place of the list read; `identity` asks for the list read instead. */
@@ -333,6 +339,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
   let digests: DigestController | null = null;
+  let runs: RunsController | null = null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
@@ -488,7 +495,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
-  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); spec.retire?.('reset'); };
+  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); spec.retire?.('reset'); };
   /**
    * Hide boundary: in-flight detail reads are retired, so a held reply released while hidden
    * issues no continuation page and paints nothing; becoming visible reads them again. Completed
@@ -595,6 +602,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
         failure = null; lastGoodAt = Date.now();
+        runs?.poll();
         schedule(); plan(REFRESH_MS);
         return;
       }
@@ -652,6 +660,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       failure = null;
       lastGoodAt = Date.now();
       if (authorityChanged) spec.onContext?.(context());
+      // The same visible poll re-reads the eligible sub-agent section; nothing else times it.
+      else runs?.poll();
     } else {
       if (!failure || failure.kind !== result.failure.kind) versions.data++;
       failure = result.failure;
@@ -789,14 +799,10 @@ export function startView<U>(spec: ViewSpec<U>) {
    * own anchors, so a pause loses nothing.
    */
   function planLabels() {
-    const wanted = !disposed && document.visibilityState !== 'hidden' && !!mount!.querySelector('time[data-age],time[data-elapsed],[data-expires]');
+    const wanted = !disposed && document.visibilityState !== 'hidden' && !!mount!.querySelector('time[data-age],time[data-elapsed]');
     if (!wanted) { if (labelTimer) clearTimeout(labelTimer); labelTimer = null; return; }
-    // The same single timer, woken early only for the next observed-activity expiry.
-    const expiries = [...mount!.querySelectorAll<HTMLElement>('[data-expires]')].map((n) => Number(n.dataset.expires)).filter(Number.isFinite);
     const now = performance.now();
-    const due = now + Math.max(0, Math.min(LABEL_TICK_MS, ...expiries.map((at) => at - now + 50)));
-    if (labelTimer && due < labelDue) { clearTimeout(labelTimer); labelTimer = null; }
-    if (!labelTimer) labelDue = due;
+    if (!labelTimer) labelDue = now + LABEL_TICK_MS;
     labelTimer ??= setTimeout(() => {
       labelTimer = null;
       if (ctx) refreshLabels(mount!, ctx.locale);
@@ -901,6 +907,15 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       service: (current) => guardedHost(current),
       detailPlan: (p) => { const c = details.get(p.key)?.result; return c?.ok && c.plan.key === p.key ? c.plan : null; },
+      runs: (claim) => {
+        if (disposed || !read || !identity) return null;
+        runs ??= new RunsController({
+          service: (current) => guardedHost(current),
+          visible: () => document.visibilityState !== 'hidden',
+          changed: () => { versions.ui++; schedule(); },
+        });
+        return runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
+      },
     };
   }
 
@@ -964,9 +979,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     root.dataset.surface = spec.surface;
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
-    digests?.beginPaint();
+    digests?.beginPaint(); runs?.beginPaint();
     spec.paint(root, vc);
-    digests?.endPaint();
+    digests?.endPaint(); runs?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
     const list = article?.querySelector<HTMLElement>('ul.ap-items') ?? null;
     const complete = !!article?.querySelector(COMPLETE_TASKS);
@@ -1126,6 +1141,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     } else {
       html.dataset.apHidden = '';
       digests?.hidden();
+      runs?.hidden();
       spec.retire?.('hidden');
       retireHiddenDetails();
       if (timer) { clearTimeout(timer); timer = null; }
@@ -1138,6 +1154,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     disposed = true;
     digests?.dispose();
+    runs?.retire();
     spec.retire?.('dispose');
     html.dataset.apHidden = '';
     gate.stop();

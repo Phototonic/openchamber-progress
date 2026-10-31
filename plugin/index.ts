@@ -5,7 +5,7 @@ import path from 'node:path';
 import { realpathSync, readFileSync } from 'node:fs';
 import { readBinding, verifyStore } from '../shared/binding.ts';
 import { Store, storageError } from '../shared/store.ts';
-import { parseRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, type Actor } from '../shared/progress.ts';
+import { parseReportRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, type Actor } from '../shared/progress.ts';
 import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
 import { activationFingerprint } from '../shared/activation.ts';
@@ -33,7 +33,11 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
     editor.add({ name:'report',description:`Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,input:REPORT_SCHEMA,options:{namespace:'agent_progress',codemode:false},
       execute: async (value,caller) => {
         try {
-          const r = parseRequest(value); const actor = await identity(caller.sessionID,caller.agent);
+           const r = parseReportRequest(value); const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);
+           if(r.op==='handoff') {
+             const child=await sessionIdentity(ctx,b.source,caller.sessionID,caller.agent,{alive:()=>true,signal:new AbortController().signal,sameScope:true});
+             return {content:JSON.stringify(store.handoff(r,child,observedAt,observedEpoch))};
+           }
           if (r.op === 'read') {
             const view=store.detail(actor.sourceId,r.plan,r.page??0);
             return {content:JSON.stringify(r.page===undefined?{plan:r.plan,rev:view.plan.revision,structuralRev:view.plan.structuralRevision,lifecycle:view.plan.lifecycle,counts:view.plan.counts,documentState:view.plan.document.state,detailPageSize:20}:view)};
@@ -80,12 +84,13 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
   }
 } });
 
-const START_HELP = `Every mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
+const START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
 \`\`\`json
 {"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
-Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50) for its next subagent delegation; empty assign cancels that plan's pending intent. Declaration is not assignment or dispatch: pending authority is memory-only, expires in five minutes and is lost on restart. Identical retries do not re-arm it. Any installed subagent implementation qualifies only with a matching hook pair, exactly agreeing native call census, matching step.ended and verified immediate child/complete ancestry; ambiguity or missing evidence retires without assignment. These gates prove call correlation and child lineage, not that the tool actually created or continued the child: installed tools are trusted to report the child they delegated to. Slim is covered through these same gates, not separate certification. Use explicit link and assigned parent relay when evidence is unavailable. After restart deliberately re-declare with a fresh oid. Binding never changes task progress, reporting permissions or accepted handoff.`;
+Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50). Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions.
+A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. Handoff accepts no plan, rev, child, attributed identity or source. It is a child-authored claim, not acceptance or task progress; host completion is independent and absence is normal. Identical retries use the same oid; another claim for that execution conflicts. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
 
 const GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.

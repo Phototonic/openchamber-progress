@@ -584,3 +584,49 @@ remain prohibited while a copied credential exists. Legacy OpenAI capped-route
 incompatibility was not bypassed; z.ai was selected explicitly, not as an automatic
 fallback. These are historical test limitations, not restrictions on the shipped
 production artifacts.
+
+## Sub-agent runs revision-1 read seam
+
+The additive run extension preserves schema/protocol 2. A missing extension or
+older service is unavailable, not a certified empty archive. A read-only open
+and authenticated GET never install the extension. Activation validates the
+whole extension and refuses partial/future schemas without destructive repair.
+Downgrade leaves additive tables intact; older writers do not produce run facts.
+
+Portable read-seam tests now exercise an unmodified base schema-2 writer in a
+separate Node process, a read-only reopen, DDL/write rollback, real SQLite/HTTP
+reads and the actual companion registration with controlled native get/list
+metadata. They preserve existing progress snapshots and verify persistent
+capture-generation fencing. This is not a new native-host or Windows claim;
+the native observations and screenshot limits above remain historical.
+
+Recorded native execution events distinguish succeeded/failed/interrupted from
+SDK idle/completed. Historical native `outcome` with `time.idle` is labelled a
+session observation, without invented dispatch/start/duration. Updated time is
+not end time. Neither elapsed age nor transport uncertainty terminates a retained
+Running fact or makes cached SDK activity proof of success. A native outcome is
+not proof that requested work was correct and never advances plan-task progress.
+No-plan UI hiding is independent of passive plan-free capture. Current-bundle UI,
+implementation review and owner acceptance remain separate gates.
+
+### Run producer boundary
+
+The current native 2.2.2 execution events omit optional `location`, despite
+carrying event ID, creation time, aggregate and sequence. Capture retains such
+events as metadata candidates; native same-source/project/location child lineage
+must still be proven before attachment. A present wrong location is refused.
+Parent interruption/failure may omit an after-hook: that retires the unconfirmed
+dispatch reservation, not the child's outcome, and cannot poison later calls.
+Foreground tool errors without structured child identity remain unconfirmed;
+they must not be relabelled failed child runs. Background post-return native
+failure/interruption is separately observable once identity is proven.
+
+The isolated production fixture has an explicitly labelled backend-only mode
+for source/built run and reporting assertions without launching a browser or
+certifying the three guests. It exercises registered child handoff, native
+foreground/background completion, controlled native provider failure, native
+interruption, metadata reconciliation and a real isolated producer restart with
+durable next-dispatch intent. Slim pre-acknowledgement resume refusal remains a
+reported unsupported result, not a text-parsed child or successful execution.
+Controlled faults and actual native events are distinguished in evidence. The
+default combined fixture still includes its independently owned UI checks.

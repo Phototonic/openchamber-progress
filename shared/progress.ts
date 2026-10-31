@@ -107,6 +107,7 @@ export interface Request {
   upload?: string; chunk?: number; chunks?: number; page?: number;
 }
 export type BlockerRequest = Request;
+export interface HandoffRequest { op:'handoff'; oid:string; summary:string; outcome:'done'|'partial'|'blocked' }
 export function identifier(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value); }
 const BLOCKER_CATEGORIES: readonly string[] = ['decision','dependency','review','external','other'];
 function blockerText(value: unknown): value is string { return typeof value === 'string' && value.trim().length > 0 && value.length <= BLOCKER_LIMITS.textCodeUnits && !value.includes('\0'); }
@@ -130,8 +131,14 @@ export function validBlockerAnnotation(value: unknown, revision: number): value 
     identifier(b.reporterSessionId) && identifier(b.attributedSessionId) &&
     (b.mode === 'direct' && b.reporterSessionId === b.attributedSessionId || b.mode === 'parent-relay' && b.reporterSessionId !== b.attributedSessionId);
 }
-export function parseRequest(value: unknown): Request {
+export function parseRequest(value:unknown):Request {const r=parseReportRequest(value);requireProgress(r.op!=='handoff');return r;}
+export function parseReportRequest(value: unknown): Request|HandoffRequest {
   validRequest(value && typeof value === 'object' && !Array.isArray(value), 'request');
+  if((value as {op?:unknown}).op==='handoff') {
+    const r=value as HandoffRequest;
+    requireProgress(Object.keys(r).every(k=>['op','oid','summary','outcome'].includes(k))&&identifier(r.oid)&&typeof r.summary==='string'&&r.summary.trim().length>0&&r.summary.length<=200&&!/[\u0000\r\n\u2028\u2029]/.test(r.summary)&&['done','partial','blocked'].includes(r.outcome)&&Buffer.byteLength(JSON.stringify(r))<=LIMITS.requestBytes);
+    return {op:'handoff',oid:r.oid,summary:r.summary,outcome:r.outcome};
+  }
   const r = value as Request;
   const fields: Record<Request['op'], string[]> = {
     start: ['title','items','source'], read: ['page'], change: ['changes','attributed'], revise: ['title','items','reopen'],
@@ -181,19 +188,19 @@ export function parseRequest(value: unknown): Request {
 }
 export const BLOCKER_SCHEMA = { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: false, properties: { category: { type: 'string', enum: ['decision','dependency','review','external','other'] }, reason: { type: 'string', minLength: 1, maxLength: 512 }, nextAction: { type: 'string', minLength: 1, maxLength: 512 } } }], description: 'Blocked tasks only. Optional complete replacement: category, nonblank reason and nextAction (each at most 512 JS code units, no NUL). Null clears details, not status; omit to retain only verified-current details.' } as const;
 export const REPORT_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['op','plan'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish'], description: 'New start requires plan, title, items, oid and rev:0. Every mutation requires oid and expected rev. Delegate declares assign IDs for the next supported delegation; empty assign cancels. Declaration is not assignment. Read accepts only op, concrete plan and optional 0-based page. Omit page for a compact summary without items; explicit page returns paged detail.' },
-    plan: { type: 'string', description: 'One concrete stable plan identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for every mutation; omit for read. New start uses 0. Read current revision before updating; use the returned rev.' },
+  type: 'object', additionalProperties: false, required: ['op'], properties: {
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish','handoff'], description: 'Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page.' },
+    plan: { type: 'string', description: 'Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } }, blocker: BLOCKER_SCHEMA }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] }, blocker: BLOCKER_SCHEMA }, required: ['id','status'], additionalProperties: false } },
-    child: { type: 'string' }, assign: { type: 'array', items: { type: 'string' } }, attributed: { type: 'string' }, source: { type: 'string' }, confirm: { type: 'boolean' }, outcome: { enum: ['finished','cancelled','failed'] }, reopen: { type: 'boolean' }, upload: { type: 'string' }, chunk: { type: 'integer' }, chunks: { type: 'integer' }, page: { type: 'integer' },
+    child: { type: 'string' }, assign: { type: 'array', items: { type: 'string' } }, attributed: { type: 'string' }, source: { type: 'string' }, confirm: { type: 'boolean' }, outcome: { enum: ['finished','cancelled','failed','done','partial','blocked'] }, summary:{type:'string',minLength:1,maxLength:200,description:'Handoff only: one safe nonblank line; no NUL/newlines. Literal rendering is not secret redaction.'}, reopen: { type: 'boolean' }, upload: { type: 'string' }, chunk: { type: 'integer' }, chunks: { type: 'integer' }, page: { type: 'integer' },
   },
 } as const;
 
 /** Tool-only recovery text. Constant allowlist: never interpolate rejected input. */
 const VALIDATION_HINTS = {
   request: 'Send one request object.',
-  op: 'Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind or finish.',
+  op: 'Use a supported op: start, read, change, revise, stage, commit, link, delegate, bind, finish or handoff.',
   plan: 'Use one concrete plan identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit); read does not accept wildcards.',
   fields: 'Remove unsupported fields for this op. Read accepts only op, plan and optional 0-based page; omit page for a compact summary without items, or set page for paged detail. Mutations also require oid and rev.',
   oid: 'Every mutation requires oid: a fresh identifier (1-80 letters, digits, _, ., : or -, starting with a letter or digit). Reuse only for an identical retry.',

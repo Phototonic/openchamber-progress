@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startActivityHost } from './subagent-activity-host.ts';
-import { nativeActions, readyAssignmentSnapshot, screenshotFrame, screenshotSection, stableScreenshot } from './subagent-activity-harness.ts';
+import { nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, runtimeFailure, screenshotFrame, screenshotSection, stableScreenshot, type RosterIds } from './subagent-activity-harness.ts';
 
-export async function nativeProductionViews(root: string, env: Record<string, string>, ids: { a: string; b: string; c1: string; c2: string; bound: string; n1: string }, evidence: any, activity: { start(): Promise<void>; stop(): Promise<void> }) {
+export async function nativeProductionViews(root: string, env: Record<string, string>, ids: RosterIds, evidence: any, activity: { start(): Promise<void>; stop(): Promise<void> }) {
   const host = await startActivityHost(root, env, ids.a, true);
   evidence.host = { available: host.available, reason: host.reason, diagnostics: host.diagnostics };
   assert.ok(host.available && host.controls, 'production guest mounted');
@@ -17,51 +17,68 @@ export async function nativeProductionViews(root: string, env: Record<string, st
   };
   const actions = nativeActions(host.controls);
   const clickMain = (expression: string, label: string) => actions.click(`[${expression}].filter(Boolean)`, label);
+  // Sanitized evidence: native IDs become fixture roles.
+  const roleOf = (session: string | null) => session === null ? 'unconfirmed' : Object.entries(ids).filter(([, id]) => id === session).map(([role]) => role).join('/') || 'other-child';
+  const sanitize = (r: ReturnType<typeof rosterSnapshot>) => ({ summary: r.summary, clutter: r.clutter, clutterMatch: r.clutterMatch, canary: r.canary, overflow: r.overflow, rows: r.rows.map(x => ({ ...x, session: roleOf(x.session) })) });
+  const census = '[data-testid="subagent-activity"]';
+  const row = (id: string) => `${census} [data-session="${id}"]`;
+  const snapshot = (frame: string) => evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`, frame) as Promise<ReturnType<typeof rosterSnapshot>>;
+  /** Q-N1 browser expectations on one surface with plan-alpha in scope for A. */
+  const assertRoster = (r: ReturnType<typeof rosterSnapshot>, surface: string, cap: number) => {
+    evidence.lastRoster = { surface, ...sanitize(r) };
+    const featured = r.rows.filter(x => x.featured);
+    assert.ok(!r.clutter, `${surface}: no unassigned/no-update/root/seen-just-now/cap-warning/unknown-now copy`);
+    assert.ok(!r.canary, `${surface}: no prompt, output or raw error text`);
+    assert.ok(!r.overflow, `${surface}: no horizontal overflow`);
+    assert.ok(!r.rows.some(x => x.session === ids.a), `${surface}: no root row for the session itself`);
+    assert.ok(!r.rows.some(x => x.session === ids.b), `${surface}: the unrelated session never joins`);
+    assert.ok(!r.rows.some(x => x.session === ids.n1), `${surface}: an idle child without a run or task is not listed`);
+    assert.ok(featured.length <= cap, `${surface}: featured rows bounded to ${cap}`);
+    const bound = r.rows.filter(x => x.session === ids.bound);
+    assert.equal(bound.filter(x => x.facts.includes('accepted')).length, 1, `${surface}: the linked child's task facts appear once, on its latest run`);
+    assert.ok(bound.some(x => x.featured && x.recorded && x.ran === 'finished'), `${surface}: linked child featured with its recorded native run (finished, not done)`);
+    assert.ok(!featured.some(x => x.session === ids.c2), `${surface}: unassigned finished child is folded, not featured`);
+    for (const kind of ['finished', 'failed', 'interrupted']) assert.ok(r.summary.includes(kind), `${surface}: summary counts ${kind} native runs`);
+    assert.ok(!r.summary.includes('running') && !r.summary.includes('waiting'), `${surface}: nothing is running before the renewal turn`);
+  };
   try {
     await send('Page.bringToFront');
     await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 3600, deviceScaleFactor: 1, mobile: false });
     evidence.stage = 'panel-frame';
     let panel = await guestFrame('panel');
-    evidence.stage = 'panel-native-lineage';
-    const selector = (id: string) => `[data-testid="observed-session-${id}"]`;
-    const census = '[data-testid="subagent-activity"]';
-    const lineageReady = await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector(ids.n1))}))`, panel));
-    evidence.panelDiagnostic = await evaluate(`({hasMain:!!document.querySelector('main'),hasCensus:!!document.querySelector('${census}'),hasPlan:!!document.querySelector('[data-testid="plan-plan-alpha"]'),hasFailure:!!document.querySelector('[data-testid="failure-state"]'),hasSetup:!!document.querySelector('[data-testid="setup-needed"]'),testids:[...document.querySelectorAll('[data-testid]')].map(n=>n.dataset.testid).filter(s=>!s.startsWith('observed-session-')&&!s.includes('ses_'))})`, panel);
-    assert.ok(lineageReady, 'native N1 row');
-    evidence.stage = 'panel-assignment-readiness';
-    const facts = await readyAssignmentSnapshot(host.controls, panel, ids);
-    evidence.assignmentSnapshot = { ready: facts.ready, rows: facts.rows.map(r => ({ role: Object.entries(ids).filter(([, id]) => id === r.id).map(([role]) => role).join('/'), depth: r.depth, assignment: r.assignment })) };
-    const assertFresh = async (frame: string, surface: string) => {
-      const fresh = await evaluate(`(()=>{const s=document.querySelector('${census}'),r=document.querySelector(${JSON.stringify(selector(ids.bound))}),o=r?.querySelector('.ap-obs');return {ready:s?.dataset.state==='ready',complete:s?.dataset.complete==='true',noDisconnectedCopy:!s?.textContent.toLowerCase().includes('disconnected'),state:o?.dataset.state,remainingMs:Number(o?.dataset.expires)-performance.now()}})()`, frame);
-      assert.ok(fresh.ready && fresh.complete && fresh.noDisconnectedCopy, `${surface}: ready coverage without disconnected copy`);
-      assert.ok(fresh.state && fresh.state !== 'unknown' && fresh.remainingMs > 0 && fresh.remainingMs <= 60000, `${surface}: bound child is fresh/current`);
-      assert.ok(await evaluate(`(()=>{const o=document.querySelector(${JSON.stringify(selector(ids.c2) + ' .ap-obs')});return !!o&&o.dataset.state!=='unknown'&&Number(o.dataset.expires)>performance.now()})()`, frame), `${surface}: unassigned child is fresh/current`);
-      return fresh;
-    };
-    evidence.panelFresh = await assertFresh(panel, 'rail');
-    for (const id of [ids.a, ids.c1, ids.c2, ids.bound, ids.n1]) assert.ok(facts.rows.some((r: any) => r.id === id));
-    assert.ok(!facts.rows.some((r: any) => r.id === ids.b));
-    assert.ok(facts.rows.some((r: any) => r.id === ids.c2 && r.unassigned));
-    assert.ok(facts.rows.some((r: any) => r.id === ids.bound && r.assigned));
-    assert.equal(facts.rows.find((r: any) => r.id === ids.n1)?.depth, '2');
-    evidence.panel = { nativeLineage: true, unassigned: true, bound: true, nested: true, noHorizontalOverflow: !facts.overflow };
+    evidence.stage = 'panel-roster-readiness';
+    let facts;
+    try { facts = await readyRosterSnapshot(host.controls, panel, ids); }
+    finally { evidence.panelDiagnostic = await evaluate(`({hasMain:!!document.querySelector('main'),hasRoster:!!document.querySelector('${census}'),state:document.querySelector('${census}')?.dataset.state,hasPlan:!!document.querySelector('[data-testid="plan-plan-alpha"]'),hasFailure:!!document.querySelector('[data-testid="failure-state"]'),hasSetup:!!document.querySelector('[data-testid="setup-needed"]')})`, panel).catch(() => null); }
+    evidence.panelRoster = sanitize(facts);
+    evidence.stage = 'panel-roster';
+    assertRoster(facts, 'rail', 6);
+    // Earlier list: the child's own handoff (Claimed) and distinct failed/interrupted native runs.
+    await evaluate(`(()=>{const d=document.querySelector('${census} [data-testid="observed-more"]');if(d)d.open=true;return !!d})()`, panel);
+    const earlier = await snapshot(panel);
+    assert.ok(earlier.rows.some(x => !x.featured && x.facts.includes('claimed')), 'rail: registered child handoff shown as Claimed');
+    assert.ok(earlier.rows.some(x => x.ran === 'failed') && earlier.rows.some(x => x.ran === 'interrupted'), 'rail: failed and interrupted runs stay distinct');
+    evidence.panelEarlier = sanitize(earlier);
+    evidence.panel = { roster: true, threeLayers: true, linkedOnce: true, noClutter: true, noCanary: true, noHorizontalOverflow: true };
     evidence.screenshots = [];
-    const shot = async (frame: string, name: string, observation: string | null = null) => {
+    const shot = async (frame: string, name: string, observation: string | null = null, target = census) => {
       const started = performance.now();
       const attempt: any = { name, phase: 'foreground', samples: [] };
       evidence.screenshotAttempt = attempt;
       await send('Page.bringToFront');
       attempt.phase = 'scroll';
-      await evaluate(`document.querySelector('${census}').scrollIntoView({block:'center',behavior:'instant'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
+      await evaluate(`document.querySelector(${JSON.stringify(target)}).scrollIntoView({block:'center',behavior:'instant'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
       const href = await evaluate('location.href', frame);
       await evaluate(`document.querySelectorAll('iframe').forEach(f=>{if(f.src===${JSON.stringify(href)})f.scrollIntoView({block:'center',behavior:'instant'})})`);
       attempt.phase = 'state-and-paint';
+      // Same bounded wait as every other state (host wait default); a frame that never fits becomes
+      // an explicit "partial capture" failure instead of a clipped screenshot or a vague timeout.
       const sample = await stableScreenshot(host.controls, async () => {
         // After foregrounding/scrolling, require both renderer turns to paint.
         await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
         await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
         const outer = await evaluate(`(${screenshotFrame.toString()})(${JSON.stringify(href)})`);
-        const inner = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(census)},${JSON.stringify(observation)})`, frame);
+        const inner = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(target)},${JSON.stringify(observation)})`, frame);
         const sx = outer.width / outer.clientWidth, sy = outer.height / outer.clientHeight;
         const clip = { x: Math.max(0, outer.x + inner.x * sx), y: Math.max(0, outer.y + inner.y * sy), width: inner.width * sx, height: Math.min(inner.height * sy, outer.height - Math.max(0, inner.y * sy)), scale: 1 };
         const ready = outer.ready && inner.ready && clip.width > 0 && clip.height > 0 && Number.isFinite(clip.width) && Number.isFinite(clip.height);
@@ -69,8 +86,14 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       }, sample => {
         attempt.samples.push({ elapsedMs: Math.round(performance.now() - started), ...sample });
         if (attempt.samples.length > 8) attempt.samples.shift();
+      }).catch((error) => {
+        const partial = partialCapture(name, attempt.samples.at(-1)?.inner);
+        if (partial) { attempt.failure = 'partial-capture'; throw new assert.AssertionError({ message: partial }); }
+        throw error;
       });
       const { clip, inner, sx, sy } = sample;
+      const partial = partialCapture(name, inner, clip.height, inner.height * sy);
+      if (partial) { attempt.failure = 'partial-capture'; throw new assert.AssertionError({ message: partial }); }
       attempt.phase = 'capture';
       attempt.readyMs = Math.round(performance.now() - started);
       const captureStarted = performance.now();
@@ -81,7 +104,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
         attempt.captureMs = Math.round(performance.now() - captureStarted);
         attempt.failure = 'cdp-capture';
         attempt.hostAtFailure = await evaluate(`({visible:document.visibilityState==='visible',focused:document.hasFocus(),frames:document.querySelectorAll('iframe').length,animating:document.getAnimations().filter(a=>a.playState==='running').length})`).catch(() => ({ unavailable: true }));
-        attempt.sectionAtFailure = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(census)},${JSON.stringify(observation)})`, frame).catch(() => ({ unavailable: true }));
+        attempt.sectionAtFailure = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(target)},${JSON.stringify(observation)})`, frame).catch(() => ({ unavailable: true }));
         throw error;
       }
       attempt.captureMs = Math.round(performance.now() - captureStarted);
@@ -90,70 +113,98 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       evidence.screenshots.push({ name, width: Math.round(clip.width), height: Math.round(clip.height), frameScale: { x: sx, y: sy }, fullSection: clip.height >= inner.height * sy - 1, readyMs: attempt.readyMs, captureMs: attempt.captureMs });
     };
     evidence.stage = 'rail-screenshot';
-    await shot(panel, 'native-rail-children');
+    await shot(panel, 'native-rail-roster');
+    await evaluate(`(()=>{const d=document.querySelector('${census} [data-testid="observed-more"]');if(d)d.open=false;return true})()`, panel);
     evidence.stage = 'status-screenshot';
     // Work Status may already be mounted but hidden; the real host toggle makes it visible.
     if (!await evaluate(`!!document.querySelector('button[aria-label="Toggle work-status panel"][aria-pressed="true"]')`))
       await clickMain(`document.querySelector('button[aria-label="Toggle work-status panel"]')`, 'work-status open');
     const status = await guestFrame('status');
-    assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector(ids.n1))}))`, status)), 'status native lineage');
-    evidence.statusFresh = await assertFresh(status, 'status');
-    await shot(status, 'native-status-children');
-    evidence.status = { nativeLineage: true };
+    const statusRoster = await readyRosterSnapshot(host.controls, status, ids);
+    assertRoster(statusRoster, 'status', 3);
+    assert.ok(!await evaluate(`!!document.querySelector('[data-testid="subagent-about"]')`, status), 'status: no records disclosure on the compact card');
+    evidence.statusRoster = sanitize(statusRoster);
+    await shot(status, 'native-status-roster');
+    evidence.status = { roster: true };
     evidence.stage = 'selection-B';
+    // Defect A natively: B has a real native child (its wrong-parent dispatch) but no plan.
     await actions.select(ids.b, 'select B');
     evidence.hostSelectedB = true;
-    assert.ok(await wait(() => evaluate(`!document.querySelector(${JSON.stringify(selector(ids.c1))})&&!!document.querySelector(${JSON.stringify(selector(ids.b))})`, panel)), 'A rows retired on B');
-    await shot(panel, 'native-selected-B');
+    assert.ok(await wait(() => evaluate(`!!document.querySelector('[data-testid="empty-state"]')&&!document.querySelector('${census}')&&!document.querySelector('[data-testid="subagent-count"]')`, panel)), 'no plan in scope: no section or count on the rail');
+    for (let i = 0; i < 4; i++) { await new Promise(r => setTimeout(r, 1000)); assert.ok(await evaluate(`!document.querySelector('${census}')`, panel), 'no section reappears on later refreshes'); }
+    const statusB = await evaluate(`!document.querySelector('${census}')`, status).catch(() => true);
+    assert.ok(statusB, 'no plan in scope: no section on Work Status');
+    await shot(panel, 'native-no-plan-B', null, 'main');
+    evidence.noPlan = { rail: true, status: true, laterRefreshes: 4 };
     evidence.stage = 'selection-none';
     await clickMain(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='New session')??document.querySelector('button[aria-label="New session"]')`, 'draft selection');
     const draftReady = await wait(() => evaluate(`!!document.querySelector('[data-testid="unscoped-state"]')&&!document.querySelector('${census}')`, panel).catch(() => evaluate(`document.querySelectorAll('iframe').length===0`)));
     evidence.draftDiagnostic = { productionFramesUnmounted: await evaluate(`document.querySelectorAll('iframe').length===0`) };
-    assert.ok(draftReady, 'draft retires census');
-    evidence.selection = { AtoBtoNone: true, railRetiresChildren: true };
+    assert.ok(draftReady, 'draft has no section');
+    evidence.selection = { AtoBtoNone: true, railRetiresRoster: true };
     await actions.select(ids.a, 'return A');
     const railRestored = await wait(async () => { for (const f of frames) if (await evaluate(`document.querySelector('main')?.dataset.surface==='panel'`, f).catch(() => false)) return true; return false; }, 2000);
     if (!railRestored) await clickMain(`document.querySelector('[data-context-surface="plugin:activity-probe"]')`, 'reopen native rail');
     panel = await guestFrame('panel');
-    assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector(ids.n1))}))`, panel)), 'return A lineage');
+    assertRoster(await readyRosterSnapshot(host.controls, panel, ids), 'rail after A→B→draft→A', 6);
     evidence.stage = 'page-screenshot';
     await actions.click(`[...document.querySelectorAll('button[aria-label="Activity probe"]')].filter(b=>!b.hasAttribute('data-context-surface'))`, 'native page open');
     const page = await guestFrame('page');
     assert.ok(await wait(() => evaluate(`Boolean(document.querySelector('[data-testid="plan-row-plan-alpha"]'))`, page)), 'native page plan');
     await evaluate(`document.querySelector('[data-testid="plan-row-plan-alpha"]').click()`, page);
-    assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector(ids.n1))}))`, page)), 'page native lineage');
-    evidence.pageFresh = await assertFresh(page, 'page');
-    const expiry = await evaluate(`Number(document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs')}).dataset.expires)`, page);
-    // Passive allowlisted SDK metadata only, to distinguish real stream resets
-    // or activity changes from an incorrectly renewed freshness receipt.
-    await evaluate(`(()=>{const trace=[],subs=new Map();window.__u4ObservationTrace=trace;addEventListener('message',e=>{if(e.source!==parent)return;const m=e.data;if(!m||!['workspace','ready','session','directory'].includes(m.type))return;const p=m.payload,s=p?.snapshot,r=s?.sessions?.find(r=>r.id===${JSON.stringify(ids.bound)});const key=p?.subscriptionId;if(key&&!subs.has(key))subs.set(key,subs.size+1);trace.push({at:Math.round(performance.now()),type:m.type,kind:s?.kind,state:s?.state,subscription:key?subs.get(key):undefined,coverage:s?.coverage?.map(c=>c.state),bound:r?{activity:r.activity,outcome:r.outcome}:undefined,sessionPresent:m.type==='session'?!!p?.session:undefined,directoryPresent:m.type==='directory'?!!p?.directory:undefined});if(trace.length>160)trace.shift()});return true})()`, page);
-    await shot(page, 'native-page-children');
-    evidence.page = { nativeLineage: true, planRoot: true };
-    evidence.stage = 'unknown-row';
-    const becameUnknown = await wait(() => evaluate(`(()=>{const s=document.querySelector('${census}');return performance.now()>=${expiry}&&s?.dataset.state==='ready'&&s?.dataset.complete==='true'&&!!document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs[data-state="unknown"]')})})()`, page), 75000);
-    evidence.observationTrace = await evaluate('window.__u4ObservationTrace', page);
-    evidence.expiryDiagnostic = await evaluate(`(()=>{const o=document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs')});return {visibility:document.visibilityState,focused:document.hasFocus(),state:o?.dataset.state,originalExpiryPassed:performance.now()>=${expiry},lateByMs:Math.round(performance.now()-${expiry}),remainingMs:o?.hasAttribute('data-expires')?Number(o.dataset.expires)-performance.now():null}})()`, page);
-    assert.ok(becameUnknown, 'native unknown row');
-    assert.ok(evidence.expiryDiagnostic.lateByMs <= 15000, 'silent row expires near its original 60-second deadline');
-    const reloads = evidence.observationTrace.filter((e: any) => e.kind === 'sessions');
-    assert.ok(reloads.some((e: any) => e.state === 'loading') && reloads.some((e: any) => e.state === 'ready'), 'actual native reload exercised');
-    assert.equal(new Set(reloads.map((e: any) => e.subscription)).size, 1, 'reload stays in the same subscription');
-    assert.ok(reloads.every((e: any) => e.bound?.activity === 'idle' && e.bound?.outcome === null), 'silent child unchanged through native reload');
-    await shot(page, 'native-unknown-stale', selector(ids.bound) + ' .ap-obs[data-state="unknown"]');
-    const stale = await evaluate(`(()=>{const s=document.querySelector('${census}'),o=document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs')});return {ready:s?.dataset.state==='ready',complete:s?.dataset.complete==='true',noDisconnectedCopy:!s?.textContent.toLowerCase().includes('disconnected'),unknown:o?.dataset.state==='unknown',expired:performance.now()>=${expiry},expiryRemoved:!o?.hasAttribute('data-expires'),lastSeenShown:!!o?.querySelector('.ap-obs-last')?.textContent.trim()}})()`, page);
-    assert.ok(stale.ready && stale.complete && stale.noDisconnectedCopy && stale.unknown && stale.expired && stale.expiryRemoved && stale.lastSeenShown, 'real expiry, not lost coverage, makes the bound child unknown');
-    evidence.unknown = { visible: true, clockOverridden: false, reason: 'real monotonic expiry', realFreshnessExpiryProven: true, ...stale };
-    evidence.stage = 'genuine-activity-renewal';
+    const pageRoster = await readyRosterSnapshot(host.controls, page, ids);
+    assertRoster(pageRoster, 'page', 10);
+    evidence.pageRoster = sanitize(pageRoster);
+    // Passive allowlisted SDK metadata only, to prove a real same-subscription reload happened
+    // while the child kept running, and that nothing but host activity changed its word.
+    await evaluate(`(()=>{const trace=[],subs=new Map();window.__u4ObservationTrace=trace;addEventListener('message',e=>{if(e.source!==parent)return;const m=e.data;if(!m||!['workspace','ready','session','directory'].includes(m.type))return;const p=m.payload,s=p?.snapshot,r=s?.sessions?.find(r=>r.id===${JSON.stringify(ids.bound)});const key=p?.subscriptionId;if(key&&!subs.has(key))subs.set(key,subs.size+1);trace.push({at:Math.round(performance.now()),type:m.type,kind:s?.kind,state:s?.state,subscription:key?subs.get(key):undefined,coverage:s?.coverage?.map(c=>c.state),bound:r?{activity:r.activity,outcome:r.outcome}:undefined});if(trace.length>200)trace.shift()});return true})()`, page);
+    await shot(page, 'native-page-roster');
+    evidence.page = { roster: true, planRoot: true };
+    evidence.stage = 'steady-running';
+    const boundNow = `${row(ids.bound)}[data-now="active"]`;
     try {
       await activity.start();
-      assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs[data-state="active"]')}))`, page)), 'real native activity renews the expired bound child');
-      const renewed = await evaluate(`(()=>{const o=document.querySelector(${JSON.stringify(selector(ids.bound) + ' .ap-obs')}),sibling=document.querySelector(${JSON.stringify(selector(ids.c2) + ' .ap-obs')});return {active:o?.dataset.state==='active',remainingMs:Number(o?.dataset.expires)-performance.now(),newDeadline:Number(o?.dataset.expires)>${expiry},silentSiblingUnknown:sibling?.dataset.state==='unknown'}})()`, page);
-      assert.ok(renewed.active && renewed.newDeadline && renewed.remainingMs > 0 && renewed.remainingMs <= 60000 && renewed.silentSiblingUnknown, 'only the changed child renews');
-      evidence.renewal = { realNativeTurn: true, ...renewed };
-      await shot(page, 'native-renewed-child', selector(ids.bound) + ' .ap-obs[data-state="active"]');
+      assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(boundNow)}))`, page), 30000), 'a real native turn shows the linked child running again');
+      const started = await evaluate('performance.now()', page);
+      await shot(page, 'native-running-again', boundNow);
+      // Sample until the host itself reports something else. While the latest host value for the
+      // child is running, the row must say running: no time-based decay, at any elapsed time.
+      // (The observer fixture ends a held turn after 15 s, so this native run cannot reach 60 s;
+      // the >60 s proof is the controlled-clock and real-ticker browser regressions.)
+      const samples: { elapsedMs: number; running: boolean; hostRunning: boolean; ran: string | null; accepted: boolean }[] = [];
+      for (;;) {
+        await new Promise(r => setTimeout(r, 500));
+        const s = await evaluate(`(()=>{const rows=[...document.querySelectorAll(${JSON.stringify(row(ids.bound))})],live=rows.find(r=>r.dataset.now==='active'),latest=rows.find(r=>r.querySelector('[data-fact="accepted"]'));const t=(window.__u4ObservationTrace||[]).filter(e=>e.kind==='sessions'&&e.state==='ready'&&e.bound);return {elapsedMs:Math.round(performance.now()-${started}),running:!!live,hostRunning:t.at(-1)?.bound.activity==='running',ran:latest?.dataset.ran??null,accepted:!!latest}})()`, page);
+        samples.push(s);
+        if (!s.hostRunning) break;
+        assert.ok(s.running, `still running at ${s.elapsedMs} ms while the host still reports running`);
+        assert.ok(s.elapsedMs < 100000, 'the native turn ends within 100 s');
+      }
+      const during = samples.filter(x => x.hostRunning);
+      assert.ok(during.length >= 2 && during.every(x => x.running), 'running for every sample while the host reports running');
+      assert.ok(samples.every(x => x.ran === 'finished' && x.accepted), 'the recorded run and task facts are never rewritten by host activity');
+      const trace = (await evaluate('window.__u4ObservationTrace', page)).filter((e: any) => e.kind === 'sessions');
+      evidence.steadyRunning = { clockOverridden: false, realNativeTurn: true, runningForMs: during.at(-1)!.elapsedMs, samples: samples.length, everySampleRunningWhileHostRunning: true, runFactUnchanged: true,
+        beyond60s: false, limitedBy: 'observer fixture held-turn deadline (15 s)', subscriptions: new Set(trace.map((e: any) => e.subscription)).size, nativeReloadDuringRun: trace.some((e: any) => e.state === 'loading' && e.at >= started && e.at <= started + during.at(-1)!.elapsedMs) };
     } finally { await activity.stop(); }
+    evidence.stage = 'host-change';
+    // A genuine host change (the turn ends) updates the word promptly; nothing else moves.
+    const idleAt = await evaluate('performance.now()', page);
+    assert.ok(await wait(() => evaluate(`!document.querySelector(${JSON.stringify(boundNow)})`, page), 5000), 'host idle removes the running-again word promptly');
+    evidence.hostChangeLatencyMs = Math.round(await evaluate('performance.now()', page) - idleAt);
+    const after = await readyRosterSnapshot(host.controls, page, ids);
+    assertRoster(after, 'page after the turn ended', 10);
+    evidence.hostChange = { promptlyUpdated: true, rosterUnchanged: true };
     evidence.defects = [];
     evidence.stage = 'complete';
+  } catch (error) {
+    // This module's own fixed assertion text (no page text or IDs), so a failure names its check.
+    if (error instanceof assert.AssertionError) evidence.assertion = error.message;
+    // Other failures: the harness's own fixed message only (allowlist), else a generic code.
+    else evidence.runtimeFailure = runtimeFailure(error);
+    for (const f of frames) { const t = await evaluate('window.__u4ObservationTrace??null', f).catch(() => null); if (t) evidence.observationTrace = t; }
+    for (const f of frames) evidence.boundRows = await evaluate(`[...document.querySelectorAll(${JSON.stringify(`[data-testid="subagent-activity"] [data-session="${ids.bound}"]`)})].map(r=>({ran:r.dataset.ran,now:r.dataset.now??null,featured:!r.closest('[data-testid="observed-more"]')}))`, f).then((v: any) => [...(evidence.boundRows ?? []), { surface: 'frame', rows: v }]).catch(() => evidence.boundRows);
+    throw error;
   } finally {
     evidence.hostControls = await evaluate(`({surfaces:[...document.querySelectorAll('[data-context-surface]')].map(n=>n.getAttribute('data-context-surface')),buttons:[...document.querySelectorAll('button')].map(b=>({title:b.title,aria:b.getAttribute('aria-label'),text:b.textContent?.trim().slice(0,60)})).filter(b=>/status|progress|activity|new session|draft/i.test(b.title+' '+b.aria+' '+b.text))})`).catch(() => null);
     evidence.frames = await Promise.all(frames.map(f => evaluate(`({scheme:location.protocol,surface:document.querySelector('main')?.dataset.surface,hasCensus:!!document.querySelector('[data-testid="subagent-activity"]'),plan:!!document.querySelector('[data-testid="plan-plan-alpha"]')})`, f).catch(() => ({ unavailable: true }))));

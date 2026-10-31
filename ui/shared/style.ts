@@ -228,16 +228,35 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-link{background:none;border:0;padding:0;color:var(--oc-primary-text,var(--oc-primary));cursor:pointer;font-size:11.5px}
 .ap-link:hover{text-decoration:underline}
 
-/* Sub-agents: observed now, kept apart from reported progress. Static (no motion): activity is an
-   observation, not reported work. Nesting reads from indentation + elbows + aria-level; each state
-   has its own mark shape and words, colour only reinforces it. */
-/* The page detail pane stacks without gaps: set the live section apart from the recorded plan. */
+/* Sub-agents: Ran (host facts), Claimed (child-reported) and Accepted (plan task status) stay
+   apart on every row. Static (no motion): a run is not reported work. Nesting reads from indentation
+   + elbows + aria-level; each state has its own mark shape and words, colour only reinforces it. */
+/* The page detail pane stacks without gaps: set the section apart from the recorded plan. */
 .ap-detail>.ap-census{margin-top:18px;padding-top:14px;border-top:1px solid var(--oc-border)}
 .ap-census-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0}
+.ap-sub-summary{display:flex;flex-wrap:wrap;gap:2px 12px;margin:0;font-size:12px;font-variant-numeric:tabular-nums;min-width:0}
+.ap-sub-part{display:inline-flex;align-items:center;white-space:nowrap}
+.ap-sub-part .ap-obs-mark{margin-right:5px}
+.ap-sub-part[data-kind="running"] .ap-obs-mark{border-color:var(--oc-info);background:radial-gradient(circle,var(--oc-info) 0 2.5px,transparent 3px)}
+.ap-sub-part[data-kind="waiting"]{color:var(--oc-warning-text,var(--oc-warning));font-weight:600}
+.ap-sub-part[data-kind="waiting"] .ap-obs-mark{border-radius:1px;transform:rotate(45deg) scale(.85);border-color:var(--oc-warning)}
+.ap-sub-part[data-kind="finished"] .ap-obs-mark{background:color-mix(in srgb,var(--oc-muted) 70%,transparent);border-color:transparent}
+.ap-sub-part[data-kind="failed"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-error);background:var(--oc-error)}
+.ap-sub-part[data-kind="interrupted"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-warning)}
+.ap-sub-part[data-kind="unknown"] .ap-obs-mark{border-style:dashed}
+.ap-sub-part[data-kind="unknown"]{color:var(--oc-muted)}
 .ap-obs-list{display:flex;flex-direction:column;min-width:0}
-.ap-obs-row{position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;padding:7px 0 7px calc(var(--depth,0) * 14px)}
+.ap-obs-row{position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;padding:7px 0 7px calc((var(--depth,1) - 1) * 14px)}
 .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}
-.ap-obs-row[data-role="child"]::before{content:"";position:absolute;left:calc(var(--depth,1) * 14px - 10px);top:6px;width:6px;height:10px;border-left:1px solid var(--oc-muted);border-bottom:1px solid var(--oc-muted);border-bottom-left-radius:3px;opacity:.55}
+.ap-obs-row[data-depth]:not([data-depth="1"])::before{content:"";position:absolute;left:calc((var(--depth,1) - 1) * 14px - 10px);top:6px;width:6px;height:10px;border-left:1px solid var(--oc-muted);border-bottom:1px solid var(--oc-muted);border-bottom-left-radius:3px;opacity:.55}
+.ap-obs-meta{font-size:11px;color:var(--oc-muted);min-width:0;overflow-wrap:anywhere}
+.ap-claim q{quotes:"“" "”";margin-left:4px;overflow-wrap:anywhere}
+.ap-claim q::before{content:open-quote}.ap-claim q::after{content:close-quote}
+.ap-claim time{color:var(--oc-muted)}
+.ap-sub-page{margin:4px 0 2px;font-size:11.5px}
+.ap-sub-page[aria-disabled="true"]{color:var(--oc-muted);cursor:default;text-decoration:none}
+.ap-sub-notes{display:flex;flex-direction:column;gap:3px;margin:0;padding:0 0 0 14px;font-size:11.5px;color:var(--oc-muted)}
+.ap-sub-notes .ap-link{font-size:11.5px}
 .ap-obs-head{display:flex;align-items:baseline;gap:4px 8px;min-width:0}
 .ap-obs-title{flex:1 1 auto;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ap-obs-row[data-role="root"] .ap-obs-title{font-weight:600}
@@ -251,6 +270,9 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-obs{display:inline;min-width:0}
 .ap-obs-last:empty{display:none}
 .ap-obs time,.ap-obs-last{color:var(--oc-muted)}
+/* An age moves to the next line as one unit ("· 2 minutes ago") instead of leaving "ago" alone;
+   only a line narrower than the age itself (200% zoom) wraps inside it. */
+.ap-census time{display:inline-block;max-width:100%}
 .ap-obs-label{font-weight:500}
 .ap-obs-mark{display:inline-block;vertical-align:-1px;margin-right:6px;width:9px;height:9px;border-radius:50%;border:1.5px solid color-mix(in srgb,var(--oc-muted) 80%,transparent)}
 .ap-obs[data-state="active"] .ap-obs-mark{border-color:var(--oc-info);background:radial-gradient(circle,var(--oc-info) 0 2.5px,transparent 3px)}
@@ -260,20 +282,27 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-obs[data-state="ended"] .ap-obs-mark{background:color-mix(in srgb,var(--oc-muted) 70%,transparent);border-color:transparent}
 .ap-obs[data-state="failed"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-error);background:var(--oc-error)}
 .ap-obs[data-state="failed"] .ap-obs-label{color:var(--oc-error-text,var(--oc-error))}
+.ap-obs[data-state="interrupted"] .ap-obs-mark{border-radius:2px;border-color:var(--oc-warning)}
 .ap-obs[data-state="unknown"] .ap-obs-mark{border-style:dashed}
 .ap-obs[data-state="unknown"] .ap-obs-label{font-weight:400;color:var(--oc-muted)}
 .ap-obs-update time{color:var(--oc-muted)}
 .ap-obs-more>summary{cursor:pointer;width:fit-content;max-width:100%;min-height:24px;padding:2px 0;font-size:11.5px;color:var(--oc-muted)}
 .ap-obs-more>summary:hover{color:var(--oc-fg)}
 .ap-obs-more[open]>summary{margin-bottom:2px}
-.ap-obs-more>.ap-obs-list{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent)}
+.ap-obs-more>.ap-obs-list{border-top:1px solid color-mix(in srgb,var(--oc-border) 70%,transparent);padding-top:2px}
+.ap[data-surface="page"] .ap-census .ap-obs-row:not([data-compact]){padding-top:10px;padding-bottom:10px}
 .ap-census :is(button,summary):focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 /* Work Status: one line per session (name, state word), one muted line of recorded facts. */
 .ap[data-surface="status"] .ap-census{gap:4px;border-top:1px solid var(--oc-border);padding-top:6px}
-.ap[data-surface="status"] .ap-obs-row{padding-top:3px;padding-bottom:3px;gap:1px}
+.ap-obs-row[data-compact]{padding-top:4px;padding-bottom:4px;gap:1px}
 .ap[data-surface="status"] .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:0}
-.ap[data-surface="status"] .ap-obs-head>.ap-obs{flex:none;margin-left:auto;font-size:11.5px;white-space:nowrap}
-.ap[data-surface="status"] .ap-obs-label{font-weight:400}
+.ap-obs-row[data-compact] .ap-obs-head{flex-wrap:wrap}
+.ap-obs-row[data-compact] .ap-obs-head>.ap-obs-title{flex:1 1 8em}
+/* One line when it fits; at 200% zoom the state drops below the title and may wrap, never overflow. */
+.ap-obs-row[data-compact] .ap-obs-head>.ap-obs{flex:0 1 auto;margin-left:auto;font-size:11.5px;min-width:0;overflow-wrap:anywhere}
+.ap-obs-row[data-compact] .ap-obs-head>.ap-link{margin-left:0}
+.ap-obs-row[data-compact] .ap-obs-label{font-weight:400}
+.ap-obs-row[data-compact][data-ran="active"] .ap-obs-label,.ap-obs-row[data-compact][data-ran="waiting"] .ap-obs-label{font-weight:500}
 .ap-obs-sub{display:flex;flex-wrap:wrap;gap:0 6px;font-size:11px;color:var(--oc-muted);min-width:0}
 .ap-obs-sub>*+*::before{content:"·";margin-right:6px}
 @media(forced-colors:active){.ap-obs-mark{border-color:CanvasText!important}.ap-obs[data-state=active] .ap-obs-mark,.ap-obs[data-state=failed] .ap-obs-mark,.ap-obs[data-state=ended] .ap-obs-mark{background:CanvasText}}

@@ -9,6 +9,7 @@ import { Store } from '../../shared/store.ts';
 import { RELEASE } from '../../shared/release.ts';
 
 export async function runNativeRegression() {
+  const backendOnly=process.env.SUBAGENT_ACTIVITY_BACKEND_ONLY==='1';
   assert.equal(process.version, 'v24.19.0');
   const binary = process.env.OPENCODE_BINARY;
   assert.ok(binary && fs.realpathSync(binary) === '/tmp/opencode/agent-progress-probe-cli/opencode', 'explicit independent binary required');
@@ -21,6 +22,7 @@ export async function runNativeRegression() {
   assert.equal(JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version, '2.5.1');
   const result: any = { phase: 'regression', runtime: '2.2.2', node: process.version, sdk: '2.5.1', hashes: Object.fromEntries([binary, 'bun.lock', 'tests/fixtures/subagent-activity-regression.ts', 'tests/fixtures/subagent-activity-integration-driver.ts', 'tests/fixtures/subagent-activity-observer.ts', 'tests/browser/subagent-activity-native.ts', 'tests/browser/subagent-activity-host.ts', 'ui/shared/app.ts', 'ui/shared/live.ts', 'ui/shared/census.ts', 'ui/shared/census-view.ts'].map(file => [file === binary ? 'nativeRuntime' : file, hash(file)])), modes: [], pass: false };
   const profiles = process.env.SUBAGENT_ACTIVITY_PROFILES?.split(',') ?? ['builtin', 'slim'];
+  result.backendOnly=backendOnly;
   assert.ok(profiles.length && profiles.every(p => ['builtin', 'slim'].includes(p)) && new Set(profiles).size === profiles.length);
   try {
     for (const mode of profiles) {
@@ -38,6 +40,7 @@ export async function runNativeRegression() {
         assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
         const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ACTIVITY_WAYLAND_SOCKET: socket, AGENT_PROGRESS_BINDING: `${root}/binding.json` };
         assert.equal(spawnSync(binary, ['--version'], { env, encoding: 'utf8' }).stdout.trim(), 'opencode v2.2.2');
+        if(backendOnly)env.SUBAGENT_ACTIVITY_BACKEND_ONLY='1';
         const source = { id: 'source-alpha', configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, verified: true };
         const store = new Store(`${root}/store/progress.sqlite`, { create: true });
         try { store.registerSource(source); fs.writeFileSync(`${root}/binding.json`, JSON.stringify({ protocolVersion: 2, schemaVersion: 2, installId: 'synthetic-activity', version: RELEASE, database: store.file, storeId: store.list({ limit: 1 }).storeId, source }), { mode: 0o600 }); } finally { store.close(); }
@@ -52,7 +55,7 @@ export async function runNativeRegression() {
         fs.copyFileSync(guidance, `${path.dirname(target)}/SKILL.md`); report.guidanceSha256 = hash(guidance);
         report.observerSha256 = build('tests/fixtures/subagent-activity-observer.ts', `${root}/config/opencode/plugins/observer/index.js`);
         for (const name of ['observer', 'companion']) fs.writeFileSync(`${root}/config/opencode/plugins/${name}/package.json`, JSON.stringify({ name: `synthetic-${name}`, type: 'module', exports: { '.': './index.js' } }));
-        fs.writeFileSync(`${root}/config/opencode/opencode.json`, JSON.stringify({ agents: Object.fromEntries(['restricted-worker', 'slow-worker'].map(id => [id, { mode: 'subagent', description: 'Synthetic restricted worker', permissions: [{ action: '*', resource: '*', effect: 'deny' }] }])) }));
+        fs.writeFileSync(`${root}/config/opencode/opencode.json`, JSON.stringify({ agents: Object.fromEntries(['restricted-worker', 'slow-worker','reporting-worker','failing-worker'].map(id => [id, { mode: 'subagent', description: 'Synthetic restricted worker', permissions: [{ action: '*', resource: '*', effect: 'deny' },...(id==='reporting-worker'?[{action:'agent_progress_report',resource:'*',effect:'allow'}]:[])] }])) }));
         if (mode === 'slim') {
           const slim = path.join(process.env.HOME!, '.bun/install/cache/oh-my-opencode-slim@2.2.25@@@1');
           assert.equal(JSON.parse(fs.readFileSync(`${slim}/package.json`, 'utf8')).version, '2.2.25');
@@ -67,6 +70,7 @@ export async function runNativeRegression() {
         // Actual production guests, temporary outputs only. The service wrapper
         // supplies the existing authenticated API, not mocked response bodies.
         report.guestHashes = {};
+        if(!backendOnly){
         for (const surface of ['panel', 'status', 'page']) {
           fs.mkdirSync(`${root}/guest/ui/${surface}`, { recursive: true });
           fs.copyFileSync(`ui/${surface}/index.html`, `${root}/guest/ui/${surface}/index.html`);
@@ -80,6 +84,7 @@ export async function runNativeRegression() {
         for (const dir of ['config/openchamber', 'openchamber']) {
           fs.writeFileSync(`${root}/${dir}/extensions.json`, JSON.stringify({ paths: [`${root}/guest`], capabilityGrants: { 'activity-probe': ['sessions', 'service'] }, capabilityScopes: { 'activity-probe': { service: { exec: [], sockets: [] } } } }));
           fs.writeFileSync(`${root}/${dir}/settings.json`, JSON.stringify({ projects: ['Alpha', 'Beta'].map(name => ({ id: `project-${name.toLowerCase()}`, path: `${root}/${name}`, label: name, addedAt: 1, lastOpenedAt: 1 })), activeProjectId: 'project-alpha' }));
+        }
         }
         const child = spawn('/usr/bin/unshare', ['-Urn', '/bin/sh', '-ec', '/usr/sbin/ip link set lo up; test -z "$(/usr/sbin/ip route show default)"; exec "$@"', 'activity-regression', process.execPath, '--experimental-strip-types', path.resolve('tests/fixtures/subagent-activity-integration-driver.ts'), root, fs.readlinkSync('/proc/self/ns/net'), mode], { env, detached: true, stdio: 'ignore' });
         const kill = () => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} };

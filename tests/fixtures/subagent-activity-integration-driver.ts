@@ -16,7 +16,8 @@ assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3]);
 assert.deepEqual(Object.keys(networkInterfaces()), ['lo']);
 assert.equal(spawnSync('/usr/sbin/ip', ['route', 'show', 'default'], { encoding: 'utf8' }).stdout.trim(), '');
 const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', ACTIVITY_ROOT: root, AGENT_PROGRESS_BINDING: `${root}/binding.json`, ACTIVITY_WAYLAND_SOCKET: process.env.ACTIVITY_WAYLAND_SOCKET! };
-const native = spawn(process.env.OPENCODE_BINARY!, ['serve', '--hostname', '127.0.0.1', '--port', '18767'], { cwd: `${root}/Alpha`, env, stdio: 'ignore' });
+const launch=()=>spawn(process.env.OPENCODE_BINARY!, ['serve', '--hostname', '127.0.0.1', '--port', '18767'], { cwd: `${root}/Alpha`, env, stdio: 'ignore' });
+let native = launch();
 fs.writeFileSync(`${root}/host-pid`, String(native.pid));
 const client = OpenCode.make({ baseUrl: 'http://127.0.0.1:18767', headers: { authorization: `Basic ${Buffer.from('opencode:synthetic-local-only').toString('base64')}` } });
 const location = { directory: `${root}/Alpha` };
@@ -43,6 +44,8 @@ try {
     const s = await client.session.create({ location: { directory }, agent: 'build', title: `Synthetic ${label}`, parentID, model: { providerID: 'activity-fixture', id: 'script' } }); labels.set(s.id, label); return s;
   };
   const a = await create('A'), b = await create('B'); await create('Beta', `${root}/Beta`);
+  const runQuery=new URLSearchParams({storeId:store.list().storeId,binding:JSON.stringify({sourceId:'source-alpha',verified:true}),source:'source-alpha',root:a.id,plan:'plan-alpha',cleanupRev:'0'});
+  const runs=()=>read(`/v1/subagent-runs?${runQuery}`);
   let generation = 0;
   const prompt = async (sessionID: any, calls: any[], ended = true) => {
     jobs[sessionID] = { generation: String(++generation), calls }; fs.writeFileSync(`${root}/jobs.json`, JSON.stringify(jobs));
@@ -61,6 +64,8 @@ try {
   const initial = await detail(); assert.equal(initial.plan.revision, 1);
   stage = 'unassigned-child';
   await prompt(a.id, [spawnCall('unassigned')]); const c2 = childFor('unassigned'); assert.ok(c2); labels.set(c2, 'C2');
+  stage='native-foreground-run-projection';
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='unassigned'&&r.ran.state==='succeeded'),'native-foreground-terminal',2000);
   assert.equal((await read(`/v1/plans?session=${c2}`)).data.length, 0);
   assert.ok(records().some(e => e.type === 'context' && e.sessionID === c2 && e.reportTool === false));
   await prompt(c2, [{ id: 'restricted-report-attempt', tool: 'agent_progress_report', input: { op: 'change', plan: 'plan-alpha', oid: 'restricted-change', rev: 1, changes: [{ id: 'task-1', status: 'done' }] } }]);
@@ -109,40 +114,66 @@ try {
   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-parallel', rev: 3, assign: ['task-3'] });
   await prompt(a.id, [spawnCall('parallel-one'), spawnCall('parallel-two')]);
   assert.ok(childFor('parallel-one') && childFor('parallel-two'));
-  assert.equal((await detail()).plan.revision, 3); report.checks.parallelNoBind = true;
+   await wait(async()=>(await detail()).plan.revision===4,'parallel-first-dispatch-bind');
+   const admitted=store.db.prepare("SELECT call FROM runs_rows WHERE call IN('parallel-one','parallel-two') ORDER BY rowid LIMIT 1").get()!;
+   assert.equal((await detail()).items.data[2].assignmentBinding.callId,admitted.call);report.checks.parallelFirstAdmittedBinds=true;
   stage = 'error';
-  await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-error', rev: 3, assign: ['task-4'] });
+   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-error', rev: 4, assign: ['task-4'] });
   await prompt(a.id, [spawnCall('error', { agent: 'nonexistent-synthetic-agent' })]);
   assert.ok(records().some(e => e.type === 'after' && e.callID === 'error' && e.status === 'error'));
-  assert.equal((await detail()).plan.revision, 3); report.checks.errorNoBind = true;
+   assert.equal((await detail()).plan.revision, 4); report.checks.errorNoBind = true;
   stage = 'wrong-parent';
-  await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-wrong', rev: 3, assign: ['task-5'] });
+   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-wrong', rev: 4, assign: ['task-5'] });
   await prompt(b.id, [spawnCall('wrong-parent')]);
-  assert.equal((await detail()).plan.revision, 3);
-  await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'cancel-wrong', rev: 3, assign: [] });
+   assert.equal((await detail()).plan.revision, 4);
+   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'cancel-wrong', rev: 4, assign: [] });
   report.checks.wrongCallerNoBind = true;
   stage = 'synthetic-wrong-output';
   fs.writeFileSync(`${root}/wrong-child`, b.id);
-  await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-wrong-output', rev: 3, assign: ['task-5'] });
+   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-wrong-output', rev: 4, assign: ['task-5'] });
   await prompt(a.id, [spawnCall('fault-wrong-output')]);
   assert.ok(records().some(e => e.type === 'synthetic-result-fault'));
   assert.equal(childFor('fault-wrong-output'), b.id);
-  assert.equal((await detail()).plan.revision, 3);
+   assert.equal((await detail()).plan.revision, 4);
   report.checks.syntheticWrongReturnedNativeRootNoBind = true;
   stage = 'cancel';
-  await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-cancel', rev: 3, assign: ['task-6'] });
+   await reportTool({ op: 'delegate', plan: 'plan-alpha', oid: 'declare-cancel', rev: 4, assign: ['task-6'] });
   await prompt(a.id, [spawnCall('cancelled', { agent: 'slow-worker' })], false);
   await wait(() => records().some(e => e.type === 'before' && e.callID === 'cancelled'), 'cancel-before');
   await client.session.interrupt({ sessionID: a.id, resume: false }); fs.writeFileSync(`${root}/release`, 'release');
   await client.session.wait({ sessionID: a.id }, { signal: AbortSignal.timeout(30000) });
-  assert.equal((await detail()).plan.revision, 3); report.checks.nativeCancelNoBind = true;
+   assert.equal((await detail()).plan.revision, 4); report.checks.nativeCancelNoBind = true;
   const n1 = await create('N1-api-fixture', location.directory, c1);
   const final = await detail();
   assert.deepEqual(facts(final), facts(initial));
-  assert.deepEqual((await read('/v1/history?source=source-alpha&plan=plan-alpha')).data.map((r: any) => r.revision), [1, 2, 3]);
+   assert.deepEqual((await read('/v1/history?source=source-alpha&plan=plan-alpha')).data.map((r: any) => r.revision), [1, 2, 3,4]);
   assert.equal((await read(`/v1/plans?session=${n1.id}`)).data.length, 0);
   report.checks.finalNoProgressOrDiscoveryMembershipChange = true;
-  if (mode === 'builtin') {
+  stage='recorded-native-runs';
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='unassigned'&&r.ran.state==='succeeded'),'native-foreground-terminal');
+  const foreground=(await runs()).data.find((r:any)=>r.dispatch?.callId==='unassigned');assert.equal(foreground.ran.provenance,'native-event');assert.ok(foreground.ran.endedAt>=foreground.ran.startedAt);assert.equal(foreground.claimed,null);report.checks.nativeForegroundPersisted=true;
+  stage='native-child-handoff';
+  await prompt(a.id,[spawnCall('reported-child',{agent:'reporting-worker'})]);
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='reported-child'&&r.claimed?.outcome==='done'&&r.ran.state==='succeeded'),'native-registered-handoff');
+  assert.ok(records().some(e=>e.type==='report-reply'&&e.callID==='child-handoff'&&!e.error));report.checks.nativeRegisteredPlanFreeHandoff=true;
+  stage='native-background-terminal';fs.rmSync(`${root}/release`,{force:true});
+  await prompt(a.id,[spawnCall('background-finish',{agent:'slow-worker',background:true})]);
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='background-finish'&&r.ran.state==='running'),'native-background-running');
+  fs.writeFileSync(`${root}/release`,'release');
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='background-finish'&&r.ran.state==='succeeded'),'native-post-return-terminal');report.checks.nativeBackgroundPostReturnSucceeded=true;
+  stage='native-failure';await prompt(a.id,[spawnCall('failed-child',{agent:'failing-worker',background:true})]);
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='failed-child'&&r.ran.state==='running'),'native-failure-running');fs.writeFileSync(`${root}/release-failure`,'release');
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='failed-child'&&r.ran.state==='failed'),'native-failed-outcome');report.checks.nativeFailureDistinct=true;
+  stage='native-interruption';fs.rmSync(`${root}/release`,{force:true});await prompt(a.id,[spawnCall('interrupted-child',{agent:'slow-worker',background:true})]);
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='interrupted-child'&&r.ran.state==='running'),'native-interrupt-running');
+  const interrupted=childFor('interrupted-child');assert.ok(interrupted);await client.session.interrupt({sessionID:interrupted,resume:false});fs.writeFileSync(`${root}/release`,'release');
+  await wait(async()=>(await runs()).data.some((r:any)=>r.dispatch?.callId==='interrupted-child'&&r.ran.state==='interrupted'),'native-interrupted-outcome');report.checks.nativeInterruptionDistinct=true;
+  stage='native-metadata-reconciliation';
+  const response=await fetch('http://127.0.0.1:18769/v1/subagent-runs/reconcile',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({storeId:store.list().storeId,binding:{sourceId:'source-alpha',verified:true},source:'source-alpha',root:a.id})});assert.equal(response.status,200);
+  await wait(async()=>['complete','partial'].includes((await runs()).recovery.state),'native-companion-reconciliation');report.checks.nativeMetadataOnlyRecovery=true;
+  const archive=store.db.prepare('SELECT payload FROM runs_rows').all().map(r=>String(r.payload)).join('');assert.ok(!archive.includes('Synthetic fixed response.'));assert.ok(!archive.includes('Synthetic production regression input.'));assert.ok(!archive.includes('Synthetic provider failure'));report.checks.noPromptOutputRawErrorRetention=true;
+  assert.deepEqual(facts(await detail()),facts(initial));
+   if (mode === 'builtin'&&process.env.SUBAGENT_ACTIVITY_BACKEND_ONLY!=='1') {
     stage = 'native-production-views'; report.nativeUI = {};
     await nativeProductionViews(root, env, { a: a.id, b: b.id, c1, c2, bound, n1: n1.id }, report.nativeUI, {
       start: async () => {
@@ -153,12 +184,21 @@ try {
       stop: async () => { fs.writeFileSync(`${root}/release`, 'release'); await client.session.wait({ sessionID: bound }, { signal: AbortSignal.timeout(30000) }); },
     });
   }
-  assert.equal((await detail()).plan.revision, 3);
+  assert.equal((await detail()).plan.revision, 4);
+  stage='native-producer-restart';
+  await reportTool({op:'delegate',plan:'plan-alpha',oid:'restart-intent',rev:4,assign:['task-4']});
+  const registered=records().filter(e=>e.type==='registered').length;
+  const exited=once(native,'exit');native.kill('SIGTERM');await exited;
+  native=launch();fs.writeFileSync(`${root}/host-pid`,String(native.pid));
+  await wait(async()=>{try{await client.agent.list({location},{signal:AbortSignal.timeout(1000)});return records().filter(e=>e.type==='registered').length>registered;}catch{return false;}},'native-reload-ready');
+  await prompt(a.id,[spawnCall('after-restart')]);await wait(async()=>(await detail()).plan.revision===5,'native-restart-intent-binds');
+  assert.equal((await detail()).items.data[3].assignmentBinding.callId,'after-restart');assert.deepEqual(facts(await detail()),facts(initial));report.checks.nativeRestartDurableIntentAndProgressUnchanged=true;
   report.pass = !report.nativeUI?.defects?.length;
   if (!report.pass) report.failure = { stage: 'native-production-views', kind: 'production-ui-defect' };
 } catch (e) {
   report.failure = { stage, kind: e instanceof assert.AssertionError ? 'assertion' : 'bounded-runtime-operation', detail: e instanceof assert.AssertionError ? e.operator : undefined };
 } finally {
+  report.runDiagnostics={rows:store.db.prepare("SELECT call,json_extract(payload,'$.ran.state') AS state,json_extract(payload,'$.ran.dispatchState') AS disposition,json_extract(payload,'$.ran.sequence') AS sequence FROM runs_rows WHERE message IS NOT NULL").all(),shapes:records().filter(e=>e.type==='native-shape')};
   server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close();
   if (native.exitCode === null && !native.signalCode) { const exit = once(native, 'exit'); native.kill('SIGTERM'); const timer = setTimeout(() => native.kill('SIGKILL'), 5000); try { await exit; } finally { clearTimeout(timer); } }
   report.hostStopped = native.exitCode !== null || native.signalCode !== null;

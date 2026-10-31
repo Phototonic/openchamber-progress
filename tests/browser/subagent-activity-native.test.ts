@@ -1,17 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { actionablePoint, assignmentSnapshot, nativeActions, readyAssignmentSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type NativeAdapter } from './subagent-activity-harness.ts';
+import { actionablePoint, nativeActions, partialCapture, readyRosterSnapshot, rosterSnapshot, screenshotFrame, screenshotSection, stableScreenshot, type NativeAdapter } from './subagent-activity-harness.ts';
 
-const ids = { a: 'A', c2: 'C2', bound: 'C1' };
+const ids = { a: 'A', b: 'B', c1: 'C1', c2: 'C2', bound: 'C1', n1: 'N1' };
+/** The smallest guest DOM rosterSnapshot reads: section, rows with facts, summary parts, plan state. */
 function guest() {
-  let rows: any[] = [], detail = false, loading = false, complete = true;
-  const section = { dataset: { state: 'ready', get complete() { return String(complete); } }, querySelectorAll: () => rows };
+  let rows: any[] = [], summary: string[] = [], detail = false, loading = false, state = 'ready', text = '';
+  const section = { dataset: { get state() { return state; }, testid: 'subagent-activity' }, get textContent() { return text; },
+    querySelectorAll: (s: string) => s.includes('subagent-count') ? summary.map((kind) => ({ dataset: { kind } })) : rows };
   const document = { documentElement: { scrollWidth: 300 }, querySelector: (s: string) => s.includes('subagent-activity') ? section : s.includes('plan-plan-alpha') ? detail : s.includes('detail-loading') ? loading : null };
-  const row = (id: string, assignment?: string, depth = '1') => ({ dataset: { testid: `observed-session-${id}`, depth }, querySelector: () => assignment ? { dataset: { assignment } } : null });
-  const populate = (assignment = 'unknown') => { rows = [row('A', undefined, '0'), row('C1', assignment), row('C2', assignment), row('N1', 'unassigned', '2')]; };
-  const ready = () => { detail = true; loading = false; complete = true; rows = [row('A', undefined, '0'), row('C1', 'assigned'), row('C2', 'unassigned'), row('N1', 'unassigned', '2')]; };
-  return { evaluate: async (expression: string) => runInNewContext(expression, { document, innerWidth: 360 }), populate, ready, detail: () => { detail = true; }, invalidate: () => { loading = true; complete = false; }, wrong: () => { rows[2] = row('C2', 'assigned'); } };
+  const row = (session: string, ran: string, facts: string[], featured = true, extra: object = {}) => ({ dataset: { testid: `subagent-row-run-${session}`, session, run: 'r', ran, depth: '1', ...extra }, closest: () => featured ? null : {}, querySelectorAll: () => facts.map((fact) => ({ dataset: { fact } })) });
+  const populate = () => { summary = ['finished']; rows = [row('C1', 'finished', ['ran']), row('C2', 'finished', ['ran'], false)]; };
+  const ready = () => { detail = true; loading = false; state = 'ready'; summary = ['finished', 'failed', 'interrupted']; rows = [row('C1', 'finished', ['ran', 'accepted']), row('C2', 'finished', ['ran'], false), row('R', 'finished', ['ran', 'claimed'], false)]; };
+  return { evaluate: async (expression: string) => runInNewContext(expression, { document, innerWidth: 360 }), populate, ready, detail: () => { detail = true; },
+    invalidate: () => { loading = true; state = 'host-only'; }, noPlan: () => { detail = false; }, say: (t: string) => { text = t; }, wrong: () => { rows[0] = row('C1', 'finished', ['ran', 'accepted'], true, { now: 'active' }); } };
 }
 
 /** Controlled clock at the same bounded-predicate seam used by the native host. */
@@ -22,41 +25,52 @@ function bounded(steps: (() => void)[], limit = steps.length) {
   };
 }
 const noSend = async () => { throw new Error('unexpected dispatch'); };
-for (const order of ['rows-first', 'detail-first']) test(`ready snapshot: ${order}`, async () => {
+for (const order of ['rows-first', 'detail-first']) test(`roster ready snapshot: ${order}`, async () => {
   const g = guest();
   if (order === 'rows-first') g.populate(); else g.detail();
-  const early = await g.evaluate(`(${assignmentSnapshot.toString()})(${JSON.stringify(ids)})`);
+  const early = await g.evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`);
   assert.equal(early.ready, false);
-  const result = await readyAssignmentSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready]) }, 'panel', ids);
+  const result = await readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready]) }, 'panel', ids);
   assert.equal(result.ready, true);
-  assert.equal(result.rows.find(r => r.id === 'C2')?.assignment, 'unassigned');
-  assert.equal(result.rows.find(r => r.id === 'C1')?.assignment, 'assigned');
-  assert.equal(result.rows.find(r => r.id === 'N1')?.depth, '2');
+  assert.equal(JSON.stringify(result.rows.find((r: any) => r.session === 'C1')?.facts), '["ran","accepted"]');
+  assert.equal(result.rows.find((r: any) => r.session === 'C2')?.featured, false);
+  assert.ok(result.rows.some((r: any) => r.facts.includes('claimed')));
+  assert.equal(JSON.stringify(result.summary), '["finished","failed","interrupted"]');
   assert.notDeepEqual(result, early);
 });
-for (const state of ['unknown', 'no-plan', 'missing', 'stale']) test(`readiness rejects ${state}`, async () => {
-  const g = guest(); g.detail(); g.populate(state === 'missing' ? '' : state);
-  if (state === 'stale') { g.ready(); g.invalidate(); }
-  await assert.rejects(readyAssignmentSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}]) }, 'panel', ids), /assignment-readiness-timeout/);
+for (const state of ['no-accepted', 'host-only', 'no-plan']) test(`roster readiness rejects ${state}`, async () => {
+  const g = guest(); g.detail(); g.populate();
+  if (state === 'host-only') { g.ready(); g.invalidate(); }
+  // Every other fact ready, but no plan article: never a roster to assert.
+  if (state === 'no-plan') { g.ready(); g.noPlan(); }
+  await assert.rejects(readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}]) }, 'panel', ids), /roster-readiness-timeout/);
 });
-test('invalidation before capture cannot reuse a prior ready snapshot', async () => {
+test('invalidation before capture cannot reuse a prior ready roster', async () => {
   const g = guest(); g.ready();
-  assert.equal((await g.evaluate(`(${assignmentSnapshot.toString()})(${JSON.stringify(ids)})`)).ready, true);
+  assert.equal((await g.evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`)).ready, true);
   g.invalidate();
-  const result = await readyAssignmentSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready]) }, 'panel', ids);
+  const result = await readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready]) }, 'panel', ids);
   assert.equal(result.ready, true);
 });
-test('known wrong assignment is ready and fails the semantic assertion', async () => {
+test('removed clutter and prompt/output canaries are reported, not hidden', async () => {
+  const g = guest(); g.ready();
+  for (const [t, clutter, canary] of [['Finished · 3 minutes ago', false, false], ['Unassigned in this plan', true, false], ['Unknown now · last seen idle', true, false], ['This session · Idle', true, false], ['Synthetic fixed response.', false, true], ['Synthetic unassigned', false, false]] as const) {
+    g.say(t);
+    const r = await g.evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`);
+    assert.equal(JSON.stringify([r.clutter, r.canary]), JSON.stringify([clutter, canary]), t);
+  }
+});
+test('a ready roster with a wrong fact still fails the semantic assertion', async () => {
   const g = guest(); g.ready(); g.wrong();
-  const result = await readyAssignmentSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}]) }, 'panel', ids);
+  const result = await readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}]) }, 'panel', ids);
   assert.equal(result.ready, true);
-  assert.throws(() => assert.ok(result.rows.some(r => r.id === 'C2' && r.unassigned)));
+  assert.throws(() => assert.equal(result.rows.find((r: any) => r.session === 'C1')?.now, null));
 });
 test('ready immediately before deadline succeeds; unresolved at deadline fails', async () => {
   const g = guest();
-  assert.equal((await readyAssignmentSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready], 2) }, 'panel', ids)).ready, true);
+  assert.equal((await readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready], 2) }, 'panel', ids)).ready, true);
   const late = guest();
-  await assert.rejects(readyAssignmentSnapshot({ evaluate: late.evaluate, send: noSend, wait: bounded([() => {}, late.ready], 1) }, 'panel', ids), /timeout/);
+  await assert.rejects(readyRosterSnapshot({ evaluate: late.evaluate, send: noSend, wait: bounded([() => {}, late.ready], 1) }, 'panel', ids), /timeout/);
 });
 
 function targetFixture() {
@@ -187,20 +201,44 @@ test('screenshot protocol failure propagates without retrying observation', asyn
   assert.equal(reads, 1);
 });
 
-test('actual section reader requires the requested observation and finished rendering', () => {
-  let observation = false, animation = false, loaded = true;
+test('actual section reader requires a recorded roster, the requested mark and finished rendering', () => {
+  let observation = false, animation = false, loaded = true, state = 'ready';
   const section = {
-    dataset: { state: 'ready', complete: 'true' },
-    querySelector: () => observation ? { dataset: { state: 'unknown' } } : null,
+    dataset: { get state() { return state; }, testid: 'subagent-activity' },
+    querySelector: () => observation ? { dataset: { state: 'active' } } : null,
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 300, height: 400 }),
     getAnimations: () => animation ? [{ pending: false, playState: 'running', effect: { getTiming: () => ({ iterations: 1 }) } }] : [],
   };
   const document = { querySelector: () => section, visibilityState: 'visible', fonts: { get status() { return loaded ? 'loaded' : 'loading'; } } };
-  const read = () => runInNewContext(`(${screenshotSection.toString()})('census','unknown-row')`, { document, innerHeight: 800 });
+  const read = () => runInNewContext(`(${screenshotSection.toString()})('roster','[data-now="active"]')`, { document, innerHeight: 800 });
   assert.equal(read().ready, false);
   observation = true; assert.equal(read().ready, true);
-  animation = true; assert.equal(read().ready, false);
+  state = 'host-only'; assert.equal(read().ready, false, 'a host-only roster is not the recorded state asked for');
+  state = 'ready'; animation = true; assert.equal(read().ready, false);
   animation = false; loaded = false; assert.equal(read().ready, false);
+  // Any other target (the frame's main, for a view that must have no section) needs no roster state.
+  const main = { ...section, dataset: {} };
+  const plain = runInNewContext(`(${screenshotSection.toString()})('main',null)`, { document: { querySelector: () => main, visibilityState: 'visible', fonts: { status: 'loaded' } }, innerHeight: 800 });
+  assert.equal(plain.ready, true);
+});
+
+test('section reader: a section the frame has not grown to fit is not ready, and names a partial capture', () => {
+  let viewport = 24;
+  const section = { dataset: { state: 'ready', testid: 'subagent-activity' }, querySelector: () => null, getBoundingClientRect: () => ({ x: 3, y: 117, width: 270, height: 204 }), getAnimations: () => [] };
+  const read = () => runInNewContext(`(${screenshotSection.toString()})('roster',null)`, { document: { querySelector: () => section, visibilityState: 'visible', fonts: { status: 'loaded' } }, innerHeight: viewport });
+  // The failing native run: a 24 px frame around a fully painted 204 px section.
+  const small = read();
+  assert.deepEqual([small.ready, small.settled, small.fits], [false, true, false]);
+  assert.equal(partialCapture('native-status-roster', small), 'native-status-roster: partial capture (frame 24 px, section ends at 321 px)');
+  // Once the host grows the frame to fit, it is ready and nothing is reported.
+  viewport = 320;
+  const grown = read();
+  assert.deepEqual([grown.ready, grown.fits], [true, true]);
+  assert.equal(partialCapture('native-status-roster', grown, 204, 204), null);
+  // A clip shorter than the section (host-side frame smaller than the guest says) also fails.
+  assert.match(partialCapture('native-status-roster', grown, 24, 204)!, /partial capture \(clip 24 of 204 px\)/);
+  // Not settled yet (still loading): not a partial capture, the wait simply goes on.
+  assert.equal(partialCapture('x', { ...small, settled: false }), null);
 });
 
 test('actual frame reader rejects a hidden or transitioning frame', () => {
@@ -213,4 +251,12 @@ test('actual frame reader rejects a hidden or transitioning frame', () => {
   assert.equal(read().ready, true);
   animation = true; assert.equal(read().ready, false);
   animation = false; blocked = true; assert.equal(read().ready, false);
+});
+
+test('runtime failures keep only the harness\'s own fixed messages; anything else is a generic code', async () => {
+  const { runtimeFailure } = await import('./subagent-activity-harness.ts');
+  for (const kept of ['select B: non-actionable-target', 'select B: host-selection-timeout', 'select B: reveal sessions: non-actionable-target', 'return A: host-selection-timeout', 'work-status open: non-actionable-target', 'native-screenshot-state-not-stable', 'current-plan-roster-readiness-timeout', 'CDP deadline', 'CDP request failed', 'CDP evaluation failed'])
+    assert.equal(runtimeFailure(new Error(kept)), kept, kept);
+  for (const other of [new Error('ENOENT: /home/someone/private/file'), new Error('select B: something else'), new Error('Synthetic fixed response.'), new TypeError('x is not a function'), 'a string', null, { message: 'CDP deadline' }])
+    assert.equal(runtimeFailure(other), 'other-runtime-failure', String((other as any)?.message ?? other));
 });

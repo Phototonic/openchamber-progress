@@ -828,65 +828,315 @@ file is compared to its assembled folder. Local evidence:
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
 ## Declared delegation correlation
 
-Any installed `subagent` implementation qualifies only through the fixed native
-identity/census/fence/ancestry/control gates below. There is no implementation
-discriminator, separate certification gate, feature flag or policy switch.
-The gates prove which call supplied the result and the child's lineage, not
-that the tool actually created or continued that child: installed tools are
-trusted to report the child they delegated to. Slim is covered through these
-same gates, not separately certified. The observed 2.2.25 stack wraps the native
-tool without rewriting its structured child identity or correlation metadata;
-foreground/background signals satisfy the gates, pre-acknowledgement resume
-lacks a matching result, and competing calls are ambiguous. The latter two cases
-fail closed; post-acknowledgement resume is untested. Explicit link and assigned
-parent relay remain available when native evidence is unavailable.
+`plugin/delegation.ts` owns one hook pair and event subscription, forwarding
+allowlisted run observations to its focused helper. Declarations now persist in
+the same Store and existing plan receipts. There is one pending/reserved intent
+per source/parent, with no TTL or restart re-arming. Database admission order
+reserves the first supported dispatch; result arrival order cannot steal it.
+Second nonempty declarations conflict; explicit cancellation precedes replacement.
 
-`plugin/delegation.ts` owns bounded in-memory declarations and independent hook
-and native-event candidate maps. There is one pending intent per trusted parent
-in the running companion (128 intents, 256 retry records, five-minute TTL).
-There is no durable declaration, adoption, replay scan, worker registry, or
-cross-companion exclusivity guarantee. The report parser accepts `delegate`
-only with the existing request identity/revision fields and `assign`; arbitrary
-actor/source/call/provenance fields are rejected.
+Structured returned identity and complete native same-source/project/location
+immediate-child ancestry are required. Unsupported aliases and text results do
+not bind. The old message-wide one-call census/step fence is superseded. Native
+execution evidence remains a separate run fact, never assignment authority.
+Failed/unconfirmed reserved calls retire intent. A native failed/interrupted
+parent also retires pending call authority without asserting child failure;
+later proven child metadata may still enrich the retained row, not its assignment.
 
-Declaration expiry never certifies an empty in-flight census. Unresolved hook or
-native call evidence is retained in the bounded census beyond that TTL, until a
-matching terminal after-hook or message ended/failed boundary resolves it. Call
-identity includes the parent and assistant message: reusing a call ID in another
-message cannot bypass outstanding execution. If unresolved evidence exhausts the
-census capacity, observation coverage fails closed rather than evicting it; the
-running companion cannot regain binding authority merely through expiry.
-Capture-off still records this bounded, volatile hook/census metadata, including
-new before calls and terminal observations, so it neither invents an empty census
-nor strands completed calls as unresolved after re-enable. Control checks still
-retire pending intents; declarations, reservations and binding commits remain
-disabled. Re-enable never resurrects an old intent or backfills an assignment.
+All asynchronous identity work occurs outside transactions, with one-second
+guards and physical occupancy retained when a host ignores cancellation.
+Binding rechecks generation, plan visibility/lifecycle, original revision and
+task availability. `Store.applyMutation` is the existing private mutation owner;
+an internal savepoint commits link/provenance and durable disposition in the same
+transaction, or records a fixed refusal without losing the dispatch observation.
+Assignment is unioned with the child's current IDs. Status/reporters/counts/report
+time remain unchanged; explicit `link` and restricted-child task relay are intact.
+Capture toggles and plan closure/deletion fence intent even under old writers.
+Partial registrations dispose safely, and late disposed lookups cannot publish.
 
-An intent reserves synchronously at the first delegation before-hook, with no
-other delegation already in flight. A completed after-hook records only the
-structured child identity and supported output status, not result text. Hooks
-never await a closing message event. Independent native input-start/called
-identities must agree on exactly one delegation with the hook census at the
-matching parent/assistant-message `session.step.ended`. Missing pairs, unmatched
-identities/names, a second candidate, failure, expiry, subscription fault or cap
-retires authority. `session.step.failed` is terminal even if a retry reuses the
-assistant message ID. Ancestry resolution runs outside ingestion, has a one-second
-deadline and abort guard, and requires an immediate same-project/location child
-with complete acyclic ancestry (at most 32 hops). Every gate is rechecked after
-asynchronous work and immediately before committing. A tool name or plausible
-result alone is insufficient; missing native evidence retires without binding.
+Run identity hashes use the same canonical JSON serialization as plan mutations;
+object property order does not distinguish declaration retries or read cursors.
+Dispatch/history IDs, handoff claims and retirement fences hash fixed arrays of
+primitive fields, so their existing digests are unchanged. Intent fingerprints
+and cursor keys containing objects change from the earlier development format.
+This extension is unreleased and ships companion/service together; no released
+stored hashes require migration, and development-only intent receipts/cursors
+are not migrated.
 
-Store commit uses the existing serialized `link` authorization, revision and
-receipt/hash guards. It unions declared IDs with that child's existing IDs;
-competing assignments or revision drift are refusal, never read/overwrite retry.
-Only the assignment, optional item-level `assignmentBinding` and ordinary commit
-receipt survive restart. Status/reporters/report age and document capture remain
-unchanged. Empty-item administrative contributions are not child progress.
+Durable intent persists caller source/session IDs only. Binding resolves those
+IDs through the existing `sessions` identity owner populated by native capture;
+it does not retain another Actor/directory snapshot. Declining an after-hook at
+the lookup cap still transactionally records an unconfirmed disposition and
+retires its reservation, so restart cannot strand next-dispatch authority.
 
-The additive `delegation_control` table and `delegation_capture_epoch` trigger
-track capture changes, including old writers changing `meta.enabled`. An off/on
-interval invalidates local authority even if no callback saw the disabled state;
-the generation is capture safety, not a durable declaration or parent claim.
-Partial registrations are disposed on setup failure and disposal fences late
-lookups. The existing authenticated detail route carries optional provenance
-without a new API route or wider session membership.
+Run capture may add verified native session identity to that existing identity
+owner; such metadata is not a progress report. It cannot replace an existing
+reported identity or populate a missing identity already referenced as a plan
+coordinator, linked participant or attributed contributor. This matters because
+directory-filtered plan lists join `sessions`: passive metadata must not change
+plan visibility, summaries, detail, items, history, receipts or contributions.
+Only explicit reporting may update those progress identities. The native proxy
+fixture compares every non-run table exactly except for precisely verified new
+dispatch identities, and checks nonempty list/detail/history views before/after,
+including directory and unassigned-child membership filters.
+
+## Sub-agent run read seam
+
+`shared/subagent-runs.ts` owns the revision-1 DTO, bounds, validated additive
+schema and SQL projections. `Store` wraps every run mutation in its existing
+`BEGIN IMMEDIATE` owner, with the same SQLite busy handling and no awaits inside
+transactions. Extension initialization is explicit companion activation only;
+read-only opens, GETs and `/health` do not initialize it. Exact schema validation
+rejects incomplete, foreign and future extensions. The base user version stays 2.
+Companion activation can upgrade the exact preceding run extension by adding its
+singleton observation-epoch allocator and capture-toggle trigger update. It never
+assigns continuity evidence to epochless old rows. Reads do not perform this upgrade.
+
+`plugin/subagent-runs.ts` is a focused observer called by the existing delegation
+before/after hooks and event subscription. Before capture stores only dispatch
+IDs, dispatch time, allowlisted child-agent/description and unambiguous current
+plan context. Inherited context uses the same cleanup-state eligibility as direct context:
+archived/deleted plans are excluded, but a restored `visible` record does not
+exclude an explicitly reopened active plan.
+Parent/child identity is native, same-source/project/location and
+complete-ancestry checked. Identity work is outside transactions; ignored aborts
+retain physical lookup occupancy. Passive failures qualify capture loss and do
+not abort or modify native execution. After hooks never insert a missing dispatch.
+Native execution observations retain one bounded unassociated interval candidate
+per child; this permits a terminal event before verified after-hook attachment.
+Verified root identities (explicit null parent and empty verified ancestry) are
+not staged as child execution candidates. Root failure/interruption still retires
+pending dispatch authority. At the 256-candidate cap, admission prefers these
+unprotected victims in order: verified roots, candidates whose terminal event is
+older than the five-minute adoption window, then the oldest remaining candidate.
+The first two classes are reclaimed silently; the last records possible capture
+loss. Candidates referenced by an unresolved verified dispatch remain protected;
+if every slot is protected, the new observation is declined with loss.
+
+The five-minute window is measured from the stored terminal event to an incoming
+event from the same source, using native host timestamps, not wall-clock receipt
+age. Out-of-order/older incoming events cannot age candidates forward; another
+source's clock cannot expire them. A terminal exactly five minutes old remains
+eligible. Start-only candidates never silently expire: a foreground child can
+run for hours. Unknown identity alone is not proof of a root.
+
+Foreground subagent calls return when the child ends; background calls return at
+dispatch. The registered after hook starts child-identity resolution immediately,
+with a one-second identity guard, then attaches/adopts in the Store. Existing
+native and controlled regressions establish terminal-before-after ordering. Five
+minutes is a generous bounded allowance for that terminal/after-hook race, not
+a claim that the host guarantees a delivery deadline. Under capacity pressure,
+unassociated completed intervals outside this window may be discarded rather
+than treated as lost runs; a callback delayed beyond the allowance may therefore
+remain unknown. This bounds staging for ordinary completed, unreported sessions
+without falsely latching capture loss, while preserving fresh terminal races,
+long-running starts and unresolved verified dispatches across restart.
+A proven start must follow dispatch and a unique child interval must exist.
+Initial association requires the dispatch's capture generation and observation
+epoch to match the observed start. A dispatch with no proven start before a
+capture gap stays unknown; a later independent resume cannot fill that gap.
+Such stale dispatches do not compete with new-generation calls. Terminal
+ownership requires observation continuity, not merely unchanged capture settings:
+the start and terminal must have been observed in the same unbroken epoch and
+capture generation, or the terminal's durable sequence must immediately follow
+that start's sequence. The latter positively rules out an unobserved finish and
+resume. Sequence counts all session events, not just execution events, so this
+strict adjacency proof is uncommon. Otherwise the terminal stays unassociated with
+capture loss disclosed; an unresolved old run becomes unknown, retaining its
+start evidence but no invented end time, error or outcome. Later interval
+refinement alone cannot clear this uncertainty; a terminal with proven ownership
+can. Already-proven outcomes and their duplicate terminals remain valid.
+Within one unbroken epoch, delayed/non-contiguous terminals still use the ordinary
+sequence interval checks, with no receipt-time expiry. A real execution spanning
+a capture toggle, reload or subscription loss may remain unknown without contiguous evidence; this is a
+disclosed evidence gap, not an inferred failure or success.
+Each companion start, subscription start/restart and disposal allocates a durable
+epoch token. Subscription/observation loss and capture toggles also persist a
+barrier invalidating prior tokens, including tokens held by another process.
+Active observers retain separate tokens; merely starting another observer does
+not invalidate an uninterrupted stream. Lost candidate admission/unsafe eviction
+breaks continuity too. Captured dispatches, proven starts and staged start/end
+events retain their observation token privately; reads strip it from frozen DTOs.
+Candidate staging cannot relabel pre-gap evidence as observed after a restart.
+Event identity is independent of observer identity: a start/end event delivered
+by several companions is one event, deduplicated by its native event ID, with a
+bounded set of epochs that actually observed it. Staged and retained proof keeps
+up to 32 observation epochs per event. Duplicate starts can add the dispatch
+owner's epoch even after another observer staged that event first; they neither
+create another execution nor make the interval ambiguous. Initial association
+matches the dispatch's own epoch, while terminal continuity requires a shared
+observed epoch between that exact start and terminal. Evidence overflow breaks
+observation continuity with loss disclosed rather than permitting a later guess.
+One shared continuity predicate governs dispatch/start association, terminal
+ownership and handoff eligibility: facts need a common observed epoch with their
+execution start, or explicit adjacent native sequences. Handoffs have no native
+sequence and cannot infer contiguity from report time. The reporting companion
+captures its own epoch and report time before asynchronous identity resolution;
+another companion's newer allocator token is not observation evidence.
+Private claim provenance survives staging, attachment, retries and restaging;
+legacy claims without it remain session-only rather than acquiring current proof.
+An epoch-break terminal that makes an open interval unknown revalidates its claim
+through the same restage/retirement-fence handling as interval refinement. An
+unknown interval cannot own a claim. Unassociated claims remain session-only,
+with loss disclosed when a retained execution cannot safely own the report.
+Expected handoff refusals are returned internally as dispositions, committed,
+then mapped to the existing caller errors outside the transaction. A rejected
+legacy retry therefore cannot restore an unsupported association by rolling back
+its detachment/retirement fence, nor erase continuity-loss disclosure or bounded
+capacity handling. Authentication, corrupt state and storage faults still fail
+within the transaction and roll back; the public handoff reply/error shapes do
+not change.
+Read projection budgets the whole 4 KiB row after all enrichment, including the
+fixed accepted-task envelope and `latestForChild: boolean`. Optional agent and
+description hints are nulled first, then task entries are removed with their
+count added to `omittedItems`; if necessary the entire accepted envelope becomes
+null. A valid stored row must not fail a read because its optional enrichment
+does not fit. Projection preserves claimed text, plan context and native facts,
+and never writes this degradation back to storage.
+`latestForChild` is required on every returned row, read-only and not stored. SQL
+ranks the full proven retained root/source scope before useful/history selection
+and paging. Childless rows are false; exactly one row per retained child wins.
+Dispatch rows outrank session history, then compare proven start (else dispatch
+time), dispatch time and native sequence descending (missing sequence is -1).
+History compares end (else update time). Exact ties follow page order: running
+first, creation time descending, then stable ID ascending. A latest row outside
+the loaded page or selected view still prevents an older row from receiving the
+flag. Existing incomplete-history/traversal disclosures qualify the scope.
+Unresolved starts remain keyed by event ID inside the same 4 KiB per-child
+candidate, including earlier starts when one observer runs ahead through a resume.
+Initial association cannot skip an earlier still-unassociated start that could
+belong to the dispatch. A delayed owner duplicate can therefore prove the original
+start; it cannot make the old dispatch adopt the later independent resume.
+Every private payload update is checked against the same 4 KiB UTF-8 limit,
+including correlation and displaced-terminal staging after interval refinement.
+An oversized candidate is discarded with observation loss/epoch invalidation,
+not left as permanently unwritable pending work. Row growth first drops optional
+agent/description hints and a cached accepted-task projection (reads can re-project
+current assignments). If needed it also empties optional observer-epoch proof
+sets, disclosing the continuity loss; empty sets prove no observer continuity.
+An attached claim retains at least its common start/claim epoch proof even under
+byte pressure; pruning optional proof cannot leave an unsupported association.
+Native start identity, the immutable dispatch epoch, authored claims and retirement
+fences are preserved. An observation that still cannot fit is dropped/disclosed,
+without retrying the same failed payload or certifying an unstored outcome.
+Pending childless calls compete only when admitted in the same generation and epoch at or before an unassociated
+candidate's start. Once that start is proven for a dispatch, a later pending call
+cannot prevent its matching terminal event from completing the execution; no
+callback from the later call is required, even when the resumed call has already
+verified the same child. Terminal routing precedes initial-association competition:
+ownership is determined first by the host's per-session durable sequence: the
+greatest start sequence below the terminal, with no intervening observed start.
+It is never selected by timestamp, latest dispatch or latest event arrival.
+Timestamps must then be consistent with that sequence interval, including the
+next start boundary. A contradiction leaves the terminal unassociated with
+capture loss disclosed; it never falls back to an older execution. Equal host
+timestamps are permitted when native sequence establishes the order.
+One event can belong to at most one run. Two unassociated calls that could own
+the same start still refuse association; an earlier proven interval does not
+compete for a distinct later start. Clock/sequence contradictions cannot certify
+an interval.
+
+Each proven run privately retains its start event ID/sequence within the same
+bounded payload, stripped from read DTOs. This preserves the start evidence after
+a terminal replaces the public latest-event fields. A delayed earlier terminal
+can close its older interval even after a resumed execution has started/finished.
+If a terminal arrived before that resumed start and was provisionally associated
+with the older interval, the newly observed start refines the boundary: the older
+start is restored and the displaced terminal is routed/staged for its own interval.
+This is correction from native evidence, not time-based Running expiry. Deferred
+events are reconsidered after start/after-hook association without a history scan
+or another event source. Every interval-bound update uses the same interval and
+claim revalidation owner, including restoring an older interval to Running. An
+attached report must precede the next start boundary even if its own terminal is
+still missing. Corrected claims are also reconsidered against already
+proven resumed intervals, including ones that have already completed; full staging
+still drops only the claim with its existing retirement fence and loss disclosure.
+Historical session summaries are not competing dispatches. They remain separate
+history (and in historical/state counts and normal eviction protection); a later
+proven execution does not certify or replace an unknown earlier session summary.
+No prompt/result text or raw error/event is serialized. The ordinary report,
+link and task-status paths remain independent.
+
+After a discontinuity, the existing bounded producer-takeover reconciliation
+attempt can recover the latest reliable session outcome/end time via native
+session get/list metadata only. A newer, time-consistent idle/outcome may refresh
+an older historical summary; stale or contradictory metadata cannot. Such facts
+stay separate `historical-session` rows with `native-session` provenance, no
+execution ID and no invented start. They do not certify the unknown dispatch:
+session metadata cannot distinguish an original execution from an unseen resume.
+Recovery remains lease/budget fenced, with no transcript access or retry loop.
+A terminal rejected for an epoch break also requests one bounded metadata refresh
+for its child through the existing parent recovery job, even if restart recovery
+already completed while the child was still running. Pending requests coalesce;
+an in-flight scan retains one follow-up demand so a child already visited is
+scanned again after completion. A private terminal-sequence fence prevents replay
+or another observer's duplicate notification from creating a refresh loop. The
+existing job, storage and traversal bounds still apply; unavailable admission
+leaves the dispatch unknown with capture loss disclosed and permits a later retry.
+Refresh results remain separate `native-session` history, never dispatch outcomes.
+The private refresh marker uses numeric `0`/`1` states of equal serialized width,
+so claiming work cannot exceed the size checked at admission. Earlier boolean
+markers remain readable and shrink when claimed or re-saved; no growing boolean
+transition can strand an admitted recovery job at the row-byte limit.
+
+`GET /v1/subagent-runs` is side-effect free. Authenticated reconciliation POSTs
+create/coalesce finite source/root demand in the same database. A single unref'd
+3-second companion timer checks this queue (no empty-queue host scan). The
+companion verifies root/location before a transactional claim, then calls only
+native session get/list outside transactions. List-by-parent traversal uses
+exact links, cycle/depth/page/call/record/cooperative-time limits. Commit rechecks
+request claim and persistent capture generation. A disabled capture interval
+invalidates outstanding publication even if subsequently re-enabled. Ordinary
+reads and duplicate settled requests neither re-backfill nor re-stamp records.
+No service or guest native host credentials, session proxy or transcript API is
+introduced. Stored facts stay readable with capture disabled or companion absent.
+Plan-scoped run reads admit the root session's recorded attributed contribution,
+as session-scoped plan lists do, even after its explicit link is removed. This is
+read scope only: past contributions grant neither assignment/report authority nor
+inherited dispatch plan context.
+Plan-scoped accepted-task projection reads only task identity/status/assignee and
+link facts, not blocker details or the full stored plan. Valid snapshots may grow
+beyond 1 MiB through bounded writes; that response limit is not a stored-plan
+size invariant. The existing 1,000-item/64-link structural bounds and run DTO,
+accepted-item and response bounds still apply.
+
+The read-seam tests use a real SQLite store and authenticated HTTP server with
+the actual delegation registration and controlled native metadata replies.
+They are portable evidence, not native-runtime certification. The separate
+source/built native fixture records which host boundaries were actually exercised.
+An explicit backend-only fixture mode omits UI/browser work, never certifying it.
+
+The report router accepts a plan-free optional `handoff` only from its actual
+native child caller. It validates a safe authored one-line summary, server-stamps
+the time, stages unknown execution association separately and attaches on unique
+interval evidence. Retries and conflicts do not advance task progress.
+Changing an interval revalidates an already attached report: one outside its
+start/end or next-start bounds returns atomically to session-only staging, preserving its authored
+fields and operation identity for retry or later resumed-execution association.
+Valid attached claims are not overwritten by other staged reports. Host terminal
+facts take priority: if claim staging or total storage has no spare capacity, or
+the unknown-execution slot conflicts, the invalid claim is detached and dropped
+with `capture.loss` disclosed. The terminal still applies; capture stays enabled
+and available. Restaging never prunes host runs to retain the lower-priority claim.
+A dropped claim leaves one private operation-ID/hash fence in the affected run's
+stored payload, replacing the removed claim without allocating a bookkeeping row.
+It retains no authored text and is stripped from every run read DTO. An identical
+retry is refused with the existing retired-operation response; altered payloads
+still fail operation reuse, while a fresh operation ID remains usable. Saves
+preserve the fence across restart and later updates. Ordinary eviction transfers
+it to `runs_retired`, under the same total budget and no-fence-loss retention rule;
+if a row also carries another claim, admission must have room to retain both
+fences. This retention check affects eviction, never terminal persistence.
+Current explicit task facts are projected into `accepted` at read time, bounded by row
+bytes with an omitted-item count. Plan changes invalidate run-page cursors through
+the monotonic run revision; stale stored acceptance is not resurrected.
+
+Terminal-first retention uses the same transaction owner. Protected active state
+is never evicted to admit new metadata. Unknown historical metadata is protected,
+and the last retained ancestry edge to retained descendants is not a pruning
+candidate. No parallel lineage archive is introduced. Pruned authored claims leave bounded
+receipt fences counted in the total budget; replay cannot recreate history.
+Historical continuation queues persist across companion reload and consume the
+same bounded bookkeeping budget. A producer lease qualifies restart recovery,
+not activity liveness. The timer performs no native scan for an empty queue;
+ignored cancellation still occupies a physical host slot until settlement.

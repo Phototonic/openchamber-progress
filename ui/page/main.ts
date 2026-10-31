@@ -10,7 +10,7 @@ import { digestBlock } from '../shared/change-digest-view.ts';
 import { plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
-import { censusBlock } from '../shared/census-view.ts';
+import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView, type SearchHitView } from '../shared/model.ts';
 import {
   ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf, projectsFor, searchFilterOptions, type Filters, type Option,
@@ -403,9 +403,9 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   } else {
     detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading }));
     // Rooted in this plan's verified coordinator session; a plan from another setup borrows nothing.
-    const census = trusted(plan, env) && vc.read ? censusBlock({
-      surface: 'page', census: censusFor(plan.ownerSessionId, plan.directory, vc.live),
-      facts: planFacts(plan, vc.detail(plan), env.boundSource), verified: true, captureEnabled: vc.read.captureEnabled, env,
+    const census = trusted(plan, env) && vc.read ? subagentsBlock({
+      surface: 'page', plan, census: censusFor(plan.ownerSessionId, plan.directory, vc.live), facts: planFacts(plan, vc.detail(plan), env.boundSource),
+      runs: vc.runs(runClaim(vc.read, plan.ownerSessionId, plan)), verified: true, currentSession: null, liveSeq: vc.live.seq, env,
     }) : null;
     if (census) detail.append(census);
   }

@@ -79,16 +79,8 @@ export function elapsedLabel(plan: PlanView, item: ItemView, detail: PlanDetail,
  * when the label differs. Elapsed time comes from each label's anchor, not from counted ticks.
  */
 export function refreshLabels(root: ParentNode, locale: string, now = Date.now(), mono = performance.now()) {
-  // Observed activity past its freshness window turns unknown in place (census-view.ts markup).
-  for (const n of root.querySelectorAll<HTMLElement>('[data-expires]')) {
-    if (mono < Number(n.dataset.expires)) continue;
-    delete n.dataset.expires;
-    n.dataset.state = 'unknown';
-    const label = n.querySelector('.ap-obs-label'), last = n.querySelector('.ap-obs-last'), time = n.querySelector<HTMLTimeElement>('time[data-age]');
-    if (label) label.textContent = n.dataset.staleLabel ?? '';
-    if (last) last.textContent = n.dataset.staleLast ?? '';
-    if (time) time.dataset.age = ' · ';
-  }
+  // Only time text moves here. Activity and run state never change from elapsed time: no label
+  // expires, so a steady Running row stays Running until the host reports something else.
   for (const t of root.querySelectorAll<HTMLTimeElement>('time[data-age]')) {
     const text = `${t.dataset.age ?? ''}${relativeAge(t.dateTime, now, locale)}`;
     if (t.textContent !== text) t.textContent = text;
