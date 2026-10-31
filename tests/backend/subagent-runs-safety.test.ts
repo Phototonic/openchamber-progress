@@ -19,13 +19,22 @@ for(const state of ['succeeded','failed','interrupted'] as const)for(const reaso
   });
 });
 
-test('missing starts, clock anomalies, old outcomes and same-child competitors never certify completion',async()=>{
+test('missing starts and clock anomalies never certify intervals; same-child starts need a unique dispatch',async()=>{
   await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
     f.store.observeExecution({...start,state:'succeeded',id:'missing-start-terminal',sequence:11,at:3000});assert.equal(read(f).data[0].ran.state,'unknown');
     f.store.observeExecution({...start,at:4000});assert.equal(read(f).data[0].ran.state,'running');assert.equal(read(f).data[0].ran.endedAt,null);
     const second={...key,call:'call-2',message:'message-2'};f.store.beforeRun(second,f.actor(),'subagent',{},5000);f.store.afterRun(second,0,f.actor('C1'),'returned');
-    f.store.observeExecution({...start,id:'second-start',sequence:12,at:6000});f.store.observeExecution({...start,state:'succeeded',id:'second-end',sequence:13,at:7000});assert.equal(read(f).data.find((r:any)=>r.dispatch.callId==='call-2').ran.state,'unknown');
+    f.store.observeExecution({...start,id:'second-start',sequence:12,at:6000});f.store.observeExecution({...start,state:'succeeded',id:'second-end',sequence:13,at:7000});
+    const runs=read(f).data;assert.equal(runs.find((r:any)=>r.dispatch.callId==='call-2').ran.state,'succeeded');
+    assert.equal(runs.find((r:any)=>r.dispatch.callId===key.call).ran.state,'running');assert.equal(runs.find((r:any)=>r.dispatch.callId===key.call).ran.endedAt,null);
+  });
+  await fixture(async f=>{
+    const second={...key,call:'call-2',message:'message-2'};
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.beforeRun(second,f.actor(),'subagent',{},1500);
+    f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.afterRun(second,0,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,at:3000});f.store.observeExecution({...start,state:'succeeded',id:'ambiguous-end',sequence:11,at:4000});
+    assert.equal(read(f).counts.unknown,2);assert.equal(read(f).counts.succeeded,0);
   });
 });
 
@@ -97,7 +106,7 @@ test('terminal-first pruning never resurrects a callback or pruned authored clai
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.observeExecution(start);f.store.afterRun(key,0,f.actor('C1'),'returned');
     const req={op:'handoff',oid:'claim',summary:'Safe authored result',outcome:'done'};f.store.handoff(req,f.actor('C1'),2500);f.store.observeExecution({...start,state:'succeeded',id:'end',sequence:11,at:3000});
     const template=String(f.store.db.prepare('SELECT payload FROM runs_rows LIMIT 1').get()!.payload);
-    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1023) INSERT INTO runs_rows SELECT 'protected-'||i,'source-alpha','A',NULL,'message-other','call-other-'||i,0,0,5000,json_set(?,'$.id','protected-'||i,'$.claimed',json('null'),'$.childSessionId',json('null'),'$.ran.state','unknown') FROM n`).run(template);
+    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1023) INSERT INTO runs_rows SELECT 'protected-'||i,'source-alpha','A',NULL,'message-other','call-other-'||i,0,0,5000,json_set(json_remove(?,'$._startEvent','$._retiredClaim'),'$.id','protected-'||i,'$.claimed',json('null'),'$.childSessionId',json('null'),'$.ran.state','unknown') FROM n`).run(template);
     f.store.beforeRun({...key,call:'new'},f.actor(),'subagent',{},6000);assert.equal(read(f).counts.runs,1024);assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_retired').get()!.n,1);
     f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution({...start,state:'succeeded',id:'end',sequence:11,at:3000});assert.throws(()=>f.store.handoff(req,f.actor('C1'),7000),/not-found/);assert.equal(read(f).counts.runs,1024);
     const reopened=new Store(f.store.file,{readOnly:true});try{assert.equal(reopened.subagentRunsAvailable(),true);}finally{reopened.close();}

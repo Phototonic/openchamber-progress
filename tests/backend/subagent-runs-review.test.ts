@@ -8,6 +8,73 @@ const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
 const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
 
+test('review delayed terminal closes its proven execution after a resumed dispatch is verified, preserving claim correction',async()=>{
+  for(const mode of ['restage','fence'] as const)for(const endedAt of [3000,4500])for(const phase of ['before','after'])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');
+    const report={op:'handoff',oid:'resumed-report',summary:'Resumed result',outcome:'partial'};
+    const claim=f.store.handoff(report,f.actor('C1'),5500).handoff;
+    if(mode==='fence')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(claim));
+    const resumed=()=>{f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});};
+    if(phase==='before')resumed();
+    const terminal={...start,id:'first-end',sequence:11,at:endedAt,state:'succeeded' as const};
+    if(phase==='before'){
+      const reopened=new Store(f.store.file);
+      try{reopened.observeExecution(terminal);}finally{reopened.close();}
+    }else f.store.observeExecution(terminal);
+    const first=()=>read(f).data.find((r:RunRow)=>r.dispatch?.callId===key.call)!;
+    assert.equal(first().ran.state,'succeeded');assert.equal(first().ran.endedAt,endedAt);assert.equal(first().claimed,null);
+    if(mode==='fence')f.store.db.exec('DELETE FROM runs_claims');
+    if(phase==='after')resumed();
+    const second=read(f).data.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    assert.equal(second.ran.state,'succeeded');assert.equal(second.ran.startedAt,5000);assert.equal(second.ran.endedAt,6000);
+    if(mode==='restage')assert.equal(second.claimed!.oid,report.oid);
+    else {assert.equal(second.claimed,null);assert.throws(()=>f.store.handoff(report,f.actor('C1'),7000),/not-found/);}
+  });
+});
+
+test('review same-child sequential executions correlate across event and verified-hook interleavings',async()=>{
+  type Step='A-end'|'B-dispatch'|'B-after'|'B-start'|'B-end';
+  const permutations=(steps:Step[]):Step[][]=>steps.length?steps.flatMap((step,i)=>permutations(steps.filter((_,j)=>i!==j)).map(tail=>[step,...tail])):[[]];
+  const orders=permutations(['A-end','B-dispatch','B-after','B-start','B-end']).filter(order=>order.indexOf('B-dispatch')<order.indexOf('B-after'));
+  const failures:string[]=[];
+  for(const order of orders)await fixture(async f=>{
+    const progress=f.store.detail(f.source.id,'plan-alpha');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    for(const step of order){
+      if(step==='B-dispatch')f.store.beforeRun(next,f.actor(),'subagent',{},4000);
+      if(step==='B-after')f.store.afterRun(next,0,f.actor('C1'),'returned');
+      if(step==='A-end')f.store.observeExecution({...start,id:'first-end',sequence:11,at:3000,state:'succeeded'});
+      if(step==='B-start')f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});
+      if(step==='B-end')f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});
+    }
+    const runs=read(f).data;
+    const first=runs.find((r:RunRow)=>r.dispatch?.callId===key.call)!,second=runs.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    if(first.ran.state!=='succeeded'||first.ran.startedAt!==2000||first.ran.endedAt!==3000||first.ran.sequence!==11||first.ran.eventId!=='first-end'||second.ran.state!=='succeeded'||second.ran.startedAt!==5000||second.ran.endedAt!==6000||second.ran.sequence!==13||second.ran.eventId!=='next-end')failures.push(`${order.join(' → ')}: ${first.ran.state}/${first.ran.endedAt}, ${second.ran.state}/${second.ran.endedAt}`);
+    assert.ok(runs.every((r:RunRow)=>!Object.hasOwn(r,'_startEvent')),'start proof does not extend the read DTO');
+    for(const event of [start,{...start,id:'first-end',sequence:11,at:3000,state:'succeeded' as const},{...start,id:'next-start',sequence:12,at:5000},{...start,id:'next-end',sequence:13,at:6000,state:'succeeded' as const}])f.store.observeExecution(event);
+    assert.deepEqual(read(f).data,runs,'event replays cannot revive or reassign an interval');
+    assert.deepEqual(f.store.detail(f.source.id,'plan-alpha'),progress);
+  });
+  assert.deepEqual(failures,[]);
+});
+
+test('review obsolete starts outside retained dispatches cannot poison a later proven interval',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.observeExecution({...start,id:'obsolete-start',sequence:1,at:1});
+    f.store.observeExecution({...start,id:'first-end',sequence:11,at:3000,state:'succeeded'});
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});
+    assert.equal(read(f).counts.succeeded,2);
+  });
+});
+
 test('review dropped handoff retries stay retired across reopen and a later execution without spare storage',async()=>{
   for(const bound of ['claims','total'] as const)await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
@@ -272,7 +339,7 @@ function fillProtectedParent(f:any,n=1023) {
   const template=String(f.store.db.prepare('SELECT payload FROM runs_rows ORDER BY rowid LIMIT 1').get()!.payload);
   f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
     INSERT INTO runs_rows SELECT 'protected-'||i,'source-alpha','A',NULL,'protected-message','protected-call-'||i,0,0,10000,
-    json_set(?,'$.id','protected-'||i,'$.parentSessionId','A','$.childSessionId',json('null'),'$.ran.state','unknown','$.ran.dispatchState','pending','$.ran.startedAt',json('null'),'$.ran.endedAt',json('null'),'$.claimed',json('null')) FROM n`).run(n,template);
+    json_set(json_remove(?,'$._startEvent','$._retiredClaim'),'$.id','protected-'||i,'$.parentSessionId','A','$.childSessionId',json('null'),'$.ran.state','unknown','$.ran.dispatchState','pending','$.ran.startedAt',json('null'),'$.ran.endedAt',json('null'),'$.claimed',json('null')) FROM n`).run(n,template);
 }
 
 test('review P1 unknown historical activity is protected at capacity, not assumed inactive',async()=>{

@@ -890,7 +890,7 @@ Parent/child identity is native, same-source/project/location and
 complete-ancestry checked. Identity work is outside transactions; ignored aborts
 retain physical lookup occupancy. Passive failures qualify capture loss and do
 not abort or modify native execution. After hooks never insert a missing dispatch.
-Native execution observations retain only the latest bounded interval candidate
+Native execution observations retain only the latest bounded unassociated interval candidate
 per child; this permits a terminal event before verified after-hook attachment.
 Verified root identities (explicit null parent and empty verified ancestry) are
 not staged as child execution candidates. Root failure/interruption still retires
@@ -923,8 +923,27 @@ A proven start must follow dispatch and a unique child interval must exist.
 Pending childless calls compete only when admitted at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
-callback from the later call is required. Same-child execution ambiguity checks
-remain independent.
+callback from the later call is required, even when the resumed call has already
+verified the same child. Terminal routing precedes initial-association competition:
+ownership is determined by proven start boundaries and compatible native sequence
+ordering, never by the latest dispatch or the latest event seen for the child.
+One event can belong to at most one run. Two unassociated calls that could own
+the same start still refuse association; an earlier proven interval does not
+compete for a distinct later start. Clock/sequence contradictions cannot certify
+an interval.
+
+Each proven run privately retains its start event ID/sequence within the same
+bounded payload, stripped from read DTOs. This preserves the start evidence after
+a terminal replaces the public latest-event fields. A delayed earlier terminal
+can close its older interval even after a resumed execution has started/finished.
+If a terminal arrived before that resumed start and was provisionally associated
+with the older interval, the newly observed start refines the boundary: the older
+start is restored and the displaced terminal is routed/staged for its own interval.
+This is correction from native evidence, not time-based Running expiry. Deferred
+events are reconsidered after start/after-hook association without a history scan
+or another event source. Corrected claims are also reconsidered against already
+proven resumed intervals, including ones that have already completed; full staging
+still drops only the claim with its existing retirement fence and loss disclosure.
 Historical session summaries are not competing dispatches. They remain separate
 history (and in historical/state counts and normal eviction protection); a later
 proven execution does not certify or replace an unknown earlier session summary.
