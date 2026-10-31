@@ -85,8 +85,11 @@ export class Store {
   installSubagentRuns() { return this.transaction(true,()=>runs.installRuns(this.db)); }
   subagentRunsAvailable() { return this.transaction(false,()=>runs.runsInstalled(this.db)); }
   runControl() { return this.transaction(false,()=>runs.runControl(this.db)); }
+  beginRunObservation() {return this.transaction(true,()=>runs.beginObservation(this.db));}
+  runObservationEpoch() {return this.transaction(false,()=>runs.observationEpoch(this.db));}
+  runObservationInterrupted(epoch:number) {return this.transaction(false,()=>runs.observationInterrupted(this.db,epoch));}
   runCaptureUnavailable() { return this.transaction(true,()=>runs.runCaptureUnavailable(this.db)); }
-  beforeRun(key:runs.DispatchKey,actor:Actor,tool:'subagent'|'task',input:unknown,at:number) { return this.transaction(true,()=>runs.beforeRun(this.db,key,actor,tool,input,at)); }
+  beforeRun(key:runs.DispatchKey,actor:Actor,tool:'subagent'|'task',input:unknown,at:number,epoch?:number) { return this.transaction(true,()=>runs.beforeRun(this.db,key,actor,tool,input,at,epoch)); }
   afterRun(key:runs.DispatchKey,generation:number,child:Actor|undefined,disposition:'returned'|'failed-unconfirmed'|'unconfirmed') { return this.transaction(true,()=>{
     runs.afterRun(this.db,key,generation,child,disposition);
     const i=runs.reservedIntent(this.db,key);if(!i)return;
@@ -106,7 +109,10 @@ export class Store {
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
   handoff(value:unknown,actor:Actor,now=Date.now()) {const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');return this.transaction(true,()=>runs.handoff(this.db,r,actor,now));}
-  observeExecution(event:runs.ExecutionObservation) { return this.transaction(true,()=>runs.observeExecution(this.db,event)); }
+  observeExecution(event:runs.ExecutionObservation,epoch?:number) { return this.transaction(true,()=>{
+    const observed=epoch===undefined?runs.observationEpoch(this.db):runs.observationInterrupted(this.db,epoch)?runs.beginObservation(this.db):epoch;
+    return runs.observeExecution(this.db,event,observed)??observed;
+  }); }
   subagentRuns(request:runs.RunRequest,now?:number) { return this.transaction(false,()=>runs.readRuns(this.db,this.readBinding,request,now)); }
   requestRunReconciliation(request:runs.ReconcileRequest) { return this.transaction(true,()=>runs.requestReconciliation(this.db,this.readBinding,request)); }
   pendingRunRecovery(source:string) { return this.transaction(false,()=>runs.pendingRecovery(this.db,source)); }

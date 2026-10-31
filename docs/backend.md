@@ -888,6 +888,9 @@ schema and SQL projections. `Store` wraps every run mutation in its existing
 transactions. Extension initialization is explicit companion activation only;
 read-only opens, GETs and `/health` do not initialize it. Exact schema validation
 rejects incomplete, foreign and future extensions. The base user version stays 2.
+Companion activation can upgrade the exact preceding run extension by adding its
+singleton observation-epoch allocator and capture-toggle trigger update. It never
+assigns continuity evidence to epochless old rows. Reads do not perform this upgrade.
 
 `plugin/subagent-runs.ts` is a focused observer called by the existing delegation
 before/after hooks and event subscription. Before capture stores only dispatch
@@ -929,23 +932,33 @@ remain unknown. This bounds staging for ordinary completed, unreported sessions
 without falsely latching capture loss, while preserving fresh terminal races,
 long-running starts and unresolved verified dispatches across restart.
 A proven start must follow dispatch and a unique child interval must exist.
-Initial association requires the dispatch's capture generation to match the
-observed start's current generation. A dispatch with no proven start before a
+Initial association requires the dispatch's capture generation and observation
+epoch to match the observed start. A dispatch with no proven start before a
 capture gap stays unknown; a later independent resume cannot fill that gap.
 Such stale dispatches do not compete with new-generation calls. Terminal
-ownership also requires capture continuity: the proven start must share the
-current capture generation, or the terminal's durable sequence must immediately
-follow that start's sequence. The latter positively rules out an unobserved finish
-and resume during a capture gap. Otherwise the terminal stays unassociated with
+ownership requires observation continuity, not merely unchanged capture settings:
+the start and terminal must have been observed in the same unbroken epoch and
+capture generation, or the terminal's durable sequence must immediately follow
+that start's sequence. The latter positively rules out an unobserved finish and
+resume. Sequence counts all session events, not just execution events, so this
+strict adjacency proof is uncommon. Otherwise the terminal stays unassociated with
 capture loss disclosed; an unresolved old run becomes unknown, retaining its
 start evidence but no invented end time, error or outcome. Later interval
 refinement alone cannot clear this uncertainty; a terminal with proven ownership
 can. Already-proven outcomes and their duplicate terminals remain valid.
-Within one generation, delayed/non-contiguous terminals still use the ordinary
+Within one unbroken epoch, delayed/non-contiguous terminals still use the ordinary
 sequence interval checks, with no receipt-time expiry. A real execution spanning
-a capture toggle may remain unknown without contiguous evidence; this is a
+a capture toggle, reload or subscription loss may remain unknown without contiguous evidence; this is a
 disclosed evidence gap, not an inferred failure or success.
-Pending childless calls compete only when admitted in the same generation at or before an unassociated
+Each companion start, subscription start/restart and disposal allocates a durable
+epoch token. Subscription/observation loss and capture toggles also persist a
+barrier invalidating prior tokens, including tokens held by another process.
+Active observers retain separate tokens; merely starting another observer does
+not invalidate an uninterrupted stream. Lost candidate admission/unsafe eviction
+breaks continuity too. Captured dispatches, proven starts and staged start/end
+events retain their observation token privately; reads strip it from frozen DTOs.
+Candidate staging cannot relabel pre-gap evidence as observed after a restart.
+Pending childless calls compete only when admitted in the same generation and epoch at or before an unassociated
 candidate's start. Once that start is proven for a dispatch, a later pending call
 cannot prevent its matching terminal event from completing the execution; no
 callback from the later call is required, even when the resumed call has already
@@ -982,6 +995,15 @@ history (and in historical/state counts and normal eviction protection); a later
 proven execution does not certify or replace an unknown earlier session summary.
 No prompt/result text or raw error/event is serialized. The ordinary report,
 link and task-status paths remain independent.
+
+After a discontinuity, the existing bounded producer-takeover reconciliation
+attempt can recover the latest reliable session outcome/end time via native
+session get/list metadata only. A newer, time-consistent idle/outcome may refresh
+an older historical summary; stale or contradictory metadata cannot. Such facts
+stay separate `historical-session` rows with `native-session` provenance, no
+execution ID and no invented start. They do not certify the unknown dispatch:
+session metadata cannot distinguish an original execution from an unseen resume.
+Recovery remains lease/budget fenced, with no transcript access or retry loop.
 
 `GET /v1/subagent-runs` is side-effect free. Authenticated reconciliation POSTs
 create/coalesce finite source/root demand in the same database. A single unref'd

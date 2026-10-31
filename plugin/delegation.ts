@@ -14,9 +14,9 @@ export async function registerDelegation(ctx:Plugin.Context,options:{store:Store
   try {
     registrations.push(await ctx.tool.hook('execute.before',capture.before));
     registrations.push(await ctx.tool.hook('execute.after',capture.after));
-    try{const stream=ctx.event.subscribe({signal:abort.signal});
-      events=(async()=>{try{for await(const event of stream){if(disposed)break;capture.event(event);}}catch{}finally{if(!disposed)try{options.store.runCaptureUnavailable();}catch{}}})();
-    }catch{options.store.runCaptureUnavailable();}
+    try{capture.observationStarted();const stream=ctx.event.subscribe({signal:abort.signal});
+      events=(async()=>{try{for await(const event of stream){if(disposed)break;capture.event(event);}}catch{}finally{if(!disposed)capture.unavailable();}})();
+    }catch{capture.unavailable();}
     return {declare:(value:unknown,actor:Actor)=>options.store.declareDelegation(value,actor),dispose,drainRuns:capture.drain,settledRuns:capture.settled,settled:capture.settled};
   }catch(e){await dispose();throw e;}
 }

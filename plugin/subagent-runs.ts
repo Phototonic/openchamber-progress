@@ -9,14 +9,17 @@ const object=(v:unknown):v is Record<string,any>=>!!v&&typeof v==='object'&&!Arr
 export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceId:string;identity(id:string,alive:()=>boolean,signal:AbortSignal):Promise<Actor>;now?:()=>number}) {
   const {store,sourceId}=options;store.installSubagentRuns();
   const now=options.now??Date.now,abort=new AbortController();let disposed=false,draining=false;
+  let epoch=store.beginRunObservation(),generation=store.runControl().generation;
   const lookups=new Set<Promise<void>>();
-  const producer=randomUUID();
+  let producer=randomUUID();
   let physicalIdentities=0;
   const active=()=>!disposed&&!abort.signal.aborted;
   const key=(e:any):DispatchKey=>({source:sourceId,parent:e.sessionID,message:e.messageID,call:e.id});
   const valid=(e:any)=>['subagent','task'].includes(e.tool)&&[e.sessionID,e.messageID,e.id].every(identifier);
   // Failure is fixed metadata only; observation must never abort a native tool.
-  const unavailable=()=>{try{store.runCaptureUnavailable();}catch{}};
+  const observationStarted=()=>{epoch=store.beginRunObservation();generation=store.runControl().generation;producer=randomUUID();};
+  const currentEpoch=()=>{if(store.runControl().generation!==generation||store.runObservationInterrupted(epoch))observationStarted();return epoch;};
+  const unavailable=()=>{try{store.runCaptureUnavailable();epoch=store.runObservationEpoch();producer=randomUUID();}catch{}};
   async function identity(id:string) {
     if(physicalIdentities>=2)throw Error('capture-unavailable');
     const controller=new AbortController(),signal=AbortSignal.any([controller.signal,abort.signal]);
@@ -31,9 +34,9 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
     if(!valid(e)||!active())return;
     try{
       const c=store.runControl();if(!c.enabled)return;
-      const at=now();const actor=await identity(e.sessionID);if(!active()||store.runControl().generation!==c.generation)return;
+      const at=now(),observedEpoch=currentEpoch();const actor=await identity(e.sessionID);if(!active()||store.runControl().generation!==c.generation)return;
       if(actor.directory!==ctx.location.directory||!actor.ancestry)return;
-      store.beforeRun(key(e),actor,e.tool,e.input,at);
+      store.beforeRun(key(e),actor,e.tool,e.input,at,observedEpoch);
     }catch{unavailable();}
   }
   async function resolveAfter(e:any) {
@@ -71,7 +74,7 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
     // candidate until after-hook/child-handoff identity proves native lineage.
     if(!['started','succeeded','failed','interrupted'].includes(state)||!object(d)||!identifier(d.sessionID)||!identifier(e.id)||!Number.isSafeInteger(e.created)||e.created<0||!Number.isSafeInteger(e.durable?.seq)||e.durable.seq<0||e.durable.aggregateID!==d.sessionID||e.location!==undefined&&e.location?.directory!==ctx.location.directory)return;
     const observation:ExecutionObservation={source:sourceId,child:d.sessionID,id:e.id,sequence:e.durable.seq,at:e.created,state:state==='started'?'running':state,errorType:state==='failed'?safeErrorType(d.error?.type):null,interruptionReason:state==='interrupted'&&['user','shutdown','superseded','inactivity'].includes(d.reason)?d.reason:state==='interrupted'?'unknown':null};
-    try{store.observeExecution(observation);}catch{unavailable();}
+    try{epoch=store.observeExecution(observation,currentEpoch());}catch{unavailable();}
   }
   async function drain() {
     if(!active())return;
@@ -126,5 +129,5 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
     }catch{unavailable();}finally{draining=false;}
   }
   const timer=setInterval(()=>{void drain();},3000);timer.unref();
-  return {before,after,event,drain,settled:async()=>{await Promise.all([...lookups]);},dispose(){disposed=true;abort.abort();clearInterval(timer);}};
+  return {before,after,event,drain,observationStarted,unavailable,settled:async()=>{await Promise.all([...lookups]);},dispose(){if(disposed)return;disposed=true;try{store.beginRunObservation();}catch{}abort.abort();clearInterval(timer);}};
 }
