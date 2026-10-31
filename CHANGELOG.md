@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- Durable sub-agent run records: the companion keeps a bounded record of each sub-agent dispatch (parent, child, agent type, dispatch description and times) and takes each run's outcome from host execution events — succeeded, failed with an error type, or interrupted with a reason — including background sub-agents that finish after their call returns. Prompts, outputs and transcripts are never stored (#31).
+- Automatic plan association for sub-agents dispatched by a session with exactly one open plan, or by a delegation that names the plan. Association never assigns tasks or grants reporting authority (#31).
+- An optional `handoff` report action that lets a sub-agent leave one short line and a claimed outcome (done, partial or blocked), shown as a claim rather than as task progress (#31).
+- One-time, metadata-only history recovery for sub-agents that finished before capture, with a bounded automatic retry and a manual Retry history action (#31).
+- Authenticated, side-effect-free `GET /v1/subagent-runs` and `POST /v1/subagent-runs/reconcile` service endpoints (#31).
+
+### Changed
+
+- The sub-agent section in the rail, Work Status and page now shows three separate layers per sub-agent — Ran (host fact), Claimed (the sub-agent's report) and Accepted (the plan's reported task status) — so a finished run is never presented as a completed task (#31).
+- Only running, waiting-on-you and task-linked sub-agents are listed individually; the rest are summarised as counts with an expandable, pageable history, replacing the 128-row list and its routine incomplete-list warning (#31).
+- Sub-agent times now come from recorded activity rather than the moment the view refreshed (#31).
+- The sub-agent section is hidden entirely when no plan is in scope, including inside child sessions (#31).
+- `delegate` now records a durable intent for the session's next sub-agent dispatch instead of a five-minute in-memory declaration; explicit `link` is unchanged (#31).
+- Passive capture now covers sub-agent run state only; task progress still changes only through explicit reports (#31).
+
+### Fixed
+
+- Sub-agents that had finished showed as "Idle" and then "Unknown now", and genuinely running sub-agents decayed to unknown after about a minute; running sub-agents now stay Running until host evidence changes them (#31).
+- The Work Status card could stay collapsed when the host dropped a height request; it now re-sends its height a bounded number of times (#31).
+
 ## [0.5.0] - 2026-10-30
 
 ### Added
@@ -92,7 +116,9 @@ All notable changes to this project are documented in this file. The format is b
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/Phototonic/openchamber-progress/compare/v0.2.8...v0.2.9

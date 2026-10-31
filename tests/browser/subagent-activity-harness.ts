@@ -17,16 +17,32 @@ export async function stableScreenshot<T extends { ready: boolean; signature: st
   return snapshot!;
 }
 
-/** Read in the guest after a rendering handshake; never includes text or IDs. */
-export function screenshotSection(census: string, observation: string | null) {
-  const section = document.querySelector<HTMLElement>(census);
+/** Read in the guest after a rendering handshake; never includes text or IDs. `target` is the
+ * element to clip (the sub-agents section, or the frame's main for a view that must have none). */
+export function screenshotSection(target: string, observation: string | null) {
+  const section = document.querySelector<HTMLElement>(target);
   const r = section?.getBoundingClientRect();
   const mark = observation ? section?.querySelector<HTMLElement>(observation) : null;
   const animating = section?.getAnimations({ subtree: true }).some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) ?? false;
-  return { ready: !!section && section.dataset.state === 'ready' && section.dataset.complete === 'true' &&
-    (!observation || !!mark) && !animating && document.fonts.status === 'loaded' && document.visibilityState === 'visible',
+  const roster = section?.dataset.testid === 'subagent-activity';
+  const settled = !!section && (!roster || section.dataset.state === 'ready') &&
+    (!observation || !!mark) && !animating && document.fonts.status === 'loaded' && document.visibilityState === 'visible';
+  // The whole section must be inside the frame: a frame the host has not grown yet (or left small)
+  // would otherwise be captured as a clipped strip.
+  const fits = !!r && r.y >= -1 && r.y + r.height <= innerHeight + 1;
+  return { ready: settled && fits, settled, fits,
     observationPresent: !observation || !!mark, state: mark?.dataset.state, animating,
     x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0, viewportHeight: innerHeight };
+}
+
+/**
+ * Why a screenshot would not show its whole section, or null when it would. `inner` is the last
+ * screenshotSection() sample; `clipHeight`/`sectionHeight` are host-page pixels.
+ */
+export function partialCapture(name: string, inner: { settled?: boolean; fits?: boolean; y: number; height: number; viewportHeight: number } | undefined, clipHeight?: number, sectionHeight?: number) {
+  if (inner?.settled && inner.fits === false) return `${name}: partial capture (frame ${Math.round(inner.viewportHeight)} px, section ends at ${Math.round(inner.y + inner.height)} px)`;
+  if (clipHeight !== undefined && sectionHeight !== undefined && clipHeight < sectionHeight - 1) return `${name}: partial capture (clip ${Math.round(clipHeight)} of ${Math.round(sectionHeight)} px)`;
+  return null;
 }
 
 /** Host-side frame geometry/transition readiness, without reading its URL back. */
@@ -42,30 +58,45 @@ export function screenshotFrame(href: string) {
     clientWidth: frame?.clientWidth ?? 0, clientHeight: frame?.clientHeight ?? 0 };
 }
 
-/** Executed in the guest in one turn, so readiness and the asserted rows agree. */
-export function assignmentSnapshot(ids: { a: string; c2: string; bound: string }) {
+export interface RosterIds { a: string; b: string; c1: string; c2: string; bound: string; n1: string }
+/**
+ * Executed in the guest in one turn, so readiness and the asserted rows agree. Sub-agent runs
+ * revision 1: rows by run/session with their Ran/Claimed/Accepted facts. Returns session IDs (the
+ * caller maps them to roles), state tokens and booleans; never titles, handoff or task text.
+ */
+export function rosterSnapshot(ids: RosterIds) {
+  // The removed copy, exactly and case-sensitively: a dispatch description may say "unassigned".
+  const CLUTTER = /Unassigned (?:in this plan|here)|No update reported|No task recorded here|This session|Main session|seen just now|only the first \d+|may be incomplete|Unknown now/;
   const section = document.querySelector<HTMLElement>('[data-testid="subagent-activity"]');
-  const rows = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid^="observed-session-"]') ?? []).map(r => ({
-    id: r.dataset.testid!.slice(17), depth: r.dataset.depth,
-    assignment: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment,
-    assigned: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment === 'assigned',
-    unassigned: r.querySelector<HTMLElement>('[data-assignment]')?.dataset.assignment === 'unassigned',
+  const rows = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid^="subagent-row-"]') ?? []).map(r => ({
+    session: r.dataset.session ?? null, recorded: !!r.dataset.run, ran: r.dataset.ran ?? null, now: r.dataset.now ?? null, depth: r.dataset.depth ?? null,
+    featured: !r.closest('[data-testid="observed-more"]'),
+    facts: Array.from(r.querySelectorAll<HTMLElement>('[data-fact]')).map(f => f.dataset.fact!),
   }));
+  const summary = Array.from(section?.querySelectorAll<HTMLElement>('[data-testid="subagent-count"] [data-kind]') ?? []).map(n => n.dataset.kind!);
+  const text = section?.textContent ?? '';
   const ready = !!document.querySelector('[data-testid="plan-plan-alpha"]') &&
     !document.querySelector('[data-testid="detail-loading"], [data-testid="failure-state"], [data-testid="setup-needed"]') &&
-    section?.dataset.state === 'ready' && section.dataset.complete === 'true' &&
-    rows.some(r => r.id === ids.a && r.depth === '0') &&
-    [ids.c2, ids.bound].every(id => rows.some(r => r.id === id && ['assigned', 'unassigned'].includes(r.assignment ?? '')));
-  return { ready, rows, overflow: document.documentElement.scrollWidth > innerWidth };
+    section?.dataset.state === 'ready' && summary.length > 0 &&
+    rows.some(r => r.session === ids.bound && r.featured && r.facts.includes('accepted'));
+  return {
+    ready, rows, summary,
+    // The owner's removed clutter, and prompt/output/raw-error canaries of the native fixture.
+    clutter: CLUTTER.test(text),
+    /** Which fixed clutter phrase matched (vocabulary only, never page text). */
+    clutterMatch: text.match(CLUTTER)?.[0] ?? null,
+    canary: /Synthetic fixed|regression input|provider failure/i.test(text),
+    overflow: document.documentElement.scrollWidth > innerWidth,
+  };
 }
 
-export async function readyAssignmentSnapshot(adapter: NativeAdapter, frame: string, ids: { a: string; c2: string; bound: string }) {
-  let snapshot: ReturnType<typeof assignmentSnapshot> | undefined;
+export async function readyRosterSnapshot(adapter: NativeAdapter, frame: string, ids: RosterIds) {
+  let snapshot: ReturnType<typeof rosterSnapshot> | undefined;
   const ready = await adapter.wait(async () => {
-    snapshot = await adapter.evaluate(`(${assignmentSnapshot.toString()})(${JSON.stringify(ids)})`, frame);
+    snapshot = await adapter.evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`, frame);
     return snapshot!.ready;
   });
-  if (!ready) throw new Error('current-plan-assignment-readiness-timeout');
+  if (!ready) throw new Error('current-plan-roster-readiness-timeout');
   return snapshot!;
 }
 
@@ -130,4 +161,18 @@ export function nativeActions(adapter: NativeAdapter) {
     if (!await adapter.wait(() => selected(id))) throw new Error(`${label}: host-selection-timeout`);
   };
   return { click, select, selected, actionable: (targets: string) => point(targets, false) };
+}
+
+/**
+ * Evidence text for a non-assertion failure: only this harness's own fixed messages are kept
+ * (they carry no page text, IDs or paths); anything else is a generic code.
+ */
+const RUNTIME_PLAIN = new Set(['CDP connection deadline', 'CDP deadline', 'CDP evaluation failed', 'CDP request failed', 'CDP unavailable',
+  'current-plan-roster-readiness-timeout', 'native-screenshot-state-not-stable', 'native-renderer-startup', 'native-application-not-ready',
+  'fixture-rail-not-discovered', 'fixture-guest-not-mounted']);
+const RUNTIME_LABELS = ['select B', 'return A', 'draft selection', 'work-status open', 'native page open', 'reopen native rail', 'initial root', 'fixture rail'];
+const RUNTIME_LABELLED = new Set(RUNTIME_LABELS.flatMap((label) => ['', ': reveal sessions'].flatMap((via) => ['non-actionable-target', 'host-selection-timeout'].map((code) => `${label}${via}: ${code}`))));
+export function runtimeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : null;
+  return message !== null && (RUNTIME_PLAIN.has(message) || RUNTIME_LABELLED.has(message)) ? message : 'other-runtime-failure';
 }

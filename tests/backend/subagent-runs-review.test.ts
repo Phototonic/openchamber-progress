@@ -1,0 +1,632 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Store } from '../../shared/store.ts';
+import type { RunRow } from '../../shared/subagent-runs.ts';
+import { fixture, deferred } from './subagent-test-support.ts';
+
+const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
+const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};
+const read=(f:any)=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0});
+
+test('review terminal after an unobserved finish and resume cannot close the pre-gap execution',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.setEnabled(false);
+    f.store.observeExecution({...start,id:'unobserved-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.observeExecution({...start,id:'unobserved-resume',sequence:12,at:5000});
+    f.store.setEnabled(true);
+    const terminal={...start,id:'resumed-failure',sequence:13,at:6000,state:'failed' as const,errorType:'SyntheticError'};
+    f.store.observeExecution(terminal);
+    const result=read(f),run=result.data[0]!;
+    assert.equal(run.ran.state,'unknown');assert.equal(run.ran.startedAt,2000);assert.equal(run.ran.endedAt,null);
+    assert.equal(run.ran.eventId,start.id);assert.equal(run.ran.sequence,start.sequence);assert.equal(run.ran.errorType,null);
+    assert.equal(result.counts.failed,0);assert.equal(result.counts.unknown,1);
+    assert.equal(result.capture.loss,true);assert.ok(result.coverage.reasons.includes('capture-loss'));
+    assert.equal(result.capture.enabled,true);assert.equal(result.availability,'ready');
+    f.store.observeExecution(terminal);assert.deepEqual(read(f).data,result.data,'replay cannot certify the wrong execution');
+    const next={...key,call:'current-generation-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},7000);f.store.afterRun(next,f.store.runControl().generation,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'current-generation-start',sequence:14,at:8000});
+    assert.equal(read(f).data.find((r:RunRow)=>r.dispatch?.callId===key.call)!.ran.state,'unknown','later interval refinement cannot clear capture-gap uncertainty');
+  });
+});
+
+test('review execution spanning a capture toggle accepts only contiguous terminal sequence evidence',async()=>{
+  for(const sequence of [11,13])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.setEnabled(false);f.store.setEnabled(true);
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      reopened.observeExecution({...start,id:'spanning-terminal',sequence,at:6000,state:'succeeded'});
+      const result=read({...f,store:reopened}),run=result.data[0]!,contiguous=sequence===11;
+      assert.equal(run.ran.state,contiguous?'succeeded':'unknown');assert.equal(run.ran.startedAt,2000);
+      assert.equal(run.ran.endedAt,contiguous?6000:null);assert.equal(run.ran.eventId,contiguous?'spanning-terminal':start.id);
+      assert.equal(result.capture.loss,!contiguous);
+      if(!contiguous){
+        // A later-delivered contiguous terminal supplies the missing proof;
+        // the rejected later event must not prevent correction of the old run.
+        reopened.observeExecution({...start,id:'late-contiguous-terminal',sequence:11,at:3000,state:'succeeded'});
+        const corrected=read({...f,store:reopened}).data[0]!;
+        assert.equal(corrected.ran.state,'succeeded');assert.equal(corrected.ran.endedAt,3000);
+      }
+    }finally{reopened.close();}
+  });
+});
+
+test('review delayed non-contiguous terminals remain attributable within one capture generation',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      reopened.observeExecution({...start,id:'delayed-same-generation-terminal',sequence:13,at:600000,state:'succeeded'});
+      const result=read({...f,store:reopened}),run=result.data[0]!;
+      assert.equal(run.ran.state,'succeeded');assert.equal(run.ran.endedAt,600000);
+      assert.equal(run.ran.eventId,'delayed-same-generation-terminal');assert.equal(result.capture.loss,false);
+    }finally{reopened.close();}
+  });
+});
+
+test('review capture generations fence unproven dispatches but preserve proven terminal routing',async()=>{
+  for(const proven of [false,true])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    if(proven)f.store.observeExecution(start);
+    f.store.setEnabled(false);
+    if(!proven)f.store.observeExecution(start);
+    f.store.observeExecution({...start,id:'off-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.setEnabled(true);
+    if(proven){
+      f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+      assert.equal(read(f).data[0]!.ran.endedAt,3000,'a proven start still accepts its delayed terminal');
+    }
+    f.store.observeExecution({...start,id:'resumed-start',sequence:12,at:5000});
+    f.store.observeExecution({...start,id:'resumed-end',sequence:13,at:6000,state:'succeeded'});
+    const first=read(f).data[0]!;
+    assert.equal(first.ran.state,proven?'succeeded':'unknown');
+    assert.equal(first.ran.startedAt,proven?2000:null);assert.equal(first.ran.endedAt,proven?3000:null);
+    assert.equal(first.ran.eventId,proven?'delayed-end':null);
+    if(!proven)assert.equal(read(f).counts.unknown,1);
+  });
+});
+
+test('review stale-generation pending and verified dispatches cannot block a fresh association',async()=>{
+  for(const verified of [false,true])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    if(verified)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    f.store.setEnabled(false);f.store.setEnabled(true);
+    const next={...key,call:'fresh-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);
+    f.store.observeExecution({...start,id:'fresh-start',sequence:12,at:5000});
+    f.store.afterRun(next,f.store.runControl().generation,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'fresh-end',sequence:13,at:6000,state:'succeeded'});
+    const rows=read(f).data;
+    assert.equal(rows.find((r:RunRow)=>r.dispatch?.callId===key.call)!.ran.state,'unknown');
+    const fresh=rows.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    assert.equal(fresh.ran.state,'succeeded');assert.equal(fresh.ran.eventId,'fresh-end');
+  });
+});
+
+test('review contribution-retained plan scopes nested runs after unlink without granting context or authority',async()=>{
+  await fixture(async f=>{
+    f.store.apply({op:'link',plan:'plan-alpha',oid:'manual-link',rev:1,child:'C1',assign:['task-1']},f.actor(),undefined,f.actor('C1'));
+    f.store.apply({op:'change',plan:'plan-alpha',oid:'child-report',rev:2,changes:[{id:'task-1',status:'working'}]},f.actor('C1'));
+    f.store.apply({op:'link',plan:'plan-alpha',oid:'unlink',rev:3,child:'C1',assign:[]},f.actor(),undefined,f.actor('C1'));
+    assert.ok(f.store.list({session:'C1'}).data.some(p=>p.id==='plan-alpha'));
+    const nested={...key,parent:'C1'};
+    f.store.beforeRun(nested,f.actor('C1'),'subagent',{},1000);
+    f.store.afterRun(nested,0,{...f.actor('N1'),parentId:'C1',ancestry:['C1','A']},'returned');
+    f.store.observeExecution({...start,child:'N1'});
+    const result=f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'C1',plan:'plan-alpha',cleanupRev:0});
+    assert.equal(result.data.length,1);assert.equal(result.data[0]!.ran.state,'running');
+    assert.equal(result.data[0]!.planContext,null);assert.equal(result.data[0]!.accepted,null);
+    assert.throws(()=>f.store.apply({op:'change',plan:'plan-alpha',oid:'unassigned-report',rev:4,changes:[{id:'task-1',status:'done'}]},f.actor('C1')),/assignment/);
+    assert.throws(()=>f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'N1',plan:'plan-alpha',cleanupRev:0}),/not-found/);
+  });
+});
+
+test('review delegation retries canonicalize caller property order and still reject changed payloads',async()=>{
+  await fixture(async f=>{
+    const request=f.request(),receipt=f.store.declareDelegation(request,f.actor());
+    const reordered=Object.fromEntries(Object.entries(request).reverse()) as typeof request;
+    assert.deepEqual(f.store.declareDelegation(reordered,f.actor()),receipt);
+    const reopened=new Store(f.store.file);
+    try{assert.deepEqual(reopened.declareDelegation(reordered,f.actor()),receipt);}finally{reopened.close();}
+    assert.throws(()=>f.store.declareDelegation({...reordered,assign:['task-2']},f.actor()),/operation-reused/);
+  });
+});
+
+test('review reordered handoff retries preserve staged attached and retired claim identity',async()=>{
+  await fixture(async f=>{
+    const report={op:'handoff',oid:'ordered-report',summary:'Synthetic result',outcome:'partial'};
+    const reordered=Object.fromEntries(Object.entries(report).reverse());
+    const staged=f.store.handoff(report,f.actor('C1'),2500);
+    assert.deepEqual(f.store.handoff(reordered,f.actor('C1'),2600),staged);
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const attached=f.store.handoff(reordered,f.actor('C1'),2600);
+    assert.equal(attached.handoff.association,'execution');assert.equal(attached.handoff.reportedAt,2500);
+    assert.throws(()=>f.store.handoff({...reordered,summary:'Changed result'},f.actor('C1'),2600),/operation-reused/);
+    f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'occupied-slot','synthetic',JSON.stringify({...staged.handoff,oid:'occupied-slot'}));
+    f.store.observeExecution({...start,id:'earlier-terminal',sequence:11,at:2400,state:'succeeded'});
+    assert.equal(read(f).data[0]!.claimed,null);
+    assert.throws(()=>f.store.handoff(reordered,f.actor('C1'),2700),/not-found/);
+    assert.throws(()=>f.store.handoff({...reordered,summary:'Changed result'},f.actor('C1'),2700),/operation-reused/);
+  });
+});
+
+test('review terminal ownership follows native sequence and never falls back on contradictory timestamps',async()=>{
+  for(const event of [{sequence:13,at:4500},{sequence:11,at:5500}])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});
+    f.store.observeExecution({...start,...event,id:'contradictory-end',state:'succeeded'});
+    const result=read(f);assert.equal(result.counts.running,2);assert.equal(result.counts.succeeded,0);
+    assert.ok(result.data.every((r:RunRow)=>r.ran.endedAt===null));assert.equal(result.capture.loss,true);
+    assert.equal(result.availability,'ready');assert.equal(result.capture.enabled,true);
+  });
+});
+
+test('review start refinement revalidates an attached claim without waiting for the older terminal',async()=>{
+  for(const mode of ['restage','fence'] as const)await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');
+    const report={op:'handoff',oid:'resumed-report',summary:'Resumed result',outcome:'partial'};
+    const claim=f.store.handoff(report,f.actor('C1'),5500).handoff;
+    f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});
+    if(mode==='fence')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(claim));
+    f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});
+    const runs=read(f).data,first=runs.find((r:RunRow)=>r.dispatch?.callId===key.call)!,second=runs.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    assert.equal(first.ran.state,'running');assert.equal(first.ran.endedAt,null);assert.equal(first.claimed,null);
+    assert.equal(second.ran.state,'succeeded');assert.equal(second.ran.endedAt,6000);
+    if(mode==='restage')assert.equal(second.claimed!.oid,report.oid);
+    else {assert.equal(second.claimed,null);assert.equal(read(f).capture.loss,true);assert.throws(()=>f.store.handoff(report,f.actor('C1'),7000),/not-found/);}
+  });
+});
+
+test('review delayed terminal closes its proven execution after a resumed dispatch is verified, preserving claim correction',async()=>{
+  for(const mode of ['restage','fence'] as const)for(const endedAt of [3000,4500])for(const phase of ['before','after'])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');
+    const report={op:'handoff',oid:'resumed-report',summary:'Resumed result',outcome:'partial'};
+    const claim=f.store.handoff(report,f.actor('C1'),5500).handoff;
+    if(mode==='fence')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(claim));
+    const resumed=()=>{f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});};
+    if(phase==='before')resumed();
+    const terminal={...start,id:'first-end',sequence:11,at:endedAt,state:'succeeded' as const};
+    if(phase==='before'){
+      const reopened=new Store(f.store.file);
+      try{reopened.observeExecution(terminal);}finally{reopened.close();}
+    }else f.store.observeExecution(terminal);
+    const first=()=>read(f).data.find((r:RunRow)=>r.dispatch?.callId===key.call)!;
+    assert.equal(first().ran.state,'succeeded');assert.equal(first().ran.endedAt,endedAt);assert.equal(first().claimed,null);
+    if(mode==='fence')f.store.db.exec('DELETE FROM runs_claims');
+    if(phase==='after')resumed();
+    const second=read(f).data.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    assert.equal(second.ran.state,'succeeded');assert.equal(second.ran.startedAt,5000);assert.equal(second.ran.endedAt,6000);
+    if(mode==='restage')assert.equal(second.claimed!.oid,report.oid);
+    else {assert.equal(second.claimed,null);assert.throws(()=>f.store.handoff(report,f.actor('C1'),7000),/not-found/);}
+  });
+});
+
+test('review same-child sequential executions correlate across event and verified-hook interleavings',async()=>{
+  type Step='A-end'|'B-dispatch'|'B-after'|'B-start'|'B-end';
+  const permutations=(steps:Step[]):Step[][]=>steps.length?steps.flatMap((step,i)=>permutations(steps.filter((_,j)=>i!==j)).map(tail=>[step,...tail])):[[]];
+  const orders=permutations(['A-end','B-dispatch','B-after','B-start','B-end']).filter(order=>order.indexOf('B-dispatch')<order.indexOf('B-after'));
+  const clocks:Array<{name:string;dispatch:number;aEnd:number;bStart:number;bEnd:number;accepted:[number|null,number|null]}>=([
+    {name:'ordered clocks',dispatch:4000,aEnd:3000,bStart:5000,bEnd:6000,accepted:[3000,6000]},
+    {name:'B terminal predates its start',dispatch:4000,aEnd:3000,bStart:5000,bEnd:4500,accepted:[3000,null]},
+    {name:'A terminal crosses the next start',dispatch:4000,aEnd:5500,bStart:5000,bEnd:6000,accepted:[null,6000]},
+    {name:'equal host timestamps',dispatch:1500,aEnd:2000,bStart:2000,bEnd:2000,accepted:[2000,2000]},
+  ]);
+  const failures:string[]=[];
+  for(const clock of clocks)for(const order of orders)await fixture(async f=>{
+    const progress=f.store.detail(f.source.id,'plan-alpha');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const next={...key,message:'next-message',call:'next-call'};
+    const aEnd={...start,id:'first-end',sequence:11,at:clock.aEnd,state:'succeeded' as const},bStart={...start,id:'next-start',sequence:12,at:clock.bStart},bEnd={...start,id:'next-end',sequence:13,at:clock.bEnd,state:'succeeded' as const};
+    for(const step of order){
+      if(step==='B-dispatch')f.store.beforeRun(next,f.actor(),'subagent',{},clock.dispatch);
+      if(step==='B-after')f.store.afterRun(next,0,f.actor('C1'),'returned');
+      if(step==='A-end')f.store.observeExecution(aEnd);
+      if(step==='B-start')f.store.observeExecution(bStart);
+      if(step==='B-end')f.store.observeExecution(bEnd);
+    }
+    const runs=read(f).data;
+    const first=runs.find((r:RunRow)=>r.dispatch?.callId===key.call)!,second=runs.find((r:RunRow)=>r.dispatch?.callId===next.call)!;
+    const actual=[first,second].map(r=>[r.ran.state,r.ran.startedAt,r.ran.endedAt,r.ran.sequence,r.ran.eventId]);
+    const expected=clock.accepted.map((end,i)=>[end===null?'running':'succeeded',i?clock.bStart:2000,end,end===null?(i?12:10):(i?13:11),end===null?(i?'next-start':'start'):(i?'next-end':'first-end')]);
+    if(JSON.stringify(actual)!==JSON.stringify(expected))failures.push(`${clock.name}: ${order.join(' → ')}: ${JSON.stringify(actual)}`);
+    assert.equal(read(f).capture.loss,clock.accepted.includes(null),'contradictions are disclosed; valid reordering does not invent capture loss');
+    assert.ok(runs.every((r:RunRow)=>!Object.hasOwn(r,'_startEvent')),'start proof does not extend the read DTO');
+    for(const event of [start,aEnd,bStart,bEnd])f.store.observeExecution(event);
+    assert.deepEqual(read(f).data,runs,'event replays cannot revive or reassign an interval');
+    assert.deepEqual(f.store.detail(f.source.id,'plan-alpha'),progress);
+  });
+  assert.deepEqual(failures,[]);
+});
+
+test('review obsolete starts outside retained dispatches cannot poison a later proven interval',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    f.store.observeExecution({...start,id:'obsolete-start',sequence:1,at:1});
+    f.store.observeExecution({...start,id:'first-end',sequence:11,at:3000,state:'succeeded'});
+    const next={...key,message:'next-message',call:'next-call'};
+    f.store.beforeRun(next,f.actor(),'subagent',{},4000);f.store.afterRun(next,0,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'next-start',sequence:12,at:5000});f.store.observeExecution({...start,id:'next-end',sequence:13,at:6000,state:'succeeded'});
+    assert.equal(read(f).counts.succeeded,2);
+  });
+});
+
+test('review dropped handoff retries stay retired across reopen and a later execution without spare storage',async()=>{
+  for(const bound of ['claims','total'] as const)await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'discarded-operation',summary:'Discarded old result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    if(bound==='claims')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(attached));
+    else f.store.db.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16383)
+      INSERT INTO runs_retired SELECT 'source-alpha','synthetic-'||i,0,'synthetic-'||i,'synthetic' FROM n`);
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    assert.equal(read(f).data[0]!.ran.state,'succeeded');assert.equal(read(f).data[0]!.claimed,null);
+    assert.equal(read(f).capture.enabled,true);assert.equal(read(f).availability,'ready');
+    assert.ok(!String(f.store.db.prepare('SELECT payload FROM runs_rows').get()!.payload).includes(report.summary),'discarded claim text is not retained');
+    if(bound==='claims')f.store.db.exec('DELETE FROM runs_claims');else f.store.db.exec('DELETE FROM runs_retired');
+    const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+    try{
+      const later={...key,message:'later-execution',call:'later-execution'};
+      reopened.beforeRun(later,f.actor(),'subagent',{},5500);reopened.afterRun(later,0,f.actor('C1'),'returned');
+      reopened.observeExecution({...start,id:'later-start',sequence:12,at:6000});
+      assert.throws(()=>reopened.handoff(report,f.actor('C1'),7000),e=>['conflict','not-found'].includes((e as any).code));
+      assert.throws(()=>reopened.handoff({...report,summary:'Changed old result'},f.actor('C1'),7000),/operation-reused/);
+      const fresh=reopened.handoff({...report,oid:'fresh-operation',summary:'New result'},f.actor('C1'),7100).handoff;
+      assert.equal(fresh.association,'execution');assert.equal(fresh.reportedAt,7100);
+      const rows=read({...f,store:reopened}).data;
+      assert.ok(rows.every((r:RunRow)=>!Object.hasOwn(r,'_retiredClaim')),'private fences never extend read DTOs');
+      assert.equal(rows.find((r:RunRow)=>r.dispatch?.callId==='later-execution')!.claimed!.oid,'fresh-operation');
+    }finally{reopened.close();}
+  });
+});
+
+test('review eviction preserves a dropped handoff retirement fence without retaining its text',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'discarded-operation',summary:'Discarded old result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'other-operation','synthetic',JSON.stringify({...attached,oid:'other-operation',reportedAt:1000,association:'session-only'}));
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    f.store.beforeRun({...key,call:'seed'},f.actor(),'subagent',{},5000);
+    const template=f.store.db.prepare("SELECT payload FROM runs_rows WHERE call='seed'").get()!.payload;
+    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1022)
+      INSERT INTO runs_rows SELECT 'pressure-'||i,'source-alpha','A',NULL,'message','pressure-'||i,0,0,5000,
+      json_set(?,'$.id','pressure-'||i,'$.dispatch.callId','pressure-'||i) FROM n`).run(template);
+    f.store.beforeRun({...key,call:'pressure-new'},f.actor(),'subagent',{},6000);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE call='call'").get()!.n,0,'completed row is evicted by ordinary parent capacity');
+    assert.ok(f.store.db.prepare('SELECT 1 FROM runs_retired WHERE source=? AND child=? AND oid=?').get(f.source.id,'C1',report.oid));
+    assert.throws(()=>f.store.handoff(report,f.actor('C1'),7000),/not-found/);
+    assert.throws(()=>f.store.handoff({...report,summary:'Changed old result'},f.actor('C1'),7000),/operation-reused/);
+  });
+});
+
+test('review delayed terminal detaches an out-of-interval handoff and reattaches it to the proven resumed execution',async()=>{
+  await fixture(async f=>{
+    const progress=f.store.detail(f.source.id,'plan-alpha');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'resumed-report',summary:'Resumed result',outcome:'done'};
+    assert.equal(f.store.handoff(report,f.actor('C1'),4000).handoff.association,'execution');
+    f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+    assert.equal(read(f).data[0]!.ran.state,'succeeded');assert.equal(read(f).data[0]!.claimed,null,'a closed execution cannot retain a later report');
+    const {_epochs,...staged}=JSON.parse(String(f.store.db.prepare("SELECT payload FROM runs_claims WHERE child='C1'").get()!.payload));
+    assert.equal(staged.oid,report.oid);assert.equal(staged.association,'session-only');assert.equal(staged.reportedAt,4000);
+    assert.equal(f.store.handoff(report,f.actor('C1'),4100).handoff.association,'session-only');
+    assert.throws(()=>f.store.handoff({...report,oid:'duplicate-report'},f.actor('C1'),4100),/conflict/);
+    assert.throws(()=>f.store.handoff({...report,summary:'Changed result'},f.actor('C1'),4100),/operation-reused/);
+    const resumed={...key,message:'resumed-message',call:'resumed-call'};
+    f.store.beforeRun(resumed,f.actor(),'subagent',{},3200);f.store.afterRun(resumed,0,f.actor('C1'),'returned');
+    f.store.observeExecution({...start,id:'resumed-start',sequence:12,at:3500});
+    f.store.observeExecution({...start,id:'resumed-end',sequence:13,at:5000,state:'succeeded'});
+    const runs=f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',view:'history'}).data;
+    assert.equal(runs.find(r=>r.dispatch?.callId===key.call)!.claimed,null);
+    assert.deepEqual(runs.find(r=>r.dispatch?.callId===resumed.call)!.claimed,{...staged,association:'execution'});
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_claims WHERE child='C1'").get()!.n,0);
+    assert.equal(f.store.handoff(report,f.actor('C1'),5100).handoff.association,'execution');
+    assert.deepEqual(f.store.detail(f.source.id,'plan-alpha'),progress);
+  });
+});
+
+test('review delayed terminal applies through live capture when claim restaging is unavailable',async()=>{
+  for(const bound of ['full','slot-conflict','total'] as const)await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const report={op:'handoff',oid:'held-report',summary:'Retained result',outcome:'partial'};
+    const attached=f.store.handoff(report,f.actor('C1'),4000).handoff;
+    if(bound==='full')f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_claims SELECT 'source-alpha','staged-'||i,0,'staged-'||i,'synthetic',
+      json_set(?,'$.oid','staged-'||i,'$.sessionId','staged-'||i,'$.association','session-only') FROM n`).run(JSON.stringify(attached));
+    if(bound==='slot-conflict')f.store.db.prepare('INSERT INTO runs_claims VALUES(?,?,?,?,?,?)').run(f.source.id,'C1',0,'existing-report','synthetic',JSON.stringify({...attached,oid:'existing-report',reportedAt:1000,association:'session-only'}));
+    if(bound==='total')f.store.db.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16383)
+      INSERT INTO runs_retired SELECT 'source-alpha','retired-'||i,0,'retired-'||i,'synthetic' FROM n`);
+    await f.emit('execution.succeeded',{sessionID:'C1'},{id:'delayed-end',created:3000,durable:{aggregateID:'C1',seq:11}});
+    const result=read(f);
+    assert.equal(result.data[0]!.ran.state,'succeeded');assert.equal(result.data[0]!.ran.endedAt,3000);
+    assert.equal(result.data[0]!.claimed,null,'host outcome wins over an unstageable out-of-interval report');
+    assert.equal(result.capture.loss,true);assert.equal(result.capture.enabled,true);assert.equal(result.availability,'ready');
+    assert.equal(f.store.runControl().enabled,true);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_claims').get()!.n,bound==='full'?256:bound==='slot-conflict'?1:0);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_claims WHERE oid='held-report'").get()!.n,0);
+  });
+});
+
+test('review restored and reopened plans retain inherited context for an unassigned nested dispatch',async()=>{
+  await fixture(async f=>{
+    const plan='plan-alpha';
+    f.store.apply({op:'change',plan,oid:'complete-tasks',rev:1,changes:[{id:'task-1',status:'done'},{id:'task-2',status:'done'}]},f.actor());
+    f.store.apply({op:'finish',plan,oid:'finish',rev:2,outcome:'finished'},f.actor());
+    const cleanup={storeId:f.store.list().storeId,source:f.source.id,plan,rev:3};
+    f.store.cleanup('archive',{...cleanup,cleanupRev:0,oid:'archive'});
+    f.store.cleanup('restore',{...cleanup,cleanupRev:1,oid:'restore'});
+    f.store.apply({op:'revise',plan,oid:'reopen',rev:3,reopen:true,title:'Reopened plan'},f.actor());
+    assert.equal(f.store.db.prepare('SELECT state FROM cleanup_state WHERE source=? AND plan=?').get(f.source.id,plan)!.state,'visible');
+    const request={storeId:cleanup.storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A'};
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    assert.equal(f.store.subagentRuns(request).data[0]!.planContext!.plan,plan);
+    f.store.beforeRun({...key,parent:'C1',message:'nested-message',call:'nested-call'},f.actor('C1'),'subagent',{},2500);
+    const nested=f.store.subagentRuns({...request,view:'history'}).data.find(r=>r.dispatch?.callId==='nested-call')!;
+    assert.deepEqual(nested.planContext,{plan,revision:4,observedAt:2500});
+    assert.deepEqual(f.plan().links,[],'inherited context does not assign the child');
+  });
+});
+
+test('review a proven execution completes while a later dispatch remains pending',async()=>{
+  for(const adopted of [true,false])await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    if(adopted)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    f.store.observeExecution(start);
+    if(adopted)assert.equal(read(f).data[0]!.ran.state,'running');
+    const later={...key,message:'later-message',call:'later-call'};
+    f.store.beforeRun(later,f.actor(),'subagent',{},2500);
+    f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});
+    if(!adopted)f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f),completed=result.data.find((r:RunRow)=>r.childSessionId==='C1')!;
+    assert.equal(completed.ran.state,'succeeded');assert.equal(completed.ran.startedAt,2000);assert.equal(completed.ran.endedAt,3000);
+    assert.equal(result.data.find((r:RunRow)=>r.dispatch?.callId==='later-call')!.ran.dispatchState,'pending','no later callback is needed to finish the proven execution');
+  });
+});
+
+test('review large valid accumulated snapshots still project accepted tasks',async()=>{
+  await fixture(async f=>{
+    const plan='large-plan',items=Array.from({length:350},(_,i)=>({id:`task-${i}`,title:'Task',kind:'task' as const}));
+    for(let chunk=0;chunk<7;chunk++)f.store.apply({op:'stage',plan,oid:`large-stage-${chunk}`,rev:0,upload:'large-upload',chunk,items:items.slice(chunk*50,(chunk+1)*50)},f.actor());
+    f.store.apply({op:'commit',plan,oid:'large-start',rev:0,title:'Large plan',upload:'large-upload',chunks:7},f.actor());
+    let rev=1;
+    for(let offset=0;offset<items.length;offset+=4){
+      f.store.apply({op:'change',plan,oid:`block-${offset}`,rev,changes:items.slice(offset,offset+4).map(i=>({id:i.id,status:'blocked',blocker:{reason:'界'.repeat(512),nextAction:'界'.repeat(512)}}))},f.actor());rev++;
+    }
+    assert.ok(Number(f.store.db.prepare('SELECT length(CAST(snapshot AS BLOB)) n FROM plans WHERE id=?').get(plan)!.n)>1048576);
+    const request={storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan,cleanupRev:0};
+    assert.deepEqual(f.store.subagentRuns(request).data,[],'valid empty plan-scoped run reads must succeed');
+    f.store.apply({op:'link',plan,oid:'large-link',rev,child:'C1',assign:['task-0']},f.actor(),undefined,f.actor('C1'));rev++;
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const run=f.store.subagentRuns(request).data[0]!;
+    assert.deepEqual(run.accepted,{plan,revision:rev,items:[{id:'task-0',status:'blocked'}],omittedItems:0});
+  });
+});
+
+test('review unrelated execution candidates cannot permanently starve verified children across reopen',async()=>{
+  await fixture(async f=>{
+    // The oldest slot belongs to an unresolved verified dispatch and must not
+    // be reclaimed in preference to unrelated observations.
+    const protectedKey={...key,call:'protected'};
+    f.store.beforeRun(protectedKey,f.actor(),'subagent',{},1000);f.store.afterRun(protectedKey,0,f.actor('C2'),'returned');
+    f.store.observeExecution({...start,child:'C2'});f.store.observeExecution({...start,child:'C2',id:'ambiguous-start',sequence:12,at:2100});
+    for(let i=0;i<256;i++)f.store.observeExecution({...start,child:`unassociated-${i}`,id:`unassociated-start-${i}`});
+    const file=f.store.file;
+    const reopened=new Store(file);reopened.bindReads(f.source.id,true);
+    try{
+      // Keep the start-before-dispatch race: both events precede even the before hook.
+      reopened.observeExecution(start);reopened.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});
+      reopened.beforeRun(key,f.actor(),'subagent',{},1000);reopened.afterRun(key,0,f.actor('C1'),'returned');
+      const run=read({...f,store:reopened}).data.find((r:RunRow)=>r.childSessionId==='C1')!;assert.equal(run.ran.state,'succeeded');assert.equal(run.ran.startedAt,2000);assert.equal(run.ran.endedAt,3000);
+      assert.ok(Number(reopened.db.prepare('SELECT count(*) n FROM runs_candidates').get()!.n)<=256);
+      assert.ok(reopened.db.prepare("SELECT 1 FROM runs_candidates WHERE child='C2'").get(),'unresolved verified candidate remains protected');
+      assert.equal(read({...f,store:reopened}).capture.loss,true,'reclaimed observations must disclose capture loss');
+    }finally{reopened.close();}
+  });
+});
+
+test('review 320 verified root executions do not cause capture loss before a real child outcome',async()=>{
+  await fixture(async f=>{
+    for(let i=0;i<320;i++){
+      const id=`root-${i}`,at=10000+i*60000;
+      const actor={...f.actor(),sessionId:id};
+      // Native before-hook identity is persisted by the production capture path.
+      f.store.beforeRun({...key,parent:id,call:`root-call-${i}`},actor,'task',{},at);
+      f.store.observeExecution({...start,child:id,id:`root-start-${i}`,at,sequence:1});
+      f.store.observeExecution({...start,child:id,id:`root-end-${i}`,at:at+1000,sequence:2,state:'succeeded'});
+    }
+    f.store.beforeRun(key,f.actor(),'subagent',{},20000000);
+    f.store.observeExecution({...start,at:20000001});f.store.observeExecution({...start,id:'end',sequence:11,at:20000002,state:'succeeded'});
+    f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f);assert.equal(result.data[0]!.ran.state,'succeeded');
+    assert.equal(result.capture.loss,false,'normal verified root activity must not latch capture loss');
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_candidates').get()!.n,0);
+  });
+});
+
+test('review legacy root candidates are reclaimed silently before possibly adoptable candidates',async()=>{
+  await fixture(async f=>{
+    // Model candidates persisted by the earlier producer: put the known root
+    // last so silent reclamation must prefer it, not just take the oldest slot.
+    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_candidates SELECT 'source-alpha',CASE WHEN i=256 THEN 'A' ELSE 'unassociated-'||i END,0,
+      json_object('start',json(json_set(?,'$.child',CASE WHEN i=256 THEN 'A' ELSE 'unassociated-'||i END)),'end',NULL) FROM n`).run(JSON.stringify(start));
+    f.store.observeExecution(start);f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f);assert.equal(result.data[0]!.ran.state,'succeeded');assert.equal(result.capture.loss,false);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_candidates WHERE child GLOB 'unassociated-*'").get()!.n,255);
+  });
+});
+
+test('review 320 completed unknown roots expire silently before a verified child outcome',async()=>{
+  await fixture(async f=>{
+    const window=5*60*1000,step=window+2000;
+    for(let i=0;i<320;i++){
+      const child=`unknown-root-${i}`,at=1000+i*step;
+      f.store.observeExecution({...start,child,id:`unknown-start-${i}`,at,sequence:1});
+      f.store.observeExecution({...start,child,id:`unknown-end-${i}`,at:at+1000,sequence:2,state:'succeeded'});
+    }
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM sessions WHERE id GLOB 'unknown-root-*'").get()!.n,0);
+    const at=1000+321*step;
+    f.store.beforeRun(key,f.actor(),'subagent',{},at);
+    f.store.observeExecution({...start,at:at+1});f.store.observeExecution({...start,id:'end',sequence:11,at:at+2,state:'succeeded'});
+    f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const result=read(f);assert.equal(result.data[0]!.ran.state,'succeeded');assert.equal(result.capture.loss,false);
+    assert.ok(Number(f.store.db.prepare('SELECT count(*) n FROM runs_candidates').get()!.n)<=256);
+  });
+});
+
+test('review terminal expiry prefers stale victims but fresh terminals and start-only eviction still disclose loss',async()=>{
+  for(const kind of ['stale','fresh','start-only'] as const)await fixture(async f=>{
+    const at=1000000,window=5*60*1000;
+    // Put the terminal last: stale reclamation must prefer it over older starts.
+    // At the exact window boundary the terminal remains fresh.
+    const end={...start,id:'end',sequence:11,state:'succeeded',at:kind==='stale'?at-window-1:at-window};
+    f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
+      INSERT INTO runs_candidates SELECT 'source-alpha','unassociated-'||i,0,
+      json_object('start',json(json_set(?,'$.child','unassociated-'||i)),
+        'end',CASE WHEN ?='fresh' OR (i=256 AND ?='stale') THEN json(json_set(?,'$.child','unassociated-'||i)) ELSE NULL END) FROM n`).run(JSON.stringify(start),kind,kind,JSON.stringify(end));
+    f.store.observeExecution({...start,at});
+    assert.equal(read(f).capture.loss,kind!=='stale');
+    const victim=kind==='stale'?'unassociated-256':'unassociated-1';
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_candidates WHERE child=?').get(victim)!.n,0);
+  });
+});
+
+test('review unknown historical summaries do not compete with resumed dispatch execution',async()=>{
+  for(const early of [false,true]){
+  await fixture(async f=>{
+    const request={storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A'};
+    f.store.requestRunReconciliation(request);const job=f.store.claimRunRecovery(f.source.id,'A')!;
+    f.store.publishRunHistory(job,{id:'C1',parent:'A',agent:null,title:null,createdAt:100,updatedAt:200,idleAt:null,outcome:null});f.store.finishRunRecovery(job,'complete');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    const execution=()=>{f.store.observeExecution(start);f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});};
+    if(early)execution();f.store.afterRun(key,0,f.actor('C1'),'returned');if(!early)execution();
+    const result=read(f);assert.equal(result.data.find((r:RunRow)=>r.kind==='dispatch')!.ran.state,'succeeded');
+    assert.equal(result.counts.runs,1);assert.equal(result.counts.historicalSessions,1);assert.equal(result.counts.children,1);assert.equal(result.counts.succeeded,1);assert.equal(result.counts.unknown,1);
+    const history=f.store.subagentRuns({...request,view:'history'}).data.find(r=>r.kind==='historical-session')!;
+    assert.equal(history.ran.state,'unknown','a later execution does not certify old session history');
+  });
+  }
+});
+function fillProtectedParent(f:any,n=1023) {
+  const template=String(f.store.db.prepare('SELECT payload FROM runs_rows ORDER BY rowid LIMIT 1').get()!.payload);
+  f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
+    INSERT INTO runs_rows SELECT 'protected-'||i,'source-alpha','A',NULL,'protected-message','protected-call-'||i,0,0,10000,
+    json_set(json_remove(?,'$._startEvent','$._retiredClaim'),'$.id','protected-'||i,'$.parentSessionId','A','$.childSessionId',json('null'),'$.ran.state','unknown','$.ran.dispatchState','pending','$.ran.startedAt',json('null'),'$.ran.endedAt',json('null'),'$.claimed',json('null')) FROM n`).run(n,template);
+}
+
+test('review P1 unknown historical activity is protected at capacity, not assumed inactive',async()=>{
+  await fixture(async f=>{
+    const r={storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A'};
+    f.store.requestRunReconciliation(r);const job=f.store.claimRunRecovery(f.source.id,'A')!;
+    f.store.publishRunHistory(job,{id:'C1',parent:'A',agent:null,title:null,createdAt:1000,updatedAt:2000,idleAt:null,outcome:null});f.store.finishRunRecovery(job,'complete');
+    fillProtectedParent(f);f.store.beforeRun(key,f.actor(),'subagent',{},3000);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE child='C1'").get()!.n,1);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE call='call'").get()!.n,0);assert.equal(read(f).capture.loss,true);
+  });
+});
+
+test('review P1 pruning a completed ancestor cannot disconnect a retained running descendant',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.observeExecution(start);f.store.observeExecution({...start,id:'end',sequence:11,at:3000,state:'succeeded'});f.store.afterRun(key,0,f.actor('C1'),'returned');
+    const nested={...key,parent:'C1',call:'nested'};f.store.beforeRun(nested,f.actor('C1'),'subagent',{},4000);
+    f.store.afterRun(nested,0,{...f.actor('C1'),sessionId:'N1',parentId:'C1',ancestry:['C1','A']},'returned');f.store.observeExecution({...start,child:'N1',id:'nested-start',sequence:1,at:5000});
+    const before=read(f);assert.equal(before.counts.running,1);fillProtectedParent(f);
+    f.store.beforeRun({...key,call:'pressure'},f.actor(),'subagent',{},6000);
+    const after=read(f);assert.equal(after.counts.running,1);assert.ok(after.data.some((r:any)=>r.childSessionId==='N1'&&r.ran.state==='running'));
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE call='pressure'").get()!.n,0);
+  });
+});
+
+test('review P2 lookup saturation settles a declined reserved after-hook before reload',async()=>{
+  await fixture(async f=>{
+    for(const call of ['held-1','held-2'])await f.before(call,call);
+    const declaration=f.request();f.declare(declaration);await f.before('reserved','reserved');
+    const held=deferred<any>();let entered=0;const both=deferred();f.lookup(async id=>{if(id==='C1'){entered++;if(entered===2)both.resolve();return held.promise;}return f.records.get(id);});
+    try {
+      await f.after('held-1','held-1');await f.after('held-2','held-2');await both.promise;
+      await f.after('reserved','reserved');
+      assert.equal(f.declare(declaration).delegation.state,'retired');
+      assert.equal(JSON.parse(String(f.store.db.prepare("SELECT payload FROM runs_rows WHERE call='reserved'").get()!.payload)).ran.dispatchState,'unconfirmed');
+      await f.reload();assert.equal(f.declare(declaration).delegation.state,'retired');assert.equal(f.declare(f.request({oid:'next-declaration'})).delegation.state,'pending');
+    }finally{held.resolve(f.records.get('C1'));await f.binding.settled();}
+  });
+});
+
+test('review P1 redundant ancestry edges remain prunable but their last retained copy is protected',async()=>{
+  await fixture(async f=>{
+    for(const [call,at,sequence] of [['first',1000,10],['second',4000,12]] as const){
+      const k={...key,call};f.store.beforeRun(k,f.actor(),'subagent',{},at);f.store.observeExecution({...start,id:`start-${call}`,at:at+100,sequence});f.store.observeExecution({...start,id:`end-${call}`,at:at+200,sequence:sequence+1,state:'succeeded'});f.store.afterRun(k,0,f.actor('C1'),'returned');
+    }
+    const nested={...key,parent:'C1',call:'nested'};f.store.beforeRun(nested,f.actor('C1'),'subagent',{},6000);f.store.afterRun(nested,0,{...f.actor('C1'),sessionId:'N1',parentId:'C1',ancestry:['C1','A']},'returned');f.store.observeExecution({...start,child:'N1',id:'nested-start',sequence:1,at:7000});
+    fillProtectedParent(f,1022);f.store.beforeRun({...key,call:'admitted'},f.actor(),'subagent',{},8000);
+    assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE parent='A' AND child='C1'").get()!.n,1);assert.equal(read(f).counts.running,1);
+    f.store.beforeRun({...key,call:'declined'},f.actor(),'subagent',{},9000);assert.equal(f.store.db.prepare("SELECT count(*) n FROM runs_rows WHERE call='declined'").get()!.n,0);assert.equal(read(f).counts.running,1);
+  });
+});
+
+test('review P2 resumed execution can claim once after its start candidate is adopted',async()=>{
+  await fixture(async f=>{
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+    const first={op:'handoff',oid:'claim-first',summary:'First execution result',outcome:'done'};const receipt=f.store.handoff(first,f.actor('C1'),2500);
+    f.store.observeExecution({...start,state:'succeeded',id:'end',sequence:11,at:3000});
+    const second={...key,call:'resume',message:'resume-message'};f.store.beforeRun(second,f.actor(),'subagent',{},4000);f.store.afterRun(second,0,f.actor('C1'),'returned');f.store.observeExecution({...start,id:'resume-start',sequence:12,at:5000});
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_candidates').get()!.n,0);
+    const claim={op:'handoff',oid:'claim-second',summary:'Second execution result',outcome:'partial'};
+    assert.equal(f.store.handoff(claim,f.actor('C1'),5500).handoff.summary,claim.summary);
+    assert.throws(()=>f.store.handoff({...claim,oid:'another'},f.actor('C1'),5501),/conflict/);
+    assert.deepEqual(f.store.handoff(first,f.actor('C1'),5502),receipt);
+  });
+});
+
+test('review privacy durable intent stores only caller IDs, not a duplicate Actor snapshot',async()=>{
+  await fixture(async f=>{
+    f.declare();const text=String(f.store.db.prepare('SELECT payload FROM runs_intents').get()!.payload);const payload=JSON.parse(text);
+    assert.ok(!text.includes(f.actor().directory));assert.ok(!text.includes('directory'));assert.ok(!text.includes('projectId'));assert.ok(!text.includes('ancestry'));
+    assert.deepEqual(payload.caller,{sourceId:f.source.id,sessionId:'A'});
+    await f.reload();await f.complete();assert.equal(f.plan().revision,2);assert.equal(f.plan().items[0]!.assigneeSessionId,'C1');
+  });
+});
+
+test('review privacy binding revalidates caller IDs against the existing identity owner',async()=>{
+  await fixture(async f=>{
+    const r=f.request();f.declare(r);f.store.beforeRun(key,f.actor(),'subagent',{},1000);
+    f.store.db.prepare('UPDATE sessions SET actor=? WHERE source=? AND id=?').run(JSON.stringify({...f.actor(),sourceId:'different-source'}),f.source.id,'A');
+    f.store.afterRun(key,0,f.actor('C1'),'returned');assert.equal(f.plan().revision,1);assert.equal(f.declare(r).delegation.state,'retired');assert.equal(f.store.db.prepare('SELECT count(*) n FROM runs_intents').get()!.n,0);
+  });
+});
+
+test('hint-only capture cannot rewrite reported identity and silently change directory-filtered plans',async()=>{
+  await fixture(async f=>{
+    const directory='/synthetic/moved';const before=f.store.list({directory});const detail=f.store.detail(f.source.id,'plan-alpha');
+    const identities=f.store.db.prepare('SELECT * FROM sessions ORDER BY source,id').all();
+    f.store.beforeRun(key,{...f.actor(),directory,agent:'different-native-agent'},'subagent',{},1000);
+    assert.deepEqual(f.store.list({directory}),before);assert.deepEqual(f.store.detail(f.source.id,'plan-alpha'),detail);assert.deepEqual(f.store.db.prepare('SELECT * FROM sessions ORDER BY source,id').all(),identities);
+  });
+});
+
+test('hint-only identity insertion cannot repair a missing reported participant and grant directory visibility',async()=>{
+  await fixture(async f=>{
+    const other=f.actor('B');other.directory='/synthetic/other';f.seed('other-plan','B');
+    // Synthetic legacy state: the participant was explicitly linked in another
+    // directory, but its canonical identity row is missing. Capture is not a report.
+    f.store.apply({op:'link',plan:'other-plan',oid:'link',rev:1,child:'C1',assign:['task-1']},other,undefined,{...f.actor('C1'),directory:other.directory,ancestry:['A','B']});
+    f.store.db.prepare('DELETE FROM sessions WHERE source=? AND id=?').run(f.source.id,'C1');
+    const before=f.store.list({source:f.source.id,directory:'/synthetic/alpha'});const detail=f.store.detail(f.source.id,'other-plan');
+    f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');
+    assert.deepEqual(f.store.list({source:f.source.id,directory:'/synthetic/alpha'}),before);assert.deepEqual(f.store.detail(f.source.id,'other-plan'),detail);assert.equal(f.store.db.prepare("SELECT count(*) n FROM sessions WHERE id='C1'").get()!.n,0);
+  });
+});

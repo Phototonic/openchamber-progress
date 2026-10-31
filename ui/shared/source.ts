@@ -1,7 +1,8 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
-import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison } from './adapter.ts';
+import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, RUN_ROUTES, runQuery } from './adapter.ts';
+import type { ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
@@ -323,5 +324,16 @@ export async function readCaptureIndex(host: ServiceHost, request: CaptureReques
 }
 export async function readCaptureComparison(host: ServiceHost, request: CaptureRequest, before: number, after: number): Promise<CaptureRead<CaptureComparison>> {
   try { return { ok: true, value: parseCaptureComparison(await call(host, CAPTURE_ROUTES.comparison, captureQuery(request, { before, after })), request, before, after) }; }
+  catch (error) { return { ok: false, failure: classify(error) }; }
+}
+
+/** One bounded sub-agent run page; never a census of every child (docs/contracts.md, runs revision 1). */
+export async function readRuns(host: ServiceHost, request: RunRequest, cursor?: string): Promise<CaptureRead<RunRead>> {
+  try { return { ok: true, value: parseRunRead(await call(host, RUN_ROUTES.read, runQuery(request, cursor)), request) }; }
+  catch (error) { return { ok: false, failure: classify(error) }; }
+}
+/** Asks the companion for one bounded metadata-only history pass; the service coalesces repeats. */
+export async function requestReconcile(host: ServiceHost, request: ReconcileRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {
+  try { await call(host, RUN_ROUTES.reconcile, undefined, 'POST', reconcileBody(request)); return { ok: true }; }
   catch (error) { return { ok: false, failure: classify(error) }; }
 }
