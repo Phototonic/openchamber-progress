@@ -187,9 +187,15 @@ export function rosterFor(v: RosterInput): Roster | null {
   const titles = new Map<string, string>([...(census ? [[census.root.id, census.root.title] as const] : []), ...(census?.rows ?? []).map((r) => [r.id, r.title] as const)]);
   for (const r of runRows) if (r.childSessionId && r.description && !titles.has(r.childSessionId)) titles.set(r.childSessionId, r.description);
   const rootId = census?.rootId ?? null;
-  // Host activity belongs to the latest recorded dispatch of that child only.
+  // Host activity, task facts and "running again" belong to the child's latest run only, chosen by
+  // execution evidence: any dispatch record outranks a historical session summary (whose update time
+  // is session-wide metadata, not an execution); between dispatches the proven start (else the
+  // dispatch time), then the dispatch time, then the native sequence decide; a historical row wins
+  // only when the child has no dispatch record.
+  const evidence = (r: RunRow): number[] => r.dispatch ? [1, r.ran.startedAt ?? r.dispatch.at, r.dispatch.at, r.ran.sequence ?? -1] : [0, r.ran.endedAt ?? r.ran.updatedAt, 0, -1];
+  const newer = (a: RunRow, b: RunRow) => { const x = evidence(a), y = evidence(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
   const latest = new Map<string, RunRow>();
-  for (const r of runRows) if (r.childSessionId) { const l = latest.get(r.childSessionId); if (!l || (r.dispatch?.at ?? r.ran.updatedAt) > (l.dispatch?.at ?? l.ran.updatedAt)) latest.set(r.childSessionId, r); }
+  for (const r of runRows) if (r.childSessionId) { const l = latest.get(r.childSessionId); if (!l || newer(r, l) > 0) latest.set(r.childSessionId, r); }
   // Only a child ID on the record correlates a run with a host session. A dispatch without one
   // and a new host child stay separate rows, however likely they look like the same work.
   const covered = new Set(latest.keys());

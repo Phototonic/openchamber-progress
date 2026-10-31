@@ -741,3 +741,31 @@ test('pager: stays while a continuation cursor exists, even when the estimate sa
     assert.equal(earlierPager(rd, done, rd.earlier.length, EARLIER_STEP[surface]), null, `${surface}: no pager when exhausted`);
   }
 });
+
+test('latest run per child: a historical summary\'s later session update never displaces a dispatch record', () => {
+  // Resumed child K: dispatch at 5000, proven start at 6000; recovery returned an older outcome
+  // (idle at 2000) whose session-wide update time is 9000. The host says K waits for an answer.
+  const tasks = { plan: plan.id, revision: 3, items: [{ id: 'task-1', status: 'working' as const }], omittedItems: 0 };
+  const live = run('running', { childSessionId: 'K', dispatch: { messageId: 'm', callId: 'c', at: 5000 }, accepted: tasks, ran: { startedAt: 6000, updatedAt: 6000, endedAt: null } });
+  const past = run('succeeded', { kind: 'historical-session', childSessionId: 'K', dispatch: null, planContext: null, accepted: tasks, ran: { dispatchState: 'historical', provenance: 'native-session', startedAt: null, endedAt: 2000, updatedAt: 9000 } });
+  const census = censusFor('A', alpha.directory, snap([rec('A', null), rec('K', 'A', { activity: 'waiting-question' })]));
+  for (const rows of [[live, past], [past, live]]) {
+    const r = rosterFor(input({ census, runs: panel(readOf(rows)) }))!;
+    const all = [...r.featured, ...r.earlier];
+    const cur = all.find((e) => e.runId === live.id)!, hist = all.find((e) => e.runId === past.id)!;
+    assert.deepEqual(r.summary.map((s) => s.text), ['1 waiting on you', '1 finished'], 'the dispatch keeps the current waiting state');
+    assert.equal(cur.ran.kind, 'waiting');
+    assert.ok(cur.accepted, 'task facts stay on the dispatch record');
+    assert.equal(hist.accepted, null);
+    assert.equal(hist.ran.label, 'Finished', 'the historical row keeps only its own recorded outcome');
+  }
+  // A historical row is the latest only when no dispatch record exists for that child.
+  const alone = rosterFor(input({ census: censusFor('A', alpha.directory, snap([rec('A', null), rec('K', 'A', { activity: 'running' })])), runs: panel(readOf([past])) }))!;
+  assert.ok([...alone.featured, ...alone.earlier].find((e) => e.runId === past.id)!.accepted, 'historical row carries the tasks when it is all there is');
+  // Between dispatch records, execution evidence decides: a later proven start wins over a later dispatch time.
+  const a = run('succeeded', { childSessionId: 'J', dispatch: { messageId: 'm1', callId: 'c1', at: 1000 }, accepted: tasks, ran: { startedAt: 8000, endedAt: 8500, updatedAt: 8500, sequence: 4 } });
+  const b = run('unknown', { childSessionId: 'J', dispatch: { messageId: 'm2', callId: 'c2', at: 3000 }, accepted: tasks, ran: { dispatchState: 'returned', startedAt: null, endedAt: null, updatedAt: 3000, sequence: null } });
+  const jr = rosterFor(input({ census: censusFor('A', alpha.directory, snap([rec('A', null), rec('J', 'A', { activity: 'idle' })])), runs: panel(readOf([a, b])) }))!;
+  const ja = [...jr.featured, ...jr.earlier];
+  assert.ok(ja.find((e) => e.runId === a.id)!.accepted && !ja.find((e) => e.runId === b.id)!.accepted, 'the run with the latest execution evidence is the child\'s latest');
+});
