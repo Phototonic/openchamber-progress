@@ -47,7 +47,9 @@ export function classify(error: unknown): ReadFailure {
     if (code === 'response-too-large' || code === 'invalid') return { kind: 'invalid', code, message };
     return { kind: 'unavailable', code, message };
   }
-  if (code === 'NO_SERVICE' || code === 'NOT_GRANTED') return { kind: 'not-approved', code, message };
+  // NO_SERVICE means no service entry (not running, or grant state not independently known), so it
+  // reads as an outage below; only NOT_GRANTED is a real missing grant worth the permission remedy.
+  if (code === 'NOT_GRANTED') return { kind: 'not-approved', code, message };
   if (code === 'DISABLED') return { kind: 'paused', code, message };
   if (code === 'HOST_UNAVAILABLE' || code === 'DISCONNECTED' || code === 'HOST_TIMEOUT') return { kind: 'disconnected', code, message };
   if (code === 'RESPONSE_TOO_LARGE') return { kind: 'invalid', code, message };
@@ -75,6 +77,17 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
   try {
     const health = parseHealth(await call(host, ROUTES.health));
+    if (!health.ready) {
+      // A configured store that cannot open — or fails binding verification — reports its
+      // fixed failure code in health diagnostics. That is a classified failure on every
+      // surface, never a setup or empty success; genuinely unconfigured services report
+      // setup-flow codes ('targets-unverified' and friends) and keep the null-read path.
+      const failed = health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
+      if (failed) {
+        const failure = classify(new HttpError(503, failed));
+        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
+      }
+    }
     if (!health.ready || scope === null) return { ok: true, health, read: null };
     // An older service cannot establish an empty archive; never send it the new query.
     if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };

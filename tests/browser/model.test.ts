@@ -189,7 +189,8 @@ test('history read pages oldest-first', async () => {
 
 test('fixed error codes classify into plain user states', async () => {
   const err = (code: string) => Object.assign(new Error(code), { code });
-  assert.equal(classify(err('NO_SERVICE')).kind, 'not-approved');
+  assert.equal(classify(err('NOT_GRANTED')).kind, 'not-approved');
+  assert.equal(classify(err('NO_SERVICE')).kind, 'unavailable');
   assert.equal(classify(err('HOST_TIMEOUT')).kind, 'disconnected');
   const http = (status: number, error: string) => readList(fakeHost((r) => (r.path === '/health' ? { status: 200, body: HEALTH } : { status, body: { error } })), {});
   for (const [status, code, kind] of [[503, 'corrupt', 'damaged'], [503, 'schema', 'incompatible'], [503, 'busy', 'busy'], [503, 'storage', 'unavailable'], [400, 'invalid', 'invalid']] as const) {
