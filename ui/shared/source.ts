@@ -77,6 +77,17 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
   try {
     const health = parseHealth(await call(host, ROUTES.health));
+    if (!health.ready) {
+      // A configured store that cannot open — or fails binding verification — reports its
+      // fixed failure code in health diagnostics. That is a classified failure on every
+      // surface, never a setup or empty success; genuinely unconfigured services report
+      // setup-flow codes ('targets-unverified' and friends) and keep the null-read path.
+      const failed = health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
+      if (failed) {
+        const failure = classify(new HttpError(503, failed));
+        return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
+      }
+    }
     if (!health.ready || scope === null) return { ok: true, health, read: null };
     // An older service cannot establish an empty archive; never send it the new query.
     if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };

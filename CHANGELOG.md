@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file. The format is b
 ### Fixed
 
 - Stopping the progress service showed the permission banner ("Progress needs permission") on the first failed refresh before later polls on the same outage switched to "Progress service is not responding". A service outage now reads as not responding throughout; permission guidance is reserved for a genuinely missing grant, and reporting-health service facts classify it the same way.
+- A configured progress store that could not be opened (corrupt, incompatible, busy or unreadable) failed service startup, so the host reported the extension's service as failed and the panel could only show "Progress service is not responding". The service now stays ready with an explicit not-ready health state and fixed diagnostics; store routes answer their documented fixed 503 codes, the damaged store state is reachable in the UI, store bytes are left untouched, and reads recover in place once the file is restored.
 
 ## [0.6.0] - 2026-10-31
 
