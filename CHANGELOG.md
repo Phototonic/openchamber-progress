@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-02
+
 ### Fixed
 
 - Stopping the progress service showed the permission banner ("Progress needs permission") on the first failed refresh before later polls on the same outage switched to "Progress service is not responding". A service outage now reads as not responding throughout; permission guidance is reserved for a genuinely missing grant, and reporting-health service facts classify it the same way.
@@ -121,7 +123,8 @@ All notable changes to this project are documented in this file. The format is b
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.3.0...v0.4.0
