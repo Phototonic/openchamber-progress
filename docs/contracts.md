@@ -654,7 +654,9 @@ Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET
 
 - `/health`: `{ok:true,ready:boolean,sqlite:boolean,protocolVersion:2,schemaVersion:2,runtime:{node,bun},diagnostics?}`.
   Unconfigured service is200/ready=false, never an empty progress success;
-  corrupt/unsupported configured stores return503 with their fixed diagnostic.
+  configured stores that cannot open (unavailable, corrupt, busy or unknown-schema)
+  also stay200/ok:true,ready:false,sqlite:false with their fixed diagnostics — the
+  host marks readiness on /health 200 — while store routes keep503 fixed codes.
 - `/v1/plans?cursor=0&limit=20&source=ID&session=ID&directory=TEXT`: filters optional;
   `{...Envelope,...Page<PlanSummary>}`. Cursor is an offset; continuation reads
   may see newer revisions, not a falsely frozen cross-request snapshot.
