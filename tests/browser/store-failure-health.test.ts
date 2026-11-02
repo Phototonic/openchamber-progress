@@ -40,6 +40,15 @@ test('readList classifies health-reported store failures; only /health is called
   }
 });
 
+test('readList classifies a configured binding failure as unavailable with identity copy', async () => {
+  const calls: GuestRequest[] = [];
+  const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(failedHealth('binding')); } }, { session: 'A' });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.ok === false && { kind: result.failure.kind, code: result.failure.code }, { kind: 'unavailable', code: 'binding' });
+  assert.match(result.ok === false ? result.failure.message : '', /configured store does not match this installation/);
+  assert.deepEqual(calls.map(q => q.path), ['/health']);
+});
+
 test('readList keeps the unconfigured null read byte-compatible', async () => {
   const calls: GuestRequest[] = [];
   const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(HEALTH_UNCONFIGURED); } }, { session: 'A' });
@@ -134,6 +143,29 @@ test('cached data is retained and marked stale-damaged when the store breaks bet
   assert.equal(failure?.kind, 'damaged'); assert.equal(failure?.code, 'corrupt');
   assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
   c.stop();
+});
+
+test('configured binding failure shows a fresh failure, not the setup form, and stays stale on cached data', async () => {
+  const broken = () => response(failedHealth('binding'));
+  const fresh = controller();
+  fresh.intercept(async (q, next) => q.path === '/health' ? broken() : next());
+  fresh.ready('A'); await settle();
+  assert.equal(fresh.vc.read as unknown, null);
+  assert.equal(fresh.vc.failure?.kind, 'unavailable'); assert.equal(fresh.vc.failure?.code, 'binding');
+  assert.equal(fresh.requests.some(q => q.path === '/v1/plans'), false);
+  fresh.stop();
+
+  const cached = controller();
+  cached.ready('A'); await settle();
+  assert.equal(cached.vc.read?.plans[0]?.id, 'P-A'); assert.ok(cached.vc.lastGoodAt); assert.equal(cached.vc.failure, null);
+  cached.intercept(async (q, next) => q.path === '/health' ? broken() : next());
+  cached.vc.retry(); await settle();
+  assert.equal(cached.vc.read?.plans[0]?.id, 'P-A');
+  assert.ok(cached.vc.lastGoodAt);
+  // Re-widen: the healthy-state assertion above narrows the same property path.
+  const failure = cached.vc.failure as ReadFailure | null;
+  assert.equal(failure?.kind, 'unavailable'); assert.equal(failure?.code, 'binding');
+  cached.stop();
 });
 
 test('unconfigured health still reads as the setup-needed state, without store calls', async () => {
