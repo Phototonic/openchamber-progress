@@ -26,7 +26,8 @@ test('configured unreadable store reports storage failure without losing configu
   const f=configured();const descriptor=readFileSync(f.binding);
   chmodSync(f.store.file,0o000);const setup=new SetupController(f.binding,payload);
   try {await serve(setup,async get=>{
-    const health=await get('/health');assert.equal(health.status,503);assert.deepEqual(await health.json(),{error:'storage'});
+    const health=await get('/health');assert.equal(health.status,200);const body=await health.json();
+    assert.equal(body.ok,true);assert.equal(body.ready,false);assert.equal(body.sqlite,false);assert.ok(body.diagnostics.includes('storage'));
     const status=await(await get('/v1/setup')).json();assert.equal(status.configured,true);assert.equal(status.captureEnabled,null);
     assert.ok(status.diagnostics.includes('storage'));assert.ok(!status.diagnostics.includes('service-binding-collision'));
     assert.deepEqual(status.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});

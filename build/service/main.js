@@ -25524,12 +25524,15 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
           throw new ProgressError("invalid");
         return v;
       };
-      if (url2.pathname === "/health" && !currentStore && setup && "configured" in active && !active.configured && active.error === "binding")
-        return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+      if (url2.pathname === "/health") {
+        if (currentStore)
+          return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        if (setup)
+          return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        return answer(503, { error: active.error ?? "storage" });
+      }
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
-      if (url2.pathname === "/health")
-        return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
       if (url2.pathname === "/v1/search") {
         const options = Object.fromEntries(url2.searchParams);
         if (url2.searchParams.has("limit"))

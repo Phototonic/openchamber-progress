@@ -111,9 +111,15 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(comparisonRoute && Buffer.byteLength(url.search)>CAPTURE_LIMITS.queryBytes)throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
-      if(url.pathname==='/health'&&!currentStore&&setup&&'configured' in active&&!active.configured&&active.error==='binding')return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      if (url.pathname === '/health') {
+        // The host marks the service ready on /health 200; a configured store that
+        // cannot open keeps the process serving fixed error states (503 on store
+        // routes, diagnostics here) instead of a host-level service failure.
+        if (currentStore) return answer(200,{ok:true,ready:true,sqlite:true,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        return answer(503,{error:active.error??'storage'});
+      }
       if(!currentStore)return answer(503,{error:active.error??'storage'});
-      if (url.pathname === '/health') return answer(200,{ok:true,ready:true,sqlite:true,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       if(url.pathname==='/v1/search') {
         const options=Object.fromEntries(url.searchParams) as SearchOptions;
         if(url.searchParams.has('limit'))options.limit=number('limit',20);
