@@ -3,7 +3,8 @@
 // (the accepted search fixture plus a 1,200-plan library; a second small store for store-change
 // races). Current TypeScript service by default; `built` spawns the generated service entry
 // (build/service/main.js) for each store. The bearer stays in this process.
-// Labelled QA seams only (never shipped): held/failed service replies, a stripped search
+// Labelled QA seams only (never shipped): held/failed service replies (HTTP-like or host-rejected,
+// the latter rejecting like a missing service entry), a stripped search
 // capability, the SDK project/session snapshots, host session context, account switch, store
 // switch and fixture-side writes from "another client". Reply metadata (status, bytes, the
 // service's own work counters) is recorded for request evidence; no reply body is retained.
@@ -63,7 +64,9 @@ addEventListener('message',async e=>{
  else if(m.type==='service-request'){
   const q=m.payload,t0=performance.now();qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null,at:t0});
   const failing=qa.fail.find(x=>x.path===q.path&&(!x.frame||x.frame===f));
-  if(failing&&!(failing.skip>0)){if(failing.once)qa.fail=qa.fail.filter(x=>x!==failing);const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
+  if(failing&&!(failing.skip>0)){if(failing.once)qa.fail=qa.fail.filter(x=>x!==failing);
+   if(failing.reject){fail(failing.code??'NO_SERVICE',failing.error??'Service entry is missing.');return}
+   const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
   if(failing)failing.skip--;
   const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
    if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};

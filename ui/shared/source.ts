@@ -47,7 +47,9 @@ export function classify(error: unknown): ReadFailure {
     if (code === 'response-too-large' || code === 'invalid') return { kind: 'invalid', code, message };
     return { kind: 'unavailable', code, message };
   }
-  if (code === 'NO_SERVICE' || code === 'NOT_GRANTED') return { kind: 'not-approved', code, message };
+  // NO_SERVICE means no service entry (not running, or grant state not independently known), so it
+  // reads as an outage below; only NOT_GRANTED is a real missing grant worth the permission remedy.
+  if (code === 'NOT_GRANTED') return { kind: 'not-approved', code, message };
   if (code === 'DISABLED') return { kind: 'paused', code, message };
   if (code === 'HOST_UNAVAILABLE' || code === 'DISCONNECTED' || code === 'HOST_TIMEOUT') return { kind: 'disconnected', code, message };
   if (code === 'RESPONSE_TOO_LARGE') return { kind: 'invalid', code, message };
