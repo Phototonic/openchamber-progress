@@ -17,11 +17,12 @@ import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { contextListScope } from '../../ui/shared/scope.ts';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
+import type { ReadFailure } from '../../ui/shared/source.ts';
 import { HEALTH, HEALTH_UNCONFIGURED, plansPage, planPage, setupRead, envelope, docRef, summary } from './fixtures.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'working' as const }];
 const row = summary('P-A', items, { sessionId: 'A', document: docRef() });
-const response = (value: unknown, status = 200) => ({ status, body: JSON.stringify(value) });
+const response = (value: unknown, status = 200): GuestRequestResult => ({ status, body: JSON.stringify(value) });
 const failedHealth = (code: string) => ({ ...HEALTH, ready: false, sqlite: false, diagnostics: [code] });
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
@@ -111,7 +112,7 @@ function controller() {
 
 test('fresh surface shows the damaged failure, not the setup form, for a corrupt store', async () => {
   const c = controller();
-  c.intercept((q, next) => q.path === '/health' ? response(failedHealth('corrupt')) : q.path === '/v1/plans' ? response({ error: 'corrupt' }, 503) : next());
+  c.intercept(async (q, next) => q.path === '/health' ? response(failedHealth('corrupt')) : q.path === '/v1/plans' ? response({ error: 'corrupt' }, 503) : next());
   c.ready('A'); await settle();
   assert.equal(c.vc.read as unknown, null);
   assert.equal(c.vc.failure?.kind, 'damaged'); assert.equal(c.vc.failure?.code, 'corrupt');
@@ -124,18 +125,20 @@ test('cached data is retained and marked stale-damaged when the store breaks bet
   const c = controller();
   c.ready('A'); await settle();
   assert.equal(c.vc.read?.plans[0]?.id, 'P-A'); assert.ok(c.vc.lastGoodAt); assert.equal(c.vc.failure, null);
-  c.intercept((q, next) => q.path === '/health' ? response(failedHealth('corrupt')) : q.path === '/v1/plans' ? response({ error: 'corrupt' }, 503) : next());
+  c.intercept(async (q, next) => q.path === '/health' ? response(failedHealth('corrupt')) : q.path === '/v1/plans' ? response({ error: 'corrupt' }, 503) : next());
   const mark = c.requests.length; c.vc.retry(); await settle();
   assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
   assert.ok(c.vc.lastGoodAt);
-  assert.equal(c.vc.failure?.kind, 'damaged'); assert.equal(c.vc.failure?.code, 'corrupt');
+  // Re-widen: the healthy-state assertion above narrows the same property path.
+  const failure = c.vc.failure as ReadFailure | null;
+  assert.equal(failure?.kind, 'damaged'); assert.equal(failure?.code, 'corrupt');
   assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
   c.stop();
 });
 
 test('unconfigured health still reads as the setup-needed state, without store calls', async () => {
   const c = controller();
-  c.intercept((q, next) => q.path === '/health' ? response(HEALTH_UNCONFIGURED) : next());
+  c.intercept(async (q, next) => q.path === '/health' ? response(HEALTH_UNCONFIGURED) : next());
   c.ready('A'); await settle();
   assert.equal(c.vc.read as unknown, null);
   assert.equal(c.vc.failure, null);
