@@ -4,7 +4,7 @@ import { readPlanHead, setupCall, type ServiceHost } from './source.ts';
 export interface HealthClaim { key: string; read: StoreRead | null; plan: PlanView | null; stale: boolean }
 export interface HealthFacts { service: string; scope: string; installation: string; loaded: string; capture: string; report: string; viewer: string; version: string; platform: string; tools: string }
 export const unknownFacts = (): HealthFacts => ({service:'unknown',scope:'unknown',installation:'unknown',loaded:'unknown',capture:'unknown',report:'not-checked',viewer:'unknown',version:'unknown',platform:'unknown',tools:'unknown'});
-function serviceState(code:string){return ({busy:'busy',corrupt:'damaged',schema:'incompatible',storage:'store-unavailable',NOT_GRANTED:'not-approved',NO_SERVICE:'not-approved',DISABLED:'paused'} as Record<string,string>)[code]??'unavailable';}
+function serviceState(code:string){return ({busy:'busy',corrupt:'damaged',schema:'incompatible',storage:'store-unavailable',NOT_GRANTED:'not-approved',DISABLED:'paused'} as Record<string,string>)[code]??'unavailable';}
 export function setupFacts(s: SetupView): HealthFacts {
   return {...unknownFacts(),service:s.diagnostics.some(d=>['storage','busy','corrupt','schema'].includes(d))?serviceState(s.diagnostics.find(d=>['storage','busy','corrupt','schema'].includes(d))!):'observed',installation: !s.configured ? 'not-configured' : s.installed ? 'installed' : 'not-observed',
     loaded:s.activation === 'reload-required' ? 'reload-required' : s.activation === 'control-applies-to-loaded-instances' ? 'matching-observation' : 'unknown',

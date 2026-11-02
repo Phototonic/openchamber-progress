@@ -3,7 +3,7 @@ import { supportSummary, type ReportingHealth } from './reporting-health.ts';
 const explain:Record<string,string>={
   observed:'The service answered this explicit setup check. This does not prove recent reporting.',busy:'The progress store is busy. Try again shortly.',damaged:'The store could not be read because damage was reported. Preserve its files and review Setup diagnostics.',incompatible:'The store format is incompatible. Review the installed extension version.',
   'store-unavailable':'The configured store could not be opened. Review Setup and restore access before retrying.',
-  'not-approved':'Service access is unavailable or not granted. Review the extension service permissions in the host.',paused:'The extension is paused. Resume it in the host before checking again.',
+  'not-approved':'Service access is not granted. Review the extension service permissions in the host.',paused:'The extension is paused. Resume it in the host before checking again.',
   'association-unknown':'This setup observation cannot be associated with the viewer source. Report verification was not attempted.',
   'source-mismatch':'The selected plan belongs to a different source from this configured companion. Select a plan from the configured source to check its reporting.',
   'selected-source':'The selected report belongs to the configured source and is included in this viewer selection.',

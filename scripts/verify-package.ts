@@ -177,15 +177,25 @@ try {
   assert.equal(restarted,true,'packaged service did not preserve setup after replacement');
   const plans=await(await fetch(`${url}/v1/plans`,{headers})).json();assert.equal(plans.data[0].id,'packaged');assert.equal(plans.schemaVersion,VERSION);assert.equal(plans.storeId,binding.storeId);
   chmodSync(db,0o000);
-  const unavailable=await fetch(`${url}/health`,{headers});assert.equal(unavailable.status,503);assert.deepEqual(await unavailable.json(),{error:'storage'});
+  const unavailable=await fetch(`${url}/health`,{headers});assert.equal(unavailable.status,200);const unavailableHealth=await unavailable.json() as {ok:boolean;ready:boolean;sqlite:boolean;diagnostics:string[]};
+  assert.equal(unavailableHealth.ok,true);assert.equal(unavailableHealth.ready,false);assert.equal(unavailableHealth.sqlite,false);assert.ok(unavailableHealth.diagnostics.includes('storage'));
+  assert.equal((await fetch(`${url}/v1/plans`,{headers})).status,503);assert.deepEqual(await(await fetch(`${url}/v1/plans`,{headers})).json(),{error:'storage'});
    const configuredFailure=await(await fetch(`${url}/v1/setup`,{headers})).json();assert.equal(configuredFailure.configured,true);assert.ok(configuredFailure.diagnostics.includes('storage'));assert.equal(Object.hasOwn(configuredFailure,'update'),false);
   chmodSync(db,0o600);assert.equal((await(await fetch(`${url}/health`,{headers})).json()).ready,true);
+  // A corrupt store keeps the packaged service host-ready (health 200/ready=false)
+  // while store routes answer the fixed corrupt 503; bytes stay untouched.
+  const goodStore=readFileSync(db);const brokenStore=Buffer.from(goodStore);brokenStore.write('not-a-sqlite-file',0);writeFileSync(db,brokenStore);
+  const corruptHealth=await(await fetch(`${url}/health`,{headers})).json() as {ok:boolean;ready:boolean;sqlite:boolean;diagnostics:string[]};
+  assert.equal(corruptHealth.ok,true);assert.equal(corruptHealth.ready,false);assert.equal(corruptHealth.sqlite,false);assert.ok(corruptHealth.diagnostics.includes('corrupt'));
+  const corruptPlans=await fetch(`${url}/v1/plans`,{headers});assert.equal(corruptPlans.status,503);assert.deepEqual(await corruptPlans.json(),{error:'corrupt'});
+  assert.deepEqual(readFileSync(db),brokenStore);
+  writeFileSync(db,goodStore);assert.equal((await(await fetch(`${url}/health`,{headers})).json()).ready,true);
   // The installed standalone removal entry must work after extension absence.
   const exit=once(service,'exit');service.kill('SIGTERM');await exit;service=undefined;rmSync(localExtension,{recursive:true});
   assert.equal(JSON.parse(run([`${packageRoot}/remove.js`,'remove-capture'])).historyRetained,true);
   const retained=new Store(db);try{assert.equal(retained.list().captureEnabled,false);assert.equal(retained.history(binding.source.id,'packaged').data.length,history);}finally{retained.close();}
   assert.equal(existsSync(packageRoot),false);assert.deepEqual(readFileSync(userConfig),original);
-  console.log(JSON.stringify({packagedLifecycle:['dry-run','install','update','disable','enable','remove-capture'],historyRetained:true,userFilesUnchanged:true,packagedService:true,packagedServiceRecovery:true,extensionReplacementPreservesSetup:true,reloadSatisfied:true,versionAgreement:true}));
+  console.log(JSON.stringify({packagedLifecycle:['dry-run','install','update','disable','enable','remove-capture'],historyRetained:true,userFilesUnchanged:true,packagedService:true,packagedServiceRecovery:true,packagedCorruptStoreServiceStates:true,extensionReplacementPreservesSetup:true,reloadSatisfied:true,versionAgreement:true}));
 
   if(process.env.AGENT_PROGRESS_HOST_MODULE) {
     console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-host-package.ts'),extension],{env:{...clean,AGENT_PROGRESS_HOST_MODULE:process.env.AGENT_PROGRESS_HOST_MODULE}}));

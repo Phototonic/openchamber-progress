@@ -601,6 +601,12 @@ try {
     await context('A');
     await evaluate(`qa.binding={sourceId:'source-focus',verified:true};true`);
     await wait('panel', `d.querySelector('${art} [data-testid="readiness-link-L"]')?.textContent.includes('Review session')`, 'binding verified again', 15_000);
+    // The board adopts the restored binding only on its own next list poll; until then its state
+    // still belongs to the unverified authority, and adopting the change legitimately resets that
+    // state (as Q5 asserts on the rail). Interacting with the board inside that window would test
+    // the reset, not selection stability, so wait for the restored binding here: bound plans' rows
+    // show host session titles again (the exact inverse of the plain-rows wait above).
+    await wait('page', `[...d.querySelectorAll('[data-testid^="plan-row-"]')].some(n=>/Planner session|Scale session/.test(n.textContent))`, 'board binding verified again', 15_000);
     await evaluate('qa.railAll=true;true');
     await context('B');
     await wait('panel', `d.querySelector('[data-testid="plan-selector"]')&&/Planner session/.test(d.querySelector('[data-testid="helping-note"]')?.textContent??'')`, 'rail B: bound plan note', 15_000);
