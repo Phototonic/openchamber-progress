@@ -53,6 +53,27 @@ try{
   const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip});writeFileSync(join(output,'reporting-health-narrow.png'),Buffer.from(shot.data,'base64'));
   await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!d.querySelector('[data-testid="reporting-support-preview"]')`,'preview closed');check('close-clears-preview',await guest(`return !d.querySelector('[data-testid="reporting-support-preview"]')`));
   await wait(`d.querySelector('[data-testid="reporting-health-toggle"] button')?.textContent==='Reporting health'`,'closed');await evaluate(`qa.holds.push({path:'/v1/setup',tag:'health',frame:'page'});true`);await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`qa.held.some(h=>h.tag==='health')`,'held setup');await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await evaluate(`qa.release('health');true`);await evaluate('new Promise(r=>setTimeout(r,150))');check('closed-reply-discarded',await guest(`return !d.querySelector('[data-testid="reporting-support-preview"]')`));
+  // One service outage keeps one message: a host-rejected NO_SERVICE poll (no service entry), then
+  // 404 and 502 replies, all read as not responding; only a real missing grant (NOT_GRANTED) keeps
+  // permission copy. The last board data stays visible under the stale banner.
+  await evaluate(`qa.show(['page'],1100);true`);
+  const health=`qa.requests.filter(r=>r.path==='/health').length`;
+  const outage=async(entry:string,label:string,permission:boolean)=>{
+    const copy=permission?'Progress needs permission':'Progress service is not responding';
+    const other=permission?'Progress service is not responding':'Progress needs permission';
+    const before=await evaluate(health);
+    await evaluate(`qa.fail=[${entry}];true`);
+    if(await guest(`return !!d.querySelector('[data-testid="stale-banner"] button')`))await click('[data-testid="stale-banner"] button');
+    await wait(`${health}>${before}&&!!d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('[data-testid="stale-banner"]').textContent.includes(${JSON.stringify(copy)})`,'outage '+label);
+    check('outage-'+label,await guest(`const b=d.querySelector('[data-testid="stale-banner"]');return !!b&&b.textContent.includes(${JSON.stringify(copy)})&&!b.textContent.includes(${JSON.stringify(other)})&&!!d.querySelector('article[data-testid^="plan-"]')`));
+  };
+  await outage(`{path:'/health',reject:true}`,'no-service-not-responding',false);
+  const outageClip=await evaluate(`(()=>{const f=frame('page'),n=f.contentDocument.querySelector('[data-testid="stale-banner"]');if(!n)return null;const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return {x:Math.floor(window.scrollX+b.left+a.left),y:Math.floor(window.scrollY+b.top+a.top),width:Math.ceil(a.width),height:Math.ceil(a.height),scale:1}})()`);
+  if(outageClip){const outageShot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:outageClip});writeFileSync(join(output,'outage-not-responding.png'),Buffer.from(outageShot.data,'base64'));}
+  await outage(`{path:'/health',status:404}`,'404-stable-message',false);
+  await outage(`{path:'/health',status:502}`,'502-stable-message',false);
+  await outage(`{path:'/health',reject:true,code:'NOT_GRANTED'}`,'not-granted-permission-copy',true);
+  await evaluate('qa.fail=[];true');await wait(`!d.querySelector('[data-testid="stale-banner"]')`,'outage recovered');check('outage-recovers',await guest(`return !d.querySelector('[data-testid="stale-banner"]')&&!!d.querySelector('article[data-testid^="plan-"]')`));
   check('no-runtime-errors',runtimeErrors===0);
 }catch(error){failure=error instanceof Error?error.message:String(error);process.exitCode=1;if(diagnose)writeFileSync(join(output,'failure-state.json'),JSON.stringify(await diagnose().catch(()=>null),null,2));}
 finally{writeFileSync(join(output,'results.json'),JSON.stringify({scope:'synthetic SDK shell, current guest bundles and disposable HTTP stores',results,failure},null,2));ws?.close();chrome.kill('SIGTERM');await fx.stop();await new Promise(r=>setTimeout(r,200));rmSync(profile,{recursive:true,force:true});}

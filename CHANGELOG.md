@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopping the progress service showed the permission banner ("Progress needs permission") on the first failed refresh before later polls on the same outage switched to "Progress service is not responding". A service outage now reads as not responding throughout; permission guidance is reserved for a genuinely missing grant, and reporting-health service facts classify it the same way.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added
