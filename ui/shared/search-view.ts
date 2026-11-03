@@ -281,6 +281,10 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
   nav.dataset.scrollKey = 'search-results';
   nav.dataset.run = String(v.run);
   nav.dataset.page = String(v.page.number);
+  // Owning heading of the results region, present in every result state (focus target, never a Tab stop).
+  const heading = testid(el('h2', 'ap-region-h', 'Search results'), 'search-results-heading');
+  heading.tabIndex = -1;
+  nav.append(heading);
   if (v.blocked) {
     const box = testid(el('div', 'ap-search-blocked'), 'search-blocked');
     box.setAttribute('role', 'status');
