@@ -54,6 +54,38 @@ test('fixture classification: ready R/I, waiting W, skipped K, blocked B; inputs
   assert.equal(r.incomplete, false);
 });
 
+test('compatibility corpus: complete display entries, excluded incomplete refs and invalid priority', () => {
+  const items = withItem('I', { dependencies: [], parentId: undefined, reporterSessionId: SB });
+  const { plan, detail } = detailOf(items);
+  deepFreeze(detail);
+  const r = ready(readiness(plan, { state: 'ready', value: detail }));
+  const expected = [
+    ['R', 'ready', [{ kind: 'task', id: 'D', title: 'Prepare inputs', status: 'done' }], 'listed', SA, [], [{ mode: 'direct', reporterSessionId: SA, attributedSessionId: SA }]],
+    ['I', 'ready', [], 'empty', null, [], []],
+    ['W', 'waiting', [{ kind: 'task', id: 'R', title: 'Review the inputs', status: 'pending' }], 'listed', null, [SB], []],
+    ['K', 'skipped', [{ kind: 'task', id: 'S', title: 'Optional benchmark', status: 'skipped' }, { kind: 'task', id: 'W', title: 'Write the summary', status: 'pending' }], 'listed', SC, [], [{ mode: 'direct', reporterSessionId: SC, attributedSessionId: SC }, { mode: 'parent-relay', reporterSessionId: SA, attributedSessionId: SC }]],
+    ['B', 'blocked', [{ kind: 'task', id: 'D', title: 'Prepare inputs', status: 'done' }], 'listed', null, [], []],
+  ];
+  const entries = Object.values(r.groups).flat();
+  assert.deepEqual(entries.map((e) => [e.item.id, e.group, e.prerequisites, e.recorded, e.assigneeSessionId, e.linkedSessionIds, e.reports]), expected);
+  for (const e of entries) {
+    assert.equal(e.item, detail.items.find((i) => i.id === e.item.id));
+    assert.equal(e.incomplete, false);
+    assert.deepEqual(e.parent, e.item.id === 'I' ? { kind: 'none' } : { kind: 'known', id: 'G', title: 'Release preparation' });
+    assert.equal(e.reporterFallback, e.item.id === 'I' ? SB : null);
+  }
+  assert.equal(r.incomplete, false);
+  for (const id of ['X', 'D', 'S']) {
+    const excluded = ready(classify(withItem(id, { dependencies: ['gone', 'G'] })));
+    assert.equal(excluded.incomplete, false);
+    assert.deepEqual(ids(excluded), { ready: ['R', 'I'], waiting: ['W'], skipped: ['K'], blocked: ['B'] });
+  }
+  const cycle = withItem('R', { dependencies: ['W'] });
+  const selfAndCycle = withItem('I', { dependencies: ['I'] }, cycle);
+  assert.deepEqual(classify(selfAndCycle), { state: 'invalid', reason: 'self-dependency' });
+  assert.deepEqual(classify([...selfAndCycle, { ...READY_ITEMS[0], id: 'I' }]), { state: 'invalid', reason: 'duplicate-id' });
+});
+
 test('precedence follows reported changes: blocked never auto-clears, skipped is never done', () => {
   assert.deepEqual(ids(classify(withItem('D', { status: 'working' }))), { ready: ['I'], waiting: ['R', 'W'], skipped: ['K'], blocked: ['B'] });
   assert.deepEqual(ids(classify(withItem('R', { status: 'done' }))), { ready: ['W', 'I'], waiting: [], skipped: ['K'], blocked: ['B'] });

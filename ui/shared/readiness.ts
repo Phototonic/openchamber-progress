@@ -2,8 +2,8 @@
 // Only recorded direct prerequisites count. Nothing here changes item status, counts or
 // assignments, and nothing is inferred from activity, age, ancestry, titles or directories.
 import type { ContributionView, ElapsedAnchor, ItemStatus, ItemView, Lifecycle, PlanDetail } from './model.ts';
-
-export type ReadinessGroup = 'ready' | 'waiting' | 'skipped' | 'blocked';
+import { deriveDependencies, invalidDependencyReason, type ReadinessGroup, type InvalidReason } from './dependency-derivation.ts';
+export type { ReadinessGroup, InvalidReason } from './dependency-derivation.ts';
 
 /**
  * One recorded prerequisite as the detail describes it. `task`: a task in this plan with its
@@ -46,8 +46,6 @@ export interface ReadinessEntry {
   reporterFallback: string | null;
 }
 
-export type InvalidReason = 'duplicate-id' | 'self-dependency' | 'cycle';
-
 export type Readiness =
   /** Finished, cancelled or failed: no readiness section at all. */
   | { state: 'closed' }
@@ -63,30 +61,7 @@ type DetailState = { state: 'loading' } | { state: 'ready'; value: PlanDetail } 
 
 /** First structural problem that makes readiness unavailable, or null. Bounded O(items + edges). */
 export function invalidReason(items: readonly ItemView[]): InvalidReason | null {
-  const byId = new Map<string, ItemView>();
-  for (const item of items) {
-    if (byId.has(item.id)) return 'duplicate-id';
-    byId.set(item.id, item);
-  }
-  for (const item of items) if (item.dependencies?.includes(item.id)) return 'self-dependency';
-  // Iterative depth-first search over resolvable edges; unresolved IDs are reported per entry.
-  const state = new Map<string, 1 | 2>();
-  for (const start of items) {
-    if (state.has(start.id)) continue;
-    const stack: [ItemView, number][] = [[start, 0]];
-    state.set(start.id, 1);
-    while (stack.length) {
-      const top = stack[stack.length - 1];
-      const deps = top[0].dependencies ?? [];
-      if (top[1] >= deps.length) { state.set(top[0].id, 2); stack.pop(); continue; }
-      const next = byId.get(deps[top[1]++]);
-      if (!next) continue;
-      const seen = state.get(next.id);
-      if (seen === 1) return 'cycle';
-      if (seen === undefined) { state.set(next.id, 1); stack.push([next, 0]); }
-    }
-  }
-  return null;
+  return invalidDependencyReason(items);
 }
 
 /**
@@ -102,22 +77,18 @@ export function readiness(plan: { key: string; revision: number; lifecycle: Life
   if (detail.state === 'error') return { state: 'unavailable' };
   const d = detail.value;
   if (d.key !== plan.key || d.revision !== plan.revision) return { state: 'loading' };
-  const invalid = invalidReason(d.items);
-  if (invalid) return { state: 'invalid', reason: invalid };
+  const derived = deriveDependencies(d.items);
+  if (derived.state === 'invalid') return { state: 'invalid', reason: derived.reason };
   const byId = new Map(d.items.map((i) => [i.id, i]));
   const groups: Record<ReadinessGroup, ReadinessEntry[]> = { ready: [], waiting: [], skipped: [], blocked: [] };
   let incomplete = false;
   for (const item of d.items) {
-    if (item.kind !== 'task' || (item.status !== 'pending' && item.status !== 'blocked')) continue;
-    const prerequisites = (item.dependencies ?? []).map((id): Prerequisite => {
-      const target = byId.get(id);
-      if (!target) return { kind: 'unresolved', id };
-      return target.kind === 'task' ? { kind: 'task', id, title: target.title, status: target.status } : { kind: 'not-task', id, title: target.title };
-    });
-    const entryIncomplete = prerequisites.some((p) => p.kind !== 'task');
-    const group: ReadinessGroup = item.status === 'blocked' ? 'blocked'
-      : prerequisites.some((p) => p.kind === 'task' && p.status === 'skipped') ? 'skipped'
-      : prerequisites.every((p) => p.kind === 'task' && p.status === 'done') ? 'ready' : 'waiting';
+    const task = derived.tasks.get(item.id);
+    if (!task || task.group === null) continue;
+    const prerequisites = task.prerequisites.map((p): Prerequisite => p.kind === 'unresolved'
+      ? { ...p } : { ...p, title: byId.get(p.id)!.title });
+    const entryIncomplete = task.incomplete;
+    const group = task.group;
     incomplete ||= entryIncomplete;
     const reports = reportsFor(item.id, d.contributions);
     groups[group].push({
