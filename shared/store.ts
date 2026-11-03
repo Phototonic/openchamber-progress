@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import { GRAPH_LIMITS, graphCheck, graphInteger, graphItems, graphRecord } from './plan-graph.ts';
+import { identifier, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
 import * as runs from './subagent-runs.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
@@ -197,6 +199,27 @@ export class Store {
     try { if(!row)return undefined;const p=JSON.parse(String(row.snapshot)) as StoredPlan;need(p.sourceId===source&&p.id===id&&Array.isArray(p.items)&&Array.isArray(p.links),'corrupt');for(const item of p.items)if(!currentBinding(item.assignmentBinding,p,item.id))delete item.assignmentBinding;return p; } catch { throw new ProgressError('corrupt'); }
   }
   get(source: string, id: string) { return this.transaction(false, () => this.raw(source,id)); }
+  planGraph(r: PlanGraphRequest): PlanGraphRead {
+    return this.transaction(false, () => {
+      need(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && graphInteger(r.revision, 1) && graphInteger(r.cleanupRev));
+      need(r.binding && r.binding.sourceId === this.readBinding.sourceId && r.binding.verified === this.readBinding.verified, 'conflict');
+      const meta = this.db.prepare('SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id FROM meta WHERE singleton=1').get();
+      need(meta?.store_id === r.storeId, 'conflict');
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      need(state?.state !== 'deleted', 'not-found');
+      const row = this.db.prepare('SELECT revision, CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?').get(GRAPH_LIMITS.inputBytes, r.source, r.plan);
+      need(row, 'not-found'); graphCheck(typeof row.snapshot === 'string');
+      let p: unknown; try { p = JSON.parse(row.snapshot); } catch { throw new ProgressError('corrupt'); }
+      graphCheck(graphRecord(p) && p.id === r.plan && p.sourceId === r.source && p.revision === row.revision);
+      graphCheck(graphInteger(p.revision, 1) && graphInteger(p.structuralRevision, 1) && p.structuralRevision <= p.revision);
+      const generation = state?.generation ?? 0;
+      graphCheck(graphInteger(generation) && (!state || state.state === 'visible' || state.state === 'archived'));
+      need(p.revision === r.revision && generation === r.cleanupRev, 'conflict');
+      const items = graphItems(p.items);
+      return { protocolVersion: 2, schemaVersion: 2, planGraph: 1, storeId: r.storeId, sourceBinding: { ...this.readBinding }, source: r.source, plan: r.plan,
+        revision: p.revision, structuralRevision: p.structuralRevision, cleanup: { state: state?.state === 'archived' ? 'archived' : 'visible', revision: generation }, complete: true, itemCount: items.length, items };
+    });
+  }
   cleanup(action:CleanupAction,value:unknown) {
     need(!this.readOnly,'storage');
     try{return mutateCleanup(this.db,this.file,action,value,(write,fn)=>this.transaction(write,fn));}catch(e){throw storageError(e);}

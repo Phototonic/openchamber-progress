@@ -683,6 +683,54 @@ The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
 
+## Plan graph revision 1 (additive v2 read)
+
+Ready `/health` advertises `planGraph:1`; absent, malformed or unsupported capability means graph data unavailable, not an empty plan. Authenticated body-free GET `/v1/plan-graph` requires exactly these query fields. Protocol/schema remain 2; existing report/list/detail routes and cursors are unchanged.
+
+| Field | Validation / meaning |
+| --- | --- |
+| `storeId`, `source`, `plan` | Existing ASCII identifier rule, 1–80 characters |
+| `binding` | JSON `{sourceId:string|null,verified:boolean}`, exactly two fields, at most 256 UTF-8 bytes; expected service binding, not a restriction to reading that source |
+| `revision` | Expected current progress revision, positive safe integer, including above nine digits |
+| `cleanupRev` | Expected cleanup generation, nonnegative safe integer |
+
+The encoded query including `?` is at most 16,384 bytes. There is no cursor, historical revision selector, continuation or caller-selected item limit.
+
+Canonical exports in `shared/progress.ts`:
+
+```ts
+interface PlanGraphItem {
+  id: string;
+  kind: 'task' | 'group';
+  status: Status;
+  parentId: string | null;
+  dependencies: string[];
+}
+interface PlanGraphRead {
+  protocolVersion: 2;
+  schemaVersion: 2;
+  planGraph: 1;
+  storeId: string;
+  sourceBinding: { sourceId: string | null; verified: boolean };
+  source: string;
+  plan: string;
+  revision: number;
+  structuralRevision: number;
+  cleanup: { state: 'visible' | 'archived'; revision: number };
+  complete: true;
+  itemCount: number;
+  items: PlanGraphItem[];
+}
+```
+
+One read transaction returns every current task and group at the requested progress revision and cleanup generation, in stored order (at most 1,000). Parent absence is null and omitted dependencies are an empty array; repeated recorded dependencies are preserved. `complete:true` and `itemCount === items.length` describe coverage, not completion of work. The reply is not a legacy Envelope/PlanRead: no title, document, path, source root, contribution, assignment link, provenance, blocker, working-ID array, summary count or timing data is returned. Missing recorded prerequisites do not prove real-world independence. Item identity and structural revision retain the rules in “Item identity and structural revisions”; structuralRevision is not a topology fingerprint or item-instance identifier.
+
+The complete graph is validated: unique bounded identifiers, known kinds/statuses, at most 16 dependency entries per item, group parents, task dependency targets, no self edges, hierarchy/dependency cycles or task parents. Group dependencies targeting tasks remain allowed. Unknown/malformed wire fields fail; unreadable items/edges are never omitted to manufacture completeness. Unrelated snapshot annotations are not validated by this read.
+
+Store/binding, progress revision or cleanup conflicts return 409/conflict; missing/deleted plans return 404/not-found. Archived plans remain readable and legacy cleanup metadata is visible generation 0. Capture disabled does not prevent reading recorded facts. Input admission is one current snapshot of at most 8 MiB, checked before driver materialization/JavaScript parsing; an invalid or oversized stored snapshot fails with 503/corrupt. Complete encoded replies remain within 1,048,576 bytes; overflow returns 413/response-too-large, never a truncated success. Unknown/duplicate query fields return 404, malformed/missing values or oversized queries 400, request bodies 400, wrong methods 405 and unauthorized requests 401. Other store failures retain their fixed codes. Responses use JSON content type, no-store and nosniff. Reads create no schema objects, receipts or revisions and perform no history/contribution/timing scan, file access or model call, including on read-only legacy stores.
+
+A reply is one observed snapshot, not a freshness promise after delivery. Consumers validate the entire identity, requested progress revision and cleanup generation, and only present a complete validated reply for their current reading identity. Capability absence, refused identity, partial/malformed replies and transport/store failures remain explicit unavailable/error states; they cannot be substituted with empty data or merged with another revision. Unsupported services receive no graph request. Refreshing metadata and issuing a new pinned request is distinct from accepting a stale reply.
+
 ## Plan change digests (frozen additive read contract)
 
 See also the independent **Plan/task search revision 1** contract above. Search

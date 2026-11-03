@@ -2,7 +2,8 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
-import { BLOCKER_LIMITS, identifier } from '../../shared/progress.ts';
+import { BLOCKER_LIMITS, LIMITS, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
+import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
@@ -52,7 +53,7 @@ export function parseHealth(body: string): HealthView {
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
+  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
 }
 
 export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {
@@ -667,4 +668,26 @@ export function parseRunRead(body: string, r: RunRequest): RunRead {
   const data = v.data.map(runRow);
   check(new Set(data.map((x) => x.id)).size === data.length && data.every((x) => x.source === r.source), 'A run row does not belong to this reading.');
   return { ...(v as unknown as RunRead), data };
+}
+export function planGraphQuery(r: PlanGraphRequest): Record<string, string> {
+  check(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && graphInteger(r.revision, 1) && graphInteger(r.cleanupRev), 'Invalid graph request identity.');
+  check(isRec(r.binding) && Object.keys(r.binding).length === 2 && (r.binding.sourceId === null || identifier(r.binding.sourceId)) && typeof r.binding.verified === 'boolean', 'Invalid graph service binding.');
+  const q = { storeId: r.storeId, binding: JSON.stringify(r.binding), source: r.source, plan: r.plan, revision: String(r.revision), cleanupRev: String(r.cleanupRev) };
+  check(new TextEncoder().encode(q.binding).length <= 256 && new TextEncoder().encode('?' + new URLSearchParams(q)).length <= GRAPH_LIMITS.queryBytes, 'Graph query exceeds its limit.');
+  return q;
+}
+
+/** Strict complete graph parser. No partial prefix survives a validation failure. */
+export function parsePlanGraph(body: string, r: PlanGraphRequest): PlanGraphRead {
+  planGraphQuery(r);
+  check(body.length <= LIMITS.responseBytes && new TextEncoder().encode(body).length <= LIMITS.responseBytes, 'Graph reply exceeds its limit.');
+  const v: unknown = JSON.parse(body); check(isRec(v), 'Unreadable graph reply.'); versions(v);
+  check(Object.keys(v).length === 13 && Object.keys(v).every(k => ['protocolVersion','schemaVersion','planGraph','storeId','sourceBinding','source','plan','revision','structuralRevision','cleanup','complete','itemCount','items'].includes(k)), 'Unexpected graph reply fields.');
+  const b = v.sourceBinding, c = v.cleanup;
+  check(v.planGraph === 1 && v.storeId === r.storeId && v.source === r.source && v.plan === r.plan && v.revision === r.revision && graphInteger(v.revision, 1)
+    && isRec(b) && Object.keys(b).length === 2 && b.sourceId === r.binding.sourceId && b.verified === r.binding.verified, 'Graph reading identity changed.');
+  check(graphInteger(v.structuralRevision, 1) && v.structuralRevision <= v.revision && isRec(c) && Object.keys(c).length === 2 && (c.state === 'visible' || c.state === 'archived') && c.revision === r.cleanupRev && graphInteger(c.revision), 'Invalid graph revision or cleanup.');
+  check(v.complete === true && graphInteger(v.itemCount) && Array.isArray(v.items) && v.itemCount === v.items.length, 'Incomplete graph reply.');
+  let items; try { items = graphItems(v.items, true); } catch { throw new ContractError('Invalid graph items.'); }
+  return { ...(v as unknown as PlanGraphRead), sourceBinding: { ...b } as PlanGraphRead['sourceBinding'], cleanup: { ...c } as PlanGraphRead['cleanup'], items };
 }

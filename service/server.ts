@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { GRAPH_LIMITS } from '../shared/plan-graph.ts';
 import { RUN_LIMITS, parseReconcileBody, type ReconcileRequest, type RunRequest } from '../shared/subagent-runs.ts';
 import { parseCaptureBinding } from '../shared/document-captures.ts';
 import { CAPTURE_LIMITS } from '../shared/document-comparison.ts';
@@ -25,9 +26,11 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
+      graphRoute=url.pathname==='/v1/plan-graph';
+      if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile'].includes(url.pathname);
       if(runsRoute) {
         if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
@@ -104,18 +107,20 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
       const routes: Record<string,string[]> = { '/health':[], '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
+      routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
       const allowed = routes[url.pathname];
       if (!allowed || [...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) return answer(404,{error:'not-found'});
       if(searchRoute && Buffer.byteLength(url.search)>SEARCH_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(comparisonRoute && Buffer.byteLength(url.search)>CAPTURE_LIMITS.queryBytes)throw new ProgressError('invalid');
+      if(graphRoute && Buffer.byteLength(url.search)>GRAPH_LIMITS.queryBytes)throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if (url.pathname === '/health') {
         // The host marks the service ready on /health 200; a configured store that
         // cannot open keeps the process serving fixed error states (503 on store
         // routes, diagnostics here) instead of a host-level service failure.
-        if (currentStore) return answer(200,{ok:true,ready:true,sqlite:true,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        if (currentStore) return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
       }
@@ -134,6 +139,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
         return answer(200,currentStore.list({cursor:number('cursor',0),limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived}));
       }
       const source = text('source',true)!; const plan = text('plan',true)!;
+      if (graphRoute) {
+        const pin = (key: string, min: number) => { const v=url.searchParams.get(key);if(v===null||!/^\d{1,16}$/.test(v)||!Number.isSafeInteger(Number(v))||Number(v)<min)throw new ProgressError('invalid');return Number(v); };
+        return answer(200,currentStore.planGraph({storeId:text('storeId',true)!,binding:parseCaptureBinding(url.searchParams.get('binding')),source,plan,revision:pin('revision',1),cleanupRev:pin('cleanupRev',0)}));
+      }
       if (comparisonRoute) {
         const integer = (key: string, min: number) => { const value=url.searchParams.get(key);if(value===null||!/^\d{1,16}$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<min)throw new ProgressError('invalid');return Number(value); };
         const r={storeId:text('storeId',true)!,binding:parseCaptureBinding(url.searchParams.get('binding')),source,plan,cleanupRev:integer('cleanupRev',0)};
@@ -152,7 +161,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     } catch (e) {
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });

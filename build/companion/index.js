@@ -24701,6 +24701,58 @@ function verifyStore(store, b) {
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
+// shared/plan-graph.ts
+var GRAPH_LIMITS = { inputBytes: 8 * 1024 * 1024, queryBytes: 16 * 1024, items: 1000, dependencies: 16 };
+var graphInteger = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var graphRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function graphCheck(v) {
+  if (!v)
+    throw new ProgressError("corrupt");
+}
+function graphItems(value3, wire = false) {
+  graphCheck(Array.isArray(value3) && value3.length <= GRAPH_LIMITS.items);
+  const items = value3.map((v) => {
+    graphCheck(graphRecord(v));
+    if (wire)
+      graphCheck(Object.keys(v).length === 5 && Object.keys(v).every((k) => ["id", "kind", "status", "parentId", "dependencies"].includes(k)));
+    graphCheck(identifier2(v.id) && (v.kind === "task" || v.kind === "group") && typeof v.status === "string" && ["pending", "working", "blocked", "done", "skipped"].includes(v.status));
+    const parentId = !wire && v.parentId === undefined ? null : v.parentId;
+    const dependencies = !wire && v.dependencies === undefined ? [] : v.dependencies;
+    graphCheck(parentId === null || identifier2(parentId));
+    graphCheck(Array.isArray(dependencies) && dependencies.length <= GRAPH_LIMITS.dependencies && dependencies.every(identifier2));
+    return { id: v.id, kind: v.kind, status: v.status, parentId, dependencies: [...dependencies] };
+  });
+  const byId = new Map(items.map((i) => [i.id, i]));
+  graphCheck(byId.size === items.length);
+  for (const item of items) {
+    graphCheck(item.parentId === null || byId.get(item.parentId)?.kind === "group");
+    graphCheck(item.dependencies.every((id2) => id2 !== item.id && byId.get(id2)?.kind === "task"));
+  }
+  for (const edges of [(i) => i.parentId === null ? [] : [i.parentId], (i) => i.dependencies]) {
+    const done3 = new Set;
+    for (const item of items) {
+      const visiting = new Set;
+      const stack = [{ id: item.id, exit: false }];
+      while (stack.length) {
+        const frame = stack.pop();
+        if (frame.exit) {
+          visiting.delete(frame.id);
+          done3.add(frame.id);
+          continue;
+        }
+        if (done3.has(frame.id))
+          continue;
+        graphCheck(!visiting.has(frame.id));
+        visiting.add(frame.id);
+        stack.push({ id: frame.id, exit: true });
+        for (const id2 of edges(byId.get(frame.id)))
+          stack.push({ id: id2, exit: false });
+      }
+    }
+  }
+  return items;
+}
+
 // shared/subagent-runs.ts
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
@@ -27076,6 +27128,46 @@ class Store {
   }
   get(source, id2) {
     return this.transaction(false, () => this.raw(source, id2));
+  }
+  planGraph(r) {
+    return this.transaction(false, () => {
+      requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && graphInteger(r.revision, 1) && graphInteger(r.cleanupRev));
+      requireProgress(r.binding && r.binding.sourceId === this.readBinding.sourceId && r.binding.verified === this.readBinding.verified, "conflict");
+      const meta = this.db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id FROM meta WHERE singleton=1").get();
+      requireProgress(meta?.store_id === r.storeId, "conflict");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const row2 = this.db.prepare("SELECT revision, CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(GRAPH_LIMITS.inputBytes, r.source, r.plan);
+      requireProgress(row2, "not-found");
+      graphCheck(typeof row2.snapshot === "string");
+      let p;
+      try {
+        p = JSON.parse(row2.snapshot);
+      } catch {
+        throw new ProgressError("corrupt");
+      }
+      graphCheck(graphRecord(p) && p.id === r.plan && p.sourceId === r.source && p.revision === row2.revision);
+      graphCheck(graphInteger(p.revision, 1) && graphInteger(p.structuralRevision, 1) && p.structuralRevision <= p.revision);
+      const generation = state?.generation ?? 0;
+      graphCheck(graphInteger(generation) && (!state || state.state === "visible" || state.state === "archived"));
+      requireProgress(p.revision === r.revision && generation === r.cleanupRev, "conflict");
+      const items = graphItems(p.items);
+      return {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        planGraph: 1,
+        storeId: r.storeId,
+        sourceBinding: { ...this.readBinding },
+        source: r.source,
+        plan: r.plan,
+        revision: p.revision,
+        structuralRevision: p.structuralRevision,
+        cleanup: { state: state?.state === "archived" ? "archived" : "visible", revision: generation },
+        complete: true,
+        itemCount: items.length,
+        items
+      };
+    });
   }
   cleanup(action, value3) {
     requireProgress(!this.readOnly, "storage");

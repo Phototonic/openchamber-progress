@@ -66,6 +66,14 @@ export interface PlanTiming { readAt: string; items: Record<string, { since: str
 /** Response-only reported-blocked history, never working time. Missing/unusable entries are unknown. */
 export interface BlockedTiming { readAt: string; items: Record<string, { since: string; kind: 'exact' | 'lower-bound' }> }
 export interface PlanRead { plan: PlanSummary; items: Page<Item>; contributions: Page<Contribution>; links: PlanState['links']; timing?: PlanTiming; blockedTiming?: BlockedTiming }
+/** Additive graph read revision 1; independent of detail pagination. */
+export interface PlanGraphItem { id: string; kind: 'task' | 'group'; status: Status; parentId: string | null; dependencies: string[] }
+export interface PlanGraphRequest { storeId: string; binding: Envelope['sourceBinding']; source: string; plan: string; revision: number; cleanupRev: number }
+export interface PlanGraphRead {
+  protocolVersion: 2; schemaVersion: 2; planGraph: 1; storeId: string; sourceBinding: Envelope['sourceBinding'];
+  source: string; plan: string; revision: number; structuralRevision: number;
+  cleanup: { state: 'visible' | 'archived'; revision: number }; complete: true; itemCount: number; items: PlanGraphItem[];
+}
 export interface DocumentRead { document: DocumentRef; text: string | null; nextCursor: string | null }
 /** Official-main metadata only; not actual installation provenance or bundle audit. */
 export interface ExtensionUpdateRead {

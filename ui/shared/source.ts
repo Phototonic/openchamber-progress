@@ -1,5 +1,7 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import { planGraphQuery, parsePlanGraph } from './adapter.ts';
+import type { PlanGraphRequest, PlanGraphRead } from './model.ts';
 import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
@@ -349,4 +351,20 @@ export async function readRuns(host: ServiceHost, request: RunRequest, cursor?: 
 export async function requestReconcile(host: ServiceHost, request: ReconcileRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {
   try { await call(host, RUN_ROUTES.reconcile, undefined, 'POST', reconcileBody(request)); return { ok: true }; }
   catch (error) { return { ok: false, failure: classify(error) }; }
+}
+export type PlanGraphResult = { ok: true; graph: PlanGraphRead } | { ok: false; reason: 'unavailable' | 'conflict' | 'not-found' | 'invalid' | 'read-failed'; failure: ReadFailure; status: number | null };
+
+/** One pinned read using already observed capability. No health fetch, retries or fallback. */
+export async function readPlanGraph(host: ServiceHost, health: { readonly planGraph?: unknown } | null, expected: Readonly<PlanGraphRequest>): Promise<PlanGraphResult> {
+  if (health?.planGraph !== 1) return { ok: false, reason: 'unavailable', failure: { kind: 'unavailable', code: 'GRAPH_UNAVAILABLE', message: 'Plan graph data is unavailable.' }, status: null };
+  try {
+    // Capture the pin before awaiting the host, even if a caller mutates its own object later.
+    const r = { ...expected, binding: { ...expected.binding } };
+    const body = await call(host, '/v1/plan-graph', planGraphQuery(r));
+    return { ok: true, graph: parsePlanGraph(body, r) };
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : null;
+    const failure = classify(error);
+    return { ok: false, reason: status === 409 ? 'conflict' : status === 404 ? 'not-found' : error instanceof ContractError || failure.kind === 'invalid' || failure.kind === 'incompatible' ? 'invalid' : 'read-failed', failure, status };
+  }
 }
