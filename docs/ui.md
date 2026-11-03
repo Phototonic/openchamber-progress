@@ -548,6 +548,84 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - Setup typing does not repaint.
 - **UI updates.** Functional `updateUi` merges onto the latest UI state, so writes after an await are safe.
 
+## Synthetic large-plan QA baseline
+
+`tests/fixtures/large-plan.ts` supplies the shared `large-plan-v1` sequence:
+980 tasks in 20 layers of 49, 20 groups, 2,000 authored task dependency links,
+and status seed `0x4c504631`. Containment is not a dependency edge. The exact
+topology, seeded status multiset, loader API and S0–S8 checkpoints are documented
+in [the backend fixture guide](backend.md#deterministic-large-plan-qa-fixture).
+This is reusable sequence input, not a map, layout policy or completed map QA.
+Status-only checkpoints preserve ordered topology; title-only S4 advances the
+structural counter without changing topology. S6 must be observed absent before
+S7 reuses the leaf ID as pending. IDs and structural counters are not incarnation
+tokens or topology hashes, and there is no position-retention promise across
+removal/reuse or missed revisions.
+
+With Node 24 and pinned dependencies, the focused library proof is:
+
+```sh
+EVIDENCE=evidence/large-plan-fixture/logic node --experimental-strip-types --test tests/browser/large-plan.test.ts tests/browser/dependency-derivation.test.ts tests/browser/plan-graph.test.ts tests/browser/ready-tasks.test.ts
+```
+
+It uses the actual dependency core on frozen complete graph/detail-compatible
+inputs, checking readiness witnesses, task-only vertices, depth, representative
+closures and replay invariants. Optional `logic/summary.json` separates pure-core
+preparation/closure CPU measurements (one warm-up, three samples) from HTTP and
+browser work. It does not calculate an all-pairs closure table.
+
+The existing synthetic SDK shell has a separate, validated opt-in mode:
+
+```sh
+node --experimental-strip-types tests/browser/plan-task-search-qa.ts --only large-plan --built-service --measure --artifacts evidence/large-plan-fixture/browser
+node --experimental-strip-types tests/browser/plan-task-search-qa.ts --built-service --artifacts evidence/large-plan-fixture/search-regression
+```
+
+The mode requires `--measure`, an already-installed Chromium (optional
+`--chromium` selects it), and existing generated service/guest entries. It loads
+only this plan through the shared staged production-report loader into a fresh
+temporary store; it does not load the search library. Existing default search,
+`--only j1` and `--only capture` scenarios retain their behavior.
+
+Synthetic host session `M` selects the rail. Initial measurements isolate the
+360 px rail and 1100 px page using the document-visibility seam as well as CSS.
+Real pointer/keyboard actions cover Unfinished, Show all, disclosure, working
+jump and readiness-to-canonical-task reveal. Each load/action receives one
+warm-up and three samples without reseeding. The S1–S8 replay runs once with
+both surfaces visible at their designated widths; each must observe complete
+matching detail and readiness, including committed S6 removal, before the next
+step. Both retain a collapsed group over S1; the actively focused page retains
+its unaffected task focus (only one iframe can own focus). Work Status gets a
+count/complete-plan smoke check, not graph/readiness certification.
+
+The mode checks two completed ordinary polls for no duplicate detail stream or
+data repaint, and releases a held detail continuation while that frame is hidden.
+The retired read must neither continue nor repaint while hidden. Time-label
+updates are not counted as data repaints. Pinned `readPlanGraph`/derivation probes
+use the same real service, observe its health capability and record one warm-up
+plus three samples. They are labelled `harness-probe`, never guest traffic; no
+graph read is added to a production surface.
+
+Local smoke acceptance uses median ≤2,000 ms for complete-ready load, median
+≤500 ms for each loaded action, and ≤8,000 ms for each replay observation in
+each surface. Graph/core timings have no millisecond gate. The existing 20 s
+wait guard and 8 s service abort remain unchanged. Failed budgets fail the mode;
+they are not dropped or retried away. These are local fixture guardrails, not a
+product SLA. Replay report-to-visible includes the ordinary poll and is never
+reported with an assumed poll duration subtracted. Root-render CPU (instrumented
+application paint callbacks) is separate from HTTP and the visible outcome after
+animation frames; it is not compositor/raster time.
+
+Sanitized `results.json`, `requests.json` and `performance.json` include identity,
+seed, viewport, reduced motion, request/byte counts, DOM counts and labelled
+measurements. Screenshots are `rail-ready.png`, `page-ready.png`,
+`page-after-structural.png`, and `page-dark-narrow.png` (360 px dark task controls
+with no horizontal overflow). Local `evidence/large-plan-fixture/baseline.md`
+compares these numbers with historical service/synthetic runs, explaining their
+different fixture and timing boundaries. This is synthetic-host + real-service
+proof, not native host/plugin invocation. Profiles, stores and child services are
+disposable; failures exit nonzero and retain measured evidence.
+
 ## data-testid contract (stable for browser QA)
 
 - **Root and plans:**
