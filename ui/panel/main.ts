@@ -1,7 +1,7 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, recordedLabel, staleBlock, testid } from '../shared/components.ts';
+import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
 import { officialMainBlock } from '../shared/official.ts';
@@ -70,7 +70,7 @@ startView<Ui>({
     const official = officialMainBlock(vc);
     if (!read) {
       if (!vc.session?.id) root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.'));
-      if (failure) root.append(failureBlock(failure, vc.retry));
+      if (failure) root.append(failureBlock(failure, retryRead(vc)));
       else if (vc.health && !vc.health.ready) {
         if (official) root.append(official);
         root.append(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Connect it to your OpenCode setup to start showing plans.', true));
@@ -79,7 +79,7 @@ startView<Ui>({
       else if (official) root.append(official);
       return;
     }
-    if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
+    if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
     if (official) root.append(official);

@@ -200,7 +200,10 @@ function navButton(plan: PlanView, sessionId: string, cov: Coverage, env: Env) {
 export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' = 'h2') {
   const head = el('header', 'ap-plan-head');
   const top = el('div', 'ap-row ap-between');
-  top.append(el(headingLevel, 'ap-plan-title ap-grow', plan.title));
+  // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
+  const title = testid(el(headingLevel, 'ap-plan-title ap-grow', plan.title), 'plan-title');
+  title.tabIndex = -1;
+  top.append(title);
   if (plan.lifecycle !== 'active') top.append(lifecycleBadge(plan));
   const meta = el('div', 'ap-meta');
   meta.append(el('span', '', planLocation(plan, env.live, env.boundSource)), age(plan.reportedAt, env, 'Updated '));
@@ -455,7 +458,18 @@ function noMatches(view: TaskProjection, reading: ReadingView, who: Attribution,
     box.append(el('p', 'ap-note', `This plan no longer records ${participantText(who.filter, label)} on any task.`));
   }
   box.append(el('p', 'ap-note', `${plural(view.totals.hidden, 'task row is', 'task rows are')} hidden by it. They are still in the plan, and the totals above count every task.`));
-  button(box, 'focus-clear', 'Clear task filters', () => reading.set(CLEARED), 'outline');
+  // The button leaves with this empty state: once, hand focus to the owning Tasks heading with a
+  // short notice (docs/ui.md Restoration), unless focus already moved elsewhere.
+  button(box, 'focus-clear', 'Clear task filters', () => reading.set(CLEARED, (root) => {
+    const active = document.activeElement;
+    if (!document.hasFocus() || (active && active !== document.body)) return;
+    const article = root.querySelector<HTMLElement>('article[data-reading]');
+    const heading = article?.querySelector<HTMLElement>('.ap-tasks-h');
+    if (!heading) return;
+    heading.focus({ preventScroll: true });
+    const notice = article!.querySelector<HTMLElement>('[data-testid="focus-notice"]');
+    if (notice) notice.textContent = 'Task filters cleared, so focus moved to Tasks.';
+  }), 'outline');
   return box;
 }
 
@@ -1024,6 +1038,18 @@ export function loadingBlock() {
   return slot;
 }
 
+/**
+ * Owning section heading of a recovered read (docs/ui.md Restoration): the board's list heading, the
+ * read plan's title, Work Status's featured plan, else the empty or unscoped state.
+ */
+export const recoveredHeading = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-list-heading"], [data-testid="plan-title"], [data-testid="status-plan-title"], [data-testid="empty-state"], [data-testid="unscoped-state"], [data-testid="setup-needed"], [data-testid="setup-status-heading"]');
+/** Try again on a failed or stale read: the banner leaves on success, so focus goes to the owning heading once. */
+export const retryRead = (vc: { handoff: (h: { heading: (root: HTMLElement) => HTMLElement | null; notice: (heading: HTMLElement) => string }) => void; retry: () => void }) => () => {
+  // A service that answers but is not set up recovers into its setup state, not into progress.
+  vc.handoff({ heading: recoveredHeading, notice: (h) => (/^setup-/.test(h.dataset.testid ?? '') ? 'Setup is needed' : 'Progress loaded again') });
+  vc.retry();
+};
+
 export function failureBlock(failure: ReadFailure, onRetry: () => void) {
   const slot = testid(el('div'), `state-${failure.kind}`);
   slot.setAttribute('role', 'alert');
@@ -1044,6 +1070,8 @@ export function staleBlock(failure: ReadFailure, lastGoodAt: number, locale: str
 export function emptyBlock(id: string, title: string, body: string, compact = false, action?: { label: string; onClick: () => void }) {
   const box = testid(el('div', compact ? 'ap-section' : 'ap-empty'), id);
   box.setAttribute('role', 'status');
+  box.tabIndex = -1; // a recovered read's owning section when no plan is shown (docs/ui.md Restoration)
+  box.dataset.handoffName = title;
   if (compact) {
     box.append(el('p', '', title), el('p', 'ap-note', body));
     if (action) button(box, `${id}-action`, action.label, action.onClick, 'ghost');

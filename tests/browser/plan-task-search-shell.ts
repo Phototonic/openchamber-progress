@@ -24,6 +24,8 @@ import { digest } from '../../shared/store.ts';
 import { createLargePlanReplay, LARGE_PLAN_ID } from '../fixtures/large-plan.ts';
 import { readPlanGraph, type ServiceHost } from '../../ui/shared/source.ts';
 import { deriveDependencies } from '../../ui/shared/dependency-derivation.ts';
+import { setupRead } from './fixtures.ts';
+import { CORE_ITEMS, FINISHED_ITEMS, MANY_ITEMS } from './focus-controls-fixtures.ts';
 
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };
 const DARK = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
@@ -37,6 +39,10 @@ const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[d
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
 window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],messages:[],errors:[]};
+// Keyboard-focus modes only (labelled seams): every /v1/setup read and setup action is answered here
+// from the existing synthetic setup fixture and never forwarded to a service or installation code;
+// "unconfigured" makes /health report not ready. Metadata (method/path/status) is recorded.
+if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='disable')qa.capture=false;if(action==='enable')qa.capture=true;const v=qa.unconfigured?{...${JSON.stringify(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${JSON.stringify(setupRead())},captureEnabled:qa.capture};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
 const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.loads={};qa.loaded={};
@@ -74,7 +80,9 @@ addEventListener('message',async e=>{
    if(failing.reject){fail(failing.code??'NO_SERVICE',failing.error??'Service entry is missing.');return}
    const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
   if(failing)failing.skip--;
+  if(window.__keyboardFocus&&q.path.startsWith('/v1/setup')){const r=qa.setupReply(q);qa.intercepted.push({frame:f,method:q.method,path:q.path,status:r.status,at:t0});result(r);return}
   const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
+   if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
    if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
   const hold=qa.holds.find(h=>h.path===q.path&&(!h.frame||h.frame===f)&&(h.plan===undefined||q.query?.plan===h.plan)&&(h.cursor===undefined||!!q.query?.cursor===h.cursor));
@@ -147,12 +155,37 @@ async function serve(f: Fixture, built: boolean) {
   };
 }
 
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' = 'search') {
-  if (!['search', 'large-plan'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+/** Keyboard-focus session (synthetic): the existing focus-control fixture items as real reports. */
+export const KEYBOARD_SESSION = 'KF';
+export const KEYBOARD_PLANS = { active: 'K-focus', many: 'K-many', allDone: 'K-all-done', deletable: 'K-finished-delete', archivable: 'K-finished-archive' } as const;
+/** Reported plans cannot nest a task under a task: such a child moves up to that task's own group. */
+const asInput = (items: typeof CORE_ITEMS): ItemInput[] => items.map(({ id, title, kind, status, parentId, dependencies }) => {
+  const parent = items.find((i) => i.id === parentId);
+  const group = parent?.kind === 'task' ? parent.parentId : parentId;
+  return { id, title, kind, status, ...(group ? { parentId: group } : {}), ...(dependencies ? { dependencies } : {}) };
+});
+function seedKeyboard(f: Fixture) {
+  const who = { ...f.actor, sessionId: KEYBOARD_SESSION };
+  f.seedPlan(KEYBOARD_PLANS.active, 'Focus controls example', asInput(CORE_ITEMS), who);
+  f.seedPlan(KEYBOARD_PLANS.many, 'Parallel work example', asInput(MANY_ITEMS), who);
+  f.seedPlan(KEYBOARD_PLANS.allDone, 'All tasks done example', asInput(FINISHED_ITEMS), who);
+  for (const plan of [KEYBOARD_PLANS.deletable, KEYBOARD_PLANS.archivable]) {
+    f.seedPlan(plan, plan === KEYBOARD_PLANS.deletable ? 'Disposable finished plan A' : 'Disposable finished plan B', asInput(FINISHED_ITEMS), who);
+    f.apply(plan, { op: 'finish', outcome: 'finished' }, who);
+  }
+}
+
+/**
+ * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
+ * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
+ */
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' = 'search', keyboard = mode === 'keyboard-focus') {
+  if (!['search', 'large-plan', 'keyboard-focus'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const large = mode === 'large-plan';
   const f = searchFixture(!large);
   const replay = large ? createLargePlanReplay(f) : null;
   if (replay) replay.seed(); else { seedSearchLibrary(f); seedExtras(f); }
+  if (mode === 'keyboard-focus') seedKeyboard(f);
   const second = searchFixture(!large);
   const services = [await serve(f, built), await serve(second, built)];
   const relay = async (q: GuestRequest, store: number): Promise<GuestRequestResult> => {
@@ -164,7 +197,11 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
-      if (url.pathname === '/') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(large ? html.replace('<script>', '<script>window.__largePlan=true;') : html); }
+      if (url.pathname === '/') {
+        let page = large ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
+        res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
+      }
       else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(`.${url.pathname}`)); }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
@@ -232,6 +269,8 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
       f.store.apply({op:'bind',plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`capture-qa-${++oid}`,source,confirm:false},f.actor,{state,path:source,canonicalPath:source,text,hash:digest(text),checkedAt:new Date().toISOString()});
       return f.store.get(f.alpha.id,plan)!.document.captureId!;
     },
+    /** Keyboard-focus mode: a synthetic report by the `KF` session (production write path). */
+    reportKeyboard: (plan: string, request: Record<string, unknown>) => { f.apply(plan, request, { ...f.actor, sessionId: KEYBOARD_SESSION }); },
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); },
