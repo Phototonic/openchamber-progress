@@ -1,5 +1,93 @@
 # Production backend v2
 
+## Deterministic large-plan QA fixture
+
+`tests/fixtures/large-plan.ts` provides `large-plan-v1`, a synthetic input sequence,
+not a map implementation or layout policy. `generateLargePlan(seed?)` defaults to
+`0x4c504631`: an unsigned LCG (1664525 / 1013904223) drives Fisher–Yates over the
+remaining status multiset in pending/working/blocked/done/skipped order. Reserved
+anchors are assigned first; remaining statuses are consumed in stored task order.
+The seed changes status placement only. No clock, host identity or real data enters
+authored content.
+
+The initial plan `P-large-dependencies` has 980 tasks (`T-LL-CC`, 20 layers × 49
+columns) and 20 groups (`G-LL`). Stored order is group then tasks for each layer.
+Each five-layer block has one root group and four child groups; every task parents
+to its layer group (996 containment links). Dependencies are separate task edges:
+each nonroot-layer task depends on previous-layer columns C and (C+1) modulo 49
+(1,862 edges); column 0 at layers 4/7/10/13/16/19 also depends on previous-layer
+columns 2–15 (84); columns 20–22 at layers 2–19 also depend on `T-00-48` (54).
+All 2,000 edges are distinct and point to earlier layers. Maximum depth is 19,
+six tasks have 16 prerequisites, and the root hub has 56 direct dependents.
+Task statuses are 588 pending / 98 working / 98 blocked / 147 done / 49 skipped;
+groups are pending and do not contribute to task counts.
+
+`largePlanSteps(seed?)` returns S0–S8 authored checkpoints, expected counts,
+revision/structural revision, affected IDs and edge/parent changes.
+`createLargePlanReplay(fixture, seed?)` uses the existing `searchFixture(false)`
+operations and allocator: `seed()` publishes S0 using 20 stages of 50 items and
+one commit; `advance(stepId)` advances exactly one checkpoint. Both verify the
+starting/ending committed state; there is no conflict retry, reset or sleep.
+Full replacements likewise use `seedPlan`, not SQL or an HTTP write API.
+
+| Checkpoint | Change | Revision / structural revision |
+| --- | --- | --- |
+| S0 | Initial staged publication | 1 / 1 |
+| S1 | Start root `T-00-00` | 2 / 1 |
+| S2 | Complete root/prerequisite, unblock `T-01-03` | 3 / 1 |
+| S3 | Rotate statuses of layer 08 and `T-09-00` (50 changes) | 4 / 1 |
+| S4 | Plan title only; item graph unchanged | 5 / 2 |
+| S5 | Rename/reparent/replace one edge of `T-10-24`, swap its order with `T-10-25` | 6 / 3 |
+| S6 | Observe committed absence of leaf `T-19-48` (999 items / 1,998 edges) | 7 / 4 |
+| S7 | Restore leaf with status omitted: pending, not former done | 8 / 5 |
+| S8 | Start restored leaf | 9 / 5 |
+
+Status-only steps retain ordered structure and item titles. S4 demonstrates why
+structural revision is not a topology hash. Retained IDs are matching keys within
+the pinned store/source/plan, not incarnation tokens: observed removal breaks
+continuity. There is no position-retention promise across S6/S7 or missed revisions.
+Consumers must observe S6 before advancing, rather than inferring uninterrupted
+identity from S7's reused ID.
+
+Typical test usage (supply an authenticated `ServiceHost` connected to the same
+temporary store, and obtain current identity pins and capability from real reads):
+
+```ts
+import { searchFixture } from '../tests/fixtures/plan-task-search.ts';
+import { createLargePlanReplay } from '../tests/fixtures/large-plan.ts';
+import { readPlanGraph } from '../ui/shared/source.ts';
+import { deriveDependencies } from '../ui/shared/dependency-derivation.ts';
+
+const f = searchFixture(false);
+try {
+  const replay = createLargePlanReplay(f);
+  replay.seed();
+  const result = await readPlanGraph(host, observedHealth, currentPin);
+  if (!result.ok) throw Error('Complete pinned graph required');
+  const derived = deriveDependencies(result.graph.items);
+  // Observe the consumer using this complete graph and derivation.
+  replay.advance('S1');
+  // Re-pin/read/derive; await the consumer's matching revision before S2…S8.
+} finally { f.cleanup(); }
+```
+
+Run the service proof with Node 24 and pinned dependencies:
+
+```sh
+EVIDENCE=evidence/large-plan-fixture/service node --experimental-strip-types --test tests/backend/large-plan-fixture.test.ts tests/backend/plan-graph-service.test.ts
+bun run typecheck
+```
+
+The focused proof uses disposable SQLite and authenticated loopback HTTP. It
+checks whole report requests against 16,384 bytes, staged nonpublication,
+revision barriers, full graph identity, one request per pinned graph read and
+a 1,048,576-byte graph ceiling. Initial complete detail takes 50 default pages.
+The entire replay repeats in a second store comparing authored semantics only,
+not timestamps/store IDs/receipts. Optional sanitized `fixture.json`, `replay.json`
+and `performance.json` report counts, bytes and diagnostic timings. This proves
+fixture/report and real-service behavior, not native plugin invocation, browser
+paint performance or completed map QA; no latency SLA is established here.
+
 ## Recorded capture comparison
 
 `shared/document-captures.ts` owns bounded metadata discovery and same-plan

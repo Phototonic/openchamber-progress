@@ -6,11 +6,13 @@
 // Usage: node --experimental-strip-types tests/browser/plan-task-search-qa.ts --artifacts <dir> [--built-service] [--measure] [--chromium <path>]
 //   writes results.json, races.json, requests.json (hard work/request gates) and, with --measure,
 //   performance.json (three samples after a warm-up; diagnostic, no latency SLA) plus screenshots.
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROJECTS, startSearchShell } from './plan-task-search-shell.ts';
+import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/large-plan.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -20,6 +22,9 @@ const measure = process.argv.includes('--measure');
 /** `--only j1`: just the J1 review cases (detail retirement and retention), for iteration. */
 const onlyJ1 = arg('--only') === 'j1';
 const onlyCapture = arg('--only') === 'capture';
+const onlyLarge = arg('--only') === 'large-plan';
+if (arg('--only') && !['j1', 'capture', 'large-plan'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+if (onlyLarge && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
 mkdirSync(artifacts, { recursive: true });
 
@@ -62,7 +67,7 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-const fx = await startSearchShell(built);
+const fx = await startSearchShell(built, false, onlyLarge ? 'large-plan' : 'search');
 const origin = `http://127.0.0.1:${fx.port}`;
 const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
@@ -123,10 +128,10 @@ try {
   };
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${JSON.stringify(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
-  const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700) => {
-    await guest('page', `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
+  const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
+    await guest(surface, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('page'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
     if (!r) throw new Error(`no ${selector} to capture`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: Math.min(r[3] + pad * 2, height), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -173,11 +178,164 @@ try {
   const setHidden = (hidden: boolean) => guest('page', hidden
     ? `Object.defineProperty(d,'visibilityState',{configurable:true,get:()=>'hidden'});d.dispatchEvent(new Event('visibilitychange'));return true`
     : `delete d.visibilityState;d.dispatchEvent(new Event('visibilitychange'));return true`);
-  const instrument = () => guest('page', `if(w.__paints)return true;w.__paints=[];const mount=d.getElementById('root'),orig=w.queueMicrotask.bind(w);w.queueMicrotask=fn=>orig(()=>{const before=mount.firstElementChild,t0=w.performance.now();fn();if(mount.firstElementChild!==before)w.__paints.push(w.performance.now()-t0)});return true`);
-  const paints = () => guest<number[]>('page', `return (w.__paints??[]).splice(0)`);
+  const instrument = (surface = 'page') => guest(surface, `if(w.__paints)return true;w.__paints=[];const mount=d.getElementById('root'),orig=w.queueMicrotask.bind(w);w.queueMicrotask=fn=>orig(()=>{const before=mount.firstElementChild,t0=w.performance.now();fn();if(mount.firstElementChild!==before)w.__paints.push(w.performance.now()-t0)});return true`);
+  const paints = (surface = 'page') => guest<number[]>(surface, `return (w.__paints??[]).splice(0)`);
   const pageErrors = () => c.events.map((e) => String(e.params.exceptionDetails?.exception?.description ?? e.params.args?.map((a: any) => a.value ?? a.description).join(' ') ?? '').split('\n')[0].slice(0, 160));
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
+
+  if (onlyLarge) {
+    const replay = fx.largePlan!;
+    const plan = `[data-testid="plan-${LARGE_PLAN_ID}"]`;
+    const complete = (revision: number) => `d.querySelector('${plan}[data-revision="${revision}"] .ap-tasks[data-complete]')&&d.querySelector('${plan} [data-testid="readiness"][data-state="ready"]')`;
+    const node = (id: string) => `[data-testid="${id}"]`;
+    Object.assign(facts, { fixture: LARGE_PLAN_VERSION, seed: LARGE_PLAN_SEED, runtime: process.version, serviceMode: built ? 'built generated service' : 'current TypeScript service', commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])), viewport: { browser: [1280, 1100], panel: 360, page: 1100, darkPage: 360 }, checkpoint: 'S0', sampleCount: 3, warmups: 1 });
+    const loadMetrics: Record<string, unknown> = {}, actionMetrics: Record<string, unknown> = {}, dom: Record<string, unknown> = {};
+    Object.assign(perf, { checkpoint: 'S0', loads: loadMetrics, actions: actionMetrics, dom, interpretation: 'Synthetic host with real service; local smoke budgets, not an SLA. HTTP, core CPU, root-render CPU and report-to-visible are separate.' });
+    const budget = (id: string, measurements: ReturnType<typeof stats>, limit: number) => {
+      gates.push({ id, pass: measurements.median <= limit, observed: measurements, limit: `median ≤${limit} ms` });
+    };
+    async function ready(surface: string, revision: number) {
+      await wait(surface, complete(revision), 'complete tasks and ready readiness'); await frames2();
+    }
+    async function openBoard() {
+      await wait('page', `d.querySelector('[data-testid="plan-row-${LARGE_PLAN_ID}"]')`, 'large plan board row');
+      await click('page', `[data-testid="plan-row-${LARGE_PLAN_ID}"]`);
+    }
+    async function reloadGuest(surface: string) {
+      const sequence = await evaluate<number>(`qa.reload('${surface}')`);
+      await wait(surface, `qa.loaded['${surface}']===${sequence}`, 'new guest document loaded');
+    }
+    for (const [surface, width] of [['panel', 360], ['page', 1100]] as const) {
+      await show([surface], width);
+      await theme('light');
+      if (surface === 'page') await openBoard();
+      await ready(surface, 1);
+      const loads: number[] = [], streams: unknown[] = [];
+      for (let sample = 0; sample < 4; sample++) {
+        const mark = await now(), replyMark = await evaluate<number>('qa.replies.length');
+        await reloadGuest(surface);
+        if (surface === 'page') await openBoard();
+        await ready(surface, 1);
+        const elapsed = await now() - mark;
+        await instrument(surface);
+        const reads = (await evaluate<any[]>(`qa.replies.slice(${replyMark})`)).filter(r => r.frame === surface && r.path === '/v1/plan');
+        check(`large:${surface}:load-${sample}:complete-50-pages`, reads.length === 50 && reads.every(r => r.status === 200 && r.revision === 1), undefined, { count: reads.length });
+        if (sample) { loads.push(elapsed); streams.push({ requests: reads.length, bytes: reads.reduce((n, r) => n + r.bytes, 0), httpMs: reads.reduce((n, r) => n + r.ms, 0) }); }
+      }
+      const load = stats(loads); loadMetrics[surface] = { ...load, streams }; budget(`${surface}:complete-ready-load`, load, 2000);
+      const counts = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,groups:a.querySelectorAll('.ap-items [data-testid^="group-G-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},nodes:a.querySelectorAll('*').length}`);
+      dom[surface] = counts;
+      check(`large:${surface}:complete-counts`, counts.tasks === 980 && counts.groups === 20 && counts.counts.done === '147' && counts.counts.total === '931' && counts.counts.remaining === '784' && counts.counts.skipped === '49', undefined, counts);
+      const metrics: Record<string, unknown> = {}; actionMetrics[surface] = metrics;
+      async function action(label: string, setup: () => Promise<unknown>, run: () => Promise<unknown>, condition: string) {
+        const values: number[] = [], renders: unknown[] = [];
+        for (let sample = 0; sample < 4; sample++) {
+          await setup(); await frames2(); await paints(surface);
+          const start = await now(); await run(); await wait(surface, condition, label); await frames2();
+          const elapsed = await now() - start;
+          const cpu = await paints(surface);
+          if (sample) { values.push(elapsed); renders.push(cpu); }
+        }
+        const measured = stats(values); metrics[label] = { ...measured, rootRenderCpuMs: renders }; budget(`${surface}:${label}`, measured, 500);
+      }
+      const mode = (value: string) => click(surface, `${node(`focus-mode-${value}`)} button`);
+      const modeIs = (value: string) => `d.querySelector('${node(`focus-mode-${value}`)} button')?.getAttribute('aria-pressed')==='true'`;
+      await action('unfinished', () => mode('all'), () => mode('unfinished'), modeIs('unfinished'));
+      check(`large:${surface}:filter-hides-completed`, await guest<boolean>(surface, `return d.querySelector('${node('item-T-00-01')}').hidden&&!d.querySelector('${node('item-T-01-00')}').hidden`));
+      await action('show-all', () => mode('unfinished'), () => mode('all'), modeIs('all'));
+      const disclosure = node('group-toggle-G-15');
+      await action('disclosure', async () => { if (!(await guest<boolean>(surface, `return d.querySelector('${disclosure}').open`))) await click(surface, `${disclosure}>summary`); }, () => click(surface, `${disclosure}>summary`), `!d.querySelector('${disclosure}').open`);
+      await click(surface, `${disclosure}>summary`);
+      await action('jump-working', async () => { await click(surface, `${node('focus-mode-all')} button`); }, () => click(surface, `${node('focus-jump-working')} button`), `d.activeElement?.dataset.testid?.startsWith('item-')&&d.activeElement.dataset.status==='working'`);
+      await action('show-task', async () => { await click(surface, `${node('focus-jump-working')} button`); }, () => click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`), `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.activeElement.hidden`);
+      check(`large:${surface}:canonical-only`, await guest<boolean>(surface, `return d.querySelectorAll('${node('item-T-01-00')}').length===1&&d.querySelectorAll('${node('readiness-entry-T-01-00')}').length===1`));
+      // Real keyboard activation, independent of the pointer action timings.
+      await mode('all'); await wait(surface, modeIs('all'), 'Show all selected before keyboard activation');
+      await key('Tab');
+      check(`large:${surface}:keyboard-unfinished-start`, await guest<boolean>(surface, `return d.activeElement===d.querySelector('${node('focus-mode-unfinished')} button')&&(${modeIs('all')})&&d.querySelector('${node('focus-mode-unfinished')} button').getAttribute('aria-pressed')==='false'&&[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')].every(n=>!n.hidden)`), ['Unfinished focused without activation; Show all remains selected and all tasks are unfiltered']);
+      await key(' ');
+      const unfinishedRows = `(()=>{const rows=[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')];return rows.length===980&&rows.filter(n=>!n.hidden).length===784&&rows.every(n=>n.hidden===(n.dataset.status==='done'||n.dataset.status==='skipped'))})()`;
+      await wait(surface, `(${modeIs('unfinished')})&&${unfinishedRows}`, 'Space selects Unfinished and filters the task list');
+      check(`large:${surface}:keyboard-unfinished-filter`, await guest<boolean>(surface, `return (${modeIs('unfinished')})&&${unfinishedRows}`), ['Space changed Show all to Unfinished; 784 unfinished tasks shown and all 196 done/skipped tasks hidden']);
+      await mode('all'); await ready(surface, 1);
+      await shot(surface === 'panel' ? 'rail-ready' : 'page-ready', plan, 0, 1500, surface);
+    }
+    const graphSamples = [];
+    for (let sample = 0; sample < 4; sample++) { const probe = await fx.probeLargePlan(); if (sample) graphSamples.push(probe); }
+    perf.graphCore = { checkpoint: 'S0', traffic: 'harness-probe (never guest graph wiring)', samples: graphSamples, graphMs: stats(graphSamples.map(s => s.graphMs)), coreMs: stats(graphSamples.map(s => s.coreMs)) };
+    check('large:graph-probes-complete', graphSamples.every(s => s.items === 1000 && s.tasks === 980 && s.requests === 1 && s.bytes <= 1048576));
+
+    await show(['page', 'panel'], 1100);
+    await evaluate(`document.querySelector('section[data-frame="panel"]').style.width='360px';true`);
+    for (const surface of ['panel', 'page']) {
+      await ready(surface, 1); await instrument(surface);
+      await click(surface, `${node('group-toggle-G-15')}>summary`);
+      await click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`);
+      await wait(surface, `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.querySelector('${node('group-toggle-G-15')}').open`, 'settled reading state before replay');
+    }
+    facts.readingBeforeReplay = await Promise.all(['panel', 'page'].map(surface => guest(surface, `return {surface:'${surface}',focus:d.activeElement?.dataset.testid,hasFocus:d.hasFocus(),collapsed:!d.querySelector('${node('group-toggle-G-15')}').open}`)));
+    // Only one iframe can own focus. The final real click leaves the page focused;
+    // both surfaces retain disclosure state, but an unfocused rail has no focus to restore.
+    check('large:focused-page-before-replay', await guest<boolean>('page', `return d.hasFocus()&&d.activeElement?.dataset.testid==='item-T-01-00'`));
+    const updates: unknown[] = []; perf.replay = updates;
+    for (const step of replay.steps.slice(1)) {
+      for (const surface of ['panel', 'page']) await paints(surface);
+      const start = performance.now(); replay.advance(step.id); const committedAt = performance.now();
+      const observations = await Promise.all(['panel', 'page'].map(async surface => {
+        await ready(surface, step.revision);
+        // Validate every changed status anchor, complete counts, and the structural witness.
+        const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${JSON.stringify(i.status)}`).join('&&') || 'true';
+        await wait(surface, `${complete(step.revision)}&&(${statusChecks})${step.id === 'S6' ? `&&!d.querySelector('${node('item-T-19-48')}')` : ''}`, `${step.id} state observed`);
+        const visibleMs = performance.now() - committedAt;
+        const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('readiness-entry-T-01-00')}')?.dataset.group,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-item-title')?.textContent}`);
+        check(`large:${step.id}:${surface}:counts`, observed.tasks === step.itemCount - 20 && Object.entries(step.counts).every(([k,v]) => observed.counts[k] === String(v)));
+        if (step.id === 'S1') check(`large:${surface}:status-reading-retained`, observed.collapsed && (surface !== 'page' || observed.focus === 'item-T-01-00'), undefined, observed);
+        if (step.id === 'S2') check(`large:${surface}:readiness-unlocked`, observed.ready === 'ready');
+        if (step.id === 'S5') check(`large:${surface}:reshape`, observed.movedParent === 'group-G-11' && observed.movedTitle === 'Synthetic task moved', undefined, observed);
+        const rootRenderCpuMs = await paints(surface);
+        gates.push({ id: `${step.id}:${surface}:update-visible`, pass: visibleMs <= 8000, observed: visibleMs, limit: '≤8000 ms per observation' });
+        return { surface, visibleMs, rootRenderCpuMs, tasks: observed.tasks, collapsed: observed.collapsed, focusedTask: observed.focus ?? null };
+      }));
+      updates.push({ id: step.id, revision: step.revision, mode: 'concurrent two-surface refresh including ordinary poll', reportMs: committedAt - start, observations });
+    }
+    await shot('page-after-structural', plan, 0);
+    // Two actual completed ordinary polls, not a fixed sleep or an assumed poll period.
+    const idleMark = await evaluate<number>('qa.replies.length');
+    for (const surface of ['panel', 'page']) await paints(surface);
+    await wait('page', `['panel','page'].every(f=>qa.replies.slice(${idleMark}).filter(r=>r.frame===f&&r.path==='/v1/plans'&&r.status===200).length>=2)`, 'two completed ordinary polls');
+    const idleReplies = await evaluate<any[]>(`qa.replies.slice(${idleMark})`);
+    const idlePaints = await Promise.all(['panel', 'page'].map(f => paints(f)));
+    check('large:unchanged-polls-no-detail-or-repaint', !idleReplies.some(r => r.path === '/v1/plan') && idlePaints.every(p => p.length === 0), undefined, { detail: idleReplies.filter(r => r.path === '/v1/plan').length, paints: idlePaints });
+    perf.idle = { completedPollsPerSurface: 2, detailRequests: idleReplies.filter(r => r.path === '/v1/plan').length, dataRepaints: idlePaints.map(p => p.length) };
+
+    await evaluate(`qa.holds.push({tag:'large-hidden',path:'/v1/plan',frame:'page',cursor:true});true`);
+    await reloadGuest('page');
+    await openBoard();
+    await wait('page', `qa.held.some(h=>h.tag==='large-hidden')`, 'held detail continuation');
+    await evaluate(`qa.visibility('page',false);true`); await frames2();
+    await instrument('page'); await paints('page');
+    const hiddenMark = await evaluate<number>('qa.requests.length'), hiddenPollMark = await evaluate<number>('qa.replies.length');
+    await evaluate(`qa.release('large-hidden');true`);
+    await wait('panel', `qa.replies.slice(${hiddenPollMark}).filter(r=>r.frame==='panel'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two visible-peer polls while detail hidden');
+    const hiddenRequests = await evaluate<any[]>(`qa.requests.slice(${hiddenMark}).filter(r=>r.frame==='page')`), hiddenPaints = await paints('page');
+    check('large:hidden-retired-continuation', hiddenRequests.length === 0 && hiddenPaints.length === 0, undefined, { requests: hiddenRequests.length, paints: hiddenPaints.length });
+    perf.hidden = { requests: hiddenRequests.length, dataRepaints: hiddenPaints.length, observation: 'two completed visible-peer ordinary polls' };
+    await evaluate(`qa.visibility('page',true);true`); await ready('page', 9);
+    await show(['page'], 360); await theme('dark'); await ready('page', 9);
+    check('large:dark-narrow-no-overflow', await overflow());
+    await click('page', `${node('focus-mode-unfinished')} button`); await wait('page', `d.querySelector('${node('focus-mode-unfinished')} button')?.getAttribute('aria-pressed')==='true'`, 'narrow operable control');
+    await shot('page-dark-narrow', `${plan} .ap-tasks`, 0, 1500);
+    await show(['status'], 360);
+    await wait('status', Object.entries(replay.steps.at(-1)!.counts).map(([key, value]) => `d.querySelector('[data-testid="counts"]')?.dataset.${key}==='${value}'`).join('&&'), 'Work Status authoritative counts');
+    check('large:work-status-count-smoke', await guest<boolean>('status', `return !!d.querySelector('[data-testid="counts"]')&&!d.querySelector('[data-testid="detail-loading"]')`));
+    replies = [...await evaluate<any[]>('qa.replies'), ...fx.graphProbes];
+    check('large:no-guest-graph-wiring', !replies.some(r => r.path === '/v1/plan-graph' && r.traffic === 'guest'));
+    check('large:no-proxy-errors', JSON.stringify(await evaluate('qa.errors')) === '[]');
+    check('large:no-guest-errors', pageErrors().length === 0);
+    for (const g of gates) check(`large:budget:${g.id}`, g.pass, [g.limit], g.observed);
+    throw new OnlyDone();
+  }
 
   await show(['page', 'panel', 'status'], 1100);
   await wait('page', `d.querySelector('[data-testid="search-form"]')&&d.querySelector('[data-testid="plan-list"]')`, 'board with search form');
@@ -644,6 +802,12 @@ try {
 } catch (e) {
   if (!(e instanceof OnlyDone)) failure = e instanceof Error ? e.message.split('\n')[0].slice(0, 700) : String(e);
 } finally {
+  if (onlyLarge && page) {
+    try {
+      const captured = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
+      replies = [...(captured.result.value ?? []), ...fx.graphProbes];
+    } catch { if (!failure) failure = 'large-plan metadata collection failed'; }
+  }
   page?.close(); browser?.close();
   const exited = new Promise((r) => { if (chrome.exitCode !== null) r(null); else chrome.once('exit', r); });
   try { process.kill(-chrome.pid!, 'SIGTERM'); } catch { chrome.kill('SIGTERM'); }
@@ -651,14 +815,15 @@ try {
   await fx.stop();
   const evidenceClass = `synthetic SDK shell, real disposable HTTP services over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated headless Linux Chromium, current guest bundles`;
   const environment = { evidenceClass, browser: browserVersion, reducedMotion: true, nativeHostProof: false };
-  const passed = !failure && results.every((r) => r.pass) && races.every((r) => r.pass);
+  const passed = !failure && results.length + races.length > 0 && results.every((r) => r.pass) && races.every((r) => r.pass);
   writeFileSync(join(artifacts, 'results.json'), `${JSON.stringify({ ...environment, passed, failure, assertions: results.length, results, facts, screenshots: shots }, null, 2)}\n`);
   writeFileSync(join(artifacts, 'races.json'), `${JSON.stringify({ ...environment, passed: !failure && races.every((r) => r.pass), assertions: races.length, results: races, note: 'Held replies, failures, capability strip, account/store switches and visibility are labelled shell seams.' }, null, 2)}\n`);
   const windowSummary = replies.filter((r) => r.path === '/v1/search').map((r) => ({ status: r.status, continuation: r.cursor, hits: r.hits ?? null, bytes: r.bytes, ms: Math.round(r.ms * 10) / 10, work: r.work ?? null }));
   const stateSummary = replies.filter((r) => r.path === '/v1/search-state').map((r) => ({ status: r.status, keys: r.keys, bytes: r.bytes, ms: Math.round(r.ms * 10) / 10 }));
   const serviceMs = windowSummary.filter((w) => w.status === 200).map((w) => w.ms);
-  writeFileSync(join(artifacts, 'requests.json'), `${JSON.stringify({ ...environment, passed: gates.every((g) => g.pass) && !failure, gates, actions, searchWindows: { count: windowSummary.length, serviceRoundTripMs: serviceMs.length ? stats(serviceMs) : null, windows: windowSummary }, freshnessReads: { count: stateSummary.length, reads: stateSummary } }, null, 2)}\n`);
-  if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits are in requests.json.' }, null, 2)}\n`);
+  const detailGraph = replies.filter(r => r.path === '/v1/plan' || r.path === '/v1/plan-graph').map(({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }) => ({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }));
+  writeFileSync(join(artifacts, 'requests.json'), `${JSON.stringify({ ...environment, passed: gates.every((g) => g.pass) && !failure, gates, actions, detailGraph, searchWindows: { count: windowSummary.length, serviceRoundTripMs: serviceMs.length ? stats(serviceMs) : null, windows: windowSummary }, freshnessReads: { count: stateSummary.length, reads: stateSummary } }, null, 2)}\n`);
+  if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and any local smoke budgets are in requests.json.' }, null, 2)}\n`);
   console.log(JSON.stringify({ passed, assertions: results.length, races: races.length, gates: gates.length, failure, screenshots: shots }, null, 2));
   if (!passed) process.exitCode = 1;
   rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
