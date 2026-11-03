@@ -3779,7 +3779,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "0.6.1";
+var RELEASE = "0.7.0";
 
 // setup/cli.ts
 try {
