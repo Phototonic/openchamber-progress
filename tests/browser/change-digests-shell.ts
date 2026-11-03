@@ -21,10 +21,10 @@ const frames=${JSON.stringify(FRAMES)},surfaceOf=f=>f.startsWith('page')?'page':
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
 // devices: one Map per synthetic device namespace (browser profile + runtime + installation).
-window.qa={account:'account-example',store:0,deviceStorage:true,ns:{page:'profile-1',page2:'profile-1',page3:'profile-2',panel:'profile-1',status:'profile-1'},devices:{},instance:new Map(),
+window.qa={account:'account-example',session:'session-example',store:0,deviceStorage:true,ns:{page:'profile-1',page2:'profile-1',page3:'profile-2',panel:'profile-1',status:'profile-1'},devices:{},instance:new Map(),
  holds:[],held:[],requests:[],storageLog:[],storageFaults:[],errors:[],flight:0,stripDigests:false};
 const device=f=>qa.devices[qa.ns[f]]??=new Map();
-const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/Alpha',session:null,surface:surfaceOf(f),connection:{connected:true,account:qa.account},settings:{},item:null,...(qa.deviceStorage?{features:{deviceStorage:true}}:{})}});
+const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/Alpha',session:qa.session?{id:qa.session,title:'Example session',busy:false}:null,surface:surfaceOf(f),connection:{connected:true,account:qa.account},settings:{},item:null,...(qa.deviceStorage?{features:{deviceStorage:true}}:{})}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.show=(list,width)=>{for(const n of document.querySelectorAll('section[data-frame]')){const on=list.includes(n.dataset.frame);n.style.display=on?'block':'none';if(on)n.style.width=width+'px'}};
 qa.theme=mode=>{theme.mode=mode;Object.assign(theme.tokens,mode==='dark'?dark:light.tokens);document.documentElement.style.background=theme.tokens.background;document.body.style.background=theme.tokens.background;document.body.style.color=theme.tokens.foreground;frames.forEach(ready)};
@@ -63,7 +63,24 @@ addEventListener('message',async e=>{
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>Change digests QA</title><style>html,body{margin:0;background:#fafafa;color:#202124;font:14px system-ui}main{display:flex;flex-wrap:wrap;align-items:flex-start}section{margin:12px;display:none}h1{font-size:13px;margin:0 0 8px}iframe{display:block;width:100%;height:1500px;border:0}section[data-frame=status] iframe{height:200px}</style></head><body><script>${script}</script><main>${FRAMES.map((f) => `<section data-frame="${f}"><h1>Agent progress · ${f.startsWith('page') ? `page (${f === 'page3' ? 'profile 2' : 'profile 1'})` : f}</h1><iframe data-frame="${f}" data-surface="${f.startsWith('page') ? 'page' : f}" title="${f}" src="/ui/${f.startsWith('page') ? 'page' : f}/index.html"></iframe></section>`).join('')}</main></body></html>`;
 
 type Fixture = Awaited<ReturnType<typeof launchCleanupService>>;
-type Item = { id: string; title: string; kind: 'task' | 'group'; status?: string; parentId?: string };
+type Item = { id: string; title: string; kind: 'task' | 'group'; status?: string; parentId?: string; dependencies?: string[] };
+
+/**
+ * Focused recorded-prerequisite plan (`--only prerequisites`), seeded only on demand so the
+ * full run's fixture sequences stay unchanged. `dependencies` omitted and `[]` are both used.
+ */
+export const PREREQ_TITLE = 'Recorded prerequisite example';
+export const PREREQ_LONG = 'Publish notes — a long synthetic title with <b>not markup</b> so the recorded change has to wrap at narrow widths';
+const prerequisiteItems: Item[] = [
+  { id: 'D', title: 'Prepare inputs', kind: 'task', status: 'done' },
+  { id: 'O', title: 'Check outline', kind: 'task', status: 'pending' },
+  { id: 'E', title: 'Check examples', kind: 'task', status: 'pending', dependencies: [] },
+  { id: 'R', title: 'Review inputs', kind: 'task', status: 'pending', dependencies: ['D'] },
+  { id: 'W', title: 'Write summary', kind: 'task', status: 'pending', dependencies: ['O'] },
+  { id: 'S', title: 'Optional check', kind: 'task', status: 'skipped' },
+  { id: 'K', title: 'Publish comparison', kind: 'task', status: 'pending', dependencies: ['S'] },
+  { id: 'B', title: 'Request sign-off', kind: 'task', status: 'blocked', dependencies: [] },
+];
 
 /** Synthetic, public-safe plans seeded through the ordinary store write path. */
 function seed(f: Fixture, second: boolean) {
@@ -167,6 +184,30 @@ export async function startDigestShell(built = false) {
     /** Revision-bound fixture: more than 128 revisions after the baseline. */
     many(n: number) { for (let i = 0; i < n; i++) status('P-gap', 'T2', i % 2 ? 'pending' : 'working'); },
     advance(plan: string, id: string) { status(plan, id, 'working'); },
+    /** Focused recorded-prerequisite fixture on `P-prerequisites`; statuses are retained by every revise. */
+    prerequisites: (() => {
+      const plan = 'P-prerequisites';
+      let current = prerequisiteItems.map(({ status: _s, ...i }) => i);
+      const revise = (items: Item[]) => write(plan, { op: 'revise', items });
+      return {
+        plan,
+        start() { write(plan, { op: 'start', title: PREREQ_TITLE, items: prerequisiteItems }); return rev(plan); },
+        /** One revision: O omitted → [D]; R [D] → []; W [O] → [D]; E stays []. */
+        endpoints() {
+          const next: Record<string, string[]> = { O: ['D'], R: [], W: ['D'] };
+          current = current.map((i) => (i.id in next ? { ...i, dependencies: next[i.id] } : i));
+          revise(current);
+          return rev(plan);
+        },
+        /** Two revisions: add N0 ([]) and N1 ([D], long literal title), then remove both. */
+        addAndRemove() {
+          revise([...current, { id: 'N0', title: 'Check packaging', kind: 'task', dependencies: [] }, { id: 'N1', title: PREREQ_LONG, kind: 'task', dependencies: ['D'] }]);
+          const added = rev(plan);
+          revise(current);
+          return { added, removed: rev(plan) };
+        },
+      };
+    })(),
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(stores.map((s) => s.stop())); },
   };
 }
