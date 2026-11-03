@@ -1,0 +1,8 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+# npm/Bun updates are intentionally omitted: Dependabot does not support bun.lock
+# lockfiles. Dependency alerts still use the dependency graph via package.json.

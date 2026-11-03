@@ -75,6 +75,12 @@ The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
 
+### Security scans and action updates
+
+Gitleaks checks pushes and pull requests to `main` and `dev` for secrets; its weekly scan re-checks the default branch's full history. CodeQL analyzes JavaScript and TypeScript on those same events for security problems without a build step. Dependabot checks GitHub Actions versions weekly and opens update PRs; npm/Bun version updates are not configured.
+
+If Gitleaks flags a synthetic test fixture, confirm it cannot be a real credential, then add a narrowly scoped allowlist in `.gitleaks.toml` with a comment naming the file and explaining why the value is synthetic. Never disable the scan or broadly exempt tests. Treat a potentially real credential as a security issue: do not publish it, and arrange private reporting and rotation rather than allowlisting it.
+
 ### Built files are intentional
 
 TypeScript is the source of truth, but Git installs execute the checked-in JavaScript. Include the affected built outputs with runtime changes; consumers do not compile or install dependencies. Rebuild only the relevant outputs, coordinating changes to shared contracts and generated files rather than overwriting another contributor's work.
