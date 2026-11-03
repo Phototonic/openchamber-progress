@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Report guidance and the `op` field description now remind agents to include `op` in every call and, when the host rejects a call with `op: Missing key`, to resend the same call with `op` and the same `oid`. Some models (observed with GLM-5.3) occasionally omit the key from routine change calls.
+
 ## [0.6.1] - 2026-11-02
 
 ### Fixed
