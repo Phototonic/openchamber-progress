@@ -1236,6 +1236,14 @@ tasks. Dispatch is not work start. No file or automatic per-turn report is requi
 Description-only clients may omit/truncate tool descriptions; delivery does not
 guarantee reporting or model compliance.
 
+The start/revise guidance floor asks agents to report only known real prerequisites
+in each task's optional `dependencies` array, using same-plan task IDs that must
+finish first. Full structural replacements (`revise` or `stage`/`commit`) must
+re-include still-needed edges; omitted dependencies are not retained. Omission is
+legal when none are known. Guidance must not infer links from ordering, titles,
+sessions or activity, ask users to supply them, infer blocked status from an edge,
+or imply execution enforcement. This is guidance, not a new data contract.
+
 - start: title/items/source?; creates independent plan identity.
 - change: changes[{id,status}], attributed? (explicit validated parent relay).
 - revise: title/items/reopen?; preserves status for retained IDs unless supplied.
