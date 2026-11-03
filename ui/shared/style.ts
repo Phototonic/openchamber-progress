@@ -121,6 +121,16 @@ button{font:inherit}
 .ap-group>ul{margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
 summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 .ap-tasks-h:focus{outline:none}
+/* Owning headings: programmatic focus targets of a hand-off (never Tab stops), so focus shows on :focus */
+.ap-region-h{margin:0;padding:2px 4px;font-size:13px;font-weight:600;color:var(--oc-fg);border-radius:4px}
+.ap-region-h:focus{outline:none;box-shadow:inset 0 0 0 2px var(--oc-focus)}
+:is([data-testid="plan-title"],[data-testid="status-plan-title"],[data-testid="setup-status-heading"],[data-testid="setup-needed"],[data-testid="empty-state"],[data-testid="unscoped-state"]):focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-handoff-notice{margin:0}
+/* SDK widgets mark focus only with the hover tint (or not at all): the app adds a focus-token ring */
+.ap-plan-list [role="listbox"]:focus-visible [role="option"][data-active="true"]{box-shadow:inset 0 0 0 2px var(--oc-focus)}
+.ap-plan-list [role="listbox"]:focus-visible:not(:has([role="option"][data-active="true"])){outline:2px solid var(--oc-focus);outline-offset:-2px;border-radius:8px}
+[data-testid="detail-tabs"] [role="tab"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+:is(.ap-focus,.ap-focus-empty,.ap-setup,[data-testid="open-detail"],[data-testid="setup-needed"],[data-testid="stale-banner"],[data-testid^="state-"]) .oc-sdk-btn:focus-visible,.ap-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 /* Branch facts stay visible while folded: full working/blocked, filter-hidden rows; "folded" only while closed */
 .ap-group>summary{flex-wrap:wrap;row-gap:2px}
 .ap-group>summary .ap-grow{flex:1 1 0}

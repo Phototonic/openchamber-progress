@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
+### Added
+
+- A whole-plan graph read: `GET /v1/plan-graph` (advertised as `planGraph:1`) returns each item's id, kind, status, parent and recorded dependencies for the entire plan at one committed revision, produced inside a single transaction — never a mix across revisions — under the existing response ceiling. Older services report the read as unavailable and receive zero requests (#39).
+- One shared, tested dependency derivation now owns dependency-derived facts: the existing readiness grouping with unchanged semantics, direct unlocks-next (a task's only distinct unfinished recorded prerequisite), longest-path depth and bounded upstream/downstream closures. The ready view delegates to it with identical behavior; future whole-plan consumers derive from the same module (#40).
+- A deterministic large-plan dependency fixture (1,000 items, 2,000 dependency links, seeded status mix) loadable through real report operations into disposable stores, with a reusable status/structural replay sequence and recorded responsiveness baselines, for future performance and layout-stability QA (#41).
+- CI safeguards for the public repository: full-history secrets scanning on every push and pull request to `main`/`dev` plus a weekly re-scan (checksum-verified Gitleaks CLI, including merge-commit resolutions), CodeQL analysis for JavaScript/TypeScript, and weekly Dependabot updates for GitHub Actions versions (#43).
+
+### Changed
+
+- History prerequisite wording distinguishes recorded information from the absence of prerequisites: `Recorded prerequisites: …` versus `No prerequisites recorded.`, with explicit Before/After phrasing on changes; unrecorded no longer reads as "requires none" (#37).
+- Keyboard and focus behavior across the rail, page and Work Status: controls that remove themselves after acting (clear task filters, retry banners, search actions) hand focus to their owning section heading with a short one-shot notice; the setup confirmation returns focus to its opener like the cleanup confirmation; focus rings are visible on the plan listboxes, detail tabs, SDK buttons and the rail picker in both themes; a pending focus hand-off is cancelled when the store or binding changes, so background reads and stale actions never focus or announce in another store; the reading-position guarantee is documented with its physical bound (the page's maximum scroll) (#42).
+- Report guidance asks agents to record task dependencies so readiness reflects real prerequisites (#36), and reminds them to include `op` in every report call and to resend the same call with `op` when a host rejects it with `op: Missing key` (some models occasionally omit the key).
+- The durable contracts now define item identity and structural revisions: retained, removed and reused IDs, and `structuralRevision` as a count of structural report operations rather than a topology fingerprint (#38). The native task-capture runtime limitation is recorded (#35).
+
 ## [0.6.1] - 2026-11-02
 
 ### Fixed

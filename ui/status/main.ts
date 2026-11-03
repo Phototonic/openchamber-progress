@@ -1,6 +1,6 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
-import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, testid } from '../shared/components.ts';
+import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, retryRead, testid } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
 import { clockTime } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
@@ -58,7 +58,7 @@ startView<Ui>({
     const withOfficial = (block: HTMLElement) => { const line = official(); if (line) block.append(line); return block; };
     if (!read) {
       if (!vc.session?.id) root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
-      if (failure) root.append(failureBlock(failure, vc.retry));
+      if (failure) root.append(failureBlock(failure, retryRead(vc)));
       else if (vc.health && !vc.health.ready) root.append(withOfficial(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Set it up to see plans here.', true, { label: 'Set up', onClick: () => openRail(vc) })));
       else if (vc.session?.id) root.append(loadingBlock());
       return;
@@ -72,7 +72,7 @@ startView<Ui>({
     }
     if (!scope.plans.length) {
       // No plan in scope: no sub-agent section, count or prompt, whatever the host lists.
-      root.append(failure ? failureBlock(failure, vc.retry) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));
+      root.append(failure ? failureBlock(failure, retryRead(vc)) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));
       return;
     }
     if (!plan) return;
@@ -105,7 +105,10 @@ startView<Ui>({
     const summary = summarize(plan, detail);
     if (showsLiveness(plan.lifecycle, summary, env.view)) box.dataset.motion = 'on';
     const head = el('div', 'ap-status-row');
-    head.append(el('span', 'ap-status-title ap-grow', plan.title));
+    // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
+    const title = testid(el('span', 'ap-status-title ap-grow', plan.title), 'status-plan-title');
+    title.tabIndex = -1;
+    head.append(title);
     if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan));
     box.append(head, progressBlock(summary, true));
     if (detail) {

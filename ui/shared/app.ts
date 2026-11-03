@@ -107,6 +107,14 @@ export interface ViewContext<U> {
   openOfficialMain: () => void;
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
+  /**
+   * One-shot focus hand-off for an action that removes or replaces the control it was activated from
+   * (docs/ui.md Restoration). Captured from the current focus: `to` once it is painted (a
+   * confirmation's Cancel or opener), otherwise, once that control is gone and focus was lost, the
+   * owning section heading with a short notice. Focus moved elsewhere, another frame owning focus or
+   * a context change cancels it; it never applies twice.
+   */
+  handoff: (h: Handoff) => void;
   summary: (plan: PlanView) => SummaryView | null;
   /** Full-page History digest of this plan in the current read; null elsewhere (rail, status). */
   digest: (plan: PlanView) => DigestPanel | null;
@@ -120,6 +128,9 @@ export interface ViewContext<U> {
    */
   runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
 }
+
+/** See ViewContext.handoff. `notice` is the outcome; ", so focus moved to <heading>." is appended. */
+export interface Handoff { to?: string; heading?: (root: HTMLElement) => HTMLElement | null; notice?: string | ((heading: HTMLElement) => string) }
 
 /** One poll's bounded freshness read in place of the list read; `identity` asks for the list read instead. */
 export type Freshness = (service: ServiceHost) => Promise<FreshnessResult>;
@@ -338,6 +349,9 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanup = initialCleanup();
   let cleanupBusy = false;
   let cleanupFocus: string | null = null;
+  let handoff: (Handoff & { from: FocusKey }) | null = null;
+  /** The hand-off's short notice, kept while focus stays on that heading (repaints rebuild the root). */
+  let handoffNote: { hook: string; text: string } | null = null;
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
@@ -634,7 +648,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
-        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; live.restart(); }
+        // A hand-off belongs to the old store/binding: it never focuses or announces in the new one.
+        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
         // Evict all remembered scopes/parts so another session cannot resurrect removed data.
         const previous = memory.get(memoryKey(key))?.read;
@@ -834,6 +849,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       setUi: (patch) => applyUi(patch),
       updateUi: (fn) => applyUi(fn(ui)),
       retry, sessionSubscriptions: live.sessionSubscriptionCount,
+      handoff: (h) => { const from = focusKey(mount!); handoff = from ? { ...h, from } : null; },
       detail: (p) => { const c = details.get(p.key); return c ? c.value : null; },
       document: (p) => documents.get(docKey(p)) ?? null,
       requestDocument: (p) => {
@@ -1005,7 +1021,6 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (top) n.scrollTop = top;
     }
     if (document.scrollingElement) document.scrollingElement.scrollTop = pageScroll;
-    if (sameReading && reading && complete && reading.anchor) { if (list) applyAnchor(list, reading.anchor); reading.anchor = null; }
     // Logical task focus: restored without scrolling, parked at Tasks across a loading gap and
     // brought back only while focus is still parked there.
     let restored = false;
@@ -1035,6 +1050,21 @@ export function startView<U>(spec: ViewSpec<U>) {
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       (target ?? backFallback)?.focus({ preventScroll: true });
     }
+    const revealHeading = handoff ? resolveHandoff(root, focus) : null;
+    if (handoffNote) {
+      const at = document.activeElement as HTMLElement | null;
+      if (at && root.contains(at) && at.dataset.testid === handoffNote.hook) {
+        const note = document.createElement('p');
+        note.className = 'ap-note ap-handoff-notice';
+        note.dataset.testid = 'focus-handoff-notice';
+        note.setAttribute('role', 'status');
+        note.textContent = handoffNote.text;
+        (at.parentElement?.matches('.ap-row,.ap-status-row') ? at.parentElement : at).after(note);
+      } else handoffNote = null;
+    }
+    // After focus restoration and its notices (which change layout above the rows), never before.
+    if (sameReading && reading && complete && reading.anchor) { if (list) applyAnchor(list, reading.anchor); reading.anchor = null; }
+    if (revealHeading) { const r = revealHeading.getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) revealHeading.scrollIntoView({ block: 'nearest' }); }
     if (cleanupFocus) {
       const owner = root.querySelector<HTMLElement>(`[data-testid="${cleanupFocus}"]`);
       const target = owner?.querySelector<HTMLElement>('button') ?? owner;
@@ -1060,10 +1090,47 @@ export function startView<U>(spec: ViewSpec<U>) {
     planLabels();
   }
 
+  /**
+   * Applies a pending hand-off to this paint. Returns a heading that took focus (to bring into view
+   * after the reading anchor), else null.
+   */
+  function resolveHandoff(root: HTMLElement, before: FocusKey | null): HTMLElement | null {
+    const h = handoff!;
+    const owns = document.hasFocus();
+    const active = document.activeElement as HTMLElement | null;
+    const lost = owns && (!active || active === document.body || !active.isConnected);
+    // The user moved on (another control, another frame) before the action's result painted.
+    if (!owns || (before && (before.id !== h.from.id || before.plan !== h.from.plan))) { handoff = null; return null; }
+    const hook = (id: string) => { const owner = root.querySelector<HTMLElement>(`[data-testid="${CSS_ESCAPE(id)}"]`); return owner?.matches(FOCUSABLE) ? owner : owner?.querySelector<HTMLElement>('button') ?? owner ?? null; };
+    const fromPainted = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(h.from.id)}"]`)].some((n) => planScope(n) === h.from.plan);
+    const to = h.to ? hook(h.to) : null;
+    if (to && (lost || (fromPainted && root.querySelector(`[data-testid="${CSS_ESCAPE(h.from.id)}"]`)?.contains(active)))) {
+      to.focus({ preventScroll: true }); handoff = null; return null;
+    }
+    if (fromPainted) {
+      // Not finished, or finished without removing it (e.g. a refused action): a control that was
+      // disabled while busy lost focus to body; give it back once it is usable again.
+      const again = hook(h.from.id) as HTMLButtonElement | null;
+      if (lost && again && !again.disabled) again.focus({ preventScroll: true });
+      return null;
+    }
+    if (!lost) { handoff = null; return null; }
+    const heading = h.heading?.(root) ?? null;
+    if (!heading) { if (!h.heading) handoff = null; return null; } // wait for the resulting state's heading
+    handoff = null;
+    // Owning headings carry a stable hook and tabindex=-1 in their components, so a later repaint
+    // keeps focus on them; the notice is drawn by the caller's notice step.
+    heading.focus({ preventScroll: true });
+    const name = (heading.dataset.handoffName ?? heading.textContent ?? '').trim().slice(0, 120);
+    const notice = typeof h.notice === 'function' ? h.notice(heading) : h.notice;
+    handoffNote = notice && heading.dataset.testid ? { hook: heading.dataset.testid, text: `${notice}, so focus moved to ${name}.` } : null;
+    return heading;
+  }
+
   const contextChanged = () => {
     contextGeneration++;
     versions.ctx++;
-    cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
+    cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
     live.restart();
     // A full snapshot or incremental event can move context. Duplicate follow-up events
     // are idempotent; directory-only enrichment does not change a session list scope.
@@ -1103,7 +1170,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       contextGeneration++;
       gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
       failure = null; lastGoodAt = null;
-      cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null;
+      cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
       session = nextSession; directory = nextDirectory;
       requestedScope = scopeKey(currentScope());
       versions.ctx++; live.restart(); spec.onContext?.(context()); gate.request();

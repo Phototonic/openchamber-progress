@@ -24634,7 +24634,7 @@ var REPORT_SCHEMA = {
   additionalProperties: false,
   required: ["op"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish", "handoff"], description: "Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish", "handoff"], description: "Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid." },
     plan: { type: "string", description: "Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev." },
@@ -24700,6 +24700,58 @@ function verifyStore(store, b) {
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// shared/plan-graph.ts
+var GRAPH_LIMITS = { inputBytes: 8 * 1024 * 1024, queryBytes: 16 * 1024, items: 1000, dependencies: 16 };
+var graphInteger = (v, min6 = 0) => Number.isSafeInteger(v) && Number(v) >= min6;
+var graphRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function graphCheck(v) {
+  if (!v)
+    throw new ProgressError("corrupt");
+}
+function graphItems(value3, wire = false) {
+  graphCheck(Array.isArray(value3) && value3.length <= GRAPH_LIMITS.items);
+  const items = value3.map((v) => {
+    graphCheck(graphRecord(v));
+    if (wire)
+      graphCheck(Object.keys(v).length === 5 && Object.keys(v).every((k) => ["id", "kind", "status", "parentId", "dependencies"].includes(k)));
+    graphCheck(identifier2(v.id) && (v.kind === "task" || v.kind === "group") && typeof v.status === "string" && ["pending", "working", "blocked", "done", "skipped"].includes(v.status));
+    const parentId = !wire && v.parentId === undefined ? null : v.parentId;
+    const dependencies = !wire && v.dependencies === undefined ? [] : v.dependencies;
+    graphCheck(parentId === null || identifier2(parentId));
+    graphCheck(Array.isArray(dependencies) && dependencies.length <= GRAPH_LIMITS.dependencies && dependencies.every(identifier2));
+    return { id: v.id, kind: v.kind, status: v.status, parentId, dependencies: [...dependencies] };
+  });
+  const byId = new Map(items.map((i) => [i.id, i]));
+  graphCheck(byId.size === items.length);
+  for (const item of items) {
+    graphCheck(item.parentId === null || byId.get(item.parentId)?.kind === "group");
+    graphCheck(item.dependencies.every((id2) => id2 !== item.id && byId.get(id2)?.kind === "task"));
+  }
+  for (const edges of [(i) => i.parentId === null ? [] : [i.parentId], (i) => i.dependencies]) {
+    const done3 = new Set;
+    for (const item of items) {
+      const visiting = new Set;
+      const stack = [{ id: item.id, exit: false }];
+      while (stack.length) {
+        const frame = stack.pop();
+        if (frame.exit) {
+          visiting.delete(frame.id);
+          done3.add(frame.id);
+          continue;
+        }
+        if (done3.has(frame.id))
+          continue;
+        graphCheck(!visiting.has(frame.id));
+        visiting.add(frame.id);
+        stack.push({ id: frame.id, exit: true });
+        for (const id2 of edges(byId.get(frame.id)))
+          stack.push({ id: id2, exit: false });
+      }
+    }
+  }
+  return items;
+}
 
 // shared/subagent-runs.ts
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
@@ -27077,6 +27129,46 @@ class Store {
   get(source, id2) {
     return this.transaction(false, () => this.raw(source, id2));
   }
+  planGraph(r) {
+    return this.transaction(false, () => {
+      requireProgress(identifier2(r.storeId) && identifier2(r.source) && identifier2(r.plan) && graphInteger(r.revision, 1) && graphInteger(r.cleanupRev));
+      requireProgress(r.binding && r.binding.sourceId === this.readBinding.sourceId && r.binding.verified === this.readBinding.verified, "conflict");
+      const meta = this.db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id FROM meta WHERE singleton=1").get();
+      requireProgress(meta?.store_id === r.storeId, "conflict");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const row2 = this.db.prepare("SELECT revision, CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(GRAPH_LIMITS.inputBytes, r.source, r.plan);
+      requireProgress(row2, "not-found");
+      graphCheck(typeof row2.snapshot === "string");
+      let p;
+      try {
+        p = JSON.parse(row2.snapshot);
+      } catch {
+        throw new ProgressError("corrupt");
+      }
+      graphCheck(graphRecord(p) && p.id === r.plan && p.sourceId === r.source && p.revision === row2.revision);
+      graphCheck(graphInteger(p.revision, 1) && graphInteger(p.structuralRevision, 1) && p.structuralRevision <= p.revision);
+      const generation = state?.generation ?? 0;
+      graphCheck(graphInteger(generation) && (!state || state.state === "visible" || state.state === "archived"));
+      requireProgress(p.revision === r.revision && generation === r.cleanupRev, "conflict");
+      const items = graphItems(p.items);
+      return {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        planGraph: 1,
+        storeId: r.storeId,
+        sourceBinding: { ...this.readBinding },
+        source: r.source,
+        plan: r.plan,
+        revision: p.revision,
+        structuralRevision: p.structuralRevision,
+        cleanup: { state: state?.state === "archived" ? "archived" : "visible", revision: generation },
+        complete: true,
+        itemCount: items.length,
+        items
+      };
+    });
+  }
   cleanup(action, value3) {
     requireProgress(!this.readOnly, "storage");
     try {
@@ -28558,9 +28650,11 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
     throw error;
   }
 } });
-var START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0. Minimal valid start (replace synthetic IDs/title/items with the real plan):
+var START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0.
+When starting or revising a plan, put real prerequisites in each task's optional dependencies array: IDs of tasks in the same plan that must finish first (max 16). Omit it when none are known; never add links just for list order or infer them from titles, sessions or activity. When replacing items in revise or stage/commit, include all still-needed links; omitted dependencies are not retained. Do not ask the user to fill them in. Links neither set blocked nor enforce execution.
+Valid start with a prerequisite (replace synthetic IDs, title and items with the real plan): task-2 needs task-1 finished first; task-1 has no prerequisite.
 \`\`\`json
-{"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
+{"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
 Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50). Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions.
@@ -28570,7 +28664,7 @@ Tracker updates are not Agent Progress reports. For tracked plan work, explicitl
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.
 ${START_HELP}
 Blocked tasks may optionally include blocker:{category?,reason?,nextAction?}; categories are decision/dependency/review/external/other. Prose must be nonblank, at most 512 JS code units each, without NUL. Supply purpose-written safe summaries, never private prompts, transcripts or raw tool output; bounds do not redact secrets. Missing parts are unknown. An object completely replaces details; null clears details without resolving status. Omission retains only verified-current details on a continuously blocked task. Groups reject blocker; non-null objects require blocked status. A metadata-only change repeats status:"blocked". Start/revise/staged task entries also accept blocker; staging publishes nothing before commit. Leaving blocked or closing clears details; re-entry/reopen without an explicit object is unknown. Older writers can invalidate optional details: deliberately re-report rather than resurrecting text. Do not send unsupported fields automatically to older tools. Waiting durations are derived from reported status history, not caller input, actual model activity or approval.
-Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses.
+Start unrelated objectives as separate plan IDs. Mirror the complete structure once with stable item IDs; groups are not work. Start with op=start, plan/title/items, oid and rev=0. Routine changes send only changes:[{id,status}] with the latest rev and a fresh oid. Batch changes. Status: pending, working, blocked, done, skipped. Read after compaction/conflict before writing. Retry identical input with the same oid only; altered reuse refuses. Every call needs op, including change; if the host rejects a call with "op: Missing key", resend the same call with op added and the same oid.
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {

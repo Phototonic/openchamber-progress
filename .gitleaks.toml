@@ -1,0 +1,7 @@
+title = "Repository secrets scanning"
+
+[extend]
+useDefault = true
+
+# No repository-specific exceptions are needed after the initial history/tree scans.
+# Add only narrowly scoped synthetic-fixture allowlists, documenting file and reason.
