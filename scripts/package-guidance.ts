@@ -28,6 +28,33 @@ try {
     const receipt=JSON.parse((await tool.execute(request,{sessionID,agent:sessionID==='M'?'build':'general',messageID:'fixture-message',id:'fixture-tool'})).content);
     assert.equal(receipt.error,undefined,JSON.stringify(receipt));return receipt;
   }
+  const advertised:any[]=[];
+  for(const text of [tool.description,skill.content,readFileSync(path.join(path.dirname(entry),'SKILL.md'),'utf8')]){
+    const examples=[...text.matchAll(/```json\s*([\s\S]*?)```/g)].map(m=>JSON.parse(m[1]));
+    assert.ok(examples.length>0,'loaded tool and both installed guidance surfaces advertise an executable example');
+    for(const example of examples){
+      assert.equal(example.op,'start');assert.equal(example.rev,0);
+      assert.equal((await report(example)).rev,1);
+      const page=await report({op:'read',plan:example.plan,page:0});
+      const first=page.items.data.find((i:any)=>i.id==='task-1');const second=page.items.data.find((i:any)=>i.id==='task-2');
+      assert.deepEqual(first.dependencies??[],[]);assert.deepEqual(second.dependencies,['task-1']);
+      assert.equal(first.status,'working');assert.equal(second.status,'pending','a prerequisite does not force blocked status');
+      advertised.push(example);
+    }
+  }
+  // Identical starts across surfaces must be checked before their plan is revised.
+  for(const [index,example] of advertised.entries()){
+    for(const retain of [true,false]){
+      const current=await report({op:'read',plan:example.plan});
+      const items=example.items.map(({dependencies,...item}:any)=>retain&&dependencies?{...item,dependencies}:item);
+      const receipt=await report({op:'revise',plan:example.plan,oid:`example-${index}-${retain}`,rev:current.rev,items});
+      assert.equal(receipt.rev,current.rev+1);
+      const page=await report({op:'read',plan:example.plan,page:0});
+      const first=page.items.data.find((i:any)=>i.id==='task-1');const second=page.items.data.find((i:any)=>i.id==='task-2');
+      assert.deepEqual(first.dependencies??[],[]);assert.deepEqual(second.dependencies??[],retain?['task-1']:[]);
+      assert.equal(first.status,'working');assert.equal(second.status,'pending','revising edges does not force blocked status');
+    }
+  }
   await report({op:'start',plan:'packaged',oid:'start',rev:0,title:'Canonical workflow',items:P1,source:document});
   await report({op:'link',plan:'packaged',oid:'link',rev:1,child:'C1',assign:['I3']});
   await report({op:'change',plan:'packaged',oid:'child',rev:2,changes:[{id:'I3',status:'done'}]},'C1');

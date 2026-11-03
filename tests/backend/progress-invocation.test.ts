@@ -59,11 +59,30 @@ test('registered report provides safe recovery hints and executable start help w
     assert.equal(view().data.length,1);
 
     // Every advertised example is executable; help must not omit hidden start prerequisites.
+    const advertised:any[]=[];
     for(const text of [tool.description,skill.content,fs.readFileSync('plugin/SKILL.md','utf8')]){
       const examples=[...text.matchAll(/```json\s*([\s\S]*?)```/g)].map(m=>JSON.parse(m[1]));
       assert.ok(examples.length>0,'direct tool and both guidance surfaces include JSON start example');
       for(const example of examples){assert.equal(parseRequest(example).op,'start');assert.equal(example.rev,0);assert.equal(example.items[0].kind,'task');
         const reply=await call(example);assert.equal(reply.rev,1);
+        const page=await call({op:'read',plan:example.plan,page:0});
+        const first=page.items.data.find((i:any)=>i.id==='task-1');const second=page.items.data.find((i:any)=>i.id==='task-2');
+        assert.deepEqual(first.dependencies??[],[]);assert.deepEqual(second.dependencies,['task-1']);
+        assert.equal(first.status,'working');assert.equal(second.status,'pending','a prerequisite does not force blocked status');
+        advertised.push(example);
+      }
+    }
+    // Check all identical starts before revising: retries return the original receipt.
+    for(const [index,example] of advertised.entries()){
+      for(const retain of [true,false]){
+        const current=await call({op:'read',plan:example.plan});
+        const items=example.items.map(({dependencies,...item}:any)=>retain&&dependencies?{...item,dependencies}:item);
+        const reply=await call({op:'revise',plan:example.plan,oid:`example-${index}-${retain}`,rev:current.rev,items});
+        assert.equal(reply.rev,current.rev+1);
+        const page=await call({op:'read',plan:example.plan,page:0});
+        const first=page.items.data.find((i:any)=>i.id==='task-1');const second=page.items.data.find((i:any)=>i.id==='task-2');
+        assert.deepEqual(first.dependencies??[],[]);assert.deepEqual(second.dependencies??[],retain?['task-1']:[]);
+        assert.equal(first.status,'working');assert.equal(second.status,'pending','revising edges does not force blocked status');
       }
     }
     for(const field of ['op','plan','oid','rev','items'] as const)assert.ok(REPORT_SCHEMA.properties[field].description?.length,'schema directly explains operation requirements');
