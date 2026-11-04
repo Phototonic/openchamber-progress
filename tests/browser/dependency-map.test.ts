@@ -237,6 +237,22 @@ test('review regressions: expired same-revision detail ownership recovers; resta
       map.reconcile({ ...next, refreshSerial: 2 }); assert.equal(graphCalls, calls + 2, 'settled replacement stays deduplicated');
       map.dispose();
     }
+    {
+      // Replacement after the first picture has settled: same revision, new detail, no new graph work.
+      const map = makeMap(); map.reconcile(c); await until(() => map.value.current);
+      const settled = map.value.picture!, calls = graphCalls;
+      const replacement: CompleteDetailResult = structuredClone(result);
+      replacement.snapshot = { ...replacement.snapshot!, captureEnabled: !replacement.snapshot!.captureEnabled };
+      map.reconcile({ ...c, detail: { result: replacement, current: () => true }, refreshSerial: 2 });
+      assert.equal(map.value.state, 'ready'); assert.equal(map.value.current, true);
+      assert.equal(map.value.picture!.detail.snapshot!.captureEnabled, replacement.snapshot!.captureEnabled, 'settled picture adopts replaced detail');
+      assert.equal(map.value.picture!.graph, settled.graph, 'matched graph reused'); assert.equal(graphCalls, calls, 'no graph request for same-revision replacement');
+      assert.ok(Object.isFrozen(map.value.picture!.detail)); assert.notEqual(map.value.picture!.detail, replacement, 'owns a copy');
+      const adopted = map.value.picture;
+      map.reconcile({ ...c, detail: { result: replacement, current: () => true }, refreshSerial: 3 });
+      assert.equal(map.value.picture, adopted, 'unchanged polls keep picture identity');
+      map.dispose();
+    }
     f.seedPlan('P-paged-review', 'Paged restart fixture', Array.from({ length: 60 }, (_, n) => ({ id: `T-${n}`, title: 'Paged task', kind: 'task' as const })));
     const complete = await readDetail(host, { sourceId: f.alpha.id, id: 'P-paged-review' }); assert.ok(complete.ok);
     const paged = { ...c, plan: complete.plan, detail: { result: complete, current: () => true } };
@@ -256,6 +272,6 @@ test('review regressions: expired same-revision detail ownership recovers; resta
     restartFault = false;
     map.reconcile({ ...paged, refreshSerial: 3 }); await until(() => map.value.current);
     assert.equal(graphCalls, calls + 1); assert.equal(map.value.picture!.detail.plan.title, complete.plan.title);
-    if (process.env.EVIDENCE) { mkdirSync(process.env.EVIDENCE, { recursive: true }); writeFileSync(`${process.env.EVIDENCE}/review-fixes.json`, JSON.stringify({ fixture: MAP_FIXTURE_VERSION, runtime: process.version, passed: true, checks: ['same-revision-replacement-while-graph-held', 'same-revision-replacement-after-expired-completion', 'no-null-claim-or-refresh-required-for-replacement', 'old-completion-cannot-overwrite', 'actual-detail-restart-exhaustion-updating', 'retained-consistent-picture', 'initial-updating-without-prefix', 'failed-prefix-zero-graph-requests', 'successful-refreshed-detail-recovers'] }, null, 2) + '\n'); }
+    if (process.env.EVIDENCE) { mkdirSync(process.env.EVIDENCE, { recursive: true }); writeFileSync(`${process.env.EVIDENCE}/review-fixes.json`, JSON.stringify({ fixture: MAP_FIXTURE_VERSION, runtime: process.version, passed: true, checks: ['same-revision-replacement-while-graph-held', 'same-revision-replacement-after-settled-picture', 'same-revision-replacement-after-expired-completion', 'no-null-claim-or-refresh-required-for-replacement', 'old-completion-cannot-overwrite', 'actual-detail-restart-exhaustion-updating', 'retained-consistent-picture', 'initial-updating-without-prefix', 'failed-prefix-zero-graph-requests', 'successful-refreshed-detail-recovers'] }, null, 2) + '\n'); }
   } finally { for (const map of maps) map.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); f.cleanup(); }
 });

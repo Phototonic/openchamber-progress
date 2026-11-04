@@ -49,7 +49,9 @@ export class DependencyMapLayout {
         // At most two deterministic barycenter sweeps. Stored order is the stable tie-break.
         tasks.forEach((i, n) => rows.set(i.id, n));
         const adjacent = [new Map<string, string[]>(), new Map<string, string[]>()];
-        for (const [a, b] of edges) { adjacent[0].set(b, [...adjacent[0].get(b) ?? [], a]); adjacent[1].set(a, [...adjacent[1].get(a) ?? [], b]); }
+        // Append in place: preparation stays linear in edges even when many tasks share one prerequisite.
+        const link = (side: Map<string, string[]>, from: string, to: string) => { const list = side.get(from); if (list) list.push(to); else side.set(from, [to]); };
+        for (const [a, b] of edges) { link(adjacent[0], b, a); link(adjacent[1], a, b); }
         for (let sweep = 0; sweep < 2; sweep++) {
           const cols = [...buckets.keys()].sort((a, b) => sweep ? b - a : a - b);
           const mean = (id: string) => { const ns = adjacent[sweep].get(id); return ns?.length ? ns.reduce((s, n) => s + rows.get(n)!, 0) / ns.length : rows.get(id)!; };

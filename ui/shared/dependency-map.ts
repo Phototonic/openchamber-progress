@@ -62,6 +62,8 @@ export class DependencyMap {
   private pending: string | null = null;
   private pendingCurrent: (() => boolean) | null = null;
   private settled: string | null = null;
+  /** The caller's detail object behind the settled picture; a different same-revision object replaces it. */
+  private accepted: CompleteDetailResult | null = null;
   private disposed = false;
   private snapshot: MapSnapshot = { state: 'loading', picture: null, current: false };
   private service: (current: () => boolean) => ServiceHost;
@@ -74,7 +76,7 @@ export class DependencyMap {
   }
   get value(): MapSnapshot { return this.snapshot; }
   /** Leaving Map/hiding retains only the same frame's accepted picture; all continuations retire. */
-  pause() { this.generation++; this.gate.retire(); this.candidate = null; this.pending = null; this.pendingCurrent = null; this.attempt = null; this.settled = null; this.snapshot = { ...this.snapshot, current: false }; }
+  pause() { this.generation++; this.gate.retire(); this.candidate = null; this.pending = null; this.pendingCurrent = null; this.attempt = null; this.settled = null; this.accepted = null; this.snapshot = { ...this.snapshot, current: false }; }
   /** Selection/scope/authority/cleanup/eviction boundaries forget every same-ID retention. */
   reset() { this.pause(); this.key = null; this.snapshot = { state: 'loading', picture: null, current: false }; }
   dispose() { this.reset(); this.gate.stop(); this.disposed = true; }
@@ -108,8 +110,14 @@ export class DependencyMap {
     if (this.pendingCurrent && !this.pendingCurrent()) this.pause();
     const revision = JSON.stringify([key, result.plan.revision, result.plan.structuralRevision]);
     if (this.settled === revision && old) {
-      this.snapshot = paired(c, result, old.graph) ? { state: 'ready', picture: old, current: true }
-        : { state: 'updating', picture: old, current: false, failure: invalid() }; return this.snapshot;
+      if (!paired(c, result, old.graph)) { this.snapshot = { state: 'updating', picture: old, current: false, failure: invalid() }; return this.snapshot; }
+      // Same revision, replaced detail (e.g. a capture-setting change): reuse the matched graph with
+      // a frozen copy of the new detail so snapshot-level fields never stay stale while marked current.
+      if (result !== this.accepted) {
+        this.accepted = result;
+        this.snapshot = { state: 'ready', picture: Object.freeze({ ...old, detail: freeze(structuredClone(result)) }), current: true }; return this.snapshot;
+      }
+      this.snapshot = { state: 'ready', picture: old, current: true }; return this.snapshot;
     }
     const attempt = JSON.stringify([revision, c.refreshSerial]);
     if (this.pending === revision || this.attempt === attempt) return this.snapshot;
@@ -134,7 +142,7 @@ export class DependencyMap {
         const facts = deriveDependencies(r.graph.items);
         if (!paired(expected, detail, r.graph) || facts.state !== 'valid') this.snapshot = { state: 'updating', picture: old, current: false, failure: invalid() };
         else {
-          this.settled = revision;
+          this.settled = revision; this.accepted = result;
           this.snapshot = { state: 'ready', picture: Object.freeze({ detail, graph: freeze(r.graph), facts }), current: true };
         }
       }
