@@ -184,10 +184,11 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' = 'search', keyboard = mode === 'keyboard-focus') {
-  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render'].includes(mode)) throw Error('Unknown search-shell fixture mode');
-  const large = mode === 'large-plan';
-  const preview = mode === 'dependency-map-render';
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' = 'search', keyboard = mode === 'keyboard-focus') {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+  const large = mode === 'large-plan' || mode === 'dependency-map-large';
+  const interaction = mode === 'dependency-map-interaction' || mode === 'dependency-map-large';
+  const preview = mode === 'dependency-map-render' || interaction;
   const map = mode === 'dependency-map-hidden' || preview;
   const previewRoot = preview ? mkdtempSync('/tmp/opencode/dependency-map-preview-') : null;
   if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
@@ -213,7 +214,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
       }
-      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname) ? `${previewRoot}/main.js` : `.${url.pathname}`)); }
+      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); res.end((isPreview && interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};\n` : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8')); }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         const { request, store } = JSON.parse(body);
@@ -269,7 +270,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   }
   return {
     port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
-    previewHash: previewRoot ? createHash('sha256').update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
+    previewHash: previewRoot ? createHash('sha256').update(interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};\n` : '').update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     cleanupElsewhere, deleteElsewhere: (plan: string) => cleanupElsewhere('delete', plan),
     /** A new matching plan behind an active keyset cursor (production staged write). */
