@@ -1,4 +1,5 @@
 // Real Chromium actions through the existing CDP harness; requires cleanup-fixture.ts.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -16,7 +17,7 @@ function show(surface: string, width = 900) {
   wait(surface, `d.defaultView.innerWidth===${width}`);
 }
 function click(surface: string, selector: string) {
-  const point = evaluate(`(()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});f.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(r.width/2,30)+o.x,r.y+r.height/2+o.y]})()`);
+  const point = evaluate(`(()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});f.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(r.width/2,30)+o.x,r.y+r.height/2+o.y]})()`);
   cdp('click', ...point.map(String));
 }
 const button = (surface: string, id: string) => click(surface, `[data-testid="${id}"] button`);
@@ -36,13 +37,13 @@ const posts = () => evaluate(`qa.requests.filter(q=>q.method==='POST').length`);
 const fixture = (path: string, method = 'GET') => fetch(`http://127.0.0.1:47851${path}`, { method, headers: { connection: 'close' } });
 const state = async (plan = 'P-done', store = 0) => (await fixture(`/state?plan=${plan}&store=${store}`)).json();
 function shot(name: string, surface: string, selector?: string) {
-  if (selector) guest(surface, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'center'});return true;`);
+  if (selector) guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'center'});return true;`);
   const rect = evaluate(`(()=>{const r=document.querySelector('section[data-surface="${surface}"]').getBoundingClientRect();return [Math.max(0,r.x-8),Math.max(0,r.y-8),r.width+16,Math.min(r.height+16,innerHeight-r.y)]})()`);
   cdp('shot', `evidence/cleanup/cleanup-${name}.png`, ...rect.map(String));
 }
 function noOverflow(surface: string) { assert.equal(guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth;'), true); }
 function tab(surface: string, text: string) {
-  const index = guest(surface, `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].findIndex(n=>n.textContent===${JSON.stringify(text)});`);
+  const index = guest(surface, `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].findIndex(n=>n.textContent===${javascriptLiteral(text)});`);
   assert.ok(index >= 0); click(surface, `[data-testid="detail-tabs"] [role="tab"]:nth-child(${index + 1})`);
 }
 
@@ -99,7 +100,7 @@ assert.deepEqual(await state('P-done', 1), secondBefore);
 evaluate('qa.store=0;true'); wait('page', `qa.responses.filter(r=>r.surface==='page'&&r.path==='/v1/plans').length>2 && !d.querySelector('[data-testid="cleanup-confirm"]')`);
 // Wait on actual returned store identity via the diagnostics, not a timer.
 const store0 = evaluate(`qa.requests.find(q=>q.method==='POST').body.storeId`);
-wait('page', `d.body.textContent.includes(${JSON.stringify(store0)})`);
+wait('page', `d.body.textContent.includes(${javascriptLiteral(store0)})`);
 choosePage('P-other');
 
 // Genuine 409 from another real writer, with one deliberately delayed pre-change list.
@@ -145,8 +146,8 @@ button('panel', 'cleanup-cancel');
 // Cold part caches, then hold old detail, document and history replies. Delete from
 // another surface and release only after the page's fresh list has removed the key.
 show('page'); evaluate('qa.store=1;true');
-wait('page', `!d.body.textContent.includes(${JSON.stringify(store0)}) && d.querySelector('[data-testid="plan-row-P-done"]')`);
-evaluate('qa.store=0;true'); wait('page', `d.body.textContent.includes(${JSON.stringify(store0)})`);
+wait('page', `!d.body.textContent.includes(${javascriptLiteral(store0)}) && d.querySelector('[data-testid="plan-row-P-done"]')`);
+evaluate('qa.store=0;true'); wait('page', `d.body.textContent.includes(${javascriptLiteral(store0)})`);
 evaluate(`qa.hold={surface:'page',paths:['/v1/plan','/v1/document','/v1/history']};true`);
 choosePage('P-done'); wait('page', `qa.held.length>=1`);
 tab('page', 'Document'); wait('page', `qa.held.length>=2`);

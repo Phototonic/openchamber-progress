@@ -5,6 +5,7 @@
 // profile. Synthetic SDK-shell coverage only: not native-host or relay proof.
 // Usage: node --experimental-strip-types tests/browser/needs-you-qa.ts --artifacts <dir> [--built-service] [--chromium <path>]
 //   writes results.json (V3), races.json (V4), requests.json (bounded request metadata) and screenshots.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -114,18 +115,18 @@ try {
     }
   };
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});fr.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});fr.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
-  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${JSON.stringify(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
-  const context = async (id: string | null) => { await evaluate(`qa.context(${JSON.stringify(id)});true`); };
+  const context = async (id: string | null) => { await evaluate(`qa.context(${javascriptLiteral(id)});true`); };
   /** Element screenshot (union of selectors) of frame `f`, page coordinates, beyond the viewport. */
   const shot = async (f: string, name: string, selectors: string[], pad = 10) => {
-    await guest(f, `d.querySelector(${JSON.stringify(selectors[0])})?.scrollIntoView({block:'start'});return true`);
+    await guest(f, `d.querySelector(${javascriptLiteral(selectors[0])})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${f}'),o=fr.getBoundingClientRect(),rs=${JSON.stringify(selectors)}.map(s=>fr.contentDocument.querySelector(s)).filter(Boolean).map(n=>n.getBoundingClientRect());if(!rs.length)return null;const x=Math.min(...rs.map(a=>a.left)),y=Math.min(...rs.map(a=>a.top)),x2=Math.max(...rs.map(a=>a.right)),y2=Math.max(...rs.map(a=>a.bottom));return [o.x+x+scrollX,o.y+y+scrollY,x2-x,y2-y]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${f}'),o=fr.getBoundingClientRect(),rs=${javascriptLiteral(selectors)}.map(s=>fr.contentDocument.querySelector(s)).filter(Boolean).map(n=>n.getBoundingClientRect());if(!rs.length)return null;const x=Math.min(...rs.map(a=>a.left)),y=Math.min(...rs.map(a=>a.top)),x2=Math.max(...rs.map(a=>a.right)),y2=Math.max(...rs.map(a=>a.bottom));return [o.x+x+scrollX,o.y+y+scrollY,x2-x,y2-y]})()`);
     if (!r) throw new Error(`no ${selectors.join(',')} to capture in ${f}`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + 2 * pad, height: Math.min(r[3] + 2 * pad, 4000), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -138,7 +139,7 @@ try {
   const pick = async (f: string, holder: string, text: string) => {
     await click(f, `${holder} button`);
     await wait(f, `d.querySelector('[role="listbox"]')`, `${holder} listbox`);
-    const idx = await guest<number>(f, `return [...d.querySelectorAll('[role="listbox"] [role="option"]')].findIndex(o=>o.textContent.includes(${JSON.stringify(text)}))`);
+    const idx = await guest<number>(f, `return [...d.querySelectorAll('[role="listbox"] [role="option"]')].findIndex(o=>o.textContent.includes(${javascriptLiteral(text)}))`);
     if (idx < 0) throw new Error(`no option "${text}" in ${holder}`);
     await key('Home'); await key('ArrowDown', idx); await key('Enter');
   };

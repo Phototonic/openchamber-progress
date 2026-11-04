@@ -3,6 +3,7 @@
 // rendered-UI evidence, not native-host proof, screen-reader certification or installation.
 // node --experimental-strip-types tests/browser/subagent-activity-qa.ts [CDP_PORT] [--fixture 47873] [--out DIR] [--only smoke]
 // Without CDP_PORT it launches and later stops its own isolated headless Chromium (never downloads one).
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -80,7 +81,7 @@ try {
     for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: k, code: k === ' ' ? 'Space' : k, windowsVirtualKeyCode: KEYS[k] ?? 0, modifiers: shift ? 8 : 0, ...(type === 'keyDown' && k === 'Enter' ? { text: '\r' } : type === 'keyDown' && k === ' ' ? { text: ' ' } : {}) });
   };
   const click = async (s: string, selector: string) => {
-    const xy = await evaluate<[number, number]>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)throw Error(${JSON.stringify(`Missing ${selector}`)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(12,a.width/2),a.y+b.y+a.height/2]})()`);
+    const xy = await evaluate<[number, number]>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error(${javascriptLiteral(`Missing ${selector}`)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(12,a.width/2),a.y+b.y+a.height/2]})()`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: xy[0], y: xy[1], button: 'left', clickCount: 1 });
   };
   const viewport = async (width: number, height = 1000) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); };
@@ -106,13 +107,13 @@ try {
     results.push({ id: `${name}: captured`, pass: true, facts: { frameHeight: fit.height, clip: rect.map(Math.round) } });
     writeFileSync(join(out, `${name}.png`), Buffer.from(img.data, 'base64'));
   };
-  const text = (s: string, sel: string) => guest<string | null>(s, `return d.querySelector(${JSON.stringify(sel)})?.textContent??null`);
+  const text = (s: string, sel: string) => guest<string | null>(s, `return d.querySelector(${javascriptLiteral(sel)})?.textContent??null`);
   const sec = '[data-testid="subagent-activity"]';
   const row = (session: string) => `${sec} [data-session="${session}"]`;
   const fact = (session: string, f: string) => `${row(session)} [data-fact="${f}"]`;
-  const has = (s: string, sel: string) => guest<boolean>(s, `return !!d.querySelector(${JSON.stringify(sel)})`);
+  const has = (s: string, sel: string) => guest<boolean>(s, `return !!d.querySelector(${javascriptLiteral(sel)})`);
   const sectionText = (s: string) => guest<string>(s, `return (d.querySelector('${sec}')?.textContent??'').replace(/\\s+/g,' ')`);
-  const runRequests = (root: string) => evaluate<number>(`qa.requests.filter(q=>q.path.startsWith('/v1/subagent-runs')&&(q.query?.root===${JSON.stringify(root)}||q.method==='POST')).length`);
+  const runRequests = (root: string) => evaluate<number>(`qa.requests.filter(q=>q.path.startsWith('/v1/subagent-runs')&&(q.query?.root===${javascriptLiteral(root)}||q.method==='POST')).length`);
   const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 
   /** Selects the page row of that source; the list can repaint under the pointer, so verify and retry. */
@@ -283,7 +284,7 @@ try {
   await guest('panel', `d.querySelector('${row('C1')}').__steady=true;return true`);
   const startText = (await text('panel', `${fact('C1', 'ran')} time`))!;
   await guest('panel', `const off=95000,n=w.Date.now.bind(w.Date),p=w.performance.now.bind(w.performance);w.Date.now=()=>n()+off;w.performance.now=()=>p()+off;return true`);
-  await wait('panel', `d.querySelector('${fact('C1', 'ran')} time')?.textContent!==${JSON.stringify(startText)}`, 'label ticker advanced the start age', 40_000);
+  await wait('panel', `d.querySelector('${fact('C1', 'ran')} time')?.textContent!==${javascriptLiteral(startText)}`, 'label ticker advanced the start age', 40_000);
   const steady = await guest<{ same: boolean; label: string; state: string; time: string }>('panel', `const r=d.querySelector('${row('C1')}');return {same:r.__steady===true,label:r.querySelector('.ap-obs-label').textContent,state:r.querySelector('.ap-obs').dataset.state,time:r.querySelector('time').textContent}`);
   check('steady run past 60 s: same node (no repaint), still Running, only its age moved', steady.same && steady.label === 'Running' && steady.state === 'active' && steady.time !== startText, { ...steady, startText });
   await shot('panel', 'steady-running', 4000, true);

@@ -4,6 +4,7 @@
 //   targets | eval <expr> | frames | feval <urlPart> <expr> | shot <out.png> [x y w h] [--size WxH]
 //   click <x> <y> | type <text> | key <Key> | console <seconds>
 //   viewport <WxH> resizes an isolated browser window persistently for responsive interaction.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { writeFileSync } from 'node:fs';
 
 type Msg = { id?: number; method?: string; params?: any; result?: any; error?: { message: string }; sessionId?: string };
@@ -117,12 +118,12 @@ try {
       if (!value) process.exitCode = 1;
     } else {
       const selector = command === 'pclick' ? args[0] : args[1];
-      const rectOf = `(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect();return [r.x+Math.min(r.width/2,24),r.y+r.height/2]})()`;
+      const rectOf = `(()=>{const n=document.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect();return [r.x+Math.min(r.width/2,24),r.y+r.height/2]})()`;
       const inner = await evaluate(cdp, rectOf, frame?.sessionId) as [number, number] | null;
       if (!inner) throw new Error(`no element ${selector}`);
       let [x, y] = inner;
       if (frame) {
-        const part = JSON.stringify(args[0]);
+        const part = javascriptLiteral(args[0]);
         const offset = args[0].startsWith('surface:')
           ? await frameOffset(cdp, frame.sessionId)
           : await evaluate(cdp, `(()=>{const f=[...document.querySelectorAll('iframe')].find(i=>i.src.includes(${part}));const r=f.getBoundingClientRect();return [r.x,r.y]})()`) as [number, number];

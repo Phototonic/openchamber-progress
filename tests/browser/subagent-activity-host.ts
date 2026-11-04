@@ -1,4 +1,5 @@
 /** Disposable native renderer observer; no installed profile or host resource is modified. */
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -88,7 +89,10 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
     connected.onmessage = e => {
       if (socket !== connected) return;
       const m = JSON.parse(String(e.data));
-      if (m.id) { pending.get(m.id)?.(m); pending.delete(m.id); }
+      if (typeof m.id === 'number' && Number.isSafeInteger(m.id) && pending.has(m.id)) {
+        const callback = pending.get(m.id);
+        if (typeof callback === 'function') { pending.delete(m.id); callback(m); }
+      }
       else if (m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'iframe') frames.push(m.params.sessionId);
       else if (m.method === 'Target.detachedFromTarget') { const i = frames.indexOf(m.params.sessionId); if (i >= 0) frames.splice(i, 1); }
       else if (m.method === 'Network.loadingFailed') {
@@ -185,7 +189,7 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
       }, stop };
   } catch (error) {
     diagnostics.controlFailure = error instanceof Error && /^(initial root|fixture rail): (non-actionable-target|host-selection-timeout)$/.test(error.message) ? error.message : 'other-native-operation';
-    if (rootSessionID) diagnostics.selectionState = await evaluate(`(()=>{const toggle=document.querySelector('[data-sidebar-toggle]');return {togglePresent:!!toggle,pressed:toggle?.getAttribute('aria-pressed'),selected:location.href.includes(${JSON.stringify(rootSessionID)}),targets:[...document.querySelectorAll('[data-session-row="${rootSessionID}"] [data-session-row-main]')].map(t=>{const s=getComputedStyle(t),r=t.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2),b=t.closest('[inert],[hidden],[disabled],[aria-disabled="true"],[aria-hidden="true"]');return {connected:t.isConnected,pointerEvents:s.pointerEvents,visibility:s.visibility,opacity:s.opacity,width:r.width,height:r.height,hitWithin:!!h&&t.contains(h),hitControlWithin:!!h?.closest('button,a,input,select,textarea,[role="button"]')&&t.contains(h.closest('button,a,input,select,textarea,[role="button"]')),blocked:b?{tag:b.tagName,inert:b.hasAttribute('inert'),hidden:b.hasAttribute('hidden'),disabled:b.hasAttribute('disabled'),ariaDisabled:b.getAttribute('aria-disabled'),ariaHidden:b.getAttribute('aria-hidden')}:null}})}})()`).catch(() => ({ unavailable: true }));
+    if (rootSessionID) diagnostics.selectionState = await evaluate(`(()=>{const id=${javascriptLiteral(rootSessionID)},toggle=document.querySelector('[data-sidebar-toggle]');return {togglePresent:!!toggle,pressed:toggle?.getAttribute('aria-pressed'),selected:location.href.includes(id),targets:[...document.querySelectorAll('[data-session-row="'+CSS.escape(id)+'"] [data-session-row-main]')].map(t=>{const s=getComputedStyle(t),r=t.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2),b=t.closest('[inert],[hidden],[disabled],[aria-disabled="true"],[aria-hidden="true"]');return {connected:t.isConnected,pointerEvents:s.pointerEvents,visibility:s.visibility,opacity:s.opacity,width:r.width,height:r.height,hitWithin:!!h&&t.contains(h),hitControlWithin:!!h?.closest('button,a,input,select,textarea,[role="button"]')&&t.contains(h.closest('button,a,input,select,textarea,[role="button"]')),blocked:b?{tag:b.tagName,inert:b.hasAttribute('inert'),hidden:b.hasAttribute('hidden'),disabled:b.hasAttribute('disabled'),ariaDisabled:b.getAttribute('aria-disabled'),ariaHidden:b.getAttribute('aria-hidden')}:null}})}})()`).catch(() => ({ unavailable: true }));
     const reason = error instanceof Error && ['native-renderer-startup', 'native-application-not-ready', 'fixture-rail-not-discovered', 'fixture-guest-not-mounted'].includes(error.message) ? error.message : 'native-host-observer-failed';
     diagnostics.hostExitCode = host.exitCode;
     await stop(); return { available: false, reason, diagnostics, read: async (_lists = true) => [], stop };

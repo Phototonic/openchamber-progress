@@ -6,6 +6,7 @@
 // `--only prerequisites` runs just the focused recorded-prerequisite wording case (P:B1–B5) on its
 // own synthetic plan and skips every other scenario; the default runs everything else as before.
 // Usage: node --experimental-strip-types tests/browser/change-digests-qa.ts --artifacts <dir> [--built-service] [--chromium <path>] [--only prerequisites]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -109,11 +110,11 @@ try {
     }
   };
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
-  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${JSON.stringify(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   const D = (plan: string) => `[data-testid="plan-detail"] article[data-testid="plan-${plan}"] [data-testid="change-digest"]`;
@@ -121,7 +122,7 @@ try {
   const row = (plan: string) => `[data-testid="plan-row-${plan}"][data-source="${SOURCE}"]`;
   const TAB = (id: string) => `[data-testid="detail-tabs"] [role="tab"][data-id="${id}"]`;
   const digestState = (f: string, plan: string) => guest<{ state?: string; review?: string; reason?: string; to?: string; after?: string } | null>(f, `const n=d.querySelector('${D(plan)}');return n?{...n.dataset}:null`);
-  const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${JSON.stringify(selector)})?.textContent??''`);
+  const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${javascriptLiteral(selector)})?.textContent??''`);
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
     await wait(f, `!!d.querySelector('${row(plan)}')`, `${plan} listed`);
     await click(f, row(plan));
@@ -140,9 +141,9 @@ try {
   const flightDone = async () => { if (!(await evaluate<boolean>(`new Promise(r=>{const end=Date.now()+5000;const t=()=>qa.flight===0?r(true):Date.now()>end?r(false):setTimeout(t,40);t()})`))) throw new Error('service requests did not quiesce'); };
   const noOverflow = (f: string) => guest<{ ok: boolean; sw: number; cw: number; bad: string[] }>(f, `const cw=d.documentElement.clientWidth,sw=d.documentElement.scrollWidth;const bad=[...d.querySelectorAll('[data-testid="change-digest"] *')].filter(n=>{const r=n.getBoundingClientRect();return r.width>0&&(r.left<-0.5||r.right>cw+0.5)}).map(n=>n.dataset?.testid||n.tagName);return {ok:sw<=cw&&!bad.length,sw,cw,bad:bad.slice(0,5)}`);
   const shot = async (f: string, name: string, selector: string, pad = 12) => {
-    await guest(f, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
+    await guest(f, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
     if (!r) throw new Error(`no ${selector} to capture`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: Math.min(r[3] + pad * 2, 2400), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -150,9 +151,9 @@ try {
   };
   /** One capture spanning the same element in several side-by-side frames. */
   const shotUnion = async (list: string[], name: string, selector: string, pad = 12) => {
-    for (const f of list) await guest(f, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
+    for (const f of list) await guest(f, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const rects = await evaluate<number[][]>(`${JSON.stringify(list)}.map(f=>{const fr=frame(f),n=fr.contentDocument.querySelector(${JSON.stringify(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,o.x+a.right+scrollX,o.y+a.bottom+scrollY]})`);
+    const rects = await evaluate<number[][]>(`${javascriptLiteral(list)}.map(f=>{const fr=frame(f),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,o.x+a.right+scrollX,o.y+a.bottom+scrollY]})`);
     const x = Math.min(...rects.map((r) => r[0])) - pad, y = Math.min(...rects.map((r) => r[1])) - pad;
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, x), y: Math.max(0, y), width: Math.max(...rects.map((r) => r[2])) - x + pad, height: Math.min(Math.max(...rects.map((r) => r[3])) - y + pad, 2400), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -181,7 +182,7 @@ try {
       const count=id=>s.querySelector('[data-testid="'+id+'"]')?.dataset.count??null;
       const entries={};for(const e of s.querySelectorAll('[data-testid^="readiness-entry-"]'))entries[e.dataset.item]={group:e.dataset.group,none:e.querySelector('.ap-ready-none')?.textContent??null,deps:[...e.querySelectorAll('.ap-ready-dep')].map(x=>x.dataset.dep)};
       const c=a.querySelector('[data-testid="counts"]')?.dataset??{};
-      return {groups:{ready:count('readiness-ready'),waiting:count('readiness-waiting'),skipped:count('readiness-skipped'),needsYou:count('needs-you')},qualifier:[...s.querySelectorAll('p')].some(p=>p.textContent===${JSON.stringify(QUALIFIER)}),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
+      return {groups:{ready:count('readiness-ready'),waiting:count('readiness-waiting'),skipped:count('readiness-skipped'),needsYou:count('needs-you')},qualifier:[...s.querySelectorAll('p')].some(p=>p.textContent===${javascriptLiteral(QUALIFIER)}),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
     const expected = {
       groups: { ready: '3', waiting: '2', skipped: '1', needsYou: '1' },
       qualifier: true,
@@ -198,7 +199,7 @@ try {
     const railPick = async (title: string) => {
       await click('panel', '[data-testid="plan-selector"] button');
       await wait('panel', `!!d.querySelector('[role="listbox"]')`, 'rail plan listbox');
-      const idx = await guest<number>('panel', `return [...d.querySelectorAll('[role="listbox"] [role="option"]')].findIndex(o=>o.textContent.includes(${JSON.stringify(title)}))`);
+      const idx = await guest<number>('panel', `return [...d.querySelectorAll('[role="listbox"] [role="option"]')].findIndex(o=>o.textContent.includes(${javascriptLiteral(title)}))`);
       if (idx < 0) throw new Error(`no rail option "${title}"`);
       await key('Home'); await key('ArrowDown', idx); await key('Enter');
     };

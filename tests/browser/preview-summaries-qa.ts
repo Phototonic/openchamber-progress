@@ -4,6 +4,7 @@
 // started. Never attaches to an existing browser or uses a real profile. Synthetic SDK-shell
 // coverage only: not native-host, relay or native-Windows certification.
 // Usage: node --experimental-strip-types tests/browser/preview-summaries-qa.ts --artifacts <dir> [--chromium <path>]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -106,24 +107,24 @@ try {
     }
   };
   const click = async (s: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(12,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(12,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${s}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames(); };
-  const context = (id: string | null) => evaluate(`qa.context(${JSON.stringify(id)});true`);
+  const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
   const scope = (s: string) => (s === 'page' ? '[data-testid="plan-detail"] ' : 'article.ap-plan ');
   const hook = (s: string, id: string) => `${scope(s)}[data-testid="${id}"]`;
   const has = (s: string, id: string) => `!!d.querySelector('${hook(s, id)}')`;
   const text = (s: string) => guest<string | null>(s, `return d.querySelector('${hook(s, 'summary-text')}')?.value??null`);
   const status = (s: string) => guest<string>(s, `return d.querySelector('${hook(s, 'summary-preview')}')?.textContent??''`);
   const copyEnabled = (s: string) => `d.querySelector('${hook(s, 'summary-copy')}')?.disabled===false`;
-  const showsText = (s: string, value: string) => `d.querySelector('${hook(s, 'summary-text')}')?.value===${JSON.stringify(value)}&&${copyEnabled(s)}`;
+  const showsText = (s: string, value: string) => `d.querySelector('${hook(s, 'summary-text')}')?.value===${javascriptLiteral(value)}&&${copyEnabled(s)}`;
   const loading = (s: string) => `${has(s, 'summary-preview')}&&!${has(s, 'summary-text')}&&d.querySelector('${hook(s, 'summary-copy')}')?.disabled===true&&d.querySelector('${hook(s, 'summary-preview')}').textContent.includes('Loading complete plan')`;
-  const announced = (s: string, words: string) => `(()=>{const n=d.querySelector('${hook(s, 'summary-status')}');return !!n&&n.getAttribute('role')==='status'&&n.getAttribute('aria-live')==='polite'&&n.textContent===${JSON.stringify(words)}})()`;
+  const announced = (s: string, words: string) => `(()=>{const n=d.querySelector('${hook(s, 'summary-status')}');return !!n&&n.getAttribute('role')==='status'&&n.getAttribute('aria-live')==='polite'&&n.textContent===${javascriptLiteral(words)}})()`;
   const clipboard = () => evaluate<string>('navigator.clipboard.readText()');
-  const setClipboard = (value: string) => evaluate(`navigator.clipboard.writeText(${JSON.stringify(value)}).then(()=>true)`);
+  const setClipboard = (value: string) => evaluate(`navigator.clipboard.writeText(${javascriptLiteral(value)}).then(()=>true)`);
   const SENTINEL = 'synthetic clipboard sentinel';
   /** Side effects a preview/copy action must never cause. Fixture setup is counted separately. */
   const effects = () => evaluate<{ document: number; history: number; mutations: number; navigation: number }>(`({document:qa.requests.filter(q=>q.path==='/v1/document').length,history:qa.requests.filter(q=>q.path==='/v1/history').length,mutations:qa.requests.filter(q=>q.method!=='GET').length,navigation:qa.messages.filter(m=>m.type==='open-session').length})`);
@@ -138,7 +139,7 @@ try {
   const noOverflow = (s: string) => guest<boolean>(s, `const cw=d.documentElement.clientWidth;if(d.documentElement.scrollWidth>cw)return false;const t=d.querySelector('${hook(s, 'summary-text')}');if(t&&t.scrollWidth>t.clientWidth+1)return false;return [...d.querySelectorAll('${scope(s)}.ap-summary button,${scope(s)}.ap-summary textarea')].every(n=>{const r=n.getBoundingClientRect();return r.left>=-0.5&&r.right<=cw+0.5})`);
   const shot = async (s: string, name: string, scrollTo: string) => {
     check(`${name}:no-horizontal-overflow`, await noOverflow(s));
-    await guest(s, `d.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({block:'start'});return true`);
+    await guest(s, `d.querySelector(${javascriptLiteral(scrollTo)})?.scrollIntoView({block:'start'});return true`);
     await frames();
     const r = await evaluate<number[]>(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [Math.max(0,r.x-8),Math.max(0,r.y-8),r.width+16,Math.min(r.height+16,innerHeight)]})()`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: r[0], y: r[1], width: r[2], height: r[3], scale: 1 } });
@@ -210,7 +211,7 @@ try {
     check('S2:absent-api-not-success', (await clipboard()) === SENTINEL, ['Absent and rejecting clipboard APIs report failure, never success']);
     await click('panel', hook('panel', 'summary-text'));
     await key('a', 1, 2);
-    const selected = await guest('panel', `const t=d.querySelector('${hook('panel', 'summary-text')}');return {focused:d.activeElement===t,all:t.selectionStart===0&&t.selectionEnd===t.value.length,equal:t.value.slice(t.selectionStart,t.selectionEnd)===${JSON.stringify(handoff)},readOnly:t.readOnly}`);
+    const selected = await guest('panel', `const t=d.querySelector('${hook('panel', 'summary-text')}');return {focused:d.activeElement===t,all:t.selectionStart===0&&t.selectionEnd===t.value.length,equal:t.value.slice(t.selectionStart,t.selectionEnd)===${javascriptLiteral(handoff)},readOnly:t.readOnly}`);
     check('S2:keyboard-select-all-equals-preview', selected.focused && selected.all && selected.equal && selected.readOnly, ['Ctrl+A in the read-only textarea selects the full preview value'], selected);
     await shot('panel', 'clipboard-fallback', 'article.ap-plan .ap-summary');
     await guest('panel', `delete w.navigator.clipboard;return !!w.navigator.clipboard?.writeText`);
@@ -331,7 +332,7 @@ try {
     const refreshed = await evaluate<boolean>(`(async()=>{const end=Date.now()+30000;while(Date.now()<end){if(qa.requests.slice(${mark}).filter(q=>q.surface==='page'&&q.path==='/v1/plan'&&q.query?.plan==='P-paged'&&q.query?.cursor).length>=2&&qa.flight===0)return true;await new Promise(r=>setTimeout(r,40))}return false})()`);
     check('S4:f4-background-failed-refresh-observed', refreshed, ['Two further background reads failed at the same identity while summary-only was shown']);
     await frames();
-    const stable = await guest('page', `const t=d.querySelector('${hook('page', 'summary-text')}');return {text:t?.value===${JSON.stringify(summaryOnly)},generation:t?.dataset.generation===${JSON.stringify(generation)},copy:${copyEnabled('page')},selected:!!t&&d.activeElement===t&&t.selectionStart===0&&t.selectionEnd===t.value.length,summaryOnlyButton:${has('page', 'summary-only')},retry:${has('page', 'summary-retry')}}`);
+    const stable = await guest('page', `const t=d.querySelector('${hook('page', 'summary-text')}');return {text:t?.value===${javascriptLiteral(summaryOnly)},generation:t?.dataset.generation===${javascriptLiteral(generation)},copy:${copyEnabled('page')},selected:!!t&&d.activeElement===t&&t.selectionStart===0&&t.selectionEnd===t.value.length,summaryOnlyButton:${has('page', 'summary-only')},retry:${has('page', 'summary-retry')}}`);
     check('S4:f4-summary-only-stable-through-failed-refresh', stable.text && stable.generation && stable.copy && stable.selected && !stable.summaryOnlyButton && stable.retry, ['Chosen summary-only text, generation, selection and enabled Copy unchanged; Retry still offered'], stable);
     await setClipboard(SENTINEL);
     await click('page', hook('page', 'summary-copy'));
@@ -389,7 +390,7 @@ try {
     const second = (await fx.expected('P-race', 'progress'))!;
     await click('panel', hook('panel', 'summary-progress'));
     await wait('panel', showsText('panel', second));
-    check('S5:rail-switch-regenerates', second !== first && await guest<boolean>('panel', `return d.querySelector('article.ap-plan[data-testid="plan-P-race"]').dataset.revision===${JSON.stringify(String(fx.revision('P-race')))}`), ['A→B→null→A: preview retired; reopened text is for the new revision']);
+    check('S5:rail-switch-regenerates', second !== first && await guest<boolean>('panel', `return d.querySelector('article.ap-plan[data-testid="plan-P-race"]').dataset.revision===${javascriptLiteral(String(fx.revision('P-race')))}`), ['A→B→null→A: preview retired; reopened text is for the new revision']);
   });
 
   // ------------------------------------------------ Step 5b: cleanup-revision change without progress revision
@@ -410,7 +411,7 @@ try {
     check('S5:cleanup-revision-only', fx.revision('P-archive') === archiveRevision && fx.cleanupState('P-archive')?.state === 'visible', ['Cleanup revision moved; progress revision unchanged']);
     results.push({ id: 'S5:cleanup-change-retires-text', pass: true, facts: ['Same rail selection: old text retired, loading while the re-read is held'] });
     await evaluate(`qa.release('detail')`);
-    await wait('panel', `${showsText('panel', expected)}&&d.querySelector('${hook('panel', 'summary-text')}').dataset.generation!==${JSON.stringify(generation)}`, 'cleanup change regenerates');
+    await wait('panel', `${showsText('panel', expected)}&&d.querySelector('${hook('panel', 'summary-text')}').dataset.generation!==${javascriptLiteral(generation)}`, 'cleanup change regenerates');
     results.push({ id: 'S5:cleanup-change-regenerates', pass: true, facts: ['Cleanup-only change regenerated the same-selection preview'] });
   });
   // Board: the existing cleanup contract evicts the affected selection; its preview retires with it.

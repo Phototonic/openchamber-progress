@@ -127,7 +127,7 @@ test('F3 Markdown punctuation, multiline and HTML-looking text remain literals, 
   const r = await fixture([{ id: FORBIDDEN, title, kind: 'task', status: 'working', reporterSessionId: FORBIDDEN, assigneeSessionId: FORBIDDEN }], { title });
   const text = formatHandoff(r)!;
   assert.ok(text.includes(markdownLiteral(title)));
-  assert.doesNotMatch(text, /<script>|\n<script>|\n# \[export\]/);
+  assert.doesNotMatch(text, /<script\b|\n# \[export\]/i);
   assert.ok(!text.includes(FORBIDDEN));
   assert.equal(markdownLiteral('line\r\nnext\u2028last'), 'line next last');
 });

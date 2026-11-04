@@ -1,4 +1,5 @@
 // Current-bundle Chromium QA with deliberately synthetic SDK/service events.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -11,7 +12,7 @@ const guest = (s: string, code: string) => evaluate(`(()=>{const d=frame('${s}')
 const wait = (s: string, code: string) => assert.equal(evaluate(`(async()=>{const end=Date.now()+12000;while(Date.now()<end){const d=frame('${s}').contentDocument;if(${code})return true;await new Promise(r=>setTimeout(r,40));}return false})()`), true, `${s}: ${code}`);
 const key = (value: string, n = 1) => cdp('key', value, String(n));
 function click(s: string, selector: string) {
-  const point = evaluate(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(24,r.width/2)+o.x,r.y+r.height/2+o.y]})()`);
+  const point = evaluate(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(24,r.width/2)+o.x,r.y+r.height/2+o.y]})()`);
   cdp('click', ...point.map(String));
 }
 const button = (s: string, id: string) => click(s, `[data-testid="${id}"] button`);
@@ -21,7 +22,7 @@ function shot(s: string, name: string, height = 350) {
   const r = evaluate(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [r.x-8,r.y-8,r.width+16]})()`);
   cdp('shot', `evidence/session-progress/${name}.png`, ...r.map(String), String(height));
 }
-const context = (id: string | null, directory = '/fixture/Alpha', fullOnly = false) => evaluate(`qa.context(${JSON.stringify(id)},${JSON.stringify(directory)},${fullOnly});true`);
+const context = (id: string | null, directory = '/fixture/Alpha', fullOnly = false) => evaluate(`qa.context(${javascriptLiteral(id)},${javascriptLiteral(directory)},${fullOnly});true`);
 function sideState(testid: string) { for (const s of ['panel', 'status']) wait(s, `d.querySelector('[data-testid="${testid}"]') && !d.querySelector('[data-testid="plan-P-A"]')`); }
 function choose(s: string, id: string) {
   button(s, s === 'status' ? 'status-plan-selector' : 'plan-selector'); wait(s, `d.querySelector('[role="listbox"]')`);

@@ -5,6 +5,7 @@
 // Usage: node --experimental-strip-types tests/browser/focus-controls-qa.ts --artifacts <dir> [--baseline] [--chromium <path>]
 //   --baseline: only the existing large-plan render/disclosure/request measurements (no focus
 //   controls needed), for comparison with a later run of the same fixture and runtime.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -110,7 +111,7 @@ try {
     }
   };
   const SHIFT = 8;
-  const point = (s: string, selector: string) => evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
+  const point = (s: string, selector: string) => evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
   const click = async (s: string, selector: string) => {
     const p = await point(s, selector);
     if (!p) throw new Error(`missing ${selector} in ${s}`);
@@ -121,20 +122,20 @@ try {
   const timedClick = async (s: string, selector: string, cond: string) => {
     await guest(s, `w.__t0=null;w.addEventListener('pointerdown',()=>{w.__t0=w.performance.now()},{capture:true,once:true});return true`);
     await click(s, selector);
-    return guest<number>(s, `return new Promise((res,rej)=>{const end=w.performance.now()+10000;const tick=()=>{try{if(w.__t0!==null&&(${cond}))return res(w.performance.now()-w.__t0)}catch{}if(w.performance.now()>end)return rej(new Error('timed click: '+${JSON.stringify(cond)}));w.requestAnimationFrame(tick)};w.requestAnimationFrame(tick)})`);
+    return guest<number>(s, `return new Promise((res,rej)=>{const end=w.performance.now()+10000;const tick=()=>{try{if(w.__t0!==null&&(${cond}))return res(w.performance.now()-w.__t0)}catch{}if(w.performance.now()>end)return rej(new Error('timed click: '+${javascriptLiteral(cond)}));w.requestAnimationFrame(tick)};w.requestAnimationFrame(tick)})`);
   };
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const noOverflow = (s: string) => guest<boolean>(s, `const sw=d.documentElement.scrollWidth,cw=d.documentElement.clientWidth;return sw<=cw&&[...d.querySelectorAll('[data-testid="focus-controls"] button')].every(b=>{const r=b.getBoundingClientRect();return r.right<=cw+0.5&&r.left>=-0.5})`);
   const shot = async (s: string, name: string, scrollTo: string | null = '[data-testid="focus-controls"]') => {
     check(`${name}:no-horizontal-overflow`, await noOverflow(s));
-    if (scrollTo) await guest(s, `d.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({block:'start'});return true`);
+    if (scrollTo) await guest(s, `d.querySelector(${javascriptLiteral(scrollTo)})?.scrollIntoView({block:'start'});return true`);
     await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     const r = await evaluate<number[]>(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [r.x-8,r.y-8,r.width+16,r.height+16]})()`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: r[0], y: r[1], width: r[2], height: r[3], scale: 1 }, captureBeyondViewport: true });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
     shots.push(`${name}.png`);
   };
-  const context = (id: string | null, directory?: string) => evaluate(`qa.context(${JSON.stringify(id)}${directory ? `,${JSON.stringify(directory)}` : ''});true`);
+  const context = (id: string | null, directory?: string) => evaluate(`qa.context(${javascriptLiteral(id)}${directory ? `,${javascriptLiteral(directory)}` : ''});true`);
   const requests = (filter = 'true') => evaluate<any[]>(`qa.requests.filter(q=>${filter})`);
   const messages = (filter = 'true') => evaluate<any[]>(`qa.messages.filter(m=>${filter})`);
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -198,8 +199,8 @@ try {
       await paints('panel');
       const t0 = await hostNow();
       const title = `Scale task edited ${k}`;
-      await evaluate(`qa.update('P-scale',p=>{p.items.find(i=>i.id==='ST${10 + k}').title=${JSON.stringify(title)}});true`);
-      await wait('panel', `d.querySelector('[data-testid="item-ST${10 + k}"]')?.textContent.includes(${JSON.stringify(title)})`, `change ${k}`, 15_000);
+      await evaluate(`qa.update('P-scale',p=>{p.items.find(i=>i.id==='ST${10 + k}').title=${javascriptLiteral(title)}});true`);
+      await wait('panel', `d.querySelector('[data-testid="item-ST${10 + k}"]')?.textContent.includes(${javascriptLiteral(title)})`, `change ${k}`, 15_000);
       await frameRaf('panel');
       const t1 = await hostNow();
       const ps = await paints('panel');
@@ -466,7 +467,7 @@ try {
       return options;
     };
     const P = `${art} [data-testid="focus-participant"]`;
-    const pickPart = async (s: string, label: string, want: string) => { await choose(s, P, label); await wait(s, `d.querySelector('${P}')?.dataset.participant===${JSON.stringify(want)}`, `participant ${want}`); };
+    const pickPart = async (s: string, label: string, want: string) => { await choose(s, P, label); await wait(s, `d.querySelector('${P}')?.dataset.participant===${javascriptLiteral(want)}`, `participant ${want}`); };
     const readinessCounts = (s: string) => guest<string[]>(s, `return [...d.querySelectorAll('${art} [data-testid^="readiness-"][data-count]')].map(n=>n.dataset.testid+'='+n.dataset.count)`);
 
     // Page: the board's own session filter never picks the task participant.
@@ -826,7 +827,7 @@ try {
     await guest('panel', `d.querySelector('${art} [data-testid="item-R"]').remove();return true`);
     await click('panel', `${art} [data-testid="readiness-entry-R"] .ap-ready-head button`);
     check('Q6:missing-target-local-notice', /no longer shown/.test(await guest<string>('panel', `return d.querySelector('${art} [data-testid="readiness-notice"]').textContent`)) && await guest<boolean>('panel', `return !d.activeElement?.closest('ul.ap-items')`));
-    await evaluate(`qa.update('P-focus',p=>{p.items=${JSON.stringify(CORE_ITEMS)};p.summary.structuralRevision++});true`);
+    await evaluate(`qa.update('P-focus',p=>{p.items=${javascriptLiteral(CORE_ITEMS)};p.summary.structuralRevision++});true`);
     await repainted('P-focus restored');
     // A complete empty detail is not a loading gap: it forgets disclosures and parked focus, so the
     // same IDs coming back start at their defaults and focus stays at the Tasks heading.
@@ -841,7 +842,7 @@ try {
     { const r = await rev(); await wait('panel', `d.querySelector('${art}')?.dataset.revision==='${r}'&&d.querySelector('${art} .ap-tasks[data-complete]')&&/no tasks yet/.test(d.querySelector('${art} .ap-tasks').textContent)`, 'complete empty detail', 15_000); }
     await frameRaf('panel');
     const emptyFocus = await guest<boolean>('panel', `return d.activeElement?.matches('.ap-tasks-h')`);
-    await evaluate(`qa.update('P-focus',p=>{p.items=${JSON.stringify(CORE_ITEMS)};p.summary.structuralRevision++});true`);
+    await evaluate(`qa.update('P-focus',p=>{p.items=${javascriptLiteral(CORE_ITEMS)};p.summary.structuralRevision++});true`);
     await repainted('same IDs reintroduced');
     const back = await guest('panel', `return {z:d.querySelector('${art} [data-testid="group-toggle-Z"]').open,heading:d.activeElement?.matches('.ap-tasks-h'),active:d.activeElement?.dataset?.testid??null}`);
     race.emptyThenSameIds = { focusedBefore: focusedW, focusAtTasksWhenEmpty: emptyFocus, ...back };
@@ -880,7 +881,7 @@ try {
       check('Q6:readiness-in-view-precondition', before.top > 0 && Math.abs(before.section) < 2 && before.firstTask >= before.viewport, before);
       for (const [what, deps] of [['added', ['D', 'W', 'X']], ['removed', []]] as const) {
         const prev = await view();
-        await evaluate(`qa.update('P-focus',p=>{p.items.find(i=>i.id==='N').dependencies=${JSON.stringify(deps)}});true`);
+        await evaluate(`qa.update('P-focus',p=>{p.items.find(i=>i.id==='N').dependencies=${javascriptLiteral(deps)}});true`);
         await wait('panel', `d.querySelector('${art}')?.dataset.revision===String(qa.plan('P-focus').summary.revision)&&d.querySelector('${art} [data-testid="readiness"][data-state="ready"]')`, `readiness ${what}`, 15_000);
         await frameRaf('panel');
         const next = await view();
