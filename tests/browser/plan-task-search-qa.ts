@@ -32,7 +32,8 @@ const onlyLarge = arg('--only') === 'large-plan';
 /** `--only keyboard-focus` / `keyboard-focus-replay`: keyboard and focus verification (no measurement). */
 const onlyKeyboard = arg('--only') === 'keyboard-focus';
 const onlyReplay = arg('--only') === 'keyboard-focus-replay';
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+const onlyMapHidden = arg('--only') === 'dependency-map-hidden';
+if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden'].includes(arg('--only')!)) throw Error('Unknown --only mode');
 if ((onlyKeyboard || onlyReplay) && measure) throw Error('keyboard-focus modes take no --measure');
 if (onlyLarge && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
@@ -77,7 +78,7 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-const fx = await startSearchShell(built, false, onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
+const fx = await startSearchShell(built, false, onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
 const origin = `http://127.0.0.1:${fx.port}`;
 const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
@@ -193,6 +194,67 @@ try {
   const pageErrors = () => c.events.map((e) => String(e.params.exceptionDetails?.exception?.description ?? e.params.args?.map((a: any) => a.value ?? a.description).join(' ') ?? '').split('\n')[0].slice(0, 160));
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
+
+  if (onlyMapHidden) {
+    Object.assign(facts, { mode: 'dependency-map-hidden', fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
+    await show(['page'], 1100);
+    for (const surface of ['page', 'panel', 'status']) await wait(surface, `d.querySelector('[data-testid="progress-root"]')`, 'initial host readiness');
+    await evaluate(`qa.context('M');true`);
+    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"]')`, 'ordinary board');
+    for (const name of ['Progress', 'Document', 'History', 'Progress']) {
+      const tabs = await guest<string[]>('page', `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].map(n=>n.textContent)`);
+      const index = tabs.indexOf(name); check(`hidden:tab-${name}-${results.length}`, index >= 0);
+      await click('page', `[data-testid="detail-tabs"] [role="tab"]:nth-child(${index + 1})`);
+      await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]')?.textContent===${JSON.stringify(name)}`);
+    }
+    await searchFor('Dependency map fixture'); await click('page', H('P-map'));
+    await wait('page', `d.querySelector('[data-testid="item-B"]')`, 'searched current task');
+    const noMap = async (surface: string) => {
+      const absent = await guest<boolean>(surface, `return !d.querySelector('[data-testid^="map-"],[data-testid="plan-view-map"],[data-testid="plan-view-list"]') && ![...d.querySelectorAll('button,[role="tab"],[role="group"]')].some(n=>/^(Map|Plan view|View as list)$/.test(n.textContent.trim())||/^(Map|Plan view)$/.test(n.getAttribute('aria-label')??''))`);
+      check(`hidden:${surface}-DOM-${results.length}`, absent);
+    };
+    await noMap('page'); await shot('production-hidden');
+    for (const width of [360, 600]) {
+      await show(['panel'], width);
+      await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')`, 'rail picker');
+      await click('panel', '[data-testid="plan-selector"] .oc-sdk-trigger');
+      await wait('panel', `d.querySelector('.oc-sdk-popup [role="option"]')`, 'rail plan choices');
+      const options = await guest<string[]>('panel', `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].map(n=>n.querySelector('.oc-sdk-option-label')?.textContent??'')`);
+      const selected = options.indexOf('Dependency map fixture'); check(`hidden:rail-plan-choice-${width}`, selected >= 0);
+      await key('Home'); if (selected) await key('ArrowDown', selected); await key('Enter');
+      await wait('panel', `d.querySelector('[data-testid="item-B"]')`, 'rail tasks');
+      await click('panel', '[data-testid="focus-jump-working"] button');
+      await wait('panel', `d.activeElement?.dataset.testid==='item-B'`, 'canonical task reveal/focus');
+      await noMap('panel');
+      const before = await evaluate<number>(`qa.replies.filter(r=>r.frame==='panel'&&r.path==='/v1/plans'&&r.status===200).length`);
+      await wait('panel', `(parent.qa.replies.filter(r=>r.frame==='panel'&&r.path==='/v1/plans'&&r.status===200).length)>=${before + 2}`, 'two completed visible rail polls');
+      await noMap('panel'); await shot(width === 600 ? 'rail-hidden' : 'rail-hidden-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel');
+    }
+    await show(['page', 'panel', 'status'], 600);
+    for (const surface of ['page', 'panel', 'status']) {
+      const before = await evaluate<number>(`qa.replies.filter(r=>r.frame==='${surface}'&&['/v1/plans','/v1/search-state'].includes(r.path)&&r.status===200).length`);
+      await wait(surface, `parent.qa.replies.filter(r=>r.frame==='${surface}'&&['/v1/plans','/v1/search-state'].includes(r.path)&&r.status===200).length>=${before + 2}`, 'two completed visible polls');
+      await noMap(surface);
+    }
+    await c.send('Accessibility.enable');
+    const tree = await c.send('Page.getFrameTree');
+    const accessibility: Record<string, unknown> = {};
+    for (const child of tree.frameTree.childFrames ?? []) {
+      const surface = /\/ui\/(page|panel|status)\//.exec(child.frame.url)?.[1]; if (!surface) continue;
+      const ax = await c.send('Accessibility.getFullAXTree', { frameId: child.frame.id });
+      const names = ax.nodes.filter((n: any) => !n.ignored).map((n: any) => ({ role: n.role?.value, name: n.name?.value }));
+      check(`hidden:${surface}-accessibility-no-map-entry`, names.length > 0 && !names.some((n: any) => /^(Map|Plan view|Dependency map|View as list)$/.test(n.name ?? '')));
+      accessibility[surface] = { visibleNodes: names.length, mapEntries: 0 };
+    }
+    check('hidden:all-frame-AX-trees-inspected', Object.keys(accessibility).length === 3);
+    facts.accessibility = accessibility;
+    check('hidden:zero-guest-graph-requests', (await count('/v1/plan-graph', 'page')) + (await count('/v1/plan-graph', 'panel')) + (await count('/v1/plan-graph', 'status')) === 0);
+    for (const surface of ['page', 'panel', 'status']) check(`hidden:${surface}-bundle-no-map-code`, !/map-region|map-viewport|map-announcer|plan-view-map/.test(readFileSync(`ui/${surface}/main.js`, 'utf8')));
+    replies = await evaluate('qa.replies');
+    facts.guestGraphRequests = 0; facts.previewEntry = false;
+    check('hidden:no-guest-errors', pageErrors().length === 0 && JSON.stringify(await evaluate('qa.errors')) === '[]', undefined, { errors: pageErrors(), proxy: await evaluate('qa.errors') });
+    throw new OnlyDone();
+  }
 
   if (onlyKeyboard || onlyReplay) {
     await keyboardFocus();

@@ -731,6 +731,8 @@ Store/binding, progress revision or cleanup conflicts return 409/conflict; missi
 
 A reply is one observed snapshot, not a freshness promise after delivery. Consumers validate the entire identity, requested progress revision and cleanup generation, and only present a complete validated reply for their current reading identity. Capability absence, refused identity, partial/malformed replies and transport/store failures remain explicit unavailable/error states; they cannot be substituted with empty data or merged with another revision. Unsupported services receive no graph request. Refreshing metadata and issuing a new pinned request is distinct from accepting a stale reply.
 
+The hidden map consumer pairs this graph with complete cached detail at the identical reading identity, progress revision, structural metadata and cleanup state, also checking common item fields and coverage/order. It never uses a failed detail prefix or merges a new header with an old graph. See [Hidden map snapshot and geometry foundations](ui.md#hidden-map-snapshot-and-geometry-foundations) for frame-local retirement/retry and layout ownership. This adds no wire revision or backend behavior; production surfaces remain unwired.
+
 ## Plan change digests (frozen additive read contract)
 
 See also the independent **Plan/task search revision 1** contract above. Search
