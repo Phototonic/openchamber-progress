@@ -20,7 +20,11 @@ export function seedMapFixture(f: ReturnType<typeof searchFixture>) {
   f.seedPlan('P-map-none', 'No recorded prerequisites', [{ id: 'A', title: 'First task', kind: 'task' }, { id: 'B', title: 'Second task', kind: 'task' }]);
   f.seedPlan('P-map-groups', 'Group metadata', [{ id: 'G', title: 'Group-owned prerequisite', kind: 'group', dependencies: ['A'] }, { id: 'A', title: 'Independent task', kind: 'task', parentId: 'G' }]);
   f.seedPlan('P-map-empty', 'Empty plan', []);
-  f.seedPlan('P-map-finished', 'Finished plan', [{ id: 'A', title: 'Completed task', kind: 'task', status: 'done' }]);
+  f.seedPlan('P-map-group-only', 'Groups without task cards', [{ id: 'G', title: 'Only recorded context', kind: 'group' }]);
+  f.seedPlan('P-map-paged', 'Paged complete picture', Array.from({ length: 45 }, (_, n) => ({ id: `T${n}`, title: `Paged task ${n}`, kind: 'task' as const })));
+  f.seedPlan('P-map-finished', 'Finished plan', [{ id: 'A', title: 'Completed task', kind: 'task', status: 'done' }, { id: 'S', title: 'Skipped task', kind: 'task', status: 'skipped' }]);
   f.apply('P-map-finished', { op: 'finish', outcome: 'finished' });
+  f.seedPlan('P-map-cancelled', 'Cancelled plan', [{ id: 'P', title: 'Work left pending', kind: 'task', status: 'pending' }]);
+  f.apply('P-map-cancelled', { op: 'finish', outcome: 'cancelled' });
   f.seedPlan('P-map', 'Independent source counterpart', mapItems, { ...f.actor, sourceId: f.beta.id });
 }

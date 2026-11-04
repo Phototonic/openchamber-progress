@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROJECTS, startSearchShell } from './plan-task-search-shell.ts';
 import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/large-plan.ts';
+import { mapItems } from '../fixtures/dependency-map.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -33,7 +34,8 @@ const onlyLarge = arg('--only') === 'large-plan';
 const onlyKeyboard = arg('--only') === 'keyboard-focus';
 const onlyReplay = arg('--only') === 'keyboard-focus-replay';
 const onlyMapHidden = arg('--only') === 'dependency-map-hidden';
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+const onlyMapRender = arg('--only') === 'dependency-map-render';
+if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden', 'dependency-map-render'].includes(arg('--only')!)) throw Error('Unknown --only mode');
 if ((onlyKeyboard || onlyReplay) && measure) throw Error('keyboard-focus modes take no --measure');
 if (onlyLarge && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
@@ -78,7 +80,7 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-const fx = await startSearchShell(built, false, onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
+const fx = await startSearchShell(built, false, onlyMapRender ? 'dependency-map-render' : onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
 const origin = `http://127.0.0.1:${fx.port}`;
 const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
@@ -195,6 +197,82 @@ try {
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
+  if (onlyMapRender) {
+    Object.assign(facts, { mode: 'dependency-map-render', preview: true, fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash, serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), visualSignoff: 'evidence/dependency-map/render/design-signoff.md' });
+    const region = '[data-testid="map-region"]';
+    const ready = (f = 'page') => wait(f, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-world"]')`);
+    const select = async (f: string, id: string, value: string) => { await guest(f, `const n=d.querySelector('[data-testid="${id}"]');n.value=${JSON.stringify(value)};n.dispatchEvent(new Event('change',{bubbles:true}));return true`); await frames2(); };
+    const plan = async (id: string, f = 'page') => { await select(f, 'map-plan', id); await ready(f); };
+    const snapshot = (f: string) => guest<any>(f, `const n=d.querySelector('${region}');return {tasks:n.dataset.tasks,edges:n.dataset.edges,cards:[...n.querySelectorAll('[data-task]')].map(n=>({id:n.dataset.task,x:n.dataset.x,y:n.dataset.y,status:n.dataset.status,readiness:n.dataset.readiness,unlocks:n.dataset.unlocks})),pairs:[...n.querySelectorAll('path[data-from]')].map(n=>[n.dataset.from,n.dataset.to]),arrows:[...n.querySelectorAll('path[data-from]')].every(n=>!!n.getAttribute('marker-end'))}`);
+    await show(['page'], 1100); await ready();
+    const initial = await snapshot('page');
+    const expected = mapItems.filter(i => i.kind === 'task').flatMap(i => (i.dependencies ?? []).map(d => [d, i.id]));
+    const pairs = (v: unknown[]) => JSON.stringify(v.map(x => JSON.stringify(x)).sort());
+    check('render:explicit-directed-pairs', pairs(initial.pairs) === pairs(expected) && initial.arrows);
+    check('render:arrow-geometry-direction', await guest('page', `return [...d.querySelectorAll('path[data-from]')].every(p=>{const a=p.getPointAtLength(0),b=p.getPointAtLength(p.getTotalLength());return a.x<b.x})`));
+    check('render:full-task-coverage-no-group-substitution', initial.cards.length === mapItems.filter(i => i.kind === 'task').length && initial.cards.every((i: any) => !i.id.startsWith('G')));
+    check('render:no-false-unlock', initial.cards.every((i: any) => !i.unlocks.split(',').includes('F')));
+    check('render:skipped-is-not-done', initial.cards.find((i: any) => i.id === 'W').readiness === 'skipped' && initial.cards.find((i: any) => i.id === 'S').unlocks === '');
+    check('render:literal-text', await guest('page', `return d.body.textContent.includes('<img src=x onerror=alert(1)>')&&!d.querySelector('${region} img')`));
+    // Semantic claims use rendered text / accessible card names, not readiness data attributes.
+    const cardText = (id: string) => guest<string>('page', `const n=d.querySelector('[data-testid="map-card-${id}"]');return (n?.innerText??'')+' '+(n?.getAttribute('aria-label')??'')`);
+    // Read claims on cards and the named current-work summary, not explanatory notices saying
+    // that Ready/Unlocks next guidance is intentionally absent on stale or closed pictures.
+    const guidanceText = () => guest<string>('page', `return [...d.querySelectorAll('[data-testid="map-summary"] [aria-label="Current work"],[data-task]')].map(n=>(n.innerText??'')+' '+(n.getAttribute('aria-label')??'')).join(' ')`);
+    check('render:current-active-guidance-text', /\bReady\b/.test(await cardText('C')) && /Unlocks next/i.test(await guidanceText()));
+    const fullCounts = () => guest<string>('page', `return d.querySelector('[data-testid="map-counts"]')?.innerText??''`);
+    const countsMatch = (text: string) => /1 of 8 done/.test(text) && /7 remaining/.test(text) && /1 skipped/.test(text);
+    check('render:full-plan-count-text', countsMatch(await fullCounts()));
+    await shot('active-overview');
+    await click('page', '[data-testid="map-card-B"]'); await wait('page', `d.querySelector('[data-testid="map-inspector"]')?.textContent.includes('Build a deliberately')`); await shot('selected-inspector');
+    const unchanged = (after: any) => after.cards.every((i: any) => initial.cards.some((a: any) => a.id === i.id && a.x === i.x && a.y === i.y));
+    await select('page', 'map-status', 'unfinished'); check('render:unfinished-stable', unchanged(await snapshot('page')) && !(await snapshot('page')).cards.some((i: any) => ['A','S'].includes(i.id)));
+    await select('page', 'map-status', 'all'); await select('page', 'map-group', 'G'); check('render:group-subtree-stable', unchanged(await snapshot('page')) && (await snapshot('page')).cards.map((i: any) => i.id).join() === 'A');
+    check('render:filtered-counts-remain-full-plan', countsMatch(await fullCounts()));
+    await select('page', 'map-group', '*');
+    // A real newer report, with its graph reply held: retain the accepted picture, never reload it away.
+    const retainedRevision = await guest<string>('page', `return d.querySelector('${region}').dataset.revision`);
+    await evaluate(`qa.holds.push({path:'/v1/plan-graph',frame:'page',tag:'map-newer-graph'});true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] });
+    await wait('page', `parent.qa.held.some(h=>h.tag==='map-newer-graph')&&d.querySelector('${region}')?.dataset.state==='updating'`, 'retained picture while newer graph is held');
+    check('render:updating-retains-accepted-picture', await guest('page', `return d.querySelector('${region}').dataset.revision===${JSON.stringify(retainedRevision)}&&d.querySelectorAll('[data-task]').length===9&&d.querySelector('[data-testid="map-state"]').innerText.includes('Updating')`));
+    check('render:updating-suppresses-guidance-text', !/\bReady\b|Unlocks next/i.test(await guidanceText()) && /Reported pending/i.test(await cardText('C')));
+    await shot('retained-updating'); await evaluate(`qa.release('map-newer-graph')`); await ready();
+    check('render:matched-picture-restores-guidance-text', /\bReady\b/.test(await cardText('C')) && /Unlocks next/i.test(await guidanceText()));
+    // Legacy complete detail with no usable snapshot, after an accepted picture of this same reading.
+    await evaluate(`qa.stripDetailSnapshot='page';true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'pending' }] });
+    await wait('page', `d.querySelector('${region}')?.dataset.state==='unavailable'`, 'retained picture becomes unavailable without identity');
+    const noDiagram = () => guest<boolean>('page', `const n=d.querySelector('${region}'),control=n.querySelector('[data-testid="map-list"]'),b=control?.matches('button')?control:control?.querySelector('button');return !n.querySelector('[data-task],path[data-from]')&&!n.dataset.revision&&n.dataset.tasks==='0'&&n.dataset.edges==='0'&&!!b&&!b.disabled&&b.tabIndex>=0&&b.getClientRects().length>0&&/View as list/i.test(b.innerText)&&!/Revision [0-9]/i.test(n.innerText)`);
+    check('render:unavailable-discards-retained-diagram', await noDiagram() && await guest('page', `return d.querySelector('[data-testid="map-state"]').innerText.includes('earlier map is no longer shown')`)); await shot('retained-unavailable');
+    await evaluate(`qa.stripDetailSnapshot=false;true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] }); await ready();
+    await evaluate(`qa.fail.push({path:'/v1/plan-graph',frame:'page',status:404,code:'not-found',once:true});true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'pending' }] });
+    await wait('page', `d.querySelector('${region}')?.dataset.state==='not-found'`, 'not-found after accepted picture');
+    check('render:not-found-discards-previous-diagram', await noDiagram()); await shot('retained-not-found');
+    for (const [id, filename, text, tasks] of [['P-map-none','no-prerequisites','No prerequisites recorded for this plan',2],['P-map-groups','group-context','No task-to-task prerequisites recorded',1],['P-map-group-only','group-only','No task cards',0],['P-map-empty','empty','No task cards',0],['P-map-finished','finished','Done',2],['P-map-cancelled','cancelled','Reported pending',1]] as const) {
+      await plan(id); check(`render:${id}`, await guest('page', `return d.querySelector('${region}').textContent.includes(${JSON.stringify(text)})`) && Number((await snapshot('page')).tasks) === tasks && (await snapshot('page')).pairs.length === 0); await shot(filename);
+      if (id === 'P-map-empty' || id === 'P-map-group-only') check(`render:${id}-D5-sentence`, await guest('page', `return d.querySelector('${region}').innerText.includes('No prerequisites recorded for this plan')`));
+      if (id === 'P-map-finished' || id === 'P-map-cancelled') check(`render:${id}-no-guidance-text`, !/\bReady\b|Unlocks next/i.test(await guidanceText()) && (id === 'P-map-finished' ? /Skipped/.test(await cardText('S')) : /Reported pending/.test(await cardText('P'))));
+    }
+    await plan('P-map');
+    for (const width of [600,360]) { await show(['panel'], width); try { await ready('panel'); } catch (e) { throw Error(String(e) + JSON.stringify(pageErrors())); } const rail = await snapshot('panel'); check(`render:rail-${width}-full-coverage`, rail.tasks === initial.tasks && rail.edges === initial.edges && pairs(rail.pairs) === pairs(initial.pairs)); await shot(width === 600 ? 'rail-map-wide' : 'rail-map-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel'); }
+    await theme('dark'); await shot('dark-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel'); await theme('light'); await show(['page'],1100);
+    await evaluate(`qa.holds.push({path:'/v1/plan',frame:'page',plan:'P-map-paged',cursor:true,tag:'map-page'});true`); await select('page','map-plan','P-map-paged');
+    await wait('page', `parent.qa.held.some(h=>h.tag==='map-page')`, 'held detail continuation'); check('render:no-partial-picture', (await snapshot('page')).cards.length === 0); await evaluate(`qa.release('map-page')`); await ready(); check('render:complete-paged-picture', Number((await snapshot('page')).tasks) === 45);
+    const packedToCanvas = `(()=>{const width=Number(d.querySelector('[data-testid="preview-map-host"]')?.dataset.canvasWidth),cards=[...d.querySelectorAll('[data-task]')];return width>0&&cards.length===45&&cards.every(n=>Number(n.dataset.x)+n.offsetWidth<=width+1)})()`;
+    await wait('page', packedToCanvas, 'edgeless board packs within reported usable canvas');
+    check('render:edgeless-board-packs-to-canvas', await guest('page', `return ${packedToCanvas}`));
+    await shot('paged-edgeless-canvas');
+    await evaluate(`qa.stripGraph=true;qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='unavailable'`); await shot('unavailable');
+    await evaluate(`qa.stripGraph=false;qa.fail.push({path:'/v1/plan-graph',frame:'page',status:409,once:true});qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='updating'`); await shot('updating'); await click('page','[data-testid="map-retry"]'); await ready(); check('render:conflict-try-again', true);
+    await evaluate(`qa.fail.push({path:'/v1/plan-graph',frame:'page',status:503,once:true});qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='error'`); await shot('read-failure'); await click('page','[data-testid="map-retry"]'); await ready(); check('render:failure-try-again', true);
+    await show(['panel'],360); await evaluate(`qa.stripGraph=true;qa.reload('panel');true`); await wait('panel', `d.querySelector('${region}')?.dataset.state==='unavailable'`); await shot('rail-unavailable', '[data-testid="progress-root"]', 12, 1700, 'panel');
+    check('render:no-proxy-errors', await evaluate('qa.errors.length===0'));
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
   if (onlyMapHidden) {
     Object.assign(facts, { mode: 'dependency-map-hidden', fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
     await show(['page'], 1100);

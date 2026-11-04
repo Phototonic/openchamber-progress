@@ -9,10 +9,11 @@
 // switch and fixture-side writes from "another client". Reply metadata (status, bytes, the
 // service's own work counters) is recorded for request evidence; no reply body is retained.
 // NOT native-host, relay or cross-device proof.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer as netServer } from 'node:net';
 import path from 'node:path';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
@@ -83,8 +84,11 @@ addEventListener('message',async e=>{
   if(failing)failing.skip--;
   if(window.__keyboardFocus&&q.path.startsWith('/v1/setup')){const r=qa.setupReply(q);qa.intercepted.push({frame:f,method:q.method,path:q.path,status:r.status,at:t0});result(r);return}
   const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
+   // Labelled legacy-detail seam: optional aggregate metadata is absent, so readDetail cannot
+   // construct its authoritative snapshot/identity. Other wire identity validation stays intact.
+   if(q.path==='/v1/plan'&&reply.status===200&&qa.stripDetailSnapshot===f){const b=JSON.parse(reply.body);delete b.plan.counts;reply.body=JSON.stringify(b)}
    if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
-   if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
+    if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison||qa.stripGraph)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;if(qa.stripGraph)delete b.planGraph;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
   const hold=qa.holds.find(h=>h.path===q.path&&(!h.frame||h.frame===f)&&(h.plan===undefined||q.query?.plan===h.plan)&&(h.cursor===undefined||!!q.query?.cursor===h.cursor));
   if(hold){qa.holds=qa.holds.filter(h=>h!==hold);const reply=forward();qa.held.push({tag:hold.tag,frame:f,path:q.path,go:()=>deliver(reply)})}
@@ -180,10 +184,13 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' = 'search', keyboard = mode === 'keyboard-focus') {
-  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' = 'search', keyboard = mode === 'keyboard-focus') {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const large = mode === 'large-plan';
-  const map = mode === 'dependency-map-hidden';
+  const preview = mode === 'dependency-map-render';
+  const map = mode === 'dependency-map-hidden' || preview;
+  const previewRoot = preview ? mkdtempSync('/tmp/opencode/dependency-map-preview-') : null;
+  if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
   const f = searchFixture(!large && !map);
   const replay = large ? createLargePlanReplay(f) : null;
   if (replay) replay.seed(); else if (map) seedMapFixture(f); else { seedSearchLibrary(f); seedExtras(f); }
@@ -201,11 +208,12 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
       if (url.pathname === '/') {
-        let page = large ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        let page = large || preview ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
       }
-      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(`.${url.pathname}`)); }
+      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(readFileSync(previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname) ? `${previewRoot}/main.js` : `.${url.pathname}`)); }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         const { request, store } = JSON.parse(body);
@@ -261,6 +269,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   }
   return {
     port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
+    previewHash: previewRoot ? createHash('sha256').update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     cleanupElsewhere, deleteElsewhere: (plan: string) => cleanupElsewhere('delete', plan),
     /** A new matching plan behind an active keyset cursor (production staged write). */
@@ -274,8 +283,10 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     },
     /** Keyboard-focus mode: a synthetic report by the `KF` session (production write path). */
     reportKeyboard: (plan: string, request: Record<string, unknown>) => { f.apply(plan, request, { ...f.actor, sessionId: KEYBOARD_SESSION }); },
+    /** Map preview: another client's ordinary report, to exercise retained-picture refreshes. */
+    reportMap: (plan: string, request: Record<string, unknown>) => { if (!preview) throw Error('Map preview required'); f.apply(plan, request); },
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
-    async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); },
+    async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); if (previewRoot) rmSync(previewRoot, { recursive: true, force: true }); },
   };
 }
