@@ -122,6 +122,10 @@ export interface ViewContext<U> {
   service: (current: () => boolean) => ServiceHost;
   /** Plan metadata of the last complete detail read of this key, or null (not read, loading, failed). */
   detailPlan: (plan: PlanView) => PlanView | null;
+  /** Accepted cached read only; failed first-page snapshots are not complete detail. Inert without a consumer. */
+  detailResult: (plan: PlanView) => { result: DetailResult; current: () => boolean } | null;
+  /** Successful list/search-freshness refresh serial, not a progress revision. */
+  refreshSerial: number;
   /**
    * Sub-agent runs of one root with a plan in scope (runs.ts). Call it only while painting an eligible
    * section; a paint without a call retires the visit and any held reply. Null without a store read.
@@ -167,6 +171,8 @@ export interface ViewSpec<U> {
   wantDetails: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
+  /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
+  refreshed?: (vc: ViewContext<U>) => void;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
   beforeUiChange?: (previous: U, next: U) => void;
   /** Called after a store/binding identity change and on context changes, e.g. to restore stored UI. */
@@ -616,6 +622,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
         failure = null; lastGoodAt = Date.now();
+        spec.refreshed?.(context());
         runs?.poll();
         schedule(); plan(REFRESH_MS);
         return;
@@ -674,6 +681,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
+      spec.refreshed?.(context());
       if (authorityChanged) spec.onContext?.(context());
       // The same visible poll re-reads the eligible sub-agent section; nothing else times it.
       else runs?.poll();
@@ -923,6 +931,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       service: (current) => guardedHost(current),
       detailPlan: (p) => { const c = details.get(p.key)?.result; return c?.ok && c.plan.key === p.key ? c.plan : null; },
+      detailResult: (p) => {
+        const c = details.get(p.key), generation = cacheGeneration;
+        return c?.result ? { result: c.result, current: () => canReadPart() && details.get(p.key) === c && generation === cacheGeneration && document.visibilityState !== 'hidden' } : null;
+      },
+      refreshSerial: listReads,
       runs: (claim) => {
         if (disposed || !read || !identity) return null;
         runs ??= new RunsController({

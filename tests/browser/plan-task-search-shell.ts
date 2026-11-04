@@ -20,6 +20,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { RELEASE } from '../../shared/release.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 import { searchFixture, seedSearchLibrary } from '../fixtures/plan-task-search.ts';
+import { seedMapFixture } from '../fixtures/dependency-map.ts';
 import { digest } from '../../shared/store.ts';
 import { createLargePlanReplay, LARGE_PLAN_ID } from '../fixtures/large-plan.ts';
 import { readPlanGraph, type ServiceHost } from '../../ui/shared/source.ts';
@@ -179,14 +180,16 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' = 'search', keyboard = mode === 'keyboard-focus') {
-  if (!['search', 'large-plan', 'keyboard-focus'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' = 'search', keyboard = mode === 'keyboard-focus') {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const large = mode === 'large-plan';
-  const f = searchFixture(!large);
+  const map = mode === 'dependency-map-hidden';
+  const f = searchFixture(!large && !map);
   const replay = large ? createLargePlanReplay(f) : null;
-  if (replay) replay.seed(); else { seedSearchLibrary(f); seedExtras(f); }
+  if (replay) replay.seed(); else if (map) seedMapFixture(f); else { seedSearchLibrary(f); seedExtras(f); }
   if (mode === 'keyboard-focus') seedKeyboard(f);
-  const second = searchFixture(!large);
+  const second = searchFixture(!large && !map);
+  if (map) seedMapFixture(second);
   const services = [await serve(f, built), await serve(second, built)];
   const relay = async (q: GuestRequest, store: number): Promise<GuestRequestResult> => {
     if (q.path === '/v1/extension-update' || (q.path === '/v1/setup' && !reportingSetup)) return { status: 404, body: '{"error":"not-found"}' };
