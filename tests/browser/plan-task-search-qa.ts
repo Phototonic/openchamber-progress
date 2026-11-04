@@ -35,9 +35,11 @@ const onlyKeyboard = arg('--only') === 'keyboard-focus';
 const onlyReplay = arg('--only') === 'keyboard-focus-replay';
 const onlyMapHidden = arg('--only') === 'dependency-map-hidden';
 const onlyMapRender = arg('--only') === 'dependency-map-render';
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden', 'dependency-map-render'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+const onlyMapInteraction = arg('--only') === 'dependency-map-interaction';
+const onlyMapLarge = arg('--only') === 'dependency-map-large';
+if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large'].includes(arg('--only')!)) throw Error('Unknown --only mode');
 if ((onlyKeyboard || onlyReplay) && measure) throw Error('keyboard-focus modes take no --measure');
-if (onlyLarge && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
+if ((onlyLarge || onlyMapLarge) && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
 mkdirSync(artifacts, { recursive: true });
 
@@ -80,8 +82,8 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-const fx = await startSearchShell(built, false, onlyMapRender ? 'dependency-map-render' : onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
-const origin = `http://127.0.0.1:${fx.port}`;
+let fx = await startSearchShell(built, false, onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
+let origin = `http://127.0.0.1:${fx.port}`;
 const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
 let failure: string | null = null;
@@ -197,12 +199,352 @@ try {
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
+  if (onlyMapInteraction || onlyMapLarge) {
+    const region = '[data-testid="map-region"]';
+    const ready = (surface: string, revision = 1) => wait(surface, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision==='${revision}'&&w.mapPreview?.state.initialFramingDone`, 'complete interactive preview');
+    const command = (surface: string, event: object) => guest(surface, `return w.mapPreview.dispatch(${JSON.stringify(event)})`);
+    const state = (surface: string) => guest<any>(surface, 'return w.mapPreview.state');
+    const mapShot = async (name: string, surface: string) => {
+      const scroll = await guest<number>(surface, 'return w.scrollY');
+      await shot(name, region, 0, 1200, surface);
+      await guest(surface, `w.scrollTo(0,${scroll});return true`); await frames2();
+    };
+    const coordinates = (surface: string) => guest<any>(surface, `const v=d.querySelector('[data-testid="map-viewport"]').getBoundingClientRect();return {viewport:[v.x,v.y,v.width,v.height],scrollY:w.scrollY,world:w.mapPreview.coordinates,transform:w.mapPreview.state.transform,screen:Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>{const r=n.getBoundingClientRect();return[n.dataset.task,[r.x,r.y,r.width,r.height]]}))}`);
+    const inView = (surface: string, id: string) => guest<boolean>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]'),v=d.querySelector('[data-testid="map-viewport"]');if(!n||!v)return false;const a=n.getBoundingClientRect(),b=v.getBoundingClientRect();return n.matches('button')&&!n.disabled&&a.x>=b.x+7&&a.y>=b.y+7&&a.right<=b.right-7&&a.bottom<=b.bottom-7`);
+    Object.assign(facts, { fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map', seed: onlyMapLarge ? LARGE_PLAN_SEED : undefined, preview: true, inputCoverage: onlyMapLarge ? 'controller-dispatched timed actions through the bound shared view, plus two real CDP keyboard actions' : 'controller probes for setup', pendingDesigner: [], commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash });
+    if (onlyMapInteraction) {
+      for (const [surface, width] of [['page', 1100], ['panel', 360], ['panel', 600]] as const) {
+        await show([surface], width); await ready(surface);
+        const before = await state(surface);
+        check(`interaction:${surface}-${width}:initial-work-frame`, before.initialFramingDone && (width === 600 ? before.selected === 'C' : before.selected === null && before.transform.zoom >= .75));
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        check(`interaction:${surface}-${width}:target-in-view`, await inView(surface, 'D'));
+        await command(surface, { type: 'pan', x: -17, y: 19 }); await command(surface, { type: 'zoom', factor: 1.2, point: { x: 100, y: 100 } });
+        const moved = await state(surface), mark = await evaluate<number>('qa.replies.length');
+        await wait(surface, `qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two unchanged polls');
+        check(`interaction:${surface}-${width}:poll-continuity`, JSON.stringify((await state(surface)).transform) === JSON.stringify(moved.transform) && (await state(surface)).selected === 'D');
+        await command(surface, { type: 'filters', status: 'unfinished' }); await command(surface, { type: 'relation', id: 'A' }); await frames2();
+        check(`interaction:${surface}-${width}:relation-reveals-only-hiding-filter`, (await state(surface)).selected === 'A' && (await state(surface)).status === 'all');
+        await command(surface, { type: 'fit' }); await frames2();
+        const z = (await state(surface)).transform.zoom;
+        if (surface === 'panel') { await show(['panel'], width === 360 ? 600 : 360); await frames2(); await show(['panel'], width); await frames2(); check(`interaction:panel-${width}:resize-retains-zoom`, (await state(surface)).transform.zoom === z); }
+        // Real shared list and canonical reveal, not a fabricated list. Native switches are preview-only.
+        await click(surface, '[data-testid="plan-view-list"]');
+        await wait(surface, `d.querySelector('[data-testid="item-B"]')`, 'canonical list');
+        await click(surface, '[data-testid="item-B"]'); await click(surface, '[data-testid="plan-view-map"]'); await ready(surface);
+        check(`interaction:${surface}-${width}:explicit-list-target`, (await state(surface)).selected === 'B');
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
+        await click(surface, '[data-testid="map-list"] button'); await wait(surface, `d.activeElement?.dataset.testid==='item-C'`, 'canonical map-to-list reveal');
+        check(`interaction:${surface}-${width}:canonical-return`, await guest(surface, `return d.querySelectorAll('[data-testid="item-C"]').length===1`));
+        await click(surface, '[data-testid="plan-view-map"]'); await ready(surface);
+        check(`interaction:${surface}-${width}:consumed-target-not-replayed`, (await state(surface)).selected === 'C');
+        await shot(`${surface}-${width}-controller-preview`, region, 0, 1200, surface);
+      }
+      // ── Designer bindings through real CDP input (not controller probes): canvas Tab stop, scoped
+      // keys, toolbar keyboard operation, background drag across a poll repaint, wheel, highlights,
+      // inspector relations, the per-frame live region, handoff focus, resize and forced colours.
+      const said = (surface: string) => guest<string[]>(surface, `if(!w.__said){w.__said=[];const n=d.querySelector('[data-testid="map-announcer"]');new w.MutationObserver(()=>{if(n.textContent)w.__said.push(n.textContent)}).observe(n,{childList:true,characterData:true,subtree:true})}return w.__said.slice()`);
+      const active = (surface: string) => guest<any>(surface, `const a=d.activeElement;return {task:a?.dataset?.task??null,testid:a?.closest?.('[data-testid]')?.dataset.testid??null,tag:a?.tagName,inCanvas:!!a?.closest?.('[data-testid="map-viewport"]'),outline:a?getComputedStyle(a).outlineStyle+' '+getComputedStyle(a).outlineWidth:''}`);
+      const focusOn = (surface: string, selector: string) => guest(surface, `const n=d.querySelector(${JSON.stringify(selector)});n.focus();return d.activeElement===n`);
+      const polls = async (surface: string, n = 2) => { const mark = await evaluate<number>('qa.replies.length'); await wait(surface, `parent.qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=${n}`, `${n} completed polls`); };
+      const background = (surface: string) => evaluate<[number, number] | null>(`(()=>{const fr=frame('${surface}'),d=fr.contentDocument,v=d.querySelector('[data-testid="map-viewport"]');v.scrollIntoView({block:'center'});const b=v.getBoundingClientRect(),o=fr.getBoundingClientRect();for(let y=b.bottom-14;y>b.top+10;y-=12)for(let x=b.right-14;x>b.left+10;x-=12){const n=d.elementFromPoint(x,y);if(n&&v.contains(n)&&!n.closest('button'))return [o.x+x,o.y+y]}return null})()`);
+      const mouse = (type: string, x: number, y: number, extra: object = {}) => c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
+      const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+      const settled = (surface: string) => wait(surface, `(()=>{const v=d.querySelector('[data-testid="map-viewport"]'),h=d.querySelector('[data-testid="preview-map-host"]');return v&&h&&Number(h.dataset.canvasWidth)===v.clientWidth})()`, 'measured canvas after resize');
+      const realInput = async (surface: 'page' | 'panel', width: number) => {
+        const tag = `${surface}-${width}`;
+        await show([surface], width); await ready(surface); await said(surface);
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
+        check(`interaction:${tag}:one-persistent-announcer`, await guest(surface, `const a=d.querySelectorAll('[data-testid="map-announcer"]');return a.length===1&&!d.getElementById('root').contains(a[0])&&a[0].getAttribute('aria-live')==='polite'`));
+        check(`interaction:${tag}:one-canvas-tab-stop`, await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]'),cards=[...v.querySelectorAll('[data-task]')];return v.getAttribute('role')==='region'&&!!v.getAttribute('aria-label')&&cards.length>0&&cards.every(n=>n.tagName==='BUTTON')&&cards.filter(n=>n.tabIndex===0).length===1&&!d.querySelector('[data-testid="map-region"] [role="application"],[role="tree"],[role="grid"],[role="listbox"]')`));
+        // Keyboard entry from the last toolbar control, then scoped keys.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); await frames2();
+        let a = await active(surface);
+        check(`interaction:${tag}:tab-enters-roving-card`, a.inCanvas && a.task === 'C' && /solid/.test(a.outline), undefined, a);
+        await shot(`${tag}-keyboard-focus`, '[data-testid="map-viewport"]', 40, 900, surface);
+        const heard = (await said(surface)).length;
+        await key('ArrowRight'); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:arrow-selects-neighbour`, a.task === 'D' && (await state(surface)).selected === 'D', undefined, a);
+        const spoken = (await said(surface)).slice(heard);
+        check(`interaction:${tag}:selection-announced-once`, spoken.length === 1 && /Join both unfinished branches/.test(spoken[0]) && /2 direct prerequisites; 0 direct dependents/.test(spoken[0]), undefined, spoken);
+        await key('['); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:bracket-first-prerequisite`, a.task === 'B' && (await state(surface)).selected === 'B', undefined, a);
+        await key(']'); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:bracket-first-dependent`, a.task === 'D', undefined, a);
+        let t = (await state(surface)).transform;
+        await key('+'); await frames2();
+        check(`interaction:${tag}:plus-zooms`, near((await state(surface)).transform.zoom, Math.min(2, t.zoom * 1.2)));
+        await key('-'); await frames2(); t = (await state(surface)).transform;
+        await key('+', 1, 2); await key('f', 1, 2); await frames2();
+        check(`interaction:${tag}:modified-keys-not-intercepted`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        await key('f'); await frames2();
+        check(`interaction:${tag}:F-fits-all`, JSON.stringify((await state(surface)).transform) !== JSON.stringify(t) && (await said(surface)).some(s => /^Fit all/.test(s)));
+        await focusOn(surface, '[data-testid="map-group"]'); t = (await state(surface)).transform; await key('-'); await frames2();
+        check(`interaction:${tag}:keys-ignored-outside-canvas`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        // Tab leaves forwards and Shift+Tab returns to the same roving card: no trap.
+        await focusOn(surface, '[data-testid="map-card-D"]'); await key('Tab'); a = await active(surface);
+        check(`interaction:${tag}:tab-leaves-canvas`, !a.inCanvas && a.tag === 'BUTTON', undefined, a);
+        await key('Tab', 1, 8); a = await active(surface);
+        check(`interaction:${tag}:shift-tab-returns-to-roving-card`, a.task === 'D', undefined, a);
+        // Toolbar: keyboard operation and visible focus.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab', 1, 8); await key('Tab', 1, 8); await key('Tab', 1, 8); await key('Tab', 1, 8);
+        a = await active(surface);
+        check(`interaction:${tag}:toolbar-tab-order`, a.testid === 'map-focus-current' && /solid/.test(a.outline), undefined, a);
+        t = (await state(surface)).transform; await focusOn(surface, '[data-testid="map-zoom-in"]'); await key('Enter'); await frames2();
+        const zin = (await state(surface)).transform;
+        await focusOn(surface, '[data-testid="map-pan-left"]'); await key(' '); await frames2();
+        const panned = (await state(surface)).transform;
+        await focusOn(surface, '[data-testid="map-fit-all"]'); await key('Enter'); await frames2();
+        await focusOn(surface, '[data-testid="map-focus-current"]'); await key('Enter'); await frames2();
+        const toolSaid = await said(surface);
+        check(`interaction:${tag}:toolbar-keyboard-operable`, zin.zoom > t.zoom && panned.x > zin.x && near(panned.y, zin.y) && toolSaid.some(s => /^Zoom /.test(s)) && toolSaid.some(s => /^View moved left/.test(s)) && toolSaid.some(s => /^Focused current reported work/.test(s)), undefined, { t, zin, panned, toolSaid: toolSaid.slice(-4) });
+        // Background drag with a captured pointer across poll repaints; cards never drag.
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        let p = await background(surface); if (!p) throw Error(`no map background in ${tag}`);
+        t = (await state(surface)).transform;
+        await mouse('mouseMoved', p[0], p[1], { buttons: 0 }); await mouse('mousePressed', p[0], p[1]);
+        await mouse('mouseMoved', p[0] - 10, p[1] - 6); await mouse('mouseMoved', p[0] - 20, p[1] - 12);
+        await polls(surface, 1); await frames2();
+        const mid = await guest<any>(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return {captured:v.hasPointerCapture(1),dragging:w.mapPreview.state.dragging,active:d.activeElement?.dataset?.task??null}`);
+        await mouse('mouseMoved', p[0] - 30, p[1] - 18); await mouse('mouseMoved', p[0] - 40, p[1] - 24); await mouse('mouseReleased', p[0] - 40, p[1] - 24); await frames2();
+        const after = await state(surface);
+        check(`interaction:${tag}:captured-drag-survives-poll-repaint`, mid.captured && mid.dragging !== null && near(after.transform.x, t.x - 40) && near(after.transform.y, t.y - 24) && after.dragging === null && after.selected === 'D', undefined, { mid, t, after: after.transform });
+        await mapShot(`${tag}-pan-zoom`, surface);
+        t = after.transform; p = (await background(surface))!;
+        await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 30, deltaY: 50 }); await frames2();
+        const wheeled = (await state(surface)).transform;
+        // Ctrl/Cmd wheel is browser zoom: a labelled synthetic event (real Ctrl+wheel would zoom this
+        // browser) proves the canvas neither consumes nor cancels it.
+        const browserZoomKept = await guest<boolean>(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,ctrlKey:true,bubbles:true,cancelable:true}))&&v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,metaKey:true,bubbles:true,cancelable:true}))`); await frames2();
+        check(`interaction:${tag}:wheel-pans-canvas-ctrl-wheel-left-to-browser`, near(wheeled.x, t.x - 30) && near(wheeled.y, t.y - 50) && browserZoomKept && JSON.stringify((await state(surface)).transform) === JSON.stringify(wheeled), undefined, { t, wheeled, browserZoomKept });
+        const card = await evaluate<[number, number]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector('[data-testid="map-card-D"]');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]})()`);
+        t = (await state(surface)).transform;
+        await mouse('mouseMoved', card[0], card[1], { buttons: 0 }); await mouse('mousePressed', card[0], card[1]); await mouse('mouseMoved', card[0] + 30, card[1] + 20); await mouse('mouseReleased', card[0] + 30, card[1] + 20); await frames2();
+        check(`interaction:${tag}:cards-not-draggable`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        // Upstream/downstream highlights by real card clicks; every direct relation via the inspector.
+        // Fit all first so every card is on screen for real pointer clicks at any width.
+        await command(surface, { type: 'select', id: 'C' }); await command(surface, { type: 'fit' }); await frames2(); await click(surface, '[data-testid="map-card-D"]'); await frames2();
+        const marks = () => guest<Record<string, string>>(surface, `return Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>[n.dataset.task,n.dataset.related??(n.getAttribute('aria-current')?'selected':'')]))`);
+        let m = await marks();
+        check(`interaction:${tag}:upstream-highlight`, (await state(surface)).selected === 'D' && m.A === 'upstream' && m.B === 'upstream' && m.C === 'upstream' && m.D === 'selected' && !Object.values(m).includes('downstream') && await guest(surface, `return [...d.querySelectorAll('path[data-path]')].length===4&&[...d.querySelectorAll('path[data-path]')].every(p=>p.dataset.path==='upstream')&&/Upstream of the selected task/.test(d.querySelector('[data-testid="map-card-B"]').getAttribute('aria-label'))`), undefined, m);
+        if (surface === 'page' || width === 360) await mapShot(surface === 'page' ? 'upstream-highlight' : 'rail-upstream-highlight', surface);
+        for (const rid of ['B', 'C']) {
+          await command(surface, { type: 'select', id: 'D' }); await frames2(); await click(surface, `[data-testid="map-relation-${rid}"]`); await frames2();
+          a = await active(surface);
+          check(`interaction:${tag}:inspector-relation-${rid}`, (await state(surface)).selected === rid && a.task === rid, undefined, a);
+        }
+        await command(surface, { type: 'select', id: 'C' }); await command(surface, { type: 'fit' }); await frames2(); await click(surface, '[data-testid="map-card-A"]'); await frames2(); m = await marks();
+        check(`interaction:${tag}:downstream-highlight`, ['B', 'C', 'D', 'E', 'F'].every(id => m[id] === 'downstream') && m.A === 'selected' && !Object.values(m).includes('upstream'), undefined, m);
+        if (surface === 'page') await mapShot('downstream-highlight', surface);
+        // Filters through real input: the pressed pair, the group select by keyboard, then the no-match clear.
+        await click(surface, '[data-testid="map-status-unfinished"]'); await frames2();
+        const ids = () => guest<string[]>(surface, `return [...d.querySelectorAll('[data-task]')].map(n=>n.dataset.task)`);
+        check(`interaction:${tag}:unfinished-pressed-filter`, (await state(surface)).status === 'unfinished' && !(await ids()).some(id => ['A', 'S'].includes(id)) && await guest(surface, `return d.querySelector('[data-testid="map-status-unfinished"] button').getAttribute('aria-pressed')==='true'`));
+        await focusOn(surface, '[data-testid="map-group"]'); await key('ArrowDown', 2); await frames2();
+        check(`interaction:${tag}:no-match-one-named-target`, (await state(surface)).group === 'G' && (await ids()).length === 0 && await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return v.tabIndex<0&&v.querySelectorAll('button').length===1&&/Show all tasks/.test(v.querySelector('button').textContent)`));
+        await click(surface, '[data-testid="map-clear-filters"]'); await frames2();
+        check(`interaction:${tag}:no-match-clear`, (await state(surface)).status === 'all' && (await state(surface)).group === null && (await ids()).length === 9 && (await said(surface)).some(s => /^9 tasks shown/.test(s)));
+        // Two ordinary polls without user action speak nothing.
+        const quiet = (await said(surface)).length; await polls(surface, 2);
+        check(`interaction:${tag}:polls-silent`, (await said(surface)).length === quiet);
+        // Review regression: passive focus restoration after a poll repaint must not undo the reader's
+        // pan; genuine keyboard entry still pans the roving card into view.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); a = await active(surface);
+        const rover = a.task as string;
+        p = (await background(surface))!;
+        await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 3000, deltaY: 0 }); await frames2();
+        const away = (await state(surface)).transform;
+        check(`interaction:${tag}:wheel-away-keeps-focus`, !!rover && (await active(surface)).task === rover && !(await inView(surface, rover)));
+        await polls(surface, 2); await frames2();
+        check(`interaction:${tag}:passive-restore-keeps-pan`, JSON.stringify((await state(surface)).transform) === JSON.stringify(away) && (await active(surface)).task === rover && !(await inView(surface, rover)), undefined, { away, after: (await state(surface)).transform });
+        await key('Tab', 1, 8); await key('Tab'); await frames2();
+        check(`interaction:${tag}:keyboard-reentry-reveals`, (await active(surface)).task === rover && await inView(surface, rover));
+        check(`interaction:${tag}:no-animated-transitions`, await guest(surface, `return [...d.querySelectorAll('[data-testid="map-region"] *')].every(n=>getComputedStyle(n).transitionDuration.split(',').every(v=>parseFloat(v)===0))&&d.getAnimations().length===0`));
+      };
+      await realInput('page', 1100);
+      // Review regressions: a focus action ends with its turn, consumed or not.
+      await focusOn('page', '[data-testid="map-card-D"]'); await key('ArrowLeft'); await frames2(); await key('Tab'); const moved = await active('page');
+      await polls('page', 2); await frames2();
+      check('interaction:focus-action-ends-after-user-moves', !moved.inCanvas && JSON.stringify(await active('page')) === JSON.stringify(moved), undefined, { moved, now: await active('page') });
+      await focusOn('page', '[data-testid="map-zoom-in"]'); await command('page', { type: 'filters', status: 'unfinished' }); await frames2();
+      await guest('page', `w.mapPreview.repaint();w.mapPreview.viewCommand({type:'focus',id:'A',generation:w.mapPreview.state.generation});return true`); await frames2();
+      await command('page', { type: 'filters', status: 'all' }); await frames2(); await polls('page', 1); await frames2();
+      check('interaction:focus-action-with-missing-target-expires', (await active('page')).testid === 'map-zoom-in' && await guest('page', `return !!d.querySelector('[data-testid="map-card-A"]')`), undefined, await active('page'));
+      // Review regressions: a deferred repeat announcement never overwrites a newer message, and
+      // never survives leaving Map (the live region outlives the repainted root).
+      const tools = (...ids: string[]) => guest('page', `for(const id of ${JSON.stringify(ids)})(d.querySelector('[data-testid="'+id+'"] button')??d.querySelector('[data-testid="'+id+'"]')).click();return true`);
+      const announcerText = () => guest<string>('page', `return d.querySelector('[data-testid="map-announcer"]').textContent`);
+      await tools('map-pan-left', 'map-pan-left', 'map-pan-up'); await frames2(); await frames2();
+      check('interaction:repeat-announcement-yields-to-newer', await announcerText() === 'View moved up.', undefined, await announcerText());
+      await tools('map-pan-left', 'map-pan-left', 'plan-view-list'); await wait('page', `d.querySelector('[data-testid="item-B"]')`, 'list after leaving map'); await frames2(); await frames2();
+      check('interaction:repeat-announcement-retired-with-map', await announcerText() === '' && await guest('page', `return d.querySelectorAll('[data-testid="map-announcer"]').length===1`), undefined, await announcerText());
+      await click('page', '[data-testid="plan-view-map"]'); await ready('page');
+      await theme('dark'); await focusOn('page', '[data-testid="map-card-A"]'); await key('ArrowRight'); await frames2();
+      await shot('keyboard-focus-dark', '[data-testid="map-viewport"]', 40, 900, 'page'); await theme('light');
+      await focusOn('page', '[data-testid="map-card-A"]'); await key('ArrowRight'); await frames2(); await shot('keyboard-focus', '[data-testid="map-viewport"]', 40, 900, 'page');
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await command('page', { type: 'select', id: 'D' }); await frames2(); await focusOn('page', '[data-testid="map-card-D"]'); await key('ArrowLeft'); await key('ArrowRight'); await frames2();
+      check('interaction:forced-colors-system-marks', await guest('page', `const p=d.querySelector('path[data-path]'),c=d.querySelector('[data-related="upstream"]');return w.matchMedia('(forced-colors: active)').matches&&!!p&&getComputedStyle(p).strokeWidth==='3px'&&getComputedStyle(c).borderTopStyle==='solid'&&!!d.querySelector('.ap-map-card-rel')`));
+      await mapShot('forced-colors', 'page');
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+      for (const width of [360, 600] as const) await realInput('panel', width);
+      // Rail List → Map handoff through the real canonical list, with focus still on the switch.
+      await show(['panel'], 360); await ready('panel');
+      await click('panel', '[data-testid="plan-view-list"]'); await wait('panel', `d.querySelector('[data-testid="item-E"]')`, 'canonical list');
+      await click('panel', '[data-testid="item-E"]'); const handoffMark = (await said('panel')).length;
+      await click('panel', '[data-testid="plan-view-map"]'); await ready('panel'); await wait('panel', `d.activeElement?.dataset?.task==='E'`, 'handoff focus on the list target');
+      const handoffSaid = (await said('panel')).slice(handoffMark);
+      check('interaction:rail-handoff-focus-and-one-announcement', (await state('panel')).selected === 'E' && await inView('panel', 'E') && handoffSaid.length === 1 && /Sole remaining prerequisite/.test(handoffSaid[0]), undefined, handoffSaid);
+      check('interaction:rail-switch-pressed-group', await guest('panel', `const g=d.querySelector('[data-testid="plan-view"]');return g.getAttribute('role')==='group'&&/Plan view/.test(d.getElementById(g.getAttribute('aria-labelledby')).textContent)&&g.querySelector('[data-testid="plan-view-map"] button').getAttribute('aria-pressed')==='true'&&g.querySelector('[data-testid="plan-view-list"] button').getAttribute('aria-pressed')==='false'`));
+      await shot('rail-list-handoff', '[data-testid="progress-root"]', 12, 1100, 'panel');
+      await shot('rail-keyboard-focus', '[data-testid="map-viewport"]', 40, 900, 'panel');
+      // Resize 360 → 600 → 360 keeps the selected card visible, the zoom and full coverage.
+      const z = (await state('panel')).transform.zoom, cardsBefore = await guest<number>('panel', `return d.querySelectorAll('[data-task]').length`);
+      await show(['panel'], 600); await settled('panel');
+      check('interaction:rail-resize-600-keeps-selection-visible', (await state('panel')).selected === 'E' && await inView('panel', 'E') && (await state('panel')).transform.zoom === z && await guest<number>('panel', `return d.querySelectorAll('[data-task]').length`) === cardsBefore);
+      await shot('rail-resize', '[data-testid="progress-root"]', 12, 1100, 'panel');
+      await show(['panel'], 360); await settled('panel');
+      check('interaction:rail-resize-360-keeps-selection-visible', (await state('panel')).selected === 'E' && await inView('panel', 'E') && (await state('panel')).transform.zoom === z && await guest('panel', `return d.documentElement.scrollWidth<=w.innerWidth+1`));
+      // Two frames: a page poll neither steals the rail's focus nor speaks for it.
+      await show(['page', 'panel'], 600); await ready('page'); await ready('panel');
+      await focusOn('panel', '[data-testid="map-card-E"]'); await key('ArrowLeft'); await frames2();
+      const pageSaid = (await said('page')).length, railSaid = (await said('panel')).length, railFocus = (await active('panel')).task;
+      await polls('page', 2);
+      check('interaction:other-frame-poll-no-focus-theft-or-speech', await evaluate(`document.activeElement===frame('panel')`) && (await active('panel')).task === railFocus && (await said('page')).length === pageSaid && (await said('panel')).length === railSaid);
+      // A structural update keeps the selected card in view (both frames show the same plan).
+      await show(['page'], 1100); await ready('page'); await command('page', { type: 'select', id: 'D' }); await frames2();
+      const oldRevision = await guest<string>('page', `return d.querySelector('${region}').dataset.revision`);
+      fx.reportMap('P-map', { op: 'revise', items: [...mapItems, { id: 'J', title: 'Newly recorded follow-up', kind: 'task', dependencies: ['D'] }] });
+      await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision!==${JSON.stringify(oldRevision)}&&d.querySelector('[data-testid="map-card-J"]')`, 'structural revision');
+      await frames2();
+      check('interaction:structural-update-keeps-selection-in-view', (await state('page')).selected === 'D' && await inView('page', 'D'));
+      await mapShot('structural-anchor', 'page');
+      // Review regression: frame ownership alone does not mean the initial, unselected roving
+      // card held focus. A surviving toolbar/switch control must keep focus across its removal.
+      for (const target of ['toolbar', 'switch', 'canvas'] as const) {
+        fx.reportMap('P-map-none', { op: 'revise', items: [{ id: 'A', title: 'First task', kind: 'task' }, { id: 'B', title: 'Second task', kind: 'task' }] });
+        const sequence = await evaluate<number>(`qa.reload('page')`);
+        await wait('page', `qa.loaded.page===${sequence}&&d.querySelector('${region}')?.dataset.state==='ready'`, 'reloaded map before removal regression');
+        await guest('page', `const picker=d.querySelector('[data-testid="map-plan"]');picker.value='P-map-none';picker.dispatchEvent(new w.Event('change',{bubbles:true}));return true`);
+        await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-card-A"]')&&d.querySelector('[data-testid="map-card-B"]')&&w.mapPreview.state.selected===null`, 'fresh unselected edgeless map');
+        if (target === 'canvas') { await focusOn('page', '[data-testid="map-pan-right"]'); await key('Tab'); }
+        else await click('page', target === 'toolbar' ? '[data-testid="map-zoom-in"]' : '[data-testid="plan-view-map"] button');
+        await frames2();
+        const focusBefore = await active('page'), noticeMark = (await said('page')).length;
+        check(`interaction:removed-roving-${target}:unselected-setup`, (await state('page')).selected === null && (await state('page')).roving === 'A' && (target === 'canvas' ? focusBefore.task === 'A' : focusBefore.testid === (target === 'toolbar' ? 'map-zoom-in' : 'plan-view-map')));
+        fx.reportMap('P-map-none', { op: 'revise', items: [{ id: 'B', title: 'Second task', kind: 'task' }] });
+        await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&!d.querySelector('[data-testid="map-card-A"]')&&w.mapPreview.state.roving==='B'`, 'removed initial roving card');
+        await frames2(); await polls('page', 1); await frames2();
+        const focusAfter = await active('page'), notices = (await said('page')).slice(noticeMark);
+        check(`interaction:removed-roving-${target}:focus-and-notice`, (await state('page')).selected === null && (target === 'canvas' ? focusAfter.task === 'B' && notices.length === 1 && /focused task is no longer recorded/.test(notices[0]) : focusAfter.testid === focusBefore.testid && notices.length === 0), undefined, { focusBefore, focusAfter, notices });
+      }
+      facts.inputCoverage = 'real CDP keyboard, pointer, wheel and click input on Designer bindings, plus controller probes for setup';
+      facts.pendingDesigner = [];
+      replies = await evaluate('qa.replies');
+      check('interaction:no-proxy-errors', JSON.stringify(await evaluate('qa.errors')) === '[]');
+      check('interaction:no-guest-errors', pageErrors().length === 0);
+      throw new OnlyDone();
+    }
+    const variants: Record<string, unknown> = {}; perf.variants = variants;
+    for (const [index, [surface, width]] of ([['page', 1100], ['panel', 360], ['panel', 600]] as const).entries()) {
+      if (index) {
+        await fx.stop(); fx = await startSearchShell(built, false, 'dependency-map-large'); origin = `http://127.0.0.1:${fx.port}`;
+        await c.send('Page.navigate', { url: `${origin}/` });
+      }
+      const name = `${surface}-${width}`, destination = join(artifacts, name); mkdirSync(destination, { recursive: true });
+      await show([surface], width); await evaluate(`qa.visibility('${surface === 'page' ? 'panel' : 'page'}',false);document.querySelector('iframe[data-frame="${surface}"]').style.height='850px';true`);
+      await ready(surface);
+      const sampleLoads: number[] = [], streams: unknown[] = [];
+      for (let sample = 0; sample < 4; sample++) {
+        const start = await now(), mark = await evaluate<number>('qa.replies.length'); await evaluate(`qa.reload('${surface}')`); await ready(surface); await frames2();
+        const elapsed = await now() - start, reads = await evaluate<any[]>(`qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}')`);
+        if (sample) { sampleLoads.push(elapsed); streams.push({ requests: reads.length, bytes: reads.reduce((n,r)=>n+r.bytes,0), detail: reads.filter(r=>r.path==='/v1/plan').length, graph: reads.filter(r=>r.path==='/v1/plan-graph').length }); }
+      }
+      const load = stats(sampleLoads), actions: Record<string, unknown> = {}, replayResults: unknown[] = [];
+      const budget = (id: string, observation: ReturnType<typeof stats>, limit: number) => { gates.push({ id: `${name}:${id}`, pass: observation.median <= limit, observed: observation, limit: `median ≤${limit} ms` }); };
+      budget('load', load, 2000);
+      async function action(label: string, setup: object, event: object) {
+        const times: number[] = [];
+        for (let sample = 0; sample < 4; sample++) { await command(surface, setup); await frames2(); const start = await now(); await command(surface, event); await frames2(); if (sample) times.push(await now() - start); }
+        const observation = stats(times); actions[label] = observation; budget(label, observation, 500);
+      }
+      await action('select-inspect', { type: 'select', id: 'T-00-00' }, { type: 'select', id: 'T-01-00' });
+      await action('unfinished', { type: 'filters', status: 'all' }, { type: 'filters', status: 'unfinished' });
+      await action('show-all', { type: 'filters', status: 'unfinished' }, { type: 'filters', status: 'all' });
+      await action('group-filter', { type: 'filters', group: null }, { type: 'filters', group: 'G-10' });
+      await action('group-reset', { type: 'filters', group: 'G-10' }, { type: 'filters', group: null });
+      await action('upstream', { type: 'select', id: 'T-01-00' }, { type: 'key', key: '[', canvas: true });
+      await action('downstream', { type: 'select', id: 'T-00-00' }, { type: 'key', key: ']', canvas: true });
+      await action('fit-all', { type: 'current' }, { type: 'fit' });
+      await action('neighbour', { type: 'select', id: 'T-00-00' }, { type: 'key', key: 'ArrowRight', canvas: true });
+      await action('pan', { type: 'fit' }, { type: 'pan', x: -30, y: 20 });
+      await action('zoom', { type: 'fit' }, { type: 'zoom', factor: 1.2 });
+      // Real CDP input through the shared view's bindings: a scoped arrow key on the focused card and a
+      // keyboard-activated toolbar Fit all, each timed to its settled frame.
+      async function realAction(label: string, setup: () => Promise<unknown>, input: () => Promise<unknown>, settled: string) {
+        const times: number[] = [];
+        for (let sample = 0; sample < 4; sample++) { await setup(); await frames2(); const start = await now(); await input(); await wait(surface, settled, label); await frames2(); if (sample) times.push(await now() - start); }
+        const observation = stats(times); actions[label] = { ...observation, input: 'real CDP keyboard' }; budget(label, observation, 500);
+      }
+      await realAction('real-key-neighbour', async () => { await command(surface, { type: 'select', id: 'T-00-00' }); await frames2(); await guest(surface, `d.querySelector('[data-testid="map-card-T-00-00"]').focus();return true`); }, () => key('ArrowRight'), `d.activeElement?.dataset?.task&&d.activeElement.dataset.task!=='T-00-00'&&w.mapPreview.state.selected===d.activeElement.dataset.task`);
+      await realAction('real-toolbar-fit-all', async () => { await command(surface, { type: 'current' }); await guest(surface, `w.__fit=JSON.stringify(w.mapPreview.state.transform);d.querySelector('[data-testid="map-fit-all"]').focus();return true`); }, () => key('Enter'), `JSON.stringify(w.mapPreview.state.transform)!==w.__fit&&d.querySelector('[data-testid="map-world"]').style.getPropertyValue('--ap-map-zoom')===String(w.mapPreview.state.transform.zoom)`);
+      await command(surface, { type: 'current' }); await command(surface, { type: 'select', id: 'T-10-24' }); await frames2();
+      const dom = await guest(surface, `return {cards:d.querySelectorAll('[data-task]').length,svg:d.querySelectorAll('svg').length,edges:d.querySelectorAll('path[data-from]').length,nodes:d.querySelectorAll('*').length,viewport:{width:w.innerWidth,height:w.innerHeight}}`);
+      check(`map-large:${name}:full-plan`, dom.cards === 980 && dom.edges === 2000, undefined, dom);
+      await mapShot(`${name}/map-ready`, surface);
+      for (const step of fx.largePlan!.steps.slice(1)) {
+        const before = await coordinates(surface); const commit = performance.now(); fx.largePlan!.advance(step.id);
+        await ready(surface, step.revision); await frames2(); const elapsed = performance.now() - commit, after = await coordinates(surface);
+        const moved = Object.keys(after.world).filter(id => before.world[id] && JSON.stringify(before.world[id]) !== JSON.stringify(after.world[id]));
+        const screenMoved = Object.keys(after.screen).filter(id => before.screen[id] && JSON.stringify(before.screen[id]) !== JSON.stringify(after.screen[id]));
+        gates.push({ id: `${name}:${step.id}:visible`, pass: elapsed <= 8000, observed: elapsed, limit: '≤8000 ms per observation' });
+        if (step.id === 'S4') check(`map-large:${name}:S4:no-topology-relocation`, moved.length === 0 && JSON.stringify(before.transform) === JSON.stringify(after.transform));
+        if (['S1','S2','S3','S8'].includes(step.id)) check(`map-large:${name}:${step.id}:zero-movement`, moved.length === 0 && screenMoved.length === 0 && JSON.stringify(before.transform) === JSON.stringify(after.transform), undefined, { moved: moved.length, screenMoved: screenMoved.length, transformBefore: before.transform, transformAfter: after.transform, firstBefore: Object.values(before.screen)[0], firstAfter: Object.values(after.screen)[0], viewportBefore:before.viewport,viewportAfter:after.viewport,scrollBefore:before.scrollY,scrollAfter:after.scrollY });
+        if (step.id === 'S5') { check(`map-large:${name}:selected-card-fully-in-view`, await inView(surface, 'T-10-24')); await mapShot(`${name}/map-after-structural`, surface); await command(surface, { type: 'select', id: 'T-19-48' }); await frames2(); }
+        if (step.id === 'S6' || step.id === 'S7') check(`map-large:${name}:${step.id}:removed-state-retired`, (await state(surface)).selected !== 'T-19-48');
+        replayResults.push({ step: step.id, visibleMs: elapsed, moved: moved.length, screenMoved: screenMoved.length });
+      }
+      const mark = await evaluate<number>('qa.replies.length'), layouts = await guest<number>(surface, 'return w.mapPreview.cpu.layouts');
+      await wait(surface, `qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two completed unchanged polls');
+      const idle = await evaluate<any[]>(`qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}')`);
+      check(`map-large:${name}:unchanged-polls-no-graph-detail-layout`, !idle.some(r=>r.path==='/v1/plan'||r.path==='/v1/plan-graph') && await guest<number>(surface, 'return w.mapPreview.cpu.layouts') === layouts);
+      // A real paged read is held across visibility retirement, then released. A visible peer's
+      // two ordinary polls bound the observation without assuming/subtracting a poll interval.
+      const peer = surface === 'page' ? 'panel' : 'page';
+      await evaluate(`qa.holds.push({tag:'map-large-hidden',path:'/v1/plan',frame:'${surface}',cursor:true});qa.reload('${surface}');true`);
+      await wait(surface, `qa.held.some(h=>h.tag==='map-large-hidden')`, 'held large-map detail continuation');
+      await evaluate(`qa.visibility('${surface}',false);qa.visibility('${peer}',true);true`); await frames2();
+      const requestMark = await evaluate<number>('qa.requests.length'), pollMark = await evaluate<number>('qa.replies.length');
+      const renderMark = await guest<number>(surface, 'return w.mapPreview.cpu.render.length');
+      await evaluate(`qa.release('map-large-hidden');true`);
+      await wait(peer, `qa.replies.slice(${pollMark}).filter(r=>r.frame==='${peer}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'visible-peer polls after hidden release');
+      const hiddenRequests = await evaluate<any[]>(`qa.requests.slice(${requestMark}).filter(r=>r.frame==='${surface}')`);
+      const hiddenRenders = await guest<number>(surface, 'return w.mapPreview.cpu.render.length') - renderMark;
+      check(`map-large:${name}:hidden-read-neither-continues-nor-paints`, hiddenRequests.length === 0 && hiddenRenders === 0, undefined, { requests: hiddenRequests.length, renders: hiddenRenders });
+      await evaluate(`qa.visibility('${surface}',true);qa.visibility('${peer}',false);true`); await ready(surface, 9); await frames2();
+      await theme('dark'); await mapShot(`${name}/map-dark-narrow`, surface);
+      const cpu = await guest(surface, 'return w.mapPreview.cpu'), requests = await evaluate('qa.replies');
+      const summary = { preview: true, input: 'controller-dispatched timed actions through the bound shared view, plus real CDP keyboard actions (real-key-neighbour, real-toolbar-fit-all); pointer/keyboard reachability is proven by dependency-map-interaction', fixture: LARGE_PLAN_VERSION, seed: LARGE_PLAN_SEED, surface, width, frameHeight: 850, browser: browserVersion, runtime: process.version, service: built ? 'built' : 'typescript', serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), commit: facts.commit, previewHash: fx.previewHash, load, streams, actions, dom, cpu: { ...cpu, label: 'layout and shared view render CPU; not compositor time' }, hidden: { requests: hiddenRequests.length, renders: hiddenRenders, completedPeerPolls: 2 }, replay: replayResults, budgets: gates.filter(g=>g.id.startsWith(name)) };
+      variants[name] = summary;
+      writeFileSync(join(destination, 'performance.json'), JSON.stringify(summary, null, 2)+'\n');
+      writeFileSync(join(destination, 'requests.json'), JSON.stringify(requests, null, 2)+'\n');
+      writeFileSync(join(destination, 'results.json'), JSON.stringify({ checks: results.filter(r=>r.id.includes(name)), preview: true }, null, 2)+'\n');
+      replies.push(...requests);
+      check(`map-large:${name}:no-proxy-errors`, JSON.stringify(await evaluate('qa.errors')) === '[]');
+      check(`map-large:${name}:no-guest-errors`, pageErrors().length === 0);
+    }
+    for (const g of gates) check(`map-large:budget:${g.id}`, g.pass, [g.limit], g.observed);
+    throw new OnlyDone();
+  }
+
   if (onlyMapRender) {
     Object.assign(facts, { mode: 'dependency-map-render', preview: true, fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash, serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), visualSignoff: 'evidence/dependency-map/render/design-signoff.md' });
     const region = '[data-testid="map-region"]';
     const ready = (f = 'page') => wait(f, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-world"]')`);
     const select = async (f: string, id: string, value: string) => { await guest(f, `const n=d.querySelector('[data-testid="${id}"]');n.value=${JSON.stringify(value)};n.dispatchEvent(new Event('change',{bubbles:true}));return true`); await frames2(); };
     const plan = async (id: string, f = 'page') => { await select(f, 'map-plan', id); await ready(f); };
+    // Show all / Unfinished is the list's pressed-button pair (map-status-{all,unfinished}).
+    const showTasks = async (f: string, value: 'all' | 'unfinished') => { await guest(f, `d.querySelector('[data-testid="map-status-${value}"] button').click();return true`); await frames2(); };
     const snapshot = (f: string) => guest<any>(f, `const n=d.querySelector('${region}');return {tasks:n.dataset.tasks,edges:n.dataset.edges,cards:[...n.querySelectorAll('[data-task]')].map(n=>({id:n.dataset.task,x:n.dataset.x,y:n.dataset.y,status:n.dataset.status,readiness:n.dataset.readiness,unlocks:n.dataset.unlocks})),pairs:[...n.querySelectorAll('path[data-from]')].map(n=>[n.dataset.from,n.dataset.to]),arrows:[...n.querySelectorAll('path[data-from]')].every(n=>!!n.getAttribute('marker-end'))}`);
     await show(['page'], 1100); await ready();
     const initial = await snapshot('page');
@@ -226,8 +568,8 @@ try {
     await shot('active-overview');
     await click('page', '[data-testid="map-card-B"]'); await wait('page', `d.querySelector('[data-testid="map-inspector"]')?.textContent.includes('Build a deliberately')`); await shot('selected-inspector');
     const unchanged = (after: any) => after.cards.every((i: any) => initial.cards.some((a: any) => a.id === i.id && a.x === i.x && a.y === i.y));
-    await select('page', 'map-status', 'unfinished'); check('render:unfinished-stable', unchanged(await snapshot('page')) && !(await snapshot('page')).cards.some((i: any) => ['A','S'].includes(i.id)));
-    await select('page', 'map-status', 'all'); await select('page', 'map-group', 'G'); check('render:group-subtree-stable', unchanged(await snapshot('page')) && (await snapshot('page')).cards.map((i: any) => i.id).join() === 'A');
+    await showTasks('page', 'unfinished'); check('render:unfinished-stable', unchanged(await snapshot('page')) && !(await snapshot('page')).cards.some((i: any) => ['A','S'].includes(i.id)));
+    await showTasks('page', 'all'); await select('page', 'map-group', 'G'); check('render:group-subtree-stable', unchanged(await snapshot('page')) && (await snapshot('page')).cards.map((i: any) => i.id).join() === 'A');
     check('render:filtered-counts-remain-full-plan', countsMatch(await fullCounts()));
     await select('page', 'map-group', '*');
     // A real newer report, with its graph reply held: retain the accepted picture, never reload it away.
@@ -2204,7 +2546,7 @@ try {
   const serviceMs = windowSummary.filter((w) => w.status === 200).map((w) => w.ms);
   const detailGraph = replies.filter(r => r.path === '/v1/plan' || r.path === '/v1/plan-graph').map(({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }) => ({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }));
   writeFileSync(join(artifacts, 'requests.json'), `${JSON.stringify({ ...environment, passed: gates.every((g) => g.pass) && !failure, gates, actions, detailGraph, searchWindows: { count: windowSummary.length, serviceRoundTripMs: serviceMs.length ? stats(serviceMs) : null, windows: windowSummary }, freshnessReads: { count: stateSummary.length, reads: stateSummary } }, null, 2)}\n`);
-  if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and any local smoke budgets are in requests.json.' }, null, 2)}\n`);
+   if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyMapLarge ? 'dependency-map-large' : onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and local smoke budgets are in requests.json. Map preview timings run through the bound shared view; most actions are controller-dispatched, two use real CDP keyboard input.' }, null, 2)}\n`);
   console.log(JSON.stringify({ passed, assertions: results.length, races: races.length, gates: gates.length, failure, screenshots: shots }, null, 2));
   if (!passed) process.exitCode = 1;
   rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

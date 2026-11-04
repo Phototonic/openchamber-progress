@@ -2,7 +2,8 @@
 // stylesheet so production guests (and Work Status) ship no map code until the map is exposed.
 // Colours come only from host tokens; the shared stylesheet's reduced-motion rule still applies.
 export const MAP_CSS = `
-/* Dependency map (read-only; one renderer for board and rail). Static: no transitions or animation.
+/* Dependency map (one renderer for board and rail). Static: no transitions or animation, so
+   reduced motion has nothing to remove; viewport changes and anchoring apply instantly.
    Status is always words + a distinct mark shape; colour only reinforces it. Card slots come inline
    from the full-plan layout, so filters hide cards in place and status never changes card size. */
 .ap-map{container:ap-map/inline-size;display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -39,11 +40,40 @@ export const MAP_CSS = `
 .ap-map-select:hover{border-color:color-mix(in srgb,var(--oc-fg) 35%,var(--oc-bg))}
 .ap-map-select:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-hidden{flex:1 1 14rem;min-width:0;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
+/* Pressed-button pairs: map Show all / Unfinished (the list's look) and the rail's Plan view switch */
+.ap-map-pair{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.ap-map-pair [aria-pressed="true"]{font-weight:600}
+.ap-map-switch{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0;font-size:12px}
+.ap-map-switch-label{color:var(--oc-muted)}
+.ap-map-switch .oc-sdk-btn:focus-visible,.ap-map-pair .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-body{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;min-width:0}
 @container ap-map (min-width:760px){.ap-map[data-frame="board"] .ap-map-body{grid-template-columns:minmax(0,1fr) minmax(250px,300px)}}
+.ap-map-stage{display:flex;flex-direction:column;min-width:0}
 .ap-map-viewport{position:relative;min-width:0;min-height:180px;max-height:clamp(300px,64vh,600px);overflow:auto;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background-color:color-mix(in srgb,var(--oc-fg) 2.5%,var(--oc-bg));background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--oc-fg) 14%,transparent) 1px,transparent 1.5px);background-size:20px 20px;background-attachment:local}
 .ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
 .ap-map-world{position:relative}
+/* Interactive canvas: a fixed-height clipped viewport; the world is transformed, never scrolled */
+.ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;overscroll-behavior:contain}
+.ap-map[data-frame="rail"] .ap-map-viewport[data-interactive]{height:clamp(240px,54vh,460px)}
+.ap-map-viewport[data-dragging]{cursor:grabbing}
+.ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}
+.ap-map-viewport[data-interactive]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-3px}
+.ap-map-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0;padding:6px 8px;border:1px solid var(--oc-border);border-bottom:0;border-radius:var(--oc-radius,10px) var(--oc-radius,10px) 0 0;background:var(--oc-muted-surface)}
+.ap-map-tool-set{display:flex;align-items:center;gap:3px;min-width:0}
+.ap-map-pan{margin-left:auto}
+.ap-map-tool{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:28px;height:28px;padding:0 6px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12px;line-height:1;white-space:nowrap;cursor:pointer}
+.ap-map-tool[data-text]{padding:0 9px 0 7px}
+.ap-map-tool:hover{background:var(--oc-hover,color-mix(in srgb,var(--oc-fg) 6%,var(--oc-bg)))}
+.ap-map-tool:active{background:color-mix(in srgb,var(--oc-fg) 10%,var(--oc-bg))}
+.ap-map-tool:focus{outline:none}
+.ap-map-tool:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-map-icon{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ap-map-zoom{min-width:3.6em;text-align:center;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
+.ap-map-help{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
+.ap-map-help strong{color:var(--oc-fg);font-weight:600}
+.ap-map-keys{line-height:1.9}
+.ap-map-keys .ap-map-nowrap{white-space:nowrap}
+.ap-map-help kbd{display:inline-block;min-width:1.6em;padding:0 5px;border:1px solid var(--oc-border);border-bottom-width:2px;border-radius:4px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:11px;line-height:1.5;text-align:center}
 .ap-map-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .ap-map-edge{fill:none;stroke:color-mix(in srgb,var(--oc-fg) 62%,var(--oc-bg));stroke-width:1.5;stroke-linecap:round}
 .ap-map-edge[data-tone="quiet"]{stroke:color-mix(in srgb,var(--oc-fg) 38%,var(--oc-bg))}
@@ -64,6 +94,24 @@ export const MAP_CSS = `
 .ap-map-card[data-mark="skipped"]{border-style:dashed}
 .ap-map-card:is([data-mark="done"],[data-mark="skipped"]) .ap-map-card-title{color:var(--oc-muted)}
 .ap-map-card[aria-current="true"]{border-color:var(--oc-primary);background:color-mix(in srgb,var(--oc-primary) 7%,var(--oc-bg));box-shadow:0 0 0 1.5px var(--oc-primary),0 6px 16px color-mix(in srgb,var(--oc-fg) 14%,transparent)}
+/* Zoom-safe rings: inside the transformed world, one screen pixel is 1px / zoom (capped). */
+.ap-map-viewport[data-interactive] .ap-map-world{--ap-map-px:max(1px,min(calc(1px / var(--ap-map-zoom,1)),14px))}
+.ap-map-viewport[data-interactive] .ap-map-card:focus-visible{outline-width:calc(2 * var(--ap-map-px));outline-offset:calc(2 * var(--ap-map-px))}
+.ap-map-viewport[data-interactive] .ap-map-card[aria-current="true"]{box-shadow:0 0 0 calc(1.5 * var(--ap-map-px)) var(--oc-primary),0 6px 16px color-mix(in srgb,var(--oc-fg) 14%,transparent)}
+/* Selection chain: upstream = solid outline + "Upstream" tag; downstream = double outline + tag.
+   Unrelated cards and arrows recede. Shapes and words, not colour, carry the distinction. */
+.ap-map[data-highlight] .ap-map-card:not([aria-current="true"]):not([data-related]){opacity:.55}
+.ap-map[data-highlight] .ap-map-edge:not([data-path]){opacity:.3}
+.ap-map-card[data-related]{opacity:1}
+.ap-map-card[data-related="upstream"]{border:2px solid var(--oc-primary)}
+.ap-map-card[data-related="downstream"]{border:3px double var(--oc-primary)}
+.ap-map-viewport[data-interactive] .ap-map-card[data-related="upstream"]{border-width:calc(2 * var(--ap-map-px))}
+.ap-map-viewport[data-interactive] .ap-map-card[data-related="downstream"]{border-width:calc(3 * var(--ap-map-px))}
+.ap-map-card-rel{position:absolute;z-index:1;transform:translateX(-100%);padding:0 6px;border:1px solid currentColor;border-radius:4px;background:var(--oc-bg);font-size:10px;font-weight:600;letter-spacing:.02em;line-height:14px;white-space:nowrap;pointer-events:none;color:var(--oc-primary-text,var(--oc-primary))}
+.ap-map-card-rel[data-related="downstream"]{border-style:double;border-width:3px;line-height:10px}
+.ap-map-edge[data-path]{stroke:var(--oc-primary);stroke-width:2.25;opacity:1}
+.ap-map-marker-path .ap-map-arrowhead{fill:var(--oc-primary)}
+.ap-map-chain{font-size:11.5px}
 .ap-map-card-status{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;font-weight:600;line-height:16px}
 .ap-map-card-word{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--oc-muted)}
 :is(.ap-map-card,.ap-map-card-status)[data-mark="working"] .ap-map-card-word{color:var(--oc-info-text,var(--oc-info))}
@@ -125,7 +173,14 @@ export const MAP_CSS = `
 .ap-map-card::before{forced-color-adjust:none;background:transparent}
 .ap-map-card:is([data-mark="working"],[data-mark="ready"],[data-mark="blocked"])::before{background:CanvasText}
 .ap-map-card[data-mark][aria-current="true"]{border:3px solid Highlight;background:Canvas;box-shadow:none}
-.ap-map-card:focus-visible,.ap-map-rel-item:focus-visible,.ap-map-select:focus-visible{outline:2px solid CanvasText;outline-offset:2px}
+.ap-map-viewport[data-interactive] .ap-map-card[data-mark][aria-current="true"]{border-width:calc(3 * var(--ap-map-px))}
+.ap-map-card:focus-visible,.ap-map-rel-item:focus-visible,.ap-map-select:focus-visible,.ap-map-tool:focus-visible,.ap-map-viewport[data-interactive]:focus-visible{outline:2px solid CanvasText;outline-offset:2px}
+.ap-map-viewport[data-interactive] .ap-map-card:focus-visible{outline:calc(3 * var(--ap-map-px)) solid CanvasText;outline-offset:calc(2 * var(--ap-map-px))}
+.ap-map-card[data-related]{border-color:CanvasText}
+.ap-map-card-rel{color:CanvasText;border-color:CanvasText}
+.ap-map-toolbar{border-color:CanvasText}
+.ap-map .ap-map-edge[data-path]{stroke:Highlight;stroke-width:3}
+.ap-map .ap-map-marker-path .ap-map-arrowhead{fill:Highlight}
 .ap-map-edge,.ap-map-edge[data-tone="quiet"]{stroke:CanvasText}
 .ap-map-arrowhead,.ap-map-marker-open .ap-map-arrowhead,.ap-map-marker-quiet .ap-map-arrowhead{fill:CanvasText}
 .ap-map-stat,.ap-map-tag,.ap-map-card-unlocks{border:1px solid CanvasText}

@@ -32,7 +32,7 @@ export interface MapSnapshot {
   readonly current: boolean;
 }
 const cleanup = (p: PlanView) => [p.cleanup?.state ?? 'visible', p.cleanup?.revision ?? 0];
-const readingKey = (c: MapClaim) => JSON.stringify([c.account, c.read.storeId, c.read.binding.sourceId, c.read.binding.verified, c.scope, c.plan.sourceId, c.plan.id, ...cleanup(c.plan)]);
+export const mapReadingKey = (c: MapClaim) => JSON.stringify([c.account, c.read.storeId, c.read.binding.sourceId, c.read.binding.verified, c.scope, c.plan.sourceId, c.plan.id, ...cleanup(c.plan)]);
 const deps = (xs: readonly string[] | undefined) => [...new Set(xs ?? [])].sort();
 const fields = (items: CompleteDetailResult['detail']['items'] | PlanGraphRead['items']) => items.map(i => [i.id, i.kind, i.status, i.parentId ?? null, deps(i.dependencies)]);
 const invalid = (): ReadFailure => ({ kind: 'invalid', code: 'MAP_PAIR', message: 'Graph and complete detail do not describe the same reading.' });
@@ -83,7 +83,7 @@ export class DependencyMap {
   reconcile(c: MapClaim | null): MapSnapshot {
     if (this.disposed) return this.snapshot;
     if (!c) { this.reset(); return this.snapshot; }
-    const key = readingKey(c);
+    const key = mapReadingKey(c);
     if (key !== this.key) { this.reset(); this.key = key; }
     if (!c.active || !c.visible) { this.pause(); return this.snapshot; }
     const old = this.snapshot.picture;
