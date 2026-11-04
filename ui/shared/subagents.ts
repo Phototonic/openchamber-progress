@@ -170,6 +170,33 @@ const featuredKind = (e: SubagentEntry) => liveKind(e) !== null || (e.ran.kind =
 const rank = (e: SubagentEntry) => (liveKind(e) === 'waiting' ? 0 : featuredKind(e) ? 1 : 2);
 const when = (e: SubagentEntry) => e.ran.time?.at ?? 0;
 
+/** Loaded winners only. Missing, conflicting or unloaded global marks prove no latest child. */
+export function latestChildRuns(runRows: readonly RunRow[]): Map<string, RunRow> {
+  const evidence = (r: RunRow): number[] => r.dispatch ? [1, r.ran.startedAt ?? r.dispatch.at, r.dispatch.at, r.ran.sequence ?? -1] : [0, r.ran.endedAt ?? r.ran.updatedAt, 0, -1];
+  const newer = (a: RunRow, b: RunRow) => { const x = evidence(a), y = evidence(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+  const byChild = new Map<string, RunRow[]>();
+  for (const r of runRows) if (r.childSessionId) byChild.set(r.childSessionId, [...(byChild.get(r.childSessionId) ?? []), r]);
+  const latest = new Map<string, RunRow>();
+  for (const [child, rows] of byChild) {
+    if (rows.some(r => typeof r.latestForChild !== 'boolean')) continue;
+    const marked = rows.filter(r => r.latestForChild);
+    if (marked.length !== 1 || rows.some(r => r !== marked[0] && newer(r, marked[0]) > 0)) continue;
+    latest.set(child, marked[0]);
+  }
+  return latest;
+}
+
+/** Same execution/coverage qualification for roster words and map proof; no receipt-age heuristic. */
+export function runActivity(r: RunRow, h: ObservedRow | null, baselines: ExecutionBaselines | null, seq: number) {
+  const ended = r.ran.state === 'succeeded' || r.ran.state === 'failed' || r.ran.state === 'interrupted';
+  const execution = `${r.id}|${ended ? 'end' : 'start'}|${(ended ? r.ran.endedAt : r.ran.startedAt) ?? 'none'}|${r.ran.eventId ?? 'none'}`;
+  const after = (mark: number | undefined) => !!baselines && baselines.baseline(execution, seq) < (mark ?? -1);
+  const ran = ranOf(r, h, { idleAfterStart: r.ran.state === 'running' && after(h?.idleSeq) });
+  const resumed = ended && after(h?.activeSeq), o = h ? observe(h) : null;
+  const now = resumed && o && (o.kind === 'active' || o.kind === 'waiting') ? { kind: o.kind, label: o.label } : null;
+  return { ran, now };
+}
+
 /** The roster of one root with a plan in scope, or null: nothing to show on this surface. */
 export function rosterFor(v: RosterInput): Roster | null {
   if (!v.plan || !v.verified) return null;
@@ -194,18 +221,9 @@ export function rosterFor(v: RosterInput): Roster | null {
   // between dispatches the proven start (else the dispatch time), then the dispatch time, then the
   // native sequence. When the marked row is not loaded, the mark is missing (older service) or the
   // marks disagree, no loaded row of that child gets any per-child refinement: none is guessed.
-  const evidence = (r: RunRow): number[] => r.dispatch ? [1, r.ran.startedAt ?? r.dispatch.at, r.dispatch.at, r.ran.sequence ?? -1] : [0, r.ran.endedAt ?? r.ran.updatedAt, 0, -1];
-  const newer = (a: RunRow, b: RunRow) => { const x = evidence(a), y = evidence(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
   const byChild = new Map<string, RunRow[]>();
   for (const r of runRows) if (r.childSessionId) byChild.set(r.childSessionId, [...(byChild.get(r.childSessionId) ?? []), r]);
-  const latest = new Map<string, RunRow>();
-  for (const [child, rows] of byChild) {
-    if (rows.some((r) => typeof r.latestForChild !== 'boolean')) continue;
-    const marked = rows.filter((r) => r.latestForChild);
-    if (marked.length !== 1) continue;
-    if (rows.some((r) => r !== marked[0] && newer(r, marked[0]) > 0)) continue;
-    latest.set(child, marked[0]);
-  }
+  const latest = latestChildRuns(runRows);
   // Only a child ID on the record correlates a run with a host session. A dispatch without one
   // and a new host child stay separate rows, however likely they look like the same work. A child
   // with any loaded record is recorded, never also a host-only row.
@@ -214,23 +232,16 @@ export function rosterFor(v: RosterInput): Roster | null {
   // sequence current when this window first displayed that execution's start (or its end). Without
   // baselines nothing qualifies.
   const baselines = runs?.baselines ?? null, seq = v.liveSeq ?? 0;
-  const after = (key: string, mark: number | undefined) => !!baselines && baselines.baseline(key, seq) < (mark ?? -1);
   const openable = (id: string | null) => !!id && listed.has(id) && id !== v.currentSession;
   const entries: SubagentEntry[] = runRows.map((r) => {
     const sessionId = r.childSessionId;
     const isLatest = !!sessionId && latest.get(sessionId) === r;
     const h = isLatest ? host.get(sessionId!) ?? null : null;
     const nested = r.parentSessionId !== rootId && r.parentSessionId !== v.currentSession;
-    const ended = r.ran.state === 'succeeded' || r.ran.state === 'failed' || r.ran.state === 'interrupted';
-    const execution = `${r.id}|${ended ? 'end' : 'start'}|${(ended ? r.ran.endedAt : r.ran.startedAt) ?? 'none'}|${r.ran.eventId ?? 'none'}`;
     // Take the baseline at first display, with or without host data yet.
-    const idleAfterStart = r.ran.state === 'running' && after(execution, h?.idleSeq);
     // "Again" needs an idle → active change seen after the terminal fact: a still-cached Running
     // snapshot of the same execution is not a resume and is not shown or counted.
-    const resumed = ended && after(execution, h?.activeSeq);
-    const ran = ranOf(r, h, { idleAfterStart });
-    const o = h ? observe(h) : null;
-    const now = resumed && o && (o.kind === 'active' || o.kind === 'waiting') ? { kind: o.kind, label: o.label } : null;
+    const { ran, now } = runActivity(r, h, baselines, seq);
     return {
       key: r.id, runId: r.id, sessionId, title: r.description || (sessionId ? titles.get(sessionId) : null) || r.agent || (sessionId ? `Session ${shortId(sessionId)}` : 'Sub-agent'),
       agent: r.agent, depth: (sessionId ? listed.get(sessionId)?.depth : undefined) ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? `Session ${shortId(r.parentSessionId)}` : null,
