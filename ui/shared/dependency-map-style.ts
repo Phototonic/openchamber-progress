@@ -53,7 +53,7 @@ export const MAP_CSS = `
 .ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
 .ap-map-world{position:relative}
 /* Interactive canvas: a fixed-height clipped viewport; the world is transformed, never scrolled */
-.ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;overscroll-behavior:contain}
+.ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:pinch-zoom;user-select:none;-webkit-user-select:none;overscroll-behavior:contain}
 .ap-map[data-frame="rail"] .ap-map-viewport[data-interactive]{height:clamp(240px,54vh,460px)}
 .ap-map-viewport[data-dragging]{cursor:grabbing}
 .ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}

@@ -176,3 +176,27 @@ test('Fit all covers admitted narrow/deep chain and a wide edgeless plan', () =>
     }
   }
 });
+test('keys navigate from the actually focused card; its removal moves focus once without selecting', () => {
+  // Default items: A → B, A → C, B/C → D. Roving defaults to A; pointer focus lands on C without selection.
+  const { c, commands, cache, input, update } = setup();
+  c.focusOwner(true);
+  c.dispatch({ type: 'canvas-focus', id: 'C' });
+  assert.equal(c.value.selected, null); assert.notEqual(c.value.roving, 'C');
+  c.dispatch({ type: 'key', key: ']', canvas: true });
+  assert.equal(c.value.selected, 'D', '] follows the focused card C, not the roving card');
+  const fresh = setup(); fresh.c.focusOwner(true); fresh.c.dispatch({ type: 'canvas-focus', id: 'C' });
+  const expected = neighbour(fresh.input.layout, 'C', new Set(['A', 'B', 'C', 'D']), 'up') ?? neighbour(fresh.input.layout, 'C', new Set(['A', 'B', 'C', 'D']), 'left');
+  fresh.c.dispatch({ type: 'key', key: neighbour(fresh.input.layout, 'C', new Set(['A', 'B', 'C', 'D']), 'up') ? 'ArrowUp' : 'ArrowLeft', canvas: true });
+  assert.equal(fresh.c.value.selected, expected, 'arrows also start from the focused card');
+  // Removal of a pointer-focused card that is neither selected nor roving.
+  const r = setup(); r.c.focusOwner(true); r.c.dispatch({ type: 'canvas-focus', id: 'C' });
+  assert.equal(r.c.value.selected, null); r.commands.length = 0;
+  const remaining = items.filter(i => i.id !== 'C').map(i => ({ ...i, dependencies: i.dependencies?.filter(d => d !== 'C') }));
+  r.update({ items: remaining, layout: r.cache.compute(graphItems(remaining), metrics, 600) });
+  assert.equal(r.c.value.selected, null, 'focus fallback must not manufacture selection');
+  assert.equal(r.commands.filter(n => n.type === 'focus').length, 1);
+  assert.equal(r.commands.filter(n => n.type === 'announce').length, 1);
+  r.commands.length = 0; r.update({});
+  assert.equal(r.commands.filter(n => n.type === 'focus' || n.type === 'announce').length, 0, 'never replayed');
+  void commands; void cache; void input; void update;
+});

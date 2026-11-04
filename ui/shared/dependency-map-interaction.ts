@@ -146,7 +146,7 @@ export class DependencyMapInteraction {
       const fallback = fallbackFor(selected);
       this.state = { ...this.state, selected: fallback, roving: fallback };
       this.sink({ type: 'selection', id: fallback });
-      if (this.ownsFocus && this.state.active && this.focusedTask === selected) { this.sink({ type: 'announce', text: 'The selected task is no longer recorded. Moved to the next available map target.' }); this.focus(fallback); }
+      if (this.ownsFocus && this.state.active && this.focusedTask === selected) { this.sink({ type: 'announce', text: 'The selected task is no longer recorded. Moved to the next available map target.' }); this.focus(fallback); this.focusedTask = fallback; }
     } else if (roving && !next.layout.positions.has(roving)) {
       // Tab can focus the initial roving card without selecting it. Retire that target too,
       // preserving the prior-order fallback rather than silently choosing the first card.
@@ -160,11 +160,22 @@ export class DependencyMapInteraction {
       // Without selection the world point at the viewport centre stays put, including resize.
       else if (previous.viewport.width !== next.viewport.width || previous.viewport.height !== next.viewport.height) this.viewport({ ...this.state.transform, x: this.state.transform.x + (next.viewport.width - previous.viewport.width) / 2, y: this.state.transform.y + (next.viewport.height - previous.viewport.height) / 2 });
     }
+    const focusedOther = this.focusedTask;
+    if (focusedOther && focusedOther !== selected && focusedOther !== roving && !next.layout.positions.has(focusedOther)
+      && this.ownsFocus && this.state.active) {
+      // A focused card that was neither selected nor roving (e.g. pointer-focused) was removed:
+      // move focus once, without implying selection.
+      const fallback = fallbackFor(focusedOther), slot = fallback ? next.layout.positions.get(fallback) : undefined;
+      if (fallback) this.state = { ...this.state, roving: fallback };
+      if (slot) this.viewport(anchorSelection(undefined, slot, this.state.transform, next.layout.metrics, next.viewport));
+      this.sink({ type: 'announce', text: 'The focused task is no longer recorded. Moved to the next available map target.' });
+      this.focus(fallback); this.focusedTask = fallback;
+    }
     if (removedRoving && this.ownsFocus && this.state.active && this.focusedTask === roving) {
       const fallback = this.state.roving, slot = fallback ? next.layout.positions.get(fallback) : undefined;
       if (slot) this.viewport(anchorSelection(undefined, slot, this.state.transform, next.layout.metrics, next.viewport));
       this.sink({ type: 'announce', text: 'The focused task is no longer recorded. Moved to the next available map target.' });
-      this.focus(fallback);
+      this.focus(fallback); this.focusedTask = fallback;
     }
     this.consumeTarget();
     if (this.state.active && !this.state.initialFramingDone && next.viewport.width > 0 && next.viewport.height > 0) {
@@ -252,7 +263,9 @@ export class DependencyMapInteraction {
       case 'key': {
         if (!e.canvas || e.modified || e.editable) return false;
         const direction = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' } as const)[e.key as 'ArrowLeft'];
-        const from = this.state.roving;
+        // Navigate from the card that actually holds focus (pointer focus need not move roving or select).
+        const focused = this.focusedTask && this.visible.includes(this.focusedTask) ? this.focusedTask : null;
+        const from = focused ?? this.state.roving;
         if (direction) { const id = from && neighbour(i.layout, from, new Set(this.visible), direction); if (id) this.select(id, true); }
         else if (e.key === '[' || e.key === ']') { const id = from && relations(i.layout, from, e.key === '[' ? 'upstream' : 'downstream')[0]; if (id) this.select(id, true, true); }
         else if (e.key.toLowerCase() === 'f') this.dispatch({ type: 'fit' });
