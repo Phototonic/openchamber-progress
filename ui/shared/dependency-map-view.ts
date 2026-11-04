@@ -11,7 +11,9 @@ import { MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type Ma
 import { button, el, lifecycleBadge, testid } from './components.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
 import { plural } from './format.ts';
+import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type StatusFilter } from './model.ts';
+import type { MapTaskAttribution } from './dependency-map-attribution.ts';
 
 /** The frame's interaction controller, as the view sees it. The controller lives outside the root. */
 export interface MapInteractionBinding {
@@ -24,6 +26,13 @@ export interface MapInteractionBinding {
 }
 
 export interface DependencyMapViewInput extends MapSnapshot {
+  /** Frame-local, revision-bound assignment/link/report and live-session proof; never layout input.
+   * Absent (map or task entry): provenance/activity unavailable, never “unassigned”. Only a proven
+   * live entry on a current picture permits the session-only “Assigned session active now”. */
+  attribution?: ReadonlyMap<string, MapTaskAttribution>;
+  /** Source-safe session label (`recordedLabel(plan, env)`): host titles only for the verified bound
+   * source. Absent: plain recorded labels (“Session …”) for every session. */
+  label?: (sessionId: string) => string;
   frame: 'board' | 'rail';
   /** Geometry is computed by the frame owner from the FULL picture, never by the view. */
   layout: MapLayout | null;
@@ -60,7 +69,10 @@ export interface DependencyMapView {
  * data-{task,x,y,status,readiness,unlocks,related}; SVG paths data-{from,to,path}, marker-end;
  * map-{state,viewport,world,inspector,group,status,list,retry,help}; toolbar map-{zoom-in,
  * zoom-out,zoom-level,fit-all,focus-current,pan-left,pan-right,pan-up,pan-down}; one per-frame
- * map-announcer outside the root; plan-view, plan-view-{list,map}. No data-reading article.
+ * map-announcer outside the root; plan-view, plan-view-{list,map}. Attribution (S4): card
+ * data-{attribution,live}, map-card-who-ID, map-card-live-ID; inspector map-attribution
+ * data-{assignment,live} with map-attribution-{assignment,links,reports,live}; map-attribution-help.
+ * No data-reading article.
  * These describe semantic facts, not styling or incidental DOM nesting.
  */
 
@@ -369,6 +381,14 @@ export function createDependencyMapView(): DependencyMapView {
     const groupOwned = groups.filter(g => g.dependencies?.length);
     const unlocking = (id: string) => guidance && byId.get(id)?.status !== 'skipped' ? [...facts?.get(id)?.unlocksNext ?? []] : [];
     const titleOf = (id: string) => byId.get(id)?.title ?? id;
+    const sessionName = v.label ?? ((sid: string) => sessionLabel(sid, EMPTY_LIVE));
+    const copies = new Map<string, MapAttributionCopy>();
+    const attributionOf = (id: string) => {
+      let c = copies.get(id);
+      if (!c) copies.set(id, c = attributionCopy(v.attribution?.get(id), v.current, p.graph.revision, sessionName));
+      return c;
+    };
+    const anyAttribution = tasks.some(i => attributionOf(i.id).card);
     const selected = v.selected && byId.get(v.selected)?.kind === 'task' ? byId.get(v.selected)! : null;
     // Upstream/downstream emphasis: fresh on-demand closure walks for the selection only.
     const upstreamSet = selected && layout ? v.facts?.upstream(selected.id) ?? null : null;
@@ -664,12 +684,34 @@ export function createDependencyMapView(): DependencyMapView {
         const statusRow = el('span', 'ap-map-card-status');
         statusRow.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
         const title = el('span', 'ap-map-card-title', i.title);
+        // Attribution line: takes the title's second line inside the same fixed slot (the full title
+        // stays in the name and inspector), so its text never moves or resizes anything else.
+        const who = attributionOf(id);
+        card.dataset.attribution = who.kind;
+        if (who.live) card.dataset.live = who.live.kind;
         const foot = el('span', 'ap-map-card-foot');
         foot.append(el('span', 'ap-map-card-group', path.length ? path[path.length - 1] : ''));
         if (unlocks.length) { const u = el('span', 'ap-map-card-unlocks'); u.append(el('span', 'ap-map-unlock-icon'), `Unlocks next · ${unlocks.length}`); foot.append(u); }
-        card.append(statusRow, title, foot);
+        card.append(statusRow, title);
+        if (who.card) {
+          card.dataset.who = '';
+          const line = testid(el('span', 'ap-map-card-who'), `map-card-who-${id}`);
+          line.dataset.attribution = who.kind;
+          const text = el('span', 'ap-map-card-who-text');
+          // Session activity: a small square (status marks are round) placed on the assigned SESSION's
+          // name, never beside the task's status words. Inline in this fixed line, so it moves nothing
+          // else; its words are in the card's name, the inspector and the map help.
+          if (who.live && who.session) {
+            const live = testid(el('span', 'ap-map-live-mark'), `map-card-live-${id}`);
+            live.dataset.live = who.live.kind; live.setAttribute('aria-hidden', 'true');
+            text.append(who.card.slice(0, -who.session.length), live, who.session);
+          } else text.textContent = who.card;
+          line.append(text);
+          card.append(line);
+        }
+        card.append(foot);
         card.setAttribute('aria-label', [
-          i.title, MARK_TEXT[kind],
+          i.title, MARK_TEXT[kind], who.card ?? '', who.live ? `${who.live.text}, session activity only` : '',
           path.length ? `Group: ${path.join(' › ')}` : '',
           `${plural(prereqs, 'recorded prerequisite', 'recorded prerequisites')}, ${plural(dependents, 'dependent', 'dependents')}`,
           unlocks.length ? `Unlocks next for ${plural(unlocks.length, 'task', 'tasks')}` : '',
@@ -734,6 +776,34 @@ export function createDependencyMapView(): DependencyMapView {
         fact2('Next action', blockerPart(bl, 'nextAction'));
       }
       inspector.append(factsList);
+      // Who: verified assignment, link-only and unverified context, reports and session activity,
+      // each as its own recorded fact. Never “unassigned” for a missing projection.
+      const who = attributionOf(id);
+      const ws = testid(el('div', 'ap-map-rel ap-map-who'), 'map-attribution');
+      Object.assign(ws.dataset, { assignment: who.kind, live: who.live?.kind ?? '' });
+      ws.append(el('h4', 'ap-map-rel-h', 'Assignment and activity'));
+      const whoList = el('dl', 'ap-map-facts');
+      const row = (label: string, testId: string, lines: (string | Node)[], note: string | null = null) => {
+        const d = testid(el('div'), testId); d.append(el('dt', '', label));
+        const dd = el('dd');
+        lines.forEach((line, n) => { if (n) dd.append(el('br')); dd.append(line); });
+        if (note) dd.append(el('span', 'ap-map-who-note', note));
+        d.append(dd); whoList.append(d);
+      };
+      row('Assignment', 'map-attribution-assignment', [who.assignment], who.assignmentNote);
+      if (who.links.length) row('Links', 'map-attribution-links', who.links);
+      if (who.kind !== 'unavailable') row('Reports', 'map-attribution-reports', who.reports.length ? who.reports : ['No reports recorded']);
+      let activity: string | Node = who.activity;
+      if (who.live) {
+        // The mark is decorative here: the words beside it say the same thing.
+        const mark = el('span', 'ap-map-live-mark'); mark.dataset.live = who.live.kind; mark.setAttribute('aria-hidden', 'true');
+        const words = el('strong', 'ap-map-who-live'); words.dataset.live = who.live.kind;
+        words.append(mark, who.live.text);
+        activity = words;
+      }
+      row('Session activity', 'map-attribution-live', [activity], who.activityNote);
+      ws.append(whoList);
+      inspector.append(ws);
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
         const sec = testid(el('div', 'ap-map-rel'), testId);
         sec.dataset.related = kindOf;
@@ -794,7 +864,7 @@ export function createDependencyMapView(): DependencyMapView {
     region.append(body);
 
     // ── Help: keys (interactive), reading the highlights and the guidance definitions moved from the header.
-    if (b || (guidance && tasks.length)) {
+    if (b || (guidance && tasks.length) || anyAttribution) {
       const help = testid(el('div', 'ap-map-help'), 'map-help');
       help.id = helpId;
       if (b) {
@@ -806,6 +876,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
       }
       if (guidance && tasks.length) help.append(el('p', '', 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
+      if (anyAttribution) help.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
       region.append(help);
     }
 
@@ -905,6 +976,71 @@ function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: 
   if (fact?.group === 'ready') return fact.prerequisites.length ? 'Every recorded prerequisite is reported done. Ready describes recorded prerequisites only.' : 'No prerequisites recorded. Ready describes recorded prerequisites only.';
   if (fact?.group === 'skipped') return `Waiting: a recorded prerequisite was skipped (${open.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => titleOf(p.id)).join('; ')}), and skipped work never counts as done.`;
   return `Waiting on ${plural(open.length, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}.`;
+}
+
+/**
+ * Map-only attribution words (stricter than the list): “Assigned to” needs the verified, revision-
+ * current delegation; links and an unverified recorded assignee are named as such; a missing
+ * projection is “unavailable”, never “unassigned”. Live words are about the assigned SESSION only
+ * and appear only with proof on a current picture. Pure: no DOM, so the copy is checkable alone.
+ */
+export type MapAttributionKind = 'assigned' | 'recorded' | 'linked' | 'none' | 'unavailable';
+export interface MapAttributionCopy {
+  kind: MapAttributionKind;
+  /** Compact card line, or null when the card shows nothing (no assignee/link, or unavailable). */
+  card: string | null;
+  /** The verified assigned session's label, which ends `card` (where the live mark sits). */
+  session: string | null;
+  /** Inspector Assignment value and its explanation. */
+  assignment: string;
+  assignmentNote: string | null;
+  links: string[];
+  reports: string[];
+  /** Proven session activity on a current picture only. */
+  live: { kind: 'active' | 'waiting'; text: string } | null;
+  activity: string;
+  activityNote: string | null;
+}
+export const LIVE_HEDGE = 'Session activity only: the assigned session is active in this view’s run records, which doesn’t show that it is working on this task.';
+export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string): MapAttributionCopy {
+  if (!a) return {
+    kind: 'unavailable', card: null, session: null, assignment: 'Unavailable in this view',
+    assignmentNote: 'Assignment provenance couldn’t be checked for this picture. That doesn’t mean the task is unassigned.',
+    links: [], reports: [], live: null, activity: 'Not shown', activityNote: 'Session activity isn’t available in this view.',
+  };
+  const verified = a.assignment;
+  const kind: MapAttributionKind = verified ? 'assigned' : a.recordedAssignee ? 'recorded' : a.links.length ? 'linked' : 'none';
+  const more = (n: number) => n > 1 ? ` and ${n - 1} more` : '';
+  const card = kind === 'assigned' ? `Assigned to ${label(verified!.childSessionId)}`
+    // Qualifier first: a truncated card line must still never read as a verified assignment.
+    : kind === 'recorded' ? `Unverified assignee · ${label(a.recordedAssignee!)}`
+    : kind === 'linked' ? `Linked to ${label(a.links[0])}${more(a.links.length)} · no verified delegation` : null;
+  const assignment = kind === 'assigned' ? `Assigned to ${label(verified!.childSessionId)}`
+    : kind === 'recorded' ? `Recorded assignee ${label(a.recordedAssignee!)} · delegation provenance unavailable`
+    : 'No assignee recorded';
+  const assignmentNote = kind === 'assigned' ? `Verified delegation, current for revision ${verified!.validAtRevision}.`
+    : kind === 'recorded' ? 'No verified delegation is recorded for this revision, so the map doesn’t say Assigned. That doesn’t mean the task is unassigned.'
+    : kind === 'linked' ? 'Only session links name this task. A link is not an assignment.' : null;
+  const links = a.links.map(id => verified && id === verified.childSessionId ? `Linked to ${label(id)}` : `Linked to ${label(id)} · no verified delegation`);
+  // One line per distinct report; repeats are counted, never added as extra people or tasks.
+  const lines = new Map<string, number>();
+  for (const r of a.reports) {
+    const text = r.mode === 'parent-relay' ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
+    lines.set(text, (lines.get(text) ?? 0) + 1);
+  }
+  const reports = [...lines].map(([text, n]) => n > 1 ? `${text} · ${n} reports` : text);
+  if (!reports.length && a.reporter) reports.push(`Last reported by ${label(a.reporter)} · report mode unavailable`);
+  const proven = a.live.proven && current && !!verified ? a.live : null;
+  const live = proven ? proven.kind === 'active'
+    ? { kind: 'active' as const, text: 'Assigned session active now' }
+    : { kind: 'waiting' as const, text: 'Assigned session waiting for input now' } : null;
+  const reason = a.live.proven ? 'picture-not-current' : a.live.reason;
+  const activityNote = live ? LIVE_HEDGE : !current || reason === 'picture-not-current' ? `Hidden while the map shows revision ${revision} as last reported.`
+    : reason === 'no-verified-assignment' ? 'Shown only for a verified assignment.'
+    : reason === 'run-scope-unavailable' ? 'This view’s run records aren’t available.'
+    : reason === 'latest-child-not-proven' ? 'This view’s run records don’t confirm the assigned session’s latest run.'
+    : 'The assigned session’s latest recorded run isn’t active now.';
+  return { kind, card, session: verified ? label(verified.childSessionId) : null, assignment, assignmentNote, links, reports, live, activity: live ? live.text : 'Not shown', activityNote };
 }
 
 function blockerPart(b: BlockerView | undefined, part: 'reason' | 'nextAction'): string {

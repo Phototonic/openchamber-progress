@@ -120,6 +120,23 @@ export const MAP_CSS = `
 .ap-map-card-title{flex:0 1 auto;min-height:0;max-height:calc(2em * 1.35);font-size:12.5px;font-weight:500;line-height:1.35;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 .ap-map-card-foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;font-size:11px;line-height:16px;color:var(--oc-muted)}
 .ap-map-card-group{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Attribution line (S4): one 16px line that takes the title's second line inside the same fixed
+   slot, so no card ever grows, moves or reflows its other rows. Session activity is a small square
+   on the assigned session's name (status marks are round): filled = active, outlined = waiting for
+   input. Words live in the card name, inspector and help; no animation. */
+/* Four rows need 77px; tighter padding/gaps leave room for the thickest selection/chain borders
+   (forced colours, zoomed-out rings) so the one-line title is never squeezed mid-glyph. */
+.ap-map-card[data-who]{gap:4px;padding-top:7px;padding-bottom:6px}
+.ap-map-card[data-who] .ap-map-card-title{flex:none;-webkit-line-clamp:1;max-height:calc(1em * 1.35)}
+.ap-map-card[data-who] .ap-map-card-status{flex:none}
+.ap-map-card-who{display:flex;align-items:center;min-width:0;font-size:11px;line-height:16px;color:var(--oc-muted)}
+.ap-map-card-who-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-map-card-who[data-attribution="assigned"] .ap-map-card-who-text{color:var(--oc-fg)}
+.ap-map-live-mark{display:inline-block;width:8px;height:8px;margin:0 4px 0 1px;border-radius:2px;background:var(--oc-info);vertical-align:0;forced-color-adjust:none}
+.ap-map-live-mark[data-live="waiting"]{background:transparent;border:1.5px solid var(--oc-warning)}
+.ap-map-who-live{display:inline-flex;align-items:center;gap:2px;font-weight:600;color:var(--oc-info-text,var(--oc-info))}
+.ap-map-who-live[data-live="waiting"]{color:var(--oc-warning-text,var(--oc-warning))}
+.ap-map-who-note{display:block;margin-top:2px;font-size:11.5px;color:var(--oc-muted);white-space:normal}
 .ap-map-card-unlocks{flex:none;display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--oc-primary) 13%,var(--oc-bg));color:var(--oc-primary-text,var(--oc-fg));font-weight:600}
 .ap-map-unlock-icon{flex:none;display:inline-block;width:6px;height:6px;margin-right:1px;border-top:1.6px solid currentColor;border-right:1.6px solid currentColor;transform:rotate(45deg)}
 .ap-map-empty{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center;font-size:12.5px;color:var(--oc-muted);pointer-events:none}
@@ -192,5 +209,8 @@ export const MAP_CSS = `
 .ap-map-mark:is([data-mark="waiting"],[data-mark="waiting-skipped"])::after{border-color:CanvasText}
 .ap-map-mark[data-mark="done"]::after{border-color:Canvas}
 .ap-map-mark[data-mark="blocked"]::after{color:Canvas}
+.ap-map :is(.ap-map-card-who,.ap-map-card-who-text,.ap-map-who-live){color:CanvasText}
+.ap-map-live-mark{background:CanvasText}
+.ap-map-live-mark[data-live="waiting"]{background:Canvas;border-color:CanvasText}
 }
 `;

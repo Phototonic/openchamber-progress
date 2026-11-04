@@ -28,6 +28,7 @@ import { readPlanGraph, type ServiceHost } from '../../ui/shared/source.ts';
 import { deriveDependencies } from '../../ui/shared/dependency-derivation.ts';
 import { setupRead } from './fixtures.ts';
 import { CORE_ITEMS, FINISHED_ITEMS, MANY_ITEMS } from './focus-controls-fixtures.ts';
+import { seedMapAttribution } from '../fixtures/dependency-map-attribution.ts';
 
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };
 const DARK = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
@@ -55,13 +56,13 @@ qa.theme=mode=>{theme.mode=mode;Object.assign(theme.tokens,mode==='dark'?dark:li
 // Host session A/B/null notifications (the board must keep its own explicit scope).
 qa.context=id=>{qa.session=id;for(const f of frames)send(f,{type:'session',payload:{session:id?{id,title:'Example session',busy:false}:null}})};
 const projectsSnapshot=()=>({kind:'projects',state:'ready',projects:qa.projects});
-const sessionsSnapshot=id=>({kind:'sessions',state:'ready',projectId:id,sessions:qa.sessions[id]??[],worktrees:[],coverage:[]});
+const sessionsSnapshot=id=>({kind:'sessions',state:'ready',projectId:id,sessions:qa.sessions[id]??[],worktrees:[],coverage:qa.sessionCoverage?.[id]??[]});
 qa.setProjects=list=>{qa.projects=list;for(const s of qa.subs)if(s.kind==='projects')send(s.frame,{type:'workspace',payload:{subscriptionId:s.id,snapshot:projectsSnapshot()}})};
 const worktreesSnapshot=id=>({kind:'worktrees',state:'ready',projectId:id,worktrees:qa.worktrees[id]??[]});
 qa.setWorktrees=(id,list)=>{qa.worktrees[id]=list;for(const s of qa.subs)if(s.kind==='worktrees'&&s.projectId===id)send(s.frame,{type:'workspace',payload:{subscriptionId:s.id,snapshot:worktreesSnapshot(id)}})};
 qa.setSessions=(id,list)=>{qa.sessions[id]=list;for(const s of qa.subs)if(s.kind==='sessions'&&s.projectId===id)send(s.frame,{type:'workspace',payload:{subscriptionId:s.id,snapshot:sessionsSnapshot(id)}})};
 qa.release=tag=>{const out=qa.held.filter(h=>!tag||h.tag===tag);qa.held=qa.held.filter(h=>!out.includes(h));out.forEach(h=>h.go());return out.length};
-const record=(f,q,reply,ms)=>{if(!q.path.startsWith('/v1/search')&&!['/v1/plan','/v1/plan-graph','/health','/v1/plans'].includes(q.path))return;const e={frame:f,traffic:'guest',path:q.path,status:reply.status,bytes:new TextEncoder().encode(reply.body).length,ms,at:performance.now()};
+const record=(f,q,reply,ms)=>{if(!q.path.startsWith('/v1/search')&&!['/v1/plan','/v1/plan-graph','/v1/subagent-runs','/health','/v1/plans'].includes(q.path))return;const e={frame:f,traffic:'guest',path:q.path,status:reply.status,bytes:new TextEncoder().encode(reply.body).length,ms,at:performance.now()};
  if(q.path==='/v1/search')e.cursor=!!q.query?.cursor;
  if(q.path==='/v1/search-state')e.keys=JSON.parse(q.query?.keys??'[]').length;
  if(q.path==='/v1/plan')e.continuation=!!q.query?.cursor;
@@ -86,7 +87,12 @@ addEventListener('message',async e=>{
   const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
    // Labelled legacy-detail seam: optional aggregate metadata is absent, so readDetail cannot
    // construct its authoritative snapshot/identity. Other wire identity validation stays intact.
-   if(q.path==='/v1/plan'&&reply.status===200&&qa.stripDetailSnapshot===f){const b=JSON.parse(reply.body);delete b.plan.counts;reply.body=JSON.stringify(b)}
+    if(q.path==='/v1/plan'&&reply.status===200&&qa.stripDetailSnapshot===f){const b=JSON.parse(reply.body);delete b.plan.counts;reply.body=JSON.stringify(b)}
+    // QT legacy-read fixture: modern link writes also record an assignee. Older readable snapshots
+    // can retain links alone; foreign same-ID assignees must not borrow this host's title/activity.
+    if(window.__mapAttribution&&q.path==='/v1/plan'&&reply.status===200){const b=JSON.parse(reply.body);for(const item of b.items.data){if(item.id==='L')delete item.assigneeSessionId;if(q.query.source==='source-beta'&&item.id==='B')item.assigneeSessionId='map-child'}reply.body=JSON.stringify(b)}
+    // QT fault injection only: older/missing/unloaded/mismatched child evidence, not Store writes.
+    if(q.path==='/v1/subagent-runs'&&reply.status===200&&qa.mapRunFault?.[f]){const b=JSON.parse(reply.body),fault=qa.mapRunFault[f];for(const row of b.data){if(fault==='missing')delete row.latestForChild;if(fault==='unloaded')row.latestForChild=false;if(fault==='childless'){row.childSessionId=null;row.latestForChild=false}if(fault==='other')row.childSessionId='other-child'}reply.body=JSON.stringify(b)}
    if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
     if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison||qa.stripGraph)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;if(qa.stripGraph)delete b.planGraph;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
@@ -184,20 +190,23 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' = 'search', keyboard = mode === 'keyboard-focus') {
-  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' = 'search', keyboard = mode === 'keyboard-focus') {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const large = mode === 'large-plan' || mode === 'dependency-map-large';
-  const interaction = mode === 'dependency-map-interaction' || mode === 'dependency-map-large';
+  const interaction = mode === 'dependency-map-interaction' || mode === 'dependency-map-large' || mode === 'dependency-map-attribution';
   const preview = mode === 'dependency-map-render' || interaction;
+  const previewPrefix = interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};globalThis.__mapAttribution=${mode === 'dependency-map-attribution'};\n` : '';
   const map = mode === 'dependency-map-hidden' || preview;
   const previewRoot = preview ? mkdtempSync('/tmp/opencode/dependency-map-preview-') : null;
   if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
   const f = searchFixture(!large && !map);
   const replay = large ? createLargePlanReplay(f) : null;
   if (replay) replay.seed(); else if (map) seedMapFixture(f); else { seedSearchLibrary(f); seedExtras(f); }
+  const attribution = mode === 'dependency-map-attribution' ? seedMapAttribution(f) : null;
   if (mode === 'keyboard-focus') seedKeyboard(f);
   const second = searchFixture(!large && !map);
   if (map) seedMapFixture(second);
+  if (attribution) seedMapAttribution(second);
   const services = [await serve(f, built), await serve(second, built)];
   const relay = async (q: GuestRequest, store: number): Promise<GuestRequestResult> => {
     if (q.path === '/v1/extension-update' || (q.path === '/v1/setup' && !reportingSetup)) return { status: 404, body: '{"error":"not-found"}' };
@@ -210,11 +219,12 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     try {
       if (url.pathname === '/') {
         let page = large || preview ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        if (attribution) page = page.replace('<script>', '<script>window.__mapAttribution=true;');
         if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
       }
-      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); res.end((isPreview && interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};\n` : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8')); }
+      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); res.end((isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8')); }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         const { request, store } = JSON.parse(body);
@@ -270,8 +280,9 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   }
   return {
     port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
-    previewHash: previewRoot ? createHash('sha256').update(interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};\n` : '').update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
+    previewHash: previewRoot ? createHash('sha256').update(previewPrefix).update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
+    mapAttribution: attribution,
     cleanupElsewhere, deleteElsewhere: (plan: string) => cleanupElsewhere('delete', plan),
     /** A new matching plan behind an active keyset cursor (production staged write). */
     insert: (plan: string, title: string) => { f.seedPlan(plan, title, [{ id: 'N1', title: 'Inserted task', kind: 'task', status: 'pending' }]); },

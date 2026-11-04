@@ -1389,6 +1389,10 @@ is omitted without rewriting stored history. Absence means provenance unavailabl
 not absence of assignment; explicit links and older v2 writers have no such
 provenance. Current neutral writers carry only validated current provenance;
 explicit link replacement/unlink invalidates it, including a same-child relink.
+The hidden dependency-map consumer uses this revision-current provenance for
+its verified assignment caption. Its separate live-session proof joins the bound
+child to a loaded verified run child under the existing run-read scope below;
+neither assignment nor a running session proves that a particular task is executing.
 An older writer's revision cannot certify inherited provenance. The base protocol
 and SQLite schema version remain 2. Existing detail pagination and source binding
 apply; list/history routes gain no discovery or authorization semantics.
