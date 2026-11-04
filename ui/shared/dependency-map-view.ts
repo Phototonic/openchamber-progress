@@ -1022,13 +1022,17 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
     : kind === 'recorded' ? 'No verified delegation is recorded for this revision, so the map doesn’t say Assigned. That doesn’t mean the task is unassigned.'
     : kind === 'linked' ? 'Only session links name this task. A link is not an assignment.' : null;
   const links = a.links.map(id => verified && id === verified.childSessionId ? `Linked to ${label(id)}` : `Linked to ${label(id)} · no verified delegation`);
-  // One line per distinct report; repeats are counted, never added as extra people or tasks.
-  const lines = new Map<string, number>();
+  // One line per distinct reporting identity (mode, reporter, attributed session); repeats by the
+  // same identity are counted. Grouping uses session IDs, never display text: two sessions with the
+  // same title or a colliding short-ID fallback stay separate lines.
+  const lines = new Map<string, { text: string; n: number }>();
   for (const r of a.reports) {
-    const text = r.mode === 'parent-relay' ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
-    lines.set(text, (lines.get(text) ?? 0) + 1);
+    const relay = r.mode === 'parent-relay';
+    const key = JSON.stringify([relay ? 'relay' : 'direct', r.reporterSessionId, relay ? r.attributedSessionId : null]);
+    const text = relay ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
+    const line = lines.get(key); if (line) line.n++; else lines.set(key, { text, n: 1 });
   }
-  const reports = [...lines].map(([text, n]) => n > 1 ? `${text} · ${n} reports` : text);
+  const reports = [...lines.values()].map(({ text, n }) => n > 1 ? `${text} · ${n} reports` : text);
   if (!reports.length && a.reporter) reports.push(`Last reported by ${label(a.reporter)} · report mode unavailable`);
   const proven = a.live.proven && current && !!verified ? a.live : null;
   const live = proven ? proven.kind === 'active'

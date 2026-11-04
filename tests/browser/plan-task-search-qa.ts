@@ -260,6 +260,9 @@ try {
       check('attribution:copy:waiting-session-words', waiting.live?.kind === 'waiting' && waiting.live.text === 'Assigned session waiting for input now' && waiting.session === 'Session kid');
       const relay = attributionCopy({ ...base, links: [], reporter: 'M', reports: [{ revision: 3, reporterSessionId: 'M', attributedSessionId: 'kid', mode: 'parent-relay', itemIds: ['B'] }, { revision: 3, reporterSessionId: 'M', attributedSessionId: 'kid', mode: 'parent-relay', itemIds: ['B'] }] }, true, 3, L);
       check('attribution:copy:relay-separate-and-counted', relay.reports.length === 1 && relay.reports[0] === 'Reported by Session M for Session kid · 2 reports' && relay.kind === 'none');
+      const same = (_: string) => 'Session same-title';
+      const distinct = attributionCopy({ ...base, links: [], reporter: 'M1', reports: [{ revision: 3, reporterSessionId: 'M1', attributedSessionId: 'M1', mode: 'direct', itemIds: ['B'] }, { revision: 3, reporterSessionId: 'M2', attributedSessionId: 'M2', mode: 'direct', itemIds: ['B'] }] }, true, 3, same);
+      check('attribution:copy:same-label-reporters-stay-separate', distinct.reports.length === 2 && distinct.reports.every(r => r === 'Reported directly by Session same-title'));
     }
     // Inspector: the full context for the proof-positive card and the unverified card, both frames.
     for (const surface of ['page', 'panel']) {
