@@ -89,9 +89,9 @@ export async function startActivityHost(root: string, baseEnv: Record<string, st
     connected.onmessage = e => {
       if (socket !== connected) return;
       const m = JSON.parse(String(e.data));
-      if (typeof m.id === 'number' && Number.isSafeInteger(m.id)) {
+      if (typeof m.id === 'number' && Number.isSafeInteger(m.id) && pending.has(m.id)) {
         const callback = pending.get(m.id);
-        if (callback) { pending.delete(m.id); callback(m); }
+        if (typeof callback === 'function') { pending.delete(m.id); callback(m); }
       }
       else if (m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'iframe') frames.push(m.params.sessionId);
       else if (m.method === 'Target.detachedFromTarget') { const i = frames.indexOf(m.params.sessionId); if (i >= 0) frames.splice(i, 1); }
