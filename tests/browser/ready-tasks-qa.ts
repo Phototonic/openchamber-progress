@@ -3,6 +3,7 @@
 // with a fresh disposable profile, drives real mouse/keyboard input over CDP, and stops only
 // what it started. Never attaches to an existing browser or uses a real profile.
 // Usage: node --experimental-strip-types tests/browser/ready-tasks-qa.ts --artifacts <dir> [--chromium <path>]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -95,7 +96,7 @@ try {
     }
   };
   const click = async (s: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
     if (!point) throw new Error(`missing ${selector} in ${s}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
@@ -103,14 +104,14 @@ try {
   const noOverflow = (s: string) => guest<boolean>(s, `const sw=d.documentElement.scrollWidth,cw=d.documentElement.clientWidth;return sw<=cw&&[...d.querySelectorAll('[data-testid="readiness"] button')].every(b=>{const r=b.getBoundingClientRect();return r.right<=cw+0.5&&r.left>=-0.5})`);
   const shot = async (s: string, name: string, scrollTo = '[data-testid="readiness"]') => {
     check(`${name}:no-horizontal-overflow`, await noOverflow(s));
-    if (scrollTo) await guest(s, `d.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({block:'start'});return true`);
+    if (scrollTo) await guest(s, `d.querySelector(${javascriptLiteral(scrollTo)})?.scrollIntoView({block:'start'});return true`);
     await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     const r = await evaluate<number[]>(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [r.x-8,r.y-8,r.width+16,r.height+16]})()`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: r[0], y: r[1], width: r[2], height: r[3], scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
     shots.push(`${name}.png`);
   };
-  const context = (id: string | null) => evaluate(`qa.context(${JSON.stringify(id)});true`);
+  const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
   const rd = '[data-testid="readiness"]';
   /** Readiness membership by group in surface `s`, from per-entry attributes. */
   const groups = (s: string) => guest<Record<string, string[]>>(s, `const out={ready:[],waiting:[],skipped:[],blocked:[]};for(const e of d.querySelectorAll('${rd} [data-testid^="readiness-entry-"]'))out[e.dataset.group].push(e.dataset.item);return out`);
@@ -251,7 +252,7 @@ try {
   check('Q5:link-never-selected-session', asC.a === 'none' && !asC.t.includes('selected session') && !asC.t.includes('Assigned to') && asC.t.includes('(no recorded assignment)'), asC);
   check('Q5:link-counts-unchanged', same(await counts('panel'), ['1', '7', '6', '1']));
   await context('A');
-  await evaluate(`qa.update('P-ready',p=>{p.links=${JSON.stringify([{ sessionId: 'C', itemIds: ['K'] }, { sessionId: 'B', itemIds: ['W'] }])}});true`);
+  await evaluate(`qa.update('P-ready',p=>{p.links=${javascriptLiteral([{ sessionId: 'C', itemIds: ['K'] }, { sessionId: 'B', itemIds: ['W'] }])}});true`);
   await wait('panel', `d.querySelector('[data-testid="readiness-link-W"]')?.textContent.includes('Review session')&&d.querySelector('[data-assignment="selected"]')`, 'links restored');
   const wrapped = await guest('panel', `const b=d.querySelector('[data-testid="readiness-entry-I"] .ap-ready-head button'),cs=getComputedStyle(b);return {lines:Math.round(b.getBoundingClientRect().height/parseFloat(cs.lineHeight)),text:b.textContent.includes('<b>not markup</b>'),html:!!b.querySelector('b')}`);
   check('Q5:long-untrusted-title-wraps-as-text', wrapped.lines > 1 && wrapped.text && !wrapped.html, wrapped);
@@ -279,7 +280,7 @@ try {
   check('Q5:empty-no-completion-claim', await guest('panel', `const t=d.querySelector('article.ap-plan').textContent;return t.includes('No tasks are ready from the recorded information.')&&!/Finished|complete/i.test(d.querySelector('${rd}').textContent)&&d.querySelector('article.ap-plan').dataset.lifecycle==='active'`));
   await show('panel', 360);
   await shot('panel', 'empty');
-  await evaluate(`qa.update('P-ready',p=>{p.items=${'JSON.parse(' + JSON.stringify(restore) + ')'}});true`);
+  await evaluate(`qa.update('P-ready',p=>{p.items=${'JSON.parse(' + javascriptLiteral(restore) + ')'}});true`);
   await wait('panel', `d.querySelector('[data-testid="readiness-entry-R"][data-group="ready"]')`);
 
   // Inconsistent snapshot (cycle): unavailable, tasks still shown as reported.

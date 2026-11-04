@@ -12,6 +12,7 @@
 //   labelled setup-interception seam, write results.json (per-K coverage, inventory, skips, failed expectations),
 //   races.json, requests.json and screenshots, and exit non-zero on any failed assertion. `--kf-scenarios a,b`
 //   runs a subset for iteration only and always fails the run as partial.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -137,16 +138,16 @@ try {
   };
   const type = (t: string) => c.send('Input.insertText', { text: t });
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
-  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${JSON.stringify(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
-    await guest(surface, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
+    await guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
     if (!r) throw new Error(`no ${selector} to capture`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: Math.min(r[3] + pad * 2, height), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -186,7 +187,7 @@ try {
   const searchFor = async (q: string, all = false) => {
     const prev = await run();
     await clearField(); await type(q);
-    await act(`search “${q}”`, async () => { await key('Enter'); await wait('page', `d.querySelector('[data-testid="search-results"]')?.dataset.run!==${JSON.stringify(prev)}`, `new run for ${q}`); });
+    await act(`search “${q}”`, async () => { await key('Enter'); await wait('page', `d.querySelector('[data-testid="search-results"]')?.dataset.run!==${javascriptLiteral(prev)}`, `new run for ${q}`); });
     if (all) await exhaust();
   };
   const overflow = () => guest<boolean>('page', `return d.documentElement.scrollWidth<=w.innerWidth+1`);
@@ -202,7 +203,7 @@ try {
   if (onlyMapInteraction || onlyMapLarge) {
     const region = '[data-testid="map-region"]';
     const ready = (surface: string, revision = 1) => wait(surface, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision==='${revision}'&&w.mapPreview?.state.initialFramingDone`, 'complete interactive preview');
-    const command = (surface: string, event: object) => guest(surface, `return w.mapPreview.dispatch(${JSON.stringify(event)})`);
+    const command = (surface: string, event: object) => guest(surface, `return w.mapPreview.dispatch(${javascriptLiteral(event)})`);
     const state = (surface: string) => guest<any>(surface, 'return w.mapPreview.state');
     const mapShot = async (name: string, surface: string) => {
       const scroll = await guest<number>(surface, 'return w.scrollY');
@@ -245,7 +246,7 @@ try {
       // inspector relations, the per-frame live region, handoff focus, resize and forced colours.
       const said = (surface: string) => guest<string[]>(surface, `if(!w.__said){w.__said=[];const n=d.querySelector('[data-testid="map-announcer"]');new w.MutationObserver(()=>{if(n.textContent)w.__said.push(n.textContent)}).observe(n,{childList:true,characterData:true,subtree:true})}return w.__said.slice()`);
       const active = (surface: string) => guest<any>(surface, `const a=d.activeElement;return {task:a?.dataset?.task??null,testid:a?.closest?.('[data-testid]')?.dataset.testid??null,tag:a?.tagName,inCanvas:!!a?.closest?.('[data-testid="map-viewport"]'),outline:a?getComputedStyle(a).outlineStyle+' '+getComputedStyle(a).outlineWidth:''}`);
-      const focusOn = (surface: string, selector: string) => guest(surface, `const n=d.querySelector(${JSON.stringify(selector)});n.focus();return d.activeElement===n`);
+      const focusOn = (surface: string, selector: string) => guest(surface, `const n=d.querySelector(${javascriptLiteral(selector)});n.focus();return d.activeElement===n`);
       const polls = async (surface: string, n = 2) => { const mark = await evaluate<number>('qa.replies.length'); await wait(surface, `parent.qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=${n}`, `${n} completed polls`); };
       const background = (surface: string) => evaluate<[number, number] | null>(`(()=>{const fr=frame('${surface}'),d=fr.contentDocument,v=d.querySelector('[data-testid="map-viewport"]');v.scrollIntoView({block:'center'});const b=v.getBoundingClientRect(),o=fr.getBoundingClientRect();for(let y=b.bottom-14;y>b.top+10;y-=12)for(let x=b.right-14;x>b.left+10;x-=12){const n=d.elementFromPoint(x,y);if(n&&v.contains(n)&&!n.closest('button'))return [o.x+x,o.y+y]}return null})()`);
       const mouse = (type: string, x: number, y: number, extra: object = {}) => c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
@@ -372,7 +373,7 @@ try {
       check('interaction:focus-action-with-missing-target-expires', (await active('page')).testid === 'map-zoom-in' && await guest('page', `return !!d.querySelector('[data-testid="map-card-A"]')`), undefined, await active('page'));
       // Review regressions: a deferred repeat announcement never overwrites a newer message, and
       // never survives leaving Map (the live region outlives the repainted root).
-      const tools = (...ids: string[]) => guest('page', `for(const id of ${JSON.stringify(ids)})(d.querySelector('[data-testid="'+id+'"] button')??d.querySelector('[data-testid="'+id+'"]')).click();return true`);
+      const tools = (...ids: string[]) => guest('page', `for(const id of ${javascriptLiteral(ids)})(d.querySelector('[data-testid="'+id+'"] button')??d.querySelector('[data-testid="'+id+'"]')).click();return true`);
       const announcerText = () => guest<string>('page', `return d.querySelector('[data-testid="map-announcer"]').textContent`);
       await tools('map-pan-left', 'map-pan-left', 'map-pan-up'); await frames2(); await frames2();
       check('interaction:repeat-announcement-yields-to-newer', await announcerText() === 'View moved up.', undefined, await announcerText());
@@ -415,7 +416,7 @@ try {
       await show(['page'], 1100); await ready('page'); await command('page', { type: 'select', id: 'D' }); await frames2();
       const oldRevision = await guest<string>('page', `return d.querySelector('${region}').dataset.revision`);
       fx.reportMap('P-map', { op: 'revise', items: [...mapItems, { id: 'J', title: 'Newly recorded follow-up', kind: 'task', dependencies: ['D'] }] });
-      await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision!==${JSON.stringify(oldRevision)}&&d.querySelector('[data-testid="map-card-J"]')`, 'structural revision');
+      await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision!==${javascriptLiteral(oldRevision)}&&d.querySelector('[data-testid="map-card-J"]')`, 'structural revision');
       await frames2();
       check('interaction:structural-update-keeps-selection-in-view', (await state('page')).selected === 'D' && await inView('page', 'D'));
       await mapShot('structural-anchor', 'page');
@@ -541,7 +542,7 @@ try {
     Object.assign(facts, { mode: 'dependency-map-render', preview: true, fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash, serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), visualSignoff: 'evidence/dependency-map/render/design-signoff.md' });
     const region = '[data-testid="map-region"]';
     const ready = (f = 'page') => wait(f, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-world"]')`);
-    const select = async (f: string, id: string, value: string) => { await guest(f, `const n=d.querySelector('[data-testid="${id}"]');n.value=${JSON.stringify(value)};n.dispatchEvent(new Event('change',{bubbles:true}));return true`); await frames2(); };
+    const select = async (f: string, id: string, value: string) => { await guest(f, `const n=d.querySelector('[data-testid="${id}"]');n.value=${javascriptLiteral(value)};n.dispatchEvent(new Event('change',{bubbles:true}));return true`); await frames2(); };
     const plan = async (id: string, f = 'page') => { await select(f, 'map-plan', id); await ready(f); };
     // Show all / Unfinished is the list's pressed-button pair (map-status-{all,unfinished}).
     const showTasks = async (f: string, value: 'all' | 'unfinished') => { await guest(f, `d.querySelector('[data-testid="map-status-${value}"] button').click();return true`); await frames2(); };
@@ -577,7 +578,7 @@ try {
     await evaluate(`qa.holds.push({path:'/v1/plan-graph',frame:'page',tag:'map-newer-graph'});true`);
     fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] });
     await wait('page', `parent.qa.held.some(h=>h.tag==='map-newer-graph')&&d.querySelector('${region}')?.dataset.state==='updating'`, 'retained picture while newer graph is held');
-    check('render:updating-retains-accepted-picture', await guest('page', `return d.querySelector('${region}').dataset.revision===${JSON.stringify(retainedRevision)}&&d.querySelectorAll('[data-task]').length===9&&d.querySelector('[data-testid="map-state"]').innerText.includes('Updating')`));
+    check('render:updating-retains-accepted-picture', await guest('page', `return d.querySelector('${region}').dataset.revision===${javascriptLiteral(retainedRevision)}&&d.querySelectorAll('[data-task]').length===9&&d.querySelector('[data-testid="map-state"]').innerText.includes('Updating')`));
     check('render:updating-suppresses-guidance-text', !/\bReady\b|Unlocks next/i.test(await guidanceText()) && /Reported pending/i.test(await cardText('C')));
     await shot('retained-updating'); await evaluate(`qa.release('map-newer-graph')`); await ready();
     check('render:matched-picture-restores-guidance-text', /\bReady\b/.test(await cardText('C')) && /Unlocks next/i.test(await guidanceText()));
@@ -594,7 +595,7 @@ try {
     await wait('page', `d.querySelector('${region}')?.dataset.state==='not-found'`, 'not-found after accepted picture');
     check('render:not-found-discards-previous-diagram', await noDiagram()); await shot('retained-not-found');
     for (const [id, filename, text, tasks] of [['P-map-none','no-prerequisites','No prerequisites recorded for this plan',2],['P-map-groups','group-context','No task-to-task prerequisites recorded',1],['P-map-group-only','group-only','No task cards',0],['P-map-empty','empty','No task cards',0],['P-map-finished','finished','Done',2],['P-map-cancelled','cancelled','Reported pending',1]] as const) {
-      await plan(id); check(`render:${id}`, await guest('page', `return d.querySelector('${region}').textContent.includes(${JSON.stringify(text)})`) && Number((await snapshot('page')).tasks) === tasks && (await snapshot('page')).pairs.length === 0); await shot(filename);
+      await plan(id); check(`render:${id}`, await guest('page', `return d.querySelector('${region}').textContent.includes(${javascriptLiteral(text)})`) && Number((await snapshot('page')).tasks) === tasks && (await snapshot('page')).pairs.length === 0); await shot(filename);
       if (id === 'P-map-empty' || id === 'P-map-group-only') check(`render:${id}-D5-sentence`, await guest('page', `return d.querySelector('${region}').innerText.includes('No prerequisites recorded for this plan')`));
       if (id === 'P-map-finished' || id === 'P-map-cancelled') check(`render:${id}-no-guidance-text`, !/\bReady\b|Unlocks next/i.test(await guidanceText()) && (id === 'P-map-finished' ? /Skipped/.test(await cardText('S')) : /Reported pending/.test(await cardText('P'))));
     }
@@ -625,7 +626,7 @@ try {
       const tabs = await guest<string[]>('page', `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].map(n=>n.textContent)`);
       const index = tabs.indexOf(name); check(`hidden:tab-${name}-${results.length}`, index >= 0);
       await click('page', `[data-testid="detail-tabs"] [role="tab"]:nth-child(${index + 1})`);
-      await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]')?.textContent===${JSON.stringify(name)}`);
+      await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]')?.textContent===${javascriptLiteral(name)}`);
     }
     await searchFor('Dependency map fixture'); await click('page', H('P-map'));
     await wait('page', `d.querySelector('[data-testid="item-B"]')`, 'searched current task');
@@ -704,13 +705,13 @@ try {
     type FocusState = { top: string; frame: string | null; topHasFocus: boolean; guestHasFocus?: boolean; el?: { tag: string; testid: string | null; role?: string; label: string; ring: boolean; inline: boolean; expanded?: string; pressed?: string; selected?: string; disabled?: boolean } | null; guests: Record<string, { hasFocus: boolean; active: string | null }> };
     const focusState = () => evaluate<FocusState>('kf.state()');
     const clickTop = async (selector: string) => {
-      const p = await evaluate<[number, number] | null>(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
+      const p = await evaluate<[number, number] | null>(`(()=>{const n=document.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
       if (!p) throw Error(`missing shell ${selector}`);
       for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: p[0], y: p[1], button: 'left', clickCount: 1 });
     };
     const SHIFT = 8;
     /** In the owning guest only: is focus on `selector` (or inside it) while that frame owns focus? */
-    const focusedOn = (surface: string, selector: string) => evaluate<boolean>(`(()=>{const a=document.activeElement;if(!a||a.tagName!=='IFRAME'||a.dataset.frame!=='${surface}')return false;const d=a.contentDocument;if(!d.hasFocus())return false;const n=d.querySelector(${JSON.stringify(selector)});return !!n&&(n===d.activeElement||n.contains(d.activeElement))})()`);
+    const focusedOn = (surface: string, selector: string) => evaluate<boolean>(`(()=>{const a=document.activeElement;if(!a||a.tagName!=='IFRAME'||a.dataset.frame!=='${surface}')return false;const d=a.contentDocument;if(!d.hasFocus())return false;const n=d.querySelector(${javascriptLiteral(selector)});return !!n&&(n===d.activeElement||n.contains(d.activeElement))})()`);
     /** Tab from the neutral start sentinel until focus leaves to the end sentinel; then Shift+Tab back. */
     const walk = async (name: string, max = 160) => {
       await clickTop('#qa-before');
@@ -799,12 +800,12 @@ try {
       const clip = { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: r[3] + pad * 2, scale: 2 };
       const cs = await guest<Record<string, string>>(surface, `const a=d.activeElement,e=a.getAttribute('role')==='listbox'?(a.querySelector('[data-active="true"]')??a):a,cs=w.getComputedStyle(e),own=w.getComputedStyle(a);return {outline:own.outlineStyle+' '+own.outlineWidth+' '+own.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage,ring:String((own.outlineStyle!=='none'&&parseFloat(own.outlineWidth)>0)||(cs.boxShadow!=='none'&&!/^rgba\\(0, 0, 0, 0\\.0\\d/.test(cs.boxShadow)&&!/0px 1px/.test(cs.boxShadow)))}`);
       const a = await c.send('Page.captureScreenshot', { format: 'png', clip });
-      const where = () => evaluate<number[]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [Math.round(o.x+a.x+scrollX),Math.round(o.y+a.y+scrollY)]})()`);
+      const where = () => evaluate<number[]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [Math.round(o.x+a.x+scrollX),Math.round(o.y+a.y+scrollY)]})()`);
       const before = await where();
       // Unfocused reference only (not reachability evidence): the shell sentinel takes focus without scrolling.
       await evaluate(`document.getElementById('qa-before').focus({preventScroll:true});true`); await frames2();
       const stable = JSON.stringify(before) === JSON.stringify(await where());
-      const cs2 = await guest<Record<string, string>>(surface, `const e=d.querySelector(${JSON.stringify(selector)}),cs=w.getComputedStyle(e);return {outline:cs.outlineStyle+' '+cs.outlineWidth+' '+cs.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage}`);
+      const cs2 = await guest<Record<string, string>>(surface, `const e=d.querySelector(${javascriptLiteral(selector)}),cs=w.getComputedStyle(e);return {outline:cs.outlineStyle+' '+cs.outlineWidth+' '+cs.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage}`);
       const b = await c.send('Page.captureScreenshot', { format: 'png', clip });
       writeFileSync(join(artifacts!, `${name}-focused.png`), Buffer.from(a.data, 'base64'));
       writeFileSync(join(artifacts!, `${name}-unfocused.png`), Buffer.from(b.data, 'base64'));
@@ -822,7 +823,7 @@ try {
         if (await focusedOn(surface, selector)) { await frames2(); await frames2(); return i; }
         const st = await focusState();
         seen.push(st.el ? `${st.frame}:${st.el.testid ?? st.el.tag}` : String(st.top));
-        if (st.top === 'qa-after') throw Error(`Tab left ${surface} before reaching ${selector}; target ${JSON.stringify(await guest(surface, `const n=d.querySelector(${JSON.stringify(selector)});return n?{disabled:n.disabled??null,hidden:!!n.closest('[hidden]'),tabIndex:n.tabIndex,rects:n.getClientRects().length}:null`))}; stops ${JSON.stringify(seen.slice(-40))}`);
+        if (st.top === 'qa-after') throw Error(`Tab left ${surface} before reaching ${selector}; target ${JSON.stringify(await guest(surface, `const n=d.querySelector(${javascriptLiteral(selector)});return n?{disabled:n.disabled??null,hidden:!!n.closest('[hidden]'),tabIndex:n.tabIndex,rects:n.getClientRects().length}:null`))}; stops ${JSON.stringify(seen.slice(-40))}`);
       }
       throw Error(`${selector} not reached in ${surface} within ${max} Tab presses`);
     };
@@ -1788,7 +1789,7 @@ try {
       /** The row line's offset from its task list's top (moves only if rows above it changed). */
       const inListTop = (surface: string, id: string) => guest<number | null>(surface, `const li=d.querySelector('[data-testid="${id}"]'),ul=d.querySelector('${plan} ul.ap-items');if(!li||!ul)return null;const n=li.querySelector(':scope > .ap-item, :scope > details > summary')??li;return Math.round(n.getBoundingClientRect().top-ul.getBoundingClientRect().top)`);
       const noticeBox = (surface: string) => guest<{ h: number; text: boolean }>(surface, `const n=d.querySelector('${plan} [data-testid="focus-notice"]');return {h:n?Math.round(n.getBoundingClientRect().height):0,text:!!n?.textContent}`);
-      const statusOk = (step: (typeof replay.steps)[number]) => step.items.filter((i) => step.affectedIds.includes(i.id) && i.kind === 'task').map((i) => `d.querySelector('[data-testid="item-${i.id}"]')?.dataset.status===${JSON.stringify(i.status)}`).join('&&') || 'true';
+      const statusOk = (step: (typeof replay.steps)[number]) => step.items.filter((i) => step.affectedIds.includes(i.id) && i.kind === 'task').map((i) => `d.querySelector('[data-testid="item-${i.id}"]')?.dataset.status===${javascriptLiteral(i.status)}`).join('&&') || 'true';
       const settle = async (surface: string, step: (typeof replay.steps)[number]) => { await wait(surface, `${complete(step.revision)}&&(${statusOk(step)})${step.id === 'S6' ? `&&!d.querySelector('[data-testid="item-T-19-48"]')` : ''}`, `${surface} ${step.id}`); await frames2(); };
       const step = (id: string) => replay.steps.find((s) => s.id === id)!;
       await scenario('K9-replay', ['K9', 'K8', 'K10'], async () => {
@@ -2006,7 +2007,7 @@ try {
       const observations = await Promise.all(['panel', 'page'].map(async surface => {
         await ready(surface, step.revision);
         // Validate every changed status anchor, complete counts, and the structural witness.
-        const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${JSON.stringify(i.status)}`).join('&&') || 'true';
+        const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${javascriptLiteral(i.status)}`).join('&&') || 'true';
         await wait(surface, `${complete(step.revision)}&&(${statusChecks})${step.id === 'S6' ? `&&!d.querySelector('${node('item-T-19-48')}')` : ''}`, `${step.id} state observed`);
         const visibleMs = performance.now() - committedAt;
         const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('readiness-entry-T-01-00')}')?.dataset.group,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-item-title')?.textContent}`);
@@ -2223,13 +2224,13 @@ try {
   await evaluate(`qa.setSessions('alpha',[{id:'unrelated-session',title:'Synthetic session',projectId:'alpha',directory:'/fixture/main',parentId:null,createdAt:0,updatedAt:0,archivedAt:null,worktree:null,activity:'idle',outcome:null,items:[]}]);true`);
   await sleep(500);
   race('A9:unrelated-new-session-keeps-search', subscribed && await run() === runBefore && await stop() !== 'membership', ['The board watches Alpha’s sessions; a new session owning no seen candidate is not a membership change'], { subscribed, stop: await stop() });
-  await evaluate(`qa.setProjects(${JSON.stringify(PROJECTS.filter((p) => p.id !== 'alpha'))});true`);
+  await evaluate(`qa.setProjects(${javascriptLiteral(PROJECTS.filter((p) => p.id !== 'alpha'))});true`);
   await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='membership'`, 'membership change retires the narrowed search');
   await click('page', '[data-testid="search-refresh"] button');
   await wait('page', `d.querySelector('[data-testid="search-blocked"]')?.dataset.reason==='missing'`, 'unavailable project blocks');
   check('A6:unavailable-choice-kept', await guest<boolean>('page', `return d.querySelector('[data-testid="search-chip-project"]')?.dataset.available==='false'&&!!d.querySelector('[data-testid="search-remove-location"]')`));
   await shot('search-unavailable-scope');
-  await evaluate(`qa.setProjects(${JSON.stringify(PROJECTS)});qa.setSessions('alpha',[]);true`);
+  await evaluate(`qa.setProjects(${javascriptLiteral(PROJECTS)});qa.setSessions('alpha',[]);true`);
   await click('page', '[data-testid="search-remove-location"] button'); await idle();
   // A chosen worktree removed later: its chip stays, the narrowed search is blocked (never widened),
   // and only the worktree filter is offered for removal; the project stays.
@@ -2362,7 +2363,7 @@ try {
     // R9: host session A/B/null keeps the board search; zero new windows.
     await searchFor('export csv');
     const keep = await run(); mark = await count('/v1/search');
-    for (const s of ['session-a', 'session-b', null]) { await evaluate(`qa.context(${JSON.stringify(s)});true`); await sleep(300); }
+    for (const s of ['session-a', 'session-b', null]) { await evaluate(`qa.context(${javascriptLiteral(s)});true`); await sleep(300); }
     race('F3:host-session-changes-keep-board-search', await run() === keep && await count('/v1/search') === mark && await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-chip-q"]')`));
     // Rail with a null host session stays health-only and search-free.
     const railMark = (await reqs(`r.frame==='panel'`)).length;

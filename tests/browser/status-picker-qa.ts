@@ -1,5 +1,6 @@
 // CP-Q1 rendered regression. Run against tests/browser/status-picker-fixture.ts
 // in an isolated Chromium profile; all input goes through the existing CDP harness.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -23,7 +24,7 @@ function open() {
 }
 function choose(index: number, expected: string) {
   open(); key('Home'); if (index) key('ArrowDown', index); key('Enter');
-  wait(`d.querySelector('.ap-status-title')?.textContent===${JSON.stringify(expected)} && !d.querySelector('[role="listbox"]')`);
+  wait(`d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(expected)} && !d.querySelector('[role="listbox"]')`);
   assert.match(snapshot().focus, /oc-sdk-trigger/);
   const counts = guest(`return {...d.querySelector('.ap-status-plan [data-testid="counts"]').dataset};`);
   assert.equal(counts.done, expected === 'Finished plan' ? '3' : '1');
@@ -54,7 +55,7 @@ const initialConsole = JSON.parse(cdp('console', '1'));
 assert.deepEqual(initialConsole.entries, []);
 // M and U use the prior fixture's session-a/session-b IDs. All five M plans share
 // one directory here; scope semantics are unchanged. Fifth plan is explicitly finished.
-evaluate(`qa.expanded=true;for(const p of data.extras){p.sessionId='session-a';p.directory=data.projects[0].directory;}data.extras[1].title=${JSON.stringify(title)};qa.report();true`);
+evaluate(`qa.expanded=true;for(const p of data.extras){p.sessionId='session-a';p.directory=data.projects[0].directory;}data.extras[1].title=${javascriptLiteral(title)};qa.report();true`);
 wait(`d.querySelector('[data-testid="more-plans"]')?.textContent.includes('2 more')`);
 
 const measurements = [];
@@ -69,12 +70,12 @@ for (const width of [280, 360, 480]) {
   assert.equal(measure(width).title, title);
   const before = evaluate('qa.listReads');
   evaluate('qa.report();true');
-  wait(`qa.listReads>${before} && d.querySelector('.ap-status-title')?.textContent===${JSON.stringify(title)}`);
+  wait(`qa.listReads>${before} && d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(title)}`);
   assert.ok(evaluate(`qa.detailRequests.includes('extra-1')`));
   measurements.push({ state: 'long-title', ...measure(width) });
   // Keyboard-only open and Escape restore visible trigger focus without a selection.
   key('ArrowDown'); wait(`d.querySelector('[role="listbox"]')`); popupFit();
-  const fullOption = guest(`return [...d.querySelectorAll('[role="option"]')].some(n=>n.textContent.includes(${JSON.stringify(title)}));`);
+  const fullOption = guest(`return [...d.querySelectorAll('[role="option"]')].some(n=>n.textContent.includes(${javascriptLiteral(title)}));`);
   assert.equal(fullOption, true);
   if (width === 280) shot('open', width);
   key('Escape'); wait(`!d.querySelector('[role="listbox"]') && d.activeElement?.matches('${trigger}')`);
@@ -99,11 +100,11 @@ choose(4, title);
 evaluate(`qa.context('session-a');true`);
 wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
 evaluate('qa.context(null);true');
-wait(`d.querySelector('.ap-status-title')?.textContent===${JSON.stringify(title)}`);
+wait(`d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(title)}`);
 evaluate(`send({type:'directory',payload:{directory:null}});true`);
 wait(`d.querySelector('[data-testid="unscoped-state"]') && !d.querySelector('${trigger}')`);
 evaluate(`send({type:'directory',payload:{directory:data.projects[0].directory}});true`);
-wait(`d.querySelector('.ap-status-title')?.textContent===${JSON.stringify(title)}`);
+wait(`d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(title)}`);
 
 // Same guest/theme bridge, neutral dark tokens. Ready restores M (with its own choice).
 evaluate(`theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});document.documentElement.style.background=theme.tokens.background;document.body.style.background=theme.tokens.background;document.body.style.color=theme.tokens.foreground;ready();true`);

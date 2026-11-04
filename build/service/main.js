@@ -3437,6 +3437,14 @@ function validateItems(items) {
     visit(i.id);
 }
 
+// shared/javascript-literal.ts
+function javascriptLiteral(value) {
+  const json = JSON.stringify(value);
+  if (json === undefined)
+    throw new TypeError("Value has no JSON representation");
+  return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
 // setup/lifecycle.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync } from "node:fs";
@@ -3820,7 +3828,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   if (old) {
     manifest = { ...old.manifest, active: release, releases: { ...old.manifest.releases, [release]: { version: payload.version, files: releaseHash } } };
   } else {
-    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${JSON.stringify(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${JSON.stringify(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);

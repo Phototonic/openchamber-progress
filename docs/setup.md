@@ -272,6 +272,9 @@ reads the selection at setup time (not module-import cache time), validates
 hashes and delegates setup. The previous runnable release stays intact until the
 switch and is retained for recovery. File/parent sync precedes acknowledgement.
 No runtime npm/Bun dependency fetch or consumer TypeScript compilation.
+Values embedded in the discovery loader are serialized as JavaScript literals
+with HTML delimiters and Unicode line separators escaped; filesystem paths
+retain their original values when the loader runs.
 
 Interrupted staging/activation is not silently cleaned or relabeled success.
 Inspect distinguishes staged files/releases, unreferenced finalized releases and

@@ -4,6 +4,21 @@ import{mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirSync,symli
 import{lifecycle,inspect,type Targets,type Payload}from'../../setup/lifecycle.ts';
 import{Store}from'../../shared/store.ts';
 import{readBinding}from'../../shared/binding.ts';
+import { pathToFileURL } from 'node:url';
+
+test('generated discovery loader preserves special characters in a payload path', { skip: process.platform === 'win32' && 'fixture uses characters forbidden in Windows paths' }, async () => {
+  const f = fixture();
+  try {
+    f.targets.storeRoot = `${f.root}/store-<tag>-"'-\u2028\u2029`;
+    lifecycle('install', f.targets, { plugin: 'export default { setup: async ctx => ctx.probe };', guidance: 'Fixture guidance.', removal: '// fixture', version: '0.2.0' });
+    const loader = `${f.targets.configRoot}/plugins/agent-progress/index.js`;
+    const source = readFileSync(loader, 'utf8');
+    assert.ok(source.includes('\\u003ctag\\u003e'));
+    assert.doesNotMatch(source, /[\u2028\u2029]/);
+    const plugin = (await import(pathToFileURL(loader).href)).default;
+    assert.equal(await plugin.setup({ probe: 'fixture-result' }), 'fixture-result');
+  } finally { f.clean(); }
+});
 
 function fixture(){const root=mkdtempSync('/tmp/opencode/agent-progress-setup-');for(const n of ['配置 space','data'])mkdirSync(`${root}/${n}`,{mode:0o700});const targets:Targets={configRoot:`${root}/配置 space`,dataRoot:`${root}/data`,storeRoot:`${root}/store`,confirmed:true};return{root,targets,clean(){rmSync(root,{recursive:true,force:true});}};}
 const payload:Payload={plugin:'export default {id:"test",setup:async()=>{}};',guidance:'Keep canonical planner.',removal:'// removal fixture',version:'0.2.0'};
