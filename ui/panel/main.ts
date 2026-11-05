@@ -10,8 +10,10 @@ import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { planProject } from '../shared/live.ts';
+import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
 
-type Ui = { selected: string | null; setup: SetupUi };
+/** `presentation`: Plan view List (default) or Map, in this frame only; never stored. */
+type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
 const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
 // Recent sessions' chosen plan, so a remembered session repaints with its own selection at once
 // (host storage stays the durable copy and is still read on every switch).
@@ -19,12 +21,15 @@ const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
 let contextSession: string | null | undefined;
 let contextAuthority = '';
 let selectionGeneration = 0;
+/** The rail hosts the full map itself (the host can't open the board from here). View as list stays in this frame. */
+const railMap = createMapFrame<Ui>('rail', (vc) => vc.setUi({ presentation: 'list' }));
+const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-view-list"] button');
 
 // Right rail: the selected session's plan, progress first; diagnostics collapsed at the end.
 startView<Ui>({
   surface: 'panel',
   maxSessionSubscriptions: 4,
-  initialUi: () => ({ selected: null, setup: initialSetupUi() }),
+  initialUi: () => ({ selected: null, setup: initialSetupUi(), presentation: 'list' }),
   actionPlan: current,
   forgetPlans: (keys, ui, vc) => {
     selectionGeneration++;
@@ -47,6 +52,11 @@ startView<Ui>({
   // Task reading belongs to the selected session's view of the plan: another session (even of the
   // same plan) or plan starts at Show all again; nothing about it is stored.
   reading: (vc) => { const p = current(vc); return p && vc.session ? { plan: p.key, scope: `rail:${vc.session.id}` } : null; },
+  // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
+  get refreshed() { return railMap.refreshed; },
+  retire: (reason) => railMap.retire(reason),
+  afterPaint: (root, vc) => railMap.afterPaint(root, vc, current(vc), listSwitch),
+  preserveFocus: preserveMapFocus,
   // The chosen plan is remembered per session, so reopening the panel keeps it.
   onContext: (vc) => {
     const id = vc.session?.id ?? null;
@@ -54,7 +64,9 @@ startView<Ui>({
     if (id === contextSession) return; // another step of the same switch keeps the selection
     contextSession = id;
     const generation = ++selectionGeneration;
-    vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null });
+    // A new rail reading (also A → B → A, or none) starts on List with no map or task-target state.
+    railMap.resetReading();
+    vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null, presentation: 'list' });
     if (!id) return;
     void vc.storage.get(storeKey(id)).then((v) => {
       if (typeof v !== 'string' || generation !== selectionGeneration) return;
@@ -64,6 +76,10 @@ startView<Ui>({
   },
   paint(root, vc) {
     const { read, failure, env } = vc;
+    // Map work belongs to the selected session's reading of its plan, and runs only while Map is shown.
+    const shown = current(vc), session = vc.session?.id;
+    const mapShown = vc.ui.presentation === 'map' && !!shown && !!session;
+    railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', 'Agent progress'));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
     // The official-main notice does not depend on companion setup or the store.
@@ -85,6 +101,10 @@ startView<Ui>({
     if (official) root.append(official);
     if (!read.captureEnabled) root.append(testid(el('p', 'ap-doc-warn', 'Capture is off, so no new progress is being recorded.'), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
+    // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
+    const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
+    const runRequest = shown && session ? runClaim(read, session, shown) : null;
+    const runs = runRequest && verified ? vc.runs(runRequest) : null;
     if (scope.kind === 'none') {
       root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see the plan its agent reported.'));
     } else if (!scope.plans.length) {
@@ -98,19 +118,29 @@ startView<Ui>({
         vc.setUi({ selected: key });
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
       }));
+      // Plan view: List / Map, below the picker (also with one plan). List is the unchanged plan detail.
+      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); vc.setUi({ presentation: mode }); }));
       if (plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId) {
         root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${recordedLabel(plan, env)(plan.ownerSessionId)}.`), 'helping-note'));
       }
-      if (plan) root.append(planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading }), cleanupBlock(vc, plan));
+      if (plan && mapShown && session) {
+        const host = testid(el('div', 'ap-map-host'), 'map-host');
+        root.append(host);
+        railMap.paint(host, vc, { plan, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
+        root.append(cleanupBlock(vc, plan));
+      } else if (plan) {
+        const article = planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading });
+        // An explicit task focus/reveal or pointer selection here is what Map opens on.
+        railMap.listTargets(article);
+        root.append(article, cleanupBlock(vc, plan));
+      }
       if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
     }
     // Sub-agents of the selected session, only with a plan in scope, kept apart from the plan above.
-    const shown = current(vc);
-    const session = vc.session?.id;
-    if (shown && session && read.binding.verified && shown.sourceId === env.boundSource) {
+    if (shown && session && verified) {
       const census = subagentsBlock({
         surface: 'panel', plan: shown, census: censusFor(session, vc.directory, vc.live), facts: planFacts(shown, vc.detail(shown), env.boundSource),
-        runs: vc.runs(runClaim(read, session, shown)), verified: true, currentSession: session, liveSeq: vc.live.seq, env,
+        runs, verified: true, currentSession: session, liveSeq: vc.live.seq, env,
       });
       if (census) root.append(census);
     }

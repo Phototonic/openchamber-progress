@@ -12,6 +12,17 @@ function invariant(layout: MapLayout) {
   for (const p of layout.positions.values()) { const key = `${p.column}:${p.row}`; assert.ok(!slots.has(key)); slots.add(key); }
   for (const [a, b] of layout.edges) assert.ok(layout.positions.get(a)!.column < layout.positions.get(b)!.column);
 }
+test('admitted 1000-task deep chain remains navigable from a narrow viewport', () => {
+  const items = Array.from({ length: 1000 }, (_, n) => ({ id: `T-${n}`, kind: 'task' as const,
+    status: 'pending' as const, parentId: null, dependencies: n ? [`T-${n-1}`] : [] }));
+  const layout = new DependencyMapLayout().compute(items, metrics, 360);
+  invariant(layout);
+  assert.equal(layout.positions.size, 1000); assert.equal(layout.edges.length, 999);
+  assert.equal(layout.positions.get('T-999')!.column, 999);
+  assert.equal(neighbour(layout, 'T-998', new Set(layout.order), 'right'), 'T-999');
+  const target=layout.positions.get('T-999')!, transform=anchorSelection(undefined,target,{x:0,y:0,zoom:1},metrics,{width:360,height:400});
+  assert.ok(target.x+transform.x>=8 && target.x+transform.x+metrics.width<=352);
+});
 test('deterministic task-only layout, filters/content invariant, invalid input fails closed and pure navigation', () => {
   const input = graphItems(mapItems.map(i => ({ ...i, status: i.status ?? 'pending' }))), cache = new DependencyMapLayout();
   const a = cache.compute(input, metrics, 600); invariant(a);

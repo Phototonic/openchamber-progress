@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- An interactive dependency map of the selected plan, in two places: a fourth **Map** tab in the fullscreen board's plan detail, and a **Plan view: List / Map** switch below the plan picker in the right rail. Both show the same full map: task cards with recorded prerequisite → dependent arrows, reported status in words and shapes, Ready and Unlocks next guidance for active plans (from recorded prerequisites only, never permission to start), Show all / Unfinished and group filters, pan, zoom, Fit all and Focus current work, keyboard navigation with one Tab stop, an inspector for each task's prerequisites, dependents, blocker and verified assignment, and a View as list action that reveals the selected task in the ordinary list. A task you reveal or select in the list opens selected in the map. The board still opens on Progress and the rail on List; nothing about the map is stored, and graph data is read only while a Map view is shown. Older services without the graph read show a plain unavailable note and the lists keep working.
+- The host can't open the fullscreen board from the rail, so the rail hosts the map itself; nothing opens, links or synchronizes between the two. The narrow Work Status sidebar has no map.
+
+### Known issues
+
+- With the Orca screen reader, using View as list from the rail's map moves focus to the right task in the list but announces only "Selected map task" instead of the task's title and status. The board's View as list is unaffected.
+
 ## [0.7.0] - 2026-11-04
 
 ### Added

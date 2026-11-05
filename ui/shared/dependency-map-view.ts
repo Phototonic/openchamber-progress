@@ -4,15 +4,20 @@
 // With an interaction binding (S3) the canvas is a pan/zoom viewport with one roving card Tab stop,
 // scoped keys, a viewport toolbar, background-drag/wheel panning, relation highlights and one
 // persistent per-frame live region. Without one it stays the S2 read-only, natively scrolled view.
-import type { MapSnapshot, MapPicture } from './dependency-map.ts';
-import type { MapLayout } from './dependency-map-layout.ts';
+import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
+import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
-import { button, el, lifecycleBadge, testid } from './components.ts';
+import { DependencyMapInteraction, MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { mapAttribution } from './dependency-map-attribution.ts';
+import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
+import type { ViewContext } from './app.ts';
+import type { Census } from './census.ts';
+import type { RunsPanel } from './runs.ts';
+import type { RunRequest } from '../../shared/subagent-runs.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
 import { plural } from './format.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
-import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type StatusFilter } from './model.ts';
+import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
 import type { MapTaskAttribution } from './dependency-map-attribution.ts';
 
 /** The frame's interaction controller, as the view sees it. The controller lives outside the root. */
@@ -63,6 +68,8 @@ export interface DependencyMapView {
   update: (input: DependencyMapViewInput) => void;
   /** Apply an action-local controller command: viewport, focus, capture or announcement. */
   command: (command: MapInteractionCommand) => void;
+  /** Retire delivered and pending speech without removing the persistent live region. */
+  clearAnnouncements: () => void;
   dispose: () => void;
 }
 /** QA vocabulary: map-region data-{state,current,revision,tasks,edges,highlight}; map-card-ID
@@ -88,7 +95,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 let instances = 0;
 
 /**
- * Map CSS lives only with the map (production guests ship none until the map is exposed). One
+ * Map CSS lives only with the map (Work Status, which never mounts it, ships none). One
  * `<style data-map-style>` per document in `<head>`, after the shared sheet and outside every
  * repainted root, so remounts and root replacement neither duplicate nor drop it.
  */
@@ -160,6 +167,14 @@ function icon(name: keyof typeof ICONS) {
   svg.append(path);
   return svg;
 }
+/**
+ * Singular counts in controller messages ("1 direct prerequisites" → "1 direct prerequisite").
+ * Presentation-side until the controller pluralises its own text; a no-op once it does.
+ */
+const singular = (text: string) => text
+  .replace(/(^|\D)1 direct prerequisites\b/g, '$11 direct prerequisite').replace(/(^|\D)1 direct dependents\b/g, '$11 direct dependent')
+  .replace(/(^|\D)1 relationships hidden\b/g, '$11 relationship hidden').replace(/(^|\D)1 tasks shown\b/g, '$11 task shown')
+  .replace(/(^|\D)1 visible tasks\b/g, '$11 visible task');
 const zoomText = (zoom: number) => zoom * 100 < 1 ? 'under 1%' : `${Math.round(zoom * 100)}%`;
 
 function markOf(item: ItemView, fact: DerivedTask | undefined, guidance: boolean): Mark {
@@ -182,6 +197,28 @@ const STATE_COPY = {
   notFound: 'This plan is no longer recorded',
 } as const;
 
+/** Preserve the focused card across the owner's root commit, not merely its focus key.
+ * Other nodes use the ordinary paint. The card gets this paint's attributes, contents
+ * and click closure, while its native focus/accessibility identity survives the move.
+ * Older engines keep the owner's existing logical-focus restoration fallback.
+ */
+export function preserveMapFocus(previous: HTMLElement, next: HTMLElement) {
+  const active = previous.ownerDocument.activeElement;
+  if (!(active instanceof HTMLButtonElement) || !previous.contains(active) || !active.matches('.ap-map-card')) return;
+  const oldRegion = active.closest<HTMLElement>('[data-map-identity]');
+  const region = next.querySelector<HTMLElement>('[data-map-identity]');
+  if (!oldRegion?.dataset.mapIdentity || oldRegion.dataset.mapIdentity !== region?.dataset.mapIdentity) return;
+  const fresh = region.querySelector<HTMLButtonElement>(`.ap-map-card[data-task="${CSS.escape(active.dataset.task!)}"]`);
+  const parent = fresh?.parentElement as (HTMLElement & { moveBefore?: (node: Node, before: Node | null) => void }) | null;
+  if (!fresh || !parent || typeof parent.moveBefore !== 'function') return;
+  for (const a of [...active.attributes]) if (!fresh.hasAttribute(a.name)) active.removeAttribute(a.name);
+  for (const a of [...fresh.attributes]) if (active.getAttribute(a.name) !== a.value) active.setAttribute(a.name, a.value);
+  if (active.innerHTML !== fresh.innerHTML) active.replaceChildren(...fresh.childNodes);
+  active.onclick = fresh.onclick;
+  parent.moveBefore(active, fresh);
+  fresh.remove();
+}
+
 export function createDependencyMapView(): DependencyMapView {
   let host: HTMLElement | null = null, input: DependencyMapViewInput | null = null;
   const uid = `ap-map-${++instances}`;
@@ -201,10 +238,59 @@ export function createDependencyMapView(): DependencyMapView {
   let pendingFocus: { id: string | null; generation: number } | null = null;
   let painted = { key: '', viewport: null as HTMLElement | null };
   let listening: Document | null = null, announcer: HTMLElement | null = null;
+  // Controller speech waits one task (after this turn's focus and any repaint's restore; a timer, not
+  // an animation frame, so a throttled window can't hold it back). A
+  // selection description is dropped when its own card took focus: the card's name already says
+  // it, so it is spoken once (from the focus), not twice. Everything else is spoken.
+  let speech: { text: string; selection: string | null; focus: string | null; identity: string | null; generation: number; timer: ReturnType<typeof setTimeout> | undefined } | null = null;
+  // The task a `selection` command named in this turn (cleared at the end of the turn), and the
+  // card a pointer press just moved focus onto (cleared once its click has dispatched).
+  let turnSelection: string | null = null, pointerFocused: string | null = null;
+  // Each painted card's name without the selection-relative Upstream/Downstream phrase.
+  let baseNames = new Map<string, string>();
   const binding = () => input?.interaction ?? null;
 
-  function announce(text: string) {
-    const node = announcer, b = binding(); if (!node || !text || !b) return;
+  function dropSpeech() { if (speech) clearTimeout(speech.timer); speech = null; }
+  function clearAnnouncements() {
+    dropSpeech(); turnSelection = pointerFocused = null;
+    if (speakFrame) cancelAnimationFrame(speakFrame);
+    speakFrame = 0; spoken++;
+    if (announcer?.textContent) announcer.textContent = '';
+  }
+  function queueSpeech(text: string) {
+    const b = binding(); if (!b || !text) return;
+    dropSpeech();
+    const { identity, generation } = b.state();
+    // Reconcile can emit the first List → Map selection before render supplies its
+    // ready picture. Resolve the title at delivery, not against the loading input.
+    const item = { text, selection: turnSelection, focus: null as string | null, identity, generation, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+    if (item.selection && item.selection === pointerFocused) item.focus = item.selection;
+    item.timer = setTimeout(() => {
+      if (speech !== item) return;
+      speech = null;
+      const now = binding()?.state();
+      if (!now?.active || now.identity !== item.identity || now.generation !== item.generation) return;
+      const active = document.activeElement as HTMLElement | null;
+      const title = item.selection ? input?.picture?.detail.detail.items.find(i => i.id === item.selection)?.title : undefined;
+      // Only the selection description itself ("<title>. <state>. …") can be dropped.
+      if (title !== undefined && item.text.startsWith(`${title}.`) && item.selection && item.focus === item.selection && document.hasFocus() && active?.matches('.ap-map-card') && active.dataset.task === item.selection) return;
+      announce(item.text);
+    }, 0);
+    speech = item;
+  }
+  /** A keyboard move focuses the card in the current DOM before the repaint: give it its fresh name first. */
+  function markSelected(id: string | null) {
+    const v = viewportNode; if (!v?.isConnected) return;
+    for (const n of v.querySelectorAll<HTMLElement>('.ap-map-card[aria-current="true"]')) n.removeAttribute('aria-current');
+    const card = id === null ? null : v.querySelector<HTMLElement>(`.ap-map-card[data-task="${CSS.escape(id)}"]`);
+    const name = id === null ? undefined : baseNames.get(id);
+    if (card) { card.setAttribute('aria-current', 'true'); if (name) card.setAttribute('aria-label', name); }
+  }
+
+  function announce(raw: string) {
+    const node = announcer, b = binding(); if (!node || !raw || !b) return;
+    const text = singular(raw);
+    dropSpeech(); // a direct outcome (zoom, pan) is newer than any queued controller message
     // A newer message always wins: it cancels any deferred repeat still waiting for its frame.
     const token = ++spoken;
     if (speakFrame) { cancelAnimationFrame(speakFrame); speakFrame = 0; }
@@ -282,6 +368,7 @@ export function createDependencyMapView(): DependencyMapView {
 
   function paint() {
     observer?.disconnect(); observer = null;
+    baseNames = new Map();
     if (!host || !input) return;
     // The owner restores focus synchronously after attaching this paint's root; this microtask runs
     // after that, so the restoration's focusin is recognised as passive.
@@ -294,6 +381,7 @@ export function createDependencyMapView(): DependencyMapView {
     const retainedUnavailable = !!v.picture && (v.state === 'unavailable' || v.state === 'not-found');
     const p = retainedUnavailable ? null : v.picture, layout = p ? v.layout : null;
     const region = testid(el('article', 'ap-map'), 'map-region');
+    if (st?.identity) region.dataset.mapIdentity = st.identity;
     region.dataset.frame = v.frame;
     region.setAttribute('aria-labelledby', `${uid}-title`);
     region.dataset.state = v.state; region.dataset.current = String(v.current);
@@ -377,6 +465,10 @@ export function createDependencyMapView(): DependencyMapView {
     const shownEdges = edges.filter(([a, b]) => visible.has(a) && visible.has(b));
     const hiddenTasks = (layout?.order.length ?? tasks.length) - [...visible].filter(id => layout?.positions.has(id) ?? true).length;
     const hiddenEdges = edges.length - shownEdges.length;
+    // Direct counts per task, and relationships of a shown task whose other end the filters hide.
+    const inCount = new Map<string, number>(), outCount = new Map<string, number>(), hiddenRelCount = new Map<string, number>();
+    const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+    for (const [a, z] of edges) { bump(outCount, a); bump(inCount, z); if (visible.has(a) !== visible.has(z)) bump(hiddenRelCount, visible.has(a) ? a : z); }
     const anyRecorded = items.some(i => i.dependencies?.length);
     const groupOwned = groups.filter(g => g.dependencies?.length);
     const unlocking = (id: string) => guidance && byId.get(id)?.status !== 'skipped' ? [...facts?.get(id)?.unlocksNext ?? []] : [];
@@ -680,7 +772,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (b) card.tabIndex = id === roving ? 0 : -1;
         Object.assign(card.style, { left: `${slot.x + PAD}px`, top: `${slot.y + PAD}px`, width: `${m.width}px`, height: `${m.height}px` });
         const path = groupPath(id);
-        const prereqs = edges.filter(([, b]) => b === id).length, dependents = edges.filter(([a]) => a === id).length;
+        const prereqs = inCount.get(id) ?? 0, dependents = outCount.get(id) ?? 0, hiddenRel = hiddenRelCount.get(id) ?? 0;
         const statusRow = el('span', 'ap-map-card-status');
         statusRow.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
         const title = el('span', 'ap-map-card-title', i.title);
@@ -710,14 +802,20 @@ export function createDependencyMapView(): DependencyMapView {
           card.append(line);
         }
         card.append(foot);
-        card.setAttribute('aria-label', [
+        // The card's name is what a screen reader speaks when a selection focuses it (the map
+        // announcer then stays quiet), so it carries title, state and direct counts in full.
+        const name = [
           i.title, MARK_TEXT[kind], who.card ?? '', who.live ? `${who.live.text}, session activity only` : '',
           path.length ? `Group: ${path.join(' › ')}` : '',
-          `${plural(prereqs, 'recorded prerequisite', 'recorded prerequisites')}, ${plural(dependents, 'dependent', 'dependents')}`,
+          `${plural(prereqs, 'direct recorded prerequisite', 'direct recorded prerequisites')}, ${plural(dependents, 'direct dependent', 'direct dependents')}`,
+          hiddenRel ? `${plural(hiddenRel, 'related task', 'related tasks')} hidden by filters` : '',
           unlocks.length ? `Unlocks next for ${plural(unlocks.length, 'task', 'tasks')}` : '',
-          rel === 'upstream' ? 'Upstream of the selected task' : rel === 'downstream' ? 'Downstream of the selected task' : '',
-        ].filter(Boolean).join('. '));
-        card.onclick = () => { if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); };
+        ].filter(Boolean).join('. ');
+        baseNames.set(id, name);
+        card.setAttribute('aria-label', rel ? `${name}. ${rel === 'upstream' ? 'Upstream' : 'Downstream'} of the selected task` : name);
+        // A click whose press moved focus onto this card has already had its name spoken.
+        card.onpointerdown = () => { pointerFocused = document.activeElement === card ? null : id; };
+        card.onclick = () => { if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null; };
         world.append(card);
         // Chain tag: a label on the card's top edge, outside its clipped content, so it never competes
         // with status words or chips. Decorative: the card's name carries the same words.
@@ -942,8 +1040,14 @@ export function createDependencyMapView(): DependencyMapView {
     command(c) {
       switch (c.type) {
         case 'viewport': scheduleViewport(); break;
-        case 'announce': announce(c.text); break;
+        case 'selection':
+          // Remembered for this turn only, so the following announcement can be matched to it.
+          turnSelection = c.id; queueMicrotask(() => { turnSelection = null; });
+          markSelected(c.id);
+          break;
+        case 'announce': queueSpeech(c.text); break;
         case 'focus': {
+          if (speech?.selection && speech.selection === c.id) speech.focus = c.id;
           // Focus now (keyboard moves feel immediate), and again after a repaint in this same turn:
           // the owner restores its pre-paint focus after replacing the root. The action always ends
           // with this turn (after any repaint's restore has run), consumed or not: a missing target
@@ -954,14 +1058,160 @@ export function createDependencyMapView(): DependencyMapView {
           break;
         }
         case 'capture': capture(c.pointerId, c.capture); break;
-        default: break; // selection, filters and list reveal are frame state, owned by the frame
+        default: break; // filters and list reveal are frame state, owned by the frame
       }
     },
+    clearAnnouncements,
     dispose() {
-      observer?.disconnect(); observer = null; unlisten();
+      observer?.disconnect(); observer = null; unlisten(); clearAnnouncements();
       if (frame) cancelAnimationFrame(frame); frame = 0;
-      if (speakFrame) cancelAnimationFrame(speakFrame); speakFrame = 0; spoken++;
       host = null; input = null; viewportNode = worldNode = zoomNode = null; pendingFocus = null; painted = { key: '', viewport: null };
+    },
+  };
+}
+
+/** What one production frame paints into its map host this turn. */
+export interface MapFramePaint {
+  plan: PlanView;
+  /** The frame's reading scope: board filters/search run, or `rail:<selected session>`. Never the board's host session. */
+  scope: string;
+  /** This surface's ONE existing run visit (board: the plan's coordinator; rail: the selected session), or null. */
+  runs: { request: RunRequest; panel: RunsPanel | null } | null;
+  census: Census;
+}
+/**
+ * One production map frame (board or rail): the frame-local snapshot coordinator, full-plan layout
+ * cache, interaction controller and view, all outside the replaced root. The owner calls `sync` on
+ * every paint with its reading plan (so explicit list targets belong to the right reading), `paint`
+ * only while its Map view is shown, and forwards its controller hooks. Graph reads start only while
+ * Map is shown and the frame is visible; leaving Map pauses them. Nothing is stored.
+ */
+export interface MapFrame<U> {
+  /** Every paint. `shown`: this frame's Map view is the one painted now. */
+  sync: (vc: ViewContext<U>, plan: PlanView | null, scope: string, shown: boolean) => void;
+  /** The user activated Map (call before the UI change, so focus ownership is the activated control's). */
+  enter: () => void;
+  /** The user left Map without a list reveal (tab or switch). */
+  leave: () => void;
+  /** Explicit list task focus/reveal or pointer selection in this frame's canonical list. */
+  listTargets: (article: HTMLElement) => void;
+  paint: (host: HTMLElement, vc: ViewContext<U>, input: MapFramePaint) => void;
+  /** `listFocus`: the frame's List control (rail switch / board Progress tab), when nothing else took focus. */
+  afterPaint: (root: HTMLElement, vc: ViewContext<U>, plan: PlanView | null, listFocus: (root: HTMLElement) => HTMLElement | null) => void;
+  /**
+   * Existing successful-refresh cadence: re-pin an unsettled map. Present only while this frame's Map
+   * is shown (a painted frame, so its host is ready); otherwise undefined, so the owner's optional
+   * `refreshed` hook is skipped entirely, including refreshes that start before the host is ready.
+   */
+  readonly refreshed: ((vc: ViewContext<U>) => void) | undefined;
+  /** A new reading the identity key cannot see (rail session A → B → A): forget everything. */
+  resetReading: () => void;
+  retire: (reason: 'reset' | 'hidden' | 'dispose') => void;
+}
+const CARD_METRICS = { width: 220, height: 100, columnGap: 70, rowGap: 25 };
+
+export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewContext<U>) => void): MapFrame<U> {
+  const view = createDependencyMapView(), geometry = new DependencyMapLayout();
+  let latest: ViewContext<U> | null = null, painting = false, shown = false;
+  // Measured canvas, kept across root replacement. Until it is measured, a conservative single-card row.
+  let canvasWidth = 0, canvasHeight = 400;
+  let lastLayout: MapLayout | null = null, lastGraph: MapPicture['graph'] | null = null, packedWidth = 0;
+  // View as list: reveal the map's selected task once in the canonical list of the same reading.
+  let reveal: { id: string | null; identity: string | null } | null = null;
+  const interaction = new DependencyMapInteraction(command => {
+    view.command(command);
+    if (command.type === 'selection' && !painting) latest?.setUi({});
+    if (command.type === 'filters') { latest?.reading?.set({ status: command.status }); if (!painting) latest?.setUi({}); }
+    if (command.type === 'list' && latest) { view.clearAnnouncements(); reveal = { id: command.id, identity: interaction.value.identity }; showList(latest); }
+  });
+  const binding: MapInteractionBinding = { state: () => interaction.value, dispatch: event => interaction.dispatch(event), focusOwner: owns => interaction.focusOwner(owns) };
+  const map = new DependencyMap(current => latest!.service(current), () => latest?.setUi({}));
+  const claimOf = (vc: ViewContext<U>, plan: PlanView, scope: string): MapClaim => ({
+    account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
+    refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
+  });
+  const forget = () => { view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
+  addEventListener('resize', () => { if (shown) latest?.setUi({}); });
+  // A settled current map does nothing; loading/updating/failed pictures re-pin on the next paint.
+  const repin = (vc: ViewContext<U>) => { const s = map.value.state; if (shown && (s === 'loading' || s === 'updating' || s === 'error')) vc.setUi({}); };
+  return {
+    sync(vc, plan, scope, want) {
+      latest = vc;
+      if (!plan || !vc.read) { shown = false; forget(); return; }
+      shown = want;
+      const identity = mapReadingKey(claimOf(vc, plan, scope));
+      // Layout retains survivor columns by task ID, so every reading-owned cache
+      // must retire together at the full identity boundary, not just interaction.
+      if (identity !== interaction.value.identity) forget();
+      interaction.identify(identity);
+      if (want && !interaction.value.active) interaction.enter(false);
+      if (!want) { view.clearAnnouncements(); if (interaction.value.active) interaction.leave(); map.pause(); }
+    },
+    enter() { interaction.enter(document.hasFocus()); },
+    leave() { view.clearAnnouncements(); interaction.leave(); },
+    listTargets(article) {
+      article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
+      article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });
+    },
+    paint(host, vc, input) {
+      latest = vc;
+      map.reconcile(claimOf(vc, input.plan, input.scope));
+      const snapshot = map.value;
+      const attribution = input.runs ? mapAttribution({ snapshot, request: input.runs.request, runs: input.runs.panel, census: input.census, liveSeq: vc.live.seq ?? 0 }) : new Map();
+      const graph = snapshot.picture?.graph ?? null, width = canvasWidth || CARD_METRICS.width;
+      // Same graph: reuse the full-plan layout (edgeless packing only re-packs for a new canvas width).
+      const reusable = graph === lastGraph && lastLayout && (lastLayout.edges.length > 0 || packedWidth === width);
+      const layout = graph && innerWidth > 0 ? reusable ? lastLayout : geometry.compute(graph.items, CARD_METRICS, width) : null;
+      lastLayout = layout; lastGraph = graph; packedWidth = width;
+      if (layout && snapshot.picture) {
+        painting = true;
+        try {
+          const items = snapshot.picture.detail.detail.items, guidance = snapshot.current && snapshot.picture.detail.plan.lifecycle === 'active';
+          interaction.reconcile({
+            identity: mapReadingKey(claimOf(vc, input.plan, input.scope)), layout, items, current: snapshot.current, guidance,
+            working: guidance ? items.filter(n => n.kind === 'task' && n.status === 'working').map(n => n.id) : [],
+            ready: guidance ? [...snapshot.picture.facts.tasks].filter(([, f]) => f.group === 'ready').map(([id]) => id) : [],
+            status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight },
+          });
+        } finally { painting = false; }
+      }
+      const state = interaction.value;
+      host.dataset.canvasWidth = String(canvasWidth);
+      view.render(host, {
+        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
+        facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
+        onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
+        onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => interaction.leave(true),
+      });
+    },
+    afterPaint(root, vc, plan, listFocus) {
+      latest = vc;
+      if (shown) {
+        reveal = null; // back on Map: an unfinished list reveal is retired
+        const viewport = root.querySelector<HTMLElement>('[data-testid="map-viewport"]');
+        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; vc.setUi({}); }
+        return;
+      }
+      const r = reveal; if (!r) return;
+      const active = document.activeElement, free = document.hasFocus() && (!active || active === document.body || !active.isConnected || active === listFocus(root));
+      // Another reading, a failed list read or focus the reader moved elsewhere retires it (no delayed theft).
+      if (!plan || r.identity !== interaction.value.identity || !free || vc.detail(plan)?.state === 'error') { reveal = null; return; }
+      if (r.id !== null) {
+        const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan[data-reading]')].find(a => a.dataset.testid === `plan-${plan.id}` && a.dataset.source === plan.sourceId);
+        if (!article?.querySelector('.ap-tasks[data-complete]')) return; // wait for this reading's complete list
+        reveal = null;
+        revealCurrentTask(article, plan, r.id, 'Selected map task');
+      } else reveal = null;
+      // Nothing took focus (no selection, or the row is gone): the frame's List control, never the body.
+      const now = document.activeElement;
+      if (!now || now === document.body || !now.isConnected) listFocus(root)?.focus({ preventScroll: true });
+    },
+    refreshed: repin,
+    resetReading: forget,
+    retire(reason) {
+      if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); shown = false; }
+      else if (reason === 'hidden') { view.clearAnnouncements(); map.pause(); interaction.leave(); }
+      else forget();
     },
   };
 }

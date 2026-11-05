@@ -159,6 +159,12 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/scope.ts')) return scope;
       if (name.endsWith('/refresh.ts')) return refresh;
       if (name.endsWith('/components.ts')) return components;
+      // S5 wires the shared map into the production rail. This preference-owner test stubs only
+      // that presentation boundary; complete map pairing/retirement is exercised above.
+      if (name.endsWith('/dependency-map-view.ts')) return { planViewSwitch: node, createMapFrame: () => ({
+        sync() {}, resetReading() {}, listTargets() {}, retire() {}, afterPaint() {}, enter() {}, leave() {},
+      }) };
+      if (name.endsWith('/census-view.ts')) return { runClaim: () => null };
       if (name.endsWith('/setup.ts')) return { initialSetupUi: () => ({}), reloadNote: () => null };
       if (name.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null, cleanupBlock: () => null };
       if (name.endsWith('/official.ts')) return { officialMainBlock: () => null };

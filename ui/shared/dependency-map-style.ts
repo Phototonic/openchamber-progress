@@ -1,5 +1,5 @@
 // Map-only guest CSS, injected by dependency-map-view.ts once per document. Kept out of the shared
-// stylesheet so production guests (and Work Status) ship no map code until the map is exposed.
+// stylesheet so Work Status, which never mounts the map, ships no map code.
 // Colours come only from host tokens; the shared stylesheet's reduced-motion rule still applies.
 export const MAP_CSS = `
 /* Dependency map (one renderer for board and rail). Static: no transitions or animation, so
@@ -21,8 +21,9 @@ export const MAP_CSS = `
 .ap-map-notice[data-tone="neutral"]{padding:12px 14px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 .ap-map-summary{display:flex;flex-direction:column;gap:6px;min-width:0}
 .ap-map-summary:empty{display:none}
-.ap-map-stats{display:flex;flex-wrap:wrap;gap:6px}
-.ap-map-stat{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 7px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-bg);font-size:12px;font-variant-numeric:tabular-nums}
+.ap-map-stats{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+/* Pills wrap their own words at 400% zoom in a narrow rail instead of widening the page */
+.ap-map-stat{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px 6px;max-width:100%;min-width:0;overflow-wrap:anywhere;padding:3px 10px 3px 7px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-bg);font-size:12px;font-variant-numeric:tabular-nums}
 .ap-map-stat strong{font-weight:650}
 .ap-map-stat[data-kind="working"] strong{color:var(--oc-info-text,var(--oc-info))}
 .ap-map-stat[data-kind="ready"] strong{color:var(--oc-success-text,var(--oc-success))}
@@ -59,7 +60,7 @@ export const MAP_CSS = `
 .ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .ap-map-viewport[data-interactive]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-3px}
 .ap-map-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0;padding:6px 8px;border:1px solid var(--oc-border);border-bottom:0;border-radius:var(--oc-radius,10px) var(--oc-radius,10px) 0 0;background:var(--oc-muted-surface)}
-.ap-map-tool-set{display:flex;align-items:center;gap:3px;min-width:0}
+.ap-map-tool-set{display:flex;flex-wrap:wrap;align-items:center;gap:3px;min-width:0;max-width:100%}
 .ap-map-pan{margin-left:auto}
 .ap-map-tool{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:28px;height:28px;padding:0 6px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12px;line-height:1;white-space:nowrap;cursor:pointer}
 .ap-map-tool[data-text]{padding:0 9px 0 7px}
@@ -167,6 +168,8 @@ export const MAP_CSS = `
 .ap-map-facts>div{display:contents}
 .ap-map-facts dt{color:var(--oc-muted)}
 .ap-map-facts dd{min-width:0;overflow-wrap:anywhere;white-space:pre-line}
+/* Very narrow map (a 360 px rail at 400% zoom): labels stack above values, help phrases wrap */
+@container ap-map (max-width:240px){.ap-map-facts{grid-template-columns:minmax(0,1fr)}.ap-map-facts dd{margin-bottom:4px}.ap-map-keys .ap-map-nowrap{white-space:normal}.ap-map-tool[data-text]{height:auto;min-height:28px;max-width:100%;padding-block:4px;white-space:normal;text-align:start;line-height:1.25}}
 .ap-map-rel{display:flex;flex-direction:column;gap:4px;min-width:0;padding-top:8px;border-top:1px solid var(--oc-border)}
 .ap-map-rel-h{margin:0;font-size:12px;font-weight:600}
 .ap-map-rel-list{display:flex;flex-direction:column;gap:1px}

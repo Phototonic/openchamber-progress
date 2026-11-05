@@ -171,6 +171,8 @@ export interface ViewSpec<U> {
   wantDetails: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
+  /** Optional native focus continuity seam, with both old and new roots connected. */
+  preserveFocus?: (previous: HTMLElement, next: HTMLElement) => void;
   /** Optional retry notification on the existing successful refresh cadence; no additional poller. */
   refreshed?: (vc: ViewContext<U>) => void;
   /** Synchronous retirement of view-owned reads before UI navigation is committed or painted. */
@@ -382,6 +384,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     return { selection, key: JSON.stringify([selection, p.revision, p.cleanup?.revision ?? 0, cacheGeneration, vc.read.captureEnabled]), plan: p };
   }
   function currentPreviewBinding(): PreviewBinding | null {
+    if (!ctx || disposed) return null;
     const vc = context();
     const target = spec.reading?.(vc);
     const p = target && vc.read?.plans.find((p) => p.key === target.plan);
@@ -588,6 +591,9 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   const gate = new RefreshGate(async (generation) => {
+    // Visibility can arrive before SDK ready. No consumer context or read belongs to that phase;
+    // onReady requests the initial refresh once account/locale/surface authority is available.
+    if (!ctx || disposed) return;
     const scope = currentScope();
     const key = scopeKey(scope);
     const fresh = read && identity && readScope === key ? spec.freshness?.(context()) ?? null : null;
@@ -622,7 +628,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
         failure = null; lastGoodAt = Date.now();
-        spec.refreshed?.(context());
+        if (ctx) spec.refreshed?.(context());
         runs?.poll();
         schedule(); plan(REFRESH_MS);
         return;
@@ -681,8 +687,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
-      spec.refreshed?.(context());
-      if (authorityChanged) spec.onContext?.(context());
+      if (ctx) spec.refreshed?.(context());
+      if (authorityChanged && ctx) spec.onContext?.(context());
       // The same visible poll re-reads the eligible sub-agent section; nothing else times it.
       else runs?.poll();
     } else {
@@ -1027,7 +1033,14 @@ export function startView<U>(spec: ViewSpec<U>) {
       const v = values.get(n.dataset.keep!);
       if (v !== undefined && n.value !== v && !n.dataset.fixed) n.value = v;
     }
-    mount!.replaceChildren(root);
+    if (spec.preserveFocus && 'moveBefore' in root && typeof root.moveBefore === 'function') {
+      // State-preserving moves require connected source AND destination. Connect the
+      // new tree before removing the old one; no frame is displayed between these steps.
+      const previous = mount!.firstElementChild as HTMLElement | null;
+      mount!.append(root);
+      if (previous) spec.preserveFocus(previous, root);
+      for (const child of [...mount!.children]) if (child !== root) child.remove();
+    } else mount!.replaceChildren(root);
     alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
       const top = scrolls.get(n.dataset.scrollKey!);
@@ -1141,6 +1154,9 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   const contextChanged = () => {
+    // Session/directory events can precede ready. Retain their values, but do not
+    // start consumers (notably summary reconciliation) without host authority.
+    if (!ctx || disposed) return;
     contextGeneration++;
     versions.ctx++;
     cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;

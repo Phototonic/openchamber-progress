@@ -420,6 +420,8 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-plan-list .oc-sdk-row{min-height:52px}
 .ap-detail{min-width:0;padding:16px;border-radius:var(--oc-radius,12px);background:color-mix(in srgb,var(--oc-fg) 3%,transparent)}
 .ap-detail-tabs{margin-bottom:4px}
+/* Four tabs (Progress, Document, History, Map) wrap at 400% zoom instead of scrolling the last ones out of view */
+.ap-detail-tabs .oc-sdk-tabs{flex-wrap:wrap}
 
 /* Board search: labelled form, explicit scope, removable chips, grouped hits. No motion. */
 .ap-search-area{display:flex;flex-direction:column;gap:8px;min-width:0}

@@ -1,5 +1,5 @@
-// Hidden, frame-local consumer of complete cached detail and the existing pinned graph reader.
-// No DOM, timers, storage, detail stream, attribution projection or production entry wiring.
+// Frame-local board/rail consumer of complete cached detail and the existing pinned graph reader.
+// No DOM, timers, storage, separate detail stream or attribution projection.
 import type { PlanGraphRead } from '../../shared/progress.ts';
 import type { HealthView, PlanView, StoreRead } from './model.ts';
 import { deriveDependencies, type DependencyDerivation } from './dependency-derivation.ts';
