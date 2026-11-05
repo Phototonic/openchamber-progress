@@ -661,8 +661,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
+        // Initial adoption is a context transition too: consumers must learn the identity
+        // before a user choice, not discover it on the next host-session switch.
+        authorityChanged = nextIdentity !== identity;
         // A hand-off belongs to the old store/binding: it never focuses or announces in the new one.
-        if (identity && nextIdentity !== identity) { authorityChanged = true; ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
+        if (identity && authorityChanged) { ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
         // Evict all remembered scopes/parts so another session cannot resurrect removed data.
         const previous = memory.get(memoryKey(key))?.read;

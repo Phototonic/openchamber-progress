@@ -7,7 +7,7 @@ import { mapItems } from '../fixtures/dependency-map.ts';
 
 type Fixture = Awaited<ReturnType<typeof startSearchShell>>;
 export interface Driver {
-  mode: 'final' | 'accessibility' | 'large' | 'owner'; artifacts: string; ownerSmoke?: boolean;
+  mode: 'final' | 'accessibility' | 'large' | 'owner' | 'rail-choice'; artifacts: string; ownerSmoke?: boolean;
   c: { send: (method: string, params?: object) => Promise<any> };
   evaluate: <T = any>(code: string) => Promise<T>;
   guest: <T = any>(surface: string, code: string) => Promise<T>;
@@ -93,6 +93,57 @@ export async function productionMapQa(d: Driver) {
   const observeSpeech = async (s: string) => guest(s, `w.__announcer=d.querySelector('${hook('map-announcer')}');w.__speech=[];w.__speechObserver?.disconnect();w.__speechObserver=new MutationObserver(()=>{const t=w.__announcer.textContent;if(t)w.__speech.push(t)});w.__speechObserver.observe(w.__announcer,{childList:true,subtree:true,characterData:true});return true`);
   const speech = (s: string) => guest<string[]>(s,'return w.__speech');
   const overflow = (s: string) => guest<boolean>(s,'return d.documentElement.scrollWidth<=w.innerWidth+1');
+  const preferenceSettled = async (after: number) => {
+    await wait('panel', `qa.preferenceReplies.slice(${after}).some(r=>r.frame==='panel'&&r.key==='rail-plan:M'&&r.consumed)`, 'preference reply consumed');
+    await frames2(); // Paint only; the acknowledged message task above owns async completion.
+    d.facts.preferenceReplies = await evaluate('qa.preferenceReplies');
+  };
+
+  if (d.mode === 'rail-choice') {
+    const choice = () => guest('panel', `const n=d.querySelector('article[data-reading]');return {plan:n?.dataset.testid,source:n?.dataset.source}`);
+    const alpha = `d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`;
+    for (const saved of [false, true]) {
+      const label = saved ? 'saved' : 'no-storage';
+      if (saved) {
+        // Opt-in realistic storage: an old beta preference is replaced by the explicit alpha
+        // choice. The ordinary fixture intentionally drops writes and returns no preference.
+        await evaluate(`qa.railPreferences={'rail-plan:M':'source-beta/P-map'};true`);
+        const mark = await evaluate<number>('qa.preferenceReplies.length');
+        await reload('panel');
+        await preferenceSettled(mark);
+        await wait('panel', `d.querySelector('article[data-source="source-beta"][data-testid="plan-P-map"]')`, 'saved beta preference restored');
+        check('rail-choice:saved:preference-restored-before-explicit-choice', true);
+      }
+      await setup();
+      await open('panel');
+      await evaluate(`qa.context('other');true`);
+      await wait('panel', `!d.querySelector('${region}')&&!d.querySelector('${hook('plan-view')}')`, 'other session');
+      const mark = await evaluate<number>(`(()=>{const mark=qa.preferenceReplies.length;qa.context('M');return mark})()`);
+      await wait('panel', `d.querySelector('article[data-reading]')`, 'returned list');
+      await preferenceSettled(mark);
+      const restored = await choice();
+      d.facts[label] = restored;
+      check(`rail-choice:${label}:source-qualified-round-trip`, restored.plan === 'plan-P-map' && restored.source === 'source-alpha', undefined, restored);
+      check(`rail-choice:${label}:list-reset`, await guest('panel', `return d.querySelector('${hook('plan-view-list')} button').getAttribute('aria-pressed')==='true'`));
+      if (saved) check('rail-choice:saved:explicit-choice-persisted', await evaluate(`qa.railPreferences['rail-plan:M']==='source-alpha/P-map'`));
+      await wait('page', `d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`, 'independent board');
+      check(`rail-choice:${label}:board-independent`, await guest('page', `return !!d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`));
+      await evaluate(`qa.context(null);true`);
+      await wait('panel', `!d.querySelector('${hook('plan-view')}')&&!d.querySelector('article[data-reading]')`, 'null removes entry');
+      check(`rail-choice:${label}:null-removes-entry`, true);
+      await evaluate(`qa.holdPreference=true;qa.context('M');true`);
+      await wait('panel', `qa.held.some(h=>h.tag==='preference')`, 'held beta preference');
+      // Use actual value changes (re-accepting the selected SDK option emits no change).
+      await pickRail('Independent source counterpart');
+      await pickRail();
+      const released = await evaluate<number>(`(()=>{const mark=qa.preferenceReplies.length;qa.release('preference');return mark})()`);
+      await preferenceSettled(released);
+      check(`rail-choice:${label}:late-preference-cannot-override`, await guest('panel', `return !!${alpha}`));
+    }
+    check('rail-choice:no-guest-errors', d.pageErrors().length === 0, undefined, d.pageErrors());
+    await photo('round-trip-list', 'panel');
+    return;
+  }
 
   if (d.mode === 'owner') {
     await setup();
@@ -311,7 +362,8 @@ export async function productionMapQa(d: Driver) {
   await evaluate(`qa.context('other');true`);await wait('panel',`!d.querySelector('${region}')`,'rail reset other');
   await evaluate(`qa.context('M');true`);await wait('panel',`d.querySelector('${hook('plan-view-list')} button')?.getAttribute('aria-pressed')==='true'`,'rail reset back');
   const restored=await guest('panel',`const n=d.querySelector('article[data-reading]');return {plan:n?.dataset.testid,source:n?.dataset.source}`);
-  d.facts.railPreferenceRepro={sequence:'Pick source-alpha/P-map; M → other → M; synthetic storage reports no saved value',restored,classification:'pre-existing stored List plan choice; Map reads the currently selected source-qualified key, not a stale source picture'};
+  d.facts.railPreferenceRepro={sequence:'Pick source-alpha/P-map; M → other → M; synthetic storage reports no saved value',restored};
+  check('rail:source-qualified-choice-survives-round-trip',restored.plan==='plan-P-map'&&restored.source==='source-alpha',undefined,restored);
   check('board:host-session-keeps-selection',await selected('page')===boardSelection);
   await pickRail();await open('panel');check('rail:map-matches-explicit-source',await guest('panel',`return d.querySelector('${hook('map-title')}').textContent==='Dependency map fixture'`));
   await photo('identity-switch','panel');
@@ -319,7 +371,9 @@ export async function productionMapQa(d: Driver) {
   // A delayed stored choice cannot undo a newer picker action or restore old map/task state.
   await evaluate(`qa.context('other');true`);await wait('panel',`!d.querySelector('${hook('plan-view')}')`);
   await evaluate(`qa.holdPreference=true;qa.context('M');true`);await wait('panel',`qa.held.some(h=>h.tag==='preference')`,'held stored choice');
-  await pickRail('No recorded prerequisites');await evaluate(`qa.release('preference');true`);await frames2();await open('panel');
+  await pickRail('No recorded prerequisites');
+  const preferenceMark=await evaluate<number>(`(()=>{const mark=qa.preferenceReplies.length;qa.release('preference');return mark})()`);
+  await preferenceSettled(preferenceMark);await open('panel');
   check('rail:late-preference-cannot-override-choice',await guest('panel',`return d.querySelector('${hook('map-title')}').textContent==='No recorded prerequisites'`));
   await expose('page');
   for(const id of ['filter-project','filter-worktree','filter-session']){
