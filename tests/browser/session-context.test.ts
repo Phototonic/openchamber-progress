@@ -71,6 +71,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   });
   let vc!: ViewContext<Ui>;
   const paints: Array<string | null> = [];
+  const contexts: Array<{ session: string | null; identity: string; hasRead: boolean }> = [];
   const spec: ViewSpec<Ui> = {
     beforeUiChange,
     surface: board ? 'page' : 'panel', maxSessionSubscriptions: 2,
@@ -78,10 +79,11 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     scope: ({ session, directory }, ui) => board ? { ...pageListScope({ ...NO_FILTERS, session: ui.sessionFilter }), archived: ui.archived ? 'only' : 'exclude' } : contextListScope(session?.id, directory),
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
+    onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
     paint: (_root, value) => { vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
   };
   exports.startView(spec);
-  return { requests, paints, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
@@ -104,6 +106,18 @@ test('sidebar null/undefined never falls back to directory; board {} and contrib
   const calls: GuestRequest[] = [];
   const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(HEALTH); } }, null);
   assert.equal(result.ok && result.read, null); assert.deepEqual(calls.map(q => q.path), ['/health']);
+});
+
+test('initial store identity adoption notifies context consumers before a later session switch', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    assert.ok(c.vc.identity);
+    assert.ok(c.contexts.some(v => v.session === 'A' && v.identity === c.vc.identity && v.hasRead), 'the rail must learn the store authority before the user can choose a plan');
+    const count = c.contexts.length;
+    c.vc.retry(); await settle();
+    assert.equal(c.contexts.length, count, 'unchanged polls do not repeat the identity transition');
+  } finally { c.stop(); }
 });
 
 test('actual controller: full ready A → null → B retires held list and open picker, then accepts later ready A', async () => {

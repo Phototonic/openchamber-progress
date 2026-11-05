@@ -41,7 +41,7 @@ const light=${JSON.stringify(LIGHT)},dark=${JSON.stringify(DARK)},theme=JSON.par
 const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
-window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],messages:[],errors:[]};
+window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],preferenceReplies:[],messages:[],errors:[]};
 // Keyboard-focus modes only (labelled seams): every /v1/setup read and setup action is answered here
 // from the existing synthetic setup fixture and never forwarded to a service or installation code;
 // "unconfigured" makes /health report not ready. Metadata (method/path/status) is recorded.
@@ -68,8 +68,10 @@ const record=(f,q,reply,ms)=>{if(!q.path.startsWith('/v1/search')&&!['/v1/plan',
  if(q.path==='/v1/plan')e.continuation=!!q.query?.cursor;
  if(reply.status===200){try{const b=JSON.parse(reply.body);if(b.work)e.work=b.work;if(b.hits)e.hits=b.hits.length;if(b.coverage)e.gapped=b.coverage.gapped;if(b.plan){e.revision=b.plan.revision;e.itemCount=b.items?.data?.length;e.nextPage=!!b.items?.nextCursor}else if(q.path==='/v1/plan-graph'){e.revision=b.revision;e.itemCount=b.itemCount}}catch{}}qa.replies.push(e)};
 addEventListener('message',async e=>{
- const el=[...document.querySelectorAll('iframe')].find(x=>x.contentWindow===e.source),m=e.data;if(!el||m.channel!=='openchamber.sdk')return;const f=el.dataset.frame;
- const result=payload=>send(f,{type:'result',id:m.id,ok:true,payload});
+ const el=[...document.querySelectorAll('iframe')].find(x=>x.contentWindow===e.source),m=e.data;if(!el)return;const f=el.dataset.frame;
+ if(m.channel==='qa.preference-consumed'){const r=qa.preferenceReplies[m.ticket];if(r?.frame===f)r.consumed=true;return}
+ if(m.channel!=='openchamber.sdk')return;
+ const result=payload=>{send(f,{type:'result',id:m.id,ok:true,payload});if(m.type==='storage'&&m.payload.op==='get'&&m.payload.key?.startsWith('rail-plan:')){const ticket=qa.preferenceReplies.length;qa.preferenceReplies.push({frame:f,key:m.payload.key,consumed:false});send(f,{channel:'qa.preference-barrier',ticket})}};
  const fail=(code,error)=>send(f,{type:'result',id:m.id,ok:false,code,error});
  qa.messages.push({frame:f,type:m.type,at:performance.now()});
  if(m.type==='hello')ready(f);
@@ -79,6 +81,7 @@ addEventListener('message',async e=>{
   const reply={storage:true,op:q.op,found:false,...(q.op==='keys'?{keys:[]}:{})};
   // Labelled delayed preference seam. Ordinary modes retain their no-saved-preference fixture.
   if(qa.holdPreference&&f==='panel'&&q.op==='get'&&q.key==='rail-plan:M'){qa.holdPreference=false;qa.held.push({tag:'preference',frame:f,path:'storage',go:()=>result({...reply,found:true,value:'source-beta/P-map'})})}
+  else if(qa.railPreferences&&f==='panel'&&q.key?.startsWith('rail-plan:')){if(q.op==='set')qa.railPreferences[q.key]=q.value;if(q.op==='delete')delete qa.railPreferences[q.key];result({...reply,...(q.op==='get'&&typeof qa.railPreferences[q.key]==='string'?{found:true,value:qa.railPreferences[q.key]}:{})})}
   else result(reply)}
  else if(m.type==='service-request'){
   const q=m.payload,t0=performance.now();qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null,at:t0});
@@ -108,6 +111,11 @@ addEventListener('message',async e=>{
 `;
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>Plan search QA</title><style>html,body{margin:0;background:#fafafa;color:#202124;font:14px system-ui}main{display:flex;flex-wrap:wrap;align-items:flex-start}section{margin:12px;display:none}h1{font-size:13px;margin:0 0 8px}iframe{display:block;width:100%;height:1500px;border:0}section[data-frame=status] iframe{height:220px}</style></head><body><script>${script}</script><main>${FRAMES.map((f) => `<section data-frame="${f}"><h1>Agent progress · ${f}</h1><iframe data-frame="${f}" data-surface="${f}" title="${f}" src="/ui/${f}/index.html"></iframe></section>`).join('')}</main></body></html>`;
+
+// Fixture-only guest acknowledgement. The parent's result and marker are FIFO message tasks:
+// the SDK resolves storage in the result handler, and its promise chain (including the rail's
+// restore callback) drains at that task's microtask checkpoint before this marker can run.
+const preferenceBarrier = `<script>addEventListener('message',e=>{if(e.source===parent&&e.data?.channel==='qa.preference-barrier')parent.postMessage({channel:'qa.preference-consumed',ticket:e.data.ticket},'*')})</script>`;
 
 type Fixture = ReturnType<typeof searchFixture>;
 
@@ -236,7 +244,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         else throw Error('Unknown fixture step');
         res.end('{}');
       }
-      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); res.end((isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8')); }
+      else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); let body = (isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8'); if (url.pathname.endsWith('.html')) body = body.replace('</body>', preferenceBarrier + '</body>'); res.end(body); }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         const { request, store } = JSON.parse(body);

@@ -40,10 +40,11 @@ const onlyMapInteraction = arg('--only') === 'dependency-map-interaction';
 const onlyMapLarge = arg('--only') === 'dependency-map-large';
 const onlyMapAttribution = arg('--only') === 'dependency-map-attribution';
 const onlyMapFinal = arg('--only') === 'dependency-map-final';
+const onlyRailChoice = arg('--only') === 'rail-plan-choice';
 const onlyMapAccessibility = arg('--only') === 'dependency-map-accessibility';
 const onlyMapOwner = arg('--only') === 'dependency-map-screen-reader';
-const productionMap = onlyMapFinal || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
+const productionMap = onlyMapFinal || onlyRailChoice || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
+if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
 if (onlyMapOwner && !process.argv.includes('--headed')) throw Error('Screen-reader fixture requires --headed');
 if (process.argv.includes('--orca-automated')) {
   const root=process.env.ORCA_PRIVATE_ROOT, display=Number(process.env.DISPLAY?.slice(1));
@@ -216,7 +217,7 @@ try {
 
   if (productionMap) {
     Object.assign(facts, { production: true, fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map-v1', ...(onlyMapLarge ? { seed: LARGE_PLAN_SEED } : {}), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), runtime: process.version, serviceClass: built ? 'built generated service' : 'TypeScript service', browser: browserVersion, bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
-    await productionMapQa({ mode: onlyMapLarge ? 'large' : onlyMapAccessibility ? 'accessibility' : onlyMapOwner ? 'owner' : 'final', ownerSmoke: process.argv.includes('--owner-fixture-smoke'), artifacts, c, evaluate, guest, wait, key, click, show, shot, frames2, theme, check, count, fx, facts, perf, pageErrors, restart: async () => {
+    await productionMapQa({ mode: onlyRailChoice ? 'rail-choice' : onlyMapLarge ? 'large' : onlyMapAccessibility ? 'accessibility' : onlyMapOwner ? 'owner' : 'final', ownerSmoke: process.argv.includes('--owner-fixture-smoke'), artifacts, c, evaluate, guest, wait, key, click, show, shot, frames2, theme, check, count, fx, facts, perf, pageErrors, restart: async () => {
       await fx.stop(); fx = await startSearchShell(built, false, 'dependency-map-large', false, true); origin = `http://127.0.0.1:${fx.port}`;
       await c.send('Page.navigate', { url: `${origin}/` }); return fx;
     } });
