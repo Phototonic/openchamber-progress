@@ -780,12 +780,14 @@ try {
     await click('panel', `${art} [data-testid="group-toggle-H"] > summary`);
     await wait('panel', `!d.querySelector('${art} [data-testid="group-toggle-H"]').open`);
     await guest('panel', `d.querySelector('${art} [data-testid="item-U"]').focus({preventScroll:true});return true`);
-    const topBefore = await guest<number>('panel', `return d.scrollingElement.scrollTop`);
+    // Notice insertion may legitimately change scrollTop to preserve the reading position.
+    // Measure the first visible row's viewport offset instead of the document scroll offset.
+    const anchorBefore = await guest<{ id: string; top: number; scroll: number } | null>('panel', `for(const row of d.querySelectorAll('${art} ul.ap-items li[data-testid]')){const line=row.querySelector(':scope > .ap-item, :scope > details > summary')??row,r=line.getBoundingClientRect();if(r.height>0&&r.bottom>0&&r.top<d.documentElement.clientHeight)return {id:row.dataset.testid,top:r.top,scroll:d.scrollingElement.scrollTop}}return null`);
     await evaluate(`qa.update('P-focus',p=>{p.items=p.items.filter(i=>i.id!=='U');p.items.push({id:'NG',title:'New follow-up group',kind:'group',status:'pending'},{id:'NT',title:'New follow-up task',kind:'task',status:'pending',parentId:'NG'});p.summary.structuralRevision++});true`);
     await repainted('U removed, NG added');
-    const fallback = await guest('panel', `return {notice:d.querySelector('${art} [data-testid="focus-notice"]').textContent,ng:d.querySelector('${art} [data-testid="group-toggle-NG"]')?.open,h:d.querySelector('${art} [data-testid="group-toggle-H"]').open,top:d.scrollingElement.scrollTop,ring:d.activeElement.matches(':focus')}`);
-    race.removedFocus = { active: await active(), ...fallback, topBefore };
-    check('Q6:removed-focus-falls-back-to-ancestor', await active() === 'summary:group-toggle-Z' && /no longer shown/.test(fallback.notice) && Math.abs(fallback.top - topBefore) < 2, race.removedFocus);
+    const fallback = await guest('panel', `const row=[...d.querySelectorAll('${art} ul.ap-items li[data-testid]')].find(n=>n.dataset.testid===${javascriptLiteral(anchorBefore?.id ?? '')}),line=row?.querySelector(':scope > .ap-item, :scope > details > summary')??row,r=line?.getBoundingClientRect();return {notice:d.querySelector('${art} [data-testid="focus-notice"]').textContent,ng:d.querySelector('${art} [data-testid="group-toggle-NG"]')?.open,h:d.querySelector('${art} [data-testid="group-toggle-H"]').open,top:d.scrollingElement.scrollTop,anchorTop:r?.height?r.top:null,ring:d.activeElement.matches(':focus')}`);
+    race.removedFocus = { active: await active(), ...fallback, anchorBefore };
+    check('Q6:removed-focus-falls-back-to-ancestor', await active() === 'summary:group-toggle-Z' && /no longer shown/.test(fallback.notice) && anchorBefore !== null && fallback.anchorTop !== null && Math.abs(fallback.anchorTop - anchorBefore.top) < 2, race.removedFocus);
     check('Q6:new-group-open-old-choice-kept', fallback.ng === true && fallback.h === false, fallback);
     await shot('panel', 'focus-fallback', `${art} [data-testid="focus-controls"]`);
     await click('panel', `${art} [data-testid="focus-mode-unfinished"] button`);
