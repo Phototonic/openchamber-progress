@@ -21,7 +21,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { RELEASE } from '../../shared/release.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 import { searchFixture, seedSearchLibrary } from '../fixtures/plan-task-search.ts';
-import { seedMapFixture } from '../fixtures/dependency-map.ts';
+import { mapItems, seedMapFixture } from '../fixtures/dependency-map.ts';
 import { digest } from '../../shared/store.ts';
 import { createLargePlanReplay, LARGE_PLAN_ID } from '../fixtures/large-plan.ts';
 import { readPlanGraph, type ServiceHost } from '../../ui/shared/source.ts';
@@ -75,7 +75,11 @@ addEventListener('message',async e=>{
  if(m.type==='hello')ready(f);
  else if(m.type==='workspace-subscribe'){result();const q=m.payload.query;qa.subs.push({frame:f,id:m.payload.subscriptionId,kind:q.kind,projectId:q.projectId});send(f,{type:'workspace',payload:{subscriptionId:m.payload.subscriptionId,snapshot:q.kind==='projects'?projectsSnapshot():q.kind==='sessions'?sessionsSnapshot(q.projectId):worktreesSnapshot(q.projectId)}})}
  else if(m.type==='workspace-unsubscribe'){qa.subs=qa.subs.filter(s=>s.id!==m.payload?.subscriptionId);result()}
- else if(m.type==='storage'){const q=m.payload;qa.storage.push({frame:f,op:q.op,key:q.key??null,scope:q.scope??'instance',at:performance.now()});result({storage:true,op:q.op,found:false,...(q.op==='keys'?{keys:[]}:{})})}
+ else if(m.type==='storage'){const q=m.payload;qa.storage.push({frame:f,op:q.op,key:q.key??null,scope:q.scope??'instance',at:performance.now()});
+  const reply={storage:true,op:q.op,found:false,...(q.op==='keys'?{keys:[]}:{})};
+  // Labelled delayed preference seam. Ordinary modes retain their no-saved-preference fixture.
+  if(qa.holdPreference&&f==='panel'&&q.op==='get'&&q.key==='rail-plan:M'){qa.holdPreference=false;qa.held.push({tag:'preference',frame:f,path:'storage',go:()=>result({...reply,found:true,value:'source-beta/P-map'})})}
+  else result(reply)}
  else if(m.type==='service-request'){
   const q=m.payload,t0=performance.now();qa.requests.push({frame:f,method:q.method,path:q.path,query:q.query||null,at:t0});
   const failing=qa.fail.find(x=>x.path===q.path&&(!x.frame||x.frame===f));
@@ -144,7 +148,7 @@ async function serve(f: Fixture, built: boolean) {
     mkdirSync(`${f.root}/home`, { mode: 0o700 });
     const reservation = netServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
     port = (reservation.address() as { port: number }).port; await new Promise<void>((r) => reservation.close(() => r()));
-    child = spawn(process.execPath, [path.resolve('build/service/main.js')], { env: { PATH: process.env.PATH, HOME: `${f.root}/home`, XDG_CONFIG_HOME: `${f.root}/config`, XDG_DATA_HOME: `${f.root}/data`, XDG_STATE_HOME: `${f.root}/state`, AGENT_PROGRESS_BINDING: binding, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' }, stdio: 'ignore' });
+    child = spawn(process.execPath, [path.resolve('build/service/main.js')], { env: { PATH: process.env.PATH, HOME: `${f.root}/home`, XDG_CONFIG_HOME: `${f.root}/config`, XDG_DATA_HOME: `${f.root}/data`, XDG_STATE_HOME: `${f.root}/state`, ...(process.env.ORCA_PRIVATE_ROOT ? { ORCA_PRIVATE_ROOT: process.env.ORCA_PRIVATE_ROOT } : {}), AGENT_PROGRESS_BINDING: binding, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' }, stdio: 'ignore' });
   } else {
     service = createProgressServer(f.store, 'fixture-only'); service.listen(0, '127.0.0.1'); await once(service, 'listening');
     port = (service.address() as { port: number }).port;
@@ -190,19 +194,19 @@ function seedKeyboard(f: Fixture) {
  * `keyboard`: neutral shell sentinels before/after the frames and the labelled setup/health seams
  * (keyboard-focus modes only). Mode `keyboard-focus` also seeds the synthetic `KF` session.
  */
-export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-hidden' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' = 'search', keyboard = mode === 'keyboard-focus') {
-  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution'].includes(mode)) throw Error('Unknown search-shell fixture mode');
+export async function startSearchShell(built = false, reportingSetup = false, mode: 'search' | 'large-plan' | 'keyboard-focus' | 'dependency-map-final' | 'dependency-map-render' | 'dependency-map-interaction' | 'dependency-map-large' | 'dependency-map-attribution' = 'search', keyboard = mode === 'keyboard-focus', productionMap = mode === 'dependency-map-final') {
+  if (!['search', 'large-plan', 'keyboard-focus', 'dependency-map-final', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution'].includes(mode)) throw Error('Unknown search-shell fixture mode');
   const large = mode === 'large-plan' || mode === 'dependency-map-large';
   const interaction = mode === 'dependency-map-interaction' || mode === 'dependency-map-large' || mode === 'dependency-map-attribution';
-  const preview = mode === 'dependency-map-render' || interaction;
+  const preview = !productionMap && (mode === 'dependency-map-render' || interaction);
   const previewPrefix = interaction ? `globalThis.__mapInteraction=true;globalThis.__mapLarge=${large};globalThis.__mapAttribution=${mode === 'dependency-map-attribution'};\n` : '';
-  const map = mode === 'dependency-map-hidden' || preview;
+  const map = mode === 'dependency-map-final' || preview || productionMap;
   const previewRoot = preview ? mkdtempSync('/tmp/opencode/dependency-map-preview-') : null;
   if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
   const f = searchFixture(!large && !map);
   const replay = large ? createLargePlanReplay(f) : null;
   if (replay) replay.seed(); else if (map) seedMapFixture(f); else { seedSearchLibrary(f); seedExtras(f); }
-  const attribution = mode === 'dependency-map-attribution' ? seedMapAttribution(f) : null;
+  let attribution = mode === 'dependency-map-attribution' ? seedMapAttribution(f) : null;
   if (mode === 'keyboard-focus') seedKeyboard(f);
   const second = searchFixture(!large && !map);
   if (map) seedMapFixture(second);
@@ -218,11 +222,19 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
       if (url.pathname === '/') {
-        let page = large || preview ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
+        let page = large || preview || productionMap ? html.replace('<script>', '<script>window.__largePlan=true;') : html;
         if (attribution) page = page.replace('<script>', '<script>window.__mapAttribution=true;');
         if (preview) page = page.replace('</body>', '<script>qa.show(["page","panel"],600);document.querySelector("section[data-frame=page]").style.width="1100px";</script></body>');
         if (keyboard) page = page.replace('<script>', '<script>window.__keyboardFocus=true;').replace('<main>', '<button id="qa-before" type="button">Shell start</button><main>').replace('</main>', '</main><button id="qa-after" type="button">Shell end</button>');
         res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(page);
+      }
+      else if (productionMap && url.pathname === '/fixture-step' && req.method === 'POST') {
+        let body = ''; for await (const part of req) body += part;
+        const step = JSON.parse(body).step;
+        if (step === 'status') f.apply('P-map', { op: 'change', changes: [{ id: 'C', status: 'working' }] });
+        else if (step === 'structure') f.apply('P-map', { op: 'revise', title: 'Dependency map fixture', items: [...mapItems.map(i=>i.id==='C'?{...i,status:'working' as const}:i), { id: 'N', title: 'New independent task', kind: 'task' }] });
+        else throw Error('Unknown fixture step');
+        res.end('{}');
       }
       else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); res.end((isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : `.${url.pathname}`, 'utf8')); }
       else if (url.pathname === '/service' && req.method === 'POST') {
@@ -283,6 +295,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     previewHash: previewRoot ? createHash('sha256').update(previewPrefix).update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     mapAttribution: attribution,
+    enableMapAttribution: () => { if (!productionMap || large) throw Error('Small production map fixture required'); return attribution ??= seedMapAttribution(f); },
     cleanupElsewhere, deleteElsewhere: (plan: string) => cleanupElsewhere('delete', plan),
     /** A new matching plan behind an active keyset cursor (production staged write). */
     insert: (plan: string, title: string) => { f.seedPlan(plan, title, [{ id: 'N1', title: 'Inserted task', kind: 'task', status: 'pending' }]); },
@@ -296,7 +309,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     /** Keyboard-focus mode: a synthetic report by the `KF` session (production write path). */
     reportKeyboard: (plan: string, request: Record<string, unknown>) => { f.apply(plan, request, { ...f.actor, sessionId: KEYBOARD_SESSION }); },
     /** Map preview: another client's ordinary report, to exercise retained-picture refreshes. */
-    reportMap: (plan: string, request: Record<string, unknown>) => { if (!preview) throw Error('Map preview required'); f.apply(plan, request); },
+    reportMap: (plan: string, request: Record<string, unknown>) => { if (!map) throw Error('Map fixture required'); f.apply(plan, request); },
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); if (previewRoot) rmSync(previewRoot, { recursive: true, force: true }); },

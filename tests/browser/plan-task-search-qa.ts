@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { PROJECTS, startSearchShell } from './plan-task-search-shell.ts';
 import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/large-plan.ts';
 import { mapItems } from '../fixtures/dependency-map.ts';
+import { productionMapQa } from './dependency-map-final-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -34,12 +35,24 @@ const onlyLarge = arg('--only') === 'large-plan';
 /** `--only keyboard-focus` / `keyboard-focus-replay`: keyboard and focus verification (no measurement). */
 const onlyKeyboard = arg('--only') === 'keyboard-focus';
 const onlyReplay = arg('--only') === 'keyboard-focus-replay';
-const onlyMapHidden = arg('--only') === 'dependency-map-hidden';
 const onlyMapRender = arg('--only') === 'dependency-map-render';
 const onlyMapInteraction = arg('--only') === 'dependency-map-interaction';
 const onlyMapLarge = arg('--only') === 'dependency-map-large';
 const onlyMapAttribution = arg('--only') === 'dependency-map-attribution';
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-hidden', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+const onlyMapFinal = arg('--only') === 'dependency-map-final';
+const onlyMapAccessibility = arg('--only') === 'dependency-map-accessibility';
+const onlyMapOwner = arg('--only') === 'dependency-map-screen-reader';
+const productionMap = onlyMapFinal || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
+if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
+if (onlyMapOwner && !process.argv.includes('--headed')) throw Error('Screen-reader fixture requires --headed');
+if (process.argv.includes('--orca-automated')) {
+  const root=process.env.ORCA_PRIVATE_ROOT, display=Number(process.env.DISPLAY?.slice(1));
+  if(!root?.startsWith('/tmp/opencode/dependency-map-orca-')||process.env.HOME!==join(root,'home')||display<99||display>198
+    ||process.env.AT_SPI_BUS_ADDRESS!=='unix:path='+join(root,'run','atspi-bus')
+    ||!existsSync(join(root,'worker.pid'))||Number(readFileSync(join(root,'worker.pid'),'utf8'))!==process.ppid
+    ||!existsSync(join(root,'xvfb.pid'))||Number(readFileSync(`/tmp/.X${display}-lock`,'utf8').trim())!==Number(readFileSync(join(root,'xvfb.pid'),'utf8')))
+    throw Error('Orca automation must be launched by the private Xvfb/D-Bus runner');
+}
 if ((onlyKeyboard || onlyReplay) && measure) throw Error('keyboard-focus modes take no --measure');
 if ((onlyLarge || onlyMapLarge) && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
@@ -84,9 +97,9 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-let fx = await startSearchShell(built, false, onlyMapAttribution ? 'dependency-map-attribution' : onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : onlyMapHidden ? 'dependency-map-hidden' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
+let fx = await startSearchShell(built, false, onlyMapAttribution ? 'dependency-map-attribution' : onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : productionMap ? 'dependency-map-final' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay, productionMap);
 let origin = `http://127.0.0.1:${fx.port}`;
-const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
+const chrome = spawn(findChromium(), [...(process.argv.includes('--headed') ? [] : ['--headless=new']), ...(process.argv.includes('--orca-automated') ? ['--force-renderer-accessibility', '--mute-audio', '--password-store=basic'] : []), '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
 let failure: string | null = null;
 let browserVersion = '';
@@ -139,7 +152,7 @@ try {
   };
   const type = (t: string) => c.send('Input.insertText', { text: t });
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),scale=o.width/fr.clientWidth;return [o.x+(r.x+Math.min(16,r.width/2))*scale,o.y+(r.y+Math.min(10,r.height/2))*scale]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
@@ -148,7 +161,7 @@ try {
   const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
     await guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),scale=o.width/fr.clientWidth;return [o.x+a.x*scale+scrollX,o.y+a.y*scale+scrollY,a.width*scale,a.height*scale]})()`);
     if (!r) throw new Error(`no ${selector} to capture`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: Math.min(r[3] + pad * 2, height), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
@@ -201,6 +214,15 @@ try {
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
+  if (productionMap) {
+    Object.assign(facts, { production: true, fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map-v1', ...(onlyMapLarge ? { seed: LARGE_PLAN_SEED } : {}), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), runtime: process.version, serviceClass: built ? 'built generated service' : 'TypeScript service', browser: browserVersion, bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
+    await productionMapQa({ mode: onlyMapLarge ? 'large' : onlyMapAccessibility ? 'accessibility' : onlyMapOwner ? 'owner' : 'final', ownerSmoke: process.argv.includes('--owner-fixture-smoke'), artifacts, c, evaluate, guest, wait, key, click, show, shot, frames2, theme, check, count, fx, facts, perf, pageErrors, restart: async () => {
+      await fx.stop(); fx = await startSearchShell(built, false, 'dependency-map-large', false, true); origin = `http://127.0.0.1:${fx.port}`;
+      await c.send('Page.navigate', { url: `${origin}/` }); return fx;
+    } });
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
   if (onlyMapAttribution) {
     facts.renderingAssertions = 'Rendered captions on the real preview, including legacy link-only detail, optional missing view input, waiting, superseded picture, repeated relay reports and foreign-source isolation. Copy-only checks remain supplemental.';
     const ready = (surface: string) => wait(surface, `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&w.mapPreview?.attribution?.B`, 'attribution picture');
@@ -513,8 +535,10 @@ try {
         const heard = (await said(surface)).length;
         await key('ArrowRight'); await frames2(); a = await active(surface);
         check(`interaction:${tag}:arrow-selects-neighbour`, a.task === 'D' && (await state(surface)).selected === 'D', undefined, a);
-        const spoken = (await said(surface)).slice(heard);
-        check(`interaction:${tag}:selection-announced-once`, spoken.length === 1 && /Join both unfinished branches/.test(spoken[0]) && /2 direct prerequisites; 0 direct dependents/.test(spoken[0]), undefined, spoken);
+        const spoken = (await said(surface)).slice(heard), focusedName = await guest<string>(surface, `return d.activeElement?.getAttribute('aria-label')??''`);
+        // Selection speech once: a move that focuses the card is spoken from the card's own name, and
+        // the live region stays quiet (no second copy). The name carries title, state and counts.
+        check(`interaction:${tag}:selection-spoken-once`, spoken.length === 0 && /^Join both unfinished branches\. Waiting\./.test(focusedName) && /2 direct recorded prerequisites, 0 direct dependents/.test(focusedName), undefined, { spoken, focusedName });
         await key('['); await frames2(); a = await active(surface);
         check(`interaction:${tag}:bracket-first-prerequisite`, a.task === 'B' && (await state(surface)).selected === 'B', undefined, a);
         await key(']'); await frames2(); a = await active(surface);
@@ -641,8 +665,9 @@ try {
       await click('panel', '[data-testid="plan-view-list"]'); await wait('panel', `d.querySelector('[data-testid="item-E"]')`, 'canonical list');
       await click('panel', '[data-testid="item-E"]'); const handoffMark = (await said('panel')).length;
       await click('panel', '[data-testid="plan-view-map"]'); await ready('panel'); await wait('panel', `d.activeElement?.dataset?.task==='E'`, 'handoff focus on the list target');
-      const handoffSaid = (await said('panel')).slice(handoffMark);
-      check('interaction:rail-handoff-focus-and-one-announcement', (await state('panel')).selected === 'E' && await inView('panel', 'E') && handoffSaid.length === 1 && /Sole remaining prerequisite/.test(handoffSaid[0]), undefined, handoffSaid);
+      const handoffSaid = (await said('panel')).slice(handoffMark), handoffName = await guest<string>('panel', `return d.activeElement?.getAttribute('aria-label')??''`);
+      // The handoff focuses the card, so its name is the one spoken selection; the live region stays quiet.
+      check('interaction:rail-handoff-focus-and-one-spoken-selection', (await state('panel')).selected === 'E' && await inView('panel', 'E') && handoffSaid.length === 0 && /^Sole remaining prerequisite\./.test(handoffName), undefined, { handoffSaid, handoffName });
       check('interaction:rail-switch-pressed-group', await guest('panel', `const g=d.querySelector('[data-testid="plan-view"]');return g.getAttribute('role')==='group'&&/Plan view/.test(d.getElementById(g.getAttribute('aria-labelledby')).textContent)&&g.querySelector('[data-testid="plan-view-map"] button').getAttribute('aria-pressed')==='true'&&g.querySelector('[data-testid="plan-view-list"] button').getAttribute('aria-pressed')==='false'`));
       await shot('rail-list-handoff', '[data-testid="progress-root"]', 12, 1100, 'panel');
       await shot('rail-keyboard-focus', '[data-testid="map-viewport"]', 40, 900, 'panel');
@@ -863,67 +888,6 @@ try {
     replies = await evaluate('qa.replies');
     throw new OnlyDone();
   }
-  if (onlyMapHidden) {
-    Object.assign(facts, { mode: 'dependency-map-hidden', fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
-    await show(['page'], 1100);
-    for (const surface of ['page', 'panel', 'status']) await wait(surface, `d.querySelector('[data-testid="progress-root"]')`, 'initial host readiness');
-    await evaluate(`qa.context('M');true`);
-    await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"]')`, 'ordinary board');
-    for (const name of ['Progress', 'Document', 'History', 'Progress']) {
-      const tabs = await guest<string[]>('page', `return [...d.querySelectorAll('[data-testid="detail-tabs"] [role="tab"]')].map(n=>n.textContent)`);
-      const index = tabs.indexOf(name); check(`hidden:tab-${name}-${results.length}`, index >= 0);
-      await click('page', `[data-testid="detail-tabs"] [role="tab"]:nth-child(${index + 1})`);
-      await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]')?.textContent===${javascriptLiteral(name)}`);
-    }
-    await searchFor('Dependency map fixture'); await click('page', H('P-map'));
-    await wait('page', `d.querySelector('[data-testid="item-B"]')`, 'searched current task');
-    const noMap = async (surface: string) => {
-      const absent = await guest<boolean>(surface, `return !d.querySelector('[data-testid^="map-"],[data-testid="plan-view-map"],[data-testid="plan-view-list"]') && ![...d.querySelectorAll('button,[role="tab"],[role="group"]')].some(n=>/^(Map|Plan view|View as list)$/.test(n.textContent.trim())||/^(Map|Plan view)$/.test(n.getAttribute('aria-label')??''))`);
-      check(`hidden:${surface}-DOM-${results.length}`, absent);
-    };
-    await noMap('page'); await shot('production-hidden');
-    for (const width of [360, 600]) {
-      await show(['panel'], width);
-      await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')`, 'rail picker');
-      await click('panel', '[data-testid="plan-selector"] .oc-sdk-trigger');
-      await wait('panel', `d.querySelector('.oc-sdk-popup [role="option"]')`, 'rail plan choices');
-      const options = await guest<string[]>('panel', `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].map(n=>n.querySelector('.oc-sdk-option-label')?.textContent??'')`);
-      const selected = options.indexOf('Dependency map fixture'); check(`hidden:rail-plan-choice-${width}`, selected >= 0);
-      await key('Home'); if (selected) await key('ArrowDown', selected); await key('Enter');
-      await wait('panel', `d.querySelector('[data-testid="item-B"]')`, 'rail tasks');
-      await click('panel', '[data-testid="focus-jump-working"] button');
-      await wait('panel', `d.activeElement?.dataset.testid==='item-B'`, 'canonical task reveal/focus');
-      await noMap('panel');
-      const before = await evaluate<number>(`qa.replies.filter(r=>r.frame==='panel'&&r.path==='/v1/plans'&&r.status===200).length`);
-      await wait('panel', `(parent.qa.replies.filter(r=>r.frame==='panel'&&r.path==='/v1/plans'&&r.status===200).length)>=${before + 2}`, 'two completed visible rail polls');
-      await noMap('panel'); await shot(width === 600 ? 'rail-hidden' : 'rail-hidden-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel');
-    }
-    await show(['page', 'panel', 'status'], 600);
-    for (const surface of ['page', 'panel', 'status']) {
-      const before = await evaluate<number>(`qa.replies.filter(r=>r.frame==='${surface}'&&['/v1/plans','/v1/search-state'].includes(r.path)&&r.status===200).length`);
-      await wait(surface, `parent.qa.replies.filter(r=>r.frame==='${surface}'&&['/v1/plans','/v1/search-state'].includes(r.path)&&r.status===200).length>=${before + 2}`, 'two completed visible polls');
-      await noMap(surface);
-    }
-    await c.send('Accessibility.enable');
-    const tree = await c.send('Page.getFrameTree');
-    const accessibility: Record<string, unknown> = {};
-    for (const child of tree.frameTree.childFrames ?? []) {
-      const surface = /\/ui\/(page|panel|status)\//.exec(child.frame.url)?.[1]; if (!surface) continue;
-      const ax = await c.send('Accessibility.getFullAXTree', { frameId: child.frame.id });
-      const names = ax.nodes.filter((n: any) => !n.ignored).map((n: any) => ({ role: n.role?.value, name: n.name?.value }));
-      check(`hidden:${surface}-accessibility-no-map-entry`, names.length > 0 && !names.some((n: any) => /^(Map|Plan view|Dependency map|View as list)$/.test(n.name ?? '')));
-      accessibility[surface] = { visibleNodes: names.length, mapEntries: 0 };
-    }
-    check('hidden:all-frame-AX-trees-inspected', Object.keys(accessibility).length === 3);
-    facts.accessibility = accessibility;
-    check('hidden:zero-guest-graph-requests', (await count('/v1/plan-graph', 'page')) + (await count('/v1/plan-graph', 'panel')) + (await count('/v1/plan-graph', 'status')) === 0);
-    for (const surface of ['page', 'panel', 'status']) check(`hidden:${surface}-bundle-no-map-code`, !/map-region|map-viewport|map-announcer|plan-view-map/.test(readFileSync(`ui/${surface}/main.js`, 'utf8')));
-    replies = await evaluate('qa.replies');
-    facts.guestGraphRequests = 0; facts.previewEntry = false;
-    check('hidden:no-guest-errors', pageErrors().length === 0 && JSON.stringify(await evaluate('qa.errors')) === '[]', undefined, { errors: pageErrors(), proxy: await evaluate('qa.errors') });
-    throw new OnlyDone();
-  }
-
   if (onlyKeyboard || onlyReplay) {
     await keyboardFocus();
     throw new OnlyDone();
@@ -1741,7 +1705,10 @@ try {
         await show(['page'], 1100); await fresh('page');
         await wait('page', `d.querySelector('[data-testid="detail-tabs"]')`, 'detail tabs');
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]');
-        await key('End');
+        // Map is the fourth (last) tab since S5, so History is two steps right of Progress, not End.
+        await key('ArrowRight');
+        await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][data-id="document"]')?.getAttribute('aria-selected')==='true'`, 'document');
+        await key('ArrowRight');
         await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][data-id="history"]')?.getAttribute('aria-selected')==='true'`, 'history');
         await wait('page', `d.querySelector('[data-testid="change-digest"]')&&d.querySelector('[data-testid="change-digest"]').dataset.state!=='loading'`, 'digest settled', 20_000).catch(() => null);
         const hw = await walk('board-1100-light-history');
@@ -2773,6 +2740,16 @@ try {
 } catch (e) {
   if (!(e instanceof OnlyDone)) failure = e instanceof Error ? e.message.split('\n')[0].slice(0, 700) : String(e);
 } finally {
+  if (productionMap && page) {
+    try {
+      const r = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
+      replies = r.result.value ?? [];
+      if (failure) {
+        const snapshot = await page.send('Runtime.evaluate', { expression: `Object.fromEntries(['page','panel','status'].map(f=>{const d=frame(f).contentDocument;return [f,{text:d.getElementById('root')?.innerText.slice(-1600),active:d.activeElement?.outerHTML.slice(0,250)}]}))`, returnByValue: true });
+        writeFileSync(join(artifacts,'failure-state.json'),JSON.stringify(snapshot.result.value,null,2)+'\n');
+      }
+    } catch { /* Browser failure is already recorded; do not hide the original failure. */ }
+  }
   if (onlyLarge && page) {
     try {
       const captured = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
@@ -2784,7 +2761,7 @@ try {
   try { process.kill(-chrome.pid!, 'SIGTERM'); } catch { chrome.kill('SIGTERM'); }
   await exited;
   await fx.stop();
-  const evidenceClass = `synthetic SDK shell, real disposable HTTP services over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated headless Linux Chromium, current guest bundles`;
+   const evidenceClass = `synthetic SDK shell, real disposable HTTP services over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated ${process.argv.includes('--headed') ? 'headed' : 'headless'} Linux Chromium, current guest bundles`;
   const environment = { evidenceClass, browser: browserVersion, reducedMotion: true, nativeHostProof: false };
   const passed = !failure && results.length + races.length > 0 && results.every((r) => r.pass) && races.every((r) => r.pass);
   writeFileSync(join(artifacts, 'results.json'), `${JSON.stringify({ ...environment, passed, failure, assertions: results.length, results, facts, screenshots: shots }, null, 2)}\n`);
@@ -2794,7 +2771,7 @@ try {
   const serviceMs = windowSummary.filter((w) => w.status === 200).map((w) => w.ms);
   const detailGraph = replies.filter(r => r.path === '/v1/plan' || r.path === '/v1/plan-graph').map(({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }) => ({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }));
   writeFileSync(join(artifacts, 'requests.json'), `${JSON.stringify({ ...environment, passed: gates.every((g) => g.pass) && !failure, gates, actions, detailGraph, searchWindows: { count: windowSummary.length, serviceRoundTripMs: serviceMs.length ? stats(serviceMs) : null, windows: windowSummary }, freshnessReads: { count: stateSummary.length, reads: stateSummary } }, null, 2)}\n`);
-   if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyMapLarge ? 'dependency-map-large' : onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and local smoke budgets are in requests.json. Map preview timings run through the bound shared view; most actions are controller-dispatched, two use real CDP keyboard input.' }, null, 2)}\n`);
+    if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyMapLarge ? 'dependency-map-large' : onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: productionMap ? 'Production guests. Three samples after one warm-up per surface/width; local budgets, not a latency SLA. Real keyboard actions and labelled native-select group changes, no controller probes. CPU is separately labelled browser layout/style/script, not compositor time.' : 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and local smoke budgets are in requests.json.' }, null, 2)}\n`);
   console.log(JSON.stringify({ passed, assertions: results.length, races: races.length, gates: gates.length, failure, screenshots: shots }, null, 2));
   if (!passed) process.exitCode = 1;
   rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

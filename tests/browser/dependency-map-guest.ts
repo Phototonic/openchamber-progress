@@ -57,7 +57,7 @@ startView<Ui>({
   initialUi: () => ({ plan: flags.__mapLarge ? 'P-large-dependencies' : 'P-map', selected: null, group: null, presentation: 'map' }),
   scope: ({ session, directory }) => rail ? contextListScope(session?.id, directory) : {},
   wantProjects: () => flags.__mapAttribution ? ['alpha'] : [], wantDetails: vc => { const p = current(vc); return p ? [p] : []; },
-  refreshed: vc => vc.setUi({}),
+  refreshed: vc => { if (latest) vc.setUi({}); },
   reading: vc => { const p = current(vc); return p ? { plan: p.key, scope: rail ? `rail:${vc.session?.id}` : 'board:all' } : null; },
   retire: reason => { attribution = new Map(); if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); } else if (reason === 'hidden') { map.pause(); interaction.leave(); } else { map.reset(); geometry.clear(); interaction.reset(); } },
   paint(root, vc) {
