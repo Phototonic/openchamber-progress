@@ -453,6 +453,25 @@ export async function productionMapQa(d: Driver) {
     await frames2();await polls(s);
     check(`${s}:view-retirement-clears-speech-keeps-node`,await guest(s,`return w.__announcer===d.querySelector('[data-testid="map-announcer"]')&&w.__announcer.textContent===''&&w.__speech.length===0`),undefined,await speech(s));
   }
+  // A settled foreign-source picture has no eligible run visit to manufacture a
+  // repaint on return. Unchanged refreshes alone must resume and re-pin the map.
+  const resumes:Record<string,unknown>[]=[];
+  for(const s of ['page','panel']){
+    if(s==='page')await pickBoard('P-map','source-beta');else await pickRail('Independent source counterpart');
+    await open(s);await select(s,'B');await polls(s);await ready(s);
+    const revision=await guest<string>(s,`return d.querySelector('${region}').dataset.revision`),graphBefore=await d.count('/v1/plan-graph',s);
+    await evaluate(`qa.visibility('${s}',false);true`);await frames2();
+    await evaluate(`qa.visibility('${s}',true);true`);await polls(s);await frames2();
+    const repins=(await d.count('/v1/plan-graph',s))-graphBefore;
+    await guest(s,`d.querySelector('[data-testid="map-card-C"]').focus();return true`);await key('Enter');await frames2();
+    const selection=await selected(s);
+    await key(']');await frames2();const navigation=await selected(s);
+    const panBefore=await coords(s);await activate(s,'map-pan-right');const toolbar=(await coords(s))!==panBefore;
+    await polls(s);
+    resumes.push({surface:s,selection,navigation,toolbar,repins,extraPins:(await d.count('/v1/plan-graph',s))-graphBefore-repins,sameRevision:revision===await guest(s,`return d.querySelector('${region}').dataset.revision`)});
+  }
+  d.facts.visibilityResume=resumes;
+  for(const r of resumes)check(`${r.surface}:settled-map-resumes-after-hide`,r.selection==='C'&&r.navigation==='D'&&r.toolbar===true&&r.repins===1&&r.extraPins===0&&r.sameRevision===true,undefined,r);
   check('final:no-stored-map-preference',await evaluate(`!qa.storage.some(r=>r.op==='set'&&/map/i.test(r.key??''))`));
   check('final:no-guest-errors',d.pageErrors().length===0,undefined,d.pageErrors());
   save('frame-requests.json',await evaluate(`qa.replies.map(({frame,traffic,path,status,bytes,ms,revision})=>({frame,traffic,path,status,bytes,ms,revision}))`));

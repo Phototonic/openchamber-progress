@@ -3,16 +3,26 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { Driver } from './dependency-map-final-qa.ts';
 
+const clean=(s:string)=>s.replace(/https?:\/\/[^\s'"<>]+/g,'[synthetic fixture URL]').replace(/\/(?:tmp|home|Users)\/[^\s'"<>]+/g,'[private path]');
+
+/** SSML log formatting only, not an HTML sanitizer. Decode literal title markup afterwards. */
+export function stripSsmlTags(text:string):string {
+  let previous:string;
+  do { previous=text; text=text.replace(/<[^>]+>/g,''); } while(text!==previous);
+  return text;
+}
+
+export const parseOrcaSpeech=(raw:string)=>[...raw.matchAll(/SPEECH DISPATCHER: Speaking '(<speak>[\s\S]*?<\/speak>)' \n\s*ORCA rate/g)].map(m=>clean(stripSsmlTags(m[1]).replace(/&(?:lt|gt|amp|quot|apos);/g,e=>({'&lt;':'<','&gt;':'>','&amp;':'&','&quot;':'"','&apos;':"'"}[e]!)).replace(/\s+/g,' ').trim()));
+
 /** Real Orca output only: never synthesize speech by reading DOM/AX names into a fake transcript. */
 export async function orcaAcceptance(d:Driver){
   const i=process.argv.indexOf('--orca-log'),log=process.argv[i+1];
   if(!process.env.ORCA_PRIVATE_ROOT||!log?.startsWith(process.env.ORCA_PRIVATE_ROOT+'/'))throw Error('Orca driver requires the isolated runner');
   const text=()=>readFileSync(log,'utf8');
-  const clean=(s:string)=>s.replace(/https?:\/\/[^\s'"<>]+/g,'[synthetic fixture URL]').replace(/\/(?:tmp|home|Users)\/[^\s'"<>]+/g,'[private path]');
   // Orca 49 sends Say All directly through speechdispatcherfactory, bypassing SPEECH OUTPUT.
   // Use its final SSML dispatch log for *both* ordinary and Say All speech, once per dispatch;
   // counting SPEECH OUTPUT as well would double-count ordinary focus announcements.
-  const speech=(raw:string)=>[...raw.matchAll(/SPEECH DISPATCHER: Speaking '(<speak>[\s\S]*?<\/speak>)' \n\s*ORCA rate/g)].map(m=>clean(m[1].replace(/<[^>]+>/g,'').replace(/&(?:lt|gt|amp|quot|apos);/g,e=>({'&lt;':'<','&gt;':'>','&amp;':'&','&quot;':'"','&apos;':"'"}[e]!)).replace(/\s+/g,' ').trim()));
+  const speech=parseOrcaSpeech;
   const pause=(ms:number)=>new Promise(r=>setTimeout(r,ms));
   const option=(name:string)=>process.argv[process.argv.indexOf(name)+1];
   const ready=option('--orca-ready'),running=option('--orca-running');
@@ -22,10 +32,11 @@ export async function orcaAcceptance(d:Driver){
   const quiet=async()=>{let last=text().length,stable=Date.now(),end=Date.now()+7000;while(Date.now()<end){await pause(100);const next=text().length;if(next!==last){last=next;stable=Date.now();}if(Date.now()-stable>=700)return;} };
   const xkey=(...keys:string[])=>execFileSync('/usr/bin/xdotool',['key','--clearmodifiers',...keys],{env:process.env});
   const transcript:{step:number;action:string;speech:string[]}[]=[];
+  const dispatches:{step:number;action:string;records:string[]}[]=[];
   const results=Array.from({length:6},(_,i)=>({step:i+1,status:'NOT_RUN',notes:'Not reached'}));
   let currentStep=0,productFailure=false;
   const focus=async(s:string,selector:string)=>{await d.wait(s,`d.querySelector(${JSON.stringify(selector)})`,'focus preparation target');return d.guest(s,`const n=d.querySelector(${JSON.stringify(selector)});n.scrollIntoView({block:'center'});n.focus();return d.activeElement===n`);};
-  const action=async(step:number,label:string,fn:()=>Promise<unknown>|unknown)=>{await quiet();const at=text().length;await fn();await quiet();const said=speech(text().slice(at));transcript.push({step,action:label,speech:said});return said;};
+  const action=async(step:number,label:string,fn:()=>Promise<unknown>|unknown)=>{await quiet();const at=text().length;await fn();await quiet();const raw=text().slice(at),said=speech(raw);dispatches.push({step,action:label,records:[...raw.matchAll(/SPEECH DISPATCHER: Speaking '(<speak>[\s\S]*?<\/speak>)' \n\s*ORCA rate[^\n]*/g)].map(m=>clean(m[0]))});transcript.push({step,action:label,speech:said});return said;};
   try{
     await d.c.send('Emulation.setFocusEmulationEnabled',{enabled:false});
     const windows=execFileSync('/usr/bin/xdotool',['search','--onlyvisible','--class','chromium|chrome'],{env:process.env,encoding:'utf8'}).trim().split('\n');
@@ -175,6 +186,7 @@ export async function orcaAcceptance(d:Driver){
     writeFileSync(join(d.artifacts,'focus-events.txt'),clean(text().split('\n').filter(s=>/object:state-changed:focused|FOCUS MANAGER:|KEYBOARD EVENT:/.test(s)).join('\n'))+'\n');
     writeFileSync(join(d.artifacts,'speech-diagnostics.txt'),clean(text().split('\n').filter(s=>/SPEECH|Speaking|speech|interrupt|PRESENT|locus_of_focus_changed/.test(s)).slice(-400).join('\n'))+'\n');
     writeFileSync(join(d.artifacts,'transcript.json'),JSON.stringify(transcript,null,2)+'\n');
+    writeFileSync(join(d.artifacts,'speech-dispatches.json'),JSON.stringify(dispatches,null,2)+'\n');
     writeFileSync(join(d.artifacts,'steps.json'),JSON.stringify(results,null,2)+'\n');
     writeFileSync(join(d.artifacts,'outcome.json'),JSON.stringify({passed:results.every(r=>r.status==='PASS'),productFailure,steps:results,humanListenerAcceptance:false,method:'Real Orca final speech-dispatcher SSML dispatch text (includes Say All), sd_dummy; private Xvfb/session/AT-SPI, native X keys; DOM used only for setup and focus/state assertions'},null,2)+'\n');
   }

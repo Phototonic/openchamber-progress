@@ -1132,8 +1132,13 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   });
   const forget = () => { view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
-  // A settled current map does nothing; loading/updating/failed pictures re-pin on the next paint.
-  const repin = (vc: ViewContext<U>) => { const s = map.value.state; if (shown && (s === 'loading' || s === 'updating' || s === 'error')) vc.setUi({}); };
+  // Hidden retirement leaves a ready picture but retires its pin and interaction.
+  // Resume on the existing visible refresh cadence, then stop once active/current.
+  // Unavailable pictures do not acquire a perpetual refresh-driven repaint.
+  const repin = (vc: ViewContext<U>) => {
+    const s = map.value;
+    if (shown && document.visibilityState !== 'hidden' && (!interaction.value.active || (s.state === 'ready' && !s.current) || s.state === 'loading' || s.state === 'updating' || s.state === 'error')) vc.setUi({});
+  };
   return {
     sync(vc, plan, scope, want) {
       latest = vc;
