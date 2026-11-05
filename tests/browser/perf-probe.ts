@@ -67,7 +67,7 @@ const FRAME_SCRIPT = `(() => {
     const q = (sel) => !!r.querySelector(sel);
     const plans = [...r.querySelectorAll('[data-testid]')].map((n) => n.dataset.testid).filter((x) => /^plan-/.test(x) && !/^plan-(list|detail|selector)$/.test(x)).map((x) => x.replace(/^plan-(row-)?/, ''));
     const state = r.getAttribute('aria-busy') === 'true' || q('[data-testid=state-loading]') ? 'loading'
-      : q('[data-testid^=state-]') ? [...r.querySelectorAll('[data-testid^=state-]')].map((n) => n.dataset.testid).join('+')
+      : q(':is([data-testid=state-not-approved],[data-testid=state-paused],[data-testid=state-disconnected],[data-testid=state-unavailable],[data-testid=state-busy],[data-testid=state-damaged],[data-testid=state-incompatible],[data-testid=state-invalid],[data-testid=state-not-found],[data-testid=state-setup-lost])') ? [...r.querySelectorAll(':is([data-testid=state-not-approved],[data-testid=state-paused],[data-testid=state-disconnected],[data-testid=state-unavailable],[data-testid=state-busy],[data-testid=state-damaged],[data-testid=state-incompatible],[data-testid=state-invalid],[data-testid=state-not-found],[data-testid=state-setup-lost])')].map((n) => n.dataset.testid).join('+')
       : q('[data-testid=setup-panel],[data-testid=setup-needed]') ? 'setup'
       : q('[data-testid=unscoped-state]') ? 'unscoped'
       : plans.length ? 'data' : q('[data-testid=empty-state]') ? 'empty' : 'other';

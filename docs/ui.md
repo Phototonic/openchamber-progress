@@ -110,6 +110,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | `dependency-map.ts` / `dependency-map-layout.ts` / `dependency-map-interaction.ts` / `dependency-map-attribution.ts` | Dependency map logic (board Map tab and rail Plan view Map; see Dependency map): the frame-local graph + complete-detail picture, full-plan geometry, frame reading/interaction state and the map's attribution proof over the surface's existing run visit. No DOM. |
 | `dependency-map-view.ts` / `dependency-map-style.ts` | The one map renderer for both frames, the Plan view switch, the production frame wiring (`createMapFrame`) and the map-only stylesheet. Work Status imports none of these. |
 | `components.ts`, `style.ts`, `format.ts` | DOM pieces, CSS from host tokens only (including reported-progress motion), locale-aware time. |
+| `primitives.ts` | Presentation-only shared primitives: status marks, state chips, the segmented bar, the ⓘ info disclosure, the ⋯ plan-actions menu and compact warnings (see Shared primitives). Depends only on the SDK kit, so a view can use one without the plan detail. |
 
 ## v2 mapping (frozen contract → UI)
 
@@ -159,7 +160,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 - **Host limit.** The host can't open the fullscreen board from the rail (the pinned SDK offers no page opener), so the rail hosts the map itself. Nothing in the rail opens, links to or synchronizes with the board.
 - Reading order (List):
   1. plan title, location, "Updated …"
-  2. large done/total and segmented bar (done / in progress / blocked)
+  2. large done/total, segmented bar (done / in progress / blocked) and a decorative legend whose entries pair each status mark with its words
   3. "Now" callout
   4. Readiness (active plans only; see Task readiness)
   5. Task view controls and the task hierarchy (groups collapsible, with their own counts; see Task view)
@@ -190,6 +191,19 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 - Footer zone: collapsed **Setup**, then collapsed **Details**.
 
 **Visible focus (all surfaces).** Kit buttons and triggers whose own focus mark is only the hover tint get an inset host focus-token outline: the task-view buttons, Clear task filters, Open progress, Set up, Try again in failure/stale banners and the rail plan picker (Work Status and participant pickers already had one). App controls keep their existing rings.
+
+## Shared primitives (`primitives.ts`)
+
+Presentation-only building blocks for all three surfaces. They read nothing, store nothing, start no timer and hold no reading state; an owning view supplies counts, labels and callbacks. Status marks and the segmented bar are used in today's views; state chips, the ⓘ info disclosure, the ⋯ plan-actions menu and the warning styles are available to the views but not yet placed in them.
+
+- **Tokens.** Host `--oc-*` tokens only: shapes use the status tokens (`--oc-success`, `--oc-info`, `--oc-warning`, muted), text uses the readable `--oc-*-text` tokens. Orange is the warning and primary colour in several host themes, so it is kept for **Blocked**, primary actions and focus. Selection (a pressed chip) uses the host's neutral selection token, and the map's Unlocks next emphasis is neutral too. Nothing uses a hardcoded palette or font.
+- **Status marks** (`statusMark`). An inline SVG with one shape per state: pending (ring), reported working (ring with a dot), blocked (filled disc with "!"), done (filled disc with a check), skipped (dashed ring with a dash), ready to start (ring with a play triangle), waiting on prerequisites (ring with clock hands). The root is `data-testid="status-mark"` with `data-status`. The SVG is always `aria-hidden` and never focusable. A mark with no adjacent status words is `role="img"` with a name; working is named **Reported working**, never "Running" (only sessions and sub-agents are observed running). A mark beside words that already say the status is hidden from assistive technology. Task rows, readiness, search hits, digests, Work Status and the progress legend use these marks through `glyph()`, which keeps the `.ap-glyph` hook.
+- **Segmented bar** (`segmentedBar`). `data-testid="progress-bar"`, `role="img"`, named by the owner's summary sentence (done of total, remaining, skipped when present, then in progress and blocked). Segments are decorative `<i data-k data-status aria-hidden>` for done, working and blocked over the task total; the track is the rest. Skipped tasks are outside the total and never drawn as done. No bar is drawn for a zero total, so there is never a NaN, Infinity or invented percentage. Widths are static; only the existing reported-progress sheen moves (see Reported in-progress motion). The surrounding `counts` element keeps its dataset.
+- **State chips** (`stateChip`, `stateChips`). Root `data-testid="state-chip"` with `data-state` and `data-count`: mark, count and state word. A zero count draws nothing. An interactive chip is a native `<button aria-pressed>` whose accessible name is its visible text (for example "1 Needs you"); Enter, Space and click activate it once. An informational chip is a plain `<span>` with no role, tab stop or pressed state. The count is whatever whole-plan number the owner passes; a chip never recounts. A labelled group (`role="group"`, `data-testid="progress-chips"`) holds them; that hook avoids the `state-` prefix the read-failure states use.
+- **Info disclosure** (`infoDisclosure`). For generic explanations only; concrete warnings stay visible outside it. Wrapper `info-disclosure`, native trigger `info-trigger` (contextual name such as "About readiness", `aria-expanded`, `aria-controls` and `aria-describedby` pointing at `info-content`). Closed content is `hidden`, so it is out of the accessibility tree and Tab order; the trigger's description still lets a screen reader hear it on focus. Keyboard focus or a click opens it without moving focus; a pointer press opens it on click only, so it does not open and close in one press. Enter or Space toggles. The content follows the trigger in Tab order, so any controls inside are reachable; pressing on the text keeps it open. Escape closes, keeps focus on the trigger and does not reopen it until a fresh focus or click. Focus leaving or a press outside closes it. It is not a dialog and has no focus trap. It positions inside the page below the trigger and shifts to stay within the frame width, wrapping at narrow widths. It carries no `aria-haspopup`, so an open explanation never defers a repaint (Controller); a repaint that replaces it closes it, and an owner that wants it to stay open passes `open` and listens to `onToggle`. `dispose()` closes it and removes its document listener; a detached disclosure also drops that listener on the next press.
+- **Plan actions** (`planActions`). Wrapper `plan-actions` around the SDK menu: the trigger visibly reads ⋯ and is named **Plan actions**. Menu and menuitem roles, `aria-expanded`, arrow keys, Enter, Escape and the return of focus to the trigger are the SDK's. Items only open existing panes or controls, which render outside the menu. While the menu is open the SDK's `aria-haspopup` trigger defers repaints as for other popups. `dispose()` is the SDK menu's.
+- **Compact warnings** (`warningLine`, `warningBadge`). An always-visible qualification line (`.ap-warn`, `data-tone` = `warning` | `error` | `info`): a small triangle or ⓘ mark in the tone's readable colour plus foreground words, so the words carry the meaning and orange stays rare. A short badge (`.ap-warn-badge`) for beside a title. Both wrap at narrow widths instead of clipping.
+- **Forced colours, motion and reflow.** In forced colours marks and icons use system colours with their shapes intact, the bar becomes an outlined track with solid, highlighted and hatched segments, a pressed chip gets a Highlight border and popover/badge edges use CanvasText. No primitive animates; the working dot's pulse in the Now callout and Work Status is the existing reported-progress motion. Chips, warnings and info content wrap at 280 px and at 200%/400% reflow without horizontal page overflow.
 
 ## Change digests (full-page History only)
 
@@ -475,7 +489,7 @@ Subtle motion marks work that agents **reported** as in progress. It never means
 - **Gate.** Motion runs only when all of these hold (`showsLiveness`, `model.ts`): the plan is active, it has working tasks, the last read succeeded (no stale or failure banner) and capture is on. The plan element (`plan-<id>`) then carries `data-motion="on"`. Closed plans (even with tasks still marked working), stale or failed views, capture off and plans with nothing in progress stay static. Report age is not an input.
 - **What moves.** All three use one 2.4 s period:
   - a light sheen sweeps across the blue working segment of the bar;
-  - the working dot pulses in the Now callout and in Work Status's current-work row (glyphs in the task list stay static);
+  - the working status mark's inner dot pulses in the Now callout and in Work Status's current-work row (marks in the task list stay static);
   - the status text pulses.
   Keyframes animate only `transform` and `opacity`. Bar widths and counts never animate, so the motion can't look like progress.
 - **Contrast-safe text pulse.** The text keeps `--oc-info-text`. A same-glyph `::after` overlay (alt text `""`, so it isn't read twice) fades in towards a colour mixed with the foreground. Every phase therefore has at least the token's own contrast. Measured: 5.8–6.1:1 at rest in light, 6.4–6.9:1 in dark.
@@ -643,8 +657,9 @@ disposable; failures exit nonzero and retain measured evidence.
   - `plan-<planId>` (`data-lifecycle`, `data-source`, `data-revision`; `data-motion="on"` while reported-progress motion runs); its title heading `plan-title` (`tabindex=-1`)
   - `focus-handoff-notice` (short notice after a self-removing control's hand-off; see Task view › Restoration)
   - status text: `.ap-working-text` (legend and Work Status counts)
-  - `counts`, with `data-done`, `data-total`, `data-remaining`, `data-skipped`
+  - `counts`, with `data-done`, `data-total`, `data-remaining`, `data-skipped`; the bar `progress-bar` (segments `[data-status]` = `done` | `working` | `blocked`)
   - `other-source`, `unverified-source`
+- **Shared primitives** (see Shared primitives): `status-mark` (`data-status`; also `.ap-glyph` on task marks), `state-chip` (`data-state`, `data-count`; `aria-pressed` when interactive) in `progress-chips`, `info-disclosure` with `info-trigger` and `info-content`, `plan-actions` (its SDK trigger button is named Plan actions)
 - **Items:**
   - `items-<planId>`
   - `item-<itemId>` and `group-<itemId>` (`data-status`)

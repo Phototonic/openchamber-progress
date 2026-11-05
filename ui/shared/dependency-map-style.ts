@@ -28,7 +28,9 @@ export const MAP_CSS = `
 .ap-map-stat[data-kind="working"] strong{color:var(--oc-info-text,var(--oc-info))}
 .ap-map-stat[data-kind="ready"] strong{color:var(--oc-success-text,var(--oc-success))}
 .ap-map-stat[data-kind="blocked"] strong{color:var(--oc-warning-text,var(--oc-warning))}
-.ap-map-stat[data-kind="unlocks"] strong,.ap-map-stat[data-kind="unlocks"] .ap-map-unlock-icon{color:var(--oc-primary-text,var(--oc-primary))}
+/* Unlocks next is guidance, not an alarm or a selection: neutral, so orange keeps meaning Blocked,
+   primary and focus (shared primitives, docs/ui.md). */
+.ap-map-stat[data-kind="unlocks"] strong,.ap-map-stat[data-kind="unlocks"] .ap-map-unlock-icon{color:var(--oc-fg)}
 .ap-map-stat[data-count="0"],.ap-map-stat[data-count="0"] strong{color:var(--oc-muted)}
 .ap-map-counts{font-size:12px;font-variant-numeric:tabular-nums}
 .ap-map-summary .ap-note{max-width:86ch}
@@ -138,7 +140,7 @@ export const MAP_CSS = `
 .ap-map-who-live{display:inline-flex;align-items:center;gap:2px;font-weight:600;color:var(--oc-info-text,var(--oc-info))}
 .ap-map-who-live[data-live="waiting"]{color:var(--oc-warning-text,var(--oc-warning))}
 .ap-map-who-note{display:block;margin-top:2px;font-size:11.5px;color:var(--oc-muted);white-space:normal}
-.ap-map-card-unlocks{flex:none;display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--oc-primary) 13%,var(--oc-bg));color:var(--oc-primary-text,var(--oc-fg));font-weight:600}
+.ap-map-card-unlocks{flex:none;display:inline-flex;align-items:center;gap:5px;padding:0 7px;border-radius:999px;background:var(--oc-muted-surface);color:var(--oc-fg);font-weight:600}
 .ap-map-unlock-icon{flex:none;display:inline-block;width:6px;height:6px;margin-right:1px;border-top:1.6px solid currentColor;border-right:1.6px solid currentColor;transform:rotate(45deg)}
 .ap-map-empty{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center;font-size:12.5px;color:var(--oc-muted);pointer-events:none}
 .ap-map-empty>*{pointer-events:auto}

@@ -65,17 +65,16 @@ button{font:inherit}
 .ap-fraction strong{font-size:24px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
 .ap-fraction span{color:var(--oc-muted)}
 .ap-seg{display:flex;height:6px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 9%,transparent)}
-.ap-seg>i{display:block;height:100%}
+.ap-seg>i{display:block;height:100%;min-width:3px}
 .ap-seg>i+i{margin-left:2px}
 .ap-seg [data-k="done"]{background:var(--oc-success)}
 .ap-seg [data-k="working"]{background:var(--oc-info)}
 .ap-seg [data-k="blocked"]{background:var(--oc-warning)}
+/* Forced colours: three distinct fills (solid, highlight, hatched) on an outlined track */
+@media(forced-colors:active){.ap-seg{forced-color-adjust:none;border:1px solid CanvasText;background:Canvas}.ap-seg [data-k="done"]{background:CanvasText}.ap-seg [data-k="working"]{background:Highlight}.ap-seg [data-k="blocked"]{background:repeating-linear-gradient(45deg,CanvasText 0 2px,Canvas 2px 4px)}}
 .ap-legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--oc-muted)}
 .ap-legend span{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
-.ap-legend i{width:7px;height:7px;border-radius:2px;background:color-mix(in srgb,var(--oc-fg) 18%,transparent)}
-.ap-legend [data-k="done"] i{background:var(--oc-success)}
-.ap-legend [data-k="working"] i{background:var(--oc-info)}
-.ap-legend [data-k="blocked"] i{background:var(--oc-warning)}
+.ap-legend .ap-mark{width:12px;height:12px}
 
 /* Reported in-progress work: readable blue status text. Motion only under [data-motion="on"]
    (active plan, working tasks, fresh read, capture on), on one shared 2.4 s phase (app.ts alignMotion).
@@ -87,7 +86,7 @@ button{font:inherit}
 [data-motion="on"] .ap-working-text::after{content:attr(data-text) / "";position:absolute;inset:0;color:color-mix(in srgb,var(--oc-info-text,var(--oc-info)) 55%,var(--oc-fg));opacity:0;animation:ap-text-pulse 2.4s ease-in-out infinite}
 [data-motion="on"] .ap-seg [data-k="working"]{position:relative;overflow:hidden}
 [data-motion="on"] .ap-seg [data-k="working"]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--oc-bg) 55%,transparent),transparent);transform:translateX(-100%);animation:ap-sheen 2.4s ease-in-out infinite}
-[data-motion="on"] .ap-now .ap-glyph[data-status="working"]::after,[data-motion="on"] [data-testid="current-work"] .ap-glyph[data-status="working"]::after{animation:ap-dot-pulse 2.4s ease-in-out infinite}
+[data-motion="on"] :is(.ap-now,[data-testid="current-work"]) .ap-mark[data-status="working"] .ap-mark-core{transform-box:fill-box;transform-origin:center;animation:ap-dot-pulse 2.4s ease-in-out infinite}
 @keyframes ap-text-pulse{0%,100%{opacity:0}50%{opacity:.9}}
 @keyframes ap-sheen{0%{transform:translateX(-100%)}65%,100%{transform:translateX(100%)}}
 @keyframes ap-dot-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.7)}}
@@ -211,17 +210,67 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 @media(max-width:300px){.ap-ny-facts{grid-template-columns:minmax(0,1fr)}.ap-ny-facts dd{margin-bottom:3px}}
 @media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}.ap-ny:not([data-count="0"])>.ap-ready-title::before{background:CanvasText}}
 
-/* Status glyph: shape + colour + hidden text, never colour alone */
-.ap-glyph{width:16px;height:16px;margin-top:1px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;line-height:1;flex:none}
-.ap-glyph[data-status="pending"]{border:1.5px solid color-mix(in srgb,var(--oc-muted) 75%,transparent)}
-.ap-glyph[data-status="done"]{background:var(--oc-success);color:var(--oc-bg)}
-.ap-glyph[data-status="done"]::after{content:"";width:6px;height:3px;border-left:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:translateY(-1px) rotate(-45deg)}
-.ap-glyph[data-status="working"]{border:1.5px solid var(--oc-info)}
-.ap-glyph[data-status="working"]::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--oc-info)}
-.ap-glyph[data-status="blocked"]{background:var(--oc-warning);color:var(--oc-bg)}
-.ap-glyph[data-status="blocked"]::after{content:"!"}
-.ap-glyph[data-status="skipped"]{border:1.5px dashed color-mix(in srgb,var(--oc-muted) 70%,transparent)}
-.ap-glyph[data-status="skipped"]::after{content:"";width:6px;height:1.5px;background:var(--oc-muted)}
+/* Shared primitives (primitives.ts, docs/ui.md Shared primitives). Host tokens only. Orange
+   (warning/primary in many themes) is kept for Blocked, primary actions and focus, never for
+   selection, links or decoration. */
+/* Status marks: inline SVG, one shape per state + a spoken name (or adjacent words), never colour alone */
+.ap-mark{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;color:color-mix(in srgb,var(--oc-muted) 85%,transparent)}
+.ap-mark-svg,.ap-icon-svg{display:block;width:100%;height:100%;overflow:visible}
+.ap-mark:is([data-status="done"],[data-status="ready"]){color:var(--oc-success)}
+.ap-mark[data-status="working"]{color:var(--oc-info)}
+.ap-mark[data-status="blocked"]{color:var(--oc-warning)}
+.ap-mark[data-status="skipped"]{color:var(--oc-muted)}
+.ap-mark .ap-mark-cut{stroke:var(--oc-bg)}
+.ap-mark circle.ap-mark-cut{fill:var(--oc-bg);stroke:none}
+.ap-glyph{margin-top:1px}
+/* A mark has no text baseline: in baseline-aligned rows it centres on the first line instead of lifting it */
+:is(.ap-now-item,.ap-status-row)>.ap-mark{align-self:center;margin-top:0}
+.ap-icon{display:inline-grid;place-items:center;flex:none;width:16px;height:16px}
+@media(forced-colors:active){.ap-mark,.ap-icon{forced-color-adjust:none}.ap-mark[data-status],.ap-icon[data-icon]{color:CanvasText}.ap-mark .ap-mark-cut{stroke:Canvas}.ap-mark circle.ap-mark-cut{fill:Canvas}}
+
+/* State chips: legend and (as toggle buttons) filter. Selection is neutral, not orange. */
+.ap-state-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.ap-state-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px 2px 7px;border:1px solid var(--oc-border);border-radius:999px;background:transparent;color:var(--oc-muted);font:inherit;font-size:12px;line-height:1.3;font-variant-numeric:tabular-nums;text-align:start}
+.ap-state-chip .ap-mark{width:14px;height:14px}
+.ap-state-chip-n{color:var(--oc-fg);font-weight:600}
+.ap-state-chip-label{min-width:0;overflow-wrap:anywhere}
+button.ap-state-chip{cursor:pointer}
+button.ap-state-chip:hover{background:var(--oc-hover);border-color:color-mix(in srgb,var(--oc-fg) 22%,var(--oc-border))}
+button.ap-state-chip[aria-pressed="true"]{background:var(--oc-selection,var(--oc-hover));border-color:color-mix(in srgb,var(--oc-fg) 55%,var(--oc-border));color:var(--oc-selection-fg,var(--oc-fg))}
+button.ap-state-chip[aria-pressed="true"] .ap-state-chip-label{font-weight:500}
+button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+@media(forced-colors:active){.ap-state-chip{border-color:CanvasText}button.ap-state-chip[aria-pressed="true"]{border:2px solid Highlight;padding:1px 9px 1px 6px}}
+
+/* ⓘ info disclosure: generic explanations only; opens on focus or click, never hover alone */
+.ap-info{position:relative;display:inline-flex;vertical-align:middle;flex:none}
+.ap-info-btn{display:inline-grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:none;color:var(--oc-muted);cursor:pointer}
+.ap-info-btn .ap-icon{width:15px;height:15px}
+.ap-info-btn:hover,.ap-info[data-open]>.ap-info-btn{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-info-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-info-content{position:absolute;z-index:20;top:calc(100% + 4px);left:0;transform:translateX(var(--ap-info-shift,0px));width:max-content;max-width:min(20rem,calc(100vw - 16px));padding:10px 12px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated,var(--oc-bg));color:var(--oc-elevated-fg,var(--oc-fg));box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 14%,transparent);font-size:12px;font-weight:400;line-height:1.5;letter-spacing:normal;text-transform:none;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.ap-info-content[hidden]{display:none}
+.ap-info-content:focus{outline:none}
+.ap-info-content p+p{margin-top:6px}
+@media(forced-colors:active){.ap-info-content{border-color:CanvasText}}
+
+/* ⋯ plan actions: the SDK menu with a visible ⋯ and a spoken "Plan actions" */
+.ap-actions{display:inline-flex;flex:none}
+/* The kit's own size rules load later; the extra class keeps a readable, foreground ⋯ */
+.ap-actions .oc-sdk-btn.ap-actions-btn{min-width:28px;height:26px;padding:0 6px;color:var(--oc-fg);font-size:18px;font-weight:700;line-height:1}
+.ap-actions .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-actions .oc-sdk-popup{min-width:min(13rem,calc(100vw - 16px))!important;max-width:calc(100vw - 16px)}
+.ap-actions .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+
+/* Compact warnings: always visible, wrap rather than clip; words carry the meaning */
+.ap-warn{display:flex;align-items:flex-start;gap:6px;min-width:0;font-size:11.5px;line-height:1.45;color:var(--oc-fg)}
+.ap-warn>.ap-icon{width:14px;height:14px;margin-top:1px;color:var(--oc-warning-text,var(--oc-warning))}
+.ap-warn[data-tone="error"]>.ap-icon{color:var(--oc-error-text,var(--oc-error))}
+.ap-warn[data-tone="info"]>.ap-icon{color:var(--oc-info-text,var(--oc-info))}
+.ap-warn-text{min-width:0;overflow-wrap:anywhere}
+.ap-warn-badge{display:inline-flex;align-items:center;max-width:100%;padding:0 6px;border-radius:5px;font-size:11px;font-weight:500;line-height:18px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="error"]{background:color-mix(in srgb,var(--oc-error) 14%,transparent);color:var(--oc-error-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="info"]{background:color-mix(in srgb,var(--oc-info) 14%,transparent);color:var(--oc-info-text,var(--oc-fg))}
+@media(forced-colors:active){.ap-warn-badge{border:1px solid CanvasText}.ap-warn[data-tone]>.ap-icon{color:CanvasText}}
 
 /* Session chips */
 /* When name and state don't fit on one line, the state wraps below instead of squeezing the name */

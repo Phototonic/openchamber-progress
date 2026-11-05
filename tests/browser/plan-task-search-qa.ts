@@ -22,12 +22,17 @@ import { PROJECTS, startSearchShell } from './plan-task-search-shell.ts';
 import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/large-plan.ts';
 import { mapItems } from '../fixtures/dependency-map.ts';
 import { productionMapQa } from './dependency-map-final-qa.ts';
+import { designRefactorQa } from './design-refactor-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
 if (!artifacts) throw new Error('usage: plan-task-search-qa.ts --artifacts <dir> [--built-service] [--measure] [--chromium <path>]');
 const built = process.argv.includes('--built-service');
 const measure = process.argv.includes('--measure');
+const onlyDesign = arg('--only') === 'design-refactor';
+const designSlice = arg('--design-slice') ?? 'primitives';
+const captureLabel = arg('--capture-label') ?? 'after';
+if (onlyDesign && (!['primitives', 'rail', 'board', 'status'].includes(designSlice) || !['before', 'after'].includes(captureLabel))) throw Error('Invalid design slice/capture label');
 /** `--only j1`: just the J1 review cases (detail retirement and retention), for iteration. */
 const onlyJ1 = arg('--only') === 'j1';
 const onlyCapture = arg('--only') === 'capture';
@@ -44,7 +49,7 @@ const onlyRailChoice = arg('--only') === 'rail-plan-choice';
 const onlyMapAccessibility = arg('--only') === 'dependency-map-accessibility';
 const onlyMapOwner = arg('--only') === 'dependency-map-screen-reader';
 const productionMap = onlyMapFinal || onlyRailChoice || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
+if (arg('--only') && !['design-refactor', 'j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
 if (onlyMapOwner && !process.argv.includes('--headed')) throw Error('Screen-reader fixture requires --headed');
 if (process.argv.includes('--orca-automated')) {
   const root=process.env.ORCA_PRIVATE_ROOT, display=Number(process.env.DISPLAY?.slice(1));
@@ -98,7 +103,7 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-let fx = await startSearchShell(built, false, onlyMapAttribution ? 'dependency-map-attribution' : onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : productionMap ? 'dependency-map-final' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay, productionMap);
+let fx = await startSearchShell(built, false, onlyDesign ? 'design-refactor' : onlyMapAttribution ? 'dependency-map-attribution' : onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : productionMap ? 'dependency-map-final' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay, productionMap, { guestRoot: arg('--guest-root'), slice: designSlice });
 let origin = `http://127.0.0.1:${fx.port}`;
 const chrome = spawn(findChromium(), [...(process.argv.includes('--headed') ? [] : ['--headless=new']), ...(process.argv.includes('--orca-automated') ? ['--force-renderer-accessibility', '--mute-audio', '--password-store=basic'] : []), '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
@@ -215,6 +220,11 @@ try {
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
+  if (onlyDesign) {
+    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, guest, evaluate, wait, show, click, theme, shot, check, key, c });
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
   if (productionMap) {
     Object.assign(facts, { production: true, fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map-v1', ...(onlyMapLarge ? { seed: LARGE_PLAN_SEED } : {}), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), runtime: process.version, serviceClass: built ? 'built generated service' : 'TypeScript service', browser: browserVersion, bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
     await productionMapQa({ mode: onlyRailChoice ? 'rail-choice' : onlyMapLarge ? 'large' : onlyMapAccessibility ? 'accessibility' : onlyMapOwner ? 'owner' : 'final', ownerSmoke: process.argv.includes('--owner-fixture-smoke'), artifacts, c, evaluate, guest, wait, key, click, show, shot, frames2, theme, check, count, fx, facts, perf, pageErrors, restart: async () => {
@@ -1511,9 +1521,9 @@ try {
         kcheck('K3', 'status', 'no-session:exits-both-ways', ns.forward && ns.backward);
         await evaluate(`qa.context('KF');qa.fail.push({path:'/v1/plans',frame:'status',status:503,code:'busy'});true`);
         const seq = await evaluate<number>(`qa.reload('status')`);
-        await wait('status', `qa.loaded.status===${seq}&&d.querySelector('[data-testid^="state-"] button')`, 'status error with Try again', 20_000);
+        await wait('status', `qa.loaded.status===${seq}&&d.querySelector('[data-testid="state-busy"] button')`, 'status error with Try again', 20_000);
         kcheck('K3', 'status', 'error:not-empty', await guest<boolean>('status', `return !d.querySelector('[data-testid="empty-state"]')`));
-        await tabTo('status', '[data-testid^="state-"] button');
+        await tabTo('status', '[data-testid="state-busy"] button');
         await focusShot('status-focus-light-error-retry', 'status', 60, 60);
         await evaluate(`qa.fail=qa.fail.filter(x=>x.frame!=='status');true`);
         await key('Enter');
@@ -1891,12 +1901,12 @@ try {
           await show([surface], width);
           await evaluate(`qa.fail.push({path:'/health',frame:'${surface}',status:503,code:'unavailable'});true`);
           const seq = await evaluate<number>(`qa.reload('${surface}')`);
-          await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid^="state-"] button')`, `${surface} failure with Try again`, 20_000);
-          await tabTo(surface, '[data-testid^="state-"] button');
+          await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid="state-unavailable"] button')`, `${surface} failure with Try again`, 20_000);
+          await tabTo(surface, '[data-testid="state-unavailable"] button');
           setups.push(`K8-retry-to-setup: labelled /health 503 then not-ready seam (${surface})`);
           await evaluate(`qa.fail=qa.fail.filter(x=>x.frame!=='${surface}');qa.unconfigured=true;true`);
           await key('Enter');
-          await wait(surface, `d.querySelector('${target}')&&!d.querySelector('[data-testid^="state-"] button')`, `${surface} setup state`, 20_000);
+          await wait(surface, `d.querySelector('${target}')&&!d.querySelector('[data-testid="state-unavailable"] button')`, `${surface} setup state`, 20_000);
           await frames2();
           const st = await focusState();
           inventory[`retry-to-setup-${surface}`] = st;
