@@ -20,9 +20,6 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // service/server.ts
 import http from "node:http";
 
-// shared/subagent-runs.ts
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
-
 // shared/progress.ts
 var VERSION = 2;
 var LIMITS = { requestBytes: 16384, documentBytes: 262144, pageSize: 20, maxPageSize: 50, chunkItems: 50, chunks: 32, planItems: 1000, responseBytes: 1048576 };
@@ -170,6 +167,61 @@ function validRequest(value, hint) {
   if (!value)
     throw new ProgressError("invalid", undefined, VALIDATION_HINTS[hint]);
 }
+
+// shared/plan-graph.ts
+var GRAPH_LIMITS = { inputBytes: 8 * 1024 * 1024, queryBytes: 16 * 1024, items: 1000, dependencies: 16 };
+var graphInteger = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var graphRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function graphCheck(v) {
+  if (!v)
+    throw new ProgressError("corrupt");
+}
+function graphItems(value, wire = false) {
+  graphCheck(Array.isArray(value) && value.length <= GRAPH_LIMITS.items);
+  const items = value.map((v) => {
+    graphCheck(graphRecord(v));
+    if (wire)
+      graphCheck(Object.keys(v).length === 5 && Object.keys(v).every((k) => ["id", "kind", "status", "parentId", "dependencies"].includes(k)));
+    graphCheck(identifier(v.id) && (v.kind === "task" || v.kind === "group") && typeof v.status === "string" && ["pending", "working", "blocked", "done", "skipped"].includes(v.status));
+    const parentId = !wire && v.parentId === undefined ? null : v.parentId;
+    const dependencies = !wire && v.dependencies === undefined ? [] : v.dependencies;
+    graphCheck(parentId === null || identifier(parentId));
+    graphCheck(Array.isArray(dependencies) && dependencies.length <= GRAPH_LIMITS.dependencies && dependencies.every(identifier));
+    return { id: v.id, kind: v.kind, status: v.status, parentId, dependencies: [...dependencies] };
+  });
+  const byId = new Map(items.map((i) => [i.id, i]));
+  graphCheck(byId.size === items.length);
+  for (const item of items) {
+    graphCheck(item.parentId === null || byId.get(item.parentId)?.kind === "group");
+    graphCheck(item.dependencies.every((id) => id !== item.id && byId.get(id)?.kind === "task"));
+  }
+  for (const edges of [(i) => i.parentId === null ? [] : [i.parentId], (i) => i.dependencies]) {
+    const done = new Set;
+    for (const item of items) {
+      const visiting = new Set;
+      const stack = [{ id: item.id, exit: false }];
+      while (stack.length) {
+        const frame = stack.pop();
+        if (frame.exit) {
+          visiting.delete(frame.id);
+          done.add(frame.id);
+          continue;
+        }
+        if (done.has(frame.id))
+          continue;
+        graphCheck(!visiting.has(frame.id));
+        visiting.add(frame.id);
+        stack.push({ id: frame.id, exit: true });
+        for (const id of edges(byId.get(frame.id)))
+          stack.push({ id, exit: false });
+      }
+    }
+  }
+  return items;
+}
+
+// shared/subagent-runs.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
@@ -2902,6 +2954,46 @@ class Store {
   }
   get(source, id) {
     return this.transaction(false, () => this.raw(source, id));
+  }
+  planGraph(r) {
+    return this.transaction(false, () => {
+      requireProgress(identifier(r.storeId) && identifier(r.source) && identifier(r.plan) && graphInteger(r.revision, 1) && graphInteger(r.cleanupRev));
+      requireProgress(r.binding && r.binding.sourceId === this.readBinding.sourceId && r.binding.verified === this.readBinding.verified, "conflict");
+      const meta = this.db.prepare("SELECT CASE WHEN length(store_id)<=80 THEN store_id END AS store_id FROM meta WHERE singleton=1").get();
+      requireProgress(meta?.store_id === r.storeId, "conflict");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, r.source, r.plan) : undefined;
+      requireProgress(state?.state !== "deleted", "not-found");
+      const row2 = this.db.prepare("SELECT revision, CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(GRAPH_LIMITS.inputBytes, r.source, r.plan);
+      requireProgress(row2, "not-found");
+      graphCheck(typeof row2.snapshot === "string");
+      let p;
+      try {
+        p = JSON.parse(row2.snapshot);
+      } catch {
+        throw new ProgressError("corrupt");
+      }
+      graphCheck(graphRecord(p) && p.id === r.plan && p.sourceId === r.source && p.revision === row2.revision);
+      graphCheck(graphInteger(p.revision, 1) && graphInteger(p.structuralRevision, 1) && p.structuralRevision <= p.revision);
+      const generation = state?.generation ?? 0;
+      graphCheck(graphInteger(generation) && (!state || state.state === "visible" || state.state === "archived"));
+      requireProgress(p.revision === r.revision && generation === r.cleanupRev, "conflict");
+      const items = graphItems(p.items);
+      return {
+        protocolVersion: 2,
+        schemaVersion: 2,
+        planGraph: 1,
+        storeId: r.storeId,
+        sourceBinding: { ...this.readBinding },
+        source: r.source,
+        plan: r.plan,
+        revision: p.revision,
+        structuralRevision: p.structuralRevision,
+        cleanup: { state: state?.state === "archived" ? "archived" : "visible", revision: generation },
+        complete: true,
+        itemCount: items.length,
+        items
+      };
+    });
   }
   cleanup(action, value) {
     requireProgress(!this.readOnly, "storage");
@@ -25130,7 +25222,7 @@ var surfaceHostMessageSchema = exports_external.discriminatedUnion("type", [
 var surfaceResizeAnswerSchema = exports_external.object({ width: dimension, height: dimension });
 var surfaceClipboardAnswerSchema = exports_external.object({ text: exports_external.string().max(SURFACE_TEXT_MAX) });
 // shared/release.ts
-var RELEASE = "0.6.1";
+var RELEASE = "0.7.0";
 
 // service/extension-updates.ts
 var OFFICIAL_MANIFEST = "https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main";
@@ -25342,9 +25434,12 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false;
     try {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
+      graphRoute = url2.pathname === "/v1/plan-graph";
+      if (graphRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
       runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile"].includes(url2.pathname);
       if (runsRoute) {
         if (url2.origin !== "http://127.0.0.1")
@@ -25502,6 +25597,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         return answer(405, { error: "method-not-allowed" });
       const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
+      routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
       routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url2.pathname];
       if (!allowed || [...url2.searchParams.keys()].some((k) => !allowed.includes(k) || url2.searchParams.getAll(k).length !== 1))
@@ -25509,6 +25605,8 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (searchRoute && Buffer.byteLength(url2.search) > SEARCH_LIMITS.queryBytes)
         throw new ProgressError("invalid");
       if (comparisonRoute && Buffer.byteLength(url2.search) > CAPTURE_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (graphRoute && Buffer.byteLength(url2.search) > GRAPH_LIMITS.queryBytes)
         throw new ProgressError("invalid");
       const number4 = (key, fallback) => {
         const v = url2.searchParams.get(key);
@@ -25526,7 +25624,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       };
       if (url2.pathname === "/health") {
         if (currentStore)
-          return answer(200, { ok: true, ready: true, sqlite: true, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+          return answer(200, { ok: true, ready: true, sqlite: true, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         if (setup)
           return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         return answer(503, { error: active.error ?? "storage" });
@@ -25556,6 +25654,15 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       }
       const source = text2("source", true);
       const plan = text2("plan", true);
+      if (graphRoute) {
+        const pin = (key, min) => {
+          const v = url2.searchParams.get(key);
+          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < min)
+            throw new ProgressError("invalid");
+          return Number(v);
+        };
+        return answer(200, currentStore.planGraph({ storeId: text2("storeId", true), binding: parseCaptureBinding(url2.searchParams.get("binding")), source, plan, revision: pin("revision", 1), cleanupRev: pin("cleanupRev", 0) }));
+      }
       if (comparisonRoute) {
         const integer4 = (key, min) => {
           const value = url2.searchParams.get(key);
@@ -25586,7 +25693,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute) && ["conflict", "operation-reused", "closed"].includes(error62.code))
         return answer(409, { error: error62.code });
       return answer(error62.code === "invalid" ? 400 : error62.code === "not-found" ? 404 : 503, { error: error62.code });
     }

@@ -94,6 +94,12 @@ export function groupTasks(tasks: DigestTask[]) {
 
 const occurrenceText = (e: DigestEvents) => FACET_ORDER.filter((f) => e[f]).map((f) => (e[f] > 1 ? `${FACET_LABEL[f]} ×${e[f]}` : FACET_LABEL[f])).join(' · ');
 
+/**
+ * Recorded prerequisite IDs of one side. An empty list (omitted or `[]`) only means none were
+ * recorded, never that the task needs nothing.
+ */
+const prerequisitesText = (f: DigestFacts) => (f.dependencies.length ? `Recorded prerequisites: ${f.dependencies.join(', ')}` : 'No prerequisites recorded');
+
 /** What one recorded adjacent pair changed, from its before/after facts only. */
 export function referenceText(r: DigestReference) {
   const parts = [r.facets.map((f) => FACET_LABEL[f]).join(', ') + '.'];
@@ -102,7 +108,7 @@ export function referenceText(r: DigestReference) {
   // Additions and removals carry the one recorded side's group and prerequisites too.
   const place = (f: DigestFacts) => {
     if (f.parentId !== null) parts.push(`Group ${f.parentId}.`);
-    if (f.dependencies.length) parts.push(`Prerequisites ${f.dependencies.join(', ')}.`);
+    parts.push(`${prerequisitesText(f)}.`);
   };
   if (!a && b) { parts.push(`Recorded as ${facts(b)}.`); place(b); }
   else if (a && !b) { parts.push(`Last recorded as ${facts(a)}.`); place(a); }
@@ -110,7 +116,7 @@ export function referenceText(r: DigestReference) {
     if (a.status !== b.status) parts.push(`Status ${STATUS_LABEL[a.status]} → ${STATUS_LABEL[b.status]}.`);
     if (a.title !== b.title) parts.push(`Title “${a.title}” → “${b.title}”.`);
     if (a.parentId !== b.parentId) parts.push(`Group ${a.parentId ?? 'none'} → ${b.parentId ?? 'none'}.`);
-    if (a.dependencies.join() !== b.dependencies.join()) parts.push(`Prerequisites ${a.dependencies.join(', ') || 'none'} → ${b.dependencies.join(', ') || 'none'}.`);
+    if (a.dependencies.join() !== b.dependencies.join()) parts.push(`Before: ${prerequisitesText(a)}. After: ${prerequisitesText(b)}.`);
   }
   return parts.join(' ');
 }

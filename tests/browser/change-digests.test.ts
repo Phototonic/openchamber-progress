@@ -109,11 +109,13 @@ test('scope explanation keeps denominators apart from completion; zero total has
 test('recorded detail of added and removed tasks keeps the recorded group and prerequisites', () => {
   const facts = { title: 'Publish build', status: 'blocked' as const, parentId: 'G-release', dependencies: ['T-build', 'T-sign'] };
   const removed = referenceText({ from: 4, to: 5, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['removed'], before: facts, after: null });
-  assert.equal(removed, 'Removed. Last recorded as “Publish build” (Blocked). Group G-release. Prerequisites T-build, T-sign.');
+  assert.equal(removed, 'Removed. Last recorded as “Publish build” (Blocked). Group G-release. Recorded prerequisites: T-build, T-sign.');
   const added = referenceText({ from: 1, to: 2, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['added', 'blocked'], before: null, after: facts });
-  assert.equal(added, 'Added, Reported blocked. Recorded as “Publish build” (Blocked). Group G-release. Prerequisites T-build, T-sign.');
-  // No group and no prerequisites recorded: nothing invented.
-  assert.equal(referenceText({ from: 1, to: 2, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['added'], before: null, after: { ...facts, status: 'pending', parentId: null, dependencies: [] } }), 'Added. Recorded as “Publish build” (Pending).');
+  assert.equal(added, 'Added, Reported blocked. Recorded as “Publish build” (Blocked). Group G-release. Recorded prerequisites: T-build, T-sign.');
+  // No group recorded: no group invented. No prerequisites recorded: said as exactly that, never "none".
+  const bare = { ...facts, status: 'pending' as const, parentId: null, dependencies: [] };
+  assert.equal(referenceText({ from: 1, to: 2, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['added'], before: null, after: bare }), 'Added. Recorded as “Publish build” (Pending). No prerequisites recorded.');
+  assert.equal(referenceText({ from: 2, to: 3, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['removed'], before: bare, after: null }), 'Removed. Last recorded as “Publish build” (Pending). No prerequisites recorded.');
   // A real removed grouped task with prerequisites, through the actual backend and parser.
   const { request, body } = real(7, 8, (f) => {
     f.revise([...digestItems.map((i) => (i.id === 'B' ? { ...i, status: 'done' as const } : i)), { id: 'D', title: 'Added task', kind: 'task' }, { id: 'E', title: 'Grouped follow-up', kind: 'task', parentId: 'G', dependencies: ['A', 'D'] }]);
@@ -122,7 +124,38 @@ test('recorded detail of added and removed tasks keeps the recorded group and pr
   const d = parseChangeDigest(body, request);
   const e = d.tasks.find((t) => t.id === 'E')!;
   assert.equal(e.presentAtTarget, false);
-  assert.equal(referenceText(e.references[0]), 'Removed. Last recorded as “Grouped follow-up” (Pending). Group G. Prerequisites A, D.');
+  assert.equal(referenceText(e.references[0]), 'Removed. Last recorded as “Grouped follow-up” (Pending). Group G. Recorded prerequisites: A, D.');
+});
+
+test('changed prerequisite sets name both recorded endpoints; absence is "not recorded", never "none"', () => {
+  const at = { title: 'Write summary', status: 'pending' as const, parentId: null };
+  const change = (before: string[], after: string[]) => referenceText({ from: 3, to: 4, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['revised'], before: { ...at, dependencies: before }, after: { ...at, dependencies: after } });
+  assert.equal(change([], ['D']), 'Revised. Before: No prerequisites recorded. After: Recorded prerequisites: D.');
+  assert.equal(change(['D'], []), 'Revised. Before: Recorded prerequisites: D. After: No prerequisites recorded.');
+  assert.equal(change(['O'], ['D']), 'Revised. Before: Recorded prerequisites: O. After: Recorded prerequisites: D.');
+  assert.equal(change(['A', 'B'], ['A', 'C']), 'Revised. Before: Recorded prerequisites: A, B. After: Recorded prerequisites: A, C.');
+  // Other facts keep their own wording, including a legitimate group-placement "none".
+  assert.equal(referenceText({ from: 3, to: 4, reportedAt: '2026-10-27T09:00:00.000Z', facets: ['revised'], before: { ...at, parentId: 'G', dependencies: ['D'] }, after: { ...at, dependencies: ['D'] } }), 'Revised. Group G → none.');
+});
+
+test('real backend: omitted ↔ empty is no change; set changes in both directions read as recorded endpoints', () => {
+  const base = digestItems.map((i) => (i.id === 'B' ? { ...i, status: 'done' as const } : i));
+  const { request, body } = real(6, 8, (f) => {
+    // Revision 7: B omitted → [] (no event); D omitted → [A].
+    f.revise([...base.map((i) => (i.id === 'B' ? { ...i, dependencies: [] } : i)), { id: 'D', title: 'Added task', kind: 'task', dependencies: ['A'] }]);
+    // Revision 8: B [] → omitted (no event); D [A] → [].
+    f.revise([...base, { id: 'D', title: 'Added task', kind: 'task', dependencies: [] }]);
+  });
+  const d = parseChangeDigest(body, request);
+  assert.deepEqual(d.tasks.map((t) => t.id), ['D']);
+  assert.equal(d.summary.events.revised, 2);
+  assert.equal(Object.values(d.summary.events).reduce((a, b) => a + b, 0), 2);
+  assert.deepEqual(d.counts.before, d.counts.after);
+  const refs = Object.fromEntries(d.tasks[0].references.map((r) => [r.to, referenceText(r)]));
+  assert.deepEqual(refs, {
+    7: 'Revised. Before: No prerequisites recorded. After: Recorded prerequisites: A.',
+    8: 'Revised. Before: Recorded prerequisites: A. After: No prerequisites recorded.',
+  });
 });
 
 // ---------------------------------------------------------------- checkpoint protocol

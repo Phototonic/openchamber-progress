@@ -133,6 +133,10 @@ export interface SetupUi {
   from: 'notice' | 'setup';
 }
 
+type Confirm = NonNullable<SetupUi['confirm']>;
+/** The status action that opened each confirmation (its focus returns there). */
+const OPENER: Record<Confirm, string> = { disable: 'setup-disable', enable: 'setup-enable', 'remove-capture': 'setup-remove' };
+
 export const initialSetupUi = (): SetupUi => ({ form: { configRoot: '', dataRoot: '', storeRoot: '' }, edited: { configRoot: false, dataRoot: false, storeRoot: false }, review: null, confirm: null, ack: false, busy: false, error: null, notice: null, from: 'setup' });
 
 type Host<U> = ViewContext<U & { setup: SetupUi }>;
@@ -302,9 +306,13 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
     return wrap;
   }
 
-  // Control confirmation: restates the configured folders and consequences.
+  // Control confirmation: restates the configured folders and consequences. Like the cleanup
+  // confirmation, Cancel receives focus; Cancel, Escape and a confirmed result return focus once to
+  // the opener, or to the setup status heading when the result replaced it (docs/ui.md Setup).
   if (s.confirm && info?.targets) {
     const c = s.confirm;
+    const back = () => vc.handoff({ to: OPENER[c], heading: (root) => root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]') });
+    const cancel = () => { back(); set({ confirm: null }); };
     const card = testid(el('div', 'ap-setup-card'), `setup-confirm-${c}`);
     const title = { disable: 'Turn off capture?', enable: 'Turn capture back on?', 'remove-capture': 'Remove capture?' }[c];
     const body = {
@@ -315,10 +323,12 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
     card.append(el('h3', 'ap-setup-title', title), el('p', '', body), facts(targetRows(info.targets)));
     const row = el('div', 'ap-row');
     button(row, 'setup-confirm', { disable: 'Turn off capture', enable: 'Turn on capture', 'remove-capture': 'Remove capture' }[c], () => {
+      back();
       void run(c, null, true, () => ({ confirm: null, notice: { disable: 'Capture is off.', enable: 'Capture is on.', 'remove-capture': 'Capture removed. History is kept.' }[c] }));
     }, c === 'enable' ? 'default' : 'destructive', s.busy);
-    button(row, 'setup-cancel', 'Cancel', () => set({ confirm: null }), 'ghost', s.busy);
+    button(row, 'setup-cancel', 'Cancel', cancel, 'ghost', s.busy);
     card.append(row);
+    card.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !s.busy) { event.preventDefault(); cancel(); } });
     wrap.append(card);
     return wrap;
   }
@@ -326,7 +336,10 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
   if (phase === 'unconfigured') {
     const hints = info?.suggestions;
     applySuggestions(s, hints);
-    wrap.append(el('h3', 'ap-setup-title', 'Set up agent progress'));
+    // The setup panel's heading in every phase (a focus target after Try again recovers into setup).
+    const heading = testid(el('h3', 'ap-setup-title', 'Set up agent progress'), 'setup-status-heading');
+    heading.tabIndex = -1;
+    wrap.append(heading);
     wrap.append(el('p', 'ap-note', 'Choose your OpenCode global config and data folders and a private folder for the progress store. Nothing is written until you review and confirm.'));
     if (!info) {
       if (state?.state === 'error') wrap.append(partState('setup-loading', 'folder suggestions', state, vc.requestSetup));
@@ -387,7 +400,9 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
   const headline = {
     installed: 'Capture is on', disabled: 'Capture is off', 'reload-required': 'Companion installed', removed: 'Capture removed', recovery: 'Setup was interrupted', unconfigured: '',
   }[phase];
-  status.append(el('h3', 'ap-setup-title', headline));
+  const heading = testid(el('h3', 'ap-setup-title', headline), 'setup-status-heading');
+  heading.tabIndex = -1; // focus target when a confirmed action replaced its opener, never a Tab stop
+  status.append(heading);
   // The comparison is independent of the setup phase: an update can be available while a reload is
   // still pending, and the two notes stay distinct.
   const update = updateNotice(info);
@@ -401,11 +416,12 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
   if (info.targets) status.append(facts([...targetRows(info.targets), ...versionRows(info)]));
   for (const d of info.diagnostics) status.append(el('p', 'ap-note', setupDiagnosticText(d)));
   const row = el('div', 'ap-row');
-  if (info.installed && info.captureEnabled !== false) button(row, 'setup-disable', 'Turn off capture', () => set({ confirm: 'disable', error: null, notice: null }), 'outline', s.busy);
-  if (info.installed && info.captureEnabled === false) button(row, 'setup-enable', 'Turn capture back on', () => set({ confirm: 'enable', error: null, notice: null }), 'outline', s.busy);
+  const confirm = (kind: Confirm) => { vc.handoff({ to: 'setup-cancel' }); set({ confirm: kind, error: null, notice: null }); };
+  if (info.installed && info.captureEnabled !== false) button(row, 'setup-disable', 'Turn off capture', () => confirm('disable'), 'outline', s.busy);
+  if (info.installed && info.captureEnabled === false) button(row, 'setup-enable', 'Turn capture back on', () => confirm('enable'), 'outline', s.busy);
   if (info.installed) {
     button(row, 'setup-update', update?.action ?? 'Update companion', c.reviewUpdate, update?.kind === 'upgrade' || update?.kind === 'rebuild' ? 'outline' : 'ghost', s.busy);
-    button(row, 'setup-remove', 'Remove capture', () => set({ confirm: 'remove-capture', error: null, notice: null }), 'ghost', s.busy);
+    button(row, 'setup-remove', 'Remove capture', () => confirm('remove-capture'), 'ghost', s.busy);
   } else if (info.targets) {
     const targets = info.targets;
     button(row, 'setup-reinstall', 'Install again', () => {

@@ -683,6 +683,54 @@ The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
 
+## Plan graph revision 1 (additive v2 read)
+
+Ready `/health` advertises `planGraph:1`; absent, malformed or unsupported capability means graph data unavailable, not an empty plan. Authenticated body-free GET `/v1/plan-graph` requires exactly these query fields. Protocol/schema remain 2; existing report/list/detail routes and cursors are unchanged.
+
+| Field | Validation / meaning |
+| --- | --- |
+| `storeId`, `source`, `plan` | Existing ASCII identifier rule, 1–80 characters |
+| `binding` | JSON `{sourceId:string|null,verified:boolean}`, exactly two fields, at most 256 UTF-8 bytes; expected service binding, not a restriction to reading that source |
+| `revision` | Expected current progress revision, positive safe integer, including above nine digits |
+| `cleanupRev` | Expected cleanup generation, nonnegative safe integer |
+
+The encoded query including `?` is at most 16,384 bytes. There is no cursor, historical revision selector, continuation or caller-selected item limit.
+
+Canonical exports in `shared/progress.ts`:
+
+```ts
+interface PlanGraphItem {
+  id: string;
+  kind: 'task' | 'group';
+  status: Status;
+  parentId: string | null;
+  dependencies: string[];
+}
+interface PlanGraphRead {
+  protocolVersion: 2;
+  schemaVersion: 2;
+  planGraph: 1;
+  storeId: string;
+  sourceBinding: { sourceId: string | null; verified: boolean };
+  source: string;
+  plan: string;
+  revision: number;
+  structuralRevision: number;
+  cleanup: { state: 'visible' | 'archived'; revision: number };
+  complete: true;
+  itemCount: number;
+  items: PlanGraphItem[];
+}
+```
+
+One read transaction returns every current task and group at the requested progress revision and cleanup generation, in stored order (at most 1,000). Parent absence is null and omitted dependencies are an empty array; repeated recorded dependencies are preserved. `complete:true` and `itemCount === items.length` describe coverage, not completion of work. The reply is not a legacy Envelope/PlanRead: no title, document, path, source root, contribution, assignment link, provenance, blocker, working-ID array, summary count or timing data is returned. Missing recorded prerequisites do not prove real-world independence. Item identity and structural revision retain the rules in “Item identity and structural revisions”; structuralRevision is not a topology fingerprint or item-instance identifier.
+
+The complete graph is validated: unique bounded identifiers, known kinds/statuses, at most 16 dependency entries per item, group parents, task dependency targets, no self edges, hierarchy/dependency cycles or task parents. Group dependencies targeting tasks remain allowed. Unknown/malformed wire fields fail; unreadable items/edges are never omitted to manufacture completeness. Unrelated snapshot annotations are not validated by this read.
+
+Store/binding, progress revision or cleanup conflicts return 409/conflict; missing/deleted plans return 404/not-found. Archived plans remain readable and legacy cleanup metadata is visible generation 0. Capture disabled does not prevent reading recorded facts. Input admission is one current snapshot of at most 8 MiB, checked before driver materialization/JavaScript parsing; an invalid or oversized stored snapshot fails with 503/corrupt. Complete encoded replies remain within 1,048,576 bytes; overflow returns 413/response-too-large, never a truncated success. Unknown/duplicate query fields return 404, malformed/missing values or oversized queries 400, request bodies 400, wrong methods 405 and unauthorized requests 401. Other store failures retain their fixed codes. Responses use JSON content type, no-store and nosniff. Reads create no schema objects, receipts or revisions and perform no history/contribution/timing scan, file access or model call, including on read-only legacy stores.
+
+A reply is one observed snapshot, not a freshness promise after delivery. Consumers validate the entire identity, requested progress revision and cleanup generation, and only present a complete validated reply for their current reading identity. Capability absence, refused identity, partial/malformed replies and transport/store failures remain explicit unavailable/error states; they cannot be substituted with empty data or merged with another revision. Unsupported services receive no graph request. Refreshing metadata and issuing a new pinned request is distinct from accepting a stale reply.
+
 ## Plan change digests (frozen additive read contract)
 
 See also the independent **Plan/task search revision 1** contract above. Search
@@ -1236,6 +1284,14 @@ tasks. Dispatch is not work start. No file or automatic per-turn report is requi
 Description-only clients may omit/truncate tool descriptions; delivery does not
 guarantee reporting or model compliance.
 
+The start/revise guidance floor asks agents to report only known real prerequisites
+in each task's optional `dependencies` array, using same-plan task IDs that must
+finish first. Full structural replacements (`revise` or `stage`/`commit`) must
+re-include still-needed edges; omitted dependencies are not retained. Omission is
+legal when none are known. Guidance must not infer links from ordering, titles,
+sessions or activity, ask users to supply them, infer blocked status from an edge,
+or imply execution enforcement. This is guidance, not a new data contract.
+
 - start: title/items/source?; creates independent plan identity.
 - change: changes[{id,status}], attributed? (explicit validated parent relay).
 - revise: title/items/reopen?; preserves status for retained IDs unless supplied.
@@ -1254,6 +1310,18 @@ guarantee reporting or model compliance.
 Same oid+same caller/session+same semantic input returns the ORIGINAL receipt;
 altered reuse refuses, stale rev returns current rev. Batches are all-or-none.
 Ancestry is authoritative or unknown, never guessed. History retained by default.
+
+### Item identity and structural revisions
+
+Item IDs are supplied by the reporter and are unique across tasks and groups in a plan's complete current item set. Their namespace is the enclosing store, source and plan, not a title, array position, session or directory. The store does not regenerate IDs when an item is renamed, reordered, moved between groups, finished or reopened. Equal IDs in different plans or sources are unrelated. An ID is a snapshot matching key, not an immutable task-instance identifier or a guarantee that the same real-world work has existed continuously.
+
+`change` updates existing tasks by ID; it cannot add, remove, rename or reparent items. A title-only `revise` leaves the item set in place. Supplying `items` to `revise`, or publishing the combined chunks with `commit`, replaces the complete item set in submitted order. An ID present in the immediately previous committed item set is retained for status fallback: an explicitly supplied status wins; otherwise the previous status is kept. An ID absent from that set starts with the supplied status or `pending`. This is not a general field merge: title and kind come from the replacement, and omitted parent or dependencies are not inherited. Assignment, reporter, blocker and binding metadata follow their existing attribution and continuity rules, not a promise that all fields survive.
+
+Omitting an ID from a committed replacement removes it from the current item set and removes its task links; earlier revision snapshots remain historical. Reusing that ID in a later replacement is allowed, but it is then a new entry for retention purposes: omitted status defaults to `pending`, and old assignments and annotations are not restored from history. An uncommitted staged omission does not remove an item. Changing a retained ID between task and group is also allowed when the submitted structure is valid; the status fallback is ID-based even across that kind change. Task-specific continuity is separate, and change digests treat task/group conversion as removal/addition. There is no per-item generation or removal tombstone, so equal IDs in nonadjacent snapshots cannot establish uninterrupted task presence.
+
+Every successful new committed plan mutation advances `revision` once. Only `start`, `revise` and `commit` also advance `structuralRevision` once; these are operation-based increments, including a title-only revision, an equivalent replacement, and an explicit reopen. First publication by `start` or `commit` has both counters at 1. `change`, `link`, `bind` and `finish` advance only `revision`. Staging advances neither counter and creates no committed plan revision; before first publication its receipt reports 0 for both. An identical admitted operation replay returns its original receipt without another increment, while rejected operations and reads advance neither counter. The receipt's `structuralRev` is the committed plan's `structuralRevision`, not a separate counter. Separately owned delegation, handoff and cleanup records are not committed plan revisions.
+
+`finish` records the outcome without replacing item IDs or resetting their statuses. Closed plans reject ordinary progress writes. Continuation requires the coordinator's `revise` or `commit` with `reopen:true`; revise still requires title or items. Each stage and commit submitted while closed needs `reopen:true`, and staging alone leaves the plan closed. Reopening without replacing items preserves the IDs and statuses, while a replacement uses the same retention rules above. Blocker annotations and derived timing have their separately documented close/reopen boundaries. Consumers must not use `structuralRevision` as a task-instance token or topology fingerprint, nor assume an unchanged structural counter means status or lifecycle is unchanged.
 
 ## Adopted bounds / compatibility
 

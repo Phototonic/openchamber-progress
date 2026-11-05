@@ -21,6 +21,55 @@ The evidence sections retain the environments, artifacts and limitations of
 those runs; they do not certify every later checkout. References under `evidence/`
 name local-only records, not files shipped in the repository or release archives.
 
+## Native structured task capture limitation
+
+As of **2026-11-02**, inspection of the pinned `@opencode/plugin`/client/schema
+**2.1.4** types, including the full `V2Event` union, finds no supported typed native
+task/todo/planner contract to mirror: no task create/update/remove/reorder events,
+task status, dependency edges, native task identity or task-list revision semantics.
+These SDK types are distinct from the **2.2.2** native test host (see the
+[current native proof pin](#current-native-proof-pin--222)) and the installed host
+observed at **2.2.0**. This finding is version-qualified, not a claim about every
+runtime or third-party tool.
+
+The available structured signals do not supply the missing contract:
+
+- Session `parentID` and fork metadata describe lineage, not task dependencies.
+- `SubtaskPart` is a dispatch record, without task status, dependencies or
+  update/remove/reorder semantics; its part identity is not a native task identity.
+- `experimental.todo` is a configuration flag with no typed task surface behind it
+  in the inspected types.
+- Event-envelope `seq`/`version` provide per-aggregate ordering, not task-list
+  revision semantics.
+- Generic structured tool results carry task semantics only when a tool defines
+  them; tool success alone does not establish task progress.
+
+Explicit producer reports through the companion's authenticated report path remain
+the only task/dependency mutation authority. Existing passive sub-agent run capture
+stays separate from task progress; a successful run establishes neither accepted
+task completion nor task ownership or dependencies. See
+[reporting participation](contracts.md#reporting-participation),
+[the unchanged reporting protocol](contracts.md#advisory-activation-does-not-change-the-protocol)
+and the [sub-agent run read seam](backend.md#sub-agent-run-read-seam).
+The later dependency diagram must consume producer-reported `Item.dependencies`
+only: ordering, lineage, similar titles, file writes and concurrent activity are
+not evidence for inferred edges. No dependency-diagram UI is implemented here.
+
+**Evidence limit:** no exhaustive live-emission audit of the **2.2.2** or **2.2.0**
+hosts was performed. Typed-contract inspection, existing native runtime tests and
+the plugin documentation consulted on 2026-11-02 bound the finding, but do not
+exhaustively prove the absence of undocumented live emissions. This section adds
+no fresh native-host verification or compatibility certification; historical probe
+results below retain their original scope.
+
+**Deferred proposal, not implemented:** a cooperating producer can deliberately
+report through the current authenticated report path today. Native capture could
+be reconsidered only after a pinned runtime documents typed task identity,
+lifecycle/status, dependency and revision/ordering semantics with validatable
+authorization/provenance. The smallest integration within the existing
+plugin/Store/source owners would then require separate review. Neither a future
+SDK upgrade nor a task-named event family may auto-enable capture.
+
 ## Native Windows verification
 
 The native implementation adds no separate binary or compilation requirement for

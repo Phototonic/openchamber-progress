@@ -21,11 +21,16 @@ canonical state needs no mutation.
 
 Use `agent_progress_report`. Every plan mutation requires a fresh `oid` and expected
 `rev`; reuse an `oid` only for an identical retry. A new `start` requires `plan`,
-`title`, the complete `items` structure and `rev:0`. Minimal valid start (replace
-synthetic IDs/title/items with the real plan):
+`title`, the complete `items` structure and `rev:0`. Every call needs `op`, including
+routine `change` calls; if the host rejects a call with `op: Missing key`, resend the
+same call with `op` added and the same `oid`.
+
+When starting or revising a plan, put real prerequisites in each task's optional `dependencies` array: IDs of tasks in the same plan that must finish first (max 16). Omit it when none are known; never add links just for list order or infer them from titles, sessions or activity. When replacing `items` in `revise` or `stage`/`commit`, include all still-needed links; omitted dependencies are not retained. Do not ask the user to fill them in. Links neither set `blocked` nor enforce execution.
+
+Valid start with a prerequisite (replace synthetic IDs, title and items with the real plan): task-2 needs task-1 finished first; task-1 has no prerequisite.
 
 ```json
-{"op":"start","plan":"synthetic-plan","title":"Synthetic plan","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Synthetic task","kind":"task","status":"working"}]}
+{"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
 ```
 
 Read accepts only `op: "read"`, one concrete `plan` identifier and optional 0-based `page`;

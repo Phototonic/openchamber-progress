@@ -1,7 +1,7 @@
 import { mountList, mountSelect, mountTabs, type Tone } from '@openchamber/sdk/ui';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
-  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, partState, planDetail, planHeader, recordedLabel, revealCurrentTask, staleBlock, testid, type Env,
+  button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, partState, planDetail, planHeader, recordedLabel, retryRead, revealCurrentTask, staleBlock, testid, type Env,
 } from '../shared/components.ts';
 import type { DigestPanel } from '../shared/change-digest.ts';
 import { CaptureController } from '../shared/capture-comparison.ts';
@@ -80,6 +80,12 @@ function draftText(vc: ViewContext<Ui>) {
 }
 const setText = (vc: ViewContext<Ui>, q: string) => { text = { owner: ownerOf(vc), q }; };
 const say = (message: string) => announceSearch(--notices, message);
+/**
+ * Owning heading of the board's list region (docs/ui.md Board search): Search results while
+ * searching, Plans while browsing. Actions whose control leaves the paint hand focus to it once.
+ */
+const regionHeading = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="search-results-heading"], [data-testid="plan-list-heading"]');
+const toRegion = (vc: ViewContext<Ui>, notice: string) => vc.handoff({ heading: regionHeading, notice });
 
 /** Whether the controller still runs this frame identity's submitted search (cheap: no view). */
 function isSearching(vc: ViewContext<Ui>) {
@@ -164,13 +170,13 @@ startView<Ui>({
     // The official-main notice does not depend on companion setup or the store.
     const official = officialMainBlock(vc);
     if (!read) {
-      if (failure) root.append(failureBlock(failure, vc.retry));
+      if (failure) root.append(failureBlock(failure, retryRead(vc)));
       else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
       else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock());
       footer(root, vc, null);
       return;
     }
-    if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, vc.retry));
+    if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
     if (official) root.append(official);
@@ -290,6 +296,7 @@ function removeChip(kind: ChipKind) {
   const vc = frame;
   const c = vc ? searching(vc)?.criteria : null;
   if (!vc || !c) return;
+  toRegion(vc, 'Filter removed');
   const next: SearchCriteria = { ...c, labels: { ...c.labels } };
   if (kind === 'q') { next.q = ''; setText(vc, ''); }
   else if (kind === 'project') { next.project = ALL; next.worktree = ALL; }
@@ -302,6 +309,7 @@ function removeChip(kind: ChipKind) {
 function clearAll() {
   const vc = frame;
   if (!vc) return;
+  toRegion(vc, 'Search cleared');
   endSearch();
   vc.setUi({ search: null, filters: NO_FILTERS, draft: NO_DRAFT, problem: null, selected: null, reveal: 0 });
   say(`Search and filters cleared. Showing all ${vc.ui.archived ? 'archived' : 'current'} plans.`);
@@ -343,8 +351,8 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
     selected: openedHit && openedHit.key === ui.selected ? openedHit : null,
     openPlan: (hit) => openHit(vc, v, hit, null),
     openTask: (hit) => openHit(vc, v, hit, hit.task),
-    more: () => search.more(),
-    retry: () => { if (v.blocked) runSearch(vc, c); else search.more(); },
+    more: () => { toRegion(vc, 'Results updated'); search.more(); },
+    retry: () => { toRegion(vc, 'Search resumed'); if (v.blocked) runSearch(vc, c); else search.more(); },
     refresh: () => runSearch(vc, c),
     page: (delta) => { search.showPage(delta); vc.retry(); },
     removeLocation: (part) => removeChip(part),
@@ -474,7 +482,9 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
   setup.append(el('summary', '', 'Setup'));
   const body = el('div');
   const fill = () => { body.replaceChildren(setupBlock(vc)); };
-  setup.addEventListener('toggle', () => { if (setup.open) { if (!vc.setup) vc.requestSetup(); fill(); } });
+  // Filled once per painted disclosure: the browser's own queued `toggle` after the repaint's synchronous
+  // one must not rebuild it, which would drop focus placed in it (e.g. a confirmation's Cancel).
+  setup.addEventListener('toggle', () => { if (setup.open && !body.firstChild) { if (!vc.setup) vc.requestSetup(); fill(); } });
   setup.append(body);
   zone.append(reportingHealthBlock(reporting.claim({key:JSON.stringify([ownerOf(vc),vc.read?.storeId,vc.read?.binding,vc.read?.captureEnabled,!!vc.failure,plan?.key,vc.ui.filters,vc.ui.archived,vc.ui.search?.key??null]),read:vc.read,plan,stale:!!vc.failure})));
   zone.append(setup, detailsBlock(vc.read, plan, [
@@ -495,6 +505,10 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   const wrap = testid(el('nav', 'ap-plan-list'), 'plan-list');
   wrap.setAttribute('aria-label', 'Plans');
   wrap.dataset.scrollKey = 'plan-list';
+  // Owning heading of the list region (focus target after Clear all and similar; never a Tab stop).
+  const heading = testid(el('h2', 'ap-region-h', 'Plans'), 'plan-list-heading');
+  heading.tabIndex = -1;
+  wrap.append(heading);
   const groups = new Map<string, { label: string; plans: PlanView[] }>();
   for (const p of plans) {
     const place = placeOf(p, env.live, env.boundSource);
