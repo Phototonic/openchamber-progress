@@ -14,6 +14,7 @@
 //   runs a subset for iteration only and always fails the run as partial.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { progressInput } from './progress-qa.ts';
+import { boardInput, BOARD_FILTERS, BOARD_FILTERS_TRIGGER } from './board-qa.ts';
 import { progressRetirementQa } from './progress-retirement-qa.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -169,6 +170,7 @@ try {
   };
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
   const progressUi = progressInput({ guest, wait, click, key });
+  const boardUi = boardInput({ guest, wait, click });
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
     await guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
@@ -180,6 +182,7 @@ try {
     shots.push(`${name}.png`);
   };
   const choose = async (holder: string, label: string) => {
+    await boardUi.openFilters();
     await click('page', `${holder} .oc-sdk-trigger`);
     await wait('page', `d.querySelector('.oc-sdk-popup [role="listbox"] [role="option"]')`, `${holder} options`);
     const options = await guest<string[]>('page', `return [...d.querySelectorAll('.oc-sdk-popup [role="listbox"] [role="option"]')].map(n=>n.querySelector('.oc-sdk-option-label')?.textContent??'')`);
@@ -187,6 +190,7 @@ try {
     if (index < 0) throw new Error(`no option ${label} in ${holder}: ${JSON.stringify(options)}`);
     await key('Home'); if (index) await key('ArrowDown', index); await key('Enter');
     await wait('page', `!d.querySelector('.oc-sdk-popup [role="listbox"]')`, `${holder} closed`);
+    await boardUi.closeFilters();
   };
   const reqs = (filter = 'true') => evaluate<any[]>(`qa.requests.filter(r=>${filter})`);
   const count = (path: string, frame = 'page') => evaluate<number>(`qa.requests.filter(r=>r.frame==='${frame}'&&r.path==='${path}').length`);
@@ -227,7 +231,9 @@ try {
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
   if (onlyDesign) {
-    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, guest, evaluate, wait, show, click, theme, shot, check, key, c });
+    const reviewCheck = arg('--board-review-check');
+    if (reviewCheck && !['menu', 'finished', 'cancelled', 'keyboard-finished', 'keyboard-cancelled'].includes(reviewCheck)) throw Error('Unknown board review check');
+    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, setCapture: fx.setCapture, cleanupElsewhere: fx.cleanupElsewhere, seedDesignFailed: fx.seedDesignFailed, seedDesignRegroup: fx.seedDesignRegroup, seedDesignKeyboardRegroup: fx.seedDesignKeyboardRegroup, finishDesignRegroup: fx.finishDesignRegroup, reviewCheck: reviewCheck as 'menu' | 'finished' | 'cancelled' | 'keyboard-finished' | 'keyboard-cancelled' | undefined, lifetimeOnly: process.argv.includes('--board-lifetime-only'), guest, evaluate, wait, show, click, theme, shot, check, key, c });
     replies = await evaluate('qa.replies');
     throw new OnlyDone();
   }
@@ -1044,7 +1050,17 @@ try {
     };
     /** From the start sentinel, real Tab presses until `selector` in `surface` owns focus. */
     const tabTo = async (surface: string, selector: string, max = 120, fromStart = true) => {
+      if (surface === 'page' && /data-testid="(?:filter-(?:project|worktree|session)|search-(?:lifecycle|task-status|source|submit))"/.test(selector)) {
+        // These capabilities moved behind Filters; reach its opener and panel
+        // through actual keyboard input rather than targeting a hidden select.
+        await boardUi.closeFilters();
+        await tabTo('page', BOARD_FILTERS_TRIGGER, max);
+        await key('Enter');
+        await wait('page', `d.querySelector('${BOARD_FILTERS}')?.getClientRects().length>0`, 'Filters opened by keyboard');
+        fromStart = false;
+      }
       if (fromStart) await clickTop('#qa-before');
+      if (await focusedOn(surface, selector)) return 0;
       const seen: string[] = [];
       for (let i = 1; i <= max; i++) {
         await key('Tab');
@@ -1257,9 +1273,10 @@ try {
       });
       await scenario('K7-board-empty', ['K7'], async () => {
         await show(['page'], 1100); await fresh('page');
-        const list = await guest<string>('page', `return d.querySelector('[data-testid="plan-row-K-all-done"]').closest('[data-testid^="project-"]').dataset.testid`);
-        await tabTo('page', `[data-testid="${list}"] [role="listbox"]`);
-        const idx = await guest<number>('page', `return [...d.querySelectorAll('[data-testid="${list}"] [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-K-all-done')`);
+        await boardUi.revealPlan('[data-testid="plan-row-K-all-done"]');
+        const list = '[data-testid="plan-list"] [role="listbox"]:has([data-testid="plan-row-K-all-done"])';
+        await tabTo('page', list);
+        const idx = await guest<number>('page', `return [...d.querySelectorAll('${list} [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-K-all-done')`);
         await key('Home'); if (idx) await key('ArrowDown', idx); await key('Enter');
         await wait('page', `d.querySelector('article[data-reading][data-testid="plan-K-all-done"] .ap-tasks[data-complete]')`, 'board all-done plan');
         await progressUi.planOrder('page');
@@ -1580,10 +1597,20 @@ try {
         await show(['page'], 1100); await theme('light'); await fresh('page');
         const w = await walkChecks('K2', 'page', 'board-1100-light');
         const ids = w.list.map((x: any) => x.testid);
-        for (const hook of ['cleanup-visible', 'cleanup-archived', 'search-query', 'search-lifecycle', 'search-task-status', 'search-source', 'search-submit', 'filter-project', 'filter-worktree', 'filter-session', 'detail-tabs']) kcheck('K2', 'page', `reachable:${hook}`, ids.includes(hook), undefined, ids);
+        for (const hook of ['cleanup-visible', 'cleanup-archived', 'search-query', 'board-filters-trigger', 'detail-tabs']) kcheck('K2', 'page', `reachable:${hook}`, ids.includes(hook), undefined, ids);
+        const deferred = ['search-lifecycle', 'search-task-status', 'search-source', 'search-submit', 'filter-project', 'filter-worktree', 'filter-session'];
+        for (const hook of deferred) kcheck('K2', 'page', `closed-filters:not-in-tab-order:${hook}`, !ids.includes(hook), undefined, ids);
+        await tabTo('page', BOARD_FILTERS_TRIGGER); await key('Enter');
+        await wait('page', `d.querySelector('${BOARD_FILTERS}')?.getClientRects().length>0`, 'Filters keyboard entry');
+        for (const hook of deferred) {
+          const selector = `[data-testid="${hook}"] ${hook === 'search-submit' ? 'button' : '.oc-sdk-trigger'}`;
+          await tabTo('page', selector);
+          kcheck('K2', 'page', `reachable:${hook}`, await focusedOn('page', selector), undefined, await focusState());
+        }
+        await boardUi.closeFilters();
         const lists = w.list.filter((x: any) => x.role === 'listbox');
         kcheck('K2', 'page', 'plan-list:one-stop-per-group', lists.length >= 1, [`${lists.length} grouped listboxes`]);
-        const listSel = `[data-testid="${(lists[0] as { testid: string }).testid}"] [role="listbox"]`;
+        const listSel = '[data-testid="plan-list"] [role="listbox"]';
         await tabTo('page', listSel);
         const sel0 = await guest<string | null>('page', `return d.querySelector('[role="option"][aria-selected="true"]')?.dataset.testid??null`);
         await focusShot('page-focus-light-listbox', 'page', 40, 200);
@@ -1846,9 +1873,10 @@ try {
         fx.recordDocument('P-0006', '# Example plan\nKeep this line\nNew action\n', '/fixture/revised-plan.md');
         setups.push('K5-document: two synthetic recorded captures for P-0006 (existing recordDocument seam)');
         await show(['page'], 1100); await fresh('page');
-        const list = await guest<string>('page', `return d.querySelector('[data-testid="plan-row-P-0006"]').closest('[data-testid^="project-"]').dataset.testid`);
-        await tabTo('page', `[data-testid="${list}"] [role="listbox"]`);
-        const idx = await guest<number>('page', `return [...d.querySelectorAll('[data-testid="${list}"] [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-P-0006')`);
+        await boardUi.revealPlan('[data-testid="plan-row-P-0006"]');
+        const list = '[data-testid="plan-list"] [role="listbox"]:has([data-testid="plan-row-P-0006"])';
+        await tabTo('page', list);
+        const idx = await guest<number>('page', `return [...d.querySelectorAll('${list} [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-P-0006')`);
         await key('Home'); if (idx) await key('ArrowDown', idx); await key('Enter');
         await wait('page', `d.querySelector('[data-testid="plan-row-P-0006"]')?.getAttribute('aria-selected')==='true'&&d.querySelector('article[data-testid="plan-P-0006"]')`, 'P-0006 selected by keyboard');
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]'); await key('ArrowRight');
@@ -1981,7 +2009,7 @@ try {
           ['panel', '[data-testid="focus-mode-unfinished"] button', 'rail-pair-mode'], ['panel', '[data-testid="focus-expand-all"] button', 'rail-pair-expand'],
           ['panel', '[data-testid="focus-jump-working"] button', 'rail-pair-jump'], ['panel', '[data-testid="plan-selector"] .oc-sdk-trigger', 'rail-pair-picker'],
           ['panel', '[data-testid="plan-actions"] button', 'rail-pair-summary-menu'], ['panel', 'article[data-reading] details[data-testid^="group-toggle-"] > summary', 'rail-pair-group-summary'],
-          ['page', '[data-testid^="project-"] [role="listbox"]', 'page-pair-listbox'], ['page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]', 'page-pair-tab'],
+          ['page', '[data-testid="plan-list"] [role="listbox"]', 'page-pair-listbox'], ['page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]', 'page-pair-tab'],
           ['page', '[data-testid="search-submit"] button', 'page-pair-submit'], ['page', '#ap-search-q', 'page-pair-search'],
           ['status', '[data-testid="open-detail"] button', 'status-pair-open'], ['status', '[data-testid="status-plan-selector"] .oc-sdk-trigger', 'status-pair-picker'],
         ];
@@ -2062,10 +2090,10 @@ try {
         await wait('page', complete(1), 'board List chosen');
         await progressUi.planOrder('page');
         // Board selection by keyboard: Tab to the plan listbox, Home, Enter.
-        await tabTo('page', '[data-testid^="project-"] [role="listbox"]');
+        await tabTo('page', '[data-testid="board-project"] [role="listbox"]');
         await key('Home'); await key('Enter');
         await wait('page', complete(1), 'board S0');
-        kcheck('K9', 'page', 'S0:keyboard-selected-plan', await focusedOn('page', '[data-testid^="project-"] [role="listbox"]'));
+        kcheck('K9', 'page', 'S0:keyboard-selected-plan', await focusedOn('page', '[data-testid="board-project"] [role="listbox"]'));
         // S1: unaffected row retained in the rail while the rail owns focus.
         await setupRowFocus('panel', 'item-T-01-00');
         replay.advance('S1'); await settle('panel', step('S1')); await settle('page', step('S1'));
@@ -2476,7 +2504,8 @@ try {
     check('A1:no-false-empty-while-unchecked', await guest<boolean>('page', `return !d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-none-yet"]')`));
     await more();
   }
-  check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
+   await boardUi.openFilters();
+   check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
   await shot('search-no-results');
 
   // ======================================================= 3. Chips, Clear all, unavailable scope, failure
@@ -2513,6 +2542,7 @@ try {
   // and only the worktree filter is offered for removal; the project stays.
   await choose('[data-testid="filter-project"]', 'Alpha'); await idle();
   await evaluate(`qa.setWorktrees('alpha',[{directory:'/fixture/wt-a',name:'feature-wt',branch:'feature-wt',status:'ready'}]);true`);
+  await boardUi.openFilters();
   await wait('page', `[...d.querySelectorAll('[data-testid="filter-worktree"] .oc-sdk-trigger')].length>0`, 'worktree filter');
   await choose('[data-testid="filter-worktree"]', 'feature-wt'); await idle();
   check('A6:worktree-search-runs-while-known', await stop() !== 'membership' && !(await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-blocked"]')`)));
@@ -2543,9 +2573,13 @@ try {
 
   // ======================================================= 4. Archived mode; freshness beyond the list
   await click('page', '[data-testid="cleanup-archived"] button');
-  await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'&&d.querySelector('[data-testid="search-scope"]')`, 'archived mode');
+  await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'`, 'archived mode');
+  await boardUi.openFilters();
+  await wait('page', `d.querySelector('[data-testid="search-scope"]')`, 'archived scope reachable in Filters');
   await searchFor('archive export', true);
+  await boardUi.openFilters();
   check('A5:archived-explicit', /archived plans only/.test(await guest<string>('page', `return d.querySelector('[data-testid="search-scope"]').textContent`)) && (await counts())?.matchedPlans === '1');
+  await boardUi.closeFilters();
   await click('page', T('P-archive', 'A1'));
   await wait('page', `d.activeElement?.dataset.testid==='item-A1'`, 'archived task revealed');
   await shot('search-archived');

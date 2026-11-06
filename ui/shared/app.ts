@@ -224,7 +224,7 @@ const focusKey = (root: HTMLElement) => {
   if (!owner) return null;
   const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const picker = owner.dataset.testid === 'plan-selector';
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
 };
 
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
@@ -1051,7 +1051,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     // A background change must not close a picker the user has open; it paints once the
     // popup closes, including same-session metadata. Navigation and authority/UI
     // changes paint immediately; versions.ctx also includes non-navigation updates.
-    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && mount!.querySelector('[aria-haspopup][aria-expanded="true"]')) {
+    // Reading-owned live popups reconstruct their controls across paints. Unlike an
+    // independent SDK picker, they must not stall freshness/capture/cleanup updates,
+    // including while one of their nested SDK selects is expanded.
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && [...mount!.querySelectorAll('[aria-haspopup][aria-expanded="true"]')].some(popup => !popup.closest('[data-live-popup]'))) {
       setTimeout(schedule, 300);
       return;
     }
@@ -1173,7 +1176,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
       const f = back;
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
-      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
+      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       (target ?? backFallback)?.focus({ preventScroll: true });
     }

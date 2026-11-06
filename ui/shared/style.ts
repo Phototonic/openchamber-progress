@@ -611,6 +611,55 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-hit-title{overflow-wrap:anywhere;min-width:0}
 .ap-hit-id{font-family:var(--oc-font-mono,monospace);font-size:11px;color:var(--oc-muted);overflow-wrap:anywhere}
 .ap-hit:focus-visible,.ap-chip-remove:focus-visible,.ap-search :is(button,input):focus-visible,.ap-search .oc-sdk-trigger:focus-visible,.ap-search-area button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+/* Board bar: Current / Archived, one search field and Filters; everything else waits in Filters.
+   Concrete states (problem, pending edit, chips, outcome, warnings) stay visible below it. */
+.ap-board-bar-wrap{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-board-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-width:0}
+.ap-board-bar>[data-testid="cleanup-modes"]{flex:none;gap:2px}
+.ap-board-bar .ap-search{flex:1 1 22rem;min-width:0}
+.ap-board-bar .ap-search-row{position:relative;flex-wrap:nowrap;align-items:center;gap:6px}
+.ap-board-bar .ap-search-field{flex:1 1 auto;min-width:0}
+.ap-filters-owner{flex:none;margin-left:auto}
+.ap-filters-trigger{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--oc-border);border-radius:7px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12.5px;white-space:nowrap;cursor:pointer}
+.ap-filters-trigger:hover{background:var(--oc-hover)}
+.ap-filters-trigger[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover))}
+.ap-filters-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-filters-trigger .ap-icon{width:15px;height:15px;color:var(--oc-muted)}
+.ap-filters-count{min-width:18px;height:18px;padding:0 5px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-muted-surface);font-size:11px;font-weight:600;line-height:16px;text-align:center;font-variant-numeric:tabular-nums}
+/* A nonmodal panel under the bar, across its width on a narrow board */
+.ap-filters-panel{position:absolute;z-index:30;top:calc(100% + 6px);right:0;width:min(44rem,100%);display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated,var(--oc-bg));color:var(--oc-elevated-fg,var(--oc-fg));box-shadow:0 12px 32px color-mix(in srgb,var(--oc-fg) 16%,transparent);text-align:start}
+.ap-filters-panel[hidden]{display:none}
+.ap-filters-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ap-filters-h{margin:0;padding:0 2px;font-size:13px;font-weight:600;border-radius:4px}
+.ap-filters-h:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+.ap-filters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(12rem,100%),1fr));gap:10px 12px;min-width:0}
+.ap-filters-grid>[data-testid="filters"]{grid-column:1/-1;display:grid;grid-template-columns:subgrid;gap:inherit}
+.ap-filters-panel .ap-filters>div{min-width:0;max-width:none}
+.ap-filters-panel .oc-sdk-select,.ap-filters-panel .oc-sdk-trigger{width:100%;min-width:0}
+.ap-filters-panel .oc-sdk-popup{max-width:calc(100vw - 16px)}
+.ap-filters-panel .ap-search-help,.ap-filters-panel .ap-search-scope{max-width:none}
+.ap-filters-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;padding-top:10px;border-top:1px solid var(--oc-border)}
+.ap-filters-foot>.ap-note{flex:1 1 16rem}
+.ap-filters-panel :is(button,.oc-sdk-trigger):focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+@media(forced-colors:active){.ap-filters-panel,.ap-filters-trigger{border-color:CanvasText}}
+.ap-search-strip{display:flex;flex-direction:column;gap:6px;min-width:0}
+/* Plan list: project groups of calm rows (mark, title, done/total, mini bar); Finished folds */
+.ap-board-project{gap:2px}
+.ap-board-project>.ap-h{padding:0 8px 2px}
+.ap-plan-list .oc-sdk-row{min-height:44px;gap:10px}
+.ap-plan-list .oc-sdk-row-title{white-space:normal;overflow-wrap:anywhere}
+.ap-plan-mark{width:15px;height:15px}
+.ap-plan-mark[data-plan="failed"]{color:var(--oc-error)}
+.ap-mini-bar{height:3px;margin-top:5px;max-width:16rem}
+.ap-mini-bar>i{min-width:2px}
+.ap-mini-bar>i+i{margin-left:1px}
+.ap-fold-toggle{display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:30px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--oc-muted);font:inherit;font-size:12.5px;cursor:pointer}
+.ap-fold-toggle:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-fold-toggle:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-fold-toggle .ap-icon{width:14px;height:14px;transform:rotate(-90deg)}
+.ap-fold-toggle[aria-expanded="true"] .ap-icon{transform:none}
+.ap-board-fold[hidden]{display:none}
+@media(forced-colors:active){.ap-fold-toggle{border:1px solid CanvasText}}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;

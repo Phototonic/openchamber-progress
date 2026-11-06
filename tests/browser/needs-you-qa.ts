@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { startNeedsYouShell } from './needs-you-shell.ts';
 import { progressInput } from './progress-qa.ts';
+import { boardInput } from './board-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -116,6 +117,7 @@ try {
     }
   };
   const click = async (f: string, selector: string) => {
+    if (f === 'page' && selector.includes('plan-row-')) await boardUi.revealPlan(selector);
     const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});fr.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
@@ -124,6 +126,7 @@ try {
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const context = async (id: string | null) => { await evaluate(`qa.context(${javascriptLiteral(id)});true`); };
   const progressUi = progressInput({ guest, wait, click, key });
+  const boardUi = boardInput({ guest, wait, click });
   /** Element screenshot (union of selectors) of frame `f`, page coordinates, beyond the viewport. */
   const shot = async (f: string, name: string, selectors: string[], pad = 10) => {
     await guest(f, `d.querySelector(${javascriptLiteral(selectors[0])})?.scrollIntoView({block:'start'});return true`);
