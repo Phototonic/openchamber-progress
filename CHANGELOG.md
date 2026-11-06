@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-06
+
+The first major release: a calmer, at-a-glance progress experience with an interactive dependency map.
+
 ### Added
 
 - An interactive dependency map of the selected plan, in two places: a fourth **Map** tab in the fullscreen board's plan detail, and a **Plan view: List / Map** switch in the right rail. Both show the same full map: task cards with recorded prerequisite → dependent arrows, reported status in words and shapes, Ready and Unlocks next guidance for active plans (from recorded prerequisites only, never permission to start), Show all / Unfinished and group filters, pan, zoom, Fit all and Focus current work, keyboard navigation with one Tab stop, an inspector for each task's prerequisites, dependents, blocker and verified assignment, and a View as list action that reveals the selected task in the ordinary list. A task you reveal or select in the list opens selected in the map. New supported readings default to Map when complete detail records a task-to-task prerequisite, otherwise List/Progress. Pending detail shows a placeholder; failure shows its error and Retry. An explicit view choice wins for that reading, resetting on plan/scope/authority changes. Nothing about the map is stored, and graph data is read only while a Map view is shown. Older services default to List/Progress; explicitly opening Map shows an unavailable note and the lists keep working.
@@ -15,6 +19,7 @@ All notable changes to this project are documented in this file. The format is b
 - The fullscreen board is quieter. One bar holds Current plans, Archived plans, the search field and a **Filters** button. Plan and task status, source, project, worktree and session, the search help and scope, and Search open from Filters, while warnings, chips and the not-yet-searched notice stay visible. Plans are listed by project as compact rows with a status mark, done/total and a small bar. Each project's finished and cancelled plans fold into one **Finished · N** row, while failed plans stay in view. Search still finds folded plans, and Archived plans shows everything.
 - The right rail and the board's Progress tab tell one calm progress story. One header has the plan title, which is the plan picker in the rail, and a ⋯ menu. Done/total sits beside the bar, and state chips act as both legend and filter. Every task appears once, grouped Now → Needs you → Up next, with Done and Skipped folded. A task's details open in its row: reason, next step and wait for a blocker, recorded prerequisites, what it unlocks, assignee, who reported it, and a Copy details preview. Copy progress update, Copy handoff, Task view options (Show all/Unfinished, participant, attention or plan order, expand/collapse, jumps), Plan document, Sessions and Details move into ⋯. Generic explanations sit behind ⓘ; stale, capture-off and incomplete-data warnings stay visible. Blocked tasks stay listed while you filter, counted apart from matches. Sessions are one compact row, and sub-agents show running ones on one line each with every other record folded. Ordinary links no longer use the orange accent.
 - Task status marks are now crisp shapes drawn from the host theme's colours, one distinct shape per status, also in high-contrast (forced colours) mode, where the progress bar's segments now stay distinguishable too. The progress legend pairs each count with its mark. A working task's mark is announced as "Reported working". The map's Unlocks next highlight is neutral, so orange stays reserved for blocked tasks, primary actions and focus. Counts, layout and wording are otherwise unchanged.
+- The README is rewritten for v1: a short, visual introduction to what Agent Progress does, with the technical detail kept in the guides under `docs/`.
 
 ### Fixed
 
@@ -156,7 +161,9 @@ All notable changes to this project are documented in this file. The format is b
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0
+[0.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.4.0...v0.5.0
