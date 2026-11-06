@@ -31,8 +31,8 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
     <th width="50%">Work Status</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="280"></td>
-    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="280"></td>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="300"></td>
+    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="322"></td>
   </tr>
   <tr>
     <td>The current session's plan, right beside your chat.</td>
