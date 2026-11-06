@@ -14,7 +14,7 @@ if (!port) throw new Error('usage: status-picker-qa.ts <isolated CDP port>');
 const artifacts = process.argv.includes('--artifacts') ? process.argv[process.argv.indexOf('--artifacts') + 1] : 'evidence/cleanup';
 if (!artifacts) throw Error('--artifacts requires a directory');
 mkdirSync(artifacts, { recursive: true });
-process.on('uncaughtExceptionMonitor', () => writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: false, failure: 'Driver assertion or browser command failed; inspect private runner output.' }, null, 2) + '\n'));
+process.on('uncaughtExceptionMonitor', () => writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: false, assertions: assertions.count(), failure: 'Driver assertion or browser command failed; inspect private runner output.' }, null, 2) + '\n'));
 const cdp = (...args: string[]) => execFileSync(process.execPath, ['tests/browser/cdp.ts', port, ...args], { encoding: 'utf8', timeout: 15_000 });
 const evaluate = (code: string) => JSON.parse(cdp('eval', code));
 const guest = (code: string) => evaluate(`(()=>{const d=document.querySelector('iframe').contentDocument;${code}})()`);
@@ -38,13 +38,15 @@ function choose(index: number, expected: string) {
   assert.equal(counts.total, '3');
 }
 function measure(width: number) {
-  const result = guest(`const wrap=d.querySelector('[data-testid="status-plan-selector"]'),label=wrap.querySelector('.oc-sdk-field-label'),button=wrap.querySelector('button');const l=label.getBoundingClientRect(),b=button.getBoundingClientRect(),r=wrap.getBoundingClientRect();return {width:d.documentElement.clientWidth,scroll:d.documentElement.scrollWidth,labelRight:l.right,buttonLeft:b.left,rowCenterDelta:Math.abs((l.top+l.height/2)-(b.top+b.height/2)),rightDelta:Math.abs(r.right-b.right),height:b.height,buttonWidth:b.width,name:d.getElementById(button.getAttribute('aria-labelledby'))?.textContent,title:button.title};`);
+  const result = guest(`const wrap=d.querySelector('[data-testid="status-plan-selector"]'),button=wrap.querySelector('button'),heading=d.querySelector('[data-testid="status-plan-title"]');const b=button.getBoundingClientRect(),h=heading.getBoundingClientRect();return {width:d.documentElement.clientWidth,scroll:d.documentElement.scrollWidth,overlap:h.right>b.left+1&&h.top<b.bottom&&h.bottom>b.top,height:b.height,buttonWidth:b.width,name:button.getAttribute('aria-label'),title:heading.textContent,automatic:button.textContent.includes('Automatic')};`);
   assert.equal(result.width, width);
   assert.ok(result.scroll <= width, 'no horizontal overflow');
-  assert.ok(result.labelRight < result.buttonLeft, 'label and control do not overlap');
-  assert.ok(result.rowCenterDelta < 1 && result.rightDelta < 1, 'one row, right aligned');
-  assert.ok(result.height >= 24 && result.height < 28, 'compact usable target');
-  assert.equal(result.name, 'Featured plan');
+  assert.equal(result.overlap, false, 'title and control do not overlap');
+  writeFileSync(join(artifacts, 'target-metrics.json'), JSON.stringify(result, null, 2) + '\n');
+  assert.ok(result.height >= 24, 'usable title-picker target');
+  assert.ok(result.name.startsWith(`Featured plan: ${result.title}, `), 'full selected title names the picker');
+  assert.ok(result.name.includes(result.automatic ? 'chosen automatically' : 'chosen.'), 'automatic/manual choice is named');
+  assert.ok(result.name.includes('5 plans; choose another'), 'all-plan context remains accessible');
   return result;
 }
 function popupFit() {
@@ -63,7 +65,7 @@ assert.deepEqual(initialConsole.entries, []);
 // M and U use the prior fixture's session-a/session-b IDs. All five M plans share
 // one directory here; scope semantics are unchanged. Fifth plan is explicitly finished.
 evaluate(`qa.expanded=true;for(const p of data.extras){p.sessionId='session-a';p.directory=data.projects[0].directory;}data.extras[1].title=${javascriptLiteral(title)};qa.report();true`);
-wait(`d.querySelector('[data-testid="more-plans"]')?.textContent.includes('2 more')`);
+wait(`d.querySelector('[data-testid="more-plans"]')?.textContent==='+4 more plans'`);
 
 const measurements = [];
 for (const width of [280, 360, 480]) {

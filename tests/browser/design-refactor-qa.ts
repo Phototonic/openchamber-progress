@@ -6,6 +6,7 @@ import { designD8Qa } from './design-d8-qa.ts';
 import { designBoardLifetimeQa } from './design-board-lifetime-qa.ts';
 import { designBoardQa } from './design-board-qa.ts';
 import { designBoardReviewQa, type BoardReviewCheck } from './design-board-review-qa.ts';
+import { designStatusQa } from './design-status-qa.ts';
 
 /** Uses the existing driver's isolated browser, real input and cleanup ownership. */
 export async function designRefactorQa(q: {
@@ -31,6 +32,7 @@ export async function designRefactorQa(q: {
 }) {
   const { guest, evaluate, wait, show, click, theme, shot, check } = q;
   const inventory: object[] = [], density: object[] = [];
+  if (q.slice === 'status') { await designStatusQa(q); return; }
   if (q.reviewCheck) { await designBoardReviewQa(q, q.reviewCheck); return; }
   if (q.lifetimeOnly) { await designBoardLifetimeQa(q); return; }
   if (q.label === 'after' && q.slice === 'rail') await designD8Qa(q);

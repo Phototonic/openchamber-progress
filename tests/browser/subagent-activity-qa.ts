@@ -249,11 +249,20 @@ try {
   await wait('status', `d.querySelector('${row('M-live')}') && d.querySelector('[data-testid="subagent-count"]')`, 'status 213');
   const many = await guest<string[]>('status', `return [...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.textContent)`);
   check('213 children: compact truthful summary', JSON.stringify(many) === JSON.stringify(['1 running', '205 finished', '4 failed', '2 interrupted', '1 unknown']), many);
-  check('213 children: one featured row, the rest folded', (await guest<number>('status', `return d.querySelectorAll('${sec} > .ap-obs-list > li').length`)) === 1 && (await text('status', '[data-testid="observed-more"] summary')) === 'Earlier sub-agents · 212');
+  check('213 children: one featured row, the rest folded', (await guest<number>('status', `return d.querySelectorAll('${sec} > .ap-obs-list > li').length`)) === 1 && (await text('status', '[data-testid="observed-more"] summary')) === 'Other records · 212');
   check('213 children: no warning line on the card', !(await has('status', '[data-testid="subagent-coverage"]')));
   await noClutter('status', 'status 213');
   const card = await guest<number>('status', `return Math.round(d.querySelector('${sec}').getBoundingClientRect().height)`);
   check('213 children: the card section stays compact', card < 140, card);
+  // Real in-place disclosure: the guest, not the screenshot helper, must resize the frame.
+  const beforeDisclosure = await evaluate(`({height:frame('status').clientHeight,resizes:qa.resizes.length})`);
+  await click('status', `${row('M-live')} details > summary`);
+  await wait('status', `d.querySelector('${row('M-live')} details')?.open&&Math.abs(d.defaultView.innerHeight-Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height))<=1`, 'opened roster row fits actual Status frame');
+  const afterDisclosure = await evaluate(`({height:frame('status').clientHeight,resizes:qa.resizes.slice(${beforeDisclosure.resizes})})`);
+  check('Status roster disclosure grows frame to its whole content', afterDisclosure.height > beforeDisclosure.height, afterDisclosure);
+  check('Status roster disclosure asks once when applied', afterDisclosure.resizes.length === 1 && !afterDisclosure.resizes[0].dropped, afterDisclosure);
+  await click('status', `${row('M-live')} details > summary`);
+  await wait('status', `!d.querySelector('${row('M-live')} details')?.open&&Math.abs(d.defaultView.innerHeight-Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height))<=1`, 'closed roster row shrinks actual Status frame');
   await shot('status', 'status-213');
   // Paging in the rail: keyboard, bounded steps, focus kept on the pager.
   await show('panel');
