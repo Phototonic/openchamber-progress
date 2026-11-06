@@ -28,6 +28,12 @@ function click(surface: string, selector: string) {
   cdp('click', ...point.map(String));
 }
 function button(surface: string, id: string) {
+  if (surface === 'page' && ['filter-project', 'filter-worktree', 'filter-session'].includes(id)) {
+    if (!guest('page', `return !!d.querySelector('[data-testid="board-filters"]')?.getClientRects().length`)) {
+      click('page', '[data-testid="board-filters-trigger"]');
+      wait('page', `d.querySelector('[data-testid="board-filters"]')?.getClientRects().length>0`);
+    }
+  }
   if (['cleanup-archive', 'cleanup-restore', 'cleanup-delete'].includes(id)) {
     if (!guest(surface, `return !!d.querySelector('[data-testid="plan-actions"] button')`)) {
       click(surface, `[data-testid="${id}"] button`);
@@ -45,7 +51,22 @@ function button(surface: string, id: string) {
 }
 function selected(surface: string, id: string) { wait(surface, `d.querySelector('${surface === 'page' ? '[data-testid="plan-detail"] ' : ''}[data-testid="plan-${id}"][data-source="source-fixture"]')`); }
 function choosePage(id: string) {
+  revealPagePlan(id);
   click('page', `[data-testid="plan-row-${id}"][data-source="source-fixture"]`); selected('page', id);
+}
+function revealPagePlan(id: string) {
+  const selector = `[data-testid="plan-row-${id}"][data-source="source-fixture"]`;
+  const visible = `!!d.querySelector(${javascriptLiteral(selector)})?.getClientRects().length`;
+  wait('page', `${visible} || d.querySelector('[data-testid="board-finished-toggle"]')`);
+  if (guest('page', `return ${visible}`)) return;
+  const projects = guest('page', `return [...d.querySelectorAll('[data-testid="board-finished-toggle"][aria-expanded="false"]')].map(n=>n.dataset.project)`);
+  for (const project of projects) {
+    const toggle = `[data-testid="board-finished-toggle"][data-project=${JSON.stringify(project)}]`;
+    click('page', toggle);
+    wait('page', `d.querySelector(${javascriptLiteral(toggle)})?.getAttribute('aria-expanded')==='true'`);
+    if (guest('page', `return ${visible}`)) return;
+  }
+  wait('page', visible);
 }
 function choosePicker(surface: string, id: string) {
   button(surface, surface === 'status' ? 'status-plan-selector' : 'plan-selector');
@@ -73,7 +94,7 @@ function tab(surface: string, text: string) {
 evaluate(`for(const f of document.querySelectorAll('iframe'))f.contentWindow.dispatchEvent(new Event('pagehide'));true`);
 assert.equal((await fixture('/reset', 'POST')).ok, true);
 evaluate('location.reload();true');
-wait('page', `d.querySelector('[data-testid="plan-row-P-done"]')`);
+revealPagePlan('P-done');
 assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
 const before = await state(); const secondBefore = await state('P-done', 1);
 for (const id of ['P-active', 'P-cancelled', 'P-failed']) {
@@ -119,7 +140,7 @@ shot('archived', 'page', '[data-testid="plan-detail"]');
 button('page', 'cleanup-restore'); wait('page', `d.querySelector('[data-testid="empty-state"]')?.textContent.includes('No archived plans')`);
 const restored = await state(); assert.equal(restored.cleanup.state, 'visible'); assert.equal(restored.lifecycle, 'finished');
 assert.deepEqual(restored.history, before.history); assert.equal(restored.document, before.document);
-button('page', 'cleanup-visible'); wait('page', `d.querySelector('[data-testid="plan-row-P-done"][data-source="source-fixture"]')`); choosePage('P-done');
+button('page', 'cleanup-visible'); choosePage('P-done');
 shot('restored', 'page', '[data-testid="plan-detail"]');
 
 // Context/store rebinding invalidates open confirmations. Neither sends a mutation.
@@ -140,7 +161,7 @@ wait('page', `qa.held.length>0`);
 assert.equal((await fixture('/conflict', 'POST')).ok, true);
 button('page', 'cleanup-archive'); wait('page', `d.querySelector('[data-testid="cleanup-error"]')`);
 assert.equal(evaluate(`qa.responses.some(r=>r.surface==='page'&&r.status===409)`), true);
-evaluate('qa.release();true'); wait('page', `d.querySelector('[data-testid="plan-row-P-other"]')`);
+evaluate('qa.release();true'); revealPagePlan('P-other');
 choosePage('P-other'); show('page', 360); noOverflow('page');
 shot('error', 'page', '[data-testid="cleanup-error"]');
 
@@ -148,7 +169,7 @@ shot('error', 'page', '[data-testid="cleanup-error"]');
 for (const mode of ['busy', 'network']) {
   evaluate(`qa.fail='${mode}';true`); count = posts(); button('page', 'cleanup-archive');
   wait('page', `d.querySelector('[data-testid="cleanup-error"]')`);
-  wait('page', `d.querySelector('[data-testid="plan-row-P-other"]')`);
+  revealPagePlan('P-other');
   assert.equal(posts(), count + 1); assert.equal((await state('P-other')).cleanup.state, 'visible');
   assert.equal(evaluate(`qa.requests.filter(q=>q.method==='POST').at(-1).body.cleanupRev`), 2, 'late pre-conflict list cannot restore an old generation');
   choosePage('P-other');
@@ -157,7 +178,7 @@ for (const mode of ['busy', 'network']) {
 // Failed archive lookup is an error, not an authoritative empty archive.
 evaluate('qa.failRead=true;true'); button('page', 'cleanup-archived');
 wait('page', `d.querySelector('[data-testid="state-busy"]') && !d.querySelector('[data-testid="empty-state"]')`);
-button('page', 'cleanup-visible'); wait('page', `d.querySelector('[data-testid="plan-row-P-other"]')`); choosePage('P-other');
+button('page', 'cleanup-visible'); choosePage('P-other');
 
 // Older service: capability stripped only; no archive query or action is offered.
 evaluate('qa.old=true;true'); wait('page', `d.querySelector('[data-testid="cleanup-unavailable"]')`);
@@ -178,7 +199,8 @@ button('panel', 'cleanup-cancel');
 // Cold part caches, then hold old detail, document and history replies. Delete from
 // another surface and release only after the page's fresh list has removed the key.
 show('page'); evaluate('qa.store=1;true');
-wait('page', `!d.body.textContent.includes(${javascriptLiteral(store0)}) && d.querySelector('[data-testid="plan-row-P-done"]')`);
+wait('page', `!d.body.textContent.includes(${javascriptLiteral(store0)}) && d.querySelector('[data-testid="plan-list-heading"]')`);
+revealPagePlan('P-done');
 evaluate('qa.store=0;true'); wait('page', `d.body.textContent.includes(${javascriptLiteral(store0)})`);
 evaluate(`qa.hold={surface:'page',paths:['/v1/plan','/v1/document','/v1/history']};true`);
 choosePage('P-done'); wait('page', `qa.held.length>=1`);
@@ -204,7 +226,7 @@ show('page'); button('page', 'cleanup-visible');
 button('page', 'filter-session'); wait('page', `d.querySelector('[role="listbox"]')`);
 const fi = guest('page', `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].findIndex(n=>n.textContent.includes('Session F'));`);
 assert.ok(fi >= 0); key('Home'); key('ArrowDown', fi); key('Enter');
-wait('page', `d.querySelector('[data-testid="plan-row-P-only"]')`); choosePage('P-only'); button('page', 'cleanup-archive');
+choosePage('P-only'); button('page', 'cleanup-archive');
 wait('page', `!d.querySelector('[data-testid="plan-row-P-only"]') && d.querySelector('[data-testid="cleanup-archived"]')`);
 button('page', 'cleanup-archived'); wait('page', `d.querySelector('[data-testid="plan-row-P-only"]')`);
 show('page', 360); noOverflow('page'); shot('archived-narrow', 'page', '[data-testid="plan-detail"]');

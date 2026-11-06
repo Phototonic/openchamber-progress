@@ -3,10 +3,20 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { primitiveQa } from './design-primitives-qa.ts';
 import { designD8Qa } from './design-d8-qa.ts';
+import { designBoardLifetimeQa } from './design-board-lifetime-qa.ts';
+import { designBoardQa } from './design-board-qa.ts';
+import { designBoardReviewQa, type BoardReviewCheck } from './design-board-review-qa.ts';
 
 /** Uses the existing driver's isolated browser, real input and cleanup ownership. */
 export async function designRefactorQa(q: {
   artifacts: string; root: string; label: string; slice: string;
+  setCapture?: (enabled: boolean) => void;
+  cleanupElsewhere?: (action: 'archive' | 'restore' | 'delete', plan: string) => Promise<void>;
+  seedDesignFailed?: () => void;
+  seedDesignRegroup?: (outcome: 'finished' | 'cancelled') => string;
+  finishDesignRegroup?: (plan: string, outcome: 'finished' | 'cancelled') => void;
+  reviewCheck?: BoardReviewCheck;
+  lifetimeOnly?: boolean;
   guest: <T = any>(f: string, code: string) => Promise<T>;
   evaluate: <T = any>(code: string) => Promise<T>;
   wait: (f: string, condition: string, what?: string) => Promise<unknown>;
@@ -20,6 +30,8 @@ export async function designRefactorQa(q: {
 }) {
   const { guest, evaluate, wait, show, click, theme, shot, check } = q;
   const inventory: object[] = [], density: object[] = [];
+  if (q.reviewCheck) { await designBoardReviewQa(q, q.reviewCheck); return; }
+  if (q.lifetimeOnly) { await designBoardLifetimeQa(q); return; }
   if (q.label === 'after' && q.slice === 'rail') await designD8Qa(q);
   await show(['page'], 1100);
   await wait('page', `d.querySelector('[data-testid="plan-row-P-calm"][data-source="source-design"]')`);
@@ -33,7 +45,7 @@ export async function designRefactorQa(q: {
       await wait(surface, `d.querySelector('[role="option"][id$="source-design/P-calm"]')`);
       await click(surface, '[role="option"][id$="source-design/P-calm"]');
     }
-    if (q.label === 'after' && q.slice === 'rail') {
+    if ((q.label === 'after' && q.slice === 'rail') || q.slice === 'board') {
       await wait(surface, `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`, 'automatic edge-bearing Map');
       check(`d8:${surface}:initial-map`, await guest(surface, `return Number(d.querySelector('[data-testid="map-region"]').dataset.edges)>0`));
       await shot(`F8-${surface}-${width}-initial-map`, '[data-testid="progress-root"]', 0, 2500, surface);
@@ -68,9 +80,18 @@ export async function designRefactorQa(q: {
           if (surface === 'panel') check(`density:${surface}:${mode}:chrome-budget`, metrics.chrome <= 10);
         }
         await shot(name, selector, 0, Math.ceil(metrics.height) + 1, surface);
-        inventory.push({ file: `${name}.png`, fixture: 'F8', surface, width, theme: mode, view, state: 'fresh complete, disclosures closed', selection: view === 'list' && mode === 'light' ? 'baseline automatic' : 'explicit', height: metrics.height });
+        inventory.push({ file: `${name}.png`, fixture: 'F8', surface, width, theme: mode, view, state: 'fresh complete, disclosures closed', selection: view === 'list' && mode === 'light' && q.slice !== 'board' && !(q.label === 'after' && q.slice === 'rail') ? 'baseline automatic' : 'explicit', height: metrics.height });
       }
     }
+  }
+  if (q.slice === 'board') {
+    if (q.label === 'after') {
+      if (!existsSync(join(q.artifacts, '..', 'before', 'density.json'))) throw Error('Board acceptance requires the sibling corrected before capture');
+      await designBoardLifetimeQa(q);
+    }
+    const board = await designBoardQa(q);
+    density.push(...board.density); inventory.push(...board.screenshots);
+    if (q.label === 'after') for (const which of ['menu', 'finished', 'cancelled'] as const) await designBoardReviewQa(q, which);
   }
   const hashes = Object.fromEntries(['panel', 'page', 'status'].map(f => [`ui/${f}/main.js`, createHash('sha256').update(readFileSync(join(q.root, `ui/${f}/main.js`))).digest('hex')]));
   writeFileSync(join(q.artifacts, 'density.json'), JSON.stringify({ label: q.label, slice: q.slice, measurements: density, note: 'Whole-region rendered line-box union and visible controls; baseline measurement only, not target acceptance.' }, null, 2) + '\n');

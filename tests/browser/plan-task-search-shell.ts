@@ -217,8 +217,8 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
   if (previewRoot) execFileSync('bun', ['node_modules/@openchamber/sdk/scripts/bundle-guest.ts', 'tests/browser/dependency-map-guest.ts', `${previewRoot}/main.js`], { stdio: 'pipe' });
   const f = searchFixture(!large && !map && !isDesign);
   const replay = large ? createLargePlanReplay(f) : null;
-  if (isDesign) seedDesignFixture(f, design.slice === 'board');
-  else if (replay) replay.seed(); else if (map) seedMapFixture(f); else { seedSearchLibrary(f); seedExtras(f); }
+  const designFixture = isDesign ? seedDesignFixture(f, design.slice === 'board') : null;
+  if (replay) replay.seed(); else if (map) seedMapFixture(f); else if (!isDesign) { seedSearchLibrary(f); seedExtras(f); }
   let attribution = mode === 'dependency-map-attribution' ? seedMapAttribution(f) : null;
   if (mode === 'keyboard-focus') seedKeyboard(f);
   const second = searchFixture(!large && !map && !isDesign);
@@ -292,7 +292,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     return {state:'captured' as const,path:p.document.path!,canonicalPath:p.document.canonicalPath!,text:String(row.text),hash:p.document.hash!,checkedAt:new Date().toISOString()};
   };
   function report(plan:string,request:Record<string,unknown>){
-    f.store.apply({plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`document-qa-${++oid}`,...request},f.actor,recordedCapture(plan));
+    f.store.apply({plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`document-qa-${++oid}`,...request},designFixture?.actor ?? f.actor,recordedCapture(plan));
   }
   /** Completes open tasks and reports the plan finished (fixture-side production writes). */
   function finish(plan: string) {
@@ -318,6 +318,22 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     insert: (plan: string, title: string) => { f.seedPlan(plan, title, [{ id: 'N1', title: 'Inserted task', kind: 'task', status: 'pending' }]); },
     /** Another client changes capture without updating any plan revision. */
     setCapture: (enabled: boolean) => f.store.setEnabled(enabled),
+    seedDesignFailed: () => {
+      if (!designFixture) throw Error('Design fixture required');
+      f.seedPlan('P-release-failed', 'Release failed record', [{ id: 'F1', title: 'Release check', kind: 'task', status: 'pending' }], designFixture.actor);
+      f.apply('P-release-failed', { op: 'finish', outcome: 'failed' }, designFixture.actor);
+    },
+    seedDesignRegroup: (outcome: 'finished' | 'cancelled') => {
+      if (!designFixture) throw Error('Design fixture required');
+      const plan = `P-review-${outcome}`;
+      f.seedPlan(plan, `Release ${outcome} focus check`, [{ id: 'T1', title: 'Release focus check', kind: 'task', status: 'pending' }], designFixture.actor);
+      return plan;
+    },
+    finishDesignRegroup: (plan: string, outcome: 'finished' | 'cancelled') => {
+      if (!designFixture) throw Error('Design fixture required');
+      if (outcome === 'finished') f.apply(plan, { op: 'change', changes: [{ id: 'T1', status: 'done' }] }, designFixture.actor);
+      f.apply(plan, { op: 'finish', outcome }, designFixture.actor);
+    },
     /** Explicit synthetic document report for the capture-comparison QA; no source file read. */
     recordDocument: (plan:string,text:string,source='/fixture/plan.md',state:'captured'|'denied'='captured') => {
       f.store.apply({op:'bind',plan,rev:f.store.get(f.alpha.id,plan)!.revision,oid:`capture-qa-${++oid}`,source,confirm:false},f.actor,{state,path:source,canonicalPath:source,text,hash:digest(text),checkedAt:new Date().toISOString()});

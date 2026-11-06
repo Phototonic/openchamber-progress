@@ -7,6 +7,7 @@
 // own synthetic plan and skips every other scenario; the default runs everything else as before.
 // Usage: node --experimental-strip-types tests/browser/change-digests-qa.ts --artifacts <dir> [--built-service] [--chromium <path>] [--only prerequisites]
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { boardInput } from './board-qa.ts';
 import { progressInput } from './progress-qa.ts';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -125,6 +126,7 @@ try {
   const digestState = (f: string, plan: string) => guest<{ state?: string; review?: string; reason?: string; to?: string; after?: string } | null>(f, `const n=d.querySelector('${D(plan)}');return n?{...n.dataset}:null`);
   const text = (f: string, selector: string) => guest<string>(f, `return d.querySelector(${javascriptLiteral(selector)})?.textContent??''`);
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
+    await boardInput({ guest, wait, click }).revealPlan(row(plan));
     await wait(f, `!!d.querySelector('${row(plan)}')`, `${plan} listed`);
     await click(f, row(plan));
     await wait(f, `!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${SOURCE}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`, `${plan} selected`);

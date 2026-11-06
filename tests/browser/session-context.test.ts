@@ -29,11 +29,13 @@ type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
-  let expanded = false, disclosure = false;
+  let expanded = false, disclosure = false, livePopup = false;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
     querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
-    querySelectorAll: () => [], getAnimations: () => [], setAttribute() {}, append() {},
-    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = false; },
+    querySelectorAll: (s: string) => s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
+      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : [],
+    getAnimations: () => [], setAttribute() {}, append() {},
+    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = livePopup = false; },
   });
   const mount = node();
   const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
@@ -84,6 +86,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   };
   exports.startView(spec);
   return { requests, paints, contexts, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+    openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
@@ -187,6 +190,64 @@ test('an expanded disclosure does not indefinitely defer background reports',asy
     c.listeners.session({id:'A',title:'Updated while comparison is open'});await settle();
     assert(c.paints.length>before);assert.equal(c.vc.session?.title,'Updated while comparison is open');
   }finally{c.stop();}
+});
+
+test('live Filters and its nested select cannot defer capture-off or read-error paints', async () => {
+  for (const nestedSelect of [false, true]) {
+    const c = controller(true);
+    try {
+      c.ready('A'); await settle();
+      c.openLivePopup(nestedSelect);
+      const before = c.paints.length;
+      c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ ...plansPage([row]), captureEnabled: false }) : next());
+      c.vc.retry(); await settle();
+      assert.ok(c.paints.length > before, 'capture update paints with the popup open');
+      assert.equal(c.vc.read?.captureEnabled, false);
+      c.openLivePopup(nestedSelect);
+      const beforeError = c.paints.length;
+      c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ error: 'unavailable' }, 503) : next());
+      c.vc.retry(); await settle();
+      assert.ok(c.paints.length > beforeError, 'a concrete failure cannot remain hidden behind the popup');
+      assert.ok(c.vc.failure);
+    } finally { c.stop(); }
+  }
+});
+
+test('live popup retirement accepts the new authority and rejects a held old reply', async () => {
+  const c = controller(true), held = deferred<GuestRequestResult>();
+  try {
+    c.ready('A'); await settle();
+    const original = c.vc.identity;
+    let holding = true;
+    c.intercept((q, next) => q.path === '/v1/plans' && holding ? (holding = false, held.promise) : next());
+    c.openLivePopup(true); c.vc.retry(); await settle();
+    c.ready('B', '/fixture/Other', 'another-account'); await settle();
+    const paints = c.paints.length;
+    assert.equal(c.vc.ctx.connection?.account, 'another-account');
+    assert.equal(c.pickerOpen, false, 'authority change replaces the old popup before its reply');
+    held.resolve(response({ ...plansPage([row]), storeId: 'retired-store', captureEnabled: false })); await settle();
+    assert.equal(c.vc.identity, original, 'same store authority remains current under the new account');
+    assert.notEqual(c.vc.read?.storeId, 'retired-store');
+    assert.equal(c.vc.read?.captureEnabled, true);
+    assert.equal(c.paints.length, paints, 'retired reply does not create a stale paint');
+  } finally { held.resolve(response(plansPage([row]))); c.stop(); }
+});
+
+test('a live Filters popup cannot keep a cleanup confirmation or its callback alive across authority change', async () => {
+  const c = controller(true);
+  try {
+    c.ready('A'); await settle();
+    c.vc.requestDelete(plan); await settle();
+    const confirmation = c.vc;
+    assert.ok(confirmation.cleanup.target);
+    c.openLivePopup(true);
+    c.ready('A', '/fixture/Alpha', 'replacement-account');
+    const mark = c.requests.length;
+    confirmation.confirmDelete(); // synchronous retirement, before another paint
+    await settle();
+    assert.equal(c.vc.cleanup.target, null);
+    assert.equal(c.requests.slice(mark).some(q => q.method === 'POST'), false);
+  } finally { c.stop(); }
 });
 
 test('view-owned requests retire on effective UI transitions before a held reply or repaint',async()=>{

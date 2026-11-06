@@ -6,6 +6,7 @@
 //   --baseline: only the existing large-plan render/disclosure/request measurements (no focus
 //   controls needed), for comparison with a later run of the same fixture and runtime.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { boardInput } from './board-qa.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -114,6 +115,7 @@ try {
   const SHIFT = 8;
   const point = (s: string, selector: string) => evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
   const click = async (s: string, selector: string) => {
+    if (s === 'page' && selector.includes('plan-row-')) await boardUi.revealPlan(selector);
     const p = await point(s, selector);
     if (!p) throw new Error(`missing ${selector} in ${s}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: p[0], y: p[1], button: 'left', clickCount: 1 });
@@ -127,6 +129,7 @@ try {
   };
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const progressUi = progressInput({ guest, wait, click, key });
+  const boardUi = boardInput({ guest, wait, click });
   const prepareProgress = async (s: string) => {
     await progressUi.list(s);
     await wait(s, `d.querySelector('.ap-tasks[data-complete]')`, 'complete Progress reading');
@@ -579,12 +582,14 @@ try {
     };
     /** Mouse to open, real keys to pick (Home, ArrowDown × index, Enter); waits for the popup to close. */
     const choose = async (s: string, holder: string, label: string | number) => {
+      if (s === 'page' && holder.includes('filter-')) await boardUi.openFilters();
       const options = await openOptions(s, holder);
       const index = typeof label === 'number' ? label : options.findIndex((o) => o.label === label);
       if (index < 0) throw new Error(`no option ${label} in ${holder}: ${JSON.stringify(options.map((o) => o.label))}`);
       await key('Home'); if (index) await key('ArrowDown', index); await key('Enter');
       await wait(s, `!d.querySelector('.oc-sdk-popup [role="listbox"]')`, `${holder} closed`);
       if (holder.includes('plan-selector')) await prepareProgress(s);
+      if (s === 'page' && holder.includes('filter-')) await boardUi.closeFilters();
       return options;
     };
     const P = `${art} [data-testid="focus-participant"]`;

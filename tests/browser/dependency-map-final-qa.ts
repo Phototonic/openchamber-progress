@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { startSearchShell } from './plan-task-search-shell.ts';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import { mapItems } from '../fixtures/dependency-map.ts';
+import { boardInput } from './board-qa.ts';
 
 type Fixture = Awaited<ReturnType<typeof startSearchShell>>;
 export interface Driver {
@@ -28,6 +29,7 @@ const planShown = (source = 'source-alpha', plan = 'P-map') => `!!d.querySelecto
 const stat = (xs: number[]) => ({ samples: xs, median: [...xs].sort((a,b)=>a-b)[1] });
 export async function productionMapQa(d: Driver) {
   const { guest, evaluate, wait, key, click, frames2, check, c } = d;
+  const boardUi = boardInput({ guest, wait, click });
   let fx = d.fx;
   const button = (s: string, id: string) => guest<string>(s, `const n=d.querySelector(${literal(hook(id))});return n?.matches('button')?${literal(hook(id))}:${literal(hook(id)+' button')}`);
   const activate = async (s: string, id: string) => { const selector = await button(s,id); await guest(s, `d.querySelector(${literal(selector)}).focus();return true`); await key('Enter'); await frames2(); };
@@ -44,6 +46,7 @@ export async function productionMapQa(d: Driver) {
   const list = async (s: string) => { await expose(s); return s === 'page' ? click(s, '[data-testid="detail-tabs"] [data-id="progress"]') : activate(s,'plan-view-list'); };
   const pickBoard = async (id = 'P-map', source = 'source-alpha') => {
     await expose('page');
+    await boardUi.revealPlan(`[data-testid="plan-row-${id}"][data-source="${source}"]`);
     await wait('page', `d.querySelector('[data-testid="plan-row-${id}"][data-source="${source}"]')`, 'board plan');
     await frames2();
     // Use the listbox's own active-option navigation. Directly focusing a -1 row is not the
@@ -61,8 +64,10 @@ export async function productionMapQa(d: Driver) {
     await key('Home'); if (i) await key('ArrowDown',i); await key('Enter'); await frames2();
   };
   const boardChoice = async (id: string, index: number) => {
+    await boardUi.openFilters();
     await click('page',`${hook(id)} .oc-sdk-trigger`);await wait('page',`d.querySelector('.oc-sdk-popup [role=option]')`,'board scope options');
     await key('Home');if(index)await key('ArrowDown',index);await key('Enter');await frames2();
+    await boardUi.closeFilters();
   };
   const select = async (s: string, id: string) => {
     // Focus a real native card, then send real Enter. No controller dispatch/debug hooks.

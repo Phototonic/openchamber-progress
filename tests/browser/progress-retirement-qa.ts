@@ -1,4 +1,5 @@
 import { progressInput, type ProgressDriver } from './progress-qa.ts';
+import { boardInput } from './board-qa.ts';
 
 interface Driver extends ProgressDriver {
   evaluate: <T = any>(code: string) => Promise<T>;
@@ -11,6 +12,7 @@ interface Driver extends ProgressDriver {
 /** Reading-owned state must survive a benign repaint, but never A→B→A or authority changes. */
 export async function progressRetirementQa(d: Driver) {
   const ui = progressInput(d);
+  const boardUi = boardInput(d);
   const state = (kind: string) => kind === 'info' ? '[data-info] [data-testid="info-trigger"][aria-expanded="true"]'
     : kind === 'copy' ? '[data-testid^="task-copy-preview-"]' : kind === 'task-view' ? '[data-testid="focus-controls"]' : `[data-testid="plan-panel-${kind}"]`;
   const select = async (surface: string, plan: string) => {
@@ -67,6 +69,7 @@ export async function progressRetirementQa(d: Driver) {
           else d.check(`reading:${surface}:${kind}:host-session-independent`, await d.guest(surface, `return !!d.querySelector('${selector}')`));
           await d.evaluate(`qa.context('${session}');true`);
           if (surface === 'page') {
+            await boardUi.openFilters();
             // Retire the board reading by changing its explicit scope, not the unrelated host selection.
             await d.wait(surface, `d.querySelector('[data-testid="filter-session"] button')`, 'board scope available after host context repaint');
             await d.guest(surface, `w.focus();d.querySelector('[data-testid="filter-session"] button').focus();return true`);
@@ -74,6 +77,7 @@ export async function progressRetirementQa(d: Driver) {
             await d.wait(surface, `d.querySelector('[role="listbox"]')`);
             await d.key!('Home'); await d.key!('ArrowDown'); await d.key!('Enter');
             await d.wait(surface, `parent.qa.requests.filter(r=>r.frame==='page'&&['/v1/plans','/v1/search'].includes(r.path)).at(-1)?.query?.session`, 'explicit board scope read');
+            await boardUi.openFilters();
             await d.wait(surface, `d.querySelector('[data-testid="filter-session"] button')`, 'scoped board repaint complete');
             await d.guest(surface, `w.focus();d.querySelector('[data-testid="filter-session"] button').focus();return true`);
             await d.key!('Enter');

@@ -13,8 +13,11 @@ export const designItems = (edges = true): BlockerItemInput[] => [
   { id: 'Q1', title: 'Publish release announcement', kind: 'task', status: 'pending', ...(edges ? { dependencies: ['B1'] } : {}) },
 ];
 
-/** F8/F8-N; F12 adds nine closed plans, not archived plans. Production writes only. */
-export function seedDesignFixture(f: ReturnType<typeof searchFixture>, twelve = false) {
+/** F8/F8-N; F12 adds nine closed plans, not archived plans. Foreign identity is a
+ * separate boundary variant so the quiet F12 board really contains twelve rows.
+ * Production writes only.
+ */
+export function seedDesignFixture(f: ReturnType<typeof searchFixture>, twelve = false, foreign = false) {
   const source = { ...f.alpha, id: DESIGN_SOURCE, configRoot: '/fixture/design/config', dataRoot: '/fixture/design/data' };
   f.store.registerSource(source); f.store.bindReads(source.id, true);
   // The shell's generated-service binding must identify this same synthetic source.
@@ -69,7 +72,7 @@ export function seedDesignFixture(f: ReturnType<typeof searchFixture>, twelve = 
       f.seedPlan(plan, `Release ${n} record`, [{ id: 'D1', title: 'Release preparation', kind: 'task', status: 'done' }], who);
       f.apply(plan, { op: 'finish', outcome: n === 7 ? 'cancelled' : 'finished' }, who);
     }
-    f.seedPlan(DESIGN_PLAN, 'Release source counterpart', designItems(), { ...actor, sourceId: f.beta.id, sessionId: 'N' });
   }
+  if (foreign) f.seedPlan(DESIGN_PLAN, 'Release source counterpart', designItems(), { ...actor, sourceId: f.beta.id, sessionId: 'N' });
   return { source: source.id, actor, other };
 }
