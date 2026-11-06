@@ -6,7 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import childProcess, { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { privateDirectory, privatePaths, isOwned, windowsPath, platformSecurityScope, windowsSecurity, sameWindowsDirectory, windowsDaclValidationScript, windowsPowerShellBootstrap } from '../../shared/platform.ts';
+import { privateDirectory, privatePaths, isOwned, windowsPath, platformSecurityScope, windowsSecurity, windowsSecurityQuery, sameWindowsDirectory, windowsDaclValidationScript, windowsPowerShellBootstrap } from '../../shared/platform.ts';
 import { lifecycle, inspect, normalizeTargets, type Payload } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
@@ -22,6 +22,9 @@ const native = { skip: process.platform !== 'win32', timeout:120000 };
 // Use a new private root; never repair ACLs on an existing shared temp folder.
 const fixtureParent = process.platform==='win32' ? path.join(path.parse(os.tmpdir()).root,`agent-progress-tests-${randomUUID()}`) : os.tmpdir();
 if(process.platform==='win32') {
+  const started = performance.now();
+  try { windowsSecurityQuery([path.parse(fixtureParent).root]); }
+  finally { console.log(`Windows first security query: ${Math.round(performance.now()-started)} ms (includes cold PowerShell launch, query and any timeout retry)`); }
   privateDirectory(fixtureParent);
   after(()=>fs.rmSync(fixtureParent,{recursive:true,force:true}));
 }

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
@@ -110,7 +110,7 @@ function objectIdentity(file:string) {const s=lstatSync(file,{bigint:true});retu
 function reparsePaths(paths:string[],parents:Set<string>) {
   const fresh=new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();
   const pending=paths.filter(p=>!scope||reparseCache.get(p)?.identity!==objectIdentity(p));
-  const before=pending.map(objectIdentity),stats=pending.map(snapshot),results=pending.length?query(pending):[];
+  const before=pending.map(objectIdentity),stats=pending.map(snapshot),results=pending.length?windowsSecurityQuery(pending):[];
   pending.forEach((p,i)=>{
     const after=objectIdentity(p);if(after!==before[i])throw new PlatformError('path-unverified');
     const result={identity:after,reparse:results[i]!.reparse,unsafeParent:results[i]!.unsafeParent};fresh.set(p,result);
@@ -121,7 +121,9 @@ function reparsePaths(paths:string[],parents:Set<string>) {
   if(paths.some(p=>parents.has(p)&&(fresh.get(p)??reparseCache.get(p)!).unsafeParent))throw new PlatformError('unsafe-parent');
   return paths.some(p=>(fresh.get(p)??reparseCache.get(p)!).reparse);
 }
-function query(paths: string[], create: string[] = []): Security[] {
+let securityQueryAttempted = false;
+/** Injectable process boundary; production callers always use the built-in spawn. */
+export function windowsSecurityQuery(paths: string[], create: string[] = [], spawn: (command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string> = spawnSync): Security[] {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot)) throw new PlatformError('windows-security-unavailable');
   // Do not inherit profile, module, proxy, Node or PowerShell startup overrides.
@@ -132,9 +134,17 @@ function query(paths: string[], create: string[] = []): Security[] {
   // Pin startup hints too; the trusted script resets the effective path and
   // imports only the built-in utility module by its absolute system path.
   env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
-  const child = spawnSync(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
+  const input = JSON.stringify({ paths, create });
+  const firstQuery = !securityQueryAttempted;
+  const run = () => spawn(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
     ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
-    { input: JSON.stringify({ paths, create }), encoding:'utf8', env, windowsHide:true, shell:false, timeout:10000, maxBuffer:1024*1024 });
+    { input, encoding:'utf8', env, windowsHide:true, shell:false, timeout:firstQuery?30000:10000, maxBuffer:1024*1024 });
+  // Only the process's first query gets cold-start headroom and one retry.
+  // Consume that budget even on failure; steady-state calls stay bounded at 10s.
+  // Existing creation targets are only inspected, never repaired, on a retry.
+  let child: SpawnSyncReturns<string>;
+  try { child = run(); } finally { securityQueryAttempted = true; }
+  if (firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
   if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable',child.error?(child.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'timeout':'spawn':'exit');
   let results: Security[];
   try { results = JSON.parse(child.stdout.replace(/^\uFEFF/,'')); } catch { throw new PlatformError('windows-security-unavailable'); }
@@ -148,7 +158,7 @@ export function windowsSecurity(paths: string[]): Security[] {
   for (const file of paths) { const stat = snapshot(file); if (!scope || cache.get(file)?.snapshot !== stat) pending.set(file,stat); }
   const files = [...pending.keys()];
   if (files.length) {
-    const results = query(files);
+    const results = windowsSecurityQuery(files);
     files.forEach((file,i) => {
       const after=snapshot(file),before=pending.get(file)!;
       if (after.split(':').slice(0,2).join(':') !== before.split(':').slice(0,2).join(':')) throw new PlatformError('path-unverified');
@@ -230,7 +240,7 @@ export function privateDirectory(file: string, recursive=false) {
     while(!existsSync(parent)){missing.unshift(parent);parent=path.dirname(parent);}
     if(!recursive&&missing.length>1)throw new PlatformError('path-unverified');
     if(missing.length) {
-      const results=query(missing,missing);
+      const results=windowsSecurityQuery(missing,missing);
       if(results.some(r=>!r.private))throw new PlatformError('private-permissions');
       missing.forEach(p=>cache.delete(p));
     } else if(!lstatSync(target).isDirectory()||!privatePaths([target]))throw new PlatformError('private-permissions');
