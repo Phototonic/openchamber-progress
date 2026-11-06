@@ -24357,7 +24357,7 @@ function objectIdentity(file) {
 function reparsePaths(paths, parents) {
   const fresh = new Map;
   const pending = paths.filter((p) => !scope3 || reparseCache.get(p)?.identity !== objectIdentity(p));
-  const before = pending.map(objectIdentity), stats = pending.map(snapshot2), results2 = pending.length ? query(pending) : [];
+  const before = pending.map(objectIdentity), stats = pending.map(snapshot2), results2 = pending.length ? windowsSecurityQuery(pending) : [];
   pending.forEach((p, i) => {
     const after = objectIdentity(p);
     if (after !== before[i])
@@ -24373,7 +24373,8 @@ function reparsePaths(paths, parents) {
     throw new PlatformError2("unsafe-parent");
   return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
 }
-function query(paths, create2 = []) {
+var securityQueryAttempted = false;
+function windowsSecurityQuery(paths, create2 = [], spawn = spawnSync) {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
     throw new PlatformError2("windows-security-unavailable");
@@ -24383,7 +24384,17 @@ function query(paths, create2 = []) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const child = spawnSync(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input: JSON.stringify({ paths, create: create2 }), encoding: "utf8", env, windowsHide: true, shell: false, timeout: 1e4, maxBuffer: 1024 * 1024 });
+  const input = JSON.stringify({ paths, create: create2 });
+  const firstQuery = !securityQueryAttempted;
+  const run3 = () => spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: firstQuery ? 30000 : 1e4, maxBuffer: 1024 * 1024 });
+  let child;
+  try {
+    child = run3();
+  } finally {
+    securityQueryAttempted = true;
+  }
+  if (firstQuery && child.error?.code === "ETIMEDOUT")
+    child = run3();
   if (child.error || child.status !== 0)
     throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results2;
@@ -24406,7 +24417,7 @@ function windowsSecurity(paths) {
   }
   const files = [...pending.keys()];
   if (files.length) {
-    const results2 = query(files);
+    const results2 = windowsSecurityQuery(files);
     files.forEach((file, i) => {
       const after = snapshot2(file), before = pending.get(file);
       if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
