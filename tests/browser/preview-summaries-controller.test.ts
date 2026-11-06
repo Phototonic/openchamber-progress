@@ -31,6 +31,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
   // Minimal focus/textarea seam: replacing a focused subtree sends focus to body, and
   // disabled native controls cannot receive it. Real input and layout remain browser QA.
   class FocusNode {
+    tagName = 'DIV';
     dataset: Record<string, string> = {};
     children: FocusNode[] = [];
     disabled = false;
@@ -47,6 +48,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
     }
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
     closest(selector: string) { return selector === '[data-testid]' && this.dataset.testid ? this : null; }
+    matches(selector: string) { return selector.split(',').some(tag => tag.toUpperCase() === this.tagName); }
     focus() { if (!this.disabled) document.activeElement = this; }
     setSelectionRange(start: number, end: number, direction: string) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; }
     getAnimations() { return []; }
@@ -78,6 +80,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
   };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+    AbortController,
     exports, document, navigator, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } }, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
@@ -87,7 +90,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
@@ -105,8 +108,8 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
     paint: (root, c) => {
       vc = c; const p = selected(c); view = p ? c.summary(p) : null;
       if (!view) return;
-      const control = (id: string) => { const n = node(); n.dataset.testid = id; (root as unknown as FocusNode).append(n); return n; };
-      control('summary-progress'); control('summary-handoff');
+      const control = (id: string) => { const n = node(); n.tagName = id === 'summary-text' ? 'TEXTAREA' : 'BUTTON'; n.dataset.testid = id; (root as unknown as FocusNode).append(n); return n; };
+      control('plan-actions');
       if (!view.preview) return;
       control('summary-copy').disabled = view.preview.copying || view.preview.text === null;
       control('summary-close');
@@ -346,10 +349,10 @@ test('retired copy completion cannot steal Close focus or focus a replacement pr
     if (boundary === 'close') { c.control('summary-close').focus(); c.view!.close(); }
     else c.vc.setUi({ filter: 'B' });
     await settle();
-    assert.equal(c.focused, boundary === 'close' ? 'summary-handoff' : 'body');
+    assert.equal(c.focused, boundary === 'close' ? 'plan-actions' : 'body');
     c.view!.open('progress'); await settle();
     held.resolve(); await settle();
-    assert.equal(c.focused, boundary === 'close' ? 'summary-handoff' : 'body');
+    assert.equal(c.focused, boundary === 'close' ? 'plan-actions' : 'body');
     assert.equal(c.view!.preview!.status, ''); assert.equal(c.writes.length, 1); c.stop();
   }
 });

@@ -80,6 +80,15 @@ test('scope: server does session/directory filtering; UI orders owned first and 
   assert.deepEqual(pageListScope(NO_FILTERS), {});
 });
 
+test('plan choice uses the source-qualified key even when plan IDs coincide', () => {
+  const plans = list([P1, { ...P1, sourceId: OTHER_SRC }]).data;
+  assert.equal(plans[0].id, plans[1].id);
+  assert.equal(pickPlan(plans, `${OTHER_SRC}/P1`)?.sourceId, OTHER_SRC);
+  assert.equal(pickPlan([...plans].reverse(), `${SRC}/P1`)?.sourceId, SRC);
+  // A bare ID cannot accidentally match the other source; absence uses ordinary ordering.
+  assert.equal(pickPlan(plans, 'P1'), plans[0]);
+});
+
 test('navigation requires the verified bound source AND current SDK coverage', () => {
   const live = liveWith([{ id: S.M, title: 'Main work' }]);
   const cov = coverageFor(S.M, '/fixture/Alpha', live);

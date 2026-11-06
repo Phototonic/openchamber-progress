@@ -1,4 +1,5 @@
 /** Bounded native-package HTTP join. Test-only external preload; never edits an artifact. */
+import { javascriptLiteral } from '../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,chmodSync} from 'node:fs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ try{
   metadata.listen(0,'127.0.0.1');await once(metadata,'listening');
   const clock=`${root}/clock.json`,preload=`${root}/preload.mjs`;writeFileSync(clock,JSON.stringify({now}));
   const origin=`http://127.0.0.1:${(metadata.address() as {port:number}).port}`;
-  writeFileSync(preload,`// TEST ONLY: native entry unchanged; fixed official URL redirected to loopback.\nimport fs from 'node:fs';\nconst native=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;if(url!=='https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main')throw new Error('fixture rejects nonallowlisted URL');return native(${JSON.stringify(origin+'/manifest')},init);};Date.now=()=>JSON.parse(fs.readFileSync(${JSON.stringify(clock)},'utf8')).now;\n`);
+  writeFileSync(preload,`// TEST ONLY: native entry unchanged; fixed official URL redirected to loopback.\nimport fs from 'node:fs';\nconst native=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;if(url!=='https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main')throw new Error('fixture rejects nonallowlisted URL');return native(${javascriptLiteral(origin+'/manifest')},init);};Date.now=()=>JSON.parse(fs.readFileSync(${javascriptLiteral(clock)},'utf8')).now;\n`);
   const advance=(ms:number)=>{now+=ms;writeFileSync(clock,JSON.stringify({now}));};
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
   const selector=`${root}/selector/binding.json`;

@@ -1,4 +1,4 @@
-import { button, el, testid } from './components.ts';
+import { button, el, offerPlanActions, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
 import type { PlanView } from './model.ts';
 
@@ -20,15 +20,37 @@ export function cleanupBlock<U>(vc: ViewContext<U>, plan: PlanView) {
     confirm.append(actions);
     confirm.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !state.pending) { event.preventDefault(); vc.cancelCleanup(); } });
     box.append(confirm);
+    // The confirmation opens below the plan from ⋯ at its top; Cancel takes focus without
+    // scrolling, so bring the confirmation into view once per opened confirmation.
+    if (!shown.has(state.target)) {
+      shown.add(state.target);
+      requestAnimationFrame(() => { if (confirm.isConnected) confirm.scrollIntoView({ block: 'nearest' }); });
+    }
   } else {
-    const actions = el('div', 'ap-row ap-between');
     const archived = plan.cleanup?.state === 'archived';
-    button(actions, archived ? 'cleanup-restore' : 'cleanup-archive', archived ? 'Restore' : 'Archive', () => vc.runCleanup(archived ? 'restore' : 'archive', plan), 'outline', disabled);
-    button(actions, 'cleanup-delete', 'Delete permanently…', () => vc.requestDelete(plan), 'ghost', disabled);
-    box.append(actions, el('p', 'ap-note', archived ? 'Archived · restoring keeps this plan finished and preserves its history.' : 'Archive hides this finished plan. Find and restore it in Archived plans on the full page.'));
+    const run = () => vc.runCleanup(archived ? 'restore' : 'archive', plan);
+    // Secondary actions live in the plan's ⋯ (docs/ui.md Finished-plan cleanup). The ⋯ holder takes
+    // the `cleanup-delete` hook, so a cancelled confirmation returns focus to the surviving opener.
+    const inMenu = offerPlanActions(vc.reading, plan, [
+      { id: archived ? 'cleanup-restore' : 'cleanup-archive', label: archived ? 'Restore plan' : 'Archive plan', run, disabled },
+      { id: 'cleanup-delete', label: 'Delete permanently…', run: () => vc.requestDelete(plan), disabled, destructive: true },
+    ], 'cleanup-delete');
+    if (!inMenu) {
+      // A view without the plan's ⋯ (Map, Document, History) keeps the visible buttons.
+      const actions = el('div', 'ap-row ap-between');
+      button(actions, archived ? 'cleanup-restore' : 'cleanup-archive', archived ? 'Restore' : 'Archive', run, 'outline', disabled);
+      button(actions, 'cleanup-delete', 'Delete permanently…', () => vc.requestDelete(plan), 'ghost', disabled);
+      box.append(actions);
+    }
+    // State, not explanation: an archived plan says so. What Archive does is in its own result notice.
+    if (archived) box.append(el('p', 'ap-note', 'Archived · restoring keeps this plan finished and preserves its history.'));
+    else if (!inMenu) box.append(el('p', 'ap-note', 'Archive hides this finished plan. Find and restore it in Archived plans on the full page.'));
   }
   return box;
 }
+
+/** Confirmations already scrolled into view (the controller's target object, one per request). */
+const shown = new WeakSet<object>();
 
 export function cleanupNotice<U>(vc: ViewContext<U>) {
   if (!vc.cleanup.message) return null;

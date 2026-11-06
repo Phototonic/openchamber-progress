@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 
 const target=path.resolve(process.argv[2]??'');assert.ok(process.argv[2],'new projection directory required');assert.equal(fs.existsSync(target),false,'never overwrite a reviewed projection');
 const runtime=new Set(['build/service/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js']);
-const excluded=new Set(['.git','node_modules','evidence','.slim','.codegraph','AGENTS.md']);
+const excluded=new Set(['.git','node_modules','evidence','.slim','.codegraph']);
 const listed=spawnSync('git',['ls-files','--cached','--others','--exclude-standard','-z'],{env:{...process.env,GIT_OPTIONAL_LOCKS:'0'},encoding:'utf8'});assert.equal(listed.status,0,'read-only Git source listing');
 const files=[...new Set(listed.stdout.split('\0').filter(Boolean))].filter(file=>{
   if(file==='docs/tracking.md'||file.split('/').some(p=>excluded.has(p)))return false;

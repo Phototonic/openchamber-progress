@@ -3,6 +3,8 @@
 // with a fresh disposable profile, drives real mouse/keyboard input over CDP, and stops only
 // what it started. Never attaches to an existing browser or uses a real profile.
 // Usage: node --experimental-strip-types tests/browser/ready-tasks-qa.ts --artifacts <dir> [--chromium <path>]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { progressInput } from './progress-qa.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -95,30 +97,34 @@ try {
     }
   };
   const click = async (s: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+r.height/2]})()`);
     if (!point) throw new Error(`missing ${selector} in ${s}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
-  const noOverflow = (s: string) => guest<boolean>(s, `const sw=d.documentElement.scrollWidth,cw=d.documentElement.clientWidth;return sw<=cw&&[...d.querySelectorAll('[data-testid="readiness"] button')].every(b=>{const r=b.getBoundingClientRect();return r.right<=cw+0.5&&r.left>=-0.5})`);
-  const shot = async (s: string, name: string, scrollTo = '[data-testid="readiness"]') => {
+  const progressUi = progressInput({ guest, wait, click, key });
+  const noOverflow = (s: string) => guest<boolean>(s, `const sw=d.documentElement.scrollWidth,cw=d.documentElement.clientWidth;return sw<=cw&&[...d.querySelectorAll('.ap-tasks button')].filter(n=>n.checkVisibility()).every(b=>{const r=b.getBoundingClientRect();return r.right<=cw+0.5&&r.left>=-0.5})`);
+  const shot = async (s: string, name: string, scrollTo = '.ap-tasks') => {
     check(`${name}:no-horizontal-overflow`, await noOverflow(s));
-    if (scrollTo) await guest(s, `d.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({block:'start'});return true`);
+    if (scrollTo) await guest(s, `d.querySelector(${javascriptLiteral(scrollTo)})?.scrollIntoView({block:'start'});return true`);
     await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     const r = await evaluate<number[]>(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [r.x-8,r.y-8,r.width+16,r.height+16]})()`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: r[0], y: r[1], width: r[2], height: r[3], scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
     shots.push(`${name}.png`);
   };
-  const context = (id: string | null) => evaluate(`qa.context(${JSON.stringify(id)});true`);
-  const rd = '[data-testid="readiness"]';
+  const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
+  const rd = '.ap-tasks';
   /** Readiness membership by group in surface `s`, from per-entry attributes. */
-  const groups = (s: string) => guest<Record<string, string[]>>(s, `const out={ready:[],waiting:[],skipped:[],blocked:[]};for(const e of d.querySelectorAll('${rd} [data-testid^="readiness-entry-"]'))out[e.dataset.group].push(e.dataset.item);return out`);
+  const groups = (s: string) => guest<Record<string, string[]>>(s, `const out={ready:[],waiting:[],skipped:[],blocked:[]};for(const e of d.querySelectorAll('${rd} li[data-testid^="item-"]'))if(out[e.dataset.state])out[e.dataset.state].push(e.dataset.testid.slice(5));return out`);
   const counts = (s: string) => guest<string[]>(s, `const n=d.querySelector('article.ap-plan [data-testid="counts"]');return [n.dataset.done,n.dataset.total,n.dataset.remaining,n.dataset.skipped]`);
   const requests = (filter = 'true') => evaluate<any[]>(`qa.requests.filter(q=>${filter})`);
   /** Session chips under the linked (W) and assigned (K) tasks in the canonical task list. */
-  const taskChips = (s: string) => guest<{ name: string; state: string; nameClipped: boolean; stateClipped: boolean; inside: boolean; oneLine: boolean }[]>(s, `return ['W','K'].map(id=>{const c=d.querySelector('[data-testid="item-'+id+'"] .ap-item-sub .ap-chip'),b=c.querySelector('b'),st=c.querySelector('.ap-chip-state'),r=c.getBoundingClientRect();return {name:b.textContent,state:st.textContent,nameClipped:b.scrollWidth>b.clientWidth+1,stateClipped:st.scrollWidth>st.clientWidth+1,inside:r.right<=d.documentElement.clientWidth+0.5,oneLine:Math.abs(b.getBoundingClientRect().top-st.getBoundingClientRect().top)<1}})`);
-  const FIXTURE_GROUPS = { ready: ['R', 'I'], waiting: ['W'], skipped: ['K'], blocked: ['B'] };
+  const taskChips = async (s: string) => {
+    for (const id of ['W','K']) await progressUi.expand(s,id);
+    return guest<{ name: string; state: string; nameClipped: boolean; stateClipped: boolean; inside: boolean; oneLine: boolean }[]>(s, `return ['W','K'].map(id=>{const c=d.querySelector('[data-testid="readiness-link-'+id+'"], [data-testid="readiness-assignee-'+id+'"]'),b=c.querySelector('b'),r=c.getBoundingClientRect(),tail=c.textContent.slice(c.textContent.indexOf(b.textContent)+b.textContent.length).trim(),state=(tail.startsWith('·')?tail.slice(1).trim():tail).split(' (no recorded assignment)')[0];return {name:b.textContent,state,nameClipped:b.scrollWidth>b.clientWidth+1,stateClipped:c.scrollWidth>c.clientWidth+1,inside:r.right<=d.documentElement.clientWidth+0.5,oneLine:Math.abs(b.getBoundingClientRect().height-r.height)<2}})`);
+  };
+  const FIXTURE_GROUPS = { ready: ['R', 'I'], waiting: ['W', 'K'], skipped: ['S'], blocked: ['B'] };
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
   await evaluate(`new Promise(r=>{const t=()=>window.qa&&frame('page').contentDocument?.querySelector('[data-testid="progress-root"]')?r(true):setTimeout(t,50);t()})`);
@@ -127,39 +133,48 @@ try {
   // ---------------------------------------------------------------- Q4 rail, light, 360px
   await show('panel', 360);
   await context('A');
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
+  await progressUi.expandAll('panel');
   check('Q4:rail-groups', same(await groups('panel'), FIXTURE_GROUPS), await groups('panel'));
   check('Q4:rail-counts-unchanged', same(await counts('panel'), ['1', '7', '6', '1']), await counts('panel'));
-  const deps = await guest<Record<string, string[]>>('panel', `const o={};for(const e of d.querySelectorAll('${rd} [data-testid^="readiness-entry-"]'))o[e.dataset.item]=[...e.querySelectorAll('[data-dep]')].map(x=>x.dataset.dep+':'+x.dataset.depState+':'+(x.querySelector('button')?.getAttribute('aria-label')??'-')+':'+x.textContent);return o`);
+  const deps = await guest<Record<string, string[]>>('panel', `const o={};for(const id of ['R','I','W','K','B']){const e=d.querySelector('li[data-testid="item-'+id+'"]');o[id]=[...e.querySelectorAll('[data-dep]')].map(x=>x.dataset.dep+':'+x.dataset.depState+':'+(x.querySelector('button')?.getAttribute('aria-label')??'-')+':'+x.textContent)}return o`);
   check('Q4:every-dependency-explained', same(deps, {
     R: ['D:done:Show prerequisite: Prepare inputs:Prepare inputsDone'], I: [], W: ['R:pending:Show prerequisite: Review the inputs:Review the inputsPending'],
     K: ['S:skipped:Show prerequisite: Optional benchmark:Optional benchmarkSkipped', 'W:pending:Show prerequisite: Write the summary:Write the summaryPending'], B: ['D:done:Show prerequisite: Prepare inputs:Prepare inputsDone'],
   }), deps);
-  check('Q4:no-prerequisites-recorded-copy', await guest('panel', `return d.querySelector('[data-testid="readiness-entry-I"]').textContent.includes('No prerequisites recorded')&&!d.body.textContent.includes('No prerequisites exist')`));
-  check('Q4:qualifier', await guest('panel', `return d.querySelector('${rd}').textContent.includes('Based on recorded prerequisites only. Other prerequisites may not be recorded.')`));
-  const attribution = await guest('panel', `const t=id=>d.querySelector('[data-testid="readiness-entry-'+id+'"]');return {r:t('R').dataset.assignment,k:t('K').dataset.assignment,kText:t('K').querySelector('.ap-ready-meta').textContent,w:t('W').dataset.assignment,reports:[...t('K').querySelectorAll('[data-report]')].map(x=>x.dataset.report+':'+x.textContent)}`);
+  check('Q4:no-prerequisites-recorded-copy', await guest('panel', `return d.querySelector('li[data-testid="item-I"]').textContent.includes('No prerequisites recorded')&&!d.body.textContent.includes('No prerequisites exist')`));
+  await click('panel', '[data-testid="progress-chips"] [data-testid="info-trigger"]');
+  check('Q4:qualifier', await guest('panel', `const b=d.querySelector('[data-testid="progress-chips"] [data-testid="info-trigger"]'),n=d.getElementById(b.getAttribute('aria-controls'));return b.getAttribute('aria-expanded')==='true'&&n.textContent.includes('recorded prerequisites only')&&n.textContent.includes('Other prerequisites may not be recorded')`));
+  await key('Escape');
+  const attribution = await guest('panel', `const t=id=>d.querySelector('[data-testid="task-assignee-'+id+'"]');return {r:t('R').dataset.assignment,k:t('K').dataset.assignment,kText:t('K').textContent,w:t('W').dataset.assignment,reports:[...d.querySelectorAll('li[data-testid="item-K"] [data-report]')].map(x=>x.dataset.report+':'+x.textContent)}`);
   check('Q4:rail-attribution', attribution.r === 'selected' && attribution.k === 'other' && attribution.w === 'none'
-    && /Assigned to Session C.*Not open in this window/.test(attribution.kText)
-    && same(attribution.reports, ['direct:Reported directly by Session C', 'parent-relay:Reported by Planner session for Session C']), attribution);
+    && /Session C.*Not open in this window/.test(attribution.kText)
+    && same(attribution.reports, ['direct:Task reported directly by Session C', 'parent-relay:Task reported by Planner session for Session C']), attribution);
   // Recorded assignee, link only and neither: three distinct lines; a link never reads as an assignment.
-  const who = await guest('panel', `const t=id=>d.querySelector('[data-testid="readiness-entry-'+id+'"]'),m=id=>t(id).querySelector('.ap-ready-meta').textContent;return {r:m('R'),w:m('W'),wLink:d.querySelector('[data-testid="readiness-link-W"]')?.textContent,wLinked:t('W').dataset.linked,wAssignee:!!d.querySelector('[data-testid="readiness-assignee-W"]'),i:m('I'),iLink:!!d.querySelector('[data-testid="readiness-link-I"]'),rLink:!!d.querySelector('[data-testid="readiness-link-R"]'),canonicalW:d.querySelector('[data-testid="item-W"] .ap-item-sub')?.textContent}`);
-  check('Q4:link-three-cases', who.r.includes('Assigned to the selected session') && !who.rLink
+  const who = await guest('panel', `const t=id=>d.querySelector('[data-testid="task-assignee-'+id+'"]'),m=id=>t(id).textContent;return {r:m('R'),w:m('W'),wLink:d.querySelector('[data-testid="readiness-link-W"]')?.textContent,wLinked:d.querySelector('[data-testid="readiness-link-W"] [data-session]')?.dataset.session,wAssignee:!!d.querySelector('[data-testid="readiness-assignee-W"]'),i:m('I'),iLink:!!d.querySelector('[data-testid="readiness-link-I"]'),rLink:!!d.querySelector('[data-testid="readiness-link-R"]')}`);
+  check('Q4:link-three-cases', who.r === 'The selected session' && !who.rLink
     && who.wLink === 'Linked to Review session · Idle (no recorded assignment)' && who.wLinked === 'B' && !who.wAssignee && !who.w.includes('Assigned to') && !who.w.includes('No assignee recorded')
-    && who.i.includes('No assignee recorded') && !who.iLink && !who.i.includes('Linked to'), who);
-  check('Q4:relay-row-kept', await guest('panel', `return d.querySelector('[data-testid="item-K"] [data-testid="relay-K"]')?.textContent==='Reported by Planner session for Session C'`));
-  check('Q4:no-canonical-testid-duplicates', await guest('panel', `return [...d.querySelectorAll('[data-testid^="item-"]')].every(n=>!n.closest('${rd}'))&&d.querySelectorAll('[data-testid="item-W"]').length===1`));
+    && who.i === 'Not recorded' && !who.iLink && !who.i.includes('Linked to'), who);
+  check('Q4:relay-row-kept', await guest('panel', `return d.querySelector('li[data-testid="item-K"] [data-report="parent-relay"]')?.textContent==='Task reported by Planner session for Session C'`));
+  check('Q4:no-canonical-testid-duplicates', await guest('panel', `const ids=[...d.querySelectorAll('li[data-testid^="item-"]')].map(n=>n.dataset.testid);return new Set(ids).size===ids.length&&ids.length===8&&d.querySelectorAll('li[data-testid="item-W"]').length===1`));
   await shot('panel', 'rail-light');
 
-  // Keyboard: collapse G with a real click, then Tab from K to its W prerequisite and press Enter.
+  // One canonical list cannot expose K's link while its shared ancestor G is closed.
+  // Give W its own synthetic branch so the real K→W reference can reveal a hidden ancestor.
+  await evaluate(`(()=>{const reported=qa.plan('P-ready').summary.reportedAt;qa.update('P-ready',p=>{p.items.push({id:'W-branch',title:'Summary branch',kind:'group',status:'pending',parentId:'G'});p.items.find(i=>i.id==='W').parentId='W-branch'});qa.plan('P-ready').summary.reportedAt=reported;return true})()`);
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]')&&d.querySelector('[data-testid="item-W"]')?.closest('article').dataset.revision===String(qa.plan('P-ready').summary.revision)`);
+  await progressUi.planOrder('panel');
+  await progressUi.expand('panel','K');
   const base = (await requests()).length;
-  await click('panel', '[data-testid="group-toggle-G"] > summary');
-  await wait('panel', `!d.querySelector('[data-testid="group-toggle-G"]').open`, 'G collapsed');
-  await guest('panel', `w.focus();d.querySelector('[data-testid="readiness-entry-K"] .ap-ready-head button').focus();return true`);
-  await key('Tab', 2);
-  check('Q4:tab-reaches-W-blocker', await guest('panel', `return d.activeElement?.getAttribute('aria-label')==='Show prerequisite: Write the summary'&&!!d.activeElement.closest('[data-testid="readiness-entry-K"]')`));
+  await click('panel', '[data-testid="group-toggle-W-branch"] > summary');
+  await wait('panel', `!d.querySelector('[data-testid="group-toggle-W-branch"]').open`, 'W branch collapsed');
+  await guest('panel', `w.focus();d.querySelector('li[data-testid="item-K"] [data-dep="S"] button').focus();return true`);
+  await key('Tab');
+  check('Q4:tab-reaches-W-blocker', await guest('panel', `return d.activeElement?.getAttribute('aria-label')==='Show prerequisite: Write the summary'&&!!d.activeElement.closest('li[data-testid="item-K"]')`), await guest('panel', `return {tag:d.activeElement?.tagName,label:d.activeElement?.getAttribute('aria-label'),hook:d.activeElement?.closest('[data-testid]')?.dataset.testid,group:d.querySelector('[data-testid="group-toggle-G"]')?.open}`));
   await key('Enter');
   await wait('panel', `d.activeElement?.dataset.testid==='item-W'`, 'focus on canonical W');
-  const landed = await guest('panel', `const n=d.activeElement,r=n.getBoundingClientRect();return {open:d.querySelector('[data-testid="group-toggle-G"]').open,inView:r.top>=0&&r.bottom<=w.innerHeight,ring:getComputedStyle(n).boxShadow!=='none',group:!!n.closest('[data-testid="group-G"]'),animations:d.getAnimations().length}`);
+  const landed = await guest('panel', `const n=d.activeElement,r=n.getBoundingClientRect();return {open:d.querySelector('[data-testid="group-toggle-W-branch"]').open,inView:r.top>=0&&r.bottom<=w.innerHeight,ring:getComputedStyle(n).boxShadow!=='none',group:!!n.closest('[data-testid="group-G"]'),animations:d.getAnimations().length}`);
   check('Q4:enter-reveals-and-focuses-W', landed.open && landed.inView && landed.ring && landed.group, landed);
   check('Q5:navigation-instant-no-animation', landed.animations === 0, landed);
   await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
@@ -169,16 +184,20 @@ try {
     writeFileSync(join(artifacts, 'keyboard-target.png'), Buffer.from(png.data, 'base64')); shots.push('keyboard-target.png');
   }
   // Space on W's R prerequisite, then a mouse click on R's D prerequisite.
-  await guest('panel', `d.querySelector('[data-testid="readiness-entry-W"] .ap-ready-head button').focus();return true`);
+  await progressUi.expand('panel','W');
+  await guest('panel', `d.querySelector('li[data-testid="item-W"] [data-info] button').focus();return true`);
   await key('Tab');
   await key(' ');
   await wait('panel', `d.activeElement?.dataset.testid==='item-R'`, 'Space focuses R');
-  await click('panel', '[data-testid="readiness-entry-R"] [data-dep="D"] button');
+  await progressUi.expand('panel','R');
+  await click('panel', 'li[data-testid="item-R"] [data-dep="D"] button');
   await wait('panel', `d.activeElement?.dataset.testid==='item-D'`, 'click focuses D');
   const after = await requests(`q.surface==='panel'`);
   check('Q4:navigation-sends-nothing', !after.slice(base).some((q: any) => q.method !== 'GET' || ['/v1/plan', '/v1/document', '/v1/history'].includes(q.path))
     && !(await evaluate<boolean>(`qa.messages.some(m=>m.type==='open-session')`)), after.slice(base).map((q: any) => q.path));
   check('Q4:rail-counts-after-navigation', same(await counts('panel'), ['1', '7', '6', '1']));
+  await evaluate(`(()=>{const reported=qa.plan('P-ready').summary.reportedAt;qa.update('P-ready',p=>{p.items=p.items.filter(i=>i.id!=='W-branch');p.items.find(i=>i.id==='W').parentId='G'});qa.plan('P-ready').summary.reportedAt=reported;return true})()`);
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]')&&d.querySelector('article.ap-plan').dataset.revision===String(qa.plan('P-ready').summary.revision)`);
 
   // Work Status keeps its compact view without readiness.
   await show('status', 360);
@@ -189,13 +208,16 @@ try {
   await evaluate(`qa.theme('dark');true`);
   await show('page', 1100);
   await wait('page', `d.querySelector('[data-testid="plan-row-P-ready"][data-source="source-ready"]')`);
+  await progressUi.list('page');
   const firstSelected = await guest<string>('page', `const a=d.querySelector('[data-testid="plan-detail"] article');return a.dataset.testid+'|'+a.dataset.source`);
   const pageMark = (await requests()).length;
   await click('page', '[data-testid="plan-row-P-ready"][data-source="source-ready"]');
-  await wait('page', `d.querySelector('article[data-testid="plan-P-ready"][data-source="source-ready"] ${rd}[data-state="ready"]')`);
+  await progressUi.list('page');
+  await wait('page', `d.querySelector('article[data-testid="plan-P-ready"][data-source="source-ready"] ${rd}[data-readiness="ready"]')`);
+  await progressUi.expandAll('page');
   check('Q4:board-groups', same(await groups('page'), FIXTURE_GROUPS), await groups('page'));
   check('Q4:board-counts-unchanged', same(await counts('page'), ['1', '7', '6', '1']));
-  check('Q5:board-no-filter-neutral-assignee', await guest('page', `const r=d.querySelector('[data-testid="readiness-entry-R"]');return r.dataset.assignment==='other'&&!d.querySelector('${rd}').textContent.includes('selected session')`));
+  check('Q5:board-no-filter-neutral-assignee', await guest('page', `const r=d.querySelector('[data-testid="task-assignee-R"]');return r.dataset.assignment==='other'&&!d.querySelector('${rd}').textContent.includes('selected session')`));
   await shot('page', 'board-dark');
   // Wide layout: each task-list chip keeps name and state on one line.
   await shot('page', 'task-chips-wide', '[data-testid="item-W"]');
@@ -214,22 +236,29 @@ try {
   const idx = await guest<number>('page', `return [...d.querySelectorAll('[role="listbox"] [role="option"]')].findIndex(o=>o.textContent.includes('Planner session'))`);
   check('Q4:filter-option-found', idx > 0, idx);
   await key('Home'); await key('ArrowDown', idx); await key('Enter');
-  await wait('page', `d.querySelector('[data-testid="readiness-entry-R"][data-assignment="selected"]')`, 'board filter A marks R selected');
+  await progressUi.list('page');
+  await wait('page', `d.querySelector('.ap-tasks[data-complete]')`);
+  await progressUi.expand('page','R');
+  await wait('page', `d.querySelector('[data-testid="task-assignee-R"][data-assignment="selected"]')`, 'board filter A marks R selected');
   await context('B'); await context(null);
-  await wait('page', `d.querySelector('[data-testid="readiness-entry-R"][data-assignment="selected"]')`);
+  await wait('page', `d.querySelector('[data-testid="task-assignee-R"][data-assignment="selected"]')`);
   const lastList = (await requests(`q.surface==='page'&&q.path==='/v1/plans'`)).at(-1);
   check('Q6:board-keeps-explicit-filter', lastList.query.session === 'A', lastList.query);
   await click('page', '[data-testid="plan-row-P-ready"][data-source="source-foreign"]');
-  await wait('page', `d.querySelector('article[data-testid="plan-P-ready"][data-source="source-foreign"] ${rd}[data-state="ready"]')`);
-  const foreign = await guest('page', `const r=d.querySelector('[data-testid="readiness-entry-R"]');return {a:r.dataset.assignment,t:r.querySelector('.ap-ready-meta').textContent,src:r.dataset.source}`);
+  await progressUi.list('page');
+  await wait('page', `d.querySelector('article[data-testid="plan-P-ready"][data-source="source-foreign"] ${rd}[data-readiness="ready"]')`);
+  await progressUi.expandAll('page');
+  const foreign = await guest('page', `const r=d.querySelector('[data-testid="task-assignee-R"]');return {a:r.dataset.assignment,t:r.textContent,src:r.closest('article').dataset.source}`);
   check('Q5:foreign-source-no-borrowed-identity', foreign.a === 'other' && foreign.src === 'source-foreign' && foreign.t.includes('Session A') && !foreign.t.includes('Planner session') && foreign.t.includes('another OpenCode setup'), foreign);
-  const foreignLink = await guest('page', `const e=d.querySelector('[data-testid="readiness-entry-W"]');return {a:e.dataset.assignment,t:d.querySelector('[data-testid="readiness-link-W"]')?.textContent}`);
+  const foreignLink = await guest('page', `const e=d.querySelector('[data-testid="task-assignee-W"]');return {a:e.dataset.assignment,t:d.querySelector('[data-testid="readiness-link-W"]')?.textContent}`);
   check('Q5:foreign-link-no-borrowed-identity', foreignLink.a === 'none' && foreignLink.t === 'Linked to Session A · from another OpenCode setup (no recorded assignment)', foreignLink);
 
   // ---------------------------------------------------------------- Q5 narrow widths, pairwise themes
   await evaluate(`qa.theme('dark');true`);
   await show('panel', 280); await context('A');
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
+  await progressUi.expandAll('panel');
   await shot('panel', 'rail-narrow-dark');
   // Link only at 280px: full wrapped text, nothing clipped or ellipsized.
   const narrowLink = await guest('panel', `const n=d.querySelector('[data-testid="readiness-link-W"]'),line=n.querySelector('.ap-ready-who'),r=n.getBoundingClientRect(),cs=getComputedStyle(line);return {t:n.textContent,right:r.right<=d.documentElement.clientWidth+0.5,lines:Math.round(r.height/parseFloat(cs.lineHeight)),clipped:line.scrollWidth>line.clientWidth+1||cs.textOverflow==='ellipsis'||n.querySelector('b').scrollWidth>n.querySelector('b').clientWidth+1}`);
@@ -244,66 +273,76 @@ try {
   await evaluate(`qa.update('P-ready',p=>{p.links=[{sessionId:'C',itemIds:['K']},{sessionId:'C',itemIds:['W']}]});true`);
   await wait('panel', `d.querySelector('[data-testid="readiness-link-W"]')?.textContent.includes('Session C')`, 'W linked to C');
   check('Q5:unavailable-link-plain-label', await guest<string>('panel', `return d.querySelector('[data-testid="readiness-link-W"]').textContent`) === 'Linked to Session C · Not open in this window (no recorded assignment)');
-  await shot('panel', 'link-unavailable-narrow', '[data-testid="readiness-entry-W"]');
+  await shot('panel', 'link-unavailable-narrow', 'li[data-testid="item-W"]');
   await context('C');
-  await wait('panel', `d.querySelector('[data-testid="helping-note"]')&&d.querySelector('[data-testid="readiness-entry-K"][data-assignment="selected"]')`, 'rail C');
-  const asC = await guest('panel', `const e=d.querySelector('[data-testid="readiness-entry-W"]');return {a:e.dataset.assignment,t:e.querySelector('.ap-ready-meta').textContent}`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]')`);
+  await progressUi.expand('panel','K');
+  await progressUi.expand('panel','W');
+  await wait('panel', `d.querySelector('[data-testid="helping-note"]')&&d.querySelector('[data-testid="task-assignee-K"][data-assignment="selected"]')`, 'rail C');
+  const asC = await guest('panel', `const e=d.querySelector('[data-testid="task-assignee-W"]');return {a:e.dataset.assignment,t:e.textContent}`);
   check('Q5:link-never-selected-session', asC.a === 'none' && !asC.t.includes('selected session') && !asC.t.includes('Assigned to') && asC.t.includes('(no recorded assignment)'), asC);
   check('Q5:link-counts-unchanged', same(await counts('panel'), ['1', '7', '6', '1']));
   await context('A');
-  await evaluate(`qa.update('P-ready',p=>{p.links=${JSON.stringify([{ sessionId: 'C', itemIds: ['K'] }, { sessionId: 'B', itemIds: ['W'] }])}});true`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]')`);
+  await progressUi.expandAll('panel');
+  await evaluate(`qa.update('P-ready',p=>{p.links=${javascriptLiteral([{ sessionId: 'C', itemIds: ['K'] }, { sessionId: 'B', itemIds: ['W'] }])}});true`);
   await wait('panel', `d.querySelector('[data-testid="readiness-link-W"]')?.textContent.includes('Review session')&&d.querySelector('[data-assignment="selected"]')`, 'links restored');
-  const wrapped = await guest('panel', `const b=d.querySelector('[data-testid="readiness-entry-I"] .ap-ready-head button'),cs=getComputedStyle(b);return {lines:Math.round(b.getBoundingClientRect().height/parseFloat(cs.lineHeight)),text:b.textContent.includes('<b>not markup</b>'),html:!!b.querySelector('b')}`);
+  const wrapped = await guest('panel', `const b=d.querySelector('[data-testid="item-toggle-I"] > summary .ap-trow-title'),cs=getComputedStyle(b);return {lines:Math.round(b.getBoundingClientRect().height/parseFloat(cs.lineHeight)),text:b.textContent.includes('<b>not markup</b>'),html:!!b.querySelector('b')}`);
   check('Q5:long-untrusted-title-wraps-as-text', wrapped.lines > 1 && wrapped.text && !wrapped.html, wrapped);
-  check('Q5:focus-ring-visible-dark', await (async () => { await guest('panel', `w.focus();d.querySelector('[data-testid="readiness-entry-W"] .ap-ready-head button').focus();return true`); await key('Tab'); return guest<boolean>('panel', `return d.activeElement.matches(':focus-visible')&&getComputedStyle(d.activeElement).boxShadow!=='none'`); })());
+  await progressUi.expand('panel','W');
+  check('Q5:focus-ring-visible-dark', await (async () => { await guest('panel', `w.focus();d.querySelector('li[data-testid="item-W"] [data-info] button').focus();return true`); await key('Tab'); return guest<boolean>('panel', `return d.activeElement.matches(':focus-visible')&&getComputedStyle(d.activeElement).boxShadow!=='none'`); })());
   await evaluate(`qa.theme('light');true`);
   await show('page', 360);
   await click('page', '[data-testid="plan-row-P-ready"][data-source="source-ready"]');
-  await wait('page', `d.querySelector('article[data-source="source-ready"] ${rd}[data-state="ready"]')`);
+  await progressUi.list('page');
+  await wait('page', `d.querySelector('article[data-source="source-ready"] ${rd}[data-readiness="ready"]')`);
   await shot('page', 'board-narrow-light');
 
   // Missing targets and a group reference: identified, never linked.
   await evaluate(`qa.update('P-ready',p=>{p.items.find(i=>i.id==='I').dependencies=['gone','G']});true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-entry-I"][data-group="waiting"]')`, 'I waits on unavailable references');
-  const missing = await guest('panel', `const e=d.querySelector('[data-testid="readiness-entry-I"]');return {gone:e.querySelector('[data-dep="gone"]').textContent,group:e.querySelector('[data-dep="G"]').textContent,buttons:[...e.querySelectorAll('[data-dep] button')].length,note:d.querySelector('${rd}').textContent.includes('aren’t in this plan')}`);
+  await wait('panel', `d.querySelector('li[data-testid="item-I"][data-state="waiting"]')`, 'I waits on unavailable references');
+  await progressUi.expand('panel','I');
+  const missing = await guest('panel', `const e=d.querySelector('li[data-testid="item-I"]');return {gone:e.querySelector('[data-dep="gone"]').textContent,group:e.querySelector('[data-dep="G"]').textContent,buttons:[...e.querySelectorAll('[data-dep] button')].length,note:d.querySelector('[data-testid="progress-qualifiers"]').textContent.includes('aren’t in this plan')}`);
   check('Q5:missing-targets-identified-not-linked', missing.gone === 'gonePrerequisite task unavailable' && missing.group.includes('A group, not a task') && missing.buttons === 0 && missing.note, missing);
   await evaluate(`qa.update('P-ready',p=>{p.items.find(i=>i.id==='I').dependencies=[]});true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-entry-I"][data-group="ready"]')?.textContent.includes('No prerequisites recorded')`, 'explicit empty list');
+  await wait('panel', `d.querySelector('li[data-testid="item-I"][data-state="ready"]')?.textContent.includes('No prerequisites recorded')`, 'explicit empty list');
   results.push({ id: 'Q5:explicit-empty-is-none-recorded', pass: true });
   check('Q5:blocked-stays-blocked', same((await groups('panel')).blocked, ['B']));
 
   // All tasks skipped: an empty ready group with no completion claim.
   const restore = await evaluate<string>(`JSON.stringify(qa.plan('P-ready').items)`);
   await evaluate(`qa.update('P-ready',p=>{for(const i of p.items)if(i.kind==='task')i.status='skipped'});true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-ready"][data-count="0"]')`, 'empty ready group');
-  check('Q5:empty-no-completion-claim', await guest('panel', `const t=d.querySelector('article.ap-plan').textContent;return t.includes('No tasks are ready from the recorded information.')&&!/Finished|complete/i.test(d.querySelector('${rd}').textContent)&&d.querySelector('article.ap-plan').dataset.lifecycle==='active'`));
+  await wait('panel', `d.querySelector('${rd}[data-complete]')&&!d.querySelector('li[data-state="ready"]')&&d.querySelector('[data-testid="progress-group-skipped"]')?.dataset.count==='8'`, 'all skipped, no ready rows');
+  check('Q5:empty-no-completion-claim', await guest('panel', `return !d.querySelector('[data-testid="state-chip"][data-state="ready"],[data-testid="progress-group-up-next"]')&&d.querySelector('article.ap-plan').dataset.lifecycle==='active'&&d.querySelector('[data-testid="counts"]').dataset.done==='0'`));
   await show('panel', 360);
   await shot('panel', 'empty');
-  await evaluate(`qa.update('P-ready',p=>{p.items=${'JSON.parse(' + JSON.stringify(restore) + ')'}});true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-entry-R"][data-group="ready"]')`);
+  await evaluate(`qa.update('P-ready',p=>{p.items=${'JSON.parse(' + javascriptLiteral(restore) + ')'}});true`);
+  await wait('panel', `d.querySelector('li[data-testid="item-R"][data-state="ready"]')`);
 
   // Inconsistent snapshot (cycle): unavailable, tasks still shown as reported.
   await evaluate(`qa.update('P-ready',p=>{p.items.find(i=>i.id==='R').dependencies=['D','W']});true`);
-  await wait('panel', `d.querySelector('${rd}[data-state="invalid"][data-reason="cycle"]')`, 'cycle refused');
-  check('Q5:invalid-snapshot-no-ready-work', await guest('panel', `return !d.querySelector('[data-testid^="readiness-entry-"]')&&!!d.querySelector('[data-testid="item-R"]')`));
+  await wait('panel', `d.querySelector('${rd}[data-readiness="invalid"]')&&d.querySelector('[data-testid="progress-qualifiers"][data-reason="cycle"]')`, 'cycle refused');
+  check('Q5:invalid-snapshot-no-ready-work', await guest('panel', `return !d.querySelector('li[data-state="ready"],li[data-state="waiting"]')&&!!d.querySelector('li[data-testid="item-R"][data-status="pending"]')&&![...d.querySelectorAll('.ap-pgroup-h,[data-testid="state-chip"]')].some(n=>/Needs you|ready|waiting/i.test(n.textContent))`));
   await evaluate(`qa.update('P-ready',p=>{p.items.find(i=>i.id==='R').dependencies=['D']});true`);
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
 
   // Closed lifecycles: no readiness section at all.
   for (const lifecycle of ['finished', 'cancelled', 'failed']) {
     await evaluate(`qa.update('P-ready',p=>{p.summary.lifecycle='${lifecycle}'});true`);
-    await wait('panel', `d.querySelector('article[data-testid="plan-P-ready"][data-lifecycle="${lifecycle === 'finished' ? 'completed' : lifecycle}"]')&&!d.querySelector('${rd}')`, `${lifecycle} has no readiness`);
+    await wait('panel', `d.querySelector('article[data-testid="plan-P-ready"][data-lifecycle="${lifecycle === 'finished' ? 'completed' : lifecycle}"] ${rd}[data-readiness="closed"]')&&!d.querySelector('li[data-state="ready"],li[data-state="waiting"]')&&![...d.querySelectorAll('.ap-pgroup-h,[data-testid="state-chip"]')].some(n=>/Needs you|ready|waiting/i.test(n.textContent))`, `${lifecycle} has reported statuses only`);
     results.push({ id: `Q5:closed-${lifecycle}-no-readiness`, pass: true });
   }
   await evaluate(`qa.update('P-ready',p=>{p.summary.lifecycle='active'});true`);
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
 
   // Stale refresh: retained readiness is visibly qualified.
   await evaluate(`qa.failList=true;true`);
-  await wait('panel', `d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('${rd}[data-stale="true"]')`, 'stale qualifier', 12_000);
-  check('Q5:stale-qualified', await guest('panel', `return d.querySelector('${rd}').textContent.includes('may be out of date')`));
+  await wait('panel', `d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('[data-testid="progress-qualifiers"][data-stale="true"]')`, 'stale qualifier', 12_000);
+  check('Q5:stale-qualified', await guest('panel', `return d.querySelector('[data-testid="progress-qualifiers"]').textContent.includes('may be out of date')`));
   await evaluate(`qa.failList=false;true`);
-  await wait('panel', `!d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('${rd}[data-state="ready"]:not([data-stale])')`, 'fresh again', 12_000);
+  await wait('panel', `!d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('${rd}[data-readiness="ready"]')&&d.querySelector('[data-testid="progress-qualifiers"]:not([data-stale])')`, 'fresh again', 12_000);
 
   // ---------------------------------------------------------------- Q5/Q6 paging: held final page, failure, corrupt
   await context(null);
@@ -316,39 +355,43 @@ try {
   await evaluate(`qa.hold={surface:'page',path:'/v1/plan',cursor:true,plan:'P-boundary'};true`);
   await click('page', '[data-testid="plan-row-P-boundary"]');
   await wait('page', `qa.held.length===1`, 'page 2 held');
-  check('Q5:held-final-page-is-loading', await guest('page', `return d.querySelector('article[data-testid="plan-P-boundary"] ${rd}')?.dataset.state==='loading'&&!d.querySelector('[data-testid^="readiness-entry-"]')&&!!d.querySelector('[data-testid="detail-loading"]')&&!d.body.textContent.includes('No tasks are ready')`));
+  check('Q5:held-final-page-is-loading', await guest('page', `return !!d.querySelector('article[data-testid="plan-P-boundary"] [data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete]')&&!d.querySelector('li[data-testid^="item-"]')&&!d.body.textContent.includes('No tasks are ready')`));
   await shot('page', 'partial', '');
   await evaluate(`qa.release();true`);
-  await wait('page', `d.querySelector('[data-testid="readiness-entry-T0"][data-group="ready"]')`, 'T0 ready after page 2');
-  check('Q6:chromium-20+1-final-page-target', await guest('page', `return d.querySelector('[data-testid="readiness-entry-T0"] [data-dep="T20"]')?.dataset.depState==='done'`));
-  await click('page', '[data-testid="readiness-entry-T0"] [data-dep="T20"] button');
+  await progressUi.list('page');
+  await wait('page', `d.querySelector('li[data-testid="item-T0"][data-state="ready"]')`, 'T0 ready after page 2');
+  await progressUi.expand('page','T0');
+  check('Q6:chromium-20+1-final-page-target', await guest('page', `return d.querySelector('li[data-testid="item-T0"] [data-dep="T20"]')?.dataset.depState==='done'`));
+  await click('page', 'li[data-testid="item-T0"] [data-dep="T20"] button');
   await wait('page', `d.activeElement?.dataset.testid==='item-T20'`, 'navigate to the final-page task');
   await evaluate(`qa.fail={cursor:true,plan:'P-boundary',error:'busy'};qa.update('P-boundary',()=>{},'source-ready');true`);
-  await wait('page', `d.querySelector('${rd}[data-state="unavailable"]')&&d.querySelector('[data-testid="detail-loading"]')?.textContent.includes('could not be loaded')`, 'continuation failure', 12_000);
-  check('Q5:continuation-failure-not-empty', await guest('page', `return !d.querySelector('[data-testid^="readiness-entry-"]')&&!d.querySelector('${rd}').textContent.includes('No tasks are ready')`));
+  await wait('page', `!d.querySelector('${rd}[data-complete]')&&d.querySelector('[data-testid="detail-loading"]')?.textContent.includes('could not be loaded')`, 'continuation failure', 12_000);
+  check('Q5:continuation-failure-not-empty', await guest('page', `return !d.querySelector('li[data-testid^="item-"]')&&!d.querySelector('${rd}').textContent.includes('No tasks are ready')`));
   await shot('page', 'error', '');
   await evaluate(`qa.fail=null;qa.corrupt=true;qa.update('P-boundary',()=>{},'source-ready');true`);
   await wait('page', `d.querySelector('[data-testid="detail-loading"]')?.textContent.includes('could not be read')||d.querySelector('[data-testid="detail-loading"]')?.textContent.includes('could not be loaded')`, 'corrupt reply refused', 12_000);
-  check('Q5:corrupt-reply-refused', await guest('page', `return d.querySelector('${rd}')?.dataset.state==='unavailable'&&!d.querySelector('[data-testid^="readiness-entry-"]')`));
+  check('Q5:corrupt-reply-refused', await guest('page', `return !!d.querySelector('[data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete],li[data-testid^="item-"]')`));
   await evaluate(`qa.corrupt=false;true`);
 
   // ---------------------------------------------------------------- Q6 races and identity
   await show('panel', 360); await context('A');
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
+  await progressUi.expand('panel','K');
   // Focus W in P-ready, then switch to B (P-same also has item-W): no cross-plan focus restore.
-  await guest('panel', `w.focus();d.querySelector('[data-testid="readiness-entry-K"] [data-dep="W"] button').focus();return true`);
+  await guest('panel', `w.focus();d.querySelector('li[data-testid="item-K"] [data-dep="W"] button').focus();return true`);
   await key('Enter');
   await wait('panel', `d.activeElement?.dataset.testid==='item-W'`);
-  await guest('panel', `window.qaOldButton=d.querySelector('[data-testid="readiness-entry-K"] [data-dep="W"] button');return true`);
+  await guest('panel', `window.qaOldButton=d.querySelector('li[data-testid="item-K"] [data-dep="W"] button');return true`);
   await context('B');
   await wait('panel', `d.querySelector('article[data-testid="plan-P-same"]')`, 'B shows P-same');
   check('Q6:no-cross-plan-focus-restore', await guest('panel', `return !d.activeElement?.closest('[data-testid="plan-P-same"]')`), await guest('panel', `return d.activeElement?.dataset.testid??d.activeElement?.tagName`));
-  check('Q6:stale-button-inert', await guest('panel', `window.qaOldButton.click();return !d.activeElement?.closest('article')&&!d.querySelector('[data-testid="readiness-notice"]')?.textContent`));
+  check('Q6:stale-button-inert', await guest('panel', `window.qaOldButton.click();return !d.activeElement?.closest('article')&&!d.querySelector('[data-testid="focus-notice"]')?.textContent`));
 
   // Held detail for E's 21-task plan; A → B → null retires it: no paint, no continuation pages.
   await evaluate(`qa.hold={surface:'panel',path:'/v1/plan',plan:'P-boundary'};true`);
   await context('E');
-  await wait('panel', `qa.held.length===1&&d.querySelector('article[data-testid="plan-P-boundary"] ${rd}[data-state="loading"]')`, 'E detail held');
+  await wait('panel', `qa.held.length===1&&d.querySelector('article[data-testid="plan-P-boundary"] [data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete]')`, 'E detail held');
   await context('B');
   await wait('panel', `d.querySelector('article[data-testid="plan-P-same"]')`);
   await context(null);
@@ -369,31 +412,40 @@ try {
 
   // Revision change while detail is held: the older readiness is not reused.
   await context('A');
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
   await evaluate(`qa.hold={surface:'panel',path:'/v1/plan',plan:'P-ready'};qa.update('P-ready',p=>{p.items.find(i=>i.id==='D').status='working'});true`);
-  await wait('panel', `qa.held.length>0&&d.querySelector('${rd}[data-state="loading"]')`, 'new revision waits for its detail', 12_000);
-  check('Q6:new-revision-not-old-readiness', await guest('panel', `return !d.querySelector('[data-testid^="readiness-entry-"]')`));
+  await wait('panel', `qa.held.length>0&&d.querySelector('[data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete]')`, 'new revision waits for its detail', 12_000);
+  check('Q6:new-revision-not-old-readiness', await guest('panel', `return !d.querySelector('li[data-testid^="item-"]')`));
   await evaluate(`qa.release();true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-entry-R"][data-group="waiting"]')`, 'R waits once D is working');
+  await wait('panel', `d.querySelector('li[data-testid="item-R"][data-state="waiting"]')`, 'R waits once D is working');
   // Removal of the focused task: focus W, remove it; no restore elsewhere, no error.
-  await guest('panel', `w.focus();d.querySelector('[data-testid="readiness-entry-K"] [data-dep="W"] button').focus();return true`);
+  await progressUi.expand('panel','K');
+  await guest('panel', `w.focus();d.querySelector('li[data-testid="item-K"] [data-dep="W"] button').focus();return true`);
   await key('Enter');
   await wait('panel', `d.activeElement?.dataset.testid==='item-W'`);
   await evaluate(`qa.update('P-ready',p=>{p.items=p.items.filter(i=>i.id!=='W');p.items.find(i=>i.id==='K').dependencies=['S']});true`);
-  await wait('panel', `!d.querySelector('[data-testid="item-W"]')&&d.querySelector('${rd}[data-state="ready"]')`, 'W removed', 12_000);
-  check('Q6:removed-focus-not-restored-elsewhere', await guest('panel', `return !d.activeElement?.closest('[data-testid^="item-"]')`));
+  await wait('panel', `!d.querySelector('[data-testid="item-W"]')&&d.querySelector('${rd}[data-readiness="ready"]')`, 'W removed', 12_000);
+  check('Q6:removed-focus-not-restored-elsewhere', await guest('panel', `return !d.activeElement?.closest('li[data-testid^="item-"]')`), await guest('panel', `return {tag:d.activeElement?.tagName,hook:d.activeElement?.closest('[data-testid]')?.dataset.testid,row:d.activeElement?.closest('li[data-testid]')?.dataset.testid}`));
   // Store/binding replacement with identical IDs and revision: held detail shows loading, not old readiness.
   await evaluate(`qa.hold={surface:'panel',path:'/v1/plan',plan:'P-ready'};qa.store='store-replaced';true`);
-  await wait('panel', `qa.held.length>0&&d.querySelector('${rd}[data-state="loading"]')`, 'store replacement re-reads detail', 12_000);
-  check('Q6:store-replacement-no-old-readiness', await guest('panel', `return !d.querySelector('[data-testid^="readiness-entry-"]')`));
+  await wait('panel', `qa.held.length>0&&d.querySelector('[data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete]')`, 'store replacement re-reads detail', 12_000);
+  check('Q6:store-replacement-no-old-readiness', await guest('panel', `return !d.querySelector('li[data-testid^="item-"]')`));
   await evaluate(`qa.release();true`);
-  await wait('panel', `d.querySelector('${rd}[data-state="ready"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('${rd}[data-readiness="ready"]')`);
   await evaluate(`qa.hold={surface:'panel',path:'/v1/plan',plan:'P-ready'};qa.binding={sourceId:'source-ready',verified:false};true`);
-  await wait('panel', `qa.held.length>0&&d.querySelector('${rd}[data-state="loading"]')`, 'binding change re-reads detail', 12_000);
+  await wait('panel', `qa.held.length>0&&d.querySelector('[data-testid="detail-loading"]')&&!d.querySelector('${rd}[data-complete]')`, 'binding change re-reads detail', 12_000);
   await evaluate(`qa.release();true`);
-  await wait('panel', `d.querySelector('[data-testid="readiness-entry-R"]')`);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('li[data-testid="item-R"]')`);
+  await progressUi.expand('panel','R');
   check('Q6:unverified-binding-no-selected-claim', await guest('panel', `return !d.querySelector('[data-assignment="selected"]')`));
   await evaluate(`qa.binding={sourceId:'source-ready',verified:true};true`);
+  await wait('panel', `[...d.querySelectorAll('[data-testid="details"] dt')].find(n=>n.textContent==='Bound source')?.nextElementSibling?.textContent==='source-ready (verified)'`, 'verified binding observed', 12_000);
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('.ap-tasks[data-complete]')`);
+  await progressUi.expand('panel','R');
   await wait('panel', `d.querySelector('[data-assignment="selected"]')`, 'verified again', 12_000);
 
   // Disposal: pagehide stops the frame's reads.

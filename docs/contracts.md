@@ -731,6 +731,8 @@ Store/binding, progress revision or cleanup conflicts return 409/conflict; missi
 
 A reply is one observed snapshot, not a freshness promise after delivery. Consumers validate the entire identity, requested progress revision and cleanup generation, and only present a complete validated reply for their current reading identity. Capability absence, refused identity, partial/malformed replies and transport/store failures remain explicit unavailable/error states; they cannot be substituted with empty data or merged with another revision. Unsupported services receive no graph request. Refreshing metadata and issuing a new pinned request is distinct from accepting a stale reply.
 
+The dependency map (board Map tab and rail Plan view Map) pairs this graph with complete cached detail at the identical reading identity, progress revision, structural metadata and cleanup state, also checking common item fields and coverage/order. It never uses a failed detail prefix or merges a new header with an old graph. See [Dependency map → Snapshot and geometry](ui.md#snapshot-and-geometry) for frame-local retirement/retry and layout ownership. This adds no wire revision or backend behavior.
+
 ## Plan change digests (frozen additive read contract)
 
 See also the independent **Plan/task search revision 1** contract above. Search
@@ -1387,6 +1389,10 @@ is omitted without rewriting stored history. Absence means provenance unavailabl
 not absence of assignment; explicit links and older v2 writers have no such
 provenance. Current neutral writers carry only validated current provenance;
 explicit link replacement/unlink invalidates it, including a same-child relink.
+The dependency map uses this revision-current provenance for
+its verified assignment caption. Its separate live-session proof joins the bound
+child to a loaded verified run child under the existing run-read scope below;
+neither assignment nor a running session proves that a particular task is executing.
 An older writer's revision cannot certify inherited provenance. The base protocol
 and SQLite schema version remain 2. Existing detail pagination and source binding
 apply; list/history routes gain no discovery or authorization semantics.

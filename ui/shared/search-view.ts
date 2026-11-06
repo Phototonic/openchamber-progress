@@ -1,7 +1,9 @@
 // Board search DOM (docs/ui.md "Search"): the labelled form, explicit scope, chips, honest counts and
 // coverage, grouped results and explicit actions. Untrusted titles land through textContent only.
-import { mountSearchField, mountSelect, mountSpinner, type SelectOption } from '@openchamber/sdk/ui';
+import { mountSearchField, mountSpinner, type SelectOption } from '@openchamber/sdk/ui';
+import { mountLiveSelect } from './live-select.ts';
 import { button, el, emptyBlock, FAILURE_COPY, glyph, planLocation, testid, type Env } from './components.ts';
+import { icon } from './primitives.ts';
 import { plural } from './format.ts';
 import { LIFECYCLE_LABEL, STATUS_LABEL, type ItemStatus, type Lifecycle, type SearchHitView, type SearchPlanView, type SourceView } from './model.ts';
 import { ALL } from './scope.ts';
@@ -34,68 +36,158 @@ const STATUSES: ItemStatus[] = ['pending', 'working', 'blocked', 'done', 'skippe
 export const draftDiffers = (text: string, draft: SearchDraft, c: SearchCriteria | null) =>
   !!c && (text.trim() !== c.q.trim() || draft.lifecycle !== c.lifecycle || draft.status !== c.status || draft.source !== c.source);
 
+export interface BoardBarHooks {
+  /** Reject input from a synchronously retired board paint. */
+  current?: () => boolean;
+  /** Current plans / Archived plans, always visible beside the search field. */
+  modes: HTMLElement;
+  /** The search form's hooks; null when this service can't search (only the location filters remain). */
+  search: SearchFormHooks | null;
+  /** Project / worktree / session selects (immediate browse commit or search rerun), or null. */
+  locations: HTMLElement | null;
+  /** How many constraints the Filters panel holds now (drafts and locations), for its trigger. */
+  active: number;
+  /** The explicit scope line (search-scope), shown inside Filters with the help. */
+  scope: HTMLElement | null;
+  open: boolean;
+  /** Open or close the Filters panel; `focus`: where focus goes after the repaint. */
+  setOpen: (open: boolean, focus: 'trigger' | 'panel' | null) => void;
+}
+
+const HELP = 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).';
+
 /**
- * Labelled search form. Typing changes only the draft (no request, no repaint); Search or Enter in
- * the field submits, never during IME composition. No document-level key handling.
+ * The board bar (docs/ui.md Board search): Current / Archived, one labelled search field and a
+ * Filters trigger. Typing changes only the draft (no request, no repaint); Enter in the field
+ * submits, never during IME composition. No document-level key handling. Filters is a nonmodal
+ * dialog in normal Tab order after its trigger: plan and task status and recorded source (drafts
+ * until Search), the location selects (applied on choice), the help and the explicit scope, and
+ * Search. It stays in the document while closed (`hidden`), so the field keeps its description.
  */
-export function searchForm(h: SearchFormHooks) {
-  const form = testid(el('form', 'ap-search'), 'search-form');
-  form.setAttribute('role', 'search');
-  form.setAttribute('aria-label', 'Search plans and tasks');
-  form.noValidate = true;
-  form.addEventListener('submit', (event) => { event.preventDefault(); h.submit(); });
+export function boardBar(h: BoardBarHooks) {
+  const bar = el('div', 'ap-board-bar');
+  bar.append(h.modes);
+  const s = h.search;
+  const form = testid(el(s ? 'form' : 'div', 'ap-search'), s ? 'search-form' : 'board-filter-bar');
+  if (form instanceof HTMLFormElement && s) {
+    form.setAttribute('role', 'search');
+    form.setAttribute('aria-label', 'Search plans and tasks');
+    form.noValidate = true;
+    form.addEventListener('submit', (event) => { event.preventDefault(); s.submit(); });
+  }
   const row = el('div', 'ap-search-row');
-  const field = el('div', 'ap-search-field');
-  const label = el('label', 'ap-search-label', 'Search titles and IDs');
-  label.htmlFor = 'ap-search-q';
-  const holder = testid(el('div'), 'search-query');
-  mountSearchField(holder, { value: h.text(), label: 'Search titles and IDs', placeholder: 'Words from a plan or task title, or an ID', onChange: (q) => { h.setText(q); pending(); } });
-  const input = holder.querySelector('input');
-  if (input) {
-    input.id = 'ap-search-q';
-    // The frame's draft text is authoritative (Clear all empties it): no generic typed-field restore.
-    input.setAttribute('aria-describedby', 'ap-search-help');
-    input.maxLength = 1024;
-    input.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter') return;
-      // Enter commits an IME composition; it never submits then.
-      if (event.isComposing || event.keyCode === 229) return;
-      event.preventDefault();
-      h.submit();
-    });
+  let pending = () => {};
+  if (s) {
+    const field = el('div', 'ap-search-field');
+    // Named for assistive technology; the field's placeholder carries the same words visibly.
+    const label = el('label', 'ap-search-label ap-sr', 'Search titles and IDs');
+    label.htmlFor = 'ap-search-q';
+    const holder = testid(el('div'), 'search-query');
+    mountSearchField(holder, { value: s.text(), label: 'Search titles and IDs', placeholder: 'Search titles and IDs', onChange: (q) => { s.setText(q); pending(); } });
+    const input = holder.querySelector('input');
+    if (input) {
+      input.id = 'ap-search-q';
+      // The frame's draft text is authoritative (Clear all empties it): no generic typed-field restore.
+      input.setAttribute('aria-describedby', 'ap-search-help');
+      input.maxLength = 1024;
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        // Enter commits an IME composition; it never submits then.
+        if (event.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        s.submit();
+      });
+    }
+    field.append(label, holder);
+    row.append(field);
   }
-  field.append(label, holder);
-  const help = el('p', 'ap-note ap-search-help', 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).');
-  help.id = 'ap-search-help';
-  testid(help, 'search-help');
-  row.append(field);
-  const filters = el('div', 'ap-search-filters');
-  const pick = (id: string, name: string, value: string, options: SelectOption[], set: (v: string) => void) => {
-    const box = testid(el('div'), id);
-    mountSelect(box, { label: name, value, options, onChange: (v) => { set(v); } });
-    filters.append(box);
-  };
-  pick('search-lifecycle', 'Plan status', h.draft.lifecycle, [{ id: ALL, label: 'Any plan status' }, ...LIFECYCLES.map((l) => ({ id: l, label: LIFECYCLE_LABEL[l] }))], (v) => h.setDraft({ lifecycle: v as SearchDraft['lifecycle'] }));
-  pick('search-task-status', 'Task status', h.draft.status, [{ id: ALL, label: 'Any task status' }, ...STATUSES.map((s) => ({ id: s, label: STATUS_LABEL[s] }))], (v) => h.setDraft({ status: v as SearchDraft['status'] }));
-  if (h.sources.length > 1 || h.draft.source !== ALL) {
-    const known = h.sources.some((s) => s.id === h.draft.source);
-    pick('search-source', 'Recorded source', h.draft.source, [{ id: ALL, label: 'All recorded sources' }, ...h.sources.map((s) => ({ id: s.id, label: s.verified ? s.id : `${s.id} (unverified)` })), ...(known || h.draft.source === ALL ? [] : [{ id: h.draft.source, label: `${h.draft.source} (not available here)` }])], (v) => h.setDraft({ source: v }));
+  // The Filters owner holds trigger and panel together (the frame's live-popup seam).
+  const owner = el('div', 'ap-filters-owner');
+  owner.dataset.livePopup = '';
+  const trigger = testid(el('button', 'ap-filters-trigger'), 'board-filters-trigger');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-haspopup', 'dialog');
+  trigger.setAttribute('aria-expanded', String(h.open));
+  trigger.setAttribute('aria-controls', 'ap-board-filters');
+  trigger.append(icon('filter'), el('span', '', 'Filters'));
+  if (h.active) { const n = el('span', 'ap-filters-count', String(h.active)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
+  trigger.setAttribute('aria-label', h.active ? `Filters, ${h.active} active` : 'Filters');
+  trigger.addEventListener('click', () => {
+    // Outside pointer dismissal can hide this owner without rebuilding it, so
+    // the live expanded state, not this paint's captured `h.open`, is current.
+    const open = trigger.getAttribute('aria-expanded') !== 'true';
+    h.setOpen(open, open ? 'panel' : null);
+  });
+  const panel = testid(el('div', 'ap-filters-panel'), 'board-filters');
+  panel.id = 'ap-board-filters';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'false');
+  panel.setAttribute('aria-labelledby', 'ap-board-filters-h');
+  panel.hidden = !h.open;
+  const head = el('div', 'ap-filters-head');
+  const title = el('h2', 'ap-filters-h', 'Filters');
+  title.id = 'ap-board-filters-h';
+  title.tabIndex = -1;
+  head.append(title);
+  button(head, 'board-filters-close', 'Close', () => h.setOpen(false, 'trigger'), 'ghost');
+  panel.append(head);
+  const grid = el('div', 'ap-filters-grid');
+  if (s) {
+    const pick = (id: string, name: string, value: string, options: SelectOption[], set: (v: string) => void) => {
+      const box = testid(el('div'), id);
+      mountLiveSelect(box, { label: name, value, options, onChange: (v) => { set(v); } }, h.current);
+      grid.append(box);
+    };
+    pick('search-lifecycle', 'Plan status', s.draft.lifecycle, [{ id: ALL, label: 'Any plan status' }, ...LIFECYCLES.map((l) => ({ id: l, label: LIFECYCLE_LABEL[l] }))], (v) => s.setDraft({ lifecycle: v as SearchDraft['lifecycle'] }));
+    pick('search-task-status', 'Task status', s.draft.status, [{ id: ALL, label: 'Any task status' }, ...STATUSES.map((t) => ({ id: t, label: STATUS_LABEL[t] }))], (v) => s.setDraft({ status: v as SearchDraft['status'] }));
+    if (s.sources.length > 1 || s.draft.source !== ALL) {
+      const known = s.sources.some((x) => x.id === s.draft.source);
+      pick('search-source', 'Recorded source', s.draft.source, [{ id: ALL, label: 'All recorded sources' }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : `${x.id} (unverified)` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: `${s.draft.source} (not available here)` }])], (v) => s.setDraft({ source: v }));
+    }
   }
-  const submit = el('div', 'ap-search-submit');
-  button(submit, 'search-submit', 'Search', () => h.submit(), 'default');
-  filters.append(submit);
-  row.append(filters);
-  form.append(row, help);
-  if (h.problem) {
-    const p = testid(el('p', 'ap-doc-warn', h.problem), 'search-problem');
+  if (h.locations) grid.append(h.locations);
+  panel.append(grid);
+  if (s) {
+    const help = testid(el('p', 'ap-note ap-search-help', HELP), 'search-help');
+    help.id = 'ap-search-help';
+    panel.append(help);
+  }
+  if (h.scope) panel.append(h.scope);
+  if (s) {
+    const foot = el('div', 'ap-filters-foot');
+    foot.append(el('p', 'ap-note', 'Plan status, task status and source apply when you search. Location choices apply right away.'));
+    const submit = el('div', 'ap-search-submit');
+    button(submit, 'search-submit', 'Search', () => { s.submit(); }, 'default');
+    foot.append(submit);
+    panel.append(foot);
+  }
+  // Escape closes and returns to the trigger, unless a select inside used the key for its own popup.
+  panel.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); h.setOpen(false, 'trigger'); } });
+  // Focus moving to a control outside dismisses without taking focus back (an outside press is
+  // handled by the owner of the frame's single document listener).
+  owner.addEventListener('focusout', (event) => {
+    const next = (event as FocusEvent).relatedTarget;
+    if (h.open && next instanceof Node && !owner.contains(next)) h.setOpen(false, null);
+  });
+  owner.append(trigger, panel);
+  row.append(owner);
+  form.append(row);
+  bar.append(form);
+  const box = el('div', 'ap-board-bar-wrap');
+  box.append(bar);
+  if (s?.problem) {
+    const p = testid(el('p', 'ap-doc-warn', s.problem), 'search-problem');
     p.setAttribute('role', 'alert');
-    form.append(p);
+    box.append(p);
   }
-  const edit = testid(el('p', 'ap-note', 'Not searched yet: these results are for the previous search. Press Search to update them.'), 'search-pending-edit');
-  form.append(edit);
-  const pending = () => { edit.hidden = !draftDiffers(h.text(), h.draft, h.submitted); };
-  pending();
-  return form;
+  if (s) {
+    // Visible outside the closed Filters: the shown results are for an earlier search.
+    const edit = testid(el('p', 'ap-note', 'Not searched yet: these results are for the previous search. Press Search to update them.'), 'search-pending-edit');
+    box.append(edit);
+    pending = () => { edit.hidden = !draftDiffers(s.text(), s.draft, s.submitted); };
+    pending();
+  }
+  return box;
 }
 
 const sourceText = (c: Pick<SearchCriteria, 'source'>) => (c.source === ALL ? 'all recorded plans in this store' : `plans recorded by source ${c.source}`);

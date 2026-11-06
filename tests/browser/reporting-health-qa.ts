@@ -1,6 +1,7 @@
 // Current-bundle browser QA over real disposable stores. Synthetic SDK seams are explicit;
 // this does not certify a native host, screen reader, live profile or installed companion.
 // node --experimental-strip-types tests/browser/reporting-health-qa.ts <artifact-directory> [--built-service]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -29,8 +30,8 @@ try{
   const wait=async(condition:string,label:string)=>{const ok=await evaluate(`(async()=>{const end=performance.now()+20000;while(performance.now()<end){try{const w=frame('page').contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>setTimeout(r,25))}return false})()`);if(!ok)throw Error('Timed out: '+label);};
   const check=(id:string,pass:boolean,facts?:unknown)=>{results.push({id,pass,...(facts===undefined?{}:{facts})});if(!pass)throw Error('Failed: '+id);};
   const key=async(k:string)=>{const code:Record<string,number>={Enter:13,Tab:9,ArrowDown:40,ArrowUp:38,Escape:27,Home:36};await send('Input.dispatchKeyEvent',{type:'keyDown',key:k,code:k,windowsVirtualKeyCode:code[k]??0,...(k==='Enter'?{text:'\r'}:{})});await send('Input.dispatchKeyEvent',{type:'keyUp',key:k,code:k,windowsVirtualKeyCode:code[k]??0});};
-  const click=async(selector:string)=>{const xy=await evaluate(`(()=>{const f=frame('page'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)throw Error(${JSON.stringify('Missing control: '+selector)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(16,a.width/2),a.y+b.y+Math.min(10,a.height/2)]})()`);for(const type of ['mouseMoved','mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:xy[0],y:xy[1],button:'left',clickCount:1});};
-  const focus=async(selector:string)=>guest(`d.querySelector(${JSON.stringify(selector)}).focus();return true`);
+  const click=async(selector:string)=>{const xy=await evaluate(`(()=>{const f=frame('page'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error(${javascriptLiteral('Missing control: '+selector)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(16,a.width/2),a.y+b.y+Math.min(10,a.height/2)]})()`);for(const type of ['mouseMoved','mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:xy[0],y:xy[1],button:'left',clickCount:1});};
+  const focus=async(selector:string)=>guest(`d.querySelector(${javascriptLiteral(selector)}).focus();return true`);
   await send('Runtime.enable');await send('Page.enable');await send('Network.enable');await send('Emulation.setFocusEmulationEnabled',{enabled:true});
   await send('Page.navigate',{url:`http://127.0.0.1:${fx.port}/`});await wait(`!!d.querySelector('[data-testid="reporting-health-toggle"] button')`,'health control');await evaluate(`qa.show(['page'],1100);true`);
   await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="reporting-support-preview"]')`,'observations');
@@ -64,8 +65,8 @@ try{
     const before=await evaluate(health);
     await evaluate(`qa.fail=[${entry}];true`);
     if(await guest(`return !!d.querySelector('[data-testid="stale-banner"] button')`))await click('[data-testid="stale-banner"] button');
-    await wait(`${health}>${before}&&!!d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('[data-testid="stale-banner"]').textContent.includes(${JSON.stringify(copy)})`,'outage '+label);
-    check('outage-'+label,await guest(`const b=d.querySelector('[data-testid="stale-banner"]');return !!b&&b.textContent.includes(${JSON.stringify(copy)})&&!b.textContent.includes(${JSON.stringify(other)})&&!!d.querySelector('article[data-testid^="plan-"]')`));
+    await wait(`${health}>${before}&&!!d.querySelector('[data-testid="stale-banner"]')&&d.querySelector('[data-testid="stale-banner"]').textContent.includes(${javascriptLiteral(copy)})`,'outage '+label);
+    check('outage-'+label,await guest(`const b=d.querySelector('[data-testid="stale-banner"]');return !!b&&b.textContent.includes(${javascriptLiteral(copy)})&&!b.textContent.includes(${javascriptLiteral(other)})&&!!d.querySelector('article[data-testid^="plan-"]')`));
   };
   await outage(`{path:'/health',reject:true}`,'no-service-not-responding',false);
   const outageClip=await evaluate(`(()=>{const f=frame('page'),n=f.contentDocument.querySelector('[data-testid="stale-banner"]');if(!n)return null;const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return {x:Math.floor(window.scrollX+b.left+a.left),y:Math.floor(window.scrollY+b.top+a.top),width:Math.ceil(a.width),height:Math.ceil(a.height),scale:1}})()`);

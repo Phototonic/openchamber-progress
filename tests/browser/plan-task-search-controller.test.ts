@@ -28,7 +28,7 @@ const APP = ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', im
 type Ui = { selected: string | null; archived: boolean; search: { key: string; criteria: SearchCriteria } | null };
 const criteria = (patch: Partial<SearchCriteria> = {}): SearchCriteria => ({ q: '', source: ALL, lifecycle: ALL, status: ALL, project: ALL, worktree: ALL, session: ALL, archived: false, labels: {}, ...patch });
 
-function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') {
+function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', preReady = false) {
   const listeners: Record<string, (v?: any) => void> = {};
   const docListeners: Record<string, () => void> = {};
   class Node {
@@ -54,6 +54,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
   const copies: string[] = [];
   const exports: any = {};
   runInNewContext(APP, {
+    AbortController,
     exports, document, navigator: { clipboard: { writeText: async (text: string) => { copies.push(text); } } }, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     require: (name: string) => {
@@ -66,7 +67,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
       if (name === './path.ts') return path;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
@@ -74,6 +75,8 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
   });
   let vc!: ViewContext<Ui>;
   let paints = 0;
+  let refreshes = 0;
+  let contexts = 0;
   /** As the board: the three plans opened before the selection keep their part caches. */
   let recent: string[] = [];
   const search = new SearchController({ service: (current) => vc.service(current), changed: () => vc?.updateUi(() => ({})), visible: () => document.visibilityState !== 'hidden' });
@@ -84,6 +87,8 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
     initialUi: () => ({ selected: null, archived: false, search: null }),
     scope: (_c, ui) => ({ archived: ui.archived ? 'only' : 'exclude' }),
     wantProjects: () => [],
+    refreshed: () => { refreshes++; },
+    onContext: () => { contexts++; },
     reading: (c) => c.ui.selected ? { plan: c.ui.selected, scope: 'board-search' } : null,
     wantDetails: (c) => { const r = search.selectedPlan(); return active(c) && r && r.key === c.ui.selected ? [r] : []; },
     actionPlan: (c) => { const r = search.selectedPlan(); return r && active(c) ? c.detailPlan(r) : null; },
@@ -99,10 +104,10 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
   };
   exports.startView(spec);
   const ready = () => listeners.ready({ session: null, directory: null, connection: { connected: true, account }, locale: 'en', surface, settings: {}, item: null, theme: {}, features: { deviceStorage: true } });
-  ready();
+  if (!preReady) ready();
   let n = 0;
   return {
-    search, copies, get vc() { return vc; }, get paints() { return paints; },
+    search, copies, ready, get vc() { return vc; }, get paints() { return paints; }, get refreshes() { return refreshes; }, get contexts() { return contexts; },
     loaded: () => until(() => !!vc?.read, 'list read'),
     submit: async (patch: Partial<SearchCriteria>) => {
       const c = criteria({ archived: vc.ui.archived, ...patch });
@@ -121,6 +126,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page') 
     poll: async () => { vc.retry(); await settle(); },
     hide: () => { document.visibilityState = 'hidden'; docListeners.visibilitychange(); },
     show: () => { document.visibilityState = 'visible'; docListeners.visibilitychange(); },
+    navigate: () => { listeners.session({ id: 'session-before-ready' }); listeners.directory('/workspace/example'); },
     stop: () => listeners.pagehide(),
     account: (next: string) => { account = next; ready(); },
   };
@@ -132,6 +138,43 @@ async function withBackend(library: boolean, body: (b: Backend, svc: SearchProxy
   try { await body(b, searchProxy(b)); } finally { await b.stop(); }
 }
 const since = (svc: SearchProxy, mark: number) => svc.log.slice(mark).map((l) => l.path);
+
+test('visibility refresh before host ready does not construct a context or notify consumers', async () => {
+  await withBackend(false, async (_b, svc) => {
+    const c = frame(svc, 'page', true);
+    try {
+      c.hide(); c.show();
+      await settle();
+      assert.equal(svc.log.length, 0, 'visibility cannot read before host authority is ready');
+      assert.equal(c.refreshes, 0);
+      c.ready(); await c.loaded();
+      assert.ok(c.vc.ctx);
+    } finally { c.stop(); }
+  });
+});
+
+test('session and directory events before ready cannot construct consumer context', async () => {
+  await withBackend(false, async (_b, svc) => {
+    for (const surface of ['page', 'panel', 'status'] as const) {
+      const a = frame(svc, surface, true);
+      try {
+        const mark = svc.log.length;
+        a.hide(); a.show(); a.navigate(); a.hide(); a.show();
+        await settle();
+        assert.equal(svc.log.length, mark);
+        assert.equal(a.paints, 0);
+        assert.equal(a.refreshes, 0);
+        assert.equal(a.contexts, 0);
+        a.ready(); await a.loaded();
+        assert.equal(a.vc.ctx.locale, 'en');
+        assert.equal(a.vc.session, null, 'ready snapshot supersedes pre-ready session events');
+        assert.equal(a.vc.directory, null, 'ready snapshot supersedes pre-ready directory events');
+        assert.ok(a.contexts > 0);
+        assert.ok(a.refreshes > 0);
+      } finally { a.stop(); }
+    }
+  });
+});
 
 test('while results are shown the poll revalidates them instead of the list; deletion beyond plan 500 converges', async () => {
   await withBackend(true, async (b, svc) => {

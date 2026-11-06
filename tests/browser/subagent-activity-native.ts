@@ -1,4 +1,5 @@
 /** Real disposable host, production guests and actual SDK ancestry. No injected host records. */
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { startActivityHost } from './subagent-activity-host.ts';
@@ -22,7 +23,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
   const sanitize = (r: ReturnType<typeof rosterSnapshot>) => ({ summary: r.summary, clutter: r.clutter, clutterMatch: r.clutterMatch, canary: r.canary, overflow: r.overflow, rows: r.rows.map(x => ({ ...x, session: roleOf(x.session) })) });
   const census = '[data-testid="subagent-activity"]';
   const row = (id: string) => `${census} [data-session="${id}"]`;
-  const snapshot = (frame: string) => evaluate(`(${rosterSnapshot.toString()})(${JSON.stringify(ids)})`, frame) as Promise<ReturnType<typeof rosterSnapshot>>;
+  const snapshot = (frame: string) => evaluate(`(${rosterSnapshot.toString()})(${javascriptLiteral(ids)})`, frame) as Promise<ReturnType<typeof rosterSnapshot>>;
   /** Q-N1 browser expectations on one surface with plan-alpha in scope for A. */
   const assertRoster = (r: ReturnType<typeof rosterSnapshot>, surface: string, cap: number) => {
     evidence.lastRoster = { surface, ...sanitize(r) };
@@ -67,9 +68,9 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       evidence.screenshotAttempt = attempt;
       await send('Page.bringToFront');
       attempt.phase = 'scroll';
-      await evaluate(`document.querySelector(${JSON.stringify(target)}).scrollIntoView({block:'center',behavior:'instant'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
+      await evaluate(`document.querySelector(${javascriptLiteral(target)}).scrollIntoView({block:'center',behavior:'instant'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
       const href = await evaluate('location.href', frame);
-      await evaluate(`document.querySelectorAll('iframe').forEach(f=>{if(f.src===${JSON.stringify(href)})f.scrollIntoView({block:'center',behavior:'instant'})})`);
+      await evaluate(`document.querySelectorAll('iframe').forEach(f=>{if(f.src===${javascriptLiteral(href)})f.scrollIntoView({block:'center',behavior:'instant'})})`);
       attempt.phase = 'state-and-paint';
       // Same bounded wait as every other state (host wait default); a frame that never fits becomes
       // an explicit "partial capture" failure instead of a clipped screenshot or a vague timeout.
@@ -77,8 +78,8 @@ export async function nativeProductionViews(root: string, env: Record<string, st
         // After foregrounding/scrolling, require both renderer turns to paint.
         await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
         await evaluate(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`, frame);
-        const outer = await evaluate(`(${screenshotFrame.toString()})(${JSON.stringify(href)})`);
-        const inner = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(target)},${JSON.stringify(observation)})`, frame);
+        const outer = await evaluate(`(${screenshotFrame.toString()})(${javascriptLiteral(href)})`);
+        const inner = await evaluate(`(${screenshotSection.toString()})(${javascriptLiteral(target)},${javascriptLiteral(observation)})`, frame);
         const sx = outer.width / outer.clientWidth, sy = outer.height / outer.clientHeight;
         const clip = { x: Math.max(0, outer.x + inner.x * sx), y: Math.max(0, outer.y + inner.y * sy), width: inner.width * sx, height: Math.min(inner.height * sy, outer.height - Math.max(0, inner.y * sy)), scale: 1 };
         const ready = outer.ready && inner.ready && clip.width > 0 && clip.height > 0 && Number.isFinite(clip.width) && Number.isFinite(clip.height);
@@ -104,7 +105,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
         attempt.captureMs = Math.round(performance.now() - captureStarted);
         attempt.failure = 'cdp-capture';
         attempt.hostAtFailure = await evaluate(`({visible:document.visibilityState==='visible',focused:document.hasFocus(),frames:document.querySelectorAll('iframe').length,animating:document.getAnimations().filter(a=>a.playState==='running').length})`).catch(() => ({ unavailable: true }));
-        attempt.sectionAtFailure = await evaluate(`(${screenshotSection.toString()})(${JSON.stringify(target)},${JSON.stringify(observation)})`, frame).catch(() => ({ unavailable: true }));
+        attempt.sectionAtFailure = await evaluate(`(${screenshotSection.toString()})(${javascriptLiteral(target)},${javascriptLiteral(observation)})`, frame).catch(() => ({ unavailable: true }));
         throw error;
       }
       attempt.captureMs = Math.round(performance.now() - captureStarted);
@@ -122,7 +123,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     const status = await guestFrame('status');
     const statusRoster = await readyRosterSnapshot(host.controls, status, ids);
     assertRoster(statusRoster, 'status', 3);
-    assert.ok(!await evaluate(`!!document.querySelector('[data-testid="subagent-about"]')`, status), 'status: no records disclosure on the compact card');
+    assert.ok(!await evaluate(`!!document.querySelector('[aria-label="About sub-agent records"]')`, status), 'status: no expanded records info on the compact card');
     evidence.statusRoster = sanitize(statusRoster);
     await shot(status, 'native-status-roster');
     evidence.status = { roster: true };
@@ -157,14 +158,14 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     evidence.pageRoster = sanitize(pageRoster);
     // Passive allowlisted SDK metadata only, to prove a real same-subscription reload happened
     // while the child kept running, and that nothing but host activity changed its word.
-    await evaluate(`(()=>{const trace=[],subs=new Map();window.__u4ObservationTrace=trace;addEventListener('message',e=>{if(e.source!==parent)return;const m=e.data;if(!m||!['workspace','ready','session','directory'].includes(m.type))return;const p=m.payload,s=p?.snapshot,r=s?.sessions?.find(r=>r.id===${JSON.stringify(ids.bound)});const key=p?.subscriptionId;if(key&&!subs.has(key))subs.set(key,subs.size+1);trace.push({at:Math.round(performance.now()),type:m.type,kind:s?.kind,state:s?.state,subscription:key?subs.get(key):undefined,coverage:s?.coverage?.map(c=>c.state),bound:r?{activity:r.activity,outcome:r.outcome}:undefined});if(trace.length>200)trace.shift()});return true})()`, page);
+    await evaluate(`(()=>{const trace=[],subs=new Map();window.__u4ObservationTrace=trace;addEventListener('message',e=>{if(e.source!==parent)return;const m=e.data;if(!m||!['workspace','ready','session','directory'].includes(m.type))return;const p=m.payload,s=p?.snapshot,r=s?.sessions?.find(r=>r.id===${javascriptLiteral(ids.bound)});const key=p?.subscriptionId;if(key&&!subs.has(key))subs.set(key,subs.size+1);trace.push({at:Math.round(performance.now()),type:m.type,kind:s?.kind,state:s?.state,subscription:key?subs.get(key):undefined,coverage:s?.coverage?.map(c=>c.state),bound:r?{activity:r.activity,outcome:r.outcome}:undefined});if(trace.length>200)trace.shift()});return true})()`, page);
     await shot(page, 'native-page-roster');
     evidence.page = { roster: true, planRoot: true };
     evidence.stage = 'steady-running';
     const boundNow = `${row(ids.bound)}[data-now="active"]`;
     try {
       await activity.start();
-      assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(boundNow)}))`, page), 30000), 'a real native turn shows the linked child running again');
+      assert.ok(await wait(() => evaluate(`Boolean(document.querySelector(${javascriptLiteral(boundNow)}))`, page), 30000), 'a real native turn shows the linked child running again');
       const started = await evaluate('performance.now()', page);
       await shot(page, 'native-running-again', boundNow);
       // Sample until the host itself reports something else. While the latest host value for the
@@ -174,7 +175,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
       const samples: { elapsedMs: number; running: boolean; hostRunning: boolean; ran: string | null; accepted: boolean }[] = [];
       for (;;) {
         await new Promise(r => setTimeout(r, 500));
-        const s = await evaluate(`(()=>{const rows=[...document.querySelectorAll(${JSON.stringify(row(ids.bound))})],live=rows.find(r=>r.dataset.now==='active'),latest=rows.find(r=>r.querySelector('[data-fact="accepted"]'));const t=(window.__u4ObservationTrace||[]).filter(e=>e.kind==='sessions'&&e.state==='ready'&&e.bound);return {elapsedMs:Math.round(performance.now()-${started}),running:!!live,hostRunning:t.at(-1)?.bound.activity==='running',ran:latest?.dataset.ran??null,accepted:!!latest}})()`, page);
+        const s = await evaluate(`(()=>{const rows=[...document.querySelectorAll(${javascriptLiteral(row(ids.bound))})],live=rows.find(r=>r.dataset.now==='active'),latest=rows.find(r=>r.querySelector('[data-fact="accepted"]'));const t=(window.__u4ObservationTrace||[]).filter(e=>e.kind==='sessions'&&e.state==='ready'&&e.bound);return {elapsedMs:Math.round(performance.now()-${started}),running:!!live,hostRunning:t.at(-1)?.bound.activity==='running',ran:latest?.dataset.ran??null,accepted:!!latest}})()`, page);
         samples.push(s);
         if (!s.hostRunning) break;
         assert.ok(s.running, `still running at ${s.elapsedMs} ms while the host still reports running`);
@@ -190,7 +191,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     evidence.stage = 'host-change';
     // A genuine host change (the turn ends) updates the word promptly; nothing else moves.
     const idleAt = await evaluate('performance.now()', page);
-    assert.ok(await wait(() => evaluate(`!document.querySelector(${JSON.stringify(boundNow)})`, page), 5000), 'host idle removes the running-again word promptly');
+    assert.ok(await wait(() => evaluate(`!document.querySelector(${javascriptLiteral(boundNow)})`, page), 5000), 'host idle removes the running-again word promptly');
     evidence.hostChangeLatencyMs = Math.round(await evaluate('performance.now()', page) - idleAt);
     const after = await readyRosterSnapshot(host.controls, page, ids);
     assertRoster(after, 'page after the turn ended', 10);
@@ -203,7 +204,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     // Other failures: the harness's own fixed message only (allowlist), else a generic code.
     else evidence.runtimeFailure = runtimeFailure(error);
     for (const f of frames) { const t = await evaluate('window.__u4ObservationTrace??null', f).catch(() => null); if (t) evidence.observationTrace = t; }
-    for (const f of frames) evidence.boundRows = await evaluate(`[...document.querySelectorAll(${JSON.stringify(`[data-testid="subagent-activity"] [data-session="${ids.bound}"]`)})].map(r=>({ran:r.dataset.ran,now:r.dataset.now??null,featured:!r.closest('[data-testid="observed-more"]')}))`, f).then((v: any) => [...(evidence.boundRows ?? []), { surface: 'frame', rows: v }]).catch(() => evidence.boundRows);
+    for (const f of frames) evidence.boundRows = await evaluate(`[...document.querySelectorAll(${javascriptLiteral(`[data-testid="subagent-activity"] [data-session="${ids.bound}"]`)})].map(r=>({ran:r.dataset.ran,now:r.dataset.now??null,featured:!r.closest('[data-testid="observed-more"]')}))`, f).then((v: any) => [...(evidence.boundRows ?? []), { surface: 'frame', rows: v }]).catch(() => evidence.boundRows);
     throw error;
   } finally {
     evidence.hostControls = await evaluate(`({surfaces:[...document.querySelectorAll('[data-context-surface]')].map(n=>n.getAttribute('data-context-surface')),buttons:[...document.querySelectorAll('button')].map(b=>({title:b.title,aria:b.getAttribute('aria-label'),text:b.textContent?.trim().slice(0,60)})).filter(b=>/status|progress|activity|new session|draft/i.test(b.title+' '+b.aria+' '+b.text))})`).catch(() => null);

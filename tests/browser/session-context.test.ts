@@ -29,15 +29,18 @@ type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
-  let expanded = false, disclosure = false;
+  const infoPaints: { kind: string; root?: object }[] = [];
+  let expanded = false, disclosure = false, livePopup = false;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
     querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
-    querySelectorAll: () => [], getAnimations: () => [], setAttribute() {}, append() {},
-    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = false; },
+    querySelectorAll: (s: string) => s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
+      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : [],
+    getAnimations: () => [], setAttribute() {}, append() {},
+    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = livePopup = false; },
   });
   const mount = node();
   const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
-    getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {}, scrollingElement: { scrollTop: 0 } };
+    getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(name: string, fn: any) { listeners[`document:${name}`] = fn; }, scrollingElement: { scrollTop: 0 } };
   let handler = async (q: GuestRequest): Promise<GuestRequestResult> => {
     if (q.path === '/health') return response({ ...HEALTH, planCleanup: 1 });
     if (q.path === '/v1/setup') return response(setupRead());
@@ -53,7 +56,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
-    queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
+    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
@@ -63,7 +66,11 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {},
+        retireReadingUi() { infoPaints.push({ kind: 'retire' }); },
+        beginInfoPaint(root: object) { infoPaints.push({ kind: 'begin', root }); },
+        commitInfoPaint(root: object) { assert.equal(mount.firstElementChild, root, 'dispose previous handles after root replacement'); infoPaints.push({ kind: 'commit', root }); },
+      };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
@@ -71,6 +78,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   });
   let vc!: ViewContext<Ui>;
   const paints: Array<string | null> = [];
+  const contexts: Array<{ session: string | null; identity: string; hasRead: boolean }> = [];
   const spec: ViewSpec<Ui> = {
     beforeUiChange,
     surface: board ? 'page' : 'panel', maxSessionSubscriptions: 2,
@@ -78,15 +86,40 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     scope: ({ session, directory }, ui) => board ? { ...pageListScope({ ...NO_FILTERS, session: ui.sessionFilter }), archived: ui.archived ? 'only' : 'exclude' } : contextListScope(session?.id, directory),
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
-    paint: (_root, value) => { vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
+    onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
+    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
   };
   exports.startView(spec);
-  return { requests, paints, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, infoPaints, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+    openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
   };
 }
+
+test('background paints preserve a pressed control until release; authority changes still retire immediately', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    const target = { closest: () => ({}), isConnected: true, setPointerCapture() {} };
+    c.listeners['document:pointerdown']({ button: 0, target });
+    const before = c.paints.length;
+    c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ error: 'unavailable' }, 503) : next());
+    c.vc.retry(); await settle();
+    assert.equal(c.paints.length, before, 'background read cannot replace the pressed target');
+    c.listeners['document:pointerup'](); await settle();
+    assert.ok(c.paints.length > before, 'release resumes the pending paint');
+    c.listeners['document:pointerdown']({ button: 0, target: { closest: (selector: string) => selector === '#root' ? {} : null, isConnected: true } });
+    const beforeDrag = c.paints.length;
+    c.intercept(async (q, next) => q.path === '/v1/plans' ? response(plansPage([row])) : next());
+    c.vc.retry(); await settle();
+    assert.ok(c.paints.length > beforeDrag, 'non-control drags do not defer live map paints');
+    c.listeners['document:pointerdown']({ button: 0, target });
+    c.ready(null); await settle();
+    assert.equal(c.vc.session, null, 'authority retirement is not deferred by a held pointer');
+  } finally { c.stop(); }
+});
 
 test('sidebar null/undefined never falls back to directory; board {} and contributors stay intact', async () => {
   for (const id of [null, undefined, '']) for (const directory of [null, '/fixture/Alpha', 'C:\\fixture\\Alpha']) {
@@ -104,6 +137,18 @@ test('sidebar null/undefined never falls back to directory; board {} and contrib
   const calls: GuestRequest[] = [];
   const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(HEALTH); } }, null);
   assert.equal(result.ok && result.read, null); assert.deepEqual(calls.map(q => q.path), ['/health']);
+});
+
+test('initial store identity adoption notifies context consumers before a later session switch', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    assert.ok(c.vc.identity);
+    assert.ok(c.contexts.some(v => v.session === 'A' && v.identity === c.vc.identity && v.hasRead), 'the rail must learn the store authority before the user can choose a plan');
+    const count = c.contexts.length;
+    c.vc.retry(); await settle();
+    assert.equal(c.contexts.length, count, 'unchanged polls do not repeat the identity transition');
+  } finally { c.stop(); }
 });
 
 test('actual controller: full ready A → null → B retires held list and open picker, then accepts later ready A', async () => {
@@ -150,6 +195,64 @@ test('an expanded disclosure does not indefinitely defer background reports',asy
     c.listeners.session({id:'A',title:'Updated while comparison is open'});await settle();
     assert(c.paints.length>before);assert.equal(c.vc.session?.title,'Updated while comparison is open');
   }finally{c.stop();}
+});
+
+test('live Filters and its nested select cannot defer capture-off or read-error paints', async () => {
+  for (const nestedSelect of [false, true]) {
+    const c = controller(true);
+    try {
+      c.ready('A'); await settle();
+      c.openLivePopup(nestedSelect);
+      const before = c.paints.length;
+      c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ ...plansPage([row]), captureEnabled: false }) : next());
+      c.vc.retry(); await settle();
+      assert.ok(c.paints.length > before, 'capture update paints with the popup open');
+      assert.equal(c.vc.read?.captureEnabled, false);
+      c.openLivePopup(nestedSelect);
+      const beforeError = c.paints.length;
+      c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ error: 'unavailable' }, 503) : next());
+      c.vc.retry(); await settle();
+      assert.ok(c.paints.length > beforeError, 'a concrete failure cannot remain hidden behind the popup');
+      assert.ok(c.vc.failure);
+    } finally { c.stop(); }
+  }
+});
+
+test('live popup retirement accepts the new authority and rejects a held old reply', async () => {
+  const c = controller(true), held = deferred<GuestRequestResult>();
+  try {
+    c.ready('A'); await settle();
+    const original = c.vc.identity;
+    let holding = true;
+    c.intercept((q, next) => q.path === '/v1/plans' && holding ? (holding = false, held.promise) : next());
+    c.openLivePopup(true); c.vc.retry(); await settle();
+    c.ready('B', '/fixture/Other', 'another-account'); await settle();
+    const paints = c.paints.length;
+    assert.equal(c.vc.ctx.connection?.account, 'another-account');
+    assert.equal(c.pickerOpen, false, 'authority change replaces the old popup before its reply');
+    held.resolve(response({ ...plansPage([row]), storeId: 'retired-store', captureEnabled: false })); await settle();
+    assert.equal(c.vc.identity, original, 'same store authority remains current under the new account');
+    assert.notEqual(c.vc.read?.storeId, 'retired-store');
+    assert.equal(c.vc.read?.captureEnabled, true);
+    assert.equal(c.paints.length, paints, 'retired reply does not create a stale paint');
+  } finally { held.resolve(response(plansPage([row]))); c.stop(); }
+});
+
+test('a live Filters popup cannot keep a cleanup confirmation or its callback alive across authority change', async () => {
+  const c = controller(true);
+  try {
+    c.ready('A'); await settle();
+    c.vc.requestDelete(plan); await settle();
+    const confirmation = c.vc;
+    assert.ok(confirmation.cleanup.target);
+    c.openLivePopup(true);
+    c.ready('A', '/fixture/Alpha', 'replacement-account');
+    const mark = c.requests.length;
+    confirmation.confirmDelete(); // synchronous retirement, before another paint
+    await settle();
+    assert.equal(c.vc.cleanup.target, null);
+    assert.equal(c.requests.slice(mark).some(q => q.method === 'POST'), false);
+  } finally { c.stop(); }
 });
 
 test('view-owned requests retire on effective UI transitions before a held reply or repaint',async()=>{

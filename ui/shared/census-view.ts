@@ -3,7 +3,8 @@
 // reported) and Accepted (task status explicitly reported in this plan). A section exists only with
 // a plan in scope and something useful to show. Words and shapes carry each state; colour only
 // reinforces it. No label here expires: the frame ticker only moves time text.
-import { age, el, testid, type Env } from './components.ts';
+import { age, el, info, testid, type Env } from './components.ts';
+import { icon, warningLine } from './primitives.ts';
 import { elapsedText, plural } from './format.ts';
 import { STATUS_LABEL } from './model.ts';
 import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
@@ -86,49 +87,53 @@ function openButton(e: SubagentEntry, env: Env) {
   return b;
 }
 
-function rowNode(e: SubagentEntry, env: Env, compact: boolean, withOpen = !compact) {
-  const li = testid(el('li', 'ap-obs-row'), `subagent-row-${e.key}`);
+/**
+ * Rail and board: one line per sub-agent (state, title, agent, real time) that expands in place to
+ * every recorded fact (Ran / Claimed / Accepted, lineage, source, a verified Open).
+ */
+function expandRow(e: SubagentEntry, env: Env, agent = true) {
+  const li = testid(el('li', 'ap-obs-row ap-obs-xrow'), `subagent-row-${e.key}`);
   li.dataset.role = 'child';
   li.dataset.depth = String(e.depth);
   if (e.runId) li.dataset.run = e.runId;
   if (e.sessionId) li.dataset.session = e.sessionId;
   li.dataset.ran = e.ran.kind;
   if (e.now) li.dataset.now = e.now.kind;
-  if (compact) li.dataset.compact = '';
   li.style.setProperty('--depth', String(Math.min(e.depth, 6)));
   li.setAttribute('aria-level', String(e.depth));
-  const head = el('div', 'ap-obs-head');
+  const d = testid(el('details', 'ap-obs-x'), `subagent-toggle-${e.key}`);
+  const summary = el('summary', 'ap-obs-line');
   const title = el('span', 'ap-obs-title', e.title);
-  title.title = e.title;
-  head.append(title);
-  if (e.parentTitle) head.append(el('span', 'ap-sr', `, started by ${e.parentTitle}`));
-  // Work Status keeps one line per row; elsewhere a compact row gives the title its own line.
-  const oneLine = compact && !withOpen;
-  // A finished run whose child is working again leads with that current word on one-line rows.
-  if (oneLine) head.append(e.now ? nowNode(e.now, true) : ranNode(e.ran, env, true));
-  if (withOpen) { const b = openButton(e, env); if (b) head.append(b); }
-  li.append(head);
-  const meta = [e.agent, e.historical ? 'from session history' : null, e.duringPlan ? 'dispatched during this plan' : null].filter((x): x is string => !!x);
-  if (compact) {
-    const line = el('div', 'ap-obs-sub');
-    if (!oneLine) { const r = ranNode(e.ran, env, true); r.dataset.fact = 'ran'; line.append(r); if (e.now) line.append(nowNode(e.now, true)); }
-    if (e.claimed) { const c = claimNode(e.claimed, env, true); c.dataset.fact = 'claimed'; line.append(c); }
-    if (e.accepted) { const a = el('span', 'ap-obs-assign', acceptedText(e.accepted, true)); a.dataset.fact = 'accepted'; line.append(a); }
-    if (line.childElementCount) li.append(line);
-    return li;
-  }
-  if (meta.length) li.append(el('div', 'ap-obs-meta', meta.join(' · ')));
+  summary.append(title);
+  if (e.parentTitle) summary.append(el('span', 'ap-sr', `, started by ${e.parentTitle}`));
+  // Agent, state words with real time, and the chevron wrap together under a long title.
+  const end = el('span', 'ap-obs-end');
+  // Work Status keeps the agent in the expanded facts only, so a running row fits one line.
+  if (e.agent && agent) end.append(el('span', 'ap-obs-agent', e.agent));
+  end.append(e.now ? nowNode(e.now, true) : ranNode(e.ran, env, true), icon('chevron-down'));
+  summary.append(end);
+  d.append(summary);
+  const body = el('div', 'ap-obs-body');
+  const meta = [e.agent, e.historical ? 'from session history' : null, e.duringPlan ? 'dispatched during this plan' : null, e.parentTitle ? `started by ${e.parentTitle}` : null].filter((x): x is string => !!x);
+  if (meta.length) body.append(el('div', 'ap-obs-meta', meta.join(' · ')));
   const facts = el('dl', 'ap-obs-facts');
-  const add = (term: string, value: Node, hook: string) => { const d = el('div'); d.dataset.fact = hook; d.append(el('dt', '', term)); const dd = el('dd'); dd.append(value); d.append(dd); facts.append(d); };
+  const add = (term: string, value: Node, hook: string) => { const f = el('div'); f.dataset.fact = hook; f.append(el('dt', '', term)); const dd = el('dd'); dd.append(value); f.append(dd); facts.append(f); };
   const ran = el('span', 'ap-ran');
   ran.append(ranNode(e.ran, env, false));
   if (e.now) ran.append(el('br'), nowNode(e.now, false));
   add('Ran', ran, 'ran');
   if (e.claimed) add('Claimed', claimNode(e.claimed, env, false), 'claimed');
   if (e.accepted) add('Accepted', el('span', 'ap-obs-assign', acceptedText(e.accepted, false)), 'accepted');
-  li.append(facts);
+  body.append(facts);
+  const open = openButton(e, env);
+  if (open) body.append(open);
+  d.append(body);
+  li.append(d);
   return li;
 }
+
+/** Running now, from the host (including a finished run's child running again); everything else folds. */
+const running = (e: SubagentEntry) => e.now ? e.now.kind === 'active' : e.ran.kind === 'active';
 
 const NOTE: Record<RosterNote['kind'], string> = {
   'runs-unavailable': 'Run records aren’t available from this progress service, so only sub-agents OpenChamber lists now are shown.',
@@ -206,54 +211,90 @@ export function earlierPager(r: Pick<Roster, 'earlier' | 'earlierTotal' | 'canPa
   return runs.paging ? 'Loading…' : left > 0 ? `Show ${Math.min(step, left)} more` : 'Show more';
 }
 
-function earlierNode(r: Roster, v: SubagentsView, compact: boolean) {
-  if (!r.earlierTotal) return null;
+/**
+ * Rail and board: every record that is not running now, folded under one summary line. Waiting,
+ * failed, interrupted, finished, idle and unknown keep their own words; the existing pager reads on.
+ */
+function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent = true) {
   const step = EARLIER_STEP[v.surface];
   const visible = Math.max(step, v.runs?.shown ?? 0);
-  const more = testid(el('details', 'ap-obs-more'), 'observed-more');
-  more.append(el('summary', '', `${r.featured.length ? 'Earlier sub-agents' : 'Sub-agents'} · ${r.earlierTotal}`));
-  const list = el('ul', 'ap-obs-list');
-  list.setAttribute('aria-label', 'Earlier sub-agents');
-  for (const e of r.earlier.slice(0, visible)) list.append(rowNode(e, v.env, true, !compact));
-  if (list.childElementCount) more.append(list);
+  const total = rest.length + r.earlierTotal;
   const runs = v.runs;
-  const loaded = r.earlier.length;
   const label = earlierPager(r, runs, visible, step);
+  if (!total && !label) return null;
+  const more = testid(el('details', 'ap-obs-more'), 'observed-more');
+  more.append(el('summary', '', `${r.featured.some(running) ? 'Other records' : 'Sub-agent records'} · ${total}`));
+  const list = el('ul', 'ap-obs-list');
+  list.setAttribute('aria-label', 'Other sub-agent records');
+  for (const e of [...rest, ...r.earlier.slice(0, visible)]) list.append(expandRow(e, v.env, agent));
+  if (list.childElementCount) more.append(list);
   if (runs && label) {
     const b = testid(el('button', 'ap-link ap-sub-page', label), 'subagent-more');
     b.type = 'button';
     // Not `disabled`: a disabled button drops keyboard focus mid-read. The controller ignores repeats.
     if (runs.paging) b.setAttribute('aria-disabled', 'true');
+    const loaded = r.earlier.length;
     b.addEventListener('click', () => { if (!runs.paging) runs.showMore(Math.min(visible, loaded), loaded, step); });
     more.append(b);
   }
   if (runs?.pageError) more.append(el('p', 'ap-note', 'More rows couldn’t be read. Try again in a moment.'));
-  if (compact && !list.childElementCount && !r.canPage) return null;
   return more;
 }
+
+/** Rail and board: the concrete coverage states as visible compact lines (generic prose is behind ⓘ). */
+function coverageNode(r: Roster, runs: RunsPanel | null) {
+  if (!r.notes.length) return null;
+  const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
+  list.dataset.notes = r.notes.map((n) => n.kind).join(' ');
+  for (const n of r.notes) {
+    const li = el('li');
+    li.append(warningLine(NOTE[n.kind], n.kind === 'history-loading' || n.kind === 'capture-off' || n.kind === 'history-off' ? 'info' : 'warning', 'span'));
+    if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
+      const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? 'Load more history' : 'Retry history'), 'subagent-retry-history');
+      b.type = 'button';
+      b.disabled = runs.reconciling;
+      b.addEventListener('click', () => runs.retryHistory());
+      li.append(b);
+    }
+    list.append(li);
+  }
+  return list;
+}
+
+const ABOUT = [
+  'Ran is what OpenChamber recorded about each run: from the host’s run events, the dispatch record, or the session’s history. A finished run is not a finished task.',
+  'Claimed is the sub-agent’s own optional report, shown as it reported it. Accepted is the task status this plan records.',
+  'Running is observed by the host for sessions and sub-agents only; tasks are reported working, not running.',
+];
 
 /** The section, or null: no plan in scope, an unverified setup, or nothing useful to show. */
 export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const r = rosterFor(v);
   if (!r) return null;
   const compact = v.surface === 'status';
-  const section = testid(el('section', 'ap-section ap-census'), 'subagent-activity');
+  // Every surface: running rows on one line each, every other record folded. Work Status keeps its
+  // one short coverage line and no ⓘ (an explanation popover would be clipped by its auto height).
+  const section = testid(el('section', 'ap-section ap-census ap-census-calm'), 'subagent-activity');
   section.dataset.state = r.recorded ? 'ready' : 'host-only';
   section.dataset.complete = String(r.recorded && !r.soFar && !r.notes.some((n) => n.kind !== 'capture-off' && n.kind !== 'history-off'));
   section.setAttribute('aria-label', 'Sub-agents');
   const head = el('div', 'ap-census-head');
-  head.append(el(v.surface === 'page' ? 'h3' : 'h2', 'ap-h', 'Sub-agents'));
+  const title = el('div', 'ap-census-title');
+  title.append(el(v.surface === 'page' ? 'h3' : 'h2', 'ap-h', 'Sub-agents'));
+  if (!compact) title.append(info('subagent-records', 'About sub-agent records', ABOUT));
+  head.append(title);
+  if (r.summary.length) head.append(summaryNode(r));
   section.append(head);
-  if (r.summary.length) section.append(summaryNode(r));
-  if (r.featured.length) {
+  const now = r.featured.filter(running);
+  if (now.length) {
     const list = el('ul', 'ap-obs-list');
-    list.setAttribute('aria-label', 'Running, waiting and task-linked sub-agents');
-    for (const e of r.featured) list.append(rowNode(e, v.env, compact));
+    list.setAttribute('aria-label', 'Running sub-agents');
+    for (const e of now) list.append(expandRow(e, v.env, !compact));
     section.append(list);
   }
-  const earlier = earlierNode(r, v, compact);
-  if (earlier) section.append(earlier);
-  const notes = notesNode(r, v.runs, compact);
+  const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
+  if (records) section.append(records);
+  const notes = compact ? notesNode(r, v.runs, true) : coverageNode(r, v.runs);
   if (notes) section.append(notes);
   return section;
 }

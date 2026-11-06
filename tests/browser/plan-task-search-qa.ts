@@ -12,6 +12,10 @@
 //   labelled setup-interception seam, write results.json (per-K coverage, inventory, skips, failed expectations),
 //   races.json, requests.json and screenshots, and exit non-zero on any failed assertion. `--kf-scenarios a,b`
 //   runs a subset for iteration only and always fails the run as partial.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { progressInput } from './progress-qa.ts';
+import { boardInput, BOARD_FILTERS, BOARD_FILTERS_TRIGGER } from './board-qa.ts';
+import { progressRetirementQa } from './progress-retirement-qa.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,12 +23,19 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROJECTS, startSearchShell } from './plan-task-search-shell.ts';
 import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/large-plan.ts';
+import { mapItems } from '../fixtures/dependency-map.ts';
+import { productionMapQa } from './dependency-map-final-qa.ts';
+import { designRefactorQa } from './design-refactor-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
 if (!artifacts) throw new Error('usage: plan-task-search-qa.ts --artifacts <dir> [--built-service] [--measure] [--chromium <path>]');
 const built = process.argv.includes('--built-service');
 const measure = process.argv.includes('--measure');
+const onlyDesign = arg('--only') === 'design-refactor';
+const designSlice = arg('--design-slice') ?? 'primitives';
+const captureLabel = arg('--capture-label') ?? 'after';
+if (onlyDesign && (!['primitives', 'rail', 'board', 'status'].includes(designSlice) || !['before', 'after'].includes(captureLabel))) throw Error('Invalid design slice/capture label');
 /** `--only j1`: just the J1 review cases (detail retirement and retention), for iteration. */
 const onlyJ1 = arg('--only') === 'j1';
 const onlyCapture = arg('--only') === 'capture';
@@ -32,9 +43,27 @@ const onlyLarge = arg('--only') === 'large-plan';
 /** `--only keyboard-focus` / `keyboard-focus-replay`: keyboard and focus verification (no measurement). */
 const onlyKeyboard = arg('--only') === 'keyboard-focus';
 const onlyReplay = arg('--only') === 'keyboard-focus-replay';
-if (arg('--only') && !['j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay'].includes(arg('--only')!)) throw Error('Unknown --only mode');
+const onlyMapRender = arg('--only') === 'dependency-map-render';
+const onlyMapInteraction = arg('--only') === 'dependency-map-interaction';
+const onlyMapLarge = arg('--only') === 'dependency-map-large';
+const onlyMapAttribution = arg('--only') === 'dependency-map-attribution';
+const onlyMapFinal = arg('--only') === 'dependency-map-final';
+const onlyRailChoice = arg('--only') === 'rail-plan-choice';
+const onlyMapAccessibility = arg('--only') === 'dependency-map-accessibility';
+const onlyMapOwner = arg('--only') === 'dependency-map-screen-reader';
+const productionMap = onlyMapFinal || onlyRailChoice || onlyMapAccessibility || onlyMapOwner || onlyMapLarge;
+if (arg('--only') && !['design-refactor', 'j1', 'capture', 'large-plan', 'keyboard-focus', 'keyboard-focus-replay', 'dependency-map-render', 'dependency-map-interaction', 'dependency-map-large', 'dependency-map-attribution', 'dependency-map-final', 'rail-plan-choice', 'dependency-map-accessibility', 'dependency-map-screen-reader'].includes(arg('--only')!)) throw Error('Unknown --only mode (S5 replaces dependency-map-hidden with dependency-map-final)');
+if (onlyMapOwner && !process.argv.includes('--headed')) throw Error('Screen-reader fixture requires --headed');
+if (process.argv.includes('--orca-automated')) {
+  const root=process.env.ORCA_PRIVATE_ROOT, display=Number(process.env.DISPLAY?.slice(1));
+  if(!root?.startsWith('/tmp/opencode/dependency-map-orca-')||process.env.HOME!==join(root,'home')||display<99||display>198
+    ||process.env.AT_SPI_BUS_ADDRESS!=='unix:path='+join(root,'run','atspi-bus')
+    ||!existsSync(join(root,'worker.pid'))||Number(readFileSync(join(root,'worker.pid'),'utf8'))!==process.ppid
+    ||!existsSync(join(root,'xvfb.pid'))||Number(readFileSync(`/tmp/.X${display}-lock`,'utf8').trim())!==Number(readFileSync(join(root,'xvfb.pid'),'utf8')))
+    throw Error('Orca automation must be launched by the private Xvfb/D-Bus runner');
+}
 if ((onlyKeyboard || onlyReplay) && measure) throw Error('keyboard-focus modes take no --measure');
-if (onlyLarge && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
+if ((onlyLarge || onlyMapLarge) && !measure) throw Error('large-plan requires --measure (one warm-up and three samples)');
 class OnlyDone extends Error {}
 mkdirSync(artifacts, { recursive: true });
 
@@ -77,9 +106,9 @@ async function connect(url: string): Promise<Cdp> {
 
 mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/plan-task-search-qa-');
-const fx = await startSearchShell(built, false, onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay);
-const origin = `http://127.0.0.1:${fx.port}`;
-const chrome = spawn(findChromium(), ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
+let fx = await startSearchShell(built, false, onlyDesign ? 'design-refactor' : onlyMapAttribution ? 'dependency-map-attribution' : onlyMapLarge ? 'dependency-map-large' : onlyMapInteraction ? 'dependency-map-interaction' : onlyMapRender ? 'dependency-map-render' : productionMap ? 'dependency-map-final' : onlyLarge || onlyReplay ? 'large-plan' : onlyKeyboard ? 'keyboard-focus' : 'search', onlyKeyboard || onlyReplay, productionMap, { guestRoot: arg('--guest-root'), slice: designSlice });
+let origin = `http://127.0.0.1:${fx.port}`;
+const chrome = spawn(findChromium(), [...(process.argv.includes('--headed') ? [] : ['--headless=new']), ...(process.argv.includes('--orca-automated') ? ['--force-renderer-accessibility', '--mute-audio', '--password-store=basic'] : []), '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--hide-scrollbars', '--window-size=1280,1100', 'about:blank'], { stdio: 'ignore', detached: true });
 let page: Cdp | null = null, browser: Cdp | null = null;
 let failure: string | null = null;
 let browserVersion = '';
@@ -132,22 +161,28 @@ try {
   };
   const type = (t: string) => c.send('Input.insertText', { text: t });
   const click = async (f: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+    // Scroll/setup paints must finish before hit-testing and pressing. Otherwise a
+    // queued scroll can dismiss the popup just opened by this synthetic pointer.
+    await guest(f, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'center'});return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),scale=o.width/fr.clientWidth;return [o.x+(r.x+Math.min(16,r.width/2))*scale,o.y+(r.y+Math.min(10,r.height/2))*scale]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
-  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${JSON.stringify(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const progressUi = progressInput({ guest, wait, click, key });
+  const boardUi = boardInput({ guest, wait, click });
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
-    await guest(surface, `d.querySelector(${JSON.stringify(selector)})?.scrollIntoView({block:'start'});return true`);
+    await guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
     await frames2();
-    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+a.x+scrollX,o.y+a.y+scrollY,a.width,a.height]})()`);
+    const r = await evaluate<number[] | null>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;const a=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),scale=o.width/fr.clientWidth;return [o.x+a.x*scale+scrollX,o.y+a.y*scale+scrollY,a.width*scale,a.height*scale]})()`);
     if (!r) throw new Error(`no ${selector} to capture`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: Math.min(r[3] + pad * 2, height), scale: 1 } });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(png.data, 'base64'));
     shots.push(`${name}.png`);
   };
   const choose = async (holder: string, label: string) => {
+    await boardUi.openFilters();
     await click('page', `${holder} .oc-sdk-trigger`);
     await wait('page', `d.querySelector('.oc-sdk-popup [role="listbox"] [role="option"]')`, `${holder} options`);
     const options = await guest<string[]>('page', `return [...d.querySelectorAll('.oc-sdk-popup [role="listbox"] [role="option"]')].map(n=>n.querySelector('.oc-sdk-option-label')?.textContent??'')`);
@@ -155,6 +190,7 @@ try {
     if (index < 0) throw new Error(`no option ${label} in ${holder}: ${JSON.stringify(options)}`);
     await key('Home'); if (index) await key('ArrowDown', index); await key('Enter');
     await wait('page', `!d.querySelector('.oc-sdk-popup [role="listbox"]')`, `${holder} closed`);
+    await boardUi.closeFilters();
   };
   const reqs = (filter = 'true') => evaluate<any[]>(`qa.requests.filter(r=>${filter})`);
   const count = (path: string, frame = 'page') => evaluate<number>(`qa.requests.filter(r=>r.frame==='${frame}'&&r.path==='${path}').length`);
@@ -181,7 +217,7 @@ try {
   const searchFor = async (q: string, all = false) => {
     const prev = await run();
     await clearField(); await type(q);
-    await act(`search “${q}”`, async () => { await key('Enter'); await wait('page', `d.querySelector('[data-testid="search-results"]')?.dataset.run!==${JSON.stringify(prev)}`, `new run for ${q}`); });
+    await act(`search “${q}”`, async () => { await key('Enter'); await wait('page', `d.querySelector('[data-testid="search-results"]')?.dataset.run!==${javascriptLiteral(prev)}`, `new run for ${q}`); });
     if (all) await exhaust();
   };
   const overflow = () => guest<boolean>('page', `return d.documentElement.scrollWidth<=w.innerWidth+1`);
@@ -194,6 +230,687 @@ try {
   const T = (plan: string, item: string, source = 'source-alpha') => `[data-testid="search-task-${source}/${plan}/${item}"]`;
   const H = (plan: string, source = 'source-alpha') => `[data-testid="search-plan-${source}/${plan}"]`;
 
+  if (onlyDesign) {
+    const reviewCheck = arg('--board-review-check');
+    if (reviewCheck && !['menu', 'finished', 'cancelled', 'keyboard-finished', 'keyboard-cancelled'].includes(reviewCheck)) throw Error('Unknown board review check');
+    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, setCapture: fx.setCapture, cleanupElsewhere: fx.cleanupElsewhere, seedDesignFailed: fx.seedDesignFailed, seedDesignRegroup: fx.seedDesignRegroup, seedDesignKeyboardRegroup: fx.seedDesignKeyboardRegroup, finishDesignRegroup: fx.finishDesignRegroup, reviewCheck: reviewCheck as 'menu' | 'finished' | 'cancelled' | 'keyboard-finished' | 'keyboard-cancelled' | undefined, lifetimeOnly: process.argv.includes('--board-lifetime-only'), guest, evaluate, wait, show, click, theme, shot, check, key, c });
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
+  if (productionMap) {
+    Object.assign(facts, { production: true, fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map-v1', ...(onlyMapLarge ? { seed: LARGE_PLAN_SEED } : {}), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), runtime: process.version, serviceClass: built ? 'built generated service' : 'TypeScript service', browser: browserVersion, bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])) });
+    await productionMapQa({ mode: onlyRailChoice ? 'rail-choice' : onlyMapLarge ? 'large' : onlyMapAccessibility ? 'accessibility' : onlyMapOwner ? 'owner' : 'final', ownerSmoke: process.argv.includes('--owner-fixture-smoke'), artifacts, c, evaluate, guest, wait, key, click, show, shot, frames2, theme, check, count, fx, facts, perf, pageErrors, restart: async () => {
+      await fx.stop(); fx = await startSearchShell(built, false, 'dependency-map-large', false, true); origin = `http://127.0.0.1:${fx.port}`;
+      await c.send('Page.navigate', { url: `${origin}/` }); return fx;
+    } });
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
+  if (onlyMapAttribution) {
+    facts.renderingAssertions = 'Rendered captions on the real preview, including legacy link-only detail, optional missing view input, waiting, superseded picture, repeated relay reports and foreign-source isolation. Copy-only checks remain supplemental.';
+    const ready = (surface: string) => wait(surface, `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&w.mapPreview?.attribution?.B`, 'attribution picture');
+    const proof = (surface: string) => guest<any>(surface, 'return w.mapPreview.attribution');
+    const positions = (surface: string) => guest(surface, 'return w.mapPreview.coordinates');
+    // ── Rendering probes (Designer): what the card and inspector actually say and where.
+    const card = (surface: string, id: string) => guest<any>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]');if(!n)return null;const who=n.querySelector('[data-testid="map-card-who-${id}"]'),live=n.querySelector('[data-testid="map-card-live-${id}"]'),t=who?.querySelector('.ap-map-card-who-text');return {attribution:n.dataset.attribution??null,live:n.dataset.live??null,name:n.getAttribute('aria-label'),status:n.querySelector('.ap-map-card-word')?.textContent,who:who?.textContent??null,whoFits:!!t&&t.scrollWidth<=t.clientWidth,chip:live?.dataset.live??null,markOnSession:!!live&&live.getAttribute('aria-hidden')==='true'&&live.nextSibling?.textContent==='Session map-child'&&getComputedStyle(live).borderRadius==='2px'&&live.offsetWidth===8,statusMarkRound:getComputedStyle(n.querySelector('.ap-map-mark')).borderRadius==='50%'}`);
+    /** Card boxes plus each row's box inside it: activity must change none of these numbers. */
+    const boxes = (surface: string) => guest<string>(surface, `return JSON.stringify([...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')].map(n=>[n.dataset.task,n.offsetLeft,n.offsetTop,n.offsetWidth,n.offsetHeight,...[...n.children].map(c=>c.className+'@'+c.offsetTop+'+'+c.offsetHeight)]))`);
+    const contained = (surface: string) => guest<boolean>(surface, `const cards=[...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')];return cards.length>0&&cards.every(n=>[...n.children].every(c=>c.offsetTop+c.offsetHeight<=n.clientHeight+0.5))`);
+    const inspector = (surface: string) => guest<any>(surface, `const s=d.querySelector('[data-testid="map-attribution"]');if(!s)return null;const t=id=>s.querySelector('[data-testid="'+id+'"] dd')?.textContent??null;return {assignment:s.dataset.assignment,live:s.dataset.live,assignmentText:t('map-attribution-assignment'),links:t('map-attribution-links'),reports:t('map-attribution-reports'),activity:t('map-attribution-live'),liveMark:!!s.querySelector('[data-testid="map-attribution-live"] .ap-map-live-mark[aria-hidden="true"]')}`);
+    const select = async (surface: string, id: string) => { await guest(surface, `w.mapPreview.dispatch({type:'select',id:'${id}'});return true`); await frames2(); };
+    /** No “running”/“unassigned” in visible text or any accessible name inside the map region. */
+    const words = (surface: string) => guest<boolean>(surface, `const r=d.querySelector('[data-testid="map-region"]');const text=r.textContent+' '+[...r.querySelectorAll('[aria-label]')].map(n=>n.getAttribute('aria-label')).join(' ');return !/\\brunning\\b/i.test(text)&&!/unassigned/i.test(text)`);
+    const mapShot = async (name: string, surface: string) => { await shot(name, '[data-testid="map-region"]', 12, 1600, surface); };
+    await show(['page', 'panel'], 600); await ready('page'); await ready('panel');
+    for (const surface of ['page', 'panel']) {
+      await wait(surface, `w.mapPreview.attribution.B.live.proven`, 'verified assigned child running');
+      const p = await proof(surface);
+      check(`attribution:${surface}:verified-binding-child-live`, p.B.assignment.childSessionId === 'map-child' && p.B.live.proven);
+      check(`attribution:${surface}:linked-is-not-assigned-or-running`, !p.C.assignment && !p.C.live.proven && p.C.links.includes('map-linked'));
+      check(`attribution:${surface}:reports-separate`, p.B.reporter === 'M' && !p.I.live.proven);
+      check(`attribution:${surface}:one-separate-roster`, await guest(surface, `return d.querySelectorAll('[data-testid="subagent-activity"]').length===1`));
+      // Rendered words: only the proof-positive card says Assigned and carries the session chip.
+      await wait(surface, `d.querySelector('[data-testid="map-card-live-B"]')`, 'proven session chip painted');
+      const b = await card(surface, 'B'), cc = await card(surface, 'C'), a = await card(surface, 'A');
+      check(`attribution:render:${surface}:assigned-caption`, b.attribution === 'assigned' && b.who === 'Assigned to Session map-child' && b.whoFits);
+      check(`attribution:render:${surface}:session-mark-shape-on-session-name`, b.live === 'active' && b.chip === 'active' && b.markOnSession && b.statusMarkRound);
+      check(`attribution:render:${surface}:status-stays-reported-working`, b.status === 'Reported working');
+      check(`attribution:render:${surface}:assigned-name`, b.name.includes('Assigned to Session map-child') && b.name.includes('Assigned session active now, session activity only'));
+      check(`attribution:render:${surface}:unverified-never-assigned`, cc.attribution === 'recorded' && cc.who === 'Unverified assignee · Session map-linked' && cc.chip === null && cc.live === null && !cc.name.includes('Assigned to'));
+      check(`attribution:render:${surface}:no-assignee-no-line`, a.attribution === 'none' && a.who === null && a.chip === null);
+      check(`attribution:render:${surface}:one-chip-only`, await guest(surface, `return d.querySelectorAll('[data-testid^="map-card-live-"]').length===1`));
+      check(`attribution:render:${surface}:no-running-or-unassigned-words`, await words(surface));
+      check(`attribution:render:${surface}:rows-inside-fixed-slot`, await contained(surface) && await guest(surface, `return [...d.querySelectorAll('[data-testid="map-viewport"] .ap-map-card')].every(n=>n.offsetWidth===220&&n.offsetHeight===100)`));
+    }
+    const coordinates = await positions('page');
+    const visitCounts = async () => ({ runs: await count('/v1/subagent-runs'), polls: await count('/v1/plans') });
+    const beforePaint = await visitCounts();
+    await guest('page', 'w.mapPreview.repaint();return true'); await frames2(); await frames2();
+    const afterPaint = await visitCounts();
+    check('attribution:map-and-roster-share-one-visit', afterPaint.runs - beforePaint.runs <= afterPaint.polls - beforePaint.polls);
+    await shot('verified-running', '[data-testid="map-region"]');
+    await shot('rail-verified-running', '[data-testid="map-region"]', 12, 1200, 'panel');
+    // Supplemental copy checks preserved from Designer; corresponding rendered cases follow below.
+    {
+      const { attributionCopy } = await import('../../ui/shared/dependency-map-view.ts');
+      const L = (id: string) => `Session ${id}`;
+      const base = { assignment: null, recordedAssignee: null, links: ['link-a', 'link-b'], reporter: null, reports: [], assignmentReason: 'no-assignee-recorded' as const, live: { proven: false as const, reason: 'no-verified-assignment' as const } };
+      const linked = attributionCopy(base, true, 3, L);
+      check('attribution:copy:link-only', linked.kind === 'linked' && linked.card === 'Linked to Session link-a and 1 more · no verified delegation' && linked.assignment === 'No assignee recorded' && linked.links[0] === 'Linked to Session link-a · no verified delegation' && linked.live === null);
+      const missing = attributionCopy(undefined, true, 3, L);
+      check('attribution:copy:missing-projection-is-unavailable-not-unassigned', missing.kind === 'unavailable' && missing.card === null && missing.assignment === 'Unavailable in this view' && /doesn’t mean the task is unassigned/.test(missing.assignmentNote ?? ''));
+      const bound = { childSessionId: 'kid', coordinatorSessionId: 'M', boundAt: '', boundRevision: 2, validAtRevision: 3 };
+      const superseded = attributionCopy({ ...base, links: [], assignment: bound, recordedAssignee: 'kid', assignmentReason: 'verified', live: { proven: true, runId: 'r', kind: 'active' } }, false, 3, L);
+      check('attribution:copy:superseded-suppresses-live', superseded.live === null && superseded.card === 'Assigned to Session kid' && superseded.activityNote === 'Hidden while the map shows revision 3 as last reported.');
+      const waiting = attributionCopy({ ...base, links: [], assignment: bound, recordedAssignee: 'kid', assignmentReason: 'verified', live: { proven: true, runId: 'r', kind: 'waiting' } }, true, 3, L);
+      check('attribution:copy:waiting-session-words', waiting.live?.kind === 'waiting' && waiting.live.text === 'Assigned session waiting for input now' && waiting.session === 'Session kid');
+      const relay = attributionCopy({ ...base, links: [], reporter: 'M', reports: [{ revision: 3, reporterSessionId: 'M', attributedSessionId: 'kid', mode: 'parent-relay', itemIds: ['B'] }, { revision: 3, reporterSessionId: 'M', attributedSessionId: 'kid', mode: 'parent-relay', itemIds: ['B'] }] }, true, 3, L);
+      check('attribution:copy:relay-separate-and-counted', relay.reports.length === 1 && relay.reports[0] === 'Reported by Session M for Session kid · 2 reports' && relay.kind === 'none');
+      const same = (_: string) => 'Session same-title';
+      const distinct = attributionCopy({ ...base, links: [], reporter: 'M1', reports: [{ revision: 3, reporterSessionId: 'M1', attributedSessionId: 'M1', mode: 'direct', itemIds: ['B'] }, { revision: 3, reporterSessionId: 'M2', attributedSessionId: 'M2', mode: 'direct', itemIds: ['B'] }] }, true, 3, same);
+      check('attribution:copy:same-label-reporters-stay-separate', distinct.reports.length === 2 && distinct.reports.every(r => r === 'Reported directly by Session same-title'));
+    }
+    // Inspector: the full context for the proof-positive card and the unverified card, both frames.
+    for (const surface of ['page', 'panel']) {
+      await select(surface, 'B');
+      const i = await inspector(surface);
+      check(`attribution:render:${surface}:inspector-verified`, i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child') && /Verified delegation, current for revision \d+\./.test(i.assignmentText));
+      check(`attribution:render:${surface}:inspector-live-hedged`, i.live === 'active' && i.activity.startsWith('Assigned session active now') && i.activity.includes('doesn’t show that it is working on this task') && i.liveMark);
+      const p = (await proof(surface)).B;
+      check(`attribution:render:${surface}:inspector-reports-separate`, typeof i.reports === 'string' && !i.reports.includes('Assigned') && (p.reports.length
+        ? p.reports.every((r: any) => i.reports.includes(r.mode === 'parent-relay' ? `Reported by Session ${r.reporterSessionId} for Session ${r.attributedSessionId}` : `Reported directly by Session ${r.reporterSessionId}`))
+        : i.reports === `Last reported by Session ${p.reporter} · report mode unavailable`));
+    }
+    await mapShot('attribution-assigned', 'page');
+    await mapShot('rail-attribution-assigned', 'panel');
+    await select('page', 'C');
+    {
+      const i = await inspector('page');
+      check('attribution:render:inspector-provenance-unavailable', i.assignment === 'recorded' && i.assignmentText.startsWith('Recorded assignee Session map-linked · delegation provenance unavailable') && i.assignmentText.includes('doesn’t mean the task is unassigned'));
+      check('attribution:render:inspector-link-context', i.links === 'Linked to Session map-linked · no verified delegation');
+      check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity.startsWith('Not shown') && i.activity.endsWith('Shown only for a verified assignment.'));
+    }
+    await mapShot('provenance-unavailable', 'page');
+    await select('page', 'I'); await mapShot('linked-no-activity', 'page');
+    // Dark, forced colours and the 360 px rail, with the proven session chip on screen.
+    await select('page', 'B'); await select('panel', 'B');
+    await theme('dark'); await mapShot('attribution-dark', 'page'); await theme('light');
+    await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-motion', value: 'reduce' }] }); await frames2();
+    check('attribution:render:forced-colors-session-mark', await guest('page', `const m=d.querySelector('[data-testid="map-card-live-B"]'),n=d.querySelector('[data-testid="map-card-B"]');return w.matchMedia('(forced-colors: active)').matches&&getComputedStyle(m).backgroundColor===getComputedStyle(n).color&&getComputedStyle(m).backgroundColor!==getComputedStyle(n).backgroundColor`));
+    check('attribution:render:forced-colors-selected-rows-unsqueezed', await guest('page', `const n=d.querySelector('[data-testid="map-card-B"]'),t=n.querySelector('.ap-map-card-title'),wl=n.querySelector('.ap-map-card-who'),f=n.querySelector('.ap-map-card-foot');return getComputedStyle(n).borderTopWidth==='3px'||parseFloat(getComputedStyle(n).borderTopWidth)>=3?t.offsetHeight>=16&&t.offsetTop+t.offsetHeight<=wl.offsetTop&&f.offsetTop+f.offsetHeight<=n.clientHeight+0.5:false`));
+    await mapShot('attribution-forced-colors', 'page');
+    await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }); await frames2();
+    check('attribution:render:no-motion', await guest('page', `return [...d.querySelectorAll('[data-testid="map-region"] *')].every(n=>{const s=getComputedStyle(n);return s.animationName==='none'&&(s.transitionDuration.split(',').every(t=>parseFloat(t)===0))})`));
+    // qa.show lists every frame to keep visible: keep the board visible (and polling) throughout.
+    await show(['page', 'panel'], 360); await wait('panel', `d.querySelector('[data-testid="map-card-live-B"]')`, 'rail 360 chip');
+    check('attribution:render:panel-360-contained', await contained('panel') && await guest('panel', `return d.documentElement.scrollWidth<=w.innerWidth+1`));
+    await mapShot('rail-attribution-360', 'panel');
+    await show(['page', 'panel'], 600); await ready('page'); await ready('panel');
+    await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')`, 'board chip after resize');
+    const cardBoxes = await boxes('page');
+    // Real controller fallback: a failed poll retains ready/cached rows for the roster, but that
+    // successful older read must not keep the map's live session proof alive.
+    await select('page', 'B');
+    await evaluate(`qa.fail.push({path:'/v1/subagent-runs',frame:'page',status:503,code:'unavailable'});true`);
+    await wait('page', `!w.mapPreview.attribution.B.live.proven`, 'failed refresh withdraws proof');
+    {
+      const b = await card('page', 'B'), i = await inspector('page');
+      check('attribution:render:failed-refresh-removes-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith('This view’s run records aren’t available.'));
+      check('attribution:render:failed-refresh-keeps-roster', await guest('page', `return d.querySelector('[data-testid="subagent-activity"]')?.dataset.state==='ready'&&!!d.querySelector('[data-testid="subagent-activity"] [data-run]')`));
+      check('attribution:render:failed-refresh-zero-movement', await boxes('page') === cardBoxes && JSON.stringify(await positions('page')) === JSON.stringify(coordinates));
+    }
+    await mapShot('failed-run-refresh', 'page');
+    await evaluate(`qa.fail=qa.fail.filter(f=>!(f.path==='/v1/subagent-runs'&&f.frame==='page'));true`);
+    await wait('page', `w.mapPreview.attribution.B.live.proven&&d.querySelector('[data-testid="map-card-live-B"]')`, 'recovered refresh restores proof');
+    check('attribution:render:failed-refresh-recovery', (await card('page', 'B')).chip === 'active' && await boxes('page') === cardBoxes);
+    for (const fault of ['missing', 'unloaded', 'childless', 'other']) {
+      await evaluate(`qa.mapRunFault={page:'${fault}'};true`);
+      await wait('page', `!w.mapPreview.attribution.B.live.proven`, `${fault} evidence withheld`);
+      check(`attribution:${fault}:not-proven`, !(await proof('page')).B.live.proven);
+      check(`attribution:${fault}:other-frame-independent`, (await proof('panel')).B.live.proven);
+      check(`attribution:${fault}:zero-activity-movement`, JSON.stringify(await positions('page')) === JSON.stringify(coordinates));
+      await wait('page', `!d.querySelector('[data-testid="map-card-live-B"]')`, `${fault}: chip removed`);
+      const b = await card('page', 'B');
+      check(`attribution:render:${fault}:assigned-without-chip`, b.who === 'Assigned to Session map-child' && b.chip === null && b.live === null && b.status === 'Reported working');
+      check(`attribution:render:${fault}:no-box-moves`, await boxes('page') === cardBoxes);
+      check(`attribution:render:${fault}:panel-chip-kept`, !!(await card('panel', 'B')).chip);
+      if (fault === 'other') {
+        // The bound child's session runs nothing here; another child's run is not this task's activity.
+        const i = await inspector('page');
+        check('attribution:render:other-child-not-proven-reason', i.live === '' && i.activity.endsWith('This view’s run records don’t confirm the assigned session’s latest run.'));
+        await mapShot('live-not-proven-other-child', 'page');
+      }
+      await evaluate('qa.mapRunFault={};true');
+      await wait('page', `w.mapPreview.attribution.B.live.proven`, 'proof recovered on existing poll');
+    }
+    // A rail rooted in the contributing child must not borrow the coordinator board's run scope.
+    await evaluate(`qa.context('map-child');true`); await ready('panel');
+    await wait('panel', `!w.mapPreview.attribution.B.live.proven`, 'child-root scope has no bound-child run');
+    check('attribution:rail-child-root-no-board-leak', !(await proof('panel')).B.live.proven && (await proof('page')).B.live.proven);
+    const roots = await reqs(`r.path==='/v1/subagent-runs'&&r.frame==='panel'`);
+    check('attribution:rail-never-widens-root', roots.at(-1)?.query.root === 'map-child');
+    await wait('panel', `!d.querySelector('[data-testid="map-card-live-B"]')`, 'rail child root: no chip');
+    await select('panel', 'B');
+    {
+      const b = await card('panel', 'B'), i = await inspector('panel');
+      check('attribution:render:rail-child-scope-assigned-no-chip', b.who === 'Assigned to Session map-child' && b.chip === null && !!(await card('page', 'B')).chip);
+      check('attribution:render:rail-child-scope-reason', i.live === '' && i.activity.startsWith('Not shown'));
+    }
+    await shot('rail-child-scope', '[data-testid="map-region"]', 12, 1600, 'panel');
+    await evaluate(`qa.context('M');true`); await ready('panel');
+    await wait('panel', 'w.mapPreview.attribution.B.live.proven', 'coordinator rail restored');
+    // Hold old run data across a new session reading; releasing it must not revive proof.
+    await evaluate(`qa.holds.push({path:'/v1/subagent-runs',frame:'panel',tag:'attribution-held'});true`);
+    await wait('panel', `parent.qa.held.some(h=>h.tag==='attribution-held')`, 'held run reply');
+    await evaluate(`qa.context('map-child');true`); await ready('panel');
+    await evaluate(`qa.release('attribution-held');true`); await frames2();
+    check('attribution:held-session-reply-retired', !(await proof('panel')).B.live.proven);
+    // Legacy link-only data is an explicitly labelled read-fixture seam: the real modern link
+    // operation records an assignee too, so the shell removes only L's assignee in the detail DTO.
+    await select('page', 'L');
+    {
+      const l = await card('page', 'L'), i = await inspector('page'), p = (await proof('page')).L;
+      check('attribution:render:legacy-link-only-data', p.recordedAssignee === null && !p.assignment && p.links.includes('map-linked'));
+      check('attribution:render:legacy-link-only-card', l.attribution === 'linked' && l.who === 'Linked to Session map-linked · no verified delegation' && l.chip === null);
+      check('attribution:render:legacy-link-only-inspector', i.assignment === 'linked' && i.assignmentText.startsWith('No assignee recorded') && i.links === 'Linked to Session map-linked · no verified delegation' && i.live === '');
+    }
+    await mapShot('link-only', 'page');
+    await select('page', 'B');
+    {
+      const i = await inspector('page');
+      check('attribution:render:repeated-relay-grouped', i.reports === 'Reported by Session M for Session map-child · 2 reports');
+      check('attribution:render:relay-is-not-assignment', i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child'));
+    }
+    await mapShot('repeated-relay-reports', 'page');
+    await guest('page', `w.mapPreview.omitAttribution('B');return true`);
+    await wait('page', `d.querySelector('[data-testid="map-card-B"]')?.dataset.attribution==='unavailable'`, 'missing optional projection painted');
+    {
+      const b = await card('page', 'B'), i = await inspector('page');
+      check('attribution:render:missing-projection-card', b.attribution === 'unavailable' && b.who === null && b.chip === null);
+      check('attribution:render:missing-projection-inspector', i.assignment === 'unavailable' && i.assignmentText.startsWith('Unavailable in this view') && i.activity.startsWith('Not shown'));
+    }
+    await mapShot('missing-projection', 'page');
+    await guest('page', 'w.mapPreview.omitAttribution(null);return true');
+    await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')`, 'projection restored');
+    // Real SDK workspace snapshots exercise both recordedLabel and host waiting qualification.
+    const sessionRecords = (activity: string) => [
+      { id: 'M', title: 'Coordinator', projectId: 'alpha', directory: '/fixture/main', parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] },
+      { id: 'map-child', title: 'Map worker', projectId: 'alpha', directory: '/fixture/main', parentId: 'M', archivedAt: null, worktree: null, activity, outcome: null, items: [] },
+    ];
+    await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Map worker'`, 'verified host title');
+    check('attribution:render:verified-source-host-title', (await card('page', 'B')).name.includes('Assigned to Map worker'));
+    await mapShot('verified-host-title', 'page');
+    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('waiting-question'))});true`);
+    await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='waiting'`, 'waiting session mark');
+    {
+      const b = await card('page', 'B'), i = await inspector('page');
+      check('attribution:render:waiting-card', b.live === 'waiting' && b.chip === 'waiting' && b.name.includes('Assigned session waiting for input now, session activity only'));
+      check('attribution:render:waiting-inspector', i.live === 'waiting' && i.activity.startsWith('Assigned session waiting for input now') && i.liveMark);
+      check('attribution:render:waiting-mark-outlined', await guest('page', `const m=d.querySelector('[data-testid="map-card-live-B"]');return getComputedStyle(m).backgroundColor==='rgba(0, 0, 0, 0)'&&parseFloat(getComputedStyle(m).borderTopWidth)>0`));
+    }
+    await mapShot('waiting-session', 'page');
+    await evaluate(`qa.setSessions('alpha',[]);true`);
+    await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Session map-child'&&d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='active'`, 'plain labels restored');
+    const lastRevision = await guest<string>('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision`);
+    await evaluate(`qa.holds.push({path:'/v1/plan-graph',frame:'page',tag:'attribution-newer-graph'});true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] });
+    await wait('page', `parent.qa.held.some(h=>h.tag==='attribution-newer-graph')&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='false'`, 'last reported picture during graph hold');
+    {
+      const b = await card('page', 'B'), i = await inspector('page');
+      check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${JSON.stringify(lastRevision)}`));
+      check('attribution:render:superseded-hides-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith(`Hidden while the map shows revision ${lastRevision} as last reported.`));
+      check('attribution:render:superseded-status-last-reported', b.status === 'Reported working' && !(await proof('page')).B.live.proven);
+    }
+    await mapShot('superseded-picture', 'page');
+    await evaluate(`qa.release('attribution-newer-graph');true`); await ready('page');
+    await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='active'`, 'live resumes on matched revision');
+    fx.mapAttribution!.terminal();
+    await wait('page', '!w.mapPreview.attribution.B.live.proven', 'terminal run loses live proof');
+    check('attribution:terminal-keeps-assignment-not-activity', !!(await proof('page')).B.assignment && !(await proof('page')).B.live.proven);
+    check('attribution:terminal-zero-movement', JSON.stringify(await positions('page')) === JSON.stringify(coordinates));
+    await wait('page', `!d.querySelector('[data-testid="map-card-live-B"]')`, 'terminal: chip removed');
+    await select('page', 'B');
+    {
+      const b = await card('page', 'B'), i = await inspector('page');
+      check('attribution:render:terminal-assigned-no-chip', b.who === 'Assigned to Session map-child' && b.chip === null);
+      check('attribution:render:terminal-reason', i.assignment === 'assigned' && i.live === '' && i.activity.endsWith('The assigned session’s latest recorded run isn’t active now.'));
+      check('attribution:render:terminal-no-box-moves', await boxes('page') === cardBoxes);
+      check('attribution:render:terminal-no-running-words', await words('page'));
+    }
+    await shot('terminal-run', '[data-testid="map-region"]', 12, 1600);
+    // Same child ID on a foreign source must keep its recorded label and get no borrowed activity.
+    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await guest('page', `w.mapPreview.source('source-beta');return true`); await ready('page');
+    await select('page', 'B');
+    {
+      const b = await card('page', 'B'), i = await inspector('page'), p = (await proof('page')).B;
+      check('attribution:render:foreign-source-no-assignment-or-live', p.recordedAssignee === 'map-child' && !p.assignment && !p.live.proven && b.attribution === 'recorded' && b.chip === null);
+      check('attribution:render:foreign-source-no-host-title', b.who === 'Unverified assignee · Session map-child' && !b.name.includes('Map worker') && i.assignmentText.startsWith('Recorded assignee Session map-child'));
+    }
+    await mapShot('foreign-source', 'page');
+    check('attribution:status-no-map-work', (await reqs(`r.frame==='status'&&r.path==='/v1/plan-graph'`)).length === 0);
+    throw new OnlyDone();
+  }
+  if (onlyMapInteraction || onlyMapLarge) {
+    const region = '[data-testid="map-region"]';
+    const ready = (surface: string, revision = 1) => wait(surface, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision==='${revision}'&&w.mapPreview?.state.initialFramingDone`, 'complete interactive preview');
+    const command = (surface: string, event: object) => guest(surface, `return w.mapPreview.dispatch(${javascriptLiteral(event)})`);
+    const state = (surface: string) => guest<any>(surface, 'return w.mapPreview.state');
+    const mapShot = async (name: string, surface: string) => {
+      const scroll = await guest<number>(surface, 'return w.scrollY');
+      await shot(name, region, 0, 1200, surface);
+      await guest(surface, `w.scrollTo(0,${scroll});return true`); await frames2();
+    };
+    const coordinates = (surface: string) => guest<any>(surface, `const v=d.querySelector('[data-testid="map-viewport"]').getBoundingClientRect();return {viewport:[v.x,v.y,v.width,v.height],scrollY:w.scrollY,world:w.mapPreview.coordinates,transform:w.mapPreview.state.transform,screen:Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>{const r=n.getBoundingClientRect();return[n.dataset.task,[r.x,r.y,r.width,r.height]]}))}`);
+    const inView = (surface: string, id: string) => guest<boolean>(surface, `const n=d.querySelector('[data-testid="map-card-${id}"]'),v=d.querySelector('[data-testid="map-viewport"]');if(!n||!v)return false;const a=n.getBoundingClientRect(),b=v.getBoundingClientRect();return n.matches('button')&&!n.disabled&&a.x>=b.x+7&&a.y>=b.y+7&&a.right<=b.right-7&&a.bottom<=b.bottom-7`);
+    Object.assign(facts, { fixture: onlyMapLarge ? LARGE_PLAN_VERSION : 'dependency-map', seed: onlyMapLarge ? LARGE_PLAN_SEED : undefined, preview: true, inputCoverage: onlyMapLarge ? 'controller-dispatched timed actions through the bound shared view, plus two real CDP keyboard actions' : 'controller probes for setup', pendingDesigner: [], commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash });
+    if (onlyMapInteraction) {
+      for (const [surface, width] of [['page', 1100], ['panel', 360], ['panel', 600]] as const) {
+        await show([surface], width); await ready(surface);
+        const before = await state(surface);
+        check(`interaction:${surface}-${width}:initial-work-frame`, before.initialFramingDone && (width === 600 ? before.selected === 'C' : before.selected === null && before.transform.zoom >= .75));
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        check(`interaction:${surface}-${width}:target-in-view`, await inView(surface, 'D'));
+        await command(surface, { type: 'pan', x: -17, y: 19 }); await command(surface, { type: 'zoom', factor: 1.2, point: { x: 100, y: 100 } });
+        const moved = await state(surface), mark = await evaluate<number>('qa.replies.length');
+        await wait(surface, `qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two unchanged polls');
+        check(`interaction:${surface}-${width}:poll-continuity`, JSON.stringify((await state(surface)).transform) === JSON.stringify(moved.transform) && (await state(surface)).selected === 'D');
+        await command(surface, { type: 'filters', status: 'unfinished' }); await command(surface, { type: 'relation', id: 'A' }); await frames2();
+        check(`interaction:${surface}-${width}:relation-reveals-only-hiding-filter`, (await state(surface)).selected === 'A' && (await state(surface)).status === 'all');
+        await command(surface, { type: 'fit' }); await frames2();
+        const z = (await state(surface)).transform.zoom;
+        if (surface === 'panel') { await show(['panel'], width === 360 ? 600 : 360); await frames2(); await show(['panel'], width); await frames2(); check(`interaction:panel-${width}:resize-retains-zoom`, (await state(surface)).transform.zoom === z); }
+        // Real shared list and canonical reveal, not a fabricated list. Native switches are preview-only.
+        await click(surface, '[data-testid="plan-view-list"]');
+        await wait(surface, `d.querySelector('[data-testid="item-B"]')`, 'canonical list');
+        await click(surface, '[data-testid="item-B"]'); await click(surface, '[data-testid="plan-view-map"]'); await ready(surface);
+        check(`interaction:${surface}-${width}:explicit-list-target`, (await state(surface)).selected === 'B');
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
+        await click(surface, '[data-testid="map-list"] button'); await wait(surface, `d.activeElement?.dataset.testid==='item-C'`, 'canonical map-to-list reveal');
+        check(`interaction:${surface}-${width}:canonical-return`, await guest(surface, `return d.querySelectorAll('[data-testid="item-C"]').length===1`));
+        await click(surface, '[data-testid="plan-view-map"]'); await ready(surface);
+        check(`interaction:${surface}-${width}:consumed-target-not-replayed`, (await state(surface)).selected === 'C');
+        await shot(`${surface}-${width}-controller-preview`, region, 0, 1200, surface);
+      }
+      // ── Designer bindings through real CDP input (not controller probes): canvas Tab stop, scoped
+      // keys, toolbar keyboard operation, background drag across a poll repaint, wheel, highlights,
+      // inspector relations, the per-frame live region, handoff focus, resize and forced colours.
+      const said = (surface: string) => guest<string[]>(surface, `if(!w.__said){w.__said=[];const n=d.querySelector('[data-testid="map-announcer"]');new w.MutationObserver(()=>{if(n.textContent)w.__said.push(n.textContent)}).observe(n,{childList:true,characterData:true,subtree:true})}return w.__said.slice()`);
+      const active = (surface: string) => guest<any>(surface, `const a=d.activeElement;return {task:a?.dataset?.task??null,testid:a?.closest?.('[data-testid]')?.dataset.testid??null,tag:a?.tagName,inCanvas:!!a?.closest?.('[data-testid="map-viewport"]'),outline:a?getComputedStyle(a).outlineStyle+' '+getComputedStyle(a).outlineWidth:''}`);
+      const focusOn = (surface: string, selector: string) => guest(surface, `const n=d.querySelector(${javascriptLiteral(selector)});n.focus();return d.activeElement===n`);
+      const polls = async (surface: string, n = 2) => { const mark = await evaluate<number>('qa.replies.length'); await wait(surface, `parent.qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=${n}`, `${n} completed polls`); };
+      const background = (surface: string) => evaluate<[number, number] | null>(`(()=>{const fr=frame('${surface}'),d=fr.contentDocument,v=d.querySelector('[data-testid="map-viewport"]');v.scrollIntoView({block:'center'});const b=v.getBoundingClientRect(),o=fr.getBoundingClientRect();for(let y=b.bottom-14;y>b.top+10;y-=12)for(let x=b.right-14;x>b.left+10;x-=12){const n=d.elementFromPoint(x,y);if(n&&v.contains(n)&&!n.closest('button'))return [o.x+x,o.y+y]}return null})()`);
+      const mouse = (type: string, x: number, y: number, extra: object = {}) => c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
+      const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+      const settled = (surface: string) => wait(surface, `(()=>{const v=d.querySelector('[data-testid="map-viewport"]'),h=d.querySelector('[data-testid="preview-map-host"]');return v&&h&&Number(h.dataset.canvasWidth)===v.clientWidth})()`, 'measured canvas after resize');
+      const realInput = async (surface: 'page' | 'panel', width: number) => {
+        const tag = `${surface}-${width}`;
+        await show([surface], width); await ready(surface); await said(surface);
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
+        check(`interaction:${tag}:one-persistent-announcer`, await guest(surface, `const a=d.querySelectorAll('[data-testid="map-announcer"]');return a.length===1&&!d.getElementById('root').contains(a[0])&&a[0].getAttribute('aria-live')==='polite'`));
+        check(`interaction:${tag}:one-canvas-tab-stop`, await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]'),cards=[...v.querySelectorAll('[data-task]')];return v.getAttribute('role')==='region'&&!!v.getAttribute('aria-label')&&cards.length>0&&cards.every(n=>n.tagName==='BUTTON')&&cards.filter(n=>n.tabIndex===0).length===1&&!d.querySelector('[data-testid="map-region"] [role="application"],[role="tree"],[role="grid"],[role="listbox"]')`));
+        // Keyboard entry from the last toolbar control, then scoped keys.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); await frames2();
+        let a = await active(surface);
+        check(`interaction:${tag}:tab-enters-roving-card`, a.inCanvas && a.task === 'C' && /solid/.test(a.outline), undefined, a);
+        await shot(`${tag}-keyboard-focus`, '[data-testid="map-viewport"]', 40, 900, surface);
+        const heard = (await said(surface)).length;
+        await key('ArrowRight'); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:arrow-selects-neighbour`, a.task === 'D' && (await state(surface)).selected === 'D', undefined, a);
+        const spoken = (await said(surface)).slice(heard), focusedName = await guest<string>(surface, `return d.activeElement?.getAttribute('aria-label')??''`);
+        // Selection speech once: a move that focuses the card is spoken from the card's own name, and
+        // the live region stays quiet (no second copy). The name carries title, state and counts.
+        check(`interaction:${tag}:selection-spoken-once`, spoken.length === 0 && /^Join both unfinished branches\. Waiting\./.test(focusedName) && /2 direct recorded prerequisites, 0 direct dependents/.test(focusedName), undefined, { spoken, focusedName });
+        await key('['); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:bracket-first-prerequisite`, a.task === 'B' && (await state(surface)).selected === 'B', undefined, a);
+        await key(']'); await frames2(); a = await active(surface);
+        check(`interaction:${tag}:bracket-first-dependent`, a.task === 'D', undefined, a);
+        let t = (await state(surface)).transform;
+        await key('+'); await frames2();
+        check(`interaction:${tag}:plus-zooms`, near((await state(surface)).transform.zoom, Math.min(2, t.zoom * 1.2)));
+        await key('-'); await frames2(); t = (await state(surface)).transform;
+        await key('+', 1, 2); await key('f', 1, 2); await frames2();
+        check(`interaction:${tag}:modified-keys-not-intercepted`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        await key('f'); await frames2();
+        check(`interaction:${tag}:F-fits-all`, JSON.stringify((await state(surface)).transform) !== JSON.stringify(t) && (await said(surface)).some(s => /^Fit all/.test(s)));
+        await focusOn(surface, '[data-testid="map-group"]'); t = (await state(surface)).transform; await key('-'); await frames2();
+        check(`interaction:${tag}:keys-ignored-outside-canvas`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        // Tab leaves forwards and Shift+Tab returns to the same roving card: no trap.
+        await focusOn(surface, '[data-testid="map-card-D"]'); await key('Tab'); a = await active(surface);
+        check(`interaction:${tag}:tab-leaves-canvas`, !a.inCanvas && a.tag === 'BUTTON', undefined, a);
+        await key('Tab', 1, 8); a = await active(surface);
+        check(`interaction:${tag}:shift-tab-returns-to-roving-card`, a.task === 'D', undefined, a);
+        // Toolbar: keyboard operation and visible focus.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab', 1, 8); await key('Tab', 1, 8); await key('Tab', 1, 8); await key('Tab', 1, 8);
+        a = await active(surface);
+        check(`interaction:${tag}:toolbar-tab-order`, a.testid === 'map-focus-current' && /solid/.test(a.outline), undefined, a);
+        t = (await state(surface)).transform; await focusOn(surface, '[data-testid="map-zoom-in"]'); await key('Enter'); await frames2();
+        const zin = (await state(surface)).transform;
+        await focusOn(surface, '[data-testid="map-pan-left"]'); await key(' '); await frames2();
+        const panned = (await state(surface)).transform;
+        await focusOn(surface, '[data-testid="map-fit-all"]'); await key('Enter'); await frames2();
+        await focusOn(surface, '[data-testid="map-focus-current"]'); await key('Enter'); await frames2();
+        const toolSaid = await said(surface);
+        check(`interaction:${tag}:toolbar-keyboard-operable`, zin.zoom > t.zoom && panned.x > zin.x && near(panned.y, zin.y) && toolSaid.some(s => /^Zoom /.test(s)) && toolSaid.some(s => /^View moved left/.test(s)) && toolSaid.some(s => /^Focused current reported work/.test(s)), undefined, { t, zin, panned, toolSaid: toolSaid.slice(-4) });
+        // Background drag with a captured pointer across poll repaints; cards never drag.
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        let p = await background(surface); if (!p) throw Error(`no map background in ${tag}`);
+        t = (await state(surface)).transform;
+        await mouse('mouseMoved', p[0], p[1], { buttons: 0 }); await mouse('mousePressed', p[0], p[1]);
+        await mouse('mouseMoved', p[0] - 10, p[1] - 6); await mouse('mouseMoved', p[0] - 20, p[1] - 12);
+        await polls(surface, 1); await frames2();
+        const mid = await guest<any>(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return {captured:v.hasPointerCapture(1),dragging:w.mapPreview.state.dragging,active:d.activeElement?.dataset?.task??null}`);
+        await mouse('mouseMoved', p[0] - 30, p[1] - 18); await mouse('mouseMoved', p[0] - 40, p[1] - 24); await mouse('mouseReleased', p[0] - 40, p[1] - 24); await frames2();
+        const after = await state(surface);
+        check(`interaction:${tag}:captured-drag-survives-poll-repaint`, mid.captured && mid.dragging !== null && near(after.transform.x, t.x - 40) && near(after.transform.y, t.y - 24) && after.dragging === null && after.selected === 'D', undefined, { mid, t, after: after.transform });
+        await mapShot(`${tag}-pan-zoom`, surface);
+        t = after.transform; p = (await background(surface))!;
+        await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 30, deltaY: 50 }); await frames2();
+        const wheeled = (await state(surface)).transform;
+        // Ctrl/Cmd wheel is browser zoom: a labelled synthetic event (real Ctrl+wheel would zoom this
+        // browser) proves the canvas neither consumes nor cancels it.
+        const browserZoomKept = await guest<boolean>(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,ctrlKey:true,bubbles:true,cancelable:true}))&&v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,metaKey:true,bubbles:true,cancelable:true}))`); await frames2();
+        check(`interaction:${tag}:wheel-pans-canvas-ctrl-wheel-left-to-browser`, near(wheeled.x, t.x - 30) && near(wheeled.y, t.y - 50) && browserZoomKept && JSON.stringify((await state(surface)).transform) === JSON.stringify(wheeled), undefined, { t, wheeled, browserZoomKept });
+        const card = await evaluate<[number, number]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector('[data-testid="map-card-D"]');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]})()`);
+        t = (await state(surface)).transform;
+        await mouse('mouseMoved', card[0], card[1], { buttons: 0 }); await mouse('mousePressed', card[0], card[1]); await mouse('mouseMoved', card[0] + 30, card[1] + 20); await mouse('mouseReleased', card[0] + 30, card[1] + 20); await frames2();
+        check(`interaction:${tag}:cards-not-draggable`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
+        // Upstream/downstream highlights by real card clicks; every direct relation via the inspector.
+        // Fit all first so every card is on screen for real pointer clicks at any width.
+        await command(surface, { type: 'select', id: 'C' }); await command(surface, { type: 'fit' }); await frames2(); await click(surface, '[data-testid="map-card-D"]'); await frames2();
+        const marks = () => guest<Record<string, string>>(surface, `return Object.fromEntries([...d.querySelectorAll('[data-task]')].map(n=>[n.dataset.task,n.dataset.related??(n.getAttribute('aria-current')?'selected':'')]))`);
+        let m = await marks();
+        check(`interaction:${tag}:upstream-highlight`, (await state(surface)).selected === 'D' && m.A === 'upstream' && m.B === 'upstream' && m.C === 'upstream' && m.D === 'selected' && !Object.values(m).includes('downstream') && await guest(surface, `return [...d.querySelectorAll('path[data-path]')].length===4&&[...d.querySelectorAll('path[data-path]')].every(p=>p.dataset.path==='upstream')&&/Upstream of the selected task/.test(d.querySelector('[data-testid="map-card-B"]').getAttribute('aria-label'))`), undefined, m);
+        if (surface === 'page' || width === 360) await mapShot(surface === 'page' ? 'upstream-highlight' : 'rail-upstream-highlight', surface);
+        for (const rid of ['B', 'C']) {
+          await command(surface, { type: 'select', id: 'D' }); await frames2(); await click(surface, `[data-testid="map-relation-${rid}"]`); await frames2();
+          a = await active(surface);
+          check(`interaction:${tag}:inspector-relation-${rid}`, (await state(surface)).selected === rid && a.task === rid, undefined, a);
+        }
+        await command(surface, { type: 'select', id: 'C' }); await command(surface, { type: 'fit' }); await frames2(); await click(surface, '[data-testid="map-card-A"]'); await frames2(); m = await marks();
+        check(`interaction:${tag}:downstream-highlight`, ['B', 'C', 'D', 'E', 'F'].every(id => m[id] === 'downstream') && m.A === 'selected' && !Object.values(m).includes('upstream'), undefined, m);
+        if (surface === 'page') await mapShot('downstream-highlight', surface);
+        // Filters through real input: the pressed pair, the group select by keyboard, then the no-match clear.
+        await click(surface, '[data-testid="map-status-unfinished"]'); await frames2();
+        const ids = () => guest<string[]>(surface, `return [...d.querySelectorAll('[data-task]')].map(n=>n.dataset.task)`);
+        check(`interaction:${tag}:unfinished-pressed-filter`, (await state(surface)).status === 'unfinished' && !(await ids()).some(id => ['A', 'S'].includes(id)) && await guest(surface, `return d.querySelector('[data-testid="map-status-unfinished"] button').getAttribute('aria-pressed')==='true'`));
+        await focusOn(surface, '[data-testid="map-group"]'); await key('ArrowDown', 2); await frames2();
+        check(`interaction:${tag}:no-match-one-named-target`, (await state(surface)).group === 'G' && (await ids()).length === 0 && await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return v.tabIndex<0&&v.querySelectorAll('button').length===1&&/Show all tasks/.test(v.querySelector('button').textContent)`));
+        await click(surface, '[data-testid="map-clear-filters"]'); await frames2();
+        check(`interaction:${tag}:no-match-clear`, (await state(surface)).status === 'all' && (await state(surface)).group === null && (await ids()).length === 9 && (await said(surface)).some(s => /^9 tasks shown/.test(s)));
+        // Two ordinary polls without user action speak nothing.
+        const quiet = (await said(surface)).length; await polls(surface, 2);
+        check(`interaction:${tag}:polls-silent`, (await said(surface)).length === quiet);
+        // Review regression: passive focus restoration after a poll repaint must not undo the reader's
+        // pan; genuine keyboard entry still pans the roving card into view.
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); a = await active(surface);
+        const rover = a.task as string;
+        p = (await background(surface))!;
+        await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 3000, deltaY: 0 }); await frames2();
+        const away = (await state(surface)).transform;
+        check(`interaction:${tag}:wheel-away-keeps-focus`, !!rover && (await active(surface)).task === rover && !(await inView(surface, rover)));
+        await polls(surface, 2); await frames2();
+        check(`interaction:${tag}:passive-restore-keeps-pan`, JSON.stringify((await state(surface)).transform) === JSON.stringify(away) && (await active(surface)).task === rover && !(await inView(surface, rover)), undefined, { away, after: (await state(surface)).transform });
+        await key('Tab', 1, 8); await key('Tab'); await frames2();
+        check(`interaction:${tag}:keyboard-reentry-reveals`, (await active(surface)).task === rover && await inView(surface, rover));
+        check(`interaction:${tag}:no-animated-transitions`, await guest(surface, `return [...d.querySelectorAll('[data-testid="map-region"] *')].every(n=>getComputedStyle(n).transitionDuration.split(',').every(v=>parseFloat(v)===0))&&d.getAnimations().length===0`));
+      };
+      await realInput('page', 1100);
+      // Review regressions: a focus action ends with its turn, consumed or not.
+      await focusOn('page', '[data-testid="map-card-D"]'); await key('ArrowLeft'); await frames2(); await key('Tab'); const moved = await active('page');
+      await polls('page', 2); await frames2();
+      check('interaction:focus-action-ends-after-user-moves', !moved.inCanvas && JSON.stringify(await active('page')) === JSON.stringify(moved), undefined, { moved, now: await active('page') });
+      await focusOn('page', '[data-testid="map-zoom-in"]'); await command('page', { type: 'filters', status: 'unfinished' }); await frames2();
+      await guest('page', `w.mapPreview.repaint();w.mapPreview.viewCommand({type:'focus',id:'A',generation:w.mapPreview.state.generation});return true`); await frames2();
+      await command('page', { type: 'filters', status: 'all' }); await frames2(); await polls('page', 1); await frames2();
+      check('interaction:focus-action-with-missing-target-expires', (await active('page')).testid === 'map-zoom-in' && await guest('page', `return !!d.querySelector('[data-testid="map-card-A"]')`), undefined, await active('page'));
+      // Review regressions: a deferred repeat announcement never overwrites a newer message, and
+      // never survives leaving Map (the live region outlives the repainted root).
+      const tools = (...ids: string[]) => guest('page', `for(const id of ${javascriptLiteral(ids)})(d.querySelector('[data-testid="'+id+'"] button')??d.querySelector('[data-testid="'+id+'"]')).click();return true`);
+      const announcerText = () => guest<string>('page', `return d.querySelector('[data-testid="map-announcer"]').textContent`);
+      await tools('map-pan-left', 'map-pan-left', 'map-pan-up'); await frames2(); await frames2();
+      check('interaction:repeat-announcement-yields-to-newer', await announcerText() === 'View moved up.', undefined, await announcerText());
+      await tools('map-pan-left', 'map-pan-left', 'plan-view-list'); await wait('page', `d.querySelector('[data-testid="item-B"]')`, 'list after leaving map'); await frames2(); await frames2();
+      check('interaction:repeat-announcement-retired-with-map', await announcerText() === '' && await guest('page', `return d.querySelectorAll('[data-testid="map-announcer"]').length===1`), undefined, await announcerText());
+      await click('page', '[data-testid="plan-view-map"]'); await ready('page');
+      await theme('dark'); await focusOn('page', '[data-testid="map-card-A"]'); await key('ArrowRight'); await frames2();
+      await shot('keyboard-focus-dark', '[data-testid="map-viewport"]', 40, 900, 'page'); await theme('light');
+      await focusOn('page', '[data-testid="map-card-A"]'); await key('ArrowRight'); await frames2(); await shot('keyboard-focus', '[data-testid="map-viewport"]', 40, 900, 'page');
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await command('page', { type: 'select', id: 'D' }); await frames2(); await focusOn('page', '[data-testid="map-card-D"]'); await key('ArrowLeft'); await key('ArrowRight'); await frames2();
+      check('interaction:forced-colors-system-marks', await guest('page', `const p=d.querySelector('path[data-path]'),c=d.querySelector('[data-related="upstream"]');return w.matchMedia('(forced-colors: active)').matches&&!!p&&getComputedStyle(p).strokeWidth==='3px'&&getComputedStyle(c).borderTopStyle==='solid'&&!!d.querySelector('.ap-map-card-rel')`));
+      await mapShot('forced-colors', 'page');
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+      for (const width of [360, 600] as const) await realInput('panel', width);
+      // Rail List → Map handoff through the real canonical list, with focus still on the switch.
+      await show(['panel'], 360); await ready('panel');
+      await click('panel', '[data-testid="plan-view-list"]'); await wait('panel', `d.querySelector('[data-testid="item-E"]')`, 'canonical list');
+      await click('panel', '[data-testid="item-E"]'); const handoffMark = (await said('panel')).length;
+      await click('panel', '[data-testid="plan-view-map"]'); await ready('panel'); await wait('panel', `d.activeElement?.dataset?.task==='E'`, 'handoff focus on the list target');
+      const handoffSaid = (await said('panel')).slice(handoffMark), handoffName = await guest<string>('panel', `return d.activeElement?.getAttribute('aria-label')??''`);
+      // The handoff focuses the card, so its name is the one spoken selection; the live region stays quiet.
+      check('interaction:rail-handoff-focus-and-one-spoken-selection', (await state('panel')).selected === 'E' && await inView('panel', 'E') && handoffSaid.length === 0 && /^Sole remaining prerequisite\./.test(handoffName), undefined, { handoffSaid, handoffName });
+      check('interaction:rail-switch-pressed-group', await guest('panel', `const g=d.querySelector('[data-testid="plan-view"]');return g.getAttribute('role')==='group'&&/Plan view/.test(d.getElementById(g.getAttribute('aria-labelledby')).textContent)&&g.querySelector('[data-testid="plan-view-map"] button').getAttribute('aria-pressed')==='true'&&g.querySelector('[data-testid="plan-view-list"] button').getAttribute('aria-pressed')==='false'`));
+      await shot('rail-list-handoff', '[data-testid="progress-root"]', 12, 1100, 'panel');
+      await shot('rail-keyboard-focus', '[data-testid="map-viewport"]', 40, 900, 'panel');
+      // Resize 360 → 600 → 360 keeps the selected card visible, the zoom and full coverage.
+      const z = (await state('panel')).transform.zoom, cardsBefore = await guest<number>('panel', `return d.querySelectorAll('[data-task]').length`);
+      await show(['panel'], 600); await settled('panel');
+      check('interaction:rail-resize-600-keeps-selection-visible', (await state('panel')).selected === 'E' && await inView('panel', 'E') && (await state('panel')).transform.zoom === z && await guest<number>('panel', `return d.querySelectorAll('[data-task]').length`) === cardsBefore);
+      await shot('rail-resize', '[data-testid="progress-root"]', 12, 1100, 'panel');
+      await show(['panel'], 360); await settled('panel');
+      check('interaction:rail-resize-360-keeps-selection-visible', (await state('panel')).selected === 'E' && await inView('panel', 'E') && (await state('panel')).transform.zoom === z && await guest('panel', `return d.documentElement.scrollWidth<=w.innerWidth+1`));
+      // Two frames: a page poll neither steals the rail's focus nor speaks for it.
+      await show(['page', 'panel'], 600); await ready('page'); await ready('panel');
+      await focusOn('panel', '[data-testid="map-card-E"]'); await key('ArrowLeft'); await frames2();
+      const pageSaid = (await said('page')).length, railSaid = (await said('panel')).length, railFocus = (await active('panel')).task;
+      await polls('page', 2);
+      check('interaction:other-frame-poll-no-focus-theft-or-speech', await evaluate(`document.activeElement===frame('panel')`) && (await active('panel')).task === railFocus && (await said('page')).length === pageSaid && (await said('panel')).length === railSaid);
+      // A structural update keeps the selected card in view (both frames show the same plan).
+      await show(['page'], 1100); await ready('page'); await command('page', { type: 'select', id: 'D' }); await frames2();
+      const oldRevision = await guest<string>('page', `return d.querySelector('${region}').dataset.revision`);
+      fx.reportMap('P-map', { op: 'revise', items: [...mapItems, { id: 'J', title: 'Newly recorded follow-up', kind: 'task', dependencies: ['D'] }] });
+      await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('${region}').dataset.revision!==${javascriptLiteral(oldRevision)}&&d.querySelector('[data-testid="map-card-J"]')`, 'structural revision');
+      await frames2();
+      check('interaction:structural-update-keeps-selection-in-view', (await state('page')).selected === 'D' && await inView('page', 'D'));
+      await mapShot('structural-anchor', 'page');
+      // Review regression: frame ownership alone does not mean the initial, unselected roving
+      // card held focus. A surviving toolbar/switch control must keep focus across its removal.
+      for (const target of ['toolbar', 'switch', 'canvas'] as const) {
+        fx.reportMap('P-map-none', { op: 'revise', items: [{ id: 'A', title: 'First task', kind: 'task' }, { id: 'B', title: 'Second task', kind: 'task' }] });
+        const sequence = await evaluate<number>(`qa.reload('page')`);
+        await wait('page', `qa.loaded.page===${sequence}&&d.querySelector('${region}')?.dataset.state==='ready'`, 'reloaded map before removal regression');
+        await guest('page', `const picker=d.querySelector('[data-testid="map-plan"]');picker.value='P-map-none';picker.dispatchEvent(new w.Event('change',{bubbles:true}));return true`);
+        await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-card-A"]')&&d.querySelector('[data-testid="map-card-B"]')&&w.mapPreview.state.selected===null`, 'fresh unselected edgeless map');
+        if (target === 'canvas') { await focusOn('page', '[data-testid="map-pan-right"]'); await key('Tab'); }
+        else await click('page', target === 'toolbar' ? '[data-testid="map-zoom-in"]' : '[data-testid="plan-view-map"] button');
+        await frames2();
+        const focusBefore = await active('page'), noticeMark = (await said('page')).length;
+        check(`interaction:removed-roving-${target}:unselected-setup`, (await state('page')).selected === null && (await state('page')).roving === 'A' && (target === 'canvas' ? focusBefore.task === 'A' : focusBefore.testid === (target === 'toolbar' ? 'map-zoom-in' : 'plan-view-map')));
+        fx.reportMap('P-map-none', { op: 'revise', items: [{ id: 'B', title: 'Second task', kind: 'task' }] });
+        await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&!d.querySelector('[data-testid="map-card-A"]')&&w.mapPreview.state.roving==='B'`, 'removed initial roving card');
+        await frames2(); await polls('page', 1); await frames2();
+        const focusAfter = await active('page'), notices = (await said('page')).slice(noticeMark);
+        check(`interaction:removed-roving-${target}:focus-and-notice`, (await state('page')).selected === null && (target === 'canvas' ? focusAfter.task === 'B' && notices.length === 1 && /focused task is no longer recorded/.test(notices[0]) : focusAfter.testid === focusBefore.testid && notices.length === 0), undefined, { focusBefore, focusAfter, notices });
+      }
+      facts.inputCoverage = 'real CDP keyboard, pointer, wheel and click input on Designer bindings, plus controller probes for setup';
+      facts.pendingDesigner = [];
+      replies = await evaluate('qa.replies');
+      check('interaction:no-proxy-errors', JSON.stringify(await evaluate('qa.errors')) === '[]');
+      check('interaction:no-guest-errors', pageErrors().length === 0);
+      throw new OnlyDone();
+    }
+    const variants: Record<string, unknown> = {}; perf.variants = variants;
+    for (const [index, [surface, width]] of ([['page', 1100], ['panel', 360], ['panel', 600]] as const).entries()) {
+      if (index) {
+        await fx.stop(); fx = await startSearchShell(built, false, 'dependency-map-large'); origin = `http://127.0.0.1:${fx.port}`;
+        await c.send('Page.navigate', { url: `${origin}/` });
+      }
+      const name = `${surface}-${width}`, destination = join(artifacts, name); mkdirSync(destination, { recursive: true });
+      await show([surface], width); await evaluate(`qa.visibility('${surface === 'page' ? 'panel' : 'page'}',false);document.querySelector('iframe[data-frame="${surface}"]').style.height='850px';true`);
+      await ready(surface);
+      const sampleLoads: number[] = [], streams: unknown[] = [];
+      for (let sample = 0; sample < 4; sample++) {
+        const start = await now(), mark = await evaluate<number>('qa.replies.length'); await evaluate(`qa.reload('${surface}')`); await ready(surface); await frames2();
+        const elapsed = await now() - start, reads = await evaluate<any[]>(`qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}')`);
+        if (sample) { sampleLoads.push(elapsed); streams.push({ requests: reads.length, bytes: reads.reduce((n,r)=>n+r.bytes,0), detail: reads.filter(r=>r.path==='/v1/plan').length, graph: reads.filter(r=>r.path==='/v1/plan-graph').length }); }
+      }
+      const load = stats(sampleLoads), actions: Record<string, unknown> = {}, replayResults: unknown[] = [];
+      const budget = (id: string, observation: ReturnType<typeof stats>, limit: number) => { gates.push({ id: `${name}:${id}`, pass: observation.median <= limit, observed: observation, limit: `median ≤${limit} ms` }); };
+      budget('load', load, 2000);
+      async function action(label: string, setup: object, event: object) {
+        const times: number[] = [];
+        for (let sample = 0; sample < 4; sample++) { await command(surface, setup); await frames2(); const start = await now(); await command(surface, event); await frames2(); if (sample) times.push(await now() - start); }
+        const observation = stats(times); actions[label] = observation; budget(label, observation, 500);
+      }
+      await action('select-inspect', { type: 'select', id: 'T-00-00' }, { type: 'select', id: 'T-01-00' });
+      await action('unfinished', { type: 'filters', status: 'all' }, { type: 'filters', status: 'unfinished' });
+      await action('show-all', { type: 'filters', status: 'unfinished' }, { type: 'filters', status: 'all' });
+      await action('group-filter', { type: 'filters', group: null }, { type: 'filters', group: 'G-10' });
+      await action('group-reset', { type: 'filters', group: 'G-10' }, { type: 'filters', group: null });
+      await action('upstream', { type: 'select', id: 'T-01-00' }, { type: 'key', key: '[', canvas: true });
+      await action('downstream', { type: 'select', id: 'T-00-00' }, { type: 'key', key: ']', canvas: true });
+      await action('fit-all', { type: 'current' }, { type: 'fit' });
+      await action('neighbour', { type: 'select', id: 'T-00-00' }, { type: 'key', key: 'ArrowRight', canvas: true });
+      await action('pan', { type: 'fit' }, { type: 'pan', x: -30, y: 20 });
+      await action('zoom', { type: 'fit' }, { type: 'zoom', factor: 1.2 });
+      // Real CDP input through the shared view's bindings: a scoped arrow key on the focused card and a
+      // keyboard-activated toolbar Fit all, each timed to its settled frame.
+      async function realAction(label: string, setup: () => Promise<unknown>, input: () => Promise<unknown>, settled: string) {
+        const times: number[] = [];
+        for (let sample = 0; sample < 4; sample++) { await setup(); await frames2(); const start = await now(); await input(); await wait(surface, settled, label); await frames2(); if (sample) times.push(await now() - start); }
+        const observation = stats(times); actions[label] = { ...observation, input: 'real CDP keyboard' }; budget(label, observation, 500);
+      }
+      await realAction('real-key-neighbour', async () => { await command(surface, { type: 'select', id: 'T-00-00' }); await frames2(); await guest(surface, `d.querySelector('[data-testid="map-card-T-00-00"]').focus();return true`); }, () => key('ArrowRight'), `d.activeElement?.dataset?.task&&d.activeElement.dataset.task!=='T-00-00'&&w.mapPreview.state.selected===d.activeElement.dataset.task`);
+      await realAction('real-toolbar-fit-all', async () => { await command(surface, { type: 'current' }); await guest(surface, `w.__fit=JSON.stringify(w.mapPreview.state.transform);d.querySelector('[data-testid="map-fit-all"]').focus();return true`); }, () => key('Enter'), `JSON.stringify(w.mapPreview.state.transform)!==w.__fit&&d.querySelector('[data-testid="map-world"]').style.getPropertyValue('--ap-map-zoom')===String(w.mapPreview.state.transform.zoom)`);
+      await command(surface, { type: 'current' }); await command(surface, { type: 'select', id: 'T-10-24' }); await frames2();
+      const dom = await guest(surface, `return {cards:d.querySelectorAll('[data-task]').length,svg:d.querySelectorAll('svg').length,edges:d.querySelectorAll('path[data-from]').length,nodes:d.querySelectorAll('*').length,viewport:{width:w.innerWidth,height:w.innerHeight}}`);
+      check(`map-large:${name}:full-plan`, dom.cards === 980 && dom.edges === 2000, undefined, dom);
+      await mapShot(`${name}/map-ready`, surface);
+      for (const step of fx.largePlan!.steps.slice(1)) {
+        const before = await coordinates(surface); const commit = performance.now(); fx.largePlan!.advance(step.id);
+        await ready(surface, step.revision); await frames2(); const elapsed = performance.now() - commit, after = await coordinates(surface);
+        const moved = Object.keys(after.world).filter(id => before.world[id] && JSON.stringify(before.world[id]) !== JSON.stringify(after.world[id]));
+        const screenMoved = Object.keys(after.screen).filter(id => before.screen[id] && JSON.stringify(before.screen[id]) !== JSON.stringify(after.screen[id]));
+        gates.push({ id: `${name}:${step.id}:visible`, pass: elapsed <= 8000, observed: elapsed, limit: '≤8000 ms per observation' });
+        if (step.id === 'S4') check(`map-large:${name}:S4:no-topology-relocation`, moved.length === 0 && JSON.stringify(before.transform) === JSON.stringify(after.transform));
+        if (['S1','S2','S3','S8'].includes(step.id)) check(`map-large:${name}:${step.id}:zero-movement`, moved.length === 0 && screenMoved.length === 0 && JSON.stringify(before.transform) === JSON.stringify(after.transform), undefined, { moved: moved.length, screenMoved: screenMoved.length, transformBefore: before.transform, transformAfter: after.transform, firstBefore: Object.values(before.screen)[0], firstAfter: Object.values(after.screen)[0], viewportBefore:before.viewport,viewportAfter:after.viewport,scrollBefore:before.scrollY,scrollAfter:after.scrollY });
+        if (step.id === 'S5') { check(`map-large:${name}:selected-card-fully-in-view`, await inView(surface, 'T-10-24')); await mapShot(`${name}/map-after-structural`, surface); await command(surface, { type: 'select', id: 'T-19-48' }); await frames2(); }
+        if (step.id === 'S6' || step.id === 'S7') check(`map-large:${name}:${step.id}:removed-state-retired`, (await state(surface)).selected !== 'T-19-48');
+        replayResults.push({ step: step.id, visibleMs: elapsed, moved: moved.length, screenMoved: screenMoved.length });
+      }
+      const mark = await evaluate<number>('qa.replies.length'), layouts = await guest<number>(surface, 'return w.mapPreview.cpu.layouts');
+      await wait(surface, `qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'two completed unchanged polls');
+      const idle = await evaluate<any[]>(`qa.replies.slice(${mark}).filter(r=>r.frame==='${surface}')`);
+      check(`map-large:${name}:unchanged-polls-no-graph-detail-layout`, !idle.some(r=>r.path==='/v1/plan'||r.path==='/v1/plan-graph') && await guest<number>(surface, 'return w.mapPreview.cpu.layouts') === layouts);
+      // A real paged read is held across visibility retirement, then released. A visible peer's
+      // two ordinary polls bound the observation without assuming/subtracting a poll interval.
+      const peer = surface === 'page' ? 'panel' : 'page';
+      await evaluate(`qa.holds.push({tag:'map-large-hidden',path:'/v1/plan',frame:'${surface}',cursor:true});qa.reload('${surface}');true`);
+      await wait(surface, `qa.held.some(h=>h.tag==='map-large-hidden')`, 'held large-map detail continuation');
+      await evaluate(`qa.visibility('${surface}',false);qa.visibility('${peer}',true);true`); await frames2();
+      const requestMark = await evaluate<number>('qa.requests.length'), pollMark = await evaluate<number>('qa.replies.length');
+      const renderMark = await guest<number>(surface, 'return w.mapPreview.cpu.render.length');
+      await evaluate(`qa.release('map-large-hidden');true`);
+      await wait(peer, `qa.replies.slice(${pollMark}).filter(r=>r.frame==='${peer}'&&r.path==='/v1/plans'&&r.status===200).length>=2`, 'visible-peer polls after hidden release');
+      const hiddenRequests = await evaluate<any[]>(`qa.requests.slice(${requestMark}).filter(r=>r.frame==='${surface}')`);
+      const hiddenRenders = await guest<number>(surface, 'return w.mapPreview.cpu.render.length') - renderMark;
+      check(`map-large:${name}:hidden-read-neither-continues-nor-paints`, hiddenRequests.length === 0 && hiddenRenders === 0, undefined, { requests: hiddenRequests.length, renders: hiddenRenders });
+      await evaluate(`qa.visibility('${surface}',true);qa.visibility('${peer}',false);true`); await ready(surface, 9); await frames2();
+      await theme('dark'); await mapShot(`${name}/map-dark-narrow`, surface);
+      const cpu = await guest(surface, 'return w.mapPreview.cpu'), requests = await evaluate('qa.replies');
+      const summary = { preview: true, input: 'controller-dispatched timed actions through the bound shared view, plus real CDP keyboard actions (real-key-neighbour, real-toolbar-fit-all); pointer/keyboard reachability is proven by dependency-map-interaction', fixture: LARGE_PLAN_VERSION, seed: LARGE_PLAN_SEED, surface, width, frameHeight: 850, browser: browserVersion, runtime: process.version, service: built ? 'built' : 'typescript', serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), commit: facts.commit, previewHash: fx.previewHash, load, streams, actions, dom, cpu: { ...cpu, label: 'layout and shared view render CPU; not compositor time' }, hidden: { requests: hiddenRequests.length, renders: hiddenRenders, completedPeerPolls: 2 }, replay: replayResults, budgets: gates.filter(g=>g.id.startsWith(name)) };
+      variants[name] = summary;
+      writeFileSync(join(destination, 'performance.json'), JSON.stringify(summary, null, 2)+'\n');
+      writeFileSync(join(destination, 'requests.json'), JSON.stringify(requests, null, 2)+'\n');
+      writeFileSync(join(destination, 'results.json'), JSON.stringify({ checks: results.filter(r=>r.id.includes(name)), preview: true }, null, 2)+'\n');
+      replies.push(...requests);
+      check(`map-large:${name}:no-proxy-errors`, JSON.stringify(await evaluate('qa.errors')) === '[]');
+      check(`map-large:${name}:no-guest-errors`, pageErrors().length === 0);
+    }
+    for (const g of gates) check(`map-large:budget:${g.id}`, g.pass, [g.limit], g.observed);
+    throw new OnlyDone();
+  }
+
+  if (onlyMapRender) {
+    Object.assign(facts, { mode: 'dependency-map-render', preview: true, fixture: 'dependency-map-v1', runtime: process.version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), previewHash: fx.previewHash, serviceHash: createHash('sha256').update(readFileSync('build/service/main.js')).digest('hex'), visualSignoff: 'evidence/dependency-map/render/design-signoff.md' });
+    const region = '[data-testid="map-region"]';
+    const ready = (f = 'page') => wait(f, `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-world"]')`);
+    const select = async (f: string, id: string, value: string) => { await guest(f, `const n=d.querySelector('[data-testid="${id}"]');n.value=${javascriptLiteral(value)};n.dispatchEvent(new Event('change',{bubbles:true}));return true`); await frames2(); };
+    const plan = async (id: string, f = 'page') => { await select(f, 'map-plan', id); await ready(f); };
+    // Show all / Unfinished is the list's pressed-button pair (map-status-{all,unfinished}).
+    const showTasks = async (f: string, value: 'all' | 'unfinished') => { await guest(f, `d.querySelector('[data-testid="map-status-${value}"] button').click();return true`); await frames2(); };
+    const snapshot = (f: string) => guest<any>(f, `const n=d.querySelector('${region}');return {tasks:n.dataset.tasks,edges:n.dataset.edges,cards:[...n.querySelectorAll('[data-task]')].map(n=>({id:n.dataset.task,x:n.dataset.x,y:n.dataset.y,status:n.dataset.status,readiness:n.dataset.readiness,unlocks:n.dataset.unlocks})),pairs:[...n.querySelectorAll('path[data-from]')].map(n=>[n.dataset.from,n.dataset.to]),arrows:[...n.querySelectorAll('path[data-from]')].every(n=>!!n.getAttribute('marker-end'))}`);
+    await show(['page'], 1100); await ready();
+    const initial = await snapshot('page');
+    const expected = mapItems.filter(i => i.kind === 'task').flatMap(i => (i.dependencies ?? []).map(d => [d, i.id]));
+    const pairs = (v: unknown[]) => JSON.stringify(v.map(x => JSON.stringify(x)).sort());
+    check('render:explicit-directed-pairs', pairs(initial.pairs) === pairs(expected) && initial.arrows);
+    check('render:arrow-geometry-direction', await guest('page', `return [...d.querySelectorAll('path[data-from]')].every(p=>{const a=p.getPointAtLength(0),b=p.getPointAtLength(p.getTotalLength());return a.x<b.x})`));
+    check('render:full-task-coverage-no-group-substitution', initial.cards.length === mapItems.filter(i => i.kind === 'task').length && initial.cards.every((i: any) => !i.id.startsWith('G')));
+    check('render:no-false-unlock', initial.cards.every((i: any) => !i.unlocks.split(',').includes('F')));
+    check('render:skipped-is-not-done', initial.cards.find((i: any) => i.id === 'W').readiness === 'skipped' && initial.cards.find((i: any) => i.id === 'S').unlocks === '');
+    check('render:literal-text', await guest('page', `return d.body.textContent.includes('<img src=x onerror=alert(1)>')&&!d.querySelector('${region} img')`));
+    // Semantic claims use rendered text / accessible card names, not readiness data attributes.
+    const cardText = (id: string) => guest<string>('page', `const n=d.querySelector('[data-testid="map-card-${id}"]');return (n?.innerText??'')+' '+(n?.getAttribute('aria-label')??'')`);
+    // Read claims on cards and the named current-work summary, not explanatory notices saying
+    // that Ready/Unlocks next guidance is intentionally absent on stale or closed pictures.
+    const guidanceText = () => guest<string>('page', `return [...d.querySelectorAll('[data-testid="map-summary"] [aria-label="Current work"],[data-task]')].map(n=>(n.innerText??'')+' '+(n.getAttribute('aria-label')??'')).join(' ')`);
+    check('render:current-active-guidance-text', /\bReady\b/.test(await cardText('C')) && /Unlocks next/i.test(await guidanceText()));
+    const fullCounts = () => guest<string>('page', `return d.querySelector('[data-testid="map-counts"]')?.innerText??''`);
+    const countsMatch = (text: string) => /1 of 8 done/.test(text) && /7 remaining/.test(text) && /1 skipped/.test(text);
+    check('render:full-plan-count-text', countsMatch(await fullCounts()));
+    await shot('active-overview');
+    await click('page', '[data-testid="map-card-B"]'); await wait('page', `d.querySelector('[data-testid="map-inspector"]')?.textContent.includes('Build a deliberately')`); await shot('selected-inspector');
+    const unchanged = (after: any) => after.cards.every((i: any) => initial.cards.some((a: any) => a.id === i.id && a.x === i.x && a.y === i.y));
+    await showTasks('page', 'unfinished'); check('render:unfinished-stable', unchanged(await snapshot('page')) && !(await snapshot('page')).cards.some((i: any) => ['A','S'].includes(i.id)));
+    await showTasks('page', 'all'); await select('page', 'map-group', 'G'); check('render:group-subtree-stable', unchanged(await snapshot('page')) && (await snapshot('page')).cards.map((i: any) => i.id).join() === 'A');
+    check('render:filtered-counts-remain-full-plan', countsMatch(await fullCounts()));
+    await select('page', 'map-group', '*');
+    // A real newer report, with its graph reply held: retain the accepted picture, never reload it away.
+    const retainedRevision = await guest<string>('page', `return d.querySelector('${region}').dataset.revision`);
+    await evaluate(`qa.holds.push({path:'/v1/plan-graph',frame:'page',tag:'map-newer-graph'});true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] });
+    await wait('page', `parent.qa.held.some(h=>h.tag==='map-newer-graph')&&d.querySelector('${region}')?.dataset.state==='updating'`, 'retained picture while newer graph is held');
+    check('render:updating-retains-accepted-picture', await guest('page', `return d.querySelector('${region}').dataset.revision===${javascriptLiteral(retainedRevision)}&&d.querySelectorAll('[data-task]').length===9&&d.querySelector('[data-testid="map-state"]').innerText.includes('Updating')`));
+    check('render:updating-suppresses-guidance-text', !/\bReady\b|Unlocks next/i.test(await guidanceText()) && /Reported pending/i.test(await cardText('C')));
+    await shot('retained-updating'); await evaluate(`qa.release('map-newer-graph')`); await ready();
+    check('render:matched-picture-restores-guidance-text', /\bReady\b/.test(await cardText('C')) && /Unlocks next/i.test(await guidanceText()));
+    // Legacy complete detail with no usable snapshot, after an accepted picture of this same reading.
+    await evaluate(`qa.stripDetailSnapshot='page';true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'pending' }] });
+    await wait('page', `d.querySelector('${region}')?.dataset.state==='unavailable'`, 'retained picture becomes unavailable without identity');
+    const noDiagram = () => guest<boolean>('page', `const n=d.querySelector('${region}'),control=n.querySelector('[data-testid="map-list"]'),b=control?.matches('button')?control:control?.querySelector('button');return !n.querySelector('[data-task],path[data-from]')&&!n.dataset.revision&&n.dataset.tasks==='0'&&n.dataset.edges==='0'&&!!b&&!b.disabled&&b.tabIndex>=0&&b.getClientRects().length>0&&/View as list/i.test(b.innerText)&&!/Revision [0-9]/i.test(n.innerText)`);
+    check('render:unavailable-discards-retained-diagram', await noDiagram() && await guest('page', `return d.querySelector('[data-testid="map-state"]').innerText.includes('earlier map is no longer shown')`)); await shot('retained-unavailable');
+    await evaluate(`qa.stripDetailSnapshot=false;true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'working' }] }); await ready();
+    await evaluate(`qa.fail.push({path:'/v1/plan-graph',frame:'page',status:404,code:'not-found',once:true});true`);
+    fx.reportMap('P-map', { op: 'change', changes: [{ id: 'I', status: 'pending' }] });
+    await wait('page', `d.querySelector('${region}')?.dataset.state==='not-found'`, 'not-found after accepted picture');
+    check('render:not-found-discards-previous-diagram', await noDiagram()); await shot('retained-not-found');
+    for (const [id, filename, text, tasks] of [['P-map-none','no-prerequisites','No prerequisites recorded for this plan',2],['P-map-groups','group-context','No task-to-task prerequisites recorded',1],['P-map-group-only','group-only','No task cards',0],['P-map-empty','empty','No task cards',0],['P-map-finished','finished','Done',2],['P-map-cancelled','cancelled','Reported pending',1]] as const) {
+      await plan(id); check(`render:${id}`, await guest('page', `return d.querySelector('${region}').textContent.includes(${javascriptLiteral(text)})`) && Number((await snapshot('page')).tasks) === tasks && (await snapshot('page')).pairs.length === 0); await shot(filename);
+      if (id === 'P-map-empty' || id === 'P-map-group-only') check(`render:${id}-D5-sentence`, await guest('page', `return d.querySelector('${region}').innerText.includes('No prerequisites recorded for this plan')`));
+      if (id === 'P-map-finished' || id === 'P-map-cancelled') check(`render:${id}-no-guidance-text`, !/\bReady\b|Unlocks next/i.test(await guidanceText()) && (id === 'P-map-finished' ? /Skipped/.test(await cardText('S')) : /Reported pending/.test(await cardText('P'))));
+    }
+    await plan('P-map');
+    for (const width of [600,360]) { await show(['panel'], width); try { await ready('panel'); } catch (e) { throw Error(String(e) + JSON.stringify(pageErrors())); } const rail = await snapshot('panel'); check(`render:rail-${width}-full-coverage`, rail.tasks === initial.tasks && rail.edges === initial.edges && pairs(rail.pairs) === pairs(initial.pairs)); await shot(width === 600 ? 'rail-map-wide' : 'rail-map-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel'); }
+    await theme('dark'); await shot('dark-narrow', '[data-testid="progress-root"]', 12, 1700, 'panel'); await theme('light'); await show(['page'],1100);
+    await evaluate(`qa.holds.push({path:'/v1/plan',frame:'page',plan:'P-map-paged',cursor:true,tag:'map-page'});true`); await select('page','map-plan','P-map-paged');
+    await wait('page', `parent.qa.held.some(h=>h.tag==='map-page')`, 'held detail continuation'); check('render:no-partial-picture', (await snapshot('page')).cards.length === 0); await evaluate(`qa.release('map-page')`); await ready(); check('render:complete-paged-picture', Number((await snapshot('page')).tasks) === 45);
+    const packedToCanvas = `(()=>{const width=Number(d.querySelector('[data-testid="preview-map-host"]')?.dataset.canvasWidth),cards=[...d.querySelectorAll('[data-task]')];return width>0&&cards.length===45&&cards.every(n=>Number(n.dataset.x)+n.offsetWidth<=width+1)})()`;
+    await wait('page', packedToCanvas, 'edgeless board packs within reported usable canvas');
+    check('render:edgeless-board-packs-to-canvas', await guest('page', `return ${packedToCanvas}`));
+    await shot('paged-edgeless-canvas');
+    await evaluate(`qa.stripGraph=true;qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='unavailable'`); await shot('unavailable');
+    await evaluate(`qa.stripGraph=false;qa.fail.push({path:'/v1/plan-graph',frame:'page',status:409,once:true});qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='updating'`); await shot('updating'); await click('page','[data-testid="map-retry"]'); await ready(); check('render:conflict-try-again', true);
+    await evaluate(`qa.fail.push({path:'/v1/plan-graph',frame:'page',status:503,once:true});qa.reload('page');true`); await wait('page', `d.querySelector('${region}')?.dataset.state==='error'`); await shot('read-failure'); await click('page','[data-testid="map-retry"]'); await ready(); check('render:failure-try-again', true);
+    await show(['panel'],360); await evaluate(`qa.stripGraph=true;qa.reload('panel');true`); await wait('panel', `d.querySelector('${region}')?.dataset.state==='unavailable'`); await shot('rail-unavailable', '[data-testid="progress-root"]', 12, 1700, 'panel');
+    check('render:no-proxy-errors', await evaluate('qa.errors.length===0'));
+    replies = await evaluate('qa.replies');
+    throw new OnlyDone();
+  }
   if (onlyKeyboard || onlyReplay) {
     await keyboardFocus();
     throw new OnlyDone();
@@ -222,13 +939,13 @@ try {
     type FocusState = { top: string; frame: string | null; topHasFocus: boolean; guestHasFocus?: boolean; el?: { tag: string; testid: string | null; role?: string; label: string; ring: boolean; inline: boolean; expanded?: string; pressed?: string; selected?: string; disabled?: boolean } | null; guests: Record<string, { hasFocus: boolean; active: string | null }> };
     const focusState = () => evaluate<FocusState>('kf.state()');
     const clickTop = async (selector: string) => {
-      const p = await evaluate<[number, number] | null>(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
+      const p = await evaluate<[number, number] | null>(`(()=>{const n=document.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
       if (!p) throw Error(`missing shell ${selector}`);
       for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: p[0], y: p[1], button: 'left', clickCount: 1 });
     };
     const SHIFT = 8;
     /** In the owning guest only: is focus on `selector` (or inside it) while that frame owns focus? */
-    const focusedOn = (surface: string, selector: string) => evaluate<boolean>(`(()=>{const a=document.activeElement;if(!a||a.tagName!=='IFRAME'||a.dataset.frame!=='${surface}')return false;const d=a.contentDocument;if(!d.hasFocus())return false;const n=d.querySelector(${JSON.stringify(selector)});return !!n&&(n===d.activeElement||n.contains(d.activeElement))})()`);
+    const focusedOn = (surface: string, selector: string) => evaluate<boolean>(`(()=>{const a=document.activeElement;if(!a||a.tagName!=='IFRAME'||a.dataset.frame!=='${surface}')return false;const d=a.contentDocument;if(!d.hasFocus())return false;const n=d.querySelector(${javascriptLiteral(selector)});return !!n&&(n===d.activeElement||n.contains(d.activeElement))})()`);
     /** Tab from the neutral start sentinel until focus leaves to the end sentinel; then Shift+Tab back. */
     const walk = async (name: string, max = 160) => {
       await clickTop('#qa-before');
@@ -317,12 +1034,12 @@ try {
       const clip = { x: Math.max(0, r[0] - pad), y: Math.max(0, r[1] - pad), width: r[2] + pad * 2, height: r[3] + pad * 2, scale: 2 };
       const cs = await guest<Record<string, string>>(surface, `const a=d.activeElement,e=a.getAttribute('role')==='listbox'?(a.querySelector('[data-active="true"]')??a):a,cs=w.getComputedStyle(e),own=w.getComputedStyle(a);return {outline:own.outlineStyle+' '+own.outlineWidth+' '+own.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage,ring:String((own.outlineStyle!=='none'&&parseFloat(own.outlineWidth)>0)||(cs.boxShadow!=='none'&&!/^rgba\\(0, 0, 0, 0\\.0\\d/.test(cs.boxShadow)&&!/0px 1px/.test(cs.boxShadow)))}`);
       const a = await c.send('Page.captureScreenshot', { format: 'png', clip });
-      const where = () => evaluate<number[]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${JSON.stringify(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [Math.round(o.x+a.x+scrollX),Math.round(o.y+a.y+scrollY)]})()`);
+      const where = () => evaluate<number[]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)}),a=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [Math.round(o.x+a.x+scrollX),Math.round(o.y+a.y+scrollY)]})()`);
       const before = await where();
       // Unfocused reference only (not reachability evidence): the shell sentinel takes focus without scrolling.
       await evaluate(`document.getElementById('qa-before').focus({preventScroll:true});true`); await frames2();
       const stable = JSON.stringify(before) === JSON.stringify(await where());
-      const cs2 = await guest<Record<string, string>>(surface, `const e=d.querySelector(${JSON.stringify(selector)}),cs=w.getComputedStyle(e);return {outline:cs.outlineStyle+' '+cs.outlineWidth+' '+cs.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage}`);
+      const cs2 = await guest<Record<string, string>>(surface, `const e=d.querySelector(${javascriptLiteral(selector)}),cs=w.getComputedStyle(e);return {outline:cs.outlineStyle+' '+cs.outlineWidth+' '+cs.outlineColor,shadow:cs.boxShadow,bg:cs.backgroundColor,bgImage:cs.backgroundImage}`);
       const b = await c.send('Page.captureScreenshot', { format: 'png', clip });
       writeFileSync(join(artifacts!, `${name}-focused.png`), Buffer.from(a.data, 'base64'));
       writeFileSync(join(artifacts!, `${name}-unfocused.png`), Buffer.from(b.data, 'base64'));
@@ -333,14 +1050,24 @@ try {
     };
     /** From the start sentinel, real Tab presses until `selector` in `surface` owns focus. */
     const tabTo = async (surface: string, selector: string, max = 120, fromStart = true) => {
+      if (surface === 'page' && /data-testid="(?:filter-(?:project|worktree|session)|search-(?:lifecycle|task-status|source|submit))"/.test(selector)) {
+        // These capabilities moved behind Filters; reach its opener and panel
+        // through actual keyboard input rather than targeting a hidden select.
+        await boardUi.closeFilters();
+        await tabTo('page', BOARD_FILTERS_TRIGGER, max);
+        await key('Enter');
+        await wait('page', `d.querySelector('${BOARD_FILTERS}')?.getClientRects().length>0`, 'Filters opened by keyboard');
+        fromStart = false;
+      }
       if (fromStart) await clickTop('#qa-before');
+      if (await focusedOn(surface, selector)) return 0;
       const seen: string[] = [];
       for (let i = 1; i <= max; i++) {
         await key('Tab');
         if (await focusedOn(surface, selector)) { await frames2(); await frames2(); return i; }
         const st = await focusState();
         seen.push(st.el ? `${st.frame}:${st.el.testid ?? st.el.tag}` : String(st.top));
-        if (st.top === 'qa-after') throw Error(`Tab left ${surface} before reaching ${selector}; target ${JSON.stringify(await guest(surface, `const n=d.querySelector(${JSON.stringify(selector)});return n?{disabled:n.disabled??null,hidden:!!n.closest('[hidden]'),tabIndex:n.tabIndex,rects:n.getClientRects().length}:null`))}; stops ${JSON.stringify(seen.slice(-40))}`);
+        if (st.top === 'qa-after') throw Error(`Tab left ${surface} before reaching ${selector}; target ${JSON.stringify(await guest(surface, `const n=d.querySelector(${javascriptLiteral(selector)});return n?{disabled:n.disabled??null,hidden:!!n.closest('[hidden]'),tabIndex:n.tabIndex,rects:n.getClientRects().length}:null`))}; stops ${JSON.stringify(seen.slice(-40))}`);
       }
       throw Error(`${selector} not reached in ${surface} within ${max} Tab presses`);
     };
@@ -372,19 +1099,30 @@ try {
     };
     const messages = (type: RegExp) => evaluate<{ frame: string; type: string }[]>(`qa.messages.filter(m=>${type}.test(m.type))`);
     const tasksOf = (_surface: string) => `d.querySelector('article[data-reading] .ap-tasks[data-complete]')`;
-    const railPlan = () => guest<string | null>('panel', `return d.querySelector('article[data-reading]')?.dataset.testid??null`);
+    const railPlan = () => guest<string | null>('panel', `const a=d.querySelector('article[data-reading]'),key=JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]');return a?.dataset.testid??(key[6]?'plan-'+key[6]:null)`);
     const stateSig = (surface: string) => guest<string>(surface, `return JSON.stringify({plan:d.querySelector('article[data-testid^="plan-"]')?.dataset.testid??null,pressed:[...d.querySelectorAll('[aria-pressed]')].map(n=>n.getAttribute('aria-pressed')),open:[...d.querySelectorAll('details')].map(n=>n.open),tabs:[...d.querySelectorAll('[role="tab"]')].map(n=>n.getAttribute('aria-selected')),selected:[...d.querySelectorAll('[role="option"][aria-selected="true"]')].map(n=>n.dataset.testid??n.id),triggers:[...d.querySelectorAll('.oc-sdk-trigger')].map(n=>n.textContent)})`);
     /** Fresh guest document per scenario, so one scenario's failure cannot leak state into the next. */
     const fresh = async (surface: string) => {
       const seq = await evaluate<number>(`qa.reload('${surface}')`);
       await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid="progress-root"]')`, `${surface} reloaded`);
+      // Cross-surface resets also reload hidden guests. Native keyboard setup belongs only
+      // to the visible scenario; a hidden iframe is not a reachable keyboard destination.
+      if (!(await evaluate<boolean>(`frame('${surface}').getClientRects().length>0`))) return;
+      if (surface !== 'status') {
+        const entry = surface === 'page' ? '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]' : '[data-testid="plan-view-list"] button';
+        await wait(surface, `d.querySelector('${entry}')`, 'explicit List entry');
+        await tabTo(surface, entry); if (surface === 'page') await key('Home'); await key('Enter');
+        await wait(surface, tasksOf(surface)); await progressUi.planOrder(surface);
+      }
       if (surface === 'page') await wait('page', `d.querySelector('[data-testid="search-form"]')&&d.querySelector('[data-testid="plan-list"]')&&d.querySelector('[data-testid="plan-detail"] .ap-tasks[data-complete]')`, 'board ready', 20_000);
       if (surface === 'panel') await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')&&d.querySelector('article[data-reading] .ap-tasks[data-complete]')`, 'rail ready', 20_000);
       if (surface === 'status') await wait('status', `d.querySelector('[data-testid="status-plan-selector"] .oc-sdk-trigger')`, 'status ready', 20_000);
     };
     const railOn = async (label: string, plan: string) => {
       if (await guest<string | null>('panel', `return d.querySelector('article[data-reading]')?.dataset.testid??null`) !== `plan-${plan}`) await openPicker('panel', 'plan-selector', label);
+      await progressUi.list('panel');
       await wait('panel', `d.querySelector('article[data-reading][data-testid="plan-${plan}"] .ap-tasks[data-complete]')`, `rail on ${plan}`);
+      await progressUi.planOrder('panel');
     };
     /** M1: focus is on the owning heading (this frame owns focus) and the short notice names the outcome. */
     const handedTo = async (k: string, surface: string, id: string, heading: string, notice: RegExp, noticeHook = 'focus-handoff-notice') => {
@@ -410,6 +1148,7 @@ try {
       await scenario('K1-rail', ['K1', 'K11'], async () => {
         await show(['panel'], 360); await theme('light');
         await evaluate(`qa.context('KF');true`);
+        await progressUi.list('panel');
         await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')&&${tasksOf('panel')}`, 'rail KF session with complete detail');
         await walkChecks('K1', 'panel', 'rail-360-light-initial');
         // Picker: Tab reaches it; Enter opens; arrows move; Escape restores trigger focus without change.
@@ -425,16 +1164,19 @@ try {
         kcheck('K1', 'panel', 'picker:escape-restores-trigger-no-change', await focusedOn('panel', '[data-testid="plan-selector"] .oc-sdk-trigger') && await railPlan() === plan0, undefined, { plan0, now: await railPlan(), focus: await focusState() });
         await key('Enter'); await wait('panel', `d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'picker open again');
         await pickOpen('panel', 'Focus controls example');
-        await wait('panel', `d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus detail');
+        await wait('panel', `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'||d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus selected reading');
         kcheck('K1', 'panel', 'picker:enter-chooses-and-keeps-trigger', await focusedOn('panel', '[data-testid="plan-selector"] .oc-sdk-trigger'), undefined, await focusState());
         await key('Enter'); await wait('panel', `d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'picker open (Tab exit)');
         await key('Tab');
         await wait('panel', `!d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'Tab closes the popup');
         kcheck('K1', 'panel', 'picker:tab-leaves-popup', !(await focusedOn('panel', '.oc-sdk-popup')) && await owns('panel') && await railPlan() === 'plan-K-focus');
+        await progressUi.list('panel');
+        await progressUi.planOrder('panel');
+        await progressUi.expandAll('panel');
         const w = await walkChecks('K1', 'panel', 'rail-360-light-active-plan');
         const ids = w.list.map((x: any) => x.testid);
         for (const hook of ['plan-selector', 'focus-mode-all', 'focus-mode-unfinished', 'focus-participant', 'focus-expand-all', 'focus-collapse-all', 'focus-jump-working', 'focus-jump-blocked']) kcheck('K1', 'panel', `reachable:${hook}`, ids.includes(hook), undefined, ids);
-        kcheck('K1', 'panel', 'reachable:readiness-entries', ids.some((t: string) => t?.startsWith('readiness-entry-')), undefined, ids);
+        kcheck('K1', 'panel', 'reachable:canonical-task-disclosures', ids.some((t: string) => t?.startsWith('item-toggle-')), undefined, ids);
         kcheck('K1', 'panel', 'reachable:group-disclosures', ids.some((t: string) => t?.startsWith('group-toggle-')), undefined, ids);
         kcheck('K1', 'panel', 'task-rows-not-tab-stops', !w.list.some((x: any) => /^item-/.test(x.testid ?? '') && x.tag === 'li'), ['Canonical task rows stay navigation targets (tabindex -1), not Tab stops']);
         // Task mode: Tab focuses Unfinished without activating; Space activates.
@@ -467,13 +1209,11 @@ try {
         const jumped = await focusState();
         kcheck('K1', 'panel', 'jump:canonical-row-ancestors-open-ring', await guest<boolean>('panel', `const a=d.activeElement;return [...d.querySelectorAll('details')].filter(x=>x.contains(a)).every(x=>x.open)&&d.querySelectorAll('[data-testid="'+a.dataset.testid+'"]').length===1`) && !!jumped.el?.ring && !!jumped.guestHasFocus, undefined, jumped);
         await focusShot('rail-focus-light-jump-row', 'panel');
-        // Readiness: Show task / prerequisite buttons reveal the canonical row.
-        const entry = await guest<string | null>('panel', `return d.querySelector('[data-testid^="readiness-entry-"] button')?.closest('[data-testid^="readiness-entry-"]').dataset.testid??null`);
-        if (!entry) throw Error('no readiness entry button in rail');
-        await tabTo('panel', `[data-testid="${entry}"] button`); await key('Enter');
-        const item = entry.replace('readiness-entry-', '');
-        await wait('panel', `d.activeElement?.dataset.testid==='item-${item}'`, 'readiness reveal');
+        // Canonical blocked jump and the expanded row's prerequisite references share reveal.
+        await tabTo('panel', '[data-testid="focus-jump-blocked"] button'); await key('Enter');
+        await wait('panel', `d.activeElement?.dataset.status==='blocked'&&d.activeElement.tagName==='LI'`, 'canonical blocker reveal');
         kcheck('K1', 'panel', 'readiness:enter-reveals-canonical-row', await owns('panel'));
+        await progressUi.expandAll('panel');
         const dep = await guest<string | null>('panel', `return d.querySelector('[data-dep] button')?.closest('[data-dep]').dataset.dep??null`);
         if (dep) {
           await tabTo('panel', `[data-dep="${dep}"] button`); await key('Enter');
@@ -488,10 +1228,11 @@ try {
         await wait('panel', `d.querySelector('[data-testid="${group}"]').open===${!was}`, 'group toggled');
         kcheck('K1', 'panel', 'group-disclosure:enter-toggles-keeps-focus', await focusedOn('panel', `[data-testid="${group}"] > summary`));
         await focusShot('rail-focus-light-summary', 'panel');
-        await tabTo('panel', '[data-testid="document-K-focus"] > summary'); await key('Enter');
-        await wait('panel', `d.querySelector('[data-testid="document-K-focus"]').open`, 'document disclosure open');
-        kcheck('K1', 'panel', 'document-disclosure:enter-opens', await focusedOn('panel', '[data-testid="document-K-focus"] > summary'));
-        await key('Enter');
+        await progressUi.action('panel', 'document', true);
+        await wait('panel', `d.querySelector('[data-testid="plan-panel-document"]')`, 'document panel open');
+        kcheck('K1', 'panel', 'document-menu:enter-opens', await focusedOn('panel', '[data-testid="plan-panel-document"] .ap-panel-h'));
+        await key('Escape');
+        kcheck('K1', 'panel', 'document-panel:escape-returns-trigger', await focusedOn('panel', '[data-testid="plan-actions"] button'));
         await shot('rail-light-360', '[data-testid="progress-root"]', 8, 1500, 'panel');
       });
       // ---------------------------------------------------------------- K7 rail filtered-empty recovery
@@ -532,11 +1273,13 @@ try {
       });
       await scenario('K7-board-empty', ['K7'], async () => {
         await show(['page'], 1100); await fresh('page');
-        const list = await guest<string>('page', `return d.querySelector('[data-testid="plan-row-K-all-done"]').closest('[data-testid^="project-"]').dataset.testid`);
-        await tabTo('page', `[data-testid="${list}"] [role="listbox"]`);
-        const idx = await guest<number>('page', `return [...d.querySelectorAll('[data-testid="${list}"] [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-K-all-done')`);
+        await boardUi.revealPlan('[data-testid="plan-row-K-all-done"]');
+        const list = '[data-testid="plan-list"] [role="listbox"]:has([data-testid="plan-row-K-all-done"])';
+        await tabTo('page', list);
+        const idx = await guest<number>('page', `return [...d.querySelectorAll('${list} [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-K-all-done')`);
         await key('Home'); if (idx) await key('ArrowDown', idx); await key('Enter');
         await wait('page', `d.querySelector('article[data-reading][data-testid="plan-K-all-done"] .ap-tasks[data-complete]')`, 'board all-done plan');
+        await progressUi.planOrder('page');
         await tabTo('page', '[data-testid="focus-mode-unfinished"] button'); await key(' ');
         await wait('page', `d.querySelector('[data-testid="focus-empty"]')`, 'board focus-empty');
         await tabTo('page', '[data-testid="focus-clear"] button'); await key('Enter');
@@ -666,6 +1409,7 @@ try {
         const st2 = await focusState();
         kcheck('K10', 'panel', 'external:held-completion-does-not-steal', st2.top === 'qa-after' && !st2.guests.panel.hasFocus, undefined, st2);
         // Session KF→B→null→KF: rail follows; old task-reading focus never moves into another identity.
+        await progressUi.controls('panel');
         await tabTo('panel', '[data-testid="focus-jump-working"] button'); await key('Enter');
         await wait('panel', `d.activeElement?.dataset.testid?.startsWith('item-')`, 'row focused before switch');
         await evaluate(`qa.context('B');true`);
@@ -673,7 +1417,7 @@ try {
         await evaluate(`qa.context(null);true`);
         await wait('panel', `d.querySelector('[data-testid="unscoped-state"]')`, 'no session');
         await evaluate(`qa.context('KF');true`);
-        await wait('panel', tasksOf('panel'), 'back to KF');
+        await wait('panel', `(${tasksOf('panel')})||(d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='K-focus')`, 'back to KF reading (D8 automatic view)');
         const st3 = await focusState();
         kcheck('K10', 'panel', 'session-switch:no-old-row-focus-replayed', !/^item-/.test(st3.guests.panel.active ?? ''), ['KF→B→null→KF starts a new reading; the earlier row focus is not replayed'], st3);
       });
@@ -683,7 +1427,8 @@ try {
         await railOn('Focus controls example', 'K-focus');
         await guest('panel', `w.__clip=[];Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:t=>new Promise(r=>w.__clip.push({len:t.length,go:()=>r()}))}});return true`);
         setups.push('K4-rail-summary: synthetic clipboard seam (held writeText; text never stored)');
-        await tabTo('panel', '[data-testid="summary-progress"]'); await key('Enter');
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.action('panel', 'summary-progress', true);
         await wait('panel', `d.querySelector('[data-testid="summary-text"]')`, 'progress preview');
         await tabTo('panel', '[data-testid="summary-text"]');
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65, commands: ['selectAll'] });
@@ -706,21 +1451,24 @@ try {
         await focusShot('rail-focus-light-summary-close', 'panel', 260, 60);
         await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="summary-preview"]')`, 'closed');
-        kcheck('K4', 'panel', 'close:returns-to-opener', await focusedOn('panel', '[data-testid="summary-progress"]'), undefined, await focusState());
-        await tabTo('panel', '[data-testid="summary-handoff"]'); await key('Enter');
+        kcheck('K4', 'panel', 'close:returns-to-opener', await focusedOn('panel', '[data-testid="plan-actions"] button'), undefined, await focusState());
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.action('panel', 'summary-handoff', true);
         await wait('panel', `d.querySelector('[data-testid="summary-preview"]')`, 'handoff preview');
         await tabTo('panel', '[data-testid="summary-close"]'); await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="summary-preview"]')`, 'handoff closed');
-        kcheck('K4', 'panel', 'handoff-close:returns-to-opener', await focusedOn('panel', '[data-testid="summary-handoff"]'));
+        kcheck('K4', 'panel', 'handoff-close:returns-to-opener', await focusedOn('panel', '[data-testid="plan-actions"] button'));
       });
       // ---------------------------------------------------------------- K6 cleanup confirmations (rail, disposable plans)
       await scenario('K6-rail-cleanup', ['K6'], async () => {
         await show(['panel'], 360); await fresh('panel');
         await openPicker('panel', 'plan-selector', 'Disposable finished plan A');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-delete"] button')`, 'cleanup actions');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'cleanup actions');
         const writes = () => reqs(`r.method!=='GET'`);
         const w0 = (await writes()).length;
-        await tabTo('panel', '[data-testid="cleanup-delete"] button');
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.menu('panel', 'cleanup-delete', true);
         kcheck('K6', 'panel', 'delete:reach-sends-nothing', (await writes()).length === w0);
         await key('Enter');
         await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'inline confirmation');
@@ -729,11 +1477,11 @@ try {
         await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="cleanup-confirm"]')`, 'cancelled by Enter');
         kcheck('K6', 'panel', 'confirm:enter-cancels-to-opener', await focusedOn('panel', '[data-testid="cleanup-delete"] button') && (await writes()).length === w0, undefined, await focusState());
-        await key('Enter'); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation again');
+        await progressUi.action('panel','cleanup-delete',true); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation again');
         await key('Escape');
         await wait('panel', `!d.querySelector('[data-testid="cleanup-confirm"]')`, 'cancelled by Escape');
         kcheck('K6', 'panel', 'confirm:escape-cancels-to-opener', await focusedOn('panel', '[data-testid="cleanup-delete"] button') && (await writes()).length === w0);
-        await key('Enter'); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation for delete');
+        await progressUi.action('panel','cleanup-delete',true); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation for delete');
         await tabTo('panel', '[data-testid="cleanup-confirm-delete"]', 30, false);
         kcheck('K6', 'panel', 'confirm:destructive-reachable-not-sent', (await writes()).length === w0);
         await key('Enter');
@@ -746,10 +1494,11 @@ try {
         await kexpect('K6', 'panel', 'delete:focus-not-stranded', notStranded(st), ['After the deleted plan leaves the rail, focus stays on a real element'], st);
         // Archive with a labelled 503, then success.
         await openPicker('panel', 'plan-selector', 'Disposable finished plan B');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
         const pickedB = await railPlan();
         await evaluate(`qa.fail.push({path:'/v1/plan/archive',status:503,code:'busy',once:true});true`);
-        await tabTo('panel', '[data-testid="cleanup-archive"] button'); await key('Enter');
+        await tabTo('panel', '[data-testid="plan-actions"] button'); await progressUi.action('panel','cleanup-archive',true);
         await wait('panel', `d.querySelector('[data-testid="cleanup-error"]')`, 'cleanup error');
         const se = await focusState();
         inventory['rail-after-archive-error'] = { focus: se, planBefore: pickedB, planAfter: await railPlan(), error: await guest<string>('panel', `return d.querySelector('[data-testid="cleanup-error"]')?.closest('[data-testid]')?.dataset.testid??''`) };
@@ -757,10 +1506,11 @@ try {
         await kexpect('K6', 'panel', 'archive-error:focus-not-stranded', notStranded(se), ['Focus moves to the cleanup error message'], se);
         await focusShot('rail-focus-light-cleanup-error', 'panel', 120, 120);
         if (await railPlan() !== pickedB) await openPicker('panel', 'plan-selector', 'Disposable finished plan B');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action again');
-        await tabTo('panel', '[data-testid="cleanup-archive"] button'); await key('Enter');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions again');
+        await tabTo('panel', '[data-testid="plan-actions"] button'); await progressUi.action('panel','cleanup-archive',true);
         await wait('panel', `qa.requests.filter(r=>r.path==='/v1/plan/archive').length>=2`, 'archive sent');
-        await wait('panel', `!d.querySelector('[data-testid="cleanup-archive"] button')||d.querySelector('[data-testid="cleanup-notice"]')`, 'archived', 20_000);
+        await wait('panel', `!d.querySelector('[data-testid="plan-K-finished-archive"]')&&d.querySelector('[data-testid="cleanup-notice"]')`, 'archived', 20_000);
         const sa = await focusState();
         inventory['rail-after-archive'] = sa;
         await kexpect('K6', 'panel', 'archive-success:focus-not-stranded', notStranded(sa), undefined, sa);
@@ -816,9 +1566,9 @@ try {
         kcheck('K3', 'status', 'no-session:exits-both-ways', ns.forward && ns.backward);
         await evaluate(`qa.context('KF');qa.fail.push({path:'/v1/plans',frame:'status',status:503,code:'busy'});true`);
         const seq = await evaluate<number>(`qa.reload('status')`);
-        await wait('status', `qa.loaded.status===${seq}&&d.querySelector('[data-testid^="state-"] button')`, 'status error with Try again', 20_000);
+        await wait('status', `qa.loaded.status===${seq}&&d.querySelector('[data-testid="state-busy"] button')`, 'status error with Try again', 20_000);
         kcheck('K3', 'status', 'error:not-empty', await guest<boolean>('status', `return !d.querySelector('[data-testid="empty-state"]')`));
-        await tabTo('status', '[data-testid^="state-"] button');
+        await tabTo('status', '[data-testid="state-busy"] button');
         await focusShot('status-focus-light-error-retry', 'status', 60, 60);
         await evaluate(`qa.fail=qa.fail.filter(x=>x.frame!=='status');true`);
         await key('Enter');
@@ -847,10 +1597,20 @@ try {
         await show(['page'], 1100); await theme('light'); await fresh('page');
         const w = await walkChecks('K2', 'page', 'board-1100-light');
         const ids = w.list.map((x: any) => x.testid);
-        for (const hook of ['cleanup-visible', 'cleanup-archived', 'search-query', 'search-lifecycle', 'search-task-status', 'search-source', 'search-submit', 'filter-project', 'filter-worktree', 'filter-session', 'detail-tabs']) kcheck('K2', 'page', `reachable:${hook}`, ids.includes(hook), undefined, ids);
+        for (const hook of ['cleanup-visible', 'cleanup-archived', 'search-query', 'board-filters-trigger', 'detail-tabs']) kcheck('K2', 'page', `reachable:${hook}`, ids.includes(hook), undefined, ids);
+        const deferred = ['search-lifecycle', 'search-task-status', 'search-source', 'search-submit', 'filter-project', 'filter-worktree', 'filter-session'];
+        for (const hook of deferred) kcheck('K2', 'page', `closed-filters:not-in-tab-order:${hook}`, !ids.includes(hook), undefined, ids);
+        await tabTo('page', BOARD_FILTERS_TRIGGER); await key('Enter');
+        await wait('page', `d.querySelector('${BOARD_FILTERS}')?.getClientRects().length>0`, 'Filters keyboard entry');
+        for (const hook of deferred) {
+          const selector = `[data-testid="${hook}"] ${hook === 'search-submit' ? 'button' : '.oc-sdk-trigger'}`;
+          await tabTo('page', selector);
+          kcheck('K2', 'page', `reachable:${hook}`, await focusedOn('page', selector), undefined, await focusState());
+        }
+        await boardUi.closeFilters();
         const lists = w.list.filter((x: any) => x.role === 'listbox');
         kcheck('K2', 'page', 'plan-list:one-stop-per-group', lists.length >= 1, [`${lists.length} grouped listboxes`]);
-        const listSel = `[data-testid="${(lists[0] as { testid: string }).testid}"] [role="listbox"]`;
+        const listSel = '[data-testid="plan-list"] [role="listbox"]';
         await tabTo('page', listSel);
         const sel0 = await guest<string | null>('page', `return d.querySelector('[role="option"][aria-selected="true"]')?.dataset.testid??null`);
         await focusShot('page-focus-light-listbox', 'page', 40, 200);
@@ -994,7 +1754,9 @@ try {
         // External focus: end sentinel owns focus while the board receives a changed read.
         await click('page', '[data-testid="plan-row-K-focus"]');
         setups.push('K10-board: pointer selection of K-focus');
+        await progressUi.list('page');
         await wait('page', `d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus on board');
+        await progressUi.planOrder('page');
         await tabTo('page', '[data-testid="focus-jump-working"] button'); await key('Enter');
         await wait('page', `d.activeElement?.dataset.testid?.startsWith('item-')`, 'board row focused');
         await clickTop('#qa-after');
@@ -1011,7 +1773,10 @@ try {
         await show(['page'], 1100); await fresh('page');
         await wait('page', `d.querySelector('[data-testid="detail-tabs"]')`, 'detail tabs');
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]');
-        await key('End');
+        // Map is the fourth (last) tab since S5, so History is two steps right of Progress, not End.
+        await key('ArrowRight');
+        await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][data-id="document"]')?.getAttribute('aria-selected')==='true'`, 'document');
+        await key('ArrowRight');
         await wait('page', `d.querySelector('[data-testid="detail-tabs"] [role="tab"][data-id="history"]')?.getAttribute('aria-selected')==='true'`, 'history');
         await wait('page', `d.querySelector('[data-testid="change-digest"]')&&d.querySelector('[data-testid="change-digest"]').dataset.state!=='loading'`, 'digest settled', 20_000).catch(() => null);
         const hw = await walk('board-1100-light-history');
@@ -1108,9 +1873,10 @@ try {
         fx.recordDocument('P-0006', '# Example plan\nKeep this line\nNew action\n', '/fixture/revised-plan.md');
         setups.push('K5-document: two synthetic recorded captures for P-0006 (existing recordDocument seam)');
         await show(['page'], 1100); await fresh('page');
-        const list = await guest<string>('page', `return d.querySelector('[data-testid="plan-row-P-0006"]').closest('[data-testid^="project-"]').dataset.testid`);
-        await tabTo('page', `[data-testid="${list}"] [role="listbox"]`);
-        const idx = await guest<number>('page', `return [...d.querySelectorAll('[data-testid="${list}"] [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-P-0006')`);
+        await boardUi.revealPlan('[data-testid="plan-row-P-0006"]');
+        const list = '[data-testid="plan-list"] [role="listbox"]:has([data-testid="plan-row-P-0006"])';
+        await tabTo('page', list);
+        const idx = await guest<number>('page', `return [...d.querySelectorAll('${list} [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-P-0006')`);
         await key('Home'); if (idx) await key('ArrowDown', idx); await key('Enter');
         await wait('page', `d.querySelector('[data-testid="plan-row-P-0006"]')?.getAttribute('aria-selected')==='true'&&d.querySelector('article[data-testid="plan-P-0006"]')`, 'P-0006 selected by keyboard');
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]'); await key('ArrowRight');
@@ -1147,13 +1913,15 @@ try {
         await tabTo('page', '[data-testid="cleanup-archived"] button'); await key('Enter');
         await wait('page', `d.querySelector('[data-testid="plan-row-K-finished-archive"]')`, 'archived list', 20_000);
         await click('page', '[data-testid="plan-row-K-finished-archive"]');
+        await progressUi.list('page');
         setups.push('K6-board-restore: pointer selection of the archived disposable plan');
-        await wait('page', `d.querySelector('[data-testid="cleanup-restore"] button')`, 'restore action');
-        await tabTo('page', '[data-testid="cleanup-restore"] button');
+        await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'restore actions available');
+        await tabTo('page', '[data-testid="plan-actions"] button');
+        await progressUi.menu('page','cleanup-restore',true);
         await focusShot('page-focus-light-restore', 'page', 60, 60);
         await key('Enter');
         await wait('page', `qa.requests.some(r=>r.path==='/v1/plan/restore')`, 'restore sent');
-        await wait('page', `!d.querySelector('[data-testid="cleanup-restore"] button')||d.querySelector('[data-testid="cleanup-notice"]')`, 'restored', 20_000);
+        await wait('page', `d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('[data-testid="plan-row-K-finished-archive"]')`, 'restored', 20_000);
         await frames2();
         const st = await focusState();
         inventory['board-after-restore'] = st;
@@ -1193,12 +1961,12 @@ try {
           await show([surface], width);
           await evaluate(`qa.fail.push({path:'/health',frame:'${surface}',status:503,code:'unavailable'});true`);
           const seq = await evaluate<number>(`qa.reload('${surface}')`);
-          await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid^="state-"] button')`, `${surface} failure with Try again`, 20_000);
-          await tabTo(surface, '[data-testid^="state-"] button');
+          await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid="state-unavailable"] button')`, `${surface} failure with Try again`, 20_000);
+          await tabTo(surface, '[data-testid="state-unavailable"] button');
           setups.push(`K8-retry-to-setup: labelled /health 503 then not-ready seam (${surface})`);
           await evaluate(`qa.fail=qa.fail.filter(x=>x.frame!=='${surface}');qa.unconfigured=true;true`);
           await key('Enter');
-          await wait(surface, `d.querySelector('${target}')&&!d.querySelector('[data-testid^="state-"] button')`, `${surface} setup state`, 20_000);
+          await wait(surface, `d.querySelector('${target}')&&!d.querySelector('[data-testid="state-unavailable"] button')`, `${surface} setup state`, 20_000);
           await frames2();
           const st = await focusState();
           inventory[`retry-to-setup-${surface}`] = st;
@@ -1218,7 +1986,7 @@ try {
         await show(['panel'], 360); await fresh('panel');
         await railOn('Focus controls example', 'K-focus');
         await walkChecks('K11', 'panel', 'rail-360-dark');
-        for (const [sel, name] of [['[data-testid="plan-selector"] .oc-sdk-trigger', 'picker'], ['[data-testid="focus-mode-unfinished"] button', 'mode'], ['[data-testid="focus-expand-all"] button', 'expand'], ['article[data-reading] details[data-testid^="group-toggle-"] > summary', 'summary'], ['[data-testid="summary-progress"]', 'summary-action']] as const) {
+        for (const [sel, name] of [['[data-testid="plan-selector"] .oc-sdk-trigger', 'picker'], ['[data-testid="focus-mode-unfinished"] button', 'mode'], ['[data-testid="focus-expand-all"] button', 'expand'], ['article[data-reading] details[data-testid^="group-toggle-"] > summary', 'summary'], ['[data-testid="plan-actions"] button', 'summary-menu']] as const) {
           await tabTo('panel', sel); await focusShot(`rail-focus-dark-${name}`, 'panel');
         }
         await tabTo('panel', '[data-testid="focus-jump-working"] button'); await key('Enter');
@@ -1240,8 +2008,8 @@ try {
         const pairs: [string, string, string][] = [
           ['panel', '[data-testid="focus-mode-unfinished"] button', 'rail-pair-mode'], ['panel', '[data-testid="focus-expand-all"] button', 'rail-pair-expand'],
           ['panel', '[data-testid="focus-jump-working"] button', 'rail-pair-jump'], ['panel', '[data-testid="plan-selector"] .oc-sdk-trigger', 'rail-pair-picker'],
-          ['panel', '[data-testid="summary-progress"]', 'rail-pair-summary-action'], ['panel', 'article[data-reading] details[data-testid^="group-toggle-"] > summary', 'rail-pair-group-summary'],
-          ['page', '[data-testid^="project-"] [role="listbox"]', 'page-pair-listbox'], ['page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]', 'page-pair-tab'],
+          ['panel', '[data-testid="plan-actions"] button', 'rail-pair-summary-menu'], ['panel', 'article[data-reading] details[data-testid^="group-toggle-"] > summary', 'rail-pair-group-summary'],
+          ['page', '[data-testid="plan-list"] [role="listbox"]', 'page-pair-listbox'], ['page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]', 'page-pair-tab'],
           ['page', '[data-testid="search-submit"] button', 'page-pair-submit'], ['page', '#ap-search-q', 'page-pair-search'],
           ['status', '[data-testid="open-detail"] button', 'status-pair-open'], ['status', '[data-testid="status-plan-selector"] .oc-sdk-trigger', 'status-pair-picker'],
         ];
@@ -1306,19 +2074,26 @@ try {
       /** The row line's offset from its task list's top (moves only if rows above it changed). */
       const inListTop = (surface: string, id: string) => guest<number | null>(surface, `const li=d.querySelector('[data-testid="${id}"]'),ul=d.querySelector('${plan} ul.ap-items');if(!li||!ul)return null;const n=li.querySelector(':scope > .ap-item, :scope > details > summary')??li;return Math.round(n.getBoundingClientRect().top-ul.getBoundingClientRect().top)`);
       const noticeBox = (surface: string) => guest<{ h: number; text: boolean }>(surface, `const n=d.querySelector('${plan} [data-testid="focus-notice"]');return {h:n?Math.round(n.getBoundingClientRect().height):0,text:!!n?.textContent}`);
-      const statusOk = (step: (typeof replay.steps)[number]) => step.items.filter((i) => step.affectedIds.includes(i.id) && i.kind === 'task').map((i) => `d.querySelector('[data-testid="item-${i.id}"]')?.dataset.status===${JSON.stringify(i.status)}`).join('&&') || 'true';
+      const statusOk = (step: (typeof replay.steps)[number]) => step.items.filter((i) => step.affectedIds.includes(i.id) && i.kind === 'task').map((i) => `d.querySelector('[data-testid="item-${i.id}"]')?.dataset.status===${javascriptLiteral(i.status)}`).join('&&') || 'true';
       const settle = async (surface: string, step: (typeof replay.steps)[number]) => { await wait(surface, `${complete(step.revision)}&&(${statusOk(step)})${step.id === 'S6' ? `&&!d.querySelector('[data-testid="item-T-19-48"]')` : ''}`, `${surface} ${step.id}`); await frames2(); };
       const step = (id: string) => replay.steps.find((s) => s.id === id)!;
       await scenario('K9-replay', ['K9', 'K8', 'K10'], async () => {
         await show(['page', 'panel'], 1100); await theme('light');
         await evaluate(`document.querySelector('section[data-frame="panel"]').style.width='360px';true`);
         await wait('panel', `w.innerWidth===360`, 'panel 360');
+        await wait('panel', `d.querySelector('[data-testid="plan-view-list"] button')`, 'rail List entry');
+        await tabTo('panel', '[data-testid="plan-view-list"] button'); await key('Enter');
         await wait('panel', complete(1), 'rail S0');
+        await progressUi.planOrder('panel');
+        await wait('page', `d.querySelector('[data-testid="detail-tabs"] [data-id="progress"]')`, 'board List entry');
+        await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]'); await key('Home'); await key('Enter');
+        await wait('page', complete(1), 'board List chosen');
+        await progressUi.planOrder('page');
         // Board selection by keyboard: Tab to the plan listbox, Home, Enter.
-        await tabTo('page', '[data-testid^="project-"] [role="listbox"]');
+        await tabTo('page', '[data-testid="board-project"] [role="listbox"]');
         await key('Home'); await key('Enter');
         await wait('page', complete(1), 'board S0');
-        kcheck('K9', 'page', 'S0:keyboard-selected-plan', await focusedOn('page', '[data-testid^="project-"] [role="listbox"]'));
+        kcheck('K9', 'page', 'S0:keyboard-selected-plan', await focusedOn('page', '[data-testid="board-project"] [role="listbox"]'));
         // S1: unaffected row retained in the rail while the rail owns focus.
         await setupRowFocus('panel', 'item-T-01-00');
         replay.advance('S1'); await settle('panel', step('S1')); await settle('page', step('S1'));
@@ -1390,7 +2165,7 @@ try {
         o = await observe('page'); races2.push({ step: 'S6-page', ...o, anchorBefore: pageAnchor, anchorRowAfter: pageAnchorTop, firstRowAfter: await anchor('page'), noticeBefore: pageNotice0, noticeAfter: pageNotice1, boundsBefore: pagePre, bounds: pagePost, anchorExpectation: pageKept });
         kcheck('K9', 'page', 'S6:removed-focus-uses-ancestor-fallback', o.hasFocus && o.connected && o.focus === 'summary:group-toggle-G-19', undefined, o);
         await kexpect('K9', 'page', 'S6:reading-anchor-kept', pageKept.pass, [`${pageKept.mode}: anchor row ${pageAnchor?.id} ${pageAnchor?.top}px → ${pageAnchorTop}px, expected ${pageKept.expectedOffset}px (±2 px); scroll ${pagePost.scroll}/${pagePost.max} after ${pagePre.scroll}/${pagePre.max}`], races2.at(-1));
-        kcheck('K9', 'page', 'S6:fallback-notice', /no longer shown/.test(await guest<string>('page', `return d.querySelector('${plan} [data-testid="focus-notice"]')?.textContent??''`)));
+        kcheck('K9', 'page', 'S6:fallback-notice', /removed, so focus moved to its group/.test(await guest<string>('page', `return d.querySelector('${plan} [data-testid="focus-notice"]')?.textContent??''`)));
         await shot('page-removal', `${plan} [data-testid="group-toggle-G-19"]`, 40, 600, 'page');
         await focusShot('page-focus-light-removal-fallback', 'page', 60, 120);
         // S7/S8: reinsertion never replays the old focus or jumps from the fallback.
@@ -1426,7 +2201,7 @@ try {
   if (onlyLarge) {
     const replay = fx.largePlan!;
     const plan = `[data-testid="plan-${LARGE_PLAN_ID}"]`;
-    const complete = (revision: number) => `d.querySelector('${plan}[data-revision="${revision}"] .ap-tasks[data-complete]')&&d.querySelector('${plan} [data-testid="readiness"][data-state="ready"]')`;
+    const complete = (revision: number) => `d.querySelector('${plan}[data-revision="${revision}"] .ap-tasks[data-complete][data-readiness="ready"]')`;
     const node = (id: string) => `[data-testid="${id}"]`;
     Object.assign(facts, { fixture: LARGE_PLAN_VERSION, seed: LARGE_PLAN_SEED, runtime: process.version, serviceMode: built ? 'built generated service' : 'current TypeScript service', commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])), viewport: { browser: [1280, 1100], panel: 360, page: 1100, darkPage: 360 }, checkpoint: 'S0', sampleCount: 3, warmups: 1 });
     const loadMetrics: Record<string, unknown> = {}, actionMetrics: Record<string, unknown> = {}, dom: Record<string, unknown> = {};
@@ -1440,15 +2215,18 @@ try {
     async function openBoard() {
       await wait('page', `d.querySelector('[data-testid="plan-row-${LARGE_PLAN_ID}"]')`, 'large plan board row');
       await click('page', `[data-testid="plan-row-${LARGE_PLAN_ID}"]`);
+      await progressUi.list('page');
     }
     async function reloadGuest(surface: string) {
       const sequence = await evaluate<number>(`qa.reload('${surface}')`);
       await wait(surface, `qa.loaded['${surface}']===${sequence}`, 'new guest document loaded');
+      if (surface === 'panel') await progressUi.list(surface);
     }
     for (const [surface, width] of [['panel', 360], ['page', 1100]] as const) {
       await show([surface], width);
       await theme('light');
       if (surface === 'page') await openBoard();
+      else await progressUi.list(surface);
       await ready(surface, 1);
       const loads: number[] = [], streams: unknown[] = [];
       for (let sample = 0; sample < 4; sample++) {
@@ -1463,7 +2241,8 @@ try {
         if (sample) { loads.push(elapsed); streams.push({ requests: reads.length, bytes: reads.reduce((n, r) => n + r.bytes, 0), httpMs: reads.reduce((n, r) => n + r.ms, 0) }); }
       }
       const load = stats(loads); loadMetrics[surface] = { ...load, streams }; budget(`${surface}:complete-ready-load`, load, 2000);
-      const counts = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,groups:a.querySelectorAll('.ap-items [data-testid^="group-G-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},nodes:a.querySelectorAll('*').length}`);
+      await progressUi.planOrder(surface);
+      const counts = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items li[data-testid^="item-T-"]').length,groups:a.querySelectorAll('.ap-items li[data-testid^="group-G-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},nodes:a.querySelectorAll('*').length}`);
       dom[surface] = counts;
       check(`large:${surface}:complete-counts`, counts.tasks === 980 && counts.groups === 20 && counts.counts.done === '147' && counts.counts.total === '931' && counts.counts.remaining === '784' && counts.counts.skipped === '49', undefined, counts);
       const metrics: Record<string, unknown> = {}; actionMetrics[surface] = metrics;
@@ -1487,14 +2266,14 @@ try {
       await action('disclosure', async () => { if (!(await guest<boolean>(surface, `return d.querySelector('${disclosure}').open`))) await click(surface, `${disclosure}>summary`); }, () => click(surface, `${disclosure}>summary`), `!d.querySelector('${disclosure}').open`);
       await click(surface, `${disclosure}>summary`);
       await action('jump-working', async () => { await click(surface, `${node('focus-mode-all')} button`); }, () => click(surface, `${node('focus-jump-working')} button`), `d.activeElement?.dataset.testid?.startsWith('item-')&&d.activeElement.dataset.status==='working'`);
-      await action('show-task', async () => { await click(surface, `${node('focus-jump-working')} button`); }, () => click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`), `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.activeElement.hidden`);
-      check(`large:${surface}:canonical-only`, await guest<boolean>(surface, `return d.querySelectorAll('${node('item-T-01-00')}').length===1&&d.querySelectorAll('${node('readiness-entry-T-01-00')}').length===1`));
+      await action('show-task', async () => { await click(surface, `${node('focus-jump-working')} button`); await progressUi.expand(surface, 'T-02-00'); }, () => click(surface, 'li[data-testid="item-T-02-00"] [data-dep="T-01-00"] button'), `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.activeElement.hidden`);
+      check(`large:${surface}:canonical-only`, await guest<boolean>(surface, `return d.querySelectorAll('li${node('item-T-01-00')}').length===1&&d.querySelectorAll('${plan} ul.ap-items').length===1&&d.querySelectorAll('${plan} li[data-testid^="item-T-"]').length===980`));
       // Real keyboard activation, independent of the pointer action timings.
       await mode('all'); await wait(surface, modeIs('all'), 'Show all selected before keyboard activation');
       await key('Tab');
-      check(`large:${surface}:keyboard-unfinished-start`, await guest<boolean>(surface, `return d.activeElement===d.querySelector('${node('focus-mode-unfinished')} button')&&(${modeIs('all')})&&d.querySelector('${node('focus-mode-unfinished')} button').getAttribute('aria-pressed')==='false'&&[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')].every(n=>!n.hidden)`), ['Unfinished focused without activation; Show all remains selected and all tasks are unfiltered']);
+      check(`large:${surface}:keyboard-unfinished-start`, await guest<boolean>(surface, `return d.activeElement===d.querySelector('${node('focus-mode-unfinished')} button')&&(${modeIs('all')})&&d.querySelector('${node('focus-mode-unfinished')} button').getAttribute('aria-pressed')==='false'&&[...d.querySelectorAll('${plan} .ap-items li[data-testid^="item-T-"]')].every(n=>!n.hidden)`), ['Unfinished focused without activation; Show all remains selected and all tasks are unfiltered']);
       await key(' ');
-      const unfinishedRows = `(()=>{const rows=[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')];return rows.length===980&&rows.filter(n=>!n.hidden).length===784&&rows.every(n=>n.hidden===(n.dataset.status==='done'||n.dataset.status==='skipped'))})()`;
+      const unfinishedRows = `(()=>{const rows=[...d.querySelectorAll('${plan} .ap-items li[data-testid^="item-T-"]')];return rows.length===980&&rows.filter(n=>!n.hidden).length===784&&rows.every(n=>n.hidden===(n.dataset.status==='done'||n.dataset.status==='skipped'))})()`;
       await wait(surface, `(${modeIs('unfinished')})&&${unfinishedRows}`, 'Space selects Unfinished and filters the task list');
       check(`large:${surface}:keyboard-unfinished-filter`, await guest<boolean>(surface, `return (${modeIs('unfinished')})&&${unfinishedRows}`), ['Space changed Show all to Unfinished; 784 unfinished tasks shown and all 196 done/skipped tasks hidden']);
       await mode('all'); await ready(surface, 1);
@@ -1510,7 +2289,8 @@ try {
     for (const surface of ['panel', 'page']) {
       await ready(surface, 1); await instrument(surface);
       await click(surface, `${node('group-toggle-G-15')}>summary`);
-      await click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`);
+      await progressUi.expand(surface,'T-02-00');
+      await click(surface, 'li[data-testid="item-T-02-00"] [data-dep="T-01-00"] button');
       await wait(surface, `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.querySelector('${node('group-toggle-G-15')}').open`, 'settled reading state before replay');
     }
     facts.readingBeforeReplay = await Promise.all(['panel', 'page'].map(surface => guest(surface, `return {surface:'${surface}',focus:d.activeElement?.dataset.testid,hasFocus:d.hasFocus(),collapsed:!d.querySelector('${node('group-toggle-G-15')}').open}`)));
@@ -1524,10 +2304,10 @@ try {
       const observations = await Promise.all(['panel', 'page'].map(async surface => {
         await ready(surface, step.revision);
         // Validate every changed status anchor, complete counts, and the structural witness.
-        const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${JSON.stringify(i.status)}`).join('&&') || 'true';
+        const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${javascriptLiteral(i.status)}`).join('&&') || 'true';
         await wait(surface, `${complete(step.revision)}&&(${statusChecks})${step.id === 'S6' ? `&&!d.querySelector('${node('item-T-19-48')}')` : ''}`, `${step.id} state observed`);
         const visibleMs = performance.now() - committedAt;
-        const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('readiness-entry-T-01-00')}')?.dataset.group,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-item-title')?.textContent}`);
+        const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items li[data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('item-T-01-00')}')?.dataset.state,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-trow-title')?.textContent}`);
         check(`large:${step.id}:${surface}:counts`, observed.tasks === step.itemCount - 20 && Object.entries(step.counts).every(([k,v]) => observed.counts[k] === String(v)));
         if (step.id === 'S1') check(`large:${surface}:status-reading-retained`, observed.collapsed && (surface !== 'page' || observed.focus === 'item-T-01-00'), undefined, observed);
         if (step.id === 'S2') check(`large:${surface}:readiness-unlocked`, observed.ready === 'ready');
@@ -1561,6 +2341,7 @@ try {
     check('large:hidden-retired-continuation', hiddenRequests.length === 0 && hiddenPaints.length === 0, undefined, { requests: hiddenRequests.length, paints: hiddenPaints.length });
     perf.hidden = { requests: hiddenRequests.length, dataRepaints: hiddenPaints.length, observation: 'two completed visible-peer ordinary polls' };
     await evaluate(`qa.visibility('page',true);true`); await ready('page', 9);
+    await progressUi.planOrder('page');
     await show(['page'], 360); await theme('dark'); await ready('page', 9);
     check('large:dark-narrow-no-overflow', await overflow());
     await click('page', `${node('focus-mode-unfinished')} button`); await wait('page', `d.querySelector('${node('focus-mode-unfinished')} button')?.getAttribute('aria-pressed')==='true'`, 'narrow operable control');
@@ -1588,9 +2369,10 @@ try {
   if (!onlyJ1) {
     await searchFor('Ship export bundle', true);
     await click('page', H('P-0005-ship'));
-    await wait('page', `d.querySelector('[data-testid="summary-handoff"]')`, 'capture fixture detail');
+    await progressUi.list('page');
+    await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'capture fixture detail');
     for (const mode of ['handoff', 'progress']) {
-      await click('page', `[data-testid="summary-${mode}"]`);
+      await progressUi.action('page', `summary-${mode}`);
       await wait('page', `d.querySelector('[data-testid="summary-text"]')`, `${mode} preview`);
       for (const enabled of [false, true]) {
         const mark = await now(), details = await count('/v1/plan');
@@ -1666,6 +2448,12 @@ try {
     race('J1-B4:old-selection-evicted', (await planReads('P-0901-recent')).length === oldBefore + 1, ['An older opened result was evicted: revisiting reads it again (bounded retention)'], { before: oldBefore, after: (await planReads('P-0901-recent')).length });
     await click('page', '[data-testid="search-clear"] button');
     await wait('page', `!d.querySelector('[data-testid="search-results"]')`, 'cleared');
+    fx.prepareRetirementPlans();
+    await progressRetirementQa({ evaluate, guest, wait, click, key, check, show, stores: [fx.storeId, fx.secondStoreId], openBoard: async (plan) => {
+      await guest('page', `w.focus();return true`);
+      await searchFor(plan, true);
+      await click('page', H(plan));
+    } });
     if (onlyJ1) throw new OnlyDone();
   }
 
@@ -1716,7 +2504,8 @@ try {
     check('A1:no-false-empty-while-unchecked', await guest<boolean>('page', `return !d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-none-yet"]')`));
     await more();
   }
-  check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
+   await boardUi.openFilters();
+   check('A7:exhausted-empty-keeps-controls', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-empty"]')&&!!d.querySelector('[data-testid="search-clear"]')&&!!d.querySelector('[data-testid="filter-project"]')&&!!d.querySelector('[data-testid="search-scope"]')`));
   await shot('search-no-results');
 
   // ======================================================= 3. Chips, Clear all, unavailable scope, failure
@@ -1741,18 +2530,19 @@ try {
   await evaluate(`qa.setSessions('alpha',[{id:'unrelated-session',title:'Synthetic session',projectId:'alpha',directory:'/fixture/main',parentId:null,createdAt:0,updatedAt:0,archivedAt:null,worktree:null,activity:'idle',outcome:null,items:[]}]);true`);
   await sleep(500);
   race('A9:unrelated-new-session-keeps-search', subscribed && await run() === runBefore && await stop() !== 'membership', ['The board watches Alpha’s sessions; a new session owning no seen candidate is not a membership change'], { subscribed, stop: await stop() });
-  await evaluate(`qa.setProjects(${JSON.stringify(PROJECTS.filter((p) => p.id !== 'alpha'))});true`);
+  await evaluate(`qa.setProjects(${javascriptLiteral(PROJECTS.filter((p) => p.id !== 'alpha'))});true`);
   await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='membership'`, 'membership change retires the narrowed search');
   await click('page', '[data-testid="search-refresh"] button');
   await wait('page', `d.querySelector('[data-testid="search-blocked"]')?.dataset.reason==='missing'`, 'unavailable project blocks');
   check('A6:unavailable-choice-kept', await guest<boolean>('page', `return d.querySelector('[data-testid="search-chip-project"]')?.dataset.available==='false'&&!!d.querySelector('[data-testid="search-remove-location"]')`));
   await shot('search-unavailable-scope');
-  await evaluate(`qa.setProjects(${JSON.stringify(PROJECTS)});qa.setSessions('alpha',[]);true`);
+  await evaluate(`qa.setProjects(${javascriptLiteral(PROJECTS)});qa.setSessions('alpha',[]);true`);
   await click('page', '[data-testid="search-remove-location"] button'); await idle();
   // A chosen worktree removed later: its chip stays, the narrowed search is blocked (never widened),
   // and only the worktree filter is offered for removal; the project stays.
   await choose('[data-testid="filter-project"]', 'Alpha'); await idle();
   await evaluate(`qa.setWorktrees('alpha',[{directory:'/fixture/wt-a',name:'feature-wt',branch:'feature-wt',status:'ready'}]);true`);
+  await boardUi.openFilters();
   await wait('page', `[...d.querySelectorAll('[data-testid="filter-worktree"] .oc-sdk-trigger')].length>0`, 'worktree filter');
   await choose('[data-testid="filter-worktree"]', 'feature-wt'); await idle();
   check('A6:worktree-search-runs-while-known', await stop() !== 'membership' && !(await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-blocked"]')`)));
@@ -1783,13 +2573,17 @@ try {
 
   // ======================================================= 4. Archived mode; freshness beyond the list
   await click('page', '[data-testid="cleanup-archived"] button');
-  await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'&&d.querySelector('[data-testid="search-scope"]')`, 'archived mode');
+  await wait('page', `d.querySelector('[data-testid="cleanup-archived"] button')?.getAttribute('aria-pressed')==='true'`, 'archived mode');
+  await boardUi.openFilters();
+  await wait('page', `d.querySelector('[data-testid="search-scope"]')`, 'archived scope reachable in Filters');
   await searchFor('archive export', true);
+  await boardUi.openFilters();
   check('A5:archived-explicit', /archived plans only/.test(await guest<string>('page', `return d.querySelector('[data-testid="search-scope"]').textContent`)) && (await counts())?.matchedPlans === '1');
+  await boardUi.closeFilters();
   await click('page', T('P-archive', 'A1'));
   await wait('page', `d.activeElement?.dataset.testid==='item-A1'`, 'archived task revealed');
   await shot('search-archived');
-  await click('page', '[data-testid="cleanup-restore"] button');
+  await progressUi.action('page','cleanup-restore');
   await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'restore retires the search');
   check('A8:local-cleanup-retires-search', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-refresh"]')`) && !fx.archived('P-archive'));
   await click('page', '[data-testid="search-refresh"] button'); await idle(); await exhaust();
@@ -1847,10 +2641,11 @@ try {
     // R5: held window during a local Archive: the pre-action reply cannot restore the plan.
     await searchFor('ship export');
     await click('page', H('P-0005-ship'));
-    await wait('page', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action');
+    await progressUi.list('page');
+    await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
     await evaluate(`qa.holds.push({tag:'r5',path:'/v1/search'});true`);
     await click('page', '[data-testid="search-more"] button'); await sleep(150);
-    await click('page', '[data-testid="cleanup-archive"] button');
+    await progressUi.action('page','cleanup-archive');
     await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'archive retires search');
     mark = await count('/v1/search');
     await evaluate(`qa.release('r5')`); await sleep(600);
@@ -1880,7 +2675,7 @@ try {
     // R9: host session A/B/null keeps the board search; zero new windows.
     await searchFor('export csv');
     const keep = await run(); mark = await count('/v1/search');
-    for (const s of ['session-a', 'session-b', null]) { await evaluate(`qa.context(${JSON.stringify(s)});true`); await sleep(300); }
+    for (const s of ['session-a', 'session-b', null]) { await evaluate(`qa.context(${javascriptLiteral(s)});true`); await sleep(300); }
     race('F3:host-session-changes-keep-board-search', await run() === keep && await count('/v1/search') === mark && await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-chip-q"]')`));
     // Rail with a null host session stays health-only and search-free.
     const railMark = (await reqs(`r.frame==='panel'`)).length;
@@ -2043,6 +2838,16 @@ try {
 } catch (e) {
   if (!(e instanceof OnlyDone)) failure = e instanceof Error ? e.message.split('\n')[0].slice(0, 700) : String(e);
 } finally {
+  if (productionMap && page) {
+    try {
+      const r = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
+      replies = r.result.value ?? [];
+      if (failure) {
+        const snapshot = await page.send('Runtime.evaluate', { expression: `Object.fromEntries(['page','panel','status'].map(f=>{const d=frame(f).contentDocument;return [f,{text:d.getElementById('root')?.innerText.slice(-1600),active:d.activeElement?.outerHTML.slice(0,250)}]}))`, returnByValue: true });
+        writeFileSync(join(artifacts,'failure-state.json'),JSON.stringify(snapshot.result.value,null,2)+'\n');
+      }
+    } catch { /* Browser failure is already recorded; do not hide the original failure. */ }
+  }
   if (onlyLarge && page) {
     try {
       const captured = await page.send('Runtime.evaluate', { expression: 'qa.replies', returnByValue: true });
@@ -2054,7 +2859,7 @@ try {
   try { process.kill(-chrome.pid!, 'SIGTERM'); } catch { chrome.kill('SIGTERM'); }
   await exited;
   await fx.stop();
-  const evidenceClass = `synthetic SDK shell, real disposable HTTP services over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated headless Linux Chromium, current guest bundles`;
+   const evidenceClass = `synthetic SDK shell, real disposable HTTP services over SQLite (${built ? 'built generated service' : 'current TypeScript service'}), isolated ${process.argv.includes('--headed') ? 'headed' : 'headless'} Linux Chromium, current guest bundles`;
   const environment = { evidenceClass, browser: browserVersion, reducedMotion: true, nativeHostProof: false };
   const passed = !failure && results.length + races.length > 0 && results.every((r) => r.pass) && races.every((r) => r.pass);
   writeFileSync(join(artifacts, 'results.json'), `${JSON.stringify({ ...environment, passed, failure, assertions: results.length, results, facts, screenshots: shots }, null, 2)}\n`);
@@ -2064,7 +2869,7 @@ try {
   const serviceMs = windowSummary.filter((w) => w.status === 200).map((w) => w.ms);
   const detailGraph = replies.filter(r => r.path === '/v1/plan' || r.path === '/v1/plan-graph').map(({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }) => ({ frame, traffic, path, status, bytes, ms, revision, itemCount, continuation, nextPage }));
   writeFileSync(join(artifacts, 'requests.json'), `${JSON.stringify({ ...environment, passed: gates.every((g) => g.pass) && !failure, gates, actions, detailGraph, searchWindows: { count: windowSummary.length, serviceRoundTripMs: serviceMs.length ? stats(serviceMs) : null, windows: windowSummary }, freshnessReads: { count: stateSummary.length, reads: stateSummary } }, null, 2)}\n`);
-  if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and any local smoke budgets are in requests.json.' }, null, 2)}\n`);
+    if (measure) writeFileSync(join(artifacts, 'performance.json'), `${JSON.stringify({ ...environment, mode: onlyMapLarge ? 'dependency-map-large' : onlyLarge ? 'large-plan' : 'candidate-search', passed, failure, measurements: perf, note: productionMap ? 'Production guests. Three samples after one warm-up per surface/width; local budgets, not a latency SLA. Real keyboard actions and labelled native-select group changes, no controller probes. CPU is separately labelled browser layout/style/script, not compositor time.' : 'Three samples after one warm-up; diagnostic on one machine, no latency SLA. Work/request limits and local smoke budgets are in requests.json.' }, null, 2)}\n`);
   console.log(JSON.stringify({ passed, assertions: results.length, races: races.length, gates: gates.length, failure, screenshots: shots }, null, 2));
   if (!passed) process.exitCode = 1;
   rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

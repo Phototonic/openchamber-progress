@@ -8,6 +8,7 @@
 // Usage: node --experimental-strip-types tests/browser/perf-probe.ts <cdp port> <scenario.json> <out.json>
 // Scenario: { sessions: {NAME: "sidebar title"}, steps: Step[], seed?: { root, sessions } } — see runStep().
 // Long runs: the output file is rewritten at every metrics step, so an interrupted run keeps its events.
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -66,7 +67,7 @@ const FRAME_SCRIPT = `(() => {
     const q = (sel) => !!r.querySelector(sel);
     const plans = [...r.querySelectorAll('[data-testid]')].map((n) => n.dataset.testid).filter((x) => /^plan-/.test(x) && !/^plan-(list|detail|selector)$/.test(x)).map((x) => x.replace(/^plan-(row-)?/, ''));
     const state = r.getAttribute('aria-busy') === 'true' || q('[data-testid=state-loading]') ? 'loading'
-      : q('[data-testid^=state-]') ? [...r.querySelectorAll('[data-testid^=state-]')].map((n) => n.dataset.testid).join('+')
+      : q(':is([data-testid=state-not-approved],[data-testid=state-paused],[data-testid=state-disconnected],[data-testid=state-unavailable],[data-testid=state-busy],[data-testid=state-damaged],[data-testid=state-incompatible],[data-testid=state-invalid],[data-testid=state-not-found],[data-testid=state-setup-lost])') ? [...r.querySelectorAll(':is([data-testid=state-not-approved],[data-testid=state-paused],[data-testid=state-disconnected],[data-testid=state-unavailable],[data-testid=state-busy],[data-testid=state-damaged],[data-testid=state-incompatible],[data-testid=state-invalid],[data-testid=state-not-found],[data-testid=state-setup-lost])')].map((n) => n.dataset.testid).join('+')
       : q('[data-testid=setup-panel],[data-testid=setup-needed]') ? 'setup'
       : q('[data-testid=unscoped-state]') ? 'unscoped'
       : plans.length ? 'data' : q('[data-testid=empty-state]') ? 'empty' : 'other';
@@ -164,13 +165,13 @@ const evalHost = async (expression: string) => (await send('Runtime.evaluate', {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function click(x: number, y: number) { for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); }
 async function clickSession(title: string) {
-  const xy = await evalHost(`(()=>{const n=[...document.querySelectorAll('nav *, aside *')].find(n=>n.children.length===0&&n.textContent.trim()===${JSON.stringify(title)});if(!n)return null;const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
+  const xy = await evalHost(`(()=>{const n=[...document.querySelectorAll('nav *, aside *')].find(n=>n.children.length===0&&n.textContent.trim()===${javascriptLiteral(title)});if(!n)return null;const r=n.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
   if (!xy) throw new Error(`session not in sidebar: ${title}`);
   const t0 = now();
   await click(xy[0], xy[1]);
   // When does the HOST's own chrome show the clicked session (title in the top bar, right of the sidebar)?
   for (let i = 0; i < 80; i++) {
-    const shown = await evalHost(`[...document.querySelectorAll('body *')].some(n=>n.children.length===0&&n.textContent.trim()===${JSON.stringify(title)}&&(()=>{const r=n.getBoundingClientRect();return r.y<45&&r.x>285&&r.width>0})())`);
+    const shown = await evalHost(`[...document.querySelectorAll('body *')].some(n=>n.children.length===0&&n.textContent.trim()===${javascriptLiteral(title)}&&(()=>{const r=n.getBoundingClientRect();return r.y<45&&r.x>285&&r.width>0})())`);
     if (shown) { events.push({ src: 'step', kind: 'host-switched', t: now(), ms: now() - t0 }); return; }
     await sleep(25);
   }
