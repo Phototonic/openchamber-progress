@@ -119,4 +119,39 @@ export async function primitiveQa(q: {
   check('primitive:disposed-info-stays-closed', await g(`return ${closed}`));
   await g('w.primitiveFixture.retire();return true');
   check('primitive:retirement-no-orphan-popup', await g(`return !d.querySelector('[data-testid="info-content"],[role="menu"]')`));
+  const paintBaseline = await listeners();
+  await g(`w.primitiveFixture.repaintInfo();d.querySelector('#painted-info [data-testid="info-trigger"]').focus();return true`);
+  await key('Tab'); await key('Tab', 1, 8);
+  await wait('page', `d.querySelector('#painted-info [aria-expanded="true"]')`, 'keyboard-open painted explanation');
+  for (let n = 0; n < 5; n++) await g('w.primitiveFixture.repaintInfo();return true');
+  check('primitive:painted-info-open-state-restored', await g(`return !!d.querySelector('#painted-info [aria-expanded="true"]')`));
+  check('primitive:painted-info-listeners-bounded', (await listeners()) === paintBaseline + 2);
+  await g('return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
+  await c.send('HeapProfiler.collectGarbage');
+  check('primitive:painted-info-removed-content-collected', await g('return w.primitiveFixture.retainedContent===0'));
+  await g('w.primitiveFixture.retirePaintedInfo();w.dispatchEvent(new w.Event("resize"));return true');
+  check('primitive:painted-info-retired-listeners-baseline', (await listeners()) === paintBaseline);
+  await g('w.primitiveFixture.mountLazyRows();return true');
+  const row = '[data-testid="item-toggle-A"]';
+  const rowBaseline = await listeners();
+  for (let n = 0; n < 6; n++) {
+    await g(`d.querySelector('${row} > summary').focus();return true`); await key('Enter');
+    await wait('page', `d.querySelectorAll('${row} [data-testid="info-content"]').length===2`, 'one current row worth of lazy explanations');
+    if (n === 3) {
+      await key('Tab');
+      await wait('page', `d.querySelector('${row} [data-testid="info-trigger"][aria-expanded="true"]')`, 'keyboard-open explanation in lazy facts');
+      check('primitive:lazy-info-adds-only-current-listeners', (await listeners()) === rowBaseline + 2);
+    }
+    await g(`d.querySelector('${row}').open=false;return true`);
+    await wait('page', `!d.querySelector('${row} [data-testid="info-content"]')`, 'collapsed facts removed in place');
+    check(`primitive:lazy-collapse-${n}:listeners-baseline`, (await listeners()) === rowBaseline);
+  }
+  await g(`d.querySelector('${row} > summary').focus();return true`); await key('Enter');
+  await wait('page', `d.querySelector('${row} [data-testid="info-trigger"]')`, 'fresh facts recreated');
+  check('primitive:lazy-reopen-has-only-current-explanations', await g(`return d.querySelectorAll('${row} [data-testid="info-content"]').length===2`));
+  await key('Tab');
+  await wait('page', `d.querySelector('${row} [data-testid="info-trigger"][aria-expanded="true"]')`, 'recreated explanation opens on keyboard focus');
+  await key('Escape');
+  check('primitive:lazy-recreated-info-escape-closes', await g(`return d.activeElement.matches('${row} [data-testid="info-trigger"]')&&d.activeElement.getAttribute('aria-expanded')==='false'`) && (await listeners()) === rowBaseline);
+  await g('w.primitiveFixture.retirePaintedInfo();return true');
 }

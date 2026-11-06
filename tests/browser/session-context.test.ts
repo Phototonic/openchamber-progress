@@ -29,6 +29,7 @@ type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
+  const infoPaints: { kind: string; root?: object }[] = [];
   let expanded = false, disclosure = false, livePopup = false;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
     querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
@@ -65,7 +66,11 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
-      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {},
+        retireReadingUi() { infoPaints.push({ kind: 'retire' }); },
+        beginInfoPaint(root: object) { infoPaints.push({ kind: 'begin', root }); },
+        commitInfoPaint(root: object) { assert.equal(mount.firstElementChild, root, 'dispose previous handles after root replacement'); infoPaints.push({ kind: 'commit', root }); },
+      };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
@@ -82,10 +87,10 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
     onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
-    paint: (_root, value) => { vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
+    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
   };
   exports.startView(spec);
-  return { requests, paints, contexts, listeners, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, infoPaints, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
     openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),

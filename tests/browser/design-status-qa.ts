@@ -6,6 +6,11 @@ import type { designRefactorQa } from './design-refactor-qa.ts';
 /** Whole guest-region Status measurements, never the host's Project section. */
 export async function designStatusQa(q: Parameters<typeof designRefactorQa>[0]) {
   const { guest, evaluate, wait, show, click, check, shot } = q;
+  const reloadStatus = async () => {
+    const generation = await evaluate<number>(`qa.reload('status')`);
+    // Old hooks remain visible until navigation commits; do not click that retired document.
+    await wait('status', `d.readyState==='complete'&&d.defaultView.parent.qa.loaded.status===${generation}`, 'new Status document loaded');
+  };
   await show(['status'], 360);
   await wait('status', `d.querySelector('[data-testid="status-plan-selector"] button')`, 'Status scoped plans available');
   await click('status', '[data-testid="status-plan-selector"] button');
@@ -68,11 +73,13 @@ export async function designStatusQa(q: Parameters<typeof designRefactorQa>[0]) 
     await capture('F8-status-stale', 'failed refresh; retained qualified counts');
     await evaluate(`qa.fail=[];true`);
     await wait('status', `!d.querySelector('[data-testid="stale-banner"]')`, 'freshness restored');
-    await evaluate(`qa.fail.push({path:'/v1/plan',frame:'status',status:503,code:'unavailable'});qa.reload('status');true`);
+    await evaluate(`qa.fail.push({path:'/v1/plan',frame:'status',status:503,code:'unavailable'});true`);
+    await reloadStatus();
     await wait('status', `d.querySelector('[data-testid="status-detail-unavailable"]')`, 'detail read unavailable');
     check('status:unavailable-does-not-fabricate-focus-or-guidance', await guest('status', `return !d.querySelector('[data-testid="current-work"]')&&!d.querySelector('[data-testid="state-chip"][data-state="ready"],[data-testid="state-chip"][data-state="waiting"]')&&d.querySelector('[data-testid="counts"]').dataset.total==='8'`));
     await capture('F8-status-unavailable', 'detail unavailable; summary totals retained');
-    await evaluate(`qa.fail=[];qa.reload('status');true`);
+    await evaluate(`qa.fail=[];true`);
+    await reloadStatus();
     await wait('status', `d.querySelector('[data-testid="current-work"]')`, 'detail restored');
     if (!q.seedDesignRegroup || !q.finishDesignRegroup) throw Error('Status finished-plan fixture required');
     const finished = q.seedDesignRegroup('finished'); q.finishDesignRegroup(finished, 'finished');
@@ -89,8 +96,9 @@ export async function designStatusQa(q: Parameters<typeof designRefactorQa>[0]) 
     await guest('status', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
     check('status:closed-detail-failure-visible-with-valid-summary', await guest('status', `return !!d.querySelector('[data-testid="status-detail-unavailable"]')&&d.querySelector('[data-testid="counts"]').dataset.done==='1'&&d.querySelector('[data-testid="counts"]').dataset.total==='1'&&!d.querySelector('[data-testid="current-work"]')`));
     await capture('status-finished-detail-unavailable', 'finished selection; failed detail read visible beside valid summary');
-    await evaluate(`qa.fail=[];qa.reload('status');true`);
-    await wait('status', `d.querySelector('[data-testid="more-plans"]')`, 'fresh picker after failure');
+    await evaluate(`qa.fail=[];true`);
+    await reloadStatus();
+    await wait('status', `d.querySelector('[data-testid="more-plans"]')?.textContent==='+3 more plans'`, 'fresh complete scoped picker after failure');
     await click('status', '[data-testid="more-plans"]');
     await wait('status', `d.querySelector('[role="option"][id$="source-design/${finished}"]')`, 'finished option after read recovery');
     await click('status', `[role="option"][id$="source-design/${finished}"]`);
