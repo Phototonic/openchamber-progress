@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { SetupController } from '../../service/setup-controller.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
+import { RELEASE } from '../../shared/release.ts';
 import { serviceBindingFile } from '../../service/state.ts';
 import { Store } from '../../shared/store.ts';
 
@@ -100,13 +101,15 @@ test('HTTP bundled comparison uses selected bytes, retains root version and clea
     state=await status();assert.equal(state.activation,'control-applies-to-loaded-instances');assert.equal(state.update.state,'current');
     lifecycle('update',f.targets,{...f.payload,plugin:f.payload.plugin+'\n// legitimate same-version rebuild\n'});
     state=await status();assert.equal(state.version,f.payload.version);assert.equal(state.update.state,'available');assert.equal(state.activation,'reload-required');
-    lifecycle('update',f.targets,{...f.payload,version:'0.10.0'});
+    // A version newer than the bundled release, so the installed companion is newer.
+    const [major,minor]=RELEASE.split('.').map(Number),newerVersion=`${major}.${minor!+10}.0`;
+    lifecycle('update',f.targets,{...f.payload,version:newerVersion});
     const manifestFile=`${f.targets.configRoot}/plugins/agent-progress/.ownership.json`,manifestBytes=readFileSync(manifestFile);
     const historyFile=`${f.targets.storeRoot}/installation-history.jsonl`,beforeRead=readFileSync(historyFile);
-    state=await status();assert.equal(state.version,'0.10.0');assert.equal(state.update.state,'newer-installed');
+    state=await status();assert.equal(state.version,newerVersion);assert.equal(state.update.state,'newer-installed');
     assert.deepEqual(readFileSync(manifestFile),manifestBytes);assert.deepEqual(readFileSync(historyFile),beforeRead);
     // Detection did not silently switch or downgrade the selected release.
-    assert.equal(lifecycle('inspect',f.targets).version,'0.10.0');
+    assert.equal(lifecycle('inspect',f.targets).version,newerVersion);
     assert.equal((await running.request('/v1/setup/update',{confirmed:true})).status,200);
     state=await status();assert.equal(state.version,f.payload.version);assert.equal(state.update.state,'current');
     assert.equal(readFileSync(`${f.targets.storeRoot}/installation-history.jsonl`,'utf8').trim().split('\n').length,5);
