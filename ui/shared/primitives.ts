@@ -287,6 +287,7 @@ export function infoDisclosure(options: InfoOptions): InfoHandle {
     };
     pending = requestAnimationFrame(step);
   };
+  const onResize = () => { if (isOpen && !disposed) placeWhenAttached(); };
   function setOpen(next: boolean, user: boolean) {
     if (disposed || next === isOpen) return;
     isOpen = next;
@@ -295,9 +296,12 @@ export function infoDisclosure(options: InfoOptions): InfoHandle {
     root.toggleAttribute('data-open', next);
     if (next) {
       document.addEventListener('pointerdown', onOutside, true);
+      // The frame can narrow while an explanation stays open: re-place it on every resize.
+      addEventListener('resize', onResize);
       placeWhenAttached();
     } else {
       document.removeEventListener('pointerdown', onOutside, true);
+      removeEventListener('resize', onResize);
       unschedule();
     }
     if (user) options.onToggle?.(next);

@@ -88,6 +88,15 @@ export async function primitiveQa(q: {
   await wait('page', edgePlaced, 'remounted restored-open disclosure positioned inside the frame');
   check('primitive:info-remount-positioned', await g(`return ${edgePlaced}`));
   check('primitive:info-restored-open-no-focus-theft', await g('return d.activeElement===w.__edgeFocus'));
+  // The frame narrows while the explanation stays open: it is re-placed inside the new frame.
+  await g('w.primitiveFixture.clearEdge();return true');
+  await q.show(['page'], 1100);
+  await g('w.primitiveFixture.restoreEdge();return true');
+  await wait('page', edgePlaced, 'wide open edge disclosure placed');
+  // Narrow enough that the content's own width shrinks too, so the wide frame's shift no longer fits.
+  await q.show(['page'], 200);
+  await wait('page', edgePlaced, 'open disclosure re-placed after the frame narrowed');
+  check('primitive:info-open-replaced-on-resize', await g(`return ${edgePlaced}`));
   await g('w.primitiveFixture.clearEdge();return true');
   check('primitive:info-restored-retired-no-listener', (await listeners()) === baseline);
   await q.show(['page'], 1100);
