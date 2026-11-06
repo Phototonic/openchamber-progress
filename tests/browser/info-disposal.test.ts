@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 
-test('info: keyboard-open explanation retires listeners and content across data paints, preserves its key, and clears on reading retirement', () => {
+function fixture() {
   // The primitive seam models its two global listeners retaining the content.
   // Use the actual components wrapper/state and paint ownership, not a parallel implementation.
   const listeners = new Map<object, object>();
@@ -12,7 +12,7 @@ test('info: keyboard-open explanation retires listeners and content across data 
   const exports: Record<string, any> = {};
   const js = ts.transpileModule(readFileSync(new URL('../../ui/shared/components.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
+  }).outputText + '\nexports.trackedInfoCount = () => [...infoHandles.values()].reduce((n, handles) => n + handles.size, 0);';
   runInNewContext(js, { exports, require: (name: string) => name === './primitives.ts' ? {
     infoDisclosure: (options: { open: boolean; onToggle: (open: boolean) => void }) => {
       const docListener = {}, windowListener = {}, content = {};
@@ -26,6 +26,11 @@ test('info: keyboard-open explanation retires listeners and content across data 
       handles.push(h); return h;
     },
   } : {} });
+  return { exports, handles, listeners };
+}
+
+test('info: keyboard-open explanation retires listeners and content across data paints, preserves its key, and clears on reading retirement', () => {
+  const { exports, handles, listeners } = fixture();
   const paint = (data: number) => {
     const root = { data }; // a distinct painted root per data update
     exports.beginInfoPaint?.(root);
@@ -56,5 +61,27 @@ test('info: keyboard-open explanation retires listeners and content across data 
   assert.equal(listeners.size, 0, 'reading retirement returns to the closed baseline');
   assert.ok(handles.every(h => !h.open));
   assert.equal(paint(7).open, false, 'a retired reading cannot restore its open key');
+  exports.retireReadingUi();
+});
+
+test('info: lazy row removal unregisters closed and open handles without a full repaint', () => {
+  const { exports, handles, listeners } = fixture();
+  const children = new Set<object>();
+  const body = { contains: (node: object) => children.has(node) };
+  exports.beginInfoPaint({});
+  for (let n = 0; n < 6; n++) {
+    exports.info('task|needs', 'About prerequisites', 'Recorded prerequisites');
+    children.add(handles.at(-1)!.root);
+    exports.info('task|unlocks', 'About unlocks', 'Recorded dependants');
+    children.add(handles.at(-1)!.root);
+    assert.equal(exports.trackedInfoCount(), 2, 'only one row worth of handles');
+    // The first cycles never open an explanation: closed handles must be released too.
+    if (n >= 3) handles.at(-1)!.focus();
+    exports.disposeInfoWithin?.(body);
+    children.clear();
+    assert.equal(exports.trackedInfoCount(), 0, 'collapsing unregisters the removed subtree before the next paint');
+    assert.equal(listeners.size, 0, 'a removed open explanation leaves no global listeners');
+    assert.ok(handles.every(h => !h.open));
+  }
   exports.retireReadingUi();
 });

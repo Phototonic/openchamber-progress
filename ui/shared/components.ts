@@ -625,6 +625,14 @@ export function commitInfoPaint(root: HTMLElement) {
     infoHandles.delete(owner);
   }
 }
+/** Release an in-place subtree before removing it; open-state keys remain reading-local. */
+export function disposeInfoWithin(root: HTMLElement) {
+  for (const handles of infoHandles.values()) for (const handle of handles) {
+    if (!root.contains(handle.root)) continue;
+    handle.dispose();
+    handles.delete(handle);
+  }
+}
 type PanelKind = 'task-view' | 'document' | 'sessions';
 let panel: { plan: string; kind: PanelKind } | null = null;
 let copy: { plan: string; item: string; generation: number; status: string; text?: string } | null = null;
@@ -944,7 +952,7 @@ function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null
   // their ⓘ explanations. Built fresh on open (this paint's controls), removed on close.
   const body = el('div', 'ap-trow-body');
   const fill = () => {
-    if (!details.open) { body.replaceChildren(); return; }
+    if (!details.open) { disposeInfoWithin(body); body.replaceChildren(); return; }
     if (body.childNodes.length) return;
     const { dl, text } = rowFacts(p, row);
     body.append(dl, copyBox(p, item, text));
