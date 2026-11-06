@@ -726,7 +726,9 @@ function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSele
   const holder = el('div', 'ap-plan-rows');
   mountList(holder, {
     ariaLabel: label,
-    selectedId: selected?.key ?? null,
+    // Partitions retain this scoped read's objects. A matching key from another
+    // list/read must not seed an SDK active option that this list cannot own.
+    selectedId: selected && plans.includes(selected) ? selected.key : null,
     onSelect,
     items: plans.map((p) => {
       const s = summarize(p);

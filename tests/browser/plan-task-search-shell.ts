@@ -329,6 +329,14 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
       f.seedPlan(plan, `Release ${outcome} focus check`, [{ id: 'T1', title: 'Release focus check', kind: 'task', status: 'pending' }], designFixture.actor);
       return plan;
     },
+    seedDesignKeyboardRegroup: (outcome: 'finished' | 'cancelled') => {
+      if (!designFixture) throw Error('Design fixture required');
+      const plan = `P-keyboard-${outcome}`;
+      const items = [{ id: 'T1', title: 'Release keyboard check', kind: 'task' as const, status: 'pending' as const }];
+      f.seedPlan(plan, `Release keyboard ${outcome} check`, items, designFixture.actor);
+      f.seedPlan(plan, `Independent keyboard ${outcome} counterpart`, items, { ...designFixture.actor, sourceId: f.beta.id, sessionId: 'N' });
+      return { plan, source: designFixture.actor.sourceId, foreignSource: f.beta.id };
+    },
     finishDesignRegroup: (plan: string, outcome: 'finished' | 'cancelled') => {
       if (!designFixture) throw Error('Design fixture required');
       if (outcome === 'finished') f.apply(plan, { op: 'change', changes: [{ id: 'T1', status: 'done' }] }, designFixture.actor);

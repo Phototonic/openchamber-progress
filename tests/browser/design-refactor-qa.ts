@@ -14,6 +14,7 @@ export async function designRefactorQa(q: {
   cleanupElsewhere?: (action: 'archive' | 'restore' | 'delete', plan: string) => Promise<void>;
   seedDesignFailed?: () => void;
   seedDesignRegroup?: (outcome: 'finished' | 'cancelled') => string;
+  seedDesignKeyboardRegroup?: (outcome: 'finished' | 'cancelled') => { plan: string; source: string; foreignSource: string };
   finishDesignRegroup?: (plan: string, outcome: 'finished' | 'cancelled') => void;
   reviewCheck?: BoardReviewCheck;
   lifetimeOnly?: boolean;
@@ -91,7 +92,7 @@ export async function designRefactorQa(q: {
     }
     const board = await designBoardQa(q);
     density.push(...board.density); inventory.push(...board.screenshots);
-    if (q.label === 'after') for (const which of ['menu', 'finished', 'cancelled'] as const) await designBoardReviewQa(q, which);
+    if (q.label === 'after') for (const which of ['menu', 'finished', 'cancelled', 'keyboard-finished', 'keyboard-cancelled'] as const) await designBoardReviewQa(q, which);
   }
   const hashes = Object.fromEntries(['panel', 'page', 'status'].map(f => [`ui/${f}/main.js`, createHash('sha256').update(readFileSync(join(q.root, `ui/${f}/main.js`))).digest('hex')]));
   writeFileSync(join(q.artifacts, 'density.json'), JSON.stringify({ label: q.label, slice: q.slice, measurements: density, note: 'Whole-region rendered line-box union and visible controls; baseline measurement only, not target acceptance.' }, null, 2) + '\n');

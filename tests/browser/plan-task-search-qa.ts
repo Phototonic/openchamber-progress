@@ -232,8 +232,8 @@ try {
 
   if (onlyDesign) {
     const reviewCheck = arg('--board-review-check');
-    if (reviewCheck && !['menu', 'finished', 'cancelled'].includes(reviewCheck)) throw Error('Unknown board review check');
-    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, setCapture: fx.setCapture, cleanupElsewhere: fx.cleanupElsewhere, seedDesignFailed: fx.seedDesignFailed, seedDesignRegroup: fx.seedDesignRegroup, finishDesignRegroup: fx.finishDesignRegroup, reviewCheck: reviewCheck as 'menu' | 'finished' | 'cancelled' | undefined, lifetimeOnly: process.argv.includes('--board-lifetime-only'), guest, evaluate, wait, show, click, theme, shot, check, key, c });
+    if (reviewCheck && !['menu', 'finished', 'cancelled', 'keyboard-finished', 'keyboard-cancelled'].includes(reviewCheck)) throw Error('Unknown board review check');
+    await designRefactorQa({ artifacts, root: arg('--guest-root') ?? '.', label: captureLabel, slice: designSlice, setCapture: fx.setCapture, cleanupElsewhere: fx.cleanupElsewhere, seedDesignFailed: fx.seedDesignFailed, seedDesignRegroup: fx.seedDesignRegroup, seedDesignKeyboardRegroup: fx.seedDesignKeyboardRegroup, finishDesignRegroup: fx.finishDesignRegroup, reviewCheck: reviewCheck as 'menu' | 'finished' | 'cancelled' | 'keyboard-finished' | 'keyboard-cancelled' | undefined, lifetimeOnly: process.argv.includes('--board-lifetime-only'), guest, evaluate, wait, show, click, theme, shot, check, key, c });
     replies = await evaluate('qa.replies');
     throw new OnlyDone();
   }
