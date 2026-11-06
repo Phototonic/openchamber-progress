@@ -23,7 +23,7 @@ import { connectHost, type HostClient, type HostReadyContext, type SessionSnapsh
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
 import { cleanupEligible, cleanupError, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
-import { el, refreshLabels, retireReadingUi, type Env } from './components.ts';
+import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
 import { OFFICIAL_MAIN_URL } from './config.ts';
 import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
@@ -1115,6 +1115,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     root.dataset.testid = 'progress-root';
     root.setAttribute('aria-busy', String(currentScope() !== null && !vc.read && !failure && !(health && !health.ready)));
     digests?.beginPaint(); runs?.beginPaint();
+    beginInfoPaint(root);
     spec.paint(root, vc);
     digests?.endPaint(); runs?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
@@ -1144,6 +1145,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       for (const child of [...mount!.children]) if (child !== root) child.remove();
     } else mount!.replaceChildren(root);
+    commitInfoPaint(root);
     alignMotion(root);
     for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
       const top = scrolls.get(n.dataset.scrollKey!);

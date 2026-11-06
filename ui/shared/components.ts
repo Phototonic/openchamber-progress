@@ -9,7 +9,7 @@ import {
   ALL_PARTICIPANTS, DOCUMENT_STATE_TEXT, elapsedAt, jumpTargets, LIFECYCLE_LABEL, nextJump, participantIndex, participants, relationsOf, showsLiveness, STATUS_LABEL, summarize, summaryText, taskProjection,
   type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
-import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine } from './primitives.ts';
+import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
@@ -613,6 +613,18 @@ const STATE_WORD: Record<ProgressState, string> = { working: 'In progress', bloc
 
 /** Frame-local, never stored: which ⓘ explanations and plan panels are open, and a task copy preview. */
 const openInfo = new Set<string>();
+// Handles belong to a DOM paint, not to its persistent open-state key. Keep the
+// current owner after commit too: task facts can create explanations on toggle.
+let infoPaint: HTMLElement | null = null;
+const infoHandles = new Map<HTMLElement | null, Set<InfoHandle>>();
+export function beginInfoPaint(root: HTMLElement) { infoPaint = root; infoHandles.set(root, new Set()); }
+/** Called after replacement, before focus restoration. Disposing is not a user close. */
+export function commitInfoPaint(root: HTMLElement) {
+  for (const [owner, handles] of infoHandles) if (owner !== root) {
+    for (const handle of handles) handle.dispose();
+    infoHandles.delete(owner);
+  }
+}
 type PanelKind = 'task-view' | 'document' | 'sessions';
 let panel: { plan: string; kind: PanelKind } | null = null;
 let copy: { plan: string; item: string; generation: number; status: string; text?: string } | null = null;
@@ -621,6 +633,9 @@ let readingEpoch = 0;
 /** Called by the reading owner, including transitions that never paint a plan detail. */
 export function retireReadingUi() {
   readingEpoch++;
+  for (const handles of infoHandles.values()) for (const handle of handles) handle.dispose();
+  infoHandles.clear();
+  infoPaint = null;
   openInfo.clear();
   panel = null;
   copy = null;
@@ -629,8 +644,12 @@ export function retireReadingUi() {
 /** An ⓘ explanation whose open state survives this frame's repaints (same key), never stored. */
 export function info(key: string, label: string, content: string | string[] | Node) {
   const epoch = readingEpoch;
-  const h = infoDisclosure({ label, content, open: openInfo.has(key), onToggle: (open) => { if (epoch !== readingEpoch) return; if (open) openInfo.add(key); else openInfo.delete(key); } });
+  const owner = infoPaint;
+  const h = infoDisclosure({ label, content, open: openInfo.has(key), onToggle: (open) => { if (epoch !== readingEpoch || owner !== infoPaint) return; if (open) openInfo.add(key); else openInfo.delete(key); } });
   h.root.dataset.info = key;
+  let handles = infoHandles.get(infoPaint);
+  if (!handles) infoHandles.set(infoPaint, handles = new Set());
+  handles.add(h);
   return h.root;
 }
 

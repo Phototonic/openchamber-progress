@@ -1,6 +1,7 @@
 // Supplemental test guest only: mounts the real primitives and real guest stylesheet.
 import { CSS } from '../../ui/shared/style.ts';
 import { icon, infoDisclosure, planActions, segmentedBar, stateChip, statusMark } from '../../ui/shared/primitives.ts';
+import { beginInfoPaint, commitInfoPaint, info as paintedInfo, retireReadingUi } from '../../ui/shared/components.ts';
 // Live window/document listeners, so retirement checks can prove nothing leaks.
 const live: [EventTarget, string, unknown, boolean][] = [];
 const capture = (o: unknown) => (typeof o === 'boolean' ? o : !!(o as AddEventListenerOptions | undefined)?.capture);
@@ -8,6 +9,10 @@ const at = (t: EventTarget, type: string, fn: unknown, o: unknown) => live.findI
 const addListener = EventTarget.prototype.addEventListener, removeListener = EventTarget.prototype.removeEventListener;
 EventTarget.prototype.addEventListener = function (this: EventTarget, type: string, fn: any, o?: any) { if ((this === window || this === document) && fn && at(this, type, fn, o) < 0) live.push([this, type, fn, capture(o)]); return addListener.call(this, type, fn, o); };
 EventTarget.prototype.removeEventListener = function (this: EventTarget, type: string, fn: any, o?: any) { const i = at(this, type, fn, o); if (i >= 0) live.splice(i, 1); return removeListener.call(this, type, fn, o); };
+// Window has its own event methods: include global resize listeners as well as document listeners.
+const windowAdd = window.addEventListener, windowRemove = window.removeEventListener;
+window.addEventListener = function (type: string, fn: any, o?: any) { if (fn && at(window, type, fn, o) < 0) live.push([window, type, fn, capture(o)]); return windowAdd.call(window, type, fn, o); } as typeof window.addEventListener;
+window.removeEventListener = function (type: string, fn: any, o?: any) { const i = at(window, type, fn, o); if (i >= 0) live.splice(i, 1); return windowRemove.call(window, type, fn, o); } as typeof window.removeEventListener;
 const style = document.createElement('style'); style.textContent = CSS; document.head.append(style);
 const root = document.getElementById('root')!;
 root.style.padding = '16px';
@@ -33,6 +38,17 @@ root.append(menu.root);
 // A right-edge disclosure restored open by a repaint: built detached with open:true, then attached.
 const edge = document.createElement('div'); edge.id = 'edge'; edge.style.display = 'flex'; edge.style.justifyContent = 'flex-end';
 let edgeInfo: ReturnType<typeof infoDisclosure> | null = null;
+let paintedRoot: HTMLElement | null = null, paintData = 0;
+const retiredContent: WeakRef<Element>[] = [];
+const repaintInfo = () => {
+  if (paintedRoot) retiredContent.push(new WeakRef(paintedRoot.querySelector('[data-testid="info-content"]')!));
+  const next = document.createElement('div'); next.id = 'painted-info';
+  beginInfoPaint(next);
+  next.append(paintedInfo('fixture-counts', 'About painted counts', `Reported count ${++paintData}`));
+  const after = document.createElement('button'); after.textContent = 'After explanation'; next.append(after);
+  if (paintedRoot) paintedRoot.replaceWith(next); else root.append(next);
+  commitInfoPaint(next); paintedRoot = next;
+};
 const restoreEdge = () => {
   edgeInfo?.dispose();
   edgeInfo = infoDisclosure({ open: true, label: 'About edge readiness', content: ['Based on recorded prerequisites only. Other prerequisites may not be recorded, so a task shown as ready may still wait on something.'] });
@@ -46,6 +62,9 @@ Object.assign(window, { primitiveFixture: {
   get toggles() { return toggles; }, get selected() { return selected; },
   get listeners() { return live.length; },
   restoreEdge,
+  repaintInfo,
+  get retainedContent() { return retiredContent.filter(r => r.deref()).length; },
+  retirePaintedInfo() { retireReadingUi(); },
   clearEdge() { edgeInfo?.dispose(); edgeInfo = null; edge.remove(); },
   /** Retire the menu while it is open and mount its replacement in the same place (a repaint). */
   remountMenu() { const next = makeMenu(); menu.root.before(next.root); menu.dispose(); menu.root.remove(); menu = next; },

@@ -119,4 +119,16 @@ export async function primitiveQa(q: {
   check('primitive:disposed-info-stays-closed', await g(`return ${closed}`));
   await g('w.primitiveFixture.retire();return true');
   check('primitive:retirement-no-orphan-popup', await g(`return !d.querySelector('[data-testid="info-content"],[role="menu"]')`));
+  const paintBaseline = await listeners();
+  await g(`w.primitiveFixture.repaintInfo();d.querySelector('#painted-info [data-testid="info-trigger"]').focus();return true`);
+  await key('Tab'); await key('Tab', 1, 8);
+  await wait('page', `d.querySelector('#painted-info [aria-expanded="true"]')`, 'keyboard-open painted explanation');
+  for (let n = 0; n < 5; n++) await g('w.primitiveFixture.repaintInfo();return true');
+  check('primitive:painted-info-open-state-restored', await g(`return !!d.querySelector('#painted-info [aria-expanded="true"]')`));
+  check('primitive:painted-info-listeners-bounded', (await listeners()) === paintBaseline + 2);
+  await g('return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))');
+  await c.send('HeapProfiler.collectGarbage');
+  check('primitive:painted-info-removed-content-collected', await g('return w.primitiveFixture.retainedContent===0'));
+  await g('w.primitiveFixture.retirePaintedInfo();w.dispatchEvent(new w.Event("resize"));return true');
+  check('primitive:painted-info-retired-listeners-baseline', (await listeners()) === paintBaseline);
 }
