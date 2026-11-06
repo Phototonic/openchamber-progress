@@ -1,13 +1,20 @@
 // CP-Q1 rendered regression. Run against tests/browser/status-picker-fixture.ts
 // in an isolated Chromium profile; all input goes through the existing CDP harness.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
-import assert from 'node:assert/strict';
+import type nodeAssert from 'node:assert/strict';
+import { countedAssertions } from './counted-assert.ts';
+const assertions = countedAssertions();
+const assert: typeof nodeAssert = assertions.assert;
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const port = process.argv[2];
 if (!port) throw new Error('usage: status-picker-qa.ts <isolated CDP port>');
-mkdirSync('evidence/cleanup', { recursive: true });
+const artifacts = process.argv.includes('--artifacts') ? process.argv[process.argv.indexOf('--artifacts') + 1] : 'evidence/cleanup';
+if (!artifacts) throw Error('--artifacts requires a directory');
+mkdirSync(artifacts, { recursive: true });
+process.on('uncaughtExceptionMonitor', () => writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: false, failure: 'Driver assertion or browser command failed; inspect private runner output.' }, null, 2) + '\n'));
 const cdp = (...args: string[]) => execFileSync(process.execPath, ['tests/browser/cdp.ts', port, ...args], { encoding: 'utf8', timeout: 15_000 });
 const evaluate = (code: string) => JSON.parse(cdp('eval', code));
 const guest = (code: string) => evaluate(`(()=>{const d=document.querySelector('iframe').contentDocument;${code}})()`);
@@ -47,7 +54,7 @@ function popupFit() {
 }
 function shot(name: string, width: number) {
   const height = evaluate(`Math.ceil(document.querySelector('iframe').getBoundingClientRect().height)+64`);
-  cdp('shot', `evidence/cleanup/status-picker-${name}.png`, '0', '0', String(width + 32), String(height));
+  cdp('shot', join(artifacts, `status-picker-${name}.png`), '0', '0', String(width + 32), String(height));
 }
 
 wait(`d.querySelector('${trigger}')`);
@@ -94,17 +101,21 @@ evaluate(`qa.context('session-b');true`);
 wait(`d.querySelector('.ap-status-title')?.textContent==='Other session plan' && !d.querySelector('${trigger}')`);
 evaluate(`qa.context('session-a');true`);
 wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
+const noSessionReads = evaluate('qa.listReads');
 evaluate('qa.context(null);true');
-wait(`d.querySelector('.ap-status-title')?.textContent==='Execution plan'`);
-choose(4, title);
-evaluate(`qa.context('session-a');true`);
-wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
-evaluate('qa.context(null);true');
-wait(`d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(title)}`);
+wait(`d.querySelector('[data-testid="unscoped-state"]')&&!d.querySelector('${trigger}')`);
 evaluate(`send({type:'directory',payload:{directory:null}});true`);
 wait(`d.querySelector('[data-testid="unscoped-state"]') && !d.querySelector('${trigger}')`);
 evaluate(`send({type:'directory',payload:{directory:data.projects[0].directory}});true`);
-wait(`d.querySelector('.ap-status-title')?.textContent===${javascriptLiteral(title)}`);
+wait(`d.querySelector('[data-testid="unscoped-state"]')&&!d.querySelector('${trigger}')`);
+assert.equal(evaluate('qa.listReads'), noSessionReads, 'directory-only notifications must not read plans');
+evaluate(`qa.context('session-a');true`);
+wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
+// Same-session directory enrichment is not a new featured-choice lifetime.
+evaluate(`send({type:'directory',payload:{directory:null}});true`);
+wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
+evaluate(`send({type:'directory',payload:{directory:data.projects[0].directory}});true`);
+wait(`d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
 
 // Same guest/theme bridge, neutral dark tokens. Ready restores M (with its own choice).
 evaluate(`theme.mode='dark';Object.assign(theme.tokens,{background:'#191b20',elevated:'#24272e',foreground:'#e6e8ee',muted:'#a4a9b4',subtle:'#9298a4',border:'#414650',hover:'#343944',selection:'#293d60',focus:'#90b8ff',primary:'#83aff7',mutedSurface:'#24272e',elevatedForeground:'#e6e8ee',active:'#3b4350',selectionForeground:'#e0ebff',primaryText:'#a6c7ff',successText:'#86dca3',warningText:'#e8c372',errorText:'#ff9e9e',infoText:'#a6c7ff',success:'#6fc58c',warning:'#d9b367',error:'#ee8989',info:'#83aff7'});document.documentElement.style.background=theme.tokens.background;document.body.style.background=theme.tokens.background;document.body.style.color=theme.tokens.foreground;ready();true`);
@@ -117,4 +128,6 @@ wait(`!d.querySelector('[role="listbox"]')`);
 measure(360); shot('dark', 360);
 const finalConsole = JSON.parse(cdp('console', '1'));
 assert.deepEqual(finalConsole.entries, []);
-console.log(JSON.stringify({ passed: true, measurements, contexts: 'M/U/directory/unscoped', console: { initial: initialConsole.entries, final: finalConsole.entries }, selected: snapshot() }, null, 2));
+const result = { passed: true, measurements, contexts: 'M/U/directory/unscoped', console: { initial: initialConsole.entries, final: finalConsole.entries }, selected: snapshot() };
+writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ ...result, assertions: assertions.count() }, null, 2) + '\n');
+console.log(JSON.stringify({ ...result, assertions: assertions.count() }, null, 2));

@@ -1,11 +1,18 @@
 // Real Chromium actions through the existing CDP harness; requires cleanup-fixture.ts.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
-import assert from 'node:assert/strict';
+import type nodeAssert from 'node:assert/strict';
+import { countedAssertions } from './counted-assert.ts';
+const assertions = countedAssertions();
+const assert: typeof nodeAssert = assertions.assert;
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 const port = process.argv[2];
 if (!port) throw new Error('usage: cleanup-qa.ts <isolated CDP port>');
-mkdirSync('evidence/cleanup', { recursive: true });
+const artifacts = process.argv.includes('--artifacts') ? process.argv[process.argv.indexOf('--artifacts') + 1] : 'evidence/cleanup';
+if (!artifacts) throw Error('--artifacts requires a directory');
+mkdirSync(artifacts, { recursive: true });
+process.on('uncaughtExceptionMonitor', () => writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: false, failure: 'Driver assertion or browser command failed; inspect private runner output.' }, null, 2) + '\n'));
 const cdp = (...args: string[]) => execFileSync(process.execPath, ['tests/browser/cdp.ts', port, ...args], { encoding: 'utf8', timeout: 20_000 });
 const evaluate = (code: string) => JSON.parse(cdp('eval', code));
 const guest = (surface: string, code: string) => evaluate(`(()=>{const d=document.querySelector('iframe[data-surface="${surface}"]').contentDocument;${code}})()`);
@@ -39,7 +46,7 @@ const state = async (plan = 'P-done', store = 0) => (await fixture(`/state?plan=
 function shot(name: string, surface: string, selector?: string) {
   if (selector) guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'center'});return true;`);
   const rect = evaluate(`(()=>{const r=document.querySelector('section[data-surface="${surface}"]').getBoundingClientRect();return [Math.max(0,r.x-8),Math.max(0,r.y-8),r.width+16,Math.min(r.height+16,innerHeight-r.y)]})()`);
-  cdp('shot', `evidence/cleanup/cleanup-${name}.png`, ...rect.map(String));
+  cdp('shot', join(artifacts, `cleanup-${name}.png`), ...rect.map(String));
 }
 function noOverflow(surface: string) { assert.equal(guest(surface, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth;'), true); }
 function tab(surface: string, text: string) {
@@ -57,9 +64,10 @@ const before = await state(); const secondBefore = await state('P-done', 1);
 for (const id of ['P-active', 'P-cancelled', 'P-failed']) {
   choosePage(id); assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]');`), false);
 }
-// Remember the same manual key in status session and directory scopes.
+// Session-local manual choice survives a temporary no-session state. Directory
+// context alone must not display plans or create a second featured-choice scope.
 show('status', 280); choosePicker('status', 'P-done');
-evaluate(`qa.context(null);true`); wait('status', `d.querySelector('[data-testid="status-plan-selector"]')`); choosePicker('status', 'P-done');
+evaluate(`qa.context(null);true`); wait('status', `d.querySelector('[data-testid="unscoped-state"]')&&!d.querySelector('[data-testid="status-plan-selector"]')`);
 evaluate(`qa.context('M');true`); selected('status', 'P-done');
 show('panel', 360); choosePicker('panel', 'P-done');
 show('page'); choosePage('P-done');
@@ -78,7 +86,7 @@ wait('status', `!d.querySelector('[data-testid="plan-P-done"][data-source="sourc
 const archived = await state(); assert.equal(archived.cleanup.state, 'archived');
 assert.deepEqual(archived.counts, before.counts); assert.deepEqual(archived.history, before.history); assert.equal(archived.document, before.document); assert.equal(archived.sourceUnchanged, true);
 evaluate(`qa.context(null);true`);
-wait('status', `d.querySelector('.ap-status-title') && !d.querySelector('[data-testid="plan-P-done"][data-source="source-fixture"]')`);
+wait('status', `d.querySelector('[data-testid="unscoped-state"]') && !d.querySelector('[data-testid="plan-P-done"][data-source="source-fixture"]')`);
 evaluate(`qa.context('M');true`);
 button('page', 'cleanup-archived');
 wait('page', `d.querySelector('[data-testid="cleanup-restore"]')`);
@@ -179,4 +187,6 @@ show('page', 360); noOverflow('page'); shot('archived-narrow', 'page', '[data-te
 
 assert.deepEqual(evaluate('qa.errors'), []);
 assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
-console.log(JSON.stringify({ passed: true, realService: true, archiveRestorePreserved: true, deleteSelectedPayloadOnly: true, sourceUnchanged: deleted.sourceUnchanged, secondStoreUnchanged: true, cancelSentNothing: true, duplicateBlocked: true, keyboardFocus: true, contextAndStoreConfirmationInvalidation: true, failureSeams: ['real409', 'synthetic503', 'syntheticNetwork', 'oldCapability', 'heldList', 'heldDetail', 'heldDocument', 'heldHistory', 'heldDeleteReply'], posts: posts() }, null, 2));
+const result = { passed: true, realService: true, archiveRestorePreserved: true, deleteSelectedPayloadOnly: true, sourceUnchanged: deleted.sourceUnchanged, secondStoreUnchanged: true, cancelSentNothing: true, duplicateBlocked: true, keyboardFocus: true, contextAndStoreConfirmationInvalidation: true, failureSeams: ['real409', 'synthetic503', 'syntheticNetwork', 'oldCapability', 'heldList', 'heldDetail', 'heldDocument', 'heldHistory', 'heldDeleteReply'], posts: posts() };
+writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ ...result, assertions: assertions.count() }, null, 2) + '\n');
+console.log(JSON.stringify({ ...result, assertions: assertions.count() }, null, 2));

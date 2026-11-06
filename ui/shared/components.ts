@@ -8,6 +8,7 @@ import {
   ALL_PARTICIPANTS, blockedWork, currentWork, DOCUMENT_STATE_TEXT, elapsedAt, jumpTargets, LIFECYCLE_LABEL, nextJump, participantIndex, participants, relationsOf, showsLiveness, STATUS_LABEL, summarize, summaryText, taskMatch, taskProjection,
   type BlockerCategory, type BranchSummary, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
+import { segmentedBar, statusMark } from './primitives.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 
@@ -98,12 +99,12 @@ function workingText(text: string) {
   return t;
 }
 
+/**
+ * A task's status mark (primitives.ts), named for assistive technology. Keeps the `ap-glyph` row
+ * hook; a working task is "Reported working", never "Running".
+ */
 export function glyph(status: ItemView['status']) {
-  const g = el('span', 'ap-glyph');
-  g.dataset.status = status;
-  g.setAttribute('role', 'img');
-  g.setAttribute('aria-label', STATUS_LABEL[status]);
-  return g;
+  return statusMark(status, { className: 'ap-glyph' });
 }
 
 export function chip(state: string, tone: 'info' | 'warning' | 'neutral', name?: string) {
@@ -124,6 +125,9 @@ export function lifecycleBadge(plan: PlanView) {
   return b;
 }
 
+/** The bar's spoken summary: done of total, remaining, skipped (never counted as done), then working and blocked. */
+const barLabel = (s: PlanSummary) => `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`;
+
 /** The at-a-glance progress story: big fraction, segmented bar, legend. */
 export function progressBlock(s: PlanSummary, compact = false) {
   const wrap = el('div', 'ap-progress');
@@ -141,19 +145,11 @@ export function progressBlock(s: PlanSummary, compact = false) {
   else if (s.total === 0) counts.append(el('span', '', summaryText(s)));
   else counts.append(el('strong', '', `${s.done}/${s.total}`), el('span', '', `done · ${s.remaining} remaining${s.skipped ? ` · ${s.skipped} skipped` : ''}`));
   wrap.append(counts);
-  if (s.total > 0) {
-    const bar = el('div', 'ap-seg');
-    bar.setAttribute('role', 'img');
-    bar.setAttribute('aria-label', `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`);
-    for (const [k, n] of [['done', s.done], ['working', s.working], ['blocked', s.blocked]] as const) {
-      if (!n) continue;
-      const seg = el('i');
-      seg.dataset.k = k;
-      seg.style.width = `${(Math.min(n, s.total) / s.total) * 100}%`;
-      bar.append(seg);
-    }
+  const bar = segmentedBar(s, barLabel(s));
+  if (bar) {
     wrap.append(bar);
     if (!compact) {
+      // Decorative: the bar's name already says these counts. Each entry pairs its mark shape with words.
       const legend = el('div', 'ap-legend');
       legend.setAttribute('aria-hidden', 'true');
       const pending = Math.max(0, s.remaining - s.working - s.blocked);
@@ -161,7 +157,7 @@ export function progressBlock(s: PlanSummary, compact = false) {
         if (!n) continue;
         const item = el('span');
         item.dataset.k = k;
-        item.append(el('i'), k === 'working' ? workingText(`${n} ${label}`) : document.createTextNode(`${n} ${label}`));
+        item.append(statusMark(k, { decorative: true }), k === 'working' ? workingText(`${n} ${label}`) : document.createTextNode(`${n} ${label}`));
         legend.append(item);
       }
       wrap.append(legend);
@@ -643,7 +639,7 @@ function navLink(plan: PlanView, itemId: string, text: string, name: string) {
 }
 
 /** Status glyph whose meaning is spoken by the adjacent status text instead. */
-const quietGlyph = (status: ItemView['status']) => { const g = glyph(status); g.removeAttribute('role'); g.removeAttribute('aria-label'); g.setAttribute('aria-hidden', 'true'); return g; };
+const quietGlyph = (status: ItemView['status']) => statusMark(status, { decorative: true, className: 'ap-glyph' });
 
 function prerequisiteRow(plan: PlanView, p: Prerequisite) {
   const li = el('li', 'ap-ready-dep');
