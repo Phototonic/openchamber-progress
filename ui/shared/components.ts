@@ -323,10 +323,11 @@ function articleOf(control: HTMLElement, plan: PlanView) {
 }
 
 /** Expand all / Collapse all: every task disclosure of this plan (filtered branches too), nothing else. */
-function setDisclosures(control: HTMLElement, plan: PlanView, open: boolean) {
+function setDisclosures(control: HTMLElement, plan: PlanView, reading: ReadingView, open: boolean) {
   const article = articleOf(control, plan);
-  if (!article) return;
-  for (const d of article.querySelectorAll<HTMLDetailsElement>('ul.ap-items details.ap-group')) if (d.open !== open) d.open = open;
+  if (!article || !reading.current()) return;
+  reading.remember({ doneOpen: open, skippedOpen: open });
+  for (const d of article.querySelectorAll<HTMLDetailsElement>('ul.ap-items details.ap-group, ul.ap-items details.ap-fold')) if (d.open !== open) d.open = open;
 }
 
 const JUMP_COPY: Record<JumpKind, { active: [string, string, string]; closed: [string, string, string] }> = {
@@ -614,7 +615,8 @@ const STATE_WORD: Record<ProgressState, string> = { working: 'In progress', bloc
 const openInfo = new Set<string>();
 type PanelKind = 'task-view' | 'document' | 'sessions';
 let panel: { plan: string; kind: PanelKind } | null = null;
-let copy: { plan: string; item: string; status: string; text?: string } | null = null;
+let copy: { plan: string; item: string; generation: number; status: string; text?: string } | null = null;
+let copyGeneration = 0;
 let readingEpoch = 0;
 /** Called by the reading owner, including transitions that never paint a plan detail. */
 export function retireReadingUi() {
@@ -865,20 +867,21 @@ function copyBox(p: Paint, item: ItemView, text: [string, string][]) {
     const b = testid(el('button', 'ap-rcopy-open', 'Copy details…'), `task-copy-${item.id}`);
     b.type = 'button';
     b.prepend(icon('copy'));
-    b.addEventListener('click', () => { if (!p.reading?.current()) return; copy = { plan: p.plan.key, item: item.id, status: '' }; repaint(p, focusIn(p.plan, `[data-testid="task-copy-text-${CSS.escape(item.id)}"]`)); });
+    b.addEventListener('click', () => { if (!p.reading?.current()) return; copy = { plan: p.plan.key, item: item.id, generation: ++copyGeneration, status: '' }; repaint(p, focusIn(p.plan, `[data-testid="task-copy-text-${CSS.escape(item.id)}"]`)); });
     holder.append(b);
     return holder;
   }
   const body = [item.title, ...text.map(([k, v]) => `${k}: ${v}`)].join('\n');
   // A changed displayed text is a new preview generation, even within one reading.
   // A held clipboard write for the old text may finish, but cannot confirm this text.
-  if (copy!.text !== body) copy = { plan: p.plan.key, item: item.id, status: '', text: body };
+  if (copy!.text !== body) copy = { plan: p.plan.key, item: item.id, generation: ++copyGeneration, status: '', text: body };
   const box = testid(el('div', 'ap-summary-preview ap-rcopy-preview'), `task-copy-preview-${item.id}`);
   const status = testid(el('p', 'ap-note', copy!.status || 'Review before sharing: this is the recorded text exactly as shown.'), `task-copy-status-${item.id}`);
   status.setAttribute('role', 'status');
   const label = el('label', 'ap-summary-label', 'Task details (read-only)');
   const area = testid(el('textarea', 'ap-summary-text'), `task-copy-text-${item.id}`);
   area.readOnly = true; area.value = body; area.rows = Math.min(10, body.split('\n').length + 1); area.spellcheck = false;
+  area.dataset.taskCopyGeneration = String(copy!.generation);
   label.append(area);
   const controls = el('div', 'ap-row');
   const preview = copy;
@@ -1103,7 +1106,7 @@ function taskViewPanel(p: Paint) {
   if (p.who) bar.append(participantSelect(p.plan, reading, p.who, p.label));
   const bulk = el('div', 'ap-focus-set');
   for (const [id, label, open] of [['focus-expand-all', 'Expand all', true], ['focus-collapse-all', 'Collapse all', false]] as const) {
-    const holder: HTMLElement = button(bulk, id, label, () => setDisclosures(holder, p.plan, open), 'ghost');
+    const holder: HTMLElement = button(bulk, id, label, () => setDisclosures(holder, p.plan, reading, open), 'ghost');
   }
   const jumps = el('div', 'ap-focus-set');
   const hierarchy = taskProjection(p.detail.items, null);
@@ -1163,8 +1166,8 @@ function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 
     const r = p.reading;
     add('task-view', 'Task view options…', () => openPanel(p, 'task-view'));
     add('order', r.order === 'plan' ? 'Show by attention' : 'Show in plan order', () => r.set({ order: r.order === 'plan' ? 'attention' : 'plan' }));
-    add('expand-all', 'Expand all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, true); });
-    add('collapse-all', 'Collapse all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, false); });
+    add('expand-all', 'Expand all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, r, true); });
+    add('collapse-all', 'Collapse all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, r, false); });
   }
   const panels: MenuItem[] = [];
   if (docMode === 'disclosure' && p) { panels.push({ id: 'document', label: 'Plan document' }); runs.set('document', () => openPanel(p, 'document')); }

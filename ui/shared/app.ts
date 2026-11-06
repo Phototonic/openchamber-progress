@@ -1039,6 +1039,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     };
   }
 
+  // A detail refresh may paint a loading gap before rebuilding the same task preview.
+  let taskSelection: { reading: Reading | null; item: string | undefined; generation: string | undefined; value: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'; top: number } | null = null;
   function render() {
     if (!ctx || disposed) return;
     const key = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
@@ -1069,6 +1071,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const textSelection = oldText && preview && oldText.dataset.generation === String(preview.generation) ? { start: oldText.selectionStart, end: oldText.selectionEnd, direction: oldText.selectionDirection, top: oldText.scrollTop } : null;
+    const taskText = mount!.querySelector<HTMLTextAreaElement>('textarea[data-task-copy-generation]');
+    if (taskText) taskSelection = { reading: paintedReading, item: taskText.dataset.testid, generation: taskText.dataset.taskCopyGeneration, value: taskText.value, start: taskText.selectionStart, end: taskText.selectionEnd, direction: taskText.selectionDirection, top: taskText.scrollTop };
     // Plan-reading disclosures, logical focus and anchor belong to the reading they were painted
     // under; a loading paint without the task list keeps what an earlier paint recorded.
     let logical: Logical | null = null;
@@ -1197,6 +1201,12 @@ export function startView<U>(spec: ViewSpec<U>) {
     const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
     if(nextSupport && supportSelection && nextSupport.dataset.observation===supportSelection.observation && nextSupport.value===supportSelection.value){nextSupport.setSelectionRange(supportSelection.start,supportSelection.end,supportSelection.direction);nextSupport.scrollTop=supportSelection.top;}
     if (nextText && textSelection) { nextText.setSelectionRange(textSelection.start, textSelection.end, textSelection.direction); nextText.scrollTop = textSelection.top; }
+    const nextTask = root.querySelector<HTMLTextAreaElement>('textarea[data-task-copy-generation]');
+    if (sameReading && taskSelection?.reading === reading && nextTask && nextTask.dataset.testid === taskSelection.item && nextTask.dataset.taskCopyGeneration === taskSelection.generation && nextTask.value === taskSelection.value) {
+      nextTask.setSelectionRange(taskSelection.start, taskSelection.end, taskSelection.direction);
+      nextTask.scrollTop = taskSelection.top;
+    }
+    if (!sameReading || complete) taskSelection = null;
     if (previewFocus) {
       const copyCurrent = previewFocus.generation === undefined || (preview?.generation === previewFocus.generation && canReturnCopyFocus());
       if (copyCurrent && currentPreviewBinding()?.selection === previewFocus.selection) {

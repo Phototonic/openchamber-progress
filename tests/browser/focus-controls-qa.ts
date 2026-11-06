@@ -311,6 +311,28 @@ try {
       await wait('panel', `d.querySelector('${art}')?.dataset.revision==='${revision}'&&d.querySelector('${art} .ap-tasks[data-complete]')`, 'review revision accepted');
       await frameRaf('panel');
     };
+    // Bulk actions own the outer attention folds as well as the task disclosures.
+    await progressUi.action('panel', 'order');
+    await wait('panel', `d.querySelector('ul.ap-items')?.dataset.order==='attention'`);
+    for (const open of [true, false]) {
+      await progressUi.action('panel', open ? 'expand-all' : 'collapse-all', true);
+      await frameRaf('panel');
+      const folds = await guest('panel', `return ['done','skipped'].map(id=>d.querySelector('[data-testid="progress-group-'+id+'"] > details')?.open)`);
+      check(`greptile:bulk-${open ? 'expand' : 'collapse'}-outer-folds`, same(folds, [open, open]), folds);
+      check(`greptile:bulk-${open}-keeps-menu-focus`, await guest('panel', `return !!d.activeElement?.closest('[data-testid="plan-actions"]')`));
+      await evaluate(`qa.update('P-focus',()=>{});true`); await reviewPaint();
+      check(`greptile:bulk-${open}-survives-repaint`, await guest('panel', `return ['done','skipped'].every(id=>d.querySelector('[data-testid="progress-group-'+id+'"] > details')?.open===${open})`));
+    }
+    await progressUi.expand('panel', 'D');
+    await evaluate(`qa.update('P-focus',()=>{});true`); await reviewPaint();
+    check('greptile:reveal-after-collapse-retains-done-fold', await guest('panel', `return d.querySelector('[data-testid="progress-group-done"] > details').open&&!d.querySelector('[data-testid="progress-group-skipped"] > details').open&&d.querySelector('[data-testid="item-toggle-D"]').open`));
+    await progressUi.action('panel', 'order');
+    await wait('panel', `d.querySelector('ul.ap-items')?.dataset.order==='plan'`);
+    for (const open of [false, true]) {
+      await progressUi.action('panel', open ? 'expand-all' : 'collapse-all', true);
+      await wait('panel', `d.querySelector('[data-testid="group-G"]').dataset.folded${open ? "==='0'" : ">0"}`);
+      check(`greptile:bulk-${open}-branch-folded-count`, await guest('panel', `const n=d.querySelector('[data-testid="group-G"]');return n.dataset.working==='1'&&n.dataset.blocked==='1'&&n.dataset.filterHidden==='0'&&n.querySelector('.ap-count').textContent==='2/5'`));
+    }
     await evaluate(`qa.update('P-focus',p=>{for(const i of p.items)if(['D','S','W','B1'].includes(i.id))i.parentId='T';p.summary.structuralRevision++});true`);
     await reviewPaint();
     await click('panel', '[data-testid="item-toggle-T"] > summary');
@@ -321,6 +343,15 @@ try {
     await progressUi.expand('panel', 'U');
     await click('panel', '[data-testid="task-copy-U"]');
     await wait('panel', `d.querySelector('[data-testid="task-copy-text-U"]')`);
+    // Make a real overflowing task preview, then repaint unrelated data while selecting it.
+    await evaluate(`qa.update('P-focus',p=>{p.items.find(i=>i.id==='U').title='Long task details '.repeat(25)});true`); await reviewPaint();
+    const copySelected = await guest('panel', `const n=d.querySelector('[data-testid="task-copy-text-U"]');n.focus();n.setSelectionRange(8,32,'backward');n.scrollTop=40;return {top:n.scrollTop,text:n.value}`);
+    check('greptile:task-preview-scroll-fixture', copySelected.top > 0);
+    await evaluate(`qa.update('P-focus',()=>{});true`); await reviewPaint();
+    const copyKept = await guest('panel', `const n=d.querySelector('[data-testid="task-copy-text-U"]');return {start:n.selectionStart,end:n.selectionEnd,direction:n.selectionDirection,top:n.scrollTop,focused:d.activeElement===n,text:n.value}`);
+    check('greptile:task-preview-preserves-selection-scroll-focus', copyKept.start===8&&copyKept.end===32&&copyKept.direction==='backward'&&Math.abs(copyKept.top-copySelected.top)<1&&copyKept.focused&&copyKept.text===copySelected.text, copyKept);
+    await evaluate(`qa.update('P-focus',p=>{p.items.find(i=>i.id==='U').title='New task text'});true`); await reviewPaint();
+    check('greptile:changed-task-text-does-not-inherit-selection', await guest('panel', `const n=d.querySelector('[data-testid="task-copy-text-U"]');return n.value.startsWith('New task text')&&n.selectionStart===n.selectionEnd&&n.scrollTop===0`));
     await guest('panel', `w.__copyDescriptor=Object.getOwnPropertyDescriptor(w.navigator,'clipboard');w.__copyWrites=[];Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:text=>new Promise((resolve,reject)=>{w.__copyWrites.push(text);w.__copyResolve=resolve;w.__copyReject=reject})}});return true`);
     await click('panel', '[data-testid="task-copy-confirm-U"] button');
     await wait('panel', `w.__copyWrites.length===1`);
