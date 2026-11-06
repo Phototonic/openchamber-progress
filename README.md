@@ -15,20 +15,39 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 
 ## Why you'll like it
 
-- 🧭 **At a glance, then in depth.** A single grouped list, *Now*, *Needs you*, *Up next*, with finished work folded away. Expand any task for its reason, next step, prerequisites and who's on it.
-- 🗺️ **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view.
-- ✋ **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
-- 🤖 **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
-- 📋 **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
-- 🔒 **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
-- ♿ **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.
+- **At a glance, then in depth.** A single grouped list, *Now*, *Needs you*, *Up next*, with finished work folded away. Expand any task for its reason, next step, prerequisites and who's on it.
+- **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view.
+- **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
+- **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
+- **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
+- **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
+- **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.
 
 ## Three places to follow along
 
-| Right rail | Work Status | Fullscreen board |
-| :---: | :---: | :---: |
-| <img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="250"> | <img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="230"> | Every plan across projects, worktrees and sessions, with search, filters, history and the dependency map pictured above. |
-| The current session's plan, right beside your chat. | A compact summary of the plan that matters most right now. | |
+<table>
+  <tr>
+    <th width="50%">Right rail</th>
+    <th width="50%">Work Status</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="280"></td>
+    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="280"></td>
+  </tr>
+  <tr>
+    <td>The current session's plan, right beside your chat.</td>
+    <td>A compact summary of the plan that matters most right now.</td>
+  </tr>
+  <tr>
+    <th colspan="2">Fullscreen board</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for release across every plan, with matching plans and tasks listed beside the selected plan's grouped progress" width="820"></td>
+  </tr>
+  <tr>
+    <td colspan="2">Every plan across projects, worktrees and sessions, with search, filters, history and the dependency map.</td>
+  </tr>
+</table>
 
 ## Get started
 
