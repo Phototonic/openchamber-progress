@@ -547,19 +547,39 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
 html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
-/* Status-only compact SDK select. Keep its label association and popup behavior. */
-.ap-status-picker .oc-sdk-select{flex-direction:row;align-items:center;gap:8px}
-.ap-status-picker .oc-sdk-field-label{flex:none;white-space:nowrap}
-.ap-status-picker .oc-sdk-trigger{margin-left:auto;max-width:65%;height:24px;padding:0 8px}
-.ap-status-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
-.ap-status-picker .oc-sdk-popup{width:min(24rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
-.ap-status-picker .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
-.ap-status-picker .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
-.ap-status-plan{display:flex;flex-direction:column;gap:6px}
-.ap-status-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* Compact Work Status: one title (the featured-plan picker beside it), the whole-plan bar, "3/8"
+   with informational chips, at most two focus rows, a compact meta line and "+N more plans".
+   Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
+.ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
+/* Title, picker and badge share the first line: a long title wraps in its own column, so the picker
+   (and the popup it opens) stays near the top of the auto-height frame. */
+.ap-status-head{display:grid;grid-template-columns:minmax(0,max-content) auto auto;justify-content:start;align-items:start;gap:2px 6px;min-width:0}
+.ap-status-title{font-weight:600;line-height:1.35;min-width:0;overflow-wrap:anywhere}
+/* A 24 x 24 px target (WCAG 2.2 target size), centred on the title's first line; the negative block
+   margins keep that line no taller than the title itself */
+.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px;margin-block:-3px}
+.ap-status-head>span:not(.ap-status-title){align-self:start}
+.ap-status-progress{gap:6px}
+.ap-status-progress .ap-seg{height:5px}
+.ap-status-counts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;font-size:12px}
+.ap-status-fraction{font-variant-numeric:tabular-nums}
+.ap-status-fraction strong{font-size:13px;font-weight:600}
+/* Informational chips here: mark, count and word inline, no pill (nothing to press) */
+.ap-status-counts .ap-state-chip{min-height:0;padding:0;border:0;gap:4px;font-size:12px}
+.ap-status-counts .ap-state-chip .ap-mark{width:12px;height:12px}
+.ap-status-focus{display:flex;flex-direction:column;gap:3px;min-width:0}
 .ap-status-row{display:flex;align-items:baseline;gap:8px;min-width:0}
-.ap-status-row .ap-grow{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ap-status-more{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--oc-border);padding-top:6px}
+.ap-status-row .ap-grow{min-width:0;overflow-wrap:anywhere}
+.ap-status-meta{font-size:11px}
+.ap-status-more{width:fit-content;font-size:12px;color:var(--oc-muted)}
+.ap-status-more:hover{color:var(--oc-fg)}
+/* Work Status has no side padding (the host owns its gutters): roster lines keep inside the frame */
+.ap[data-surface="status"] .ap-obs-x>summary.ap-obs-line{margin:0;padding:3px 0;min-height:26px}
+.ap[data-surface="status"] .ap-census-calm{gap:4px}
+.ap[data-surface="status"] .ap-obs-line>.ap-obs-title{flex:1 1 auto}
+.ap[data-surface="status"] .ap-obs-end{font-size:11px;gap:0 6px}
+/* A wrapped title keeps its mark on the first line */
+.ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
 /* Page */
 .ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:1280px;margin:0 auto}

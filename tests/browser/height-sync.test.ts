@@ -30,7 +30,9 @@ function harness(apply: (call: number, h: number) => number | null, frame = 24) 
   };
   const pending = () => queue.filter((j) => j.live).length;
   const setVisible = (v: boolean) => { shown = v; if (v) sync.visible(); else sync.hidden(); };
-  return { sync, sent, waits, settle, pending, setVisible, frame: () => frame };
+  return { sync, sent, waits, settle, pending, setVisible, frame: () => frame,
+    deliverRetired: () => { queue[0]?.fn(); },
+  };
 }
 
 test('height: a host that drops the first request gets it again and the frame recovers', async () => {
@@ -148,5 +150,17 @@ test('height: dispose cancels pending work and nothing runs or sends afterwards'
   h.sync.request(300); h.setVisible(false); h.setVisible(true);
   await h.settle();
   assert.deepEqual(h.sent, [200]);
+  assert.equal(h.pending(), 0);
+});
+
+test('height: an already queued old callback cannot retry after a newer paint or disposal', () => {
+  const h = harness(() => null);
+  h.sync.request(200);
+  h.sync.request(280);
+  h.deliverRetired();
+  assert.deepEqual(h.sent, [200, 280]);
+  assert.equal(h.pending(), 1, 'only the current height owns a recovery chain');
+  h.sync.dispose(); h.deliverRetired();
+  assert.deepEqual(h.sent, [200, 280]);
   assert.equal(h.pending(), 0);
 });

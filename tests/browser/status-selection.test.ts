@@ -11,6 +11,7 @@ import * as scopeModule from '../../ui/shared/scope.ts';
 import { automaticPlan, StatusSelection } from '../../ui/status/selection.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { at, plansPage, summary, S } from './fixtures.ts';
+import { HeightSync } from '../../ui/shared/height.ts';
 
 const [execution, acceptance] = parsePlansPage(JSON.stringify(plansPage([
   summary('execution', [{ id: 'task', kind: 'task', status: 'working', title: 'Implement feature' }], { title: 'Execution plan', reportedAt: at(10) }),
@@ -21,20 +22,56 @@ const scoped = (plans: PlanView[]) => scopeModule.contextScope(plans, S.M, '/fix
 // Capture the actual entry's controller contract without starting a DOM/host connection.
 // Rendering and real picker events are covered by the current-bundle Chromium fixture.
 type Ui = { selection: StatusSelection };
-function statusSpec() {
+function statusSpec(globals: Record<string, unknown> = {}, heightModule: object = {}) {
   let spec!: ViewSpec<Ui>;
   const js = ts.transpileModule(readFileSync(new URL('../../ui/status/main.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  runInNewContext(js, { exports: {}, require: (name: string) => {
+  runInNewContext(js, { ...globals, exports: {}, require: (name: string) => {
     if (name === '../shared/app.ts') return { RECENT_SCOPES: 8, startView: (value: ViewSpec<Ui>) => { spec = value; } };
     if (name === '../shared/scope.ts') return scopeModule;
     if (name === '../shared/live.ts') return liveModule;
     if (name === './selection.ts') return { StatusSelection };
+    if (name === '../shared/height.ts') return heightModule;
     return {}; // rendering-only imports are deliberately not executed here
   } });
   return spec;
 }
+
+test('actual Status height: each disclosure layout requests once; repaints and retirement cannot leak listeners', () => {
+  const page = new EventTarget(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+  const jobs: { fn: () => void; live: boolean }[] = [], sent: number[] = [];
+  let frame = 24;
+  const spec = statusSpec({ document, innerHeight: frame, addEventListener: page.addEventListener.bind(page) }, {
+    HeightSync: class extends HeightSync {
+      constructor(host: ConstructorParameters<typeof HeightSync>[0]) { super({ ...host, actual: () => frame }); }
+    },
+    afterAnimationFrames: (_n: number, fn: () => void) => { const j = { fn, live: true }; jobs.push(j); return () => { j.live = false; }; },
+  });
+  const vc = { host: { setHeight: async (h: number) => { sent.push(h); frame = h; } } } as ViewContext<Ui>;
+  const root = () => Object.assign(new EventTarget(), { isConnected: true, height: 200, getBoundingClientRect() { return { height: this.height }; } });
+  let previous = root();
+  for (let i = 0; i < 5; i++) {
+    previous.isConnected = false;
+    const current = root();
+    spec.afterPaint!(current as unknown as HTMLElement, vc);
+    const start = sent.length;
+    current.dispatchEvent(new Event('toggle')); // restored open state, already measured by paint
+    assert.equal(sent.length, start);
+    current.height = 340;
+    current.dispatchEvent(new Event('toggle'));
+    assert.deepEqual(sent.slice(start), [340]);
+    previous.height = 500; previous.dispatchEvent(new Event('toggle'));
+    assert.equal(sent.length, start + 1, 'detached prior root cannot send');
+    previous = current;
+  }
+  page.dispatchEvent(new Event('pagehide'));
+  const count = sent.length;
+  previous.height = 400; previous.dispatchEvent(new Event('toggle'));
+  for (const job of jobs) job.fn(); // even delivery after cancellation cannot send
+  assert.equal(sent.length, count);
+  assert.equal(jobs.filter(j => j.live).length, 0);
+});
 
 test('actual Work Status loads older explicit working plan, not the newer pending plan', () => {
   const spec = statusSpec();
@@ -99,6 +136,31 @@ test('choices follow session across moves and clear on authority change; retired
   selection.enter('store|other-source|true', S.M, execution.directory);
   selection.enter('store|source|true', S.M, execution.directory);
   assert.equal(selection.resolve(scoped([execution, acceptance])).selected, null);
+});
+
+test('returning from no session restores only the manual plan, never an old picker generation', () => {
+  const selection = new StatusSelection();
+  const old = selection.enter('account|store|source|true', S.M, execution.directory);
+  selection.choose(old, acceptance.key);
+  selection.enter('account|store|source|true', null, execution.directory);
+  const returned = selection.enter('account|store|source|true', S.M, '/fixture/Moved');
+  assert.notEqual(returned, old);
+  assert.equal(selection.resolve(scoped([execution, acceptance])).selected, acceptance.key);
+  assert.equal(selection.choose(old, execution.key), false);
+  assert.equal(selection.enter('account|store|source|true', S.M, '/fixture/Enriched'), returned);
+  assert.equal(selection.resolve(scoped([execution, acceptance])).selected, acceptance.key);
+});
+
+test('equal plan IDs across sources and authority changes cannot transfer a manual choice or late callback', () => {
+  const selection = new StatusSelection();
+  const other = { ...execution, sourceId: 'source-other', key: `source-other/${execution.id}`, working: [] };
+  const generation = selection.enter('account-A|store-A|source|true', S.M, execution.directory);
+  selection.choose(generation, other.key);
+  assert.equal(selection.resolve(scoped([execution, other])).plan, other);
+  selection.enter('account-B|store-B|source|true', S.M, execution.directory);
+  assert.equal(selection.resolve(scoped([execution, other])).selected, null);
+  assert.equal(selection.resolve(scoped([execution, other])).plan, execution);
+  assert.equal(selection.choose(generation, other.key), false);
 });
 
 test('actual Work Status details and first project enrichment follow a manual fourth plan within the existing cap', () => {
