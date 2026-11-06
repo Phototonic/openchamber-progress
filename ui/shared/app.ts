@@ -23,7 +23,7 @@ import { connectHost, type HostClient, type HostReadyContext, type SessionSnapsh
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
 import { cleanupEligible, cleanupError, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
-import { el, refreshLabels, type Env } from './components.ts';
+import { el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
 import { OFFICIAL_MAIN_URL } from './config.ts';
 import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
@@ -170,6 +170,8 @@ export interface ViewSpec<U> {
   /** Plans whose full detail this view shows right now. */
   wantDetails: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
+  /** Synchronous presentation decision before paint; must not start reads or change list scope. */
+  prepareUi?: (vc: ViewContext<U>) => Partial<U> | null;
   afterPaint?: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Optional native focus continuity seam, with both old and new roots connected. */
   preserveFocus?: (previous: HTMLElement, next: HTMLElement) => void;
@@ -221,7 +223,8 @@ const focusKey = (root: HTMLElement) => {
   const owner = active.closest<HTMLElement>('[data-testid]');
   if (!owner) return null;
   const focusables = [...owner.querySelectorAll<HTMLElement>(FOCUSABLE)];
-  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: planScope(owner), reading: !!active.closest(READING) };
+  const picker = owner.dataset.testid === 'plan-selector';
+  return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
 };
 
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
@@ -234,7 +237,7 @@ const COMPLETE_TASKS = '.ap-tasks[data-complete]';
 /** Logical focus on a canonical row or its summary, with what a fallback needs from the old paint. */
 type Logical = { id: string; summary: boolean; ancestors: string[]; order: string[] };
 /** A row line in view and its viewport offset, or (no row in view) the raw page scroll to keep across a loading paint. */
-type Anchor = { id: string; top: number; next: string[] } | { scroll: number };
+type Anchor = { id: string; top: number; next: string[]; facts?: true } | { scroll: number };
 const rowsOf = (list: Element) => [...list.querySelectorAll<HTMLElement>('li[data-testid]')];
 const summaryOf = (li: Element) => li.querySelector<HTMLElement>(':scope > details > summary');
 /** Not hidden by a filter and not folded inside a closed ancestor disclosure. */
@@ -262,6 +265,11 @@ function anchorOf(list: Element): Anchor | null {
   const rows = rowsOf(list);
   const bottom = document.documentElement.clientHeight;
   for (let i = 0; i < rows.length; i++) {
+    const body = rows[i].querySelector<HTMLElement>(':scope > details[open] > .ap-trow-body');
+    const facts = body?.getBoundingClientRect();
+    // Expanded facts now live inside canonical rows. While reading their top edge,
+    // do not anchor the next row below them when these facts change height.
+    if (facts && facts.height > 0 && facts.top <= 0 && facts.bottom > 0) return { id: rows[i].dataset.testid!, top: facts.top, next: rows.slice(i + 1).map(n => n.dataset.testid!), facts: true };
     const r = lineOf(rows[i]).getBoundingClientRect();
     if (r.top >= bottom) return null; // rows are in document order: the rest are below the fold too
     if (r.height > 0 && r.bottom > 0) return { id: rows[i].dataset.testid!, top: r.top, next: rows.slice(i + 1).map((n) => n.dataset.testid!) };
@@ -274,7 +282,8 @@ function applyAnchor(list: Element, anchor: Anchor) {
   const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
   for (const id of [anchor.id, ...anchor.next]) {
     const li = rows.get(id);
-    const r = li && shownRow(li, list) ? lineOf(li).getBoundingClientRect() : null;
+    const target = li && anchor.facts && id === anchor.id ? li.querySelector<HTMLElement>(':scope > details[open] > .ap-trow-body') : li ? lineOf(li) : null;
+    const r = li && target && shownRow(li, list) ? target.getBoundingClientRect() : null;
     if (!r?.height) continue;
     const delta = r.top - anchor.top;
     if (Math.abs(delta) >= 1 && document.scrollingElement) document.scrollingElement.scrollTop += delta;
@@ -283,8 +292,8 @@ function applyAnchor(list: Element, anchor: Anchor) {
 }
 /**
  * Restores logical focus without scrolling: the same row if it is still shown, otherwise the
- * nearest shown ancestor summary, the next then previous shown task in the old reading order,
- * then the Tasks heading; a moved focus gets a short local notice.
+ * nearest shown ancestor summary, then the Tasks heading after complete removal. A filtered
+ * (still recorded) row may use the next/previous shown task; moved focus gets a local notice.
  */
 function restoreLogical(article: Element, list: Element, want: Logical) {
   const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
@@ -298,17 +307,90 @@ function restoreLogical(article: Element, list: Element, want: Logical) {
   }
   const at = want.order.indexOf(want.id);
   const task = (id: string) => { const li = id.startsWith('item-') ? rows.get(id) : undefined; return li && shownRow(li, list) ? li : null; };
-  for (let i = at + 1; !target && i < want.order.length; i++) target = task(want.order[i]);
-  for (let i = at - 1; !target && i >= 0; i--) target = task(want.order[i]);
+  for (let i = at + 1; exact && !target && i < want.order.length; i++) target = task(want.order[i]);
+  for (let i = at - 1; exact && !target && i >= 0; i--) target = task(want.order[i]);
   target ??= article.querySelector<HTMLElement>(TASKS_HEADING);
   target?.focus({ preventScroll: true });
   const notice = article.querySelector('[data-testid="focus-notice"]');
-  if (moved && notice) notice.textContent = 'The row you were on is no longer shown, so focus moved to a nearby row.';
+  if (moved && notice) notice.textContent = exact ? 'The row you were on is no longer shown, so focus moved to a nearby row.' : `The task you were on was removed, so focus moved to ${target?.matches(TASKS_HEADING) ? 'Tasks' : 'its group'}.`;
 }
 
 const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : directoryKey(s.directory ?? '')}|a:${s.archived ?? 'exclude'}` : 'none');
 
+/**
+ * Preserve only a natively focused canonical task row across a same-reading repaint.
+ * Fresh children carry the current paint's controls/closures; no old tree is retained.
+ * Called after both roots connect, before the old root is removed (native moveBefore).
+ */
+export function preserveFocusedTaskRow(previous: HTMLElement, next: HTMLElement) {
+  const active = previous.ownerDocument.activeElement;
+  if (!(active instanceof HTMLLIElement) || !previous.contains(active) || !active.dataset.testid?.startsWith('item-')) return;
+  const before = active.closest<HTMLElement>('article.ap-plan[data-reading]');
+  const article = next.querySelector<HTMLElement>('article.ap-plan[data-reading]');
+  if (!before || !article || before.dataset.testid !== article.dataset.testid || before.dataset.source !== article.dataset.source) return;
+  const list = article.querySelector('ul.ap-items');
+  const fresh = list && [...list.querySelectorAll<HTMLLIElement>('li[data-testid]')].find(n => n.dataset.testid === active.dataset.testid);
+  const parent = fresh?.parentElement as (HTMLElement & { moveBefore?: (node: Node, before: Node | null) => void }) | null;
+  if (!fresh || !list || !shownRow(fresh, list) || !parent || typeof parent.moveBefore !== 'function') return;
+  const navigated = active.hasAttribute('data-nav-target');
+  for (const a of [...active.attributes]) if (!fresh.hasAttribute(a.name)) active.removeAttribute(a.name);
+  for (const a of [...fresh.attributes]) if (active.getAttribute(a.name) !== a.value) active.setAttribute(a.name, a.value);
+  if (navigated) active.dataset.navTarget = '';
+  active.replaceChildren(...fresh.childNodes);
+  parent.moveBefore(active, fresh);
+  fresh.remove();
+}
+
 export function startView<U>(spec: ViewSpec<U>) {
+  // SDK options select on pointerenter, including boundary events caused by layout/scroll
+  // beneath a stationary pointer. Such an event must not overwrite arrow-key selection.
+  let pointer: { x: number; y: number } | null = null;
+  let keyboardPopup = false;
+  const popupInput = new AbortController();
+  let pressedTarget: Element | null = null;
+  let cancelledClick: number | null = null;
+  const CLICK_CONTROL = 'button,a,input,select,textarea,summary,[role="option"],[role="menuitem"]';
+  document.addEventListener('pointerdown', e => {
+    const target = e.target as Element;
+    cancelledClick = null;
+    pressedTarget = e.button === 0 && target?.closest?.('#root') && target.closest(CLICK_CONTROL) ? target : null;
+    // A release outside this iframe must still reach the press owner. If capture
+    // cannot be acquired, do not leave an unbounded paint deferral behind.
+    if (pressedTarget) { try { pressedTarget.setPointerCapture(e.pointerId); } catch { pressedTarget = null; } }
+  }, { capture: true, signal: popupInput.signal });
+  const releasePress = (event?: Event) => {
+    if (!pressedTarget) return;
+    const target = pressedTarget;
+    if (event?.type === 'pointerup') {
+      const e = event as PointerEvent;
+      // Capture retargets click even after an outside release. Preserve ordinary
+      // control cancellation semantics rather than activating an abandoned press.
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (!target.closest(CLICK_CONTROL)?.contains(hit)) cancelledClick = e.pointerId;
+    }
+    // pointerup precedes click. Keep its target alive through native click dispatch.
+    requestAnimationFrame(() => { if (pressedTarget === target) { pressedTarget = null; cancelledClick = null; schedule(); } });
+  };
+  document.addEventListener('click', e => {
+    if (cancelledClick !== null && (e as PointerEvent).pointerId === cancelledClick) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, { capture: true, signal: popupInput.signal });
+  document.addEventListener('pointerup', releasePress, { capture: true, signal: popupInput.signal });
+  document.addEventListener('pointercancel', releasePress, { capture: true, signal: popupInput.signal });
+  document.addEventListener('lostpointercapture', releasePress, { capture: true, signal: popupInput.signal });
+  window.addEventListener('blur', releasePress, { signal: popupInput.signal });
+  const pointerMoved = (e: PointerEvent) => {
+    const moved = pointer !== null && (pointer.x !== e.clientX || pointer.y !== e.clientY);
+    pointer = { x: e.clientX, y: e.clientY };
+    if (moved) keyboardPopup = false;
+  };
+  document.addEventListener('pointermove', pointerMoved, { capture: true, signal: popupInput.signal });
+  document.addEventListener('keydown', e => {
+    if ((e.target as Element)?.closest('[role="menu"],[role="listbox"],[aria-haspopup="menu"],[aria-haspopup="listbox"]')) keyboardPopup = true;
+  }, { capture: true, signal: popupInput.signal });
+  document.addEventListener('pointerenter', e => {
+    pointerMoved(e);
+    if (keyboardPopup && (e.target as Element)?.matches?.('[role="menuitem"],[role="option"]')) e.stopImmediatePropagation();
+  }, { capture: true, signal: popupInput.signal });
   const host = connectHost();
   const mount = document.getElementById('root');
   if (!mount) throw new Error('Missing #root');
@@ -448,7 +530,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       open: (mode) => { if (current()) { preview = freshPreview(binding, mode); versions.ui++; schedule(); } },
       close: () => {
         if (!active()) return;
-        previewFocus = { selection: binding.selection, hook: `summary-${bound!.mode}` };
+        previewFocus = { selection: binding.selection, hook: 'plan-actions' };
         preview = null; previewGeneration++; versions.ui++; schedule();
       },
       retry: () => {
@@ -489,7 +571,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let reading: Reading | null = null;
   /** The reading the current DOM was painted under: only its own paint is harvested. */
   let paintedReading: Reading | null = null;
-  const clearReading = () => { reading = null; paintedReading = null; };
+  const clearReading = () => { retireReadingUi(); reading = null; paintedReading = null; };
   function readingView(): ReadingView | null {
     const bound = reading;
     if (!bound) return null;
@@ -957,10 +1039,15 @@ export function startView<U>(spec: ViewSpec<U>) {
     };
   }
 
+  // A detail refresh may paint a loading gap before rebuilding the same task preview.
+  let taskSelection: { reading: Reading | null; item: string | undefined; generation: string | undefined; value: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'; top: number } | null = null;
   function render() {
     if (!ctx || disposed) return;
     const key = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
     if (key === paintedKey) return;
+    // Replacing a pressed control suppresses its native click. Defer only background
+    // paints; navigation, authority changes and explicit UI actions still retire now.
+    if (contextGeneration === paintedContextGeneration && versions.ui === paintedUi && pressedTarget?.isConnected) return;
     // A background change must not close a picker the user has open; it paints once the
     // popup closes, including same-session metadata. Navigation and authority/UI
     // changes paint immediately; versions.ctx also includes non-navigation updates.
@@ -968,7 +1055,11 @@ export function startView<U>(spec: ViewSpec<U>) {
       setTimeout(schedule, 300);
       return;
     }
-    paintedKey = key;
+    // A passive default resolution is a background paint, not an explicit UI
+    // activation: honor the existing open-picker boundary before applying it.
+    const presentation = spec.prepareUi?.(context());
+    if (presentation) { const next = { ...ui, ...presentation }; spec.beforeUiChange?.(ui, next); ui = next; versions.ui++; }
+    paintedKey = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
@@ -980,6 +1071,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
     const textSelection = oldText && preview && oldText.dataset.generation === String(preview.generation) ? { start: oldText.selectionStart, end: oldText.selectionEnd, direction: oldText.selectionDirection, top: oldText.scrollTop } : null;
+    const taskText = mount!.querySelector<HTMLTextAreaElement>('textarea[data-task-copy-generation]');
+    if (taskText) taskSelection = { reading: paintedReading, item: taskText.dataset.testid, generation: taskText.dataset.taskCopyGeneration, value: taskText.value, start: taskText.selectionStart, end: taskText.selectionEnd, direction: taskText.selectionDirection, top: taskText.scrollTop };
     // Plan-reading disclosures, logical focus and anchor belong to the reading they were painted
     // under; a loading paint without the task list keeps what an earlier paint recorded.
     let logical: Logical | null = null;
@@ -996,7 +1089,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (list) { const top = document.scrollingElement?.scrollTop ?? 0; reading.anchor = anchorOf(list) ?? (top ? { scroll: top } : null); logical = active ? logicalOf(active, list) : null; }
       onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
       // Readiness (Needs you) controls exist only with complete detail too, so they park the same way.
-      taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks,[data-testid="readiness"]') && oldArticle.contains(active);
+      taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks,[data-testid="focus-controls"],[data-testid="readiness"]') && oldArticle.contains(active);
       if (!onFallback) { reading.parked = null; reading.parkedControl = null; }
     }
     const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
@@ -1009,7 +1102,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     const readingKey = target ? JSON.stringify([ctx?.connection?.account ?? '', identity, target.scope, target.plan]) : null;
     const sameReading = reading !== null && reading.key === readingKey;
     if (!sameReading) {
-      reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null } }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
+      if (reading || readingKey) retireReadingUi();
+      reading = target && readingKey ? { key: readingKey, plan: target.plan, state: { status: 'all', participant: { kind: 'all' }, cursor: { working: null, blocked: null }, state: null, order: 'attention', doneOpen: false, skippedOpen: false }, open: new Map(), anchor: null, parked: null, parkedControl: null, then: [] } : null;
       vc = { ...vc, reading: readingView() };
     }
 
@@ -1036,12 +1130,15 @@ export function startView<U>(spec: ViewSpec<U>) {
       const v = values.get(n.dataset.keep!);
       if (v !== undefined && n.value !== v && !n.dataset.fixed) n.value = v;
     }
-    if (spec.preserveFocus && 'moveBefore' in root && typeof root.moveBefore === 'function') {
+    if ((spec.preserveFocus || sameReading) && 'moveBefore' in root && typeof root.moveBefore === 'function') {
       // State-preserving moves require connected source AND destination. Connect the
       // new tree before removing the old one; no frame is displayed between these steps.
       const previous = mount!.firstElementChild as HTMLElement | null;
       mount!.append(root);
-      if (previous) spec.preserveFocus(previous, root);
+      if (previous) {
+        spec.preserveFocus?.(previous, root);
+        if (sameReading && complete) preserveFocusedTaskRow(previous, root);
+      }
       for (const child of [...mount!.children]) if (child !== root) child.remove();
     } else mount!.replaceChildren(root);
     alignMotion(root);
@@ -1063,6 +1160,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         // Loading or failed: task rows and task-view controls are absent; wait at Tasks.
         if (want) { reading.parked = want; toTasks(); }
         else if (taskControl && focus) { reading.parkedControl = focus; toTasks(); }
+        else if (onFallback) toTasks();
       } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want); }
       else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; backFallback = article.querySelector<HTMLElement>(TASKS_HEADING); }
       else if (want || onFallback || (taskControl && !list)) {
@@ -1075,7 +1173,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       // Focus inside a plan returns only to that same plan (source + ID), never a same-ID item elsewhere.
       const f = back;
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
-      const owner = candidates.find((n) => planScope(n) === f.plan);
+      const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
       (target ?? backFallback)?.focus({ preventScroll: true });
     }
@@ -1103,9 +1201,18 @@ export function startView<U>(spec: ViewSpec<U>) {
     const nextSupport = root.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
     if(nextSupport && supportSelection && nextSupport.dataset.observation===supportSelection.observation && nextSupport.value===supportSelection.value){nextSupport.setSelectionRange(supportSelection.start,supportSelection.end,supportSelection.direction);nextSupport.scrollTop=supportSelection.top;}
     if (nextText && textSelection) { nextText.setSelectionRange(textSelection.start, textSelection.end, textSelection.direction); nextText.scrollTop = textSelection.top; }
+    const nextTask = root.querySelector<HTMLTextAreaElement>('textarea[data-task-copy-generation]');
+    if (sameReading && taskSelection?.reading === reading && nextTask && nextTask.dataset.testid === taskSelection.item && nextTask.dataset.taskCopyGeneration === taskSelection.generation && nextTask.value === taskSelection.value) {
+      nextTask.setSelectionRange(taskSelection.start, taskSelection.end, taskSelection.direction);
+      nextTask.scrollTop = taskSelection.top;
+    }
+    if (!sameReading || complete) taskSelection = null;
     if (previewFocus) {
       const copyCurrent = previewFocus.generation === undefined || (preview?.generation === previewFocus.generation && canReturnCopyFocus());
-      if (copyCurrent && currentPreviewBinding()?.selection === previewFocus.selection) root.querySelector<HTMLElement>(`[data-testid="${previewFocus.hook}"]`)?.focus({ preventScroll: true });
+      if (copyCurrent && currentPreviewBinding()?.selection === previewFocus.selection) {
+        const owner = root.querySelector<HTMLElement>(`[data-testid="${previewFocus.hook}"]`);
+        (owner?.matches(FOCUSABLE) ? owner : owner?.querySelector<HTMLElement>('button'))?.focus({ preventScroll: true });
+      }
       previewFocus = null;
     }
     live.want(spec.wantProjects(vc));
@@ -1251,6 +1358,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   // Focus return re-reads only the shared review checkpoint of an open digest (coalesced).
   window.addEventListener('focus', () => { digests?.focus(); });
   window.addEventListener('pagehide', () => {
+    popupInput.abort();
     disposed = true;
     digests?.dispose();
     runs?.retire();

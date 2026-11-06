@@ -139,7 +139,7 @@ export function planViewSwitch(presentation: 'list' | 'map', onChange: (next: 'l
   group.setAttribute('aria-labelledby', label.id);
   const set = el('div', 'ap-map-pair');
   for (const [mode, text] of [['list', 'List'], ['map', 'Map']] as const) {
-    const holder = button(set, `plan-view-${mode}`, text, () => { if (mode !== presentation) onChange(mode); }, presentation === mode ? 'outline' : 'ghost');
+    const holder = button(set, `plan-view-${mode}`, text, () => onChange(mode), presentation === mode ? 'outline' : 'ghost');
     const b = holder.querySelector('button');
     b?.setAttribute('aria-pressed', String(presentation === mode));
     b?.setAttribute('data-map-focus-owner', '');
@@ -1118,11 +1118,46 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   let lastLayout: MapLayout | null = null, lastGraph: MapPicture['graph'] | null = null, packedWidth = 0;
   // View as list: reveal the map's selected task once in the canonical list of the same reading.
   let reveal: { id: string | null; identity: string | null } | null = null;
+  let listTransition: { frame: number; bridge: HTMLElement; tabIndex: string | null } | null = null;
+  function cancelListTransition() {
+    const pending = listTransition;
+    if (!pending) return;
+    listTransition = null;
+    cancelAnimationFrame(pending.frame);
+    if (pending.tabIndex === null) pending.bridge.removeAttribute('tabindex');
+    else pending.bridge.setAttribute('tabindex', pending.tabIndex);
+  }
   const interaction = new DependencyMapInteraction(command => {
     view.command(command);
     if (command.type === 'selection' && !painting) latest?.setUi({});
     if (command.type === 'filters') { latest?.reading?.set({ status: command.status }); if (!painting) latest?.setUi({}); }
-    if (command.type === 'list' && latest) { view.clearAnnouncements(); reveal = { id: command.id, identity: interaction.value.identity }; showList(latest); }
+    if (command.type === 'list' && latest) {
+      cancelListTransition();
+      view.clearAnnouncements(); reveal = { id: command.id, identity: interaction.value.identity };
+      const bridge = document.getElementById('root');
+      const active = document.activeElement;
+      if (frame !== 'rail' || !bridge || !document.hasFocus() || !active?.closest('[data-testid="map-list"]')) { showList(latest); return; }
+      // The rail replaces the focused opener's ancestors. Orca processes their removal
+      // before queued focus events and silently recovers to the new row, swallowing its
+      // native name. Leave that subtree through the persistent guest container first.
+      // Cross a painted frame: one rAF still runs before paint, and setUi renders in a
+      // microtask. This is a DOM/accessibility lifetime boundary, not a speech timer.
+      const request = reveal;
+      const pending = { frame: 0, bridge, tabIndex: bridge.getAttribute('tabindex') };
+      listTransition = pending;
+      bridge.tabIndex = -1;
+      bridge.focus({ preventScroll: true });
+      pending.frame = requestAnimationFrame(() => {
+        if (listTransition !== pending) return;
+        pending.frame = requestAnimationFrame(() => {
+          if (listTransition !== pending) return;
+          const current = latest && shown && reveal === request && request.identity === interaction.value.identity && bridge.isConnected && document.hasFocus() && document.activeElement === bridge;
+          if (current) showList(latest!);
+          else if (reveal === request) reveal = null;
+          cancelListTransition();
+        });
+      });
+    }
   });
   const binding: MapInteractionBinding = { state: () => interaction.value, dispatch: event => interaction.dispatch(event), focusOwner: owns => interaction.focusOwner(owns) };
   const map = new DependencyMap(current => latest!.service(current), () => latest?.setUi({}));
@@ -1130,7 +1165,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
     refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
   });
-  const forget = () => { view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
+  const forget = () => { cancelListTransition(); view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
@@ -1152,8 +1187,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (want && !interaction.value.active) interaction.enter(false);
       if (!want) { view.clearAnnouncements(); if (interaction.value.active) interaction.leave(); map.pause(); }
     },
-    enter() { interaction.enter(document.hasFocus()); },
-    leave() { view.clearAnnouncements(); interaction.leave(); },
+    enter() { cancelListTransition(); reveal = null; interaction.enter(document.hasFocus()); },
+    leave() { cancelListTransition(); reveal = null; view.clearAnnouncements(); interaction.leave(); },
     listTargets(article) {
       article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
       article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });
@@ -1192,13 +1227,13 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     afterPaint(root, vc, plan, listFocus) {
       latest = vc;
       if (shown) {
-        reveal = null; // back on Map: an unfinished list reveal is retired
+        if (!listTransition) reveal = null; // back on Map, unless an explicit departure is crossing paint
         const viewport = root.querySelector<HTMLElement>('[data-testid="map-viewport"]');
         if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; vc.setUi({}); }
         return;
       }
       const r = reveal; if (!r) return;
-      const active = document.activeElement, free = document.hasFocus() && (!active || active === document.body || !active.isConnected || active === listFocus(root));
+      const active = document.activeElement, free = document.hasFocus() && (!active || active === document.body || !active.isConnected || active === listFocus(root) || active === document.getElementById('root'));
       // Another reading, a failed list read or focus the reader moved elsewhere retires it (no delayed theft).
       if (!plan || r.identity !== interaction.value.identity || !free || vc.detail(plan)?.state === 'error') { reveal = null; return; }
       if (r.id !== null) {
@@ -1209,11 +1244,12 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       } else reveal = null;
       // Nothing took focus (no selection, or the row is gone): the frame's List control, never the body.
       const now = document.activeElement;
-      if (!now || now === document.body || !now.isConnected) listFocus(root)?.focus({ preventScroll: true });
+      if (!now || now === document.body || !now.isConnected || now === document.getElementById('root')) listFocus(root)?.focus({ preventScroll: true });
     },
     refreshed: repin,
     resetReading: forget,
     retire(reason) {
+      cancelListTransition();
       if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); shown = false; }
       else if (reason === 'hidden') { view.clearAnnouncements(); map.pause(); interaction.leave(); }
       else forget();

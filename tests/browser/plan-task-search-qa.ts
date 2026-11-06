@@ -13,6 +13,8 @@
 //   races.json, requests.json and screenshots, and exit non-zero on any failed assertion. `--kf-scenarios a,b`
 //   runs a subset for iteration only and always fails the run as partial.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { progressInput } from './progress-qa.ts';
+import { progressRetirementQa } from './progress-retirement-qa.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -158,11 +160,15 @@ try {
   };
   const type = (t: string) => c.send('Input.insertText', { text: t });
   const click = async (f: string, selector: string) => {
+    // Scroll/setup paints must finish before hit-testing and pressing. Otherwise a
+    // queued scroll can dismiss the popup just opened by this synthetic pointer.
+    await guest(f, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'center'});return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
     const point = await evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),scale=o.width/fr.clientWidth;return [o.x+(r.x+Math.min(16,r.width/2))*scale,o.y+(r.y+Math.min(10,r.height/2))*scale]})()`);
     if (!point) throw new Error(`missing ${selector} in ${f}`);
     for (const t of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type: t, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
   const show = async (list: string[], width: number) => { await evaluate(`qa.show(${javascriptLiteral(list)},${width});true`); for (const f of list) await wait(f, `w.innerWidth===${width}`, `${f} width ${width}`); };
+  const progressUi = progressInput({ guest, wait, click, key });
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames2(); };
   const shot = async (name: string, selector = '[data-testid="progress-root"]', pad = 12, height = 1700, surface = 'page') => {
     await guest(surface, `d.querySelector(${javascriptLiteral(selector)})?.scrollIntoView({block:'start'});return true`);
@@ -1077,19 +1083,30 @@ try {
     };
     const messages = (type: RegExp) => evaluate<{ frame: string; type: string }[]>(`qa.messages.filter(m=>${type}.test(m.type))`);
     const tasksOf = (_surface: string) => `d.querySelector('article[data-reading] .ap-tasks[data-complete]')`;
-    const railPlan = () => guest<string | null>('panel', `return d.querySelector('article[data-reading]')?.dataset.testid??null`);
+    const railPlan = () => guest<string | null>('panel', `const a=d.querySelector('article[data-reading]'),key=JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]');return a?.dataset.testid??(key[6]?'plan-'+key[6]:null)`);
     const stateSig = (surface: string) => guest<string>(surface, `return JSON.stringify({plan:d.querySelector('article[data-testid^="plan-"]')?.dataset.testid??null,pressed:[...d.querySelectorAll('[aria-pressed]')].map(n=>n.getAttribute('aria-pressed')),open:[...d.querySelectorAll('details')].map(n=>n.open),tabs:[...d.querySelectorAll('[role="tab"]')].map(n=>n.getAttribute('aria-selected')),selected:[...d.querySelectorAll('[role="option"][aria-selected="true"]')].map(n=>n.dataset.testid??n.id),triggers:[...d.querySelectorAll('.oc-sdk-trigger')].map(n=>n.textContent)})`);
     /** Fresh guest document per scenario, so one scenario's failure cannot leak state into the next. */
     const fresh = async (surface: string) => {
       const seq = await evaluate<number>(`qa.reload('${surface}')`);
       await wait(surface, `qa.loaded['${surface}']===${seq}&&d.querySelector('[data-testid="progress-root"]')`, `${surface} reloaded`);
+      // Cross-surface resets also reload hidden guests. Native keyboard setup belongs only
+      // to the visible scenario; a hidden iframe is not a reachable keyboard destination.
+      if (!(await evaluate<boolean>(`frame('${surface}').getClientRects().length>0`))) return;
+      if (surface !== 'status') {
+        const entry = surface === 'page' ? '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]' : '[data-testid="plan-view-list"] button';
+        await wait(surface, `d.querySelector('${entry}')`, 'explicit List entry');
+        await tabTo(surface, entry); if (surface === 'page') await key('Home'); await key('Enter');
+        await wait(surface, tasksOf(surface)); await progressUi.planOrder(surface);
+      }
       if (surface === 'page') await wait('page', `d.querySelector('[data-testid="search-form"]')&&d.querySelector('[data-testid="plan-list"]')&&d.querySelector('[data-testid="plan-detail"] .ap-tasks[data-complete]')`, 'board ready', 20_000);
       if (surface === 'panel') await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')&&d.querySelector('article[data-reading] .ap-tasks[data-complete]')`, 'rail ready', 20_000);
       if (surface === 'status') await wait('status', `d.querySelector('[data-testid="status-plan-selector"] .oc-sdk-trigger')`, 'status ready', 20_000);
     };
     const railOn = async (label: string, plan: string) => {
       if (await guest<string | null>('panel', `return d.querySelector('article[data-reading]')?.dataset.testid??null`) !== `plan-${plan}`) await openPicker('panel', 'plan-selector', label);
+      await progressUi.list('panel');
       await wait('panel', `d.querySelector('article[data-reading][data-testid="plan-${plan}"] .ap-tasks[data-complete]')`, `rail on ${plan}`);
+      await progressUi.planOrder('panel');
     };
     /** M1: focus is on the owning heading (this frame owns focus) and the short notice names the outcome. */
     const handedTo = async (k: string, surface: string, id: string, heading: string, notice: RegExp, noticeHook = 'focus-handoff-notice') => {
@@ -1115,6 +1132,7 @@ try {
       await scenario('K1-rail', ['K1', 'K11'], async () => {
         await show(['panel'], 360); await theme('light');
         await evaluate(`qa.context('KF');true`);
+        await progressUi.list('panel');
         await wait('panel', `d.querySelector('[data-testid="plan-selector"] .oc-sdk-trigger')&&${tasksOf('panel')}`, 'rail KF session with complete detail');
         await walkChecks('K1', 'panel', 'rail-360-light-initial');
         // Picker: Tab reaches it; Enter opens; arrows move; Escape restores trigger focus without change.
@@ -1130,16 +1148,19 @@ try {
         kcheck('K1', 'panel', 'picker:escape-restores-trigger-no-change', await focusedOn('panel', '[data-testid="plan-selector"] .oc-sdk-trigger') && await railPlan() === plan0, undefined, { plan0, now: await railPlan(), focus: await focusState() });
         await key('Enter'); await wait('panel', `d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'picker open again');
         await pickOpen('panel', 'Focus controls example');
-        await wait('panel', `d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus detail');
+        await wait('panel', `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'||d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus selected reading');
         kcheck('K1', 'panel', 'picker:enter-chooses-and-keeps-trigger', await focusedOn('panel', '[data-testid="plan-selector"] .oc-sdk-trigger'), undefined, await focusState());
         await key('Enter'); await wait('panel', `d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'picker open (Tab exit)');
         await key('Tab');
         await wait('panel', `!d.querySelector('.oc-sdk-popup [role="listbox"]')`, 'Tab closes the popup');
         kcheck('K1', 'panel', 'picker:tab-leaves-popup', !(await focusedOn('panel', '.oc-sdk-popup')) && await owns('panel') && await railPlan() === 'plan-K-focus');
+        await progressUi.list('panel');
+        await progressUi.planOrder('panel');
+        await progressUi.expandAll('panel');
         const w = await walkChecks('K1', 'panel', 'rail-360-light-active-plan');
         const ids = w.list.map((x: any) => x.testid);
         for (const hook of ['plan-selector', 'focus-mode-all', 'focus-mode-unfinished', 'focus-participant', 'focus-expand-all', 'focus-collapse-all', 'focus-jump-working', 'focus-jump-blocked']) kcheck('K1', 'panel', `reachable:${hook}`, ids.includes(hook), undefined, ids);
-        kcheck('K1', 'panel', 'reachable:readiness-entries', ids.some((t: string) => t?.startsWith('readiness-entry-')), undefined, ids);
+        kcheck('K1', 'panel', 'reachable:canonical-task-disclosures', ids.some((t: string) => t?.startsWith('item-toggle-')), undefined, ids);
         kcheck('K1', 'panel', 'reachable:group-disclosures', ids.some((t: string) => t?.startsWith('group-toggle-')), undefined, ids);
         kcheck('K1', 'panel', 'task-rows-not-tab-stops', !w.list.some((x: any) => /^item-/.test(x.testid ?? '') && x.tag === 'li'), ['Canonical task rows stay navigation targets (tabindex -1), not Tab stops']);
         // Task mode: Tab focuses Unfinished without activating; Space activates.
@@ -1172,13 +1193,11 @@ try {
         const jumped = await focusState();
         kcheck('K1', 'panel', 'jump:canonical-row-ancestors-open-ring', await guest<boolean>('panel', `const a=d.activeElement;return [...d.querySelectorAll('details')].filter(x=>x.contains(a)).every(x=>x.open)&&d.querySelectorAll('[data-testid="'+a.dataset.testid+'"]').length===1`) && !!jumped.el?.ring && !!jumped.guestHasFocus, undefined, jumped);
         await focusShot('rail-focus-light-jump-row', 'panel');
-        // Readiness: Show task / prerequisite buttons reveal the canonical row.
-        const entry = await guest<string | null>('panel', `return d.querySelector('[data-testid^="readiness-entry-"] button')?.closest('[data-testid^="readiness-entry-"]').dataset.testid??null`);
-        if (!entry) throw Error('no readiness entry button in rail');
-        await tabTo('panel', `[data-testid="${entry}"] button`); await key('Enter');
-        const item = entry.replace('readiness-entry-', '');
-        await wait('panel', `d.activeElement?.dataset.testid==='item-${item}'`, 'readiness reveal');
+        // Canonical blocked jump and the expanded row's prerequisite references share reveal.
+        await tabTo('panel', '[data-testid="focus-jump-blocked"] button'); await key('Enter');
+        await wait('panel', `d.activeElement?.dataset.status==='blocked'&&d.activeElement.tagName==='LI'`, 'canonical blocker reveal');
         kcheck('K1', 'panel', 'readiness:enter-reveals-canonical-row', await owns('panel'));
+        await progressUi.expandAll('panel');
         const dep = await guest<string | null>('panel', `return d.querySelector('[data-dep] button')?.closest('[data-dep]').dataset.dep??null`);
         if (dep) {
           await tabTo('panel', `[data-dep="${dep}"] button`); await key('Enter');
@@ -1193,10 +1212,11 @@ try {
         await wait('panel', `d.querySelector('[data-testid="${group}"]').open===${!was}`, 'group toggled');
         kcheck('K1', 'panel', 'group-disclosure:enter-toggles-keeps-focus', await focusedOn('panel', `[data-testid="${group}"] > summary`));
         await focusShot('rail-focus-light-summary', 'panel');
-        await tabTo('panel', '[data-testid="document-K-focus"] > summary'); await key('Enter');
-        await wait('panel', `d.querySelector('[data-testid="document-K-focus"]').open`, 'document disclosure open');
-        kcheck('K1', 'panel', 'document-disclosure:enter-opens', await focusedOn('panel', '[data-testid="document-K-focus"] > summary'));
-        await key('Enter');
+        await progressUi.action('panel', 'document', true);
+        await wait('panel', `d.querySelector('[data-testid="plan-panel-document"]')`, 'document panel open');
+        kcheck('K1', 'panel', 'document-menu:enter-opens', await focusedOn('panel', '[data-testid="plan-panel-document"] .ap-panel-h'));
+        await key('Escape');
+        kcheck('K1', 'panel', 'document-panel:escape-returns-trigger', await focusedOn('panel', '[data-testid="plan-actions"] button'));
         await shot('rail-light-360', '[data-testid="progress-root"]', 8, 1500, 'panel');
       });
       // ---------------------------------------------------------------- K7 rail filtered-empty recovery
@@ -1242,6 +1262,7 @@ try {
         const idx = await guest<number>('page', `return [...d.querySelectorAll('[data-testid="${list}"] [role="option"]')].findIndex(o=>o.dataset.testid==='plan-row-K-all-done')`);
         await key('Home'); if (idx) await key('ArrowDown', idx); await key('Enter');
         await wait('page', `d.querySelector('article[data-reading][data-testid="plan-K-all-done"] .ap-tasks[data-complete]')`, 'board all-done plan');
+        await progressUi.planOrder('page');
         await tabTo('page', '[data-testid="focus-mode-unfinished"] button'); await key(' ');
         await wait('page', `d.querySelector('[data-testid="focus-empty"]')`, 'board focus-empty');
         await tabTo('page', '[data-testid="focus-clear"] button'); await key('Enter');
@@ -1371,6 +1392,7 @@ try {
         const st2 = await focusState();
         kcheck('K10', 'panel', 'external:held-completion-does-not-steal', st2.top === 'qa-after' && !st2.guests.panel.hasFocus, undefined, st2);
         // Session KF→B→null→KF: rail follows; old task-reading focus never moves into another identity.
+        await progressUi.controls('panel');
         await tabTo('panel', '[data-testid="focus-jump-working"] button'); await key('Enter');
         await wait('panel', `d.activeElement?.dataset.testid?.startsWith('item-')`, 'row focused before switch');
         await evaluate(`qa.context('B');true`);
@@ -1378,7 +1400,7 @@ try {
         await evaluate(`qa.context(null);true`);
         await wait('panel', `d.querySelector('[data-testid="unscoped-state"]')`, 'no session');
         await evaluate(`qa.context('KF');true`);
-        await wait('panel', tasksOf('panel'), 'back to KF');
+        await wait('panel', `(${tasksOf('panel')})||(d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='K-focus')`, 'back to KF reading (D8 automatic view)');
         const st3 = await focusState();
         kcheck('K10', 'panel', 'session-switch:no-old-row-focus-replayed', !/^item-/.test(st3.guests.panel.active ?? ''), ['KF→B→null→KF starts a new reading; the earlier row focus is not replayed'], st3);
       });
@@ -1388,7 +1410,8 @@ try {
         await railOn('Focus controls example', 'K-focus');
         await guest('panel', `w.__clip=[];Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:t=>new Promise(r=>w.__clip.push({len:t.length,go:()=>r()}))}});return true`);
         setups.push('K4-rail-summary: synthetic clipboard seam (held writeText; text never stored)');
-        await tabTo('panel', '[data-testid="summary-progress"]'); await key('Enter');
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.action('panel', 'summary-progress', true);
         await wait('panel', `d.querySelector('[data-testid="summary-text"]')`, 'progress preview');
         await tabTo('panel', '[data-testid="summary-text"]');
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65, commands: ['selectAll'] });
@@ -1411,21 +1434,24 @@ try {
         await focusShot('rail-focus-light-summary-close', 'panel', 260, 60);
         await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="summary-preview"]')`, 'closed');
-        kcheck('K4', 'panel', 'close:returns-to-opener', await focusedOn('panel', '[data-testid="summary-progress"]'), undefined, await focusState());
-        await tabTo('panel', '[data-testid="summary-handoff"]'); await key('Enter');
+        kcheck('K4', 'panel', 'close:returns-to-opener', await focusedOn('panel', '[data-testid="plan-actions"] button'), undefined, await focusState());
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.action('panel', 'summary-handoff', true);
         await wait('panel', `d.querySelector('[data-testid="summary-preview"]')`, 'handoff preview');
         await tabTo('panel', '[data-testid="summary-close"]'); await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="summary-preview"]')`, 'handoff closed');
-        kcheck('K4', 'panel', 'handoff-close:returns-to-opener', await focusedOn('panel', '[data-testid="summary-handoff"]'));
+        kcheck('K4', 'panel', 'handoff-close:returns-to-opener', await focusedOn('panel', '[data-testid="plan-actions"] button'));
       });
       // ---------------------------------------------------------------- K6 cleanup confirmations (rail, disposable plans)
       await scenario('K6-rail-cleanup', ['K6'], async () => {
         await show(['panel'], 360); await fresh('panel');
         await openPicker('panel', 'plan-selector', 'Disposable finished plan A');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-delete"] button')`, 'cleanup actions');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'cleanup actions');
         const writes = () => reqs(`r.method!=='GET'`);
         const w0 = (await writes()).length;
-        await tabTo('panel', '[data-testid="cleanup-delete"] button');
+        await tabTo('panel', '[data-testid="plan-actions"] button');
+        await progressUi.menu('panel', 'cleanup-delete', true);
         kcheck('K6', 'panel', 'delete:reach-sends-nothing', (await writes()).length === w0);
         await key('Enter');
         await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'inline confirmation');
@@ -1434,11 +1460,11 @@ try {
         await key('Enter');
         await wait('panel', `!d.querySelector('[data-testid="cleanup-confirm"]')`, 'cancelled by Enter');
         kcheck('K6', 'panel', 'confirm:enter-cancels-to-opener', await focusedOn('panel', '[data-testid="cleanup-delete"] button') && (await writes()).length === w0, undefined, await focusState());
-        await key('Enter'); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation again');
+        await progressUi.action('panel','cleanup-delete',true); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation again');
         await key('Escape');
         await wait('panel', `!d.querySelector('[data-testid="cleanup-confirm"]')`, 'cancelled by Escape');
         kcheck('K6', 'panel', 'confirm:escape-cancels-to-opener', await focusedOn('panel', '[data-testid="cleanup-delete"] button') && (await writes()).length === w0);
-        await key('Enter'); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation for delete');
+        await progressUi.action('panel','cleanup-delete',true); await wait('panel', `d.querySelector('[data-testid="cleanup-confirm"]')`, 'confirmation for delete');
         await tabTo('panel', '[data-testid="cleanup-confirm-delete"]', 30, false);
         kcheck('K6', 'panel', 'confirm:destructive-reachable-not-sent', (await writes()).length === w0);
         await key('Enter');
@@ -1451,10 +1477,11 @@ try {
         await kexpect('K6', 'panel', 'delete:focus-not-stranded', notStranded(st), ['After the deleted plan leaves the rail, focus stays on a real element'], st);
         // Archive with a labelled 503, then success.
         await openPicker('panel', 'plan-selector', 'Disposable finished plan B');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
         const pickedB = await railPlan();
         await evaluate(`qa.fail.push({path:'/v1/plan/archive',status:503,code:'busy',once:true});true`);
-        await tabTo('panel', '[data-testid="cleanup-archive"] button'); await key('Enter');
+        await tabTo('panel', '[data-testid="plan-actions"] button'); await progressUi.action('panel','cleanup-archive',true);
         await wait('panel', `d.querySelector('[data-testid="cleanup-error"]')`, 'cleanup error');
         const se = await focusState();
         inventory['rail-after-archive-error'] = { focus: se, planBefore: pickedB, planAfter: await railPlan(), error: await guest<string>('panel', `return d.querySelector('[data-testid="cleanup-error"]')?.closest('[data-testid]')?.dataset.testid??''`) };
@@ -1462,10 +1489,11 @@ try {
         await kexpect('K6', 'panel', 'archive-error:focus-not-stranded', notStranded(se), ['Focus moves to the cleanup error message'], se);
         await focusShot('rail-focus-light-cleanup-error', 'panel', 120, 120);
         if (await railPlan() !== pickedB) await openPicker('panel', 'plan-selector', 'Disposable finished plan B');
-        await wait('panel', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action again');
-        await tabTo('panel', '[data-testid="cleanup-archive"] button'); await key('Enter');
+        await progressUi.list('panel');
+        await wait('panel', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions again');
+        await tabTo('panel', '[data-testid="plan-actions"] button'); await progressUi.action('panel','cleanup-archive',true);
         await wait('panel', `qa.requests.filter(r=>r.path==='/v1/plan/archive').length>=2`, 'archive sent');
-        await wait('panel', `!d.querySelector('[data-testid="cleanup-archive"] button')||d.querySelector('[data-testid="cleanup-notice"]')`, 'archived', 20_000);
+        await wait('panel', `!d.querySelector('[data-testid="plan-K-finished-archive"]')&&d.querySelector('[data-testid="cleanup-notice"]')`, 'archived', 20_000);
         const sa = await focusState();
         inventory['rail-after-archive'] = sa;
         await kexpect('K6', 'panel', 'archive-success:focus-not-stranded', notStranded(sa), undefined, sa);
@@ -1699,7 +1727,9 @@ try {
         // External focus: end sentinel owns focus while the board receives a changed read.
         await click('page', '[data-testid="plan-row-K-focus"]');
         setups.push('K10-board: pointer selection of K-focus');
+        await progressUi.list('page');
         await wait('page', `d.querySelector('article[data-reading][data-testid="plan-K-focus"] .ap-tasks[data-complete]')`, 'K-focus on board');
+        await progressUi.planOrder('page');
         await tabTo('page', '[data-testid="focus-jump-working"] button'); await key('Enter');
         await wait('page', `d.activeElement?.dataset.testid?.startsWith('item-')`, 'board row focused');
         await clickTop('#qa-after');
@@ -1855,13 +1885,15 @@ try {
         await tabTo('page', '[data-testid="cleanup-archived"] button'); await key('Enter');
         await wait('page', `d.querySelector('[data-testid="plan-row-K-finished-archive"]')`, 'archived list', 20_000);
         await click('page', '[data-testid="plan-row-K-finished-archive"]');
+        await progressUi.list('page');
         setups.push('K6-board-restore: pointer selection of the archived disposable plan');
-        await wait('page', `d.querySelector('[data-testid="cleanup-restore"] button')`, 'restore action');
-        await tabTo('page', '[data-testid="cleanup-restore"] button');
+        await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'restore actions available');
+        await tabTo('page', '[data-testid="plan-actions"] button');
+        await progressUi.menu('page','cleanup-restore',true);
         await focusShot('page-focus-light-restore', 'page', 60, 60);
         await key('Enter');
         await wait('page', `qa.requests.some(r=>r.path==='/v1/plan/restore')`, 'restore sent');
-        await wait('page', `!d.querySelector('[data-testid="cleanup-restore"] button')||d.querySelector('[data-testid="cleanup-notice"]')`, 'restored', 20_000);
+        await wait('page', `d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('[data-testid="plan-row-K-finished-archive"]')`, 'restored', 20_000);
         await frames2();
         const st = await focusState();
         inventory['board-after-restore'] = st;
@@ -1926,7 +1958,7 @@ try {
         await show(['panel'], 360); await fresh('panel');
         await railOn('Focus controls example', 'K-focus');
         await walkChecks('K11', 'panel', 'rail-360-dark');
-        for (const [sel, name] of [['[data-testid="plan-selector"] .oc-sdk-trigger', 'picker'], ['[data-testid="focus-mode-unfinished"] button', 'mode'], ['[data-testid="focus-expand-all"] button', 'expand'], ['article[data-reading] details[data-testid^="group-toggle-"] > summary', 'summary'], ['[data-testid="summary-progress"]', 'summary-action']] as const) {
+        for (const [sel, name] of [['[data-testid="plan-selector"] .oc-sdk-trigger', 'picker'], ['[data-testid="focus-mode-unfinished"] button', 'mode'], ['[data-testid="focus-expand-all"] button', 'expand'], ['article[data-reading] details[data-testid^="group-toggle-"] > summary', 'summary'], ['[data-testid="plan-actions"] button', 'summary-menu']] as const) {
           await tabTo('panel', sel); await focusShot(`rail-focus-dark-${name}`, 'panel');
         }
         await tabTo('panel', '[data-testid="focus-jump-working"] button'); await key('Enter');
@@ -1948,7 +1980,7 @@ try {
         const pairs: [string, string, string][] = [
           ['panel', '[data-testid="focus-mode-unfinished"] button', 'rail-pair-mode'], ['panel', '[data-testid="focus-expand-all"] button', 'rail-pair-expand'],
           ['panel', '[data-testid="focus-jump-working"] button', 'rail-pair-jump'], ['panel', '[data-testid="plan-selector"] .oc-sdk-trigger', 'rail-pair-picker'],
-          ['panel', '[data-testid="summary-progress"]', 'rail-pair-summary-action'], ['panel', 'article[data-reading] details[data-testid^="group-toggle-"] > summary', 'rail-pair-group-summary'],
+          ['panel', '[data-testid="plan-actions"] button', 'rail-pair-summary-menu'], ['panel', 'article[data-reading] details[data-testid^="group-toggle-"] > summary', 'rail-pair-group-summary'],
           ['page', '[data-testid^="project-"] [role="listbox"]', 'page-pair-listbox'], ['page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]', 'page-pair-tab'],
           ['page', '[data-testid="search-submit"] button', 'page-pair-submit'], ['page', '#ap-search-q', 'page-pair-search'],
           ['status', '[data-testid="open-detail"] button', 'status-pair-open'], ['status', '[data-testid="status-plan-selector"] .oc-sdk-trigger', 'status-pair-picker'],
@@ -2021,7 +2053,14 @@ try {
         await show(['page', 'panel'], 1100); await theme('light');
         await evaluate(`document.querySelector('section[data-frame="panel"]').style.width='360px';true`);
         await wait('panel', `w.innerWidth===360`, 'panel 360');
+        await wait('panel', `d.querySelector('[data-testid="plan-view-list"] button')`, 'rail List entry');
+        await tabTo('panel', '[data-testid="plan-view-list"] button'); await key('Enter');
         await wait('panel', complete(1), 'rail S0');
+        await progressUi.planOrder('panel');
+        await wait('page', `d.querySelector('[data-testid="detail-tabs"] [data-id="progress"]')`, 'board List entry');
+        await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]'); await key('Home'); await key('Enter');
+        await wait('page', complete(1), 'board List chosen');
+        await progressUi.planOrder('page');
         // Board selection by keyboard: Tab to the plan listbox, Home, Enter.
         await tabTo('page', '[data-testid^="project-"] [role="listbox"]');
         await key('Home'); await key('Enter');
@@ -2098,7 +2137,7 @@ try {
         o = await observe('page'); races2.push({ step: 'S6-page', ...o, anchorBefore: pageAnchor, anchorRowAfter: pageAnchorTop, firstRowAfter: await anchor('page'), noticeBefore: pageNotice0, noticeAfter: pageNotice1, boundsBefore: pagePre, bounds: pagePost, anchorExpectation: pageKept });
         kcheck('K9', 'page', 'S6:removed-focus-uses-ancestor-fallback', o.hasFocus && o.connected && o.focus === 'summary:group-toggle-G-19', undefined, o);
         await kexpect('K9', 'page', 'S6:reading-anchor-kept', pageKept.pass, [`${pageKept.mode}: anchor row ${pageAnchor?.id} ${pageAnchor?.top}px → ${pageAnchorTop}px, expected ${pageKept.expectedOffset}px (±2 px); scroll ${pagePost.scroll}/${pagePost.max} after ${pagePre.scroll}/${pagePre.max}`], races2.at(-1));
-        kcheck('K9', 'page', 'S6:fallback-notice', /no longer shown/.test(await guest<string>('page', `return d.querySelector('${plan} [data-testid="focus-notice"]')?.textContent??''`)));
+        kcheck('K9', 'page', 'S6:fallback-notice', /removed, so focus moved to its group/.test(await guest<string>('page', `return d.querySelector('${plan} [data-testid="focus-notice"]')?.textContent??''`)));
         await shot('page-removal', `${plan} [data-testid="group-toggle-G-19"]`, 40, 600, 'page');
         await focusShot('page-focus-light-removal-fallback', 'page', 60, 120);
         // S7/S8: reinsertion never replays the old focus or jumps from the fallback.
@@ -2134,7 +2173,7 @@ try {
   if (onlyLarge) {
     const replay = fx.largePlan!;
     const plan = `[data-testid="plan-${LARGE_PLAN_ID}"]`;
-    const complete = (revision: number) => `d.querySelector('${plan}[data-revision="${revision}"] .ap-tasks[data-complete]')&&d.querySelector('${plan} [data-testid="readiness"][data-state="ready"]')`;
+    const complete = (revision: number) => `d.querySelector('${plan}[data-revision="${revision}"] .ap-tasks[data-complete][data-readiness="ready"]')`;
     const node = (id: string) => `[data-testid="${id}"]`;
     Object.assign(facts, { fixture: LARGE_PLAN_VERSION, seed: LARGE_PLAN_SEED, runtime: process.version, serviceMode: built ? 'built generated service' : 'current TypeScript service', commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), bundles: Object.fromEntries(['build/service/main.js', ...['page', 'panel', 'status'].map(f => `ui/${f}/main.js`)].map(p => [p, createHash('sha256').update(readFileSync(p)).digest('hex')])), viewport: { browser: [1280, 1100], panel: 360, page: 1100, darkPage: 360 }, checkpoint: 'S0', sampleCount: 3, warmups: 1 });
     const loadMetrics: Record<string, unknown> = {}, actionMetrics: Record<string, unknown> = {}, dom: Record<string, unknown> = {};
@@ -2148,15 +2187,18 @@ try {
     async function openBoard() {
       await wait('page', `d.querySelector('[data-testid="plan-row-${LARGE_PLAN_ID}"]')`, 'large plan board row');
       await click('page', `[data-testid="plan-row-${LARGE_PLAN_ID}"]`);
+      await progressUi.list('page');
     }
     async function reloadGuest(surface: string) {
       const sequence = await evaluate<number>(`qa.reload('${surface}')`);
       await wait(surface, `qa.loaded['${surface}']===${sequence}`, 'new guest document loaded');
+      if (surface === 'panel') await progressUi.list(surface);
     }
     for (const [surface, width] of [['panel', 360], ['page', 1100]] as const) {
       await show([surface], width);
       await theme('light');
       if (surface === 'page') await openBoard();
+      else await progressUi.list(surface);
       await ready(surface, 1);
       const loads: number[] = [], streams: unknown[] = [];
       for (let sample = 0; sample < 4; sample++) {
@@ -2171,7 +2213,8 @@ try {
         if (sample) { loads.push(elapsed); streams.push({ requests: reads.length, bytes: reads.reduce((n, r) => n + r.bytes, 0), httpMs: reads.reduce((n, r) => n + r.ms, 0) }); }
       }
       const load = stats(loads); loadMetrics[surface] = { ...load, streams }; budget(`${surface}:complete-ready-load`, load, 2000);
-      const counts = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,groups:a.querySelectorAll('.ap-items [data-testid^="group-G-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},nodes:a.querySelectorAll('*').length}`);
+      await progressUi.planOrder(surface);
+      const counts = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items li[data-testid^="item-T-"]').length,groups:a.querySelectorAll('.ap-items li[data-testid^="group-G-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},nodes:a.querySelectorAll('*').length}`);
       dom[surface] = counts;
       check(`large:${surface}:complete-counts`, counts.tasks === 980 && counts.groups === 20 && counts.counts.done === '147' && counts.counts.total === '931' && counts.counts.remaining === '784' && counts.counts.skipped === '49', undefined, counts);
       const metrics: Record<string, unknown> = {}; actionMetrics[surface] = metrics;
@@ -2195,14 +2238,14 @@ try {
       await action('disclosure', async () => { if (!(await guest<boolean>(surface, `return d.querySelector('${disclosure}').open`))) await click(surface, `${disclosure}>summary`); }, () => click(surface, `${disclosure}>summary`), `!d.querySelector('${disclosure}').open`);
       await click(surface, `${disclosure}>summary`);
       await action('jump-working', async () => { await click(surface, `${node('focus-mode-all')} button`); }, () => click(surface, `${node('focus-jump-working')} button`), `d.activeElement?.dataset.testid?.startsWith('item-')&&d.activeElement.dataset.status==='working'`);
-      await action('show-task', async () => { await click(surface, `${node('focus-jump-working')} button`); }, () => click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`), `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.activeElement.hidden`);
-      check(`large:${surface}:canonical-only`, await guest<boolean>(surface, `return d.querySelectorAll('${node('item-T-01-00')}').length===1&&d.querySelectorAll('${node('readiness-entry-T-01-00')}').length===1`));
+      await action('show-task', async () => { await click(surface, `${node('focus-jump-working')} button`); await progressUi.expand(surface, 'T-02-00'); }, () => click(surface, 'li[data-testid="item-T-02-00"] [data-dep="T-01-00"] button'), `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.activeElement.hidden`);
+      check(`large:${surface}:canonical-only`, await guest<boolean>(surface, `return d.querySelectorAll('li${node('item-T-01-00')}').length===1&&d.querySelectorAll('${plan} ul.ap-items').length===1&&d.querySelectorAll('${plan} li[data-testid^="item-T-"]').length===980`));
       // Real keyboard activation, independent of the pointer action timings.
       await mode('all'); await wait(surface, modeIs('all'), 'Show all selected before keyboard activation');
       await key('Tab');
-      check(`large:${surface}:keyboard-unfinished-start`, await guest<boolean>(surface, `return d.activeElement===d.querySelector('${node('focus-mode-unfinished')} button')&&(${modeIs('all')})&&d.querySelector('${node('focus-mode-unfinished')} button').getAttribute('aria-pressed')==='false'&&[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')].every(n=>!n.hidden)`), ['Unfinished focused without activation; Show all remains selected and all tasks are unfiltered']);
+      check(`large:${surface}:keyboard-unfinished-start`, await guest<boolean>(surface, `return d.activeElement===d.querySelector('${node('focus-mode-unfinished')} button')&&(${modeIs('all')})&&d.querySelector('${node('focus-mode-unfinished')} button').getAttribute('aria-pressed')==='false'&&[...d.querySelectorAll('${plan} .ap-items li[data-testid^="item-T-"]')].every(n=>!n.hidden)`), ['Unfinished focused without activation; Show all remains selected and all tasks are unfiltered']);
       await key(' ');
-      const unfinishedRows = `(()=>{const rows=[...d.querySelectorAll('${plan} .ap-items [data-testid^="item-T-"]')];return rows.length===980&&rows.filter(n=>!n.hidden).length===784&&rows.every(n=>n.hidden===(n.dataset.status==='done'||n.dataset.status==='skipped'))})()`;
+      const unfinishedRows = `(()=>{const rows=[...d.querySelectorAll('${plan} .ap-items li[data-testid^="item-T-"]')];return rows.length===980&&rows.filter(n=>!n.hidden).length===784&&rows.every(n=>n.hidden===(n.dataset.status==='done'||n.dataset.status==='skipped'))})()`;
       await wait(surface, `(${modeIs('unfinished')})&&${unfinishedRows}`, 'Space selects Unfinished and filters the task list');
       check(`large:${surface}:keyboard-unfinished-filter`, await guest<boolean>(surface, `return (${modeIs('unfinished')})&&${unfinishedRows}`), ['Space changed Show all to Unfinished; 784 unfinished tasks shown and all 196 done/skipped tasks hidden']);
       await mode('all'); await ready(surface, 1);
@@ -2218,7 +2261,8 @@ try {
     for (const surface of ['panel', 'page']) {
       await ready(surface, 1); await instrument(surface);
       await click(surface, `${node('group-toggle-G-15')}>summary`);
-      await click(surface, `${node('readiness-entry-T-01-00')} .ap-ready-head button`);
+      await progressUi.expand(surface,'T-02-00');
+      await click(surface, 'li[data-testid="item-T-02-00"] [data-dep="T-01-00"] button');
       await wait(surface, `d.activeElement?.dataset.testid==='item-T-01-00'&&!d.querySelector('${node('group-toggle-G-15')}').open`, 'settled reading state before replay');
     }
     facts.readingBeforeReplay = await Promise.all(['panel', 'page'].map(surface => guest(surface, `return {surface:'${surface}',focus:d.activeElement?.dataset.testid,hasFocus:d.hasFocus(),collapsed:!d.querySelector('${node('group-toggle-G-15')}').open}`)));
@@ -2235,7 +2279,7 @@ try {
         const statusChecks = step.items.filter(i => step.affectedIds.includes(i.id) && i.kind === 'task').map(i => `d.querySelector('${node(`item-${i.id}`)}')?.dataset.status===${javascriptLiteral(i.status)}`).join('&&') || 'true';
         await wait(surface, `${complete(step.revision)}&&(${statusChecks})${step.id === 'S6' ? `&&!d.querySelector('${node('item-T-19-48')}')` : ''}`, `${step.id} state observed`);
         const visibleMs = performance.now() - committedAt;
-        const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items [data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('readiness-entry-T-01-00')}')?.dataset.group,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-item-title')?.textContent}`);
+        const observed = await guest<any>(surface, `const a=d.querySelector('${plan}');return {tasks:a.querySelectorAll('.ap-items li[data-testid^="item-T-"]').length,counts:{...a.querySelector('[data-testid="counts"]').dataset},collapsed:!a.querySelector('${node('group-toggle-G-15')}').open,focus:d.activeElement?.dataset.testid,ready:d.querySelector('${node('item-T-01-00')}')?.dataset.state,movedParent:d.querySelector('${node('item-T-10-24')}')?.parentElement.closest('[data-testid^="group-G-"]')?.dataset.testid,movedTitle:d.querySelector('${node('item-T-10-24')} .ap-trow-title')?.textContent}`);
         check(`large:${step.id}:${surface}:counts`, observed.tasks === step.itemCount - 20 && Object.entries(step.counts).every(([k,v]) => observed.counts[k] === String(v)));
         if (step.id === 'S1') check(`large:${surface}:status-reading-retained`, observed.collapsed && (surface !== 'page' || observed.focus === 'item-T-01-00'), undefined, observed);
         if (step.id === 'S2') check(`large:${surface}:readiness-unlocked`, observed.ready === 'ready');
@@ -2269,6 +2313,7 @@ try {
     check('large:hidden-retired-continuation', hiddenRequests.length === 0 && hiddenPaints.length === 0, undefined, { requests: hiddenRequests.length, paints: hiddenPaints.length });
     perf.hidden = { requests: hiddenRequests.length, dataRepaints: hiddenPaints.length, observation: 'two completed visible-peer ordinary polls' };
     await evaluate(`qa.visibility('page',true);true`); await ready('page', 9);
+    await progressUi.planOrder('page');
     await show(['page'], 360); await theme('dark'); await ready('page', 9);
     check('large:dark-narrow-no-overflow', await overflow());
     await click('page', `${node('focus-mode-unfinished')} button`); await wait('page', `d.querySelector('${node('focus-mode-unfinished')} button')?.getAttribute('aria-pressed')==='true'`, 'narrow operable control');
@@ -2296,9 +2341,10 @@ try {
   if (!onlyJ1) {
     await searchFor('Ship export bundle', true);
     await click('page', H('P-0005-ship'));
-    await wait('page', `d.querySelector('[data-testid="summary-handoff"]')`, 'capture fixture detail');
+    await progressUi.list('page');
+    await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'capture fixture detail');
     for (const mode of ['handoff', 'progress']) {
-      await click('page', `[data-testid="summary-${mode}"]`);
+      await progressUi.action('page', `summary-${mode}`);
       await wait('page', `d.querySelector('[data-testid="summary-text"]')`, `${mode} preview`);
       for (const enabled of [false, true]) {
         const mark = await now(), details = await count('/v1/plan');
@@ -2374,6 +2420,12 @@ try {
     race('J1-B4:old-selection-evicted', (await planReads('P-0901-recent')).length === oldBefore + 1, ['An older opened result was evicted: revisiting reads it again (bounded retention)'], { before: oldBefore, after: (await planReads('P-0901-recent')).length });
     await click('page', '[data-testid="search-clear"] button');
     await wait('page', `!d.querySelector('[data-testid="search-results"]')`, 'cleared');
+    fx.prepareRetirementPlans();
+    await progressRetirementQa({ evaluate, guest, wait, click, key, check, show, stores: [fx.storeId, fx.secondStoreId], openBoard: async (plan) => {
+      await guest('page', `w.focus();return true`);
+      await searchFor(plan, true);
+      await click('page', H(plan));
+    } });
     if (onlyJ1) throw new OnlyDone();
   }
 
@@ -2497,7 +2549,7 @@ try {
   await click('page', T('P-archive', 'A1'));
   await wait('page', `d.activeElement?.dataset.testid==='item-A1'`, 'archived task revealed');
   await shot('search-archived');
-  await click('page', '[data-testid="cleanup-restore"] button');
+  await progressUi.action('page','cleanup-restore');
   await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'restore retires the search');
   check('A8:local-cleanup-retires-search', await guest<boolean>('page', `return !!d.querySelector('[data-testid="search-refresh"]')`) && !fx.archived('P-archive'));
   await click('page', '[data-testid="search-refresh"] button'); await idle(); await exhaust();
@@ -2555,10 +2607,11 @@ try {
     // R5: held window during a local Archive: the pre-action reply cannot restore the plan.
     await searchFor('ship export');
     await click('page', H('P-0005-ship'));
-    await wait('page', `d.querySelector('[data-testid="cleanup-archive"] button')`, 'archive action');
+    await progressUi.list('page');
+    await wait('page', `d.querySelector('[data-testid="plan-actions"] button')`, 'archive actions available');
     await evaluate(`qa.holds.push({tag:'r5',path:'/v1/search'});true`);
     await click('page', '[data-testid="search-more"] button'); await sleep(150);
-    await click('page', '[data-testid="cleanup-archive"] button');
+    await progressUi.action('page','cleanup-archive');
     await wait('page', `d.querySelector('[data-testid="search-status"]')?.dataset.stop==='retired'`, 'archive retires search');
     mark = await count('/v1/search');
     await evaluate(`qa.release('r5')`); await sleep(600);

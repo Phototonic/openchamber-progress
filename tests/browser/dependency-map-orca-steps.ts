@@ -154,6 +154,14 @@ export async function orcaAcceptance(d:Driver){
 
     currentStep=6;
     await d.show(['page','panel'],600);
+    // D8 may have opened this reading on Map. This step explicitly exercises List→Map.
+    await press('panel','plan-view-list');
+    await focus('panel',await button('panel','plan-actions'));xkey('Return');
+    await d.wait('panel', `d.querySelector('[role="menu"]')`);
+    const taskViewIndex=await d.guest<number>('panel', `return [...d.querySelectorAll('[role="menuitem"]')].findIndex(n=>n.id.endsWith('-task-view'))`);
+    expect(taskViewIndex>=0,'Task view menu action unavailable');
+    xkey('Home');for(let n=0;n<taskViewIndex;n++)xkey('Down');xkey('Return');
+    await d.wait('panel', `d.querySelector('[data-testid="focus-jump-working"] button')`);
     await focus('panel',await button('panel','focus-jump-working'));await quiet();
     await action(6,'Rail canonical task reveal',async()=>{xkey('Return');await d.wait('panel',`d.activeElement?.dataset?.testid==='item-B'`);});
     await focus('panel',await button('panel','plan-view-map'));await quiet();

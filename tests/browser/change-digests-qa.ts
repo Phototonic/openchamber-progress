@@ -7,6 +7,7 @@
 // own synthetic plan and skips every other scenario; the default runs everything else as before.
 // Usage: node --experimental-strip-types tests/browser/change-digests-qa.ts --artifacts <dir> [--built-service] [--chromium <path>] [--only prerequisites]
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { progressInput } from './progress-qa.ts';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -126,7 +127,7 @@ try {
   const select = async (f: string, plan: string, tab: 'history' | 'progress' = 'history') => {
     await wait(f, `!!d.querySelector('${row(plan)}')`, `${plan} listed`);
     await click(f, row(plan));
-    await wait(f, `!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${plan}"]')`, `${plan} selected`);
+    await wait(f, `!!d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${SOURCE}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`, `${plan} selected`);
     await click(f, TAB(tab));
     if (tab === 'history') await wait(f, `!!d.querySelector('${D(plan)}')`, `${plan} history digest section`);
   };
@@ -164,6 +165,7 @@ try {
     ? `Object.defineProperty(d,'visibilityState',{configurable:true,get:()=>'hidden'});d.dispatchEvent(new Event('visibilitychange'));return true`
     : `delete d.visibilityState;d.dispatchEvent(new Event('visibilitychange'));return true`);
   const unchanged = (a: unknown, b: unknown) => same(a, b);
+  const progressUi = progressInput({ guest, wait, click, key });
 
   await evaluate(`new Promise(r=>{const t=()=>window.qa&&frame('page').contentDocument?.querySelector('[data-testid="progress-root"]')&&frame('panel').contentDocument?.querySelector('[data-testid="progress-root"]')?r(true):setTimeout(t,50);t()})`);
   await theme('light');
@@ -172,23 +174,29 @@ try {
     // ---------------------------------------------------------------- P: recorded prerequisite wording (focused)
     const P = fx.prerequisites.plan;
     const RA = `article[data-testid="plan-${P}"][data-source="${SOURCE}"]`;
-    const READY = `${RA} [data-testid="readiness"][data-state="ready"]`;
+    const READY = `${RA} .ap-tasks[data-readiness="ready"]`;
     const NONE = 'No prerequisites recorded';
-    const QUALIFIER = 'Based on recorded prerequisites only. Other prerequisites may not be recorded.';
+    const QUALIFIER = 'Other prerequisites may not be recorded';
     type Entry = { group: string; none: string | null; deps: string[] };
     type Readiness = { groups: Record<string, string | null>; qualifier: boolean; entries: Record<string, Entry>; counts: Record<string, string>; overclaim: boolean } | null;
     /** Readiness facts as painted: group counts, each entry's absent-list wording, the qualifier, server counts. */
-    const readinessFacts = (f: string) => guest<Readiness>(f, `const s=d.querySelector('${READY}'),a=d.querySelector('${RA}');if(!s||!a)return null;
-      const count=id=>s.querySelector('[data-testid="'+id+'"]')?.dataset.count??null;
-      const entries={};for(const e of s.querySelectorAll('[data-testid^="readiness-entry-"]'))entries[e.dataset.item]={group:e.dataset.group,none:e.querySelector('.ap-ready-none')?.textContent??null,deps:[...e.querySelectorAll('.ap-ready-dep')].map(x=>x.dataset.dep)};
+    const readinessFacts = async (f: string) => {
+      await progressUi.expandAll(f);
+      await click(f, '[data-testid="progress-chips"] [data-testid="info-trigger"]');
+      const result = await guest<Readiness>(f, `const s=d.querySelector('${READY}'),a=d.querySelector('${RA}');if(!s||!a)return null;
+      const count=state=>String(s.querySelectorAll('li[data-state="'+state+'"]').length);
+      const entries={};for(const e of s.querySelectorAll('li[data-testid^="item-"]'))if(e.dataset.status!=='done'&&e.dataset.status!=='skipped')entries[e.dataset.testid.slice(5)]={group:e.dataset.state,none:e.querySelector('.ap-ready-none')?.textContent??null,deps:[...e.querySelectorAll('[data-dep]')].map(x=>x.dataset.dep)};
       const c=a.querySelector('[data-testid="counts"]')?.dataset??{};
-      return {groups:{ready:count('readiness-ready'),waiting:count('readiness-waiting'),skipped:count('readiness-skipped'),needsYou:count('needs-you')},qualifier:[...s.querySelectorAll('p')].some(p=>p.textContent===${javascriptLiteral(QUALIFIER)}),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
+      const b=d.querySelector('[data-testid="progress-chips"] [data-testid="info-trigger"]'),info=d.getElementById(b.getAttribute('aria-controls'));
+      return {groups:{ready:count('ready'),waiting:count('waiting'),skipped:count('skipped'),needsYou:count('blocked')},qualifier:b.getAttribute('aria-expanded')==='true'&&info.textContent.includes(${javascriptLiteral(QUALIFIER)})&&info.textContent.includes('recorded prerequisites only'),entries,counts:{done:c.done,total:c.total,remaining:c.remaining,skipped:c.skipped},overclaim:/needs nothing|no prerequisites\\b(?! recorded)|verified independent/i.test(s.textContent)}`);
+      await key('Escape'); return result;
+    };
     const expected = {
       groups: { ready: '3', waiting: '2', skipped: '1', needsYou: '1' },
       qualifier: true,
       entries: {
         B: { group: 'blocked', none: NONE, deps: [] }, O: { group: 'ready', none: NONE, deps: [] }, E: { group: 'ready', none: NONE, deps: [] }, R: { group: 'ready', none: null, deps: ['D'] },
-        W: { group: 'waiting', none: null, deps: ['O'] }, K: { group: 'skipped', none: null, deps: ['S'] },
+        W: { group: 'waiting', none: null, deps: ['O'] }, K: { group: 'waiting', none: null, deps: ['S'] },
       },
       counts: { done: '1', total: '7', remaining: '6', skipped: '1' },
       overclaim: false,
@@ -206,8 +214,10 @@ try {
 
     // B1 — rail task detail at 280 px.
     await show(['panel'], 280);
+    await progressUi.list('panel');
     await wait('panel', `!!d.querySelector('article.ap-plan')`, 'rail plan');
     if (!(await guest<boolean>('panel', `return !!d.querySelector('${RA}')`))) await railPick(PREREQ_TITLE);
+    await progressUi.list('panel');
     await wait('panel', `!!d.querySelector('${READY}')`, 'rail readiness ready');
     const rail = await readinessFacts('panel');
     check('P:B1:rail-absent-list-wording', sameReadiness(rail), ['Rail: O, E (omitted and []) and B each say “No prerequisites recorded”; recorded-only qualifier shown; Ready 3, Waiting 2 (incl. skipped 1), Needs you 1; 1/7 done, 6 remaining, 1 skipped'], rail);
@@ -219,17 +229,17 @@ try {
     await wait('page', `!!d.querySelector('[data-testid="plan-detail"] ${READY}')`, 'page readiness ready');
     const pageFacts = await readinessFacts('page');
     check('P:B2:page-matches-rail', sameReadiness(pageFacts) && same(pageFacts, rail), ['Page Progress shows the same prerequisite descriptions, groups and counts as the rail'], pageFacts);
-    const rows = await guest<{ rowText: boolean; rowUi: boolean }>('page', `const rows=[...d.querySelectorAll('${RA} [data-testid^="item-"]')];return {rowText:rows.some(r=>/prerequisite/i.test(r.textContent)),rowUi:rows.some(r=>r.querySelector('.ap-ready-dep,.ap-ready-none'))}`);
-    check('P:B2:canonical-rows-unchanged', !rows.rowText && !rows.rowUi, ['Canonical task rows carry no prerequisite text or control'], rows);
+    const rows = await guest<{ unique: boolean; expanded: boolean }>('page', `const rows=[...d.querySelectorAll('${RA} li[data-testid^="item-"]')],ids=rows.map(n=>n.dataset.testid);return {unique:ids.length===8&&new Set(ids).size===8&&d.querySelectorAll('${RA} ul.ap-items').length===1,expanded:rows.every(r=>r.querySelector('details').open)&&rows.some(r=>r.querySelector('.ap-ready-dep,.ap-ready-none'))}`);
+    check('P:B2:canonical-prerequisite-home', rows.unique && rows.expanded, ['One canonical row per task, prerequisite facts in its expansion, no duplicate readiness list'], rows);
     await shot('page', 'page-recorded-empty', `[data-testid="plan-detail"] ${READY}`);
-    const link = `${RA} [data-testid="readiness-entry-R"] .ap-ready-dep[data-dep="D"] button`;
+    const link = `${RA} li[data-testid="item-R"] .ap-ready-dep[data-dep="D"] button`;
     const linkName = await guest<string | null>('page', `const b=d.querySelector('${link}');b?.focus();return b?.getAttribute('aria-label')??null`);
     await key('Enter');
     await wait('page', `d.activeElement?.dataset?.testid==='item-D'`, 'canonical D focused');
     check('P:B2:keyboard-prerequisite-link', linkName === 'Show prerequisite: Prepare inputs', ['Enter on “Show prerequisite: Prepare inputs” reveals and focuses canonical item D'], linkName);
     await show(['status'], 360);
     await wait('status', `!!d.querySelector('section.ap-status-plan')`, 'Work Status painted a plan');
-    const status = await guest<{ readiness: boolean; prerequisite: boolean }>('status', `return {readiness:!!d.querySelector('[data-testid="readiness"]'),prerequisite:/Recorded prerequisites:|No prerequisites recorded/.test(d.body.textContent)}`);
+    const status = await guest<{ readiness: boolean; prerequisite: boolean }>('status', `return {readiness:!!d.querySelector('.ap-tasks'),prerequisite:/Recorded prerequisites:|No prerequisites recorded/.test(d.body.textContent)}`);
     check('P:B2:work-status-unchanged', !status.readiness && !status.prerequisite, ['Work Status has no readiness section or prerequisite copy'], status);
 
     // B3 — History change endpoints.
@@ -396,6 +406,7 @@ try {
     await shot('page', 'removed-task', H('P-removal', 'digest-group-removed'));
     // Hide R1 behind a task filter and a closed group, then follow its current-task link.
     await click('page', TAB('progress'));
+    await progressUi.planOrder('page');
     await wait('page', `!!d.querySelector('[data-testid="focus-mode-unfinished"] button')`);
     await click('page', '[data-testid="focus-mode-unfinished"] button');
     await wait('page', `d.querySelector('[data-testid="item-R1"]')?.hidden===true`, 'R1 hidden by filter');

@@ -67,7 +67,7 @@ const record=(f,q,reply,ms)=>{if(!q.path.startsWith('/v1/search')&&!['/v1/plan',
  if(q.path==='/v1/search')e.cursor=!!q.query?.cursor;
  if(q.path==='/v1/search-state')e.keys=JSON.parse(q.query?.keys??'[]').length;
  if(q.path==='/v1/plan')e.continuation=!!q.query?.cursor;
- if(reply.status===200){try{const b=JSON.parse(reply.body);if(b.work)e.work=b.work;if(b.hits)e.hits=b.hits.length;if(b.coverage)e.gapped=b.coverage.gapped;if(b.plan){e.revision=b.plan.revision;e.itemCount=b.items?.data?.length;e.nextPage=!!b.items?.nextCursor}else if(q.path==='/v1/plan-graph'){e.revision=b.revision;e.itemCount=b.itemCount}}catch{}}qa.replies.push(e)};
+  if(reply.status===200){try{const b=JSON.parse(reply.body);if(b.storeId)e.storeId=b.storeId;if(b.work)e.work=b.work;if(b.hits)e.hits=b.hits.length;if(b.coverage)e.gapped=b.coverage.gapped;if(b.plan){e.revision=b.plan.revision;e.itemCount=b.items?.data?.length;e.nextPage=!!b.items?.nextCursor}else if(q.path==='/v1/plan-graph'){e.revision=b.revision;e.itemCount=b.itemCount}}catch{}}qa.replies.push(e)};
 addEventListener('message',async e=>{
  const el=[...document.querySelectorAll('iframe')].find(x=>x.contentWindow===e.source),m=e.data;if(!el)return;const f=el.dataset.frame;
  if(m.channel==='qa.preference-consumed'){const r=qa.preferenceReplies[m.ticket];if(r?.frame===f)r.consumed=true;return}
@@ -328,6 +328,14 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     /** Map preview: another client's ordinary report, to exercise retained-picture refreshes. */
     reportMap: (plan: string, request: Record<string, unknown>) => { if (!map) throw Error('Map fixture required'); f.apply(plan, request); },
     exists: (plan: string) => !!f.store.get(f.alpha.id, plan),
+    /** Scope the rail matrix to two linked plans, rather than the first 500 library keys. */
+    prepareRetirementPlans: () => {
+      const child = { ...f.actor, sessionId: 'retirement-reader', parentId: f.actor.sessionId, ancestry: [f.actor.sessionId] };
+      for (const id of ['P-export', 'P-title']) {
+        const item = f.store.get(f.alpha.id, id)!.items.find(i => i.kind === 'task')!;
+        f.apply(id, { op: 'link', child: child.sessionId, assign: [item.id] }, f.actor, child);
+      }
+    },
     archived: (plan: string) => f.store.detail(f.alpha.id, plan).plan.cleanup?.state === 'archived',
     async stop() { server.close(); server.closeAllConnections(); await Promise.all(services.map((s) => s.stop())); if (previewRoot) rmSync(previewRoot, { recursive: true, force: true }); if (primitiveRoot) rmSync(primitiveRoot, { recursive: true, force: true }); },
   };
