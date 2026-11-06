@@ -24,6 +24,7 @@ export interface Driver {
 }
 const hook = (id: string) => `[data-testid="${id}"]`;
 const region = hook('map-region'), viewport = hook('map-viewport'), inspector = hook('map-inspector');
+const planShown = (source = 'source-alpha', plan = 'P-map') => `!!d.querySelector('article[data-source="${source}"][data-testid="plan-${plan}"]')||(JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[5]==='${source}'&&JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]')[6]==='${plan}')`;
 const stat = (xs: number[]) => ({ samples: xs, median: [...xs].sort((a,b)=>a-b)[1] });
 export async function productionMapQa(d: Driver) {
   const { guest, evaluate, wait, key, click, frames2, check, c } = d;
@@ -44,6 +45,7 @@ export async function productionMapQa(d: Driver) {
   const pickBoard = async (id = 'P-map', source = 'source-alpha') => {
     await expose('page');
     await wait('page', `d.querySelector('[data-testid="plan-row-${id}"][data-source="${source}"]')`, 'board plan');
+    await frames2();
     // Use the listbox's own active-option navigation. Directly focusing a -1 row is not the
     // listbox keyboard contract; it would leave the SDK's active option on the previous plan.
     const index=await guest<number>('page', `const row=d.querySelector('[data-testid="plan-row-${id}"][data-source="${source}"]'),box=row.closest('[role="listbox"]');box.focus();return [...box.querySelectorAll('[role="option"]')].indexOf(row)`);
@@ -88,7 +90,7 @@ export async function productionMapQa(d: Driver) {
       await wait('panel',`[...d.querySelectorAll('.oc-sdk-option-label')].some(n=>n.textContent==='Dependency map fixture')`);
       await guest('panel',`[...d.querySelectorAll('.oc-sdk-option-label')].find(n=>n.textContent==='Dependency map fixture').closest('[role="option"]').click();return true`);
     }else{await pickBoard(); await pickRail();}
-    await wait('panel', `d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`, 'selected rail list');
+    await wait('panel', planShown(), 'selected rail reading in its actual view');
   };
   const observeSpeech = async (s: string) => guest(s, `w.__announcer=d.querySelector('${hook('map-announcer')}');w.__speech=[];w.__speechObserver?.disconnect();w.__speechObserver=new MutationObserver(()=>{const t=w.__announcer.textContent;if(t)w.__speech.push(t)});w.__speechObserver.observe(w.__announcer,{childList:true,subtree:true,characterData:true});return true`);
   const speech = (s: string) => guest<string[]>(s,'return w.__speech');
@@ -100,8 +102,8 @@ export async function productionMapQa(d: Driver) {
   };
 
   if (d.mode === 'rail-choice') {
-    const choice = () => guest('panel', `const n=d.querySelector('article[data-reading]');return {plan:n?.dataset.testid,source:n?.dataset.source}`);
-    const alpha = `d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`;
+    const choice = () => guest('panel', `const n=d.querySelector('article[data-reading]'),key=JSON.parse(d.querySelector('[data-map-identity]')?.dataset.mapIdentity??'[]');return {plan:n?.dataset.testid??(key[6]?'plan-'+key[6]:null),source:n?.dataset.source??key[5]}`);
+    const alpha = planShown();
     for (const saved of [false, true]) {
       const label = saved ? 'saved' : 'no-storage';
       if (saved) {
@@ -111,7 +113,7 @@ export async function productionMapQa(d: Driver) {
         const mark = await evaluate<number>('qa.preferenceReplies.length');
         await reload('panel');
         await preferenceSettled(mark);
-        await wait('panel', `d.querySelector('article[data-source="source-beta"][data-testid="plan-P-map"]')`, 'saved beta preference restored');
+        await wait('panel', planShown('source-beta'), 'saved beta preference restored');
         check('rail-choice:saved:preference-restored-before-explicit-choice', true);
       }
       await setup();
@@ -119,15 +121,15 @@ export async function productionMapQa(d: Driver) {
       await evaluate(`qa.context('other');true`);
       await wait('panel', `!d.querySelector('${region}')&&!d.querySelector('${hook('plan-view')}')`, 'other session');
       const mark = await evaluate<number>(`(()=>{const mark=qa.preferenceReplies.length;qa.context('M');return mark})()`);
-      await wait('panel', `d.querySelector('article[data-reading]')`, 'returned list');
+      await wait('panel', planShown(), 'returned source-qualified reading');
       await preferenceSettled(mark);
       const restored = await choice();
       d.facts[label] = restored;
       check(`rail-choice:${label}:source-qualified-round-trip`, restored.plan === 'plan-P-map' && restored.source === 'source-alpha', undefined, restored);
-      check(`rail-choice:${label}:list-reset`, await guest('panel', `return d.querySelector('${hook('plan-view-list')} button').getAttribute('aria-pressed')==='true'`));
+      check(`rail-choice:${label}:edge-map-default-reset`, await guest('panel', `return d.querySelector('${hook('plan-view-map')} button').getAttribute('aria-pressed')==='true'`));
       if (saved) check('rail-choice:saved:explicit-choice-persisted', await evaluate(`qa.railPreferences['rail-plan:M']==='source-alpha/P-map'`));
-      await wait('page', `d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`, 'independent board');
-      check(`rail-choice:${label}:board-independent`, await guest('page', `return !!d.querySelector('article[data-source="source-alpha"][data-testid="plan-P-map"]')`));
+      await wait('page', planShown(), 'independent board');
+      check(`rail-choice:${label}:board-independent`, await guest('page', `return ${planShown()}`));
       await evaluate(`qa.context(null);true`);
       await wait('panel', `!d.querySelector('${hook('plan-view')}')&&!d.querySelector('article[data-reading]')`, 'null removes entry');
       check(`rail-choice:${label}:null-removes-entry`, true);
@@ -181,7 +183,7 @@ export async function productionMapQa(d: Driver) {
         const mark=await evaluate<number>('qa.replies.length'), cpuBefore=await cpu(), start=performance.now();
         await reload(s);
         if (s==='page') { await wait(s,`d.querySelector('[data-testid="plan-row-P-large-dependencies"]')`,'large board'); await click(s,'[data-testid="plan-row-P-large-dependencies"]'); }
-        await open(s); await frames2();
+        await ready(s); await frames2(); // D8 automatic Map; timing still starts before reload/selection.
         const elapsed=performance.now()-start;
         if(i){loadTimes.push(elapsed);cpuSamples.push({action:'load',...difference(cpuBefore,await cpu())});streams.push(await evaluate(`qa.replies.slice(${mark}).filter(r=>r.frame==='${s}')`));}
       }
@@ -241,12 +243,17 @@ export async function productionMapQa(d: Driver) {
   }
 
   await setup();
-  check('entry:board-progress-default',await guest('page',`return d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]').dataset.id==='progress'`));
+  await ready('page'); await ready('panel');
+  check('entry:board-edge-map-default',await guest('page',`return d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]').dataset.id==='map'`));
   check('entry:map-fourth',await guest('page',`return [...d.querySelectorAll('[data-testid="detail-tabs"] [role=tab]')].map(n=>n.dataset.id).join(',')==='progress,document,history,map'`));
-  check('entry:rail-list-default',await guest('panel',`return d.querySelector('${hook('plan-view-list')} button').getAttribute('aria-pressed')==='true'`));
-  for(const s of ['page','panel','status'])check(`${s}:zero-graph-before-map`,await d.count('/v1/plan-graph',s)===0);
+  check('entry:rail-edge-map-default',await guest('panel',`return d.querySelector('${hook('plan-view-map')} button').getAttribute('aria-pressed')==='true'`));
+  for(const s of ['page','panel'])check(`${s}:visible-default-map-reads-graph`,await d.count('/v1/plan-graph',s)>0);
+  check('status:zero-graph-at-entry',await d.count('/v1/plan-graph','status')===0);
+  for(const s of ['page','panel'])check(`${s}:automatic-entry-no-selection-or-announcement`,await selected(s)===''&&await guest(s,`return !d.querySelector('${hook('map-announcer')}').textContent`));
   // A source-qualified row is picked before entering Map; same IDs do not authorize pairing.
-  await open('page');check('entry:board-does-not-activate-rail',await d.count('/v1/plan-graph','panel')===0);
+  await list('panel');
+  const railBeforeBoardEntry=await d.count('/v1/plan-graph','panel');
+  await open('page');check('entry:board-does-not-activate-rail',await d.count('/v1/plan-graph','panel')===railBeforeBoardEntry&&await guest('panel',`return !d.querySelector('${region}')&&d.querySelector('${hook('plan-view-list')} button').getAttribute('aria-pressed')==='true'`));
   await open('panel');
   for(const s of ['page','panel']){
     check(`${s}:full-small-graph`,await guest(s,`const n=d.querySelector('${region}');return n.dataset.tasks==='9'&&n.dataset.edges==='8'`));
@@ -360,8 +367,9 @@ export async function productionMapQa(d: Driver) {
   await d.shot('rail-list-handoff',hook('item-C'),12,850,'panel');await open('panel');check('rail:no-consumed-target-replay',await selected('panel')==='C');
   const boardSelection=await selected('page');
   await evaluate(`qa.context('other');true`);await wait('panel',`!d.querySelector('${region}')`,'rail reset other');
-  await evaluate(`qa.context('M');true`);await wait('panel',`d.querySelector('${hook('plan-view-list')} button')?.getAttribute('aria-pressed')==='true'`,'rail reset back');
-  const restored=await guest('panel',`const n=d.querySelector('article[data-reading]');return {plan:n?.dataset.testid,source:n?.dataset.source}`);
+   await evaluate(`qa.context('M');true`);await ready('panel');
+   check('rail:round-trip-edge-map-default',await guest('panel',`return d.querySelector('${hook('plan-view-map')} button')?.getAttribute('aria-pressed')==='true'`));
+   const restored=await guest('panel',`const key=JSON.parse(d.querySelector('[data-map-identity]').dataset.mapIdentity);return {plan:'plan-'+key[6],source:key[5]}`);
   d.facts.railPreferenceRepro={sequence:'Pick source-alpha/P-map; M → other → M; synthetic storage reports no saved value',restored};
   check('rail:source-qualified-choice-survives-round-trip',restored.plan==='plan-P-map'&&restored.source==='source-alpha',undefined,restored);
   check('board:host-session-keeps-selection',await selected('page')===boardSelection);
@@ -413,7 +421,7 @@ export async function productionMapQa(d: Driver) {
   await list('page');await evaluate(`qa.release('final-graph');true`);await polls('page');
   check('retire:leaving-map-no-late-picture',await guest('page',`return !d.querySelector('${region}')`));
   await open('page');check('no-edges:honest-statement',await guest('page',`return d.querySelector('${region}').textContent.includes('No prerequisites recorded for this plan')`));
-  await list('page');await pickBoard('P-map-paged');await wait('page',`d.querySelector('${hook('item-T0')}')`,'canonical paged task');await click('page',hook('item-T0'));
+  await pickBoard('P-map-paged');await wait('page',planShown('source-alpha','P-map-paged'),'selected paged reading');await list('page');await wait('page',`d.querySelector('${hook('item-T0')}')`,'canonical paged task');await click('page',hook('item-T0'));
   await evaluate(`qa.holds.push({tag:'focus-graph',path:'/v1/plan-graph',frame:'page'});true`);
   await click('page','[data-testid="detail-tabs"] [data-id="map"]');await wait('page',`qa.held.some(h=>h.tag==='focus-graph')`,'held initial graph with task target');
   await click('page','#ap-search-q');await evaluate(`qa.release('focus-graph');true`);await ready('page');await frames2();
@@ -441,12 +449,14 @@ export async function productionMapQa(d: Driver) {
   await list('page');await pickBoard('P-map-none');
   await evaluate(`qa.holds.push({tag:'account-graph',path:'/v1/plan-graph',frame:'page'});true`);
   await click('page','[data-testid="detail-tabs"] [data-id="map"]');await wait('page',`qa.held.some(h=>h.tag==='account-graph')`,'held graph before account switch');
+  const retiredAccountIdentity=await guest<string>('page',`return d.querySelector('${region}')?.dataset.mapIdentity??''`);
   await evaluate(`qa.account='account-next';qa.ready();true`);await wait('page',`!d.querySelector('${region}')`,'account retires map');
   await evaluate(`qa.release('account-graph');true`);await polls('page');
-  check('identity:account-held-reply-cannot-paint',await guest('page',`return !d.querySelector('${region}')&&!d.activeElement?.dataset?.task`));
+  check('identity:account-held-reply-cannot-paint',!!retiredAccountIdentity&&await guest('page',`return d.querySelector('${region}')?.dataset.mapIdentity!==${literal(retiredAccountIdentity)}&&!d.activeElement?.dataset?.task`));
   await pickBoard();await open('page');
-  await evaluate(`qa.store=1;true`);await polls('page');await wait('page',`!d.querySelector('${region}')`,'store retires reading');
-  check('identity:store-resets-to-progress',await guest('page',`return d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id==='progress'`));
+  const retiredStoreIdentity=await guest<string>('page',`return d.querySelector('${region}').dataset.mapIdentity`);
+  await evaluate(`qa.store=1;true`);await polls('page');await ready('page');
+  check('identity:store-retires-old-map-and-resolves-new-default',await guest('page',`return d.querySelector('${region}').dataset.mapIdentity!==${literal(retiredStoreIdentity)}&&d.querySelector('[data-testid="detail-tabs"] [aria-selected="true"]')?.dataset.id==='map'&&!d.querySelector('${inspector}')?.dataset.selected`));
   await evaluate(`qa.store=0;true`);await polls('page');
   await evaluate(`qa.stripGraph=true;true`);await reload('page');await reload('panel');
   await pickBoard();await pickRail();

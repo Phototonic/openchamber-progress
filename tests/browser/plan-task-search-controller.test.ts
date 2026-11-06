@@ -54,6 +54,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
   const copies: string[] = [];
   const exports: any = {};
   runInNewContext(APP, {
+    AbortController,
     exports, document, navigator: { clipboard: { writeText: async (text: string) => { copies.push(text); } } }, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     require: (name: string) => {
@@ -66,7 +67,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
       if (name === './path.ts') return path;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};

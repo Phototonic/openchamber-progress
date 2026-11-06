@@ -37,7 +37,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   });
   const mount = node();
   const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
-    getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener() {}, scrollingElement: { scrollTop: 0 } };
+    getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(name: string, fn: any) { listeners[`document:${name}`] = fn; }, scrollingElement: { scrollTop: 0 } };
   let handler = async (q: GuestRequest): Promise<GuestRequestResult> => {
     if (q.path === '/health') return response({ ...HEALTH, planCleanup: 1 });
     if (q.path === '/v1/setup') return response(setupRead());
@@ -53,7 +53,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
-    queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
+    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
@@ -63,7 +63,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
@@ -89,6 +89,29 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     stop: () => listeners.pagehide(),
   };
 }
+
+test('background paints preserve a pressed control until release; authority changes still retire immediately', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    const target = { closest: () => ({}), isConnected: true, setPointerCapture() {} };
+    c.listeners['document:pointerdown']({ button: 0, target });
+    const before = c.paints.length;
+    c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ error: 'unavailable' }, 503) : next());
+    c.vc.retry(); await settle();
+    assert.equal(c.paints.length, before, 'background read cannot replace the pressed target');
+    c.listeners['document:pointerup'](); await settle();
+    assert.ok(c.paints.length > before, 'release resumes the pending paint');
+    c.listeners['document:pointerdown']({ button: 0, target: { closest: (selector: string) => selector === '#root' ? {} : null, isConnected: true } });
+    const beforeDrag = c.paints.length;
+    c.intercept(async (q, next) => q.path === '/v1/plans' ? response(plansPage([row])) : next());
+    c.vc.retry(); await settle();
+    assert.ok(c.paints.length > beforeDrag, 'non-control drags do not defer live map paints');
+    c.listeners['document:pointerdown']({ button: 0, target });
+    c.ready(null); await settle();
+    assert.equal(c.vc.session, null, 'authority retirement is not deferred by a held pointer');
+  } finally { c.stop(); }
+});
 
 test('sidebar null/undefined never falls back to directory; board {} and contributors stay intact', async () => {
   for (const id of [null, undefined, '']) for (const directory of [null, '/fixture/Alpha', 'C:\\fixture\\Alpha']) {

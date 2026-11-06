@@ -54,7 +54,7 @@ export const MARK_LABEL: Record<MarkStatus, string> = {
 };
 
 /** Plain interface icons (never status). Decorative unless given a name. */
-export type IconName = 'info' | 'more' | 'chevron-down' | 'close' | 'warning';
+export type IconName = 'info' | 'more' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external';
 
 const ICON_SHAPES: Record<IconName, Part[]> = {
   info: [['circle', { cx: 8, cy: 8, r: 6.3, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4 }], ['path', { d: 'M8 7.3v3.6', ...LINE, 'stroke-width': 1.6 }], ['circle', { cx: 8, cy: 5.1, r: 0.95, fill: 'currentColor' }]],
@@ -62,6 +62,8 @@ const ICON_SHAPES: Record<IconName, Part[]> = {
   'chevron-down': [['path', { d: 'M4.5 6.2 8 9.8l3.5-3.6', ...LINE, 'stroke-width': 1.6 }]],
   close: [['path', { d: 'm4 4 8 8M12 4l-8 8', ...LINE, 'stroke-width': 1.6 }]],
   warning: [['path', { d: 'M8 2.4 14.2 13H1.8z', ...LINE, 'stroke-width': 1.4 }], ['path', { d: 'M8 6.4v3', ...LINE, 'stroke-width': 1.6 }], ['circle', { cx: 8, cy: 11.2, r: 0.9, fill: 'currentColor' }]],
+  copy: [['path', { d: 'M5.5 5.5h8v8h-8z', ...LINE, 'stroke-width': 1.4 }], ['path', { d: 'M10.5 3.6V2.3H2.5v8.2h1.4', ...LINE, 'stroke-width': 1.4 }]],
+  external: [['path', { d: 'M9 2.8h4.2V7M13 3 7.6 8.4M11.5 9.6v2.6a1 1 0 0 1-1 1H3.8a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.6', ...LINE, 'stroke-width': 1.4 }]],
 };
 
 /** A decorative inline SVG: hidden from accessibility, never focusable. */

@@ -27,7 +27,22 @@ function click(surface: string, selector: string) {
   const point = evaluate(`(()=>{const f=document.querySelector('iframe[data-surface="${surface}"]'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});f.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(r.width/2,30)+o.x,r.y+r.height/2+o.y]})()`);
   cdp('click', ...point.map(String));
 }
-const button = (surface: string, id: string) => click(surface, `[data-testid="${id}"] button`);
+function button(surface: string, id: string) {
+  if (['cleanup-archive', 'cleanup-restore', 'cleanup-delete'].includes(id)) {
+    if (!guest(surface, `return !!d.querySelector('[data-testid="plan-actions"] button')`)) {
+      click(surface, `[data-testid="${id}"] button`);
+      return;
+    }
+    click(surface, '[data-testid="plan-actions"] button');
+    wait(surface, `d.querySelector('[role="menuitem"][id$="-${id}"]')`);
+    click(surface, `[role="menuitem"][id$="-${id}"]`);
+    wait(surface, `!d.querySelector('[role="menu"]')`);
+    if (id === 'cleanup-delete') {
+      wait(surface, `d.querySelector('[data-testid="cleanup-confirm"]')`);
+      assert.equal(guest(surface, `return !!d.querySelector('[data-testid="cleanup-confirm"]')?.closest('[role="menu"]')`), false);
+    }
+  } else click(surface, `[data-testid="${id}"] button`);
+}
 function selected(surface: string, id: string) { wait(surface, `d.querySelector('${surface === 'page' ? '[data-testid="plan-detail"] ' : ''}[data-testid="plan-${id}"][data-source="source-fixture"]')`); }
 function choosePage(id: string) {
   click('page', `[data-testid="plan-row-${id}"][data-source="source-fixture"]`); selected('page', id);
@@ -62,7 +77,10 @@ wait('page', `d.querySelector('[data-testid="plan-row-P-done"]')`);
 assert.deepEqual(JSON.parse(cdp('console', '1')).entries, []);
 const before = await state(); const secondBefore = await state('P-done', 1);
 for (const id of ['P-active', 'P-cancelled', 'P-failed']) {
-  choosePage(id); assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]');`), false);
+  choosePage(id); click('page', '[data-testid="plan-actions"] button');
+  wait('page', `d.querySelector('[role="menu"]')`);
+  assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-archive"],[role="menuitem"][id$="-cleanup-delete"]');`), false);
+  key('Escape');
 }
 // Session-local manual choice survives a temporary no-session state. Directory
 // context alone must not display plans or create a second featured-choice scope.
@@ -89,7 +107,12 @@ evaluate(`qa.context(null);true`);
 wait('status', `d.querySelector('[data-testid="unscoped-state"]') && !d.querySelector('[data-testid="plan-P-done"][data-source="source-fixture"]')`);
 evaluate(`qa.context('M');true`);
 button('page', 'cleanup-archived');
-wait('page', `d.querySelector('[data-testid="cleanup-restore"]')`);
+wait('page', `d.querySelector('[data-testid="plan-row-P-done"][data-source="source-fixture"]')`);
+choosePage('P-done');
+click('page','[data-testid="plan-actions"] button');
+wait('page', `d.querySelector('[role="menuitem"][id$="-cleanup-restore"]')`);
+assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-delete"]')`),true);
+key('Escape');
 selected('page', 'P-done'); tab('page', 'Document'); wait('page', `d.querySelector('[data-testid="document-text"]')?.textContent.includes('Recorded finish')`);
 tab('page', 'History'); wait('page', `d.querySelector('[data-testid="revision-2"]')`);
 shot('archived', 'page', '[data-testid="plan-detail"]');
@@ -139,7 +162,8 @@ button('page', 'cleanup-visible'); wait('page', `d.querySelector('[data-testid="
 // Older service: capability stripped only; no archive query or action is offered.
 evaluate('qa.old=true;true'); wait('page', `d.querySelector('[data-testid="cleanup-unavailable"]')`);
 assert.equal(guest('page', `return d.querySelector('[data-testid="cleanup-archived"] button').disabled`), true);
-assert.equal(guest('page', `return !!d.querySelector('[data-testid="cleanup-archive"],[data-testid="cleanup-delete"]')`), false);
+click('page', '[data-testid="plan-actions"] button'); wait('page', `d.querySelector('[role="menu"]')`);
+assert.equal(guest('page', `return !!d.querySelector('[role="menuitem"][id$="-cleanup-archive"],[role="menuitem"][id$="-cleanup-delete"]')`), false); key('Escape');
 evaluate('qa.old=false;true'); wait('page', `!d.querySelector('[data-testid="cleanup-unavailable"]')`);
 
 // Capture narrow light + dark confirmation; retained picker remains usable in rail.

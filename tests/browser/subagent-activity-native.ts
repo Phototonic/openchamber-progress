@@ -123,7 +123,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     const status = await guestFrame('status');
     const statusRoster = await readyRosterSnapshot(host.controls, status, ids);
     assertRoster(statusRoster, 'status', 3);
-    assert.ok(!await evaluate(`!!document.querySelector('[data-testid="subagent-about"]')`, status), 'status: no records disclosure on the compact card');
+    assert.ok(!await evaluate(`!!document.querySelector('[aria-label="About sub-agent records"]')`, status), 'status: no expanded records info on the compact card');
     evidence.statusRoster = sanitize(statusRoster);
     await shot(status, 'native-status-roster');
     evidence.status = { roster: true };

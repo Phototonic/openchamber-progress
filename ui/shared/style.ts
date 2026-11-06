@@ -72,9 +72,6 @@ button{font:inherit}
 .ap-seg [data-k="blocked"]{background:var(--oc-warning)}
 /* Forced colours: three distinct fills (solid, highlight, hatched) on an outlined track */
 @media(forced-colors:active){.ap-seg{forced-color-adjust:none;border:1px solid CanvasText;background:Canvas}.ap-seg [data-k="done"]{background:CanvasText}.ap-seg [data-k="working"]{background:Highlight}.ap-seg [data-k="blocked"]{background:repeating-linear-gradient(45deg,CanvasText 0 2px,Canvas 2px 4px)}}
-.ap-legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--oc-muted)}
-.ap-legend span{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
-.ap-legend .ap-mark{width:12px;height:12px}
 
 /* Reported in-progress work: readable blue status text. Motion only under [data-motion="on"]
    (active plan, working tasks, fresh read, capture on), on one shared 2.4 s phase (app.ts alignMotion).
@@ -86,17 +83,12 @@ button{font:inherit}
 [data-motion="on"] .ap-working-text::after{content:attr(data-text) / "";position:absolute;inset:0;color:color-mix(in srgb,var(--oc-info-text,var(--oc-info)) 55%,var(--oc-fg));opacity:0;animation:ap-text-pulse 2.4s ease-in-out infinite}
 [data-motion="on"] .ap-seg [data-k="working"]{position:relative;overflow:hidden}
 [data-motion="on"] .ap-seg [data-k="working"]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--oc-bg) 55%,transparent),transparent);transform:translateX(-100%);animation:ap-sheen 2.4s ease-in-out infinite}
-[data-motion="on"] :is(.ap-now,[data-testid="current-work"]) .ap-mark[data-status="working"] .ap-mark-core{transform-box:fill-box;transform-origin:center;animation:ap-dot-pulse 2.4s ease-in-out infinite}
+[data-motion="on"] :is([data-testid="progress-group-now"],[data-testid="current-work"]) .ap-mark[data-status="working"] .ap-mark-core{transform-box:fill-box;transform-origin:center;animation:ap-dot-pulse 2.4s ease-in-out infinite}
 @keyframes ap-text-pulse{0%,100%{opacity:0}50%{opacity:.9}}
 @keyframes ap-sheen{0%{transform:translateX(-100%)}65%,100%{transform:translateX(100%)}}
 @keyframes ap-dot-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.7)}}
 [data-ap-hidden] *,[data-ap-hidden] *::before,[data-ap-hidden] *::after{animation:none!important}
 
-/* Current work callout */
-.ap-now{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
-.ap-now-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
-.ap-now-item{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.ap-now-item strong{font-weight:500}
 .ap-elapsed{color:var(--oc-info-text,var(--oc-info));font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted)}
 
@@ -107,10 +99,6 @@ button{font:inherit}
 /* Item hierarchy */
 .ap-items{display:flex;flex-direction:column}
 .ap-items ul{display:flex;flex-direction:column}
-.ap-item{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;align-items:start;padding:5px 0}
-.ap-item-title{line-height:1.4}
-.ap-item[data-status="skipped"] .ap-item-title{color:var(--oc-muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--oc-muted) 60%,transparent)}
-.ap-item-sub{display:flex;flex-wrap:wrap;gap:2px 8px;margin-top:2px;font-size:11.5px;color:var(--oc-muted)}
 .ap-group{border-radius:8px}
 .ap-group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 0 4px;font-weight:600}
 .ap-group>summary::-webkit-details-marker{display:none}
@@ -130,7 +118,6 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-plan-list [role="listbox"]:focus-visible:not(:has([role="option"][data-active="true"])){outline:2px solid var(--oc-focus);outline-offset:-2px;border-radius:8px}
 [data-testid="detail-tabs"] [role="tab"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 :is(.ap-focus,.ap-focus-empty,.ap-setup,[data-testid="open-detail"],[data-testid="setup-needed"],[data-testid="stale-banner"],[data-testid^="state-"]) .oc-sdk-btn:focus-visible,.ap-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
-/* Branch facts stay visible while folded: full working/blocked, filter-hidden rows; "folded" only while closed */
 .ap-group>summary{flex-wrap:wrap;row-gap:2px}
 .ap-group>summary .ap-grow{flex:1 1 0}
 .ap-branch{display:flex;flex-wrap:wrap;gap:0 8px;width:100%;padding-left:24px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
@@ -138,9 +125,6 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-branch [data-k="working"]{color:var(--oc-info-text,var(--oc-info))}
 .ap-branch [data-k="blocked"]{color:var(--oc-warning-text,var(--oc-warning))}
 .ap-branch [data-k="lead"]+*::before{content:none}
-.ap-folded{display:none}
-.ap-group:not([open])>summary .ap-folded{display:inline}
-.ap-group[open]>summary .ap-branch:not(:has(>:not(.ap-folded))){display:none}
 .ap-context{font-weight:400;font-size:11px;color:var(--oc-muted)}
 .ap-items li[hidden]{display:none!important}
 
@@ -160,29 +144,13 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 /* Why a row matches the participant filter: recorded relationships, never inferred ownership */
 .ap-reasons{display:flex;flex-wrap:wrap;gap:0 8px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
 .ap-group>summary .ap-reasons{width:100%;padding-left:24px}
-/* A task-parent's own recorded people (assignee chip, relay line) stay in its summary, visible while folded */
-.ap-group>summary .ap-summary-sub{width:100%;margin-top:0;padding-left:24px;font-weight:400;min-width:0}
 .ap-reasons>*+*::before{content:"·";margin-right:8px}
 .ap-focus-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 /* Canonical task rows are navigation targets (tabindex -1): ring for keyboard focus or a readiness jump */
 .ap-items li:focus{outline:none}
 .ap-items li:focus-visible,.ap-items li[data-nav-target]:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 
-/* Readiness (active plans): recorded prerequisites only, read-only */
-.ap-readiness{padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
-.ap-readiness .ap-note:empty{display:none}
-.ap-ready-group{display:flex;flex-direction:column;gap:4px;min-width:0}
-.ap-ready-group+.ap-ready-group{border-top:1px solid var(--oc-border);padding-top:8px}
-.ap-ready-sub{margin-top:4px;padding-left:10px;border-left:2px dashed color-mix(in srgb,var(--oc-muted) 60%,transparent)}
-.ap-ready-title{margin:0;font-size:12px;font-weight:600}
-.ap-ready-list{display:flex;flex-direction:column;gap:8px}
-.ap-ready-entry{display:flex;flex-direction:column;gap:2px;min-width:0}
-.ap-ready-head{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;align-items:start}
-.ap-ready-head .ap-ready-link{font-size:13px;font-weight:500;color:var(--oc-fg);text-align:left;line-height:1.4}
-.ap-ready-link{overflow-wrap:anywhere;text-align:left;text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 35%,transparent);text-underline-offset:2px}
-.ap-ready-meta,.ap-ready-deps,.ap-ready-entry>p{margin-left:27px}
-.ap-ready-meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:11.5px;color:var(--oc-muted);min-width:0}
-.ap-ready-meta>*{min-width:0;overflow-wrap:anywhere}
+.ap-ready-link{overflow-wrap:anywhere;text-align:left;font-size:inherit}
 .ap-ready-who b{font-weight:500;color:var(--oc-fg)}
 /* A session link is softer than a recorded assignment: muted name, never the assignee styling */
 .ap-ready-links{display:inline-flex;flex-direction:column;gap:2px}
@@ -193,22 +161,9 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-ready-dep .ap-glyph{width:12px;height:12px;font-size:8px;align-self:center;margin-top:0}
 .ap-ready-ref{overflow-wrap:anywhere;font-family:var(--oc-mono);font-size:11px}
 span.ap-ready-ref{font-family:inherit;font-size:inherit}
-/* Needs you: reported blockers lead readiness; read-only, literal text, no new controls */
-.ap-ny{padding-bottom:8px;border-bottom:1px solid var(--oc-border)}
-.ap-ny:not([data-count="0"])>.ap-ready-title{display:flex;align-items:center;gap:6px}
-.ap-ny:not([data-count="0"])>.ap-ready-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--oc-warning);flex:none}
-.ap-ny .ap-ready-list{gap:10px}
-.ap-ny-entry .ap-ready-head{grid-template-columns:18px minmax(0,1fr) auto}
 .ap-ny-cat{align-self:start;margin-top:1px;padding:0 7px;border:1px solid transparent;border-radius:999px;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap;background:color-mix(in srgb,var(--oc-warning) 16%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
 .ap-ny-cat:is([data-category="unknown"],[data-category="unclassified"]){background:color-mix(in srgb,var(--oc-fg) 7%,transparent);color:var(--oc-muted)}
-.ap-ny-facts{margin:2px 0 0 27px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:12px;min-width:0}
-.ap-ny-facts>div{display:contents}
-.ap-ny-facts dt{color:var(--oc-muted)}
-.ap-ny-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
-.ap-ny-facts .ap-ny-unknown,.ap-ny-facts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
-.ap-ny-facts .ap-elapsed{color:var(--oc-fg);font-size:12px}
-@media(max-width:300px){.ap-ny-facts{grid-template-columns:minmax(0,1fr)}.ap-ny-facts dd{margin-bottom:3px}}
-@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}.ap-ny:not([data-count="0"])>.ap-ready-title::before{background:CanvasText}}
+@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}}
 
 /* Shared primitives (primitives.ts, docs/ui.md Shared primitives). Host tokens only. Orange
    (warning/primary in many themes) is kept for Blocked, primary actions and focus, never for
@@ -224,7 +179,7 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-mark circle.ap-mark-cut{fill:var(--oc-bg);stroke:none}
 .ap-glyph{margin-top:1px}
 /* A mark has no text baseline: in baseline-aligned rows it centres on the first line instead of lifting it */
-:is(.ap-now-item,.ap-status-row)>.ap-mark{align-self:center;margin-top:0}
+.ap-status-row>.ap-mark{align-self:center;margin-top:0}
 .ap-icon{display:inline-grid;place-items:center;flex:none;width:16px;height:16px}
 @media(forced-colors:active){.ap-mark,.ap-icon{forced-color-adjust:none}.ap-mark[data-status],.ap-icon[data-icon]{color:CanvasText}.ap-mark .ap-mark-cut{stroke:Canvas}.ap-mark circle.ap-mark-cut{fill:Canvas}}
 
@@ -258,7 +213,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 /* The kit's own size rules load later; the extra class keeps a readable, foreground ⋯ */
 .ap-actions .oc-sdk-btn.ap-actions-btn{min-width:28px;height:26px;padding:0 6px;color:var(--oc-fg);font-size:18px;font-weight:700;line-height:1}
 .ap-actions .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
-.ap-actions .oc-sdk-popup{min-width:min(13rem,calc(100vw - 16px))!important;max-width:calc(100vw - 16px)}
+.ap-actions .oc-sdk-popup{min-width:min(13rem,calc(100vw - 16px))!important;max-width:calc(100vw - 16px);max-height:min(560px,calc(100vh - 16px))}
 .ap-actions .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
 
 /* Compact warnings: always visible, wrap rather than clip; words carry the meaning */
@@ -284,8 +239,10 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-people{display:flex;flex-direction:column;gap:6px}
 .ap-person{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center}
 .ap-person .ap-small{grid-column:1/-1}
-.ap-link{background:none;border:0;padding:0;color:var(--oc-primary-text,var(--oc-primary));cursor:pointer;font-size:11.5px}
-.ap-link:hover{text-decoration:underline}
+/* Ordinary links are text, not alarms: foreground with a dotted underline that turns solid on hover
+   (orange is the warning/primary colour in several host themes) */
+.ap-link{background:none;border:0;padding:0;color:var(--oc-fg);cursor:pointer;font-size:11.5px;text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 55%,transparent);text-underline-offset:2px}
+.ap-link:hover{text-decoration-style:solid}
 
 /* Sub-agents: Ran (host facts), Claimed (child-reported) and Accepted (plan task status) stay
    apart on every row. Static (no motion): a run is not reported work. Nesting reads from indentation
@@ -432,7 +389,8 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-cleanup-confirm h3{font-size:13px}
 .ap-cleanup-title{font-weight:600;overflow-wrap:anywhere}
 .ap-cleanup-error{padding:10px 12px;border-left:2px solid var(--oc-warning);color:var(--oc-warning-text,var(--oc-warning));background:var(--oc-muted-surface);border-radius:4px}
-[data-testid="cleanup-delete"] button{color:var(--oc-error-text,var(--oc-fg))}
+/* The visible Delete button only; in ⋯ the hook names the menu holder, whose destructive item the kit colours */
+[data-testid="cleanup-delete"]:not(.ap-actions-hold) button{color:var(--oc-error-text,var(--oc-fg))}
 .ap-cleanup button:focus-visible,[data-testid="cleanup-modes"] button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-details{border-top:1px solid var(--oc-border);padding-top:8px;font-size:11.5px;color:var(--oc-muted)}
 .ap-details>summary{cursor:pointer;width:fit-content}
@@ -441,6 +399,149 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-facts dd{color:var(--oc-fg);min-width:0;overflow-wrap:anywhere}
 .ap-facts .ap-mono{font-family:var(--oc-mono);font-size:11px}
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
+
+/* Calm progress (rail and board Progress): one header, one bar, state chips, one grouped list.
+   Every task appears once; details open in the row. Host tokens only; orange stays for Blocked,
+   primary and focus. No motion beyond the existing reported-progress gate. */
+.ap-plan{gap:12px}
+.ap-plan-head{gap:3px}
+.ap-plan-top{display:flex;align-items:flex-start;gap:4px 6px;min-width:0}
+.ap-plan-lead{flex:1 1 auto;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px;min-width:0}
+.ap-plan-lead .ap-plan-title{min-width:0;overflow-wrap:anywhere}
+.ap-plan-title-pick{cursor:pointer}
+.ap-plan-top>.ap-info,.ap-plan-top>.ap-actions,.ap-actions-hold{flex:none}
+.ap-actions-hold{display:inline-flex}
+.ap-actions-hold:empty{display:none}
+.ap-meta>.ap-warn-badge::before{content:none}
+/* Title-picker: the SDK select, drawn as a quiet "⌄ 1 of 3" beside the title (its name says which plan) */
+.ap-title-picker{display:inline-flex;min-width:0}
+.ap-title-picker .oc-sdk-select{display:inline-flex;width:auto}
+.ap-title-picker .oc-sdk-field-label,.ap-title-picker .oc-sdk-trigger-value{display:none}
+.ap-title-picker .oc-sdk-trigger{display:inline-flex;align-items:center;gap:3px;width:auto;min-width:0;height:24px;padding:0 6px;border:0;border-radius:6px;background:transparent;box-shadow:none;color:var(--oc-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+.ap-title-picker .oc-sdk-trigger:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-title-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:0}
+.ap-title-picker .oc-sdk-trigger-chevron{order:-1}
+.ap-title-picker .oc-sdk-popup{width:min(22rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
+.ap-title-picker .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+.ap-title-picker .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
+.ap-rail-pick{display:flex;align-items:center;gap:6px;min-width:0}
+/* done/total and the bar on one line */
+.ap-progress-line{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 10px}
+.ap-progress-line .ap-fraction{flex:none;align-items:baseline;gap:0}
+.ap-progress-line .ap-fraction strong{font-size:20px}
+.ap-fraction-total{color:var(--oc-muted);font-size:13px;font-variant-numeric:tabular-nums}
+.ap-progress-line .ap-seg{flex:1 1 48px;height:8px;min-width:0}
+.ap-chip-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.ap-quals{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ap-quals:empty{display:none}
+/* Task list */
+.ap-tasks{position:relative;gap:4px}
+/* Tasks heading: a programmatic focus fallback only; it shows itself while it has focus */
+.ap-tasks-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);width:fit-content;padding:0 4px}
+.ap-tasks-h:not(:focus){position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ap-tasks-h:focus{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--oc-muted-surface);font-size:12px}
+.ap-filter-line:empty{display:none}
+.ap-filter-line>*+span::before{content:"·";margin-right:10px;color:var(--oc-muted)}
+.ap-filter-text{font-weight:500;overflow-wrap:anywhere}
+.ap-filter-line .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-pgroup+.ap-pgroup{margin-top:8px}
+.ap-pgroup-box{display:flex;flex-direction:column;min-width:0}
+.ap-pgroup-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);padding:2px 0}
+.ap-pgroup-rows{display:flex;flex-direction:column}
+.ap-fold>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:28px;padding:0 6px;margin-left:-6px;border-radius:6px;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none}
+.ap-fold>summary::-webkit-details-marker{display:none}
+.ap-fold>summary:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-fold>summary .ap-icon{width:14px;height:14px;transform:rotate(-90deg)}
+.ap-fold[open]>summary .ap-icon{transform:none}
+.ap-fold>summary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+/* One task row: status mark, title, its reported time or readiness word, a chevron; facts open in place */
+.ap-trow-li{min-width:0}
+/* A long title keeps its line; its time/wait wraps below, right-aligned, instead of squeezing it */
+.ap-trow>summary.ap-trow-line{display:flex;flex-wrap:wrap;align-items:center;column-gap:9px;row-gap:0;min-height:32px;margin:0 -6px;padding:4px 6px;border-radius:6px;font-weight:400}
+.ap-trow>summary.ap-trow-line::before{content:none}
+.ap-trow>summary.ap-trow-line:hover{background:var(--oc-hover)}
+.ap-trow-line>.ap-mark{margin-top:0}
+.ap-trow-title{flex:1 1 10rem;min-width:0;line-height:1.4;overflow-wrap:anywhere}
+.ap-trow-line>.ap-context{flex:none}
+.ap-trow-li[data-status="skipped"] .ap-trow-title{color:var(--oc-muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--oc-muted) 60%,transparent)}
+.ap-trow-li[data-status="done"]>.ap-trow>summary .ap-trow-title{color:var(--oc-muted)}
+.ap-trow-end{flex:0 1 auto;margin-left:auto;display:inline-flex;align-items:center;gap:6px;min-width:0}
+.ap-trow-meta{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px 6px;min-width:0;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
+/* 400% reflow: a long reported time may wrap rather than widen the page */
+.ap-trow-meta .ap-elapsed,.ap-trow-meta>*{white-space:normal;overflow-wrap:anywhere;text-align:end}
+/* A reported wait is a duration, not reported work: not the working blue */
+.ap-trow-meta .ap-elapsed:not([data-testid^="elapsed-"]){color:var(--oc-muted)}
+.ap-trow-ready{color:var(--oc-success-text,var(--oc-success))}
+.ap-trow-meta .ap-ny-cat{align-self:center;margin-top:0}
+.ap-trow-end>.ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-trow[open]>summary .ap-trow-end>.ap-icon{transform:rotate(180deg)}
+.ap-trow-li>.ap-trow[open]{margin:2px -6px 4px;padding:0 6px 10px;border-radius:8px;background:color-mix(in srgb,var(--oc-fg) 4%,transparent)}
+.ap-trow-li>.ap-trow[open]>summary{margin:0 -6px}
+.ap-trow-body{display:flex;flex-direction:column;gap:8px;padding:2px 0 0 25px;min-width:0}
+.ap-rfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;font-size:12px;min-width:0}
+.ap-rfacts>div{display:contents}
+.ap-rfacts dt{color:var(--oc-muted)}
+.ap-rfacts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
+.ap-rfacts>p{grid-column:1/-1}
+.ap-rfacts .ap-ny-unknown{color:var(--oc-muted);font-style:italic}
+.ap-rfacts .ap-elapsed{color:var(--oc-fg);font-size:12px;white-space:normal}
+.ap-rfacts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
+.ap-rfacts .ap-ready-deps{gap:3px}
+.ap-rfacts .ap-ready-dep{display:grid;grid-template-columns:12px minmax(0,1fr);column-gap:6px;align-items:baseline}
+.ap-rfacts .ap-ready-dep>:nth-child(n+3){grid-column:2}
+.ap-rfacts .ap-ready-dep>.ap-glyph{align-self:start;margin-top:3px}
+.ap-rfacts .ap-ready-who{white-space:normal}
+.ap-rfacts-term{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px}
+.ap-rfacts-term .ap-info-btn{width:20px;height:20px}
+.ap-rfacts-lines{display:flex;flex-direction:column;gap:2px}
+.ap-rfacts .ap-reasons{font-size:12px}
+@media(max-width:300px){.ap-rfacts,.ap-facts{grid-template-columns:minmax(0,1fr)}.ap-rfacts dd{margin-bottom:4px}.ap-trow-body{padding-left:0}}
+.ap-rcopy-open{display:inline-flex;align-items:center;gap:6px;width:fit-content;max-width:100%;white-space:normal;text-align:start;min-height:26px;padding:0 9px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12px;cursor:pointer}
+.ap-rcopy-open:hover{background:var(--oc-hover)}
+.ap-rcopy-open .ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-rcopy-open:focus-visible,.ap-rcopy .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-rcopy-preview{background:var(--oc-bg);border:1px solid var(--oc-border)}
+/* Plan order: the recorded hierarchy, indented under its groups */
+.ap-tree{display:flex;flex-direction:column;margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
+.ap-tgroup>summary{font-weight:600}
+/* Plan panels opened from ⋯ (Task view, Plan document, Sessions) */
+.ap-panel{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
+.ap-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ap-panel-h:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-panel .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-panel .ap-doc pre{background:var(--oc-bg)}
+/* One compact session row; the Sessions panel holds every participant */
+.ap-sessions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 12px;padding-top:10px;border-top:1px solid var(--oc-border)}
+.ap-sessions .ap-people{flex:1 1 14rem;min-width:0}
+.ap-sessions .ap-person .ap-small{display:none}
+.ap-sessions-more{font-size:12px;color:var(--oc-muted)}
+.ap-sessions-more:hover{color:var(--oc-fg)}
+.ap-link:focus-visible{box-shadow:0 0 0 2px var(--oc-focus)}
+/* Calm roster (rail and board): running rows on one line each, every other record folded */
+.ap-census-calm{gap:6px}
+.ap-census-calm .ap-census-head{flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:2px 10px}
+.ap-census-title{display:inline-flex;align-items:center;gap:2px}
+.ap .ap-census-calm .ap-obs-row.ap-obs-xrow:not([data-compact]){padding-top:0;padding-bottom:0}
+.ap-census-calm .ap-obs-line time{display:inline}
+.ap-census-calm .ap-sub-summary{flex:1 1 auto}
+.ap-census-calm .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:0}
+.ap-obs-xrow{padding:0 0 0 calc((var(--depth,1) - 1) * 14px)}
+.ap-obs-xrow[data-depth]:not([data-depth="1"])::before{top:10px}
+.ap-obs-x>summary.ap-obs-line{display:flex;flex-wrap:wrap;align-items:center;column-gap:8px;row-gap:0;min-height:30px;margin:0 -6px;padding:3px 6px;border-radius:6px;list-style:none;cursor:pointer;font-size:12.5px}
+.ap-obs-x>summary::-webkit-details-marker{display:none}
+.ap-obs-x>summary:hover{background:var(--oc-hover)}
+.ap-obs-x>summary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+.ap-obs-line>.ap-obs-title{flex:1 1 8rem;font-weight:400;white-space:normal;overflow:visible;overflow-wrap:anywhere}
+.ap-obs-end{flex:0 1 auto;margin-left:auto;display:inline-flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:0 8px;min-width:0;font-size:11.5px}
+.ap-obs-agent{color:var(--oc-muted)}
+.ap-obs-end>.ap-obs{min-width:0;overflow-wrap:anywhere}
+.ap-obs-end>.ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-obs-x[open]>summary .ap-obs-end>.ap-icon{transform:rotate(180deg)}
+.ap-obs-body{display:flex;flex-direction:column;gap:4px;padding:2px 0 8px}
+.ap-obs-body>.ap-link{align-self:flex-start}
+.ap-warn-list{display:flex;flex-direction:column;gap:3px;padding:0}
+.ap-warn-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
 
 /* Status section */
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */

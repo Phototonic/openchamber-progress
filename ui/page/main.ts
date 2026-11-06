@@ -25,6 +25,8 @@ import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
+import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { warningLine } from '../shared/primitives.ts';
 
 type Tab = 'progress' | 'document' | 'history' | 'map';
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
@@ -120,7 +122,13 @@ function readingScope(vc: ViewContext<Ui>) {
   return v ? `board-search:${v.run}` : `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}`;
 }
 /** Fourth tab: the dependency map of the selected plan. View as list returns to Progress in this frame. */
-const boardMap = createMapFrame<Ui>('board', (vc) => vc.setUi({ tab: 'progress' }));
+const viewChoice = new DefaultViewChoice();
+const chooseTab = (vc: ViewContext<Ui>, tab: Tab) => {
+  const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
+  if (plan) viewChoice.choose(viewReadingKey(vc, readingScope(vc), plan), tab === 'progress' ? 'list' : tab);
+  vc.setUi({ tab });
+};
+const boardMap = createMapFrame<Ui>('board', (vc) => chooseTab(vc, 'progress'));
 const progressTab = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="detail-tabs"] [role="tab"][data-id="progress"]');
 
 // Fullscreen board: every plan in the connected store, filtered by project/worktree/session.
@@ -128,6 +136,12 @@ startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
   initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
+  prepareUi: (vc) => {
+    const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
+    const decision = resolveDefaultView(viewChoice, vc, readingScope(vc), plan);
+    const tab = decision.view === 'list' ? 'progress' : decision.view;
+    return vc.ui.tab === tab ? null : { tab };
+  },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
   forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
@@ -156,7 +170,7 @@ startView<Ui>({
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
-  retire: (reason) => { captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { if (reason !== 'hidden') viewChoice.reset(); captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
@@ -195,7 +209,7 @@ startView<Ui>({
     if (official) root.append(official);
     if (!read.captureEnabled) {
       const note = captureOffNote(vc.setup);
-      const p = testid(el('p', 'ap-doc-warn', note.text), 'capture-off');
+      const p = testid(warningLine(note.text), 'capture-off');
       p.dataset.reason = note.reason;
       root.append(p);
     }
@@ -393,6 +407,12 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
   if (previous && previous !== hit.plan.key) opened = [...opened.filter((k) => k !== previous && k !== hit.plan.key), previous].slice(-RECENT_OPENED);
   openedHit = { key: hit.plan.key, item: task?.id ?? null };
   pendingTask = task ? { key: hit.plan.key, item: task.id, title: task.title, stage: 'search', run: v.run, message: `Search result: ${task.title}` } : null;
+  const request = search.selectedPlan();
+  if (request) {
+    const key = viewReadingKey(vc, readingScope(vc), request);
+    viewChoice.identify(key);
+    if (task) viewChoice.choose(key, 'list');
+  }
   vc.setUi({ selected: hit.plan.key, tab: 'progress', reveal: ++reveals });
 }
 
@@ -403,8 +423,20 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
   mountTabs(tabs, {
     items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }, { id: 'map', label: 'Map' }],
     activeId: ui.tab,
-    onChange: (id) => { captures.retire(); if (id === 'map') boardMap.enter(); else if (ui.tab === 'map') boardMap.leave(); vc.setUi({ tab: id as Tab }); },
+    // D8 wiring (S2-H): the active tab comes from the frame's default-view decision (Progress or
+    // Map), and every actual tab activation records the explicit choice, including re-activating
+    // the provisional Progress tab (a changed-value callback alone does not see that).
+    onChange: (id) => { captures.retire(); if (id === 'map') boardMap.enter(); else if (ui.tab === 'map') boardMap.leave(); chooseTab(vc, id as Tab); },
   });
+  // SDK changed-value callbacks omit reactivation of the provisional Progress tab.
+  // Record that real activation too, before any late complete detail can settle D8.
+  const reselect = (event: Event) => {
+    if (event instanceof KeyboardEvent && event.key !== 'Enter' && event.key !== ' ') return;
+    const tab = (event.target as Element).closest<HTMLElement>('[role="tab"][data-id]');
+    if (tab?.dataset.id === ui.tab) chooseTab(vc, ui.tab);
+  };
+  tabs.addEventListener('click', reselect, true);
+  tabs.addEventListener('keydown', reselect, true);
   // The Map tab owns a pending List → Map task handoff while focus stays on it (like the rail's switch).
   tabs.querySelector('[role="tab"][data-id="map"]')?.setAttribute('data-map-focus-owner', '');
   detail.append(tabs);
@@ -443,7 +475,9 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     article.append(historyBlock(plan, vc.history(plan), env));
     detail.append(article);
   } else {
-    const article = planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading });
+    // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
+    // only the loading placeholder paints (no complete rows) until Progress or Map is settled.
+    const article = planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading, pending: viewChoice.current.pending });
     // An explicit task focus/reveal or pointer selection here is what the Map tab opens on.
     boardMap.listTargets(article);
     detail.append(article);
@@ -498,7 +532,7 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
       return;
     }
     pendingTask = { ...intent, stage: 'reveal' };
-    vc.setUi({ tab: 'progress' });
+    chooseTab(vc, 'progress');
     return;
   }
   if (vc.ui.tab !== 'progress') { pendingTask = null; return; }

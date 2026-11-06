@@ -1,7 +1,6 @@
-import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, loadingBlock, planDetail, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
+import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, loadingBlock, planDetail, planPicker, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
 import { officialMainBlock } from '../shared/official.ts';
@@ -11,6 +10,8 @@ import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { planProject } from '../shared/live.ts';
 import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
+import { warningLine } from '../shared/primitives.ts';
+import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
 
 /** `presentation`: Plan view List (default) or Map, in this frame only; never stored. */
 type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
@@ -22,7 +23,9 @@ let contextSession: string | null | undefined;
 let contextAuthority = '';
 let selectionGeneration = 0;
 /** The rail hosts the full map itself (the host can't open the board from here). View as list stays in this frame. */
-const railMap = createMapFrame<Ui>('rail', (vc) => vc.setUi({ presentation: 'list' }));
+const viewChoice = new DefaultViewChoice();
+const chooseView = (vc: ViewContext<Ui>, mode: 'list' | 'map') => { const plan = current(vc); if (plan && vc.session) viewChoice.choose(viewReadingKey(vc, `rail:${vc.session.id}`, plan), mode); vc.setUi({ presentation: mode }); };
+const railMap = createMapFrame<Ui>('rail', (vc) => chooseView(vc, 'list'));
 const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="plan-view-list"] button');
 
 // Right rail: the selected session's plan, progress first; diagnostics collapsed at the end.
@@ -30,6 +33,11 @@ startView<Ui>({
   surface: 'panel',
   maxSessionSubscriptions: 4,
   initialUi: () => ({ selected: null, setup: initialSetupUi(), presentation: 'list' }),
+  prepareUi: (vc) => {
+    const decision = resolveDefaultView(viewChoice, vc, `rail:${vc.session?.id ?? ''}`, current(vc));
+    const presentation = decision.view === 'map' ? 'map' : 'list';
+    return vc.ui.presentation === presentation ? null : { presentation };
+  },
   actionPlan: current,
   forgetPlans: (keys, ui, vc) => {
     selectionGeneration++;
@@ -54,7 +62,7 @@ startView<Ui>({
   reading: (vc) => { const p = current(vc); return p && vc.session ? { plan: p.key, scope: `rail:${vc.session.id}` } : null; },
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return railMap.refreshed; },
-  retire: (reason) => railMap.retire(reason),
+  retire: (reason) => { if (reason !== 'hidden') viewChoice.reset(); railMap.retire(reason); },
   afterPaint: (root, vc) => railMap.afterPaint(root, vc, current(vc), listSwitch),
   preserveFocus: preserveMapFocus,
   // The chosen plan is remembered per session, so reopening the panel keeps it.
@@ -66,6 +74,7 @@ startView<Ui>({
     const generation = ++selectionGeneration;
     // A new rail reading (also A → B → A, or none) starts on List with no map or task-target state.
     railMap.resetReading();
+    viewChoice.reset();
     vc.setUi({ selected: id ? recentSelection.get(id) ?? null : null, presentation: 'list' });
     if (!id) return;
     void vc.storage.get(storeKey(id)).then((v) => {
@@ -99,7 +108,7 @@ startView<Ui>({
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
     if (official) root.append(official);
-    if (!read.captureEnabled) root.append(testid(el('p', 'ap-doc-warn', 'Capture is off, so no new progress is being recorded.'), 'capture-off'));
+    if (!read.captureEnabled) root.append(testid(warningLine('Capture is off, so no new progress is being recorded.'), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
     const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
@@ -112,24 +121,37 @@ startView<Ui>({
     } else {
       const generation = selectionGeneration;
       const plan = pickPlan(scope.plans, vc.ui.selected);
-      if (scope.plans.length > 1 && plan) root.append(picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, (key) => {
+      // The title is the picker (several plans): built fresh each paint, so it carries this paint's choice guard.
+      const choose = plan && scope.plans.length > 1 ? (standalone = false) => picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, standalone, (key) => {
         if (generation !== selectionGeneration) return;
         selectionGeneration++; // a manual choice also retires a pending preference restore
         vc.setUi({ selected: key });
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
-      }));
-      // Plan view: List / Map, below the picker (also with one plan). List is the unchanged plan detail.
-      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); vc.setUi({ presentation: mode }); }));
-      if (plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId) {
-        root.append(testid(el('p', 'ap-note', `This session contributes to a plan from ${recordedLabel(plan, env)(plan.ownerSessionId)}.`), 'helping-note'));
-      }
+      }) : null;
+      // Plan view: List / Map, first (also with one plan), like the board's tabs above its detail.
+      // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
+      // activation records the explicit choice (including re-pressing the provisional List).
+      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }));
+      // Contribution context, not ownership: behind the header's ⓘ.
+      const helping = plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId
+        ? info(`${plan.key}|helping`, 'About this plan', testid(el('p', '', `This session contributes to a plan from ${recordedLabel(plan, env)(plan.ownerSessionId)}.`), 'helping-note')) : null;
       if (plan && mapShown && session) {
+        // The map keeps its own header and title; the compact picker stays above it.
+        const pick = choose?.(true);
+        if (pick) { const row = el('div', 'ap-rail-pick'); row.append(pick); if (helping) row.append(helping); root.append(row); }
+        else if (helping) root.append(helping);
         const host = testid(el('div', 'ap-map-host'), 'map-host');
         root.append(host);
         railMap.paint(host, vc, { plan, scope: `rail:${session}`, runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(session, vc.directory, vc.live) });
         root.append(cleanupBlock(vc, plan));
       } else if (plan) {
-        const article = planDetail(plan, env, hooks(vc, plan), { document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading });
+        // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
+        // only the loading placeholder paints (no complete rows) until List or Map is settled.
+        const article = planDetail(plan, env, hooks(vc, plan), {
+          document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading,
+          picker: choose?.() ?? null, info: helping, actions: [{ id: 'details', label: 'Details', run: openDetails }],
+          pending: viewChoice.current.pending,
+        });
         // An explicit task focus/reveal or pointer selection here is what Map opens on.
         railMap.listTargets(article);
         root.append(article, cleanupBlock(vc, plan));
@@ -163,11 +185,20 @@ function hooks(vc: ViewContext<Ui>, plan: PlanView) {
   };
 }
 
-function picker(plans: PlanView[], current: PlanView, sessionId: string | null, onChange: (key: string) => void) {
-  const holder = testid(el('div', 'ap-picker'), 'plan-selector');
-  mountSelect(holder, {
-    label: `${plans.length} plans`,
-    value: current.key,
+/** ⋯ → Details: open the collapsed diagnostics below and move focus to them. */
+function openDetails() {
+  const d = document.querySelector<HTMLDetailsElement>('[data-testid="details"]');
+  if (!d) return;
+  d.open = true;
+  const summary = d.querySelector<HTMLElement>('summary');
+  summary?.focus({ preventScroll: true });
+  summary?.scrollIntoView({ block: 'nearest' });
+}
+
+/** The title-picker: every scoped plan with its done/total or lifecycle, and the helping role. */
+function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void) {
+  return planPicker({
+    title: current.title, index: plans.indexOf(current) + 1, count: plans.length, value: current.key, standalone,
     options: plans.map((p) => {
       const s = summarize(p);
       const role = sessionId && p.ownerSessionId !== sessionId ? 'helping · ' : '';
@@ -175,5 +206,4 @@ function picker(plans: PlanView[], current: PlanView, sessionId: string | null, 
     }),
     onChange,
   });
-  return holder;
 }

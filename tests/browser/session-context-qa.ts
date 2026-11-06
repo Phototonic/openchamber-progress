@@ -15,7 +15,13 @@ function click(s: string, selector: string) {
   const point = evaluate(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error('Missing control');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [r.x+Math.min(24,r.width/2)+o.x,r.y+r.height/2+o.y]})()`);
   cdp('click', ...point.map(String));
 }
-const button = (s: string, id: string) => click(s, `[data-testid="${id}"] button`);
+function button(s: string, id: string) {
+  if (id === 'cleanup-delete' && guest(s, `return !!d.querySelector('[data-testid="plan-actions"] button')`)) {
+    click(s, '[data-testid="plan-actions"] button');
+    wait(s, `d.querySelector('[role="menuitem"][id$="-cleanup-delete"]')`);
+    click(s, '[role="menuitem"][id$="-cleanup-delete"]');
+  } else click(s, `[data-testid="${id}"] button`);
+}
 function show(s: string, width = 360) { cdp('viewport', width > 500 ? '1200x850' : `${width + 32}x850`); evaluate(`qa.show('${s}',${width});true`); wait(s, `d.defaultView.innerWidth===${width}`); }
 function shot(s: string, name: string, height = 350) {
   assert.equal(guest(s, 'return d.documentElement.scrollWidth<=d.documentElement.clientWidth'), true);
@@ -49,11 +55,18 @@ assert.equal(guest('panel', 'return d.body.textContent.includes("No plan reporte
 evaluate('qa.dark();true'); show('status', 280); shot('status', 'sidebar-empty-dark', 210);
 show('panel'); shot('panel', 'sidebar-empty', 220);
 
-// Hold rail preference restoration, then the A detail and document. A → draft → B
-// drops their authority and any old confirmation/button references.
-evaluate(`qa.holdStorage=true;qa.hold={surface:'panel',paths:['/v1/plan','/v1/document']};true`); context('A');
+// Hold rail preference restoration and A detail. A → draft → B drops their authority.
+// Document is now reachable from the menu after complete task detail, so exercise its
+// independent held-read retirement in a second reading instead of bypassing that menu.
+evaluate(`qa.holdStorage=true;qa.hold={surface:'panel',paths:['/v1/plan']};true`); context('A');
 wait('panel', `d.querySelector('[data-testid="plan-P-A"]') && qa.held.some(x=>x.path==='/v1/plan')`);
-click('panel', '[data-testid="document-P-A"] summary');
+context(null); sideState('unscoped-state'); context('B'); sideState('empty-state');
+evaluate('qa.release();true'); sideState('empty-state');
+evaluate(`qa.hold={surface:'panel',paths:['/v1/document']};true`); context('A');
+wait('panel', `d.querySelector('[data-testid="plan-P-A"] .ap-tasks[data-complete]')`);
+click('panel', '[data-testid="plan-actions"] button');
+wait('panel', `d.querySelector('[role="menuitem"][id$="-document"]')`);
+click('panel', '[role="menuitem"][id$="-document"]');
 wait('panel', `qa.held.some(x=>x.path==='/v1/document')`);
 context(null); sideState('unscoped-state'); context('B'); sideState('empty-state');
 evaluate('qa.release();true'); sideState('empty-state');
