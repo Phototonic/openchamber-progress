@@ -14,6 +14,8 @@ import { RELEASE } from '../../shared/release.ts';
 const manifest=JSON.parse(readFileSync(new URL('../../package.json',import.meta.url),'utf8'));
 const [major,minor,patch]=RELEASE.split('.').map(Number);
 const futureVersion=`${major}.${minor}.${patch!+1}`;
+// A newer release whose minor has two digits, so numeric (not string) ordering decides it.
+const twoDigitMinor=`${major}.${minor!+10}.0`;
 const body=(version=futureVersion)=>JSON.stringify({...manifest,version});
 const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>resolve=r);return{promise,resolve};};
 type Responder=(req:http.IncomingMessage,res:http.ServerResponse)=>void;
@@ -62,7 +64,7 @@ test('QA-U fixed authenticated route refuses guest controls before outbound/stor
 test('QA-U manifest validation and numeric/prerelease ordering through actual HTTP',{timeout:15000},async()=>{
   const h=await fixture({corrupt:true});
   try {
-    const cases:[string,string][]=[[futureVersion,'available'],[RELEASE,'not-newer'],['0.2.3','not-newer'],['0.10.0','available'],[`${RELEASE}-rc.1`,'not-newer'],[`${futureVersion}-beta.2`,'available'],[`${RELEASE}+changed`,'not-newer']];
+    const cases:[string,string][]=[[futureVersion,'available'],[RELEASE,'not-newer'],['0.2.3','not-newer'],[twoDigitMinor,'available'],['0.10.0','not-newer'],[`${RELEASE}-rc.1`,'not-newer'],[`${futureVersion}-beta.2`,'available'],[`${RELEASE}+changed`,'not-newer']];
     for(const [version,state] of cases){h.set((_req,res)=>res.end(body(version)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.state,state);assert.equal(r.candidateVersion,version);}
     h.set((_req,res)=>res.end(JSON.stringify({...manifest,version:RELEASE,description:'same version, other bytes'})));
     h.advance(UPDATE_LIMITS.successMs);assert.equal((await h.get()).state,'not-newer');

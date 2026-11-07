@@ -65,17 +65,13 @@ button{font:inherit}
 .ap-fraction strong{font-size:24px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
 .ap-fraction span{color:var(--oc-muted)}
 .ap-seg{display:flex;height:6px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 9%,transparent)}
-.ap-seg>i{display:block;height:100%}
+.ap-seg>i{display:block;height:100%;min-width:3px}
 .ap-seg>i+i{margin-left:2px}
 .ap-seg [data-k="done"]{background:var(--oc-success)}
 .ap-seg [data-k="working"]{background:var(--oc-info)}
 .ap-seg [data-k="blocked"]{background:var(--oc-warning)}
-.ap-legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--oc-muted)}
-.ap-legend span{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
-.ap-legend i{width:7px;height:7px;border-radius:2px;background:color-mix(in srgb,var(--oc-fg) 18%,transparent)}
-.ap-legend [data-k="done"] i{background:var(--oc-success)}
-.ap-legend [data-k="working"] i{background:var(--oc-info)}
-.ap-legend [data-k="blocked"] i{background:var(--oc-warning)}
+/* Forced colours: three distinct fills (solid, highlight, hatched) on an outlined track */
+@media(forced-colors:active){.ap-seg{forced-color-adjust:none;border:1px solid CanvasText;background:Canvas}.ap-seg [data-k="done"]{background:CanvasText}.ap-seg [data-k="working"]{background:Highlight}.ap-seg [data-k="blocked"]{background:repeating-linear-gradient(45deg,CanvasText 0 2px,Canvas 2px 4px)}}
 
 /* Reported in-progress work: readable blue status text. Motion only under [data-motion="on"]
    (active plan, working tasks, fresh read, capture on), on one shared 2.4 s phase (app.ts alignMotion).
@@ -87,17 +83,12 @@ button{font:inherit}
 [data-motion="on"] .ap-working-text::after{content:attr(data-text) / "";position:absolute;inset:0;color:color-mix(in srgb,var(--oc-info-text,var(--oc-info)) 55%,var(--oc-fg));opacity:0;animation:ap-text-pulse 2.4s ease-in-out infinite}
 [data-motion="on"] .ap-seg [data-k="working"]{position:relative;overflow:hidden}
 [data-motion="on"] .ap-seg [data-k="working"]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--oc-bg) 55%,transparent),transparent);transform:translateX(-100%);animation:ap-sheen 2.4s ease-in-out infinite}
-[data-motion="on"] .ap-now .ap-glyph[data-status="working"]::after,[data-motion="on"] [data-testid="current-work"] .ap-glyph[data-status="working"]::after{animation:ap-dot-pulse 2.4s ease-in-out infinite}
+[data-motion="on"] :is([data-testid="progress-group-now"],[data-testid="current-work"]) .ap-mark[data-status="working"] .ap-mark-core{transform-box:fill-box;transform-origin:center;animation:ap-dot-pulse 2.4s ease-in-out infinite}
 @keyframes ap-text-pulse{0%,100%{opacity:0}50%{opacity:.9}}
 @keyframes ap-sheen{0%{transform:translateX(-100%)}65%,100%{transform:translateX(100%)}}
 @keyframes ap-dot-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.7)}}
 [data-ap-hidden] *,[data-ap-hidden] *::before,[data-ap-hidden] *::after{animation:none!important}
 
-/* Current work callout */
-.ap-now{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
-.ap-now-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted)}
-.ap-now-item{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.ap-now-item strong{font-weight:500}
 .ap-elapsed{color:var(--oc-info-text,var(--oc-info));font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted)}
 
@@ -108,10 +99,6 @@ button{font:inherit}
 /* Item hierarchy */
 .ap-items{display:flex;flex-direction:column}
 .ap-items ul{display:flex;flex-direction:column}
-.ap-item{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;align-items:start;padding:5px 0}
-.ap-item-title{line-height:1.4}
-.ap-item[data-status="skipped"] .ap-item-title{color:var(--oc-muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--oc-muted) 60%,transparent)}
-.ap-item-sub{display:flex;flex-wrap:wrap;gap:2px 8px;margin-top:2px;font-size:11.5px;color:var(--oc-muted)}
 .ap-group{border-radius:8px}
 .ap-group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 0 4px;font-weight:600}
 .ap-group>summary::-webkit-details-marker{display:none}
@@ -131,7 +118,6 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-plan-list [role="listbox"]:focus-visible:not(:has([role="option"][data-active="true"])){outline:2px solid var(--oc-focus);outline-offset:-2px;border-radius:8px}
 [data-testid="detail-tabs"] [role="tab"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 :is(.ap-focus,.ap-focus-empty,.ap-setup,[data-testid="open-detail"],[data-testid="setup-needed"],[data-testid="stale-banner"],[data-testid^="state-"]) .oc-sdk-btn:focus-visible,.ap-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
-/* Branch facts stay visible while folded: full working/blocked, filter-hidden rows; "folded" only while closed */
 .ap-group>summary{flex-wrap:wrap;row-gap:2px}
 .ap-group>summary .ap-grow{flex:1 1 0}
 .ap-branch{display:flex;flex-wrap:wrap;gap:0 8px;width:100%;padding-left:24px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
@@ -139,9 +125,6 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-branch [data-k="working"]{color:var(--oc-info-text,var(--oc-info))}
 .ap-branch [data-k="blocked"]{color:var(--oc-warning-text,var(--oc-warning))}
 .ap-branch [data-k="lead"]+*::before{content:none}
-.ap-folded{display:none}
-.ap-group:not([open])>summary .ap-folded{display:inline}
-.ap-group[open]>summary .ap-branch:not(:has(>:not(.ap-folded))){display:none}
 .ap-context{font-weight:400;font-size:11px;color:var(--oc-muted)}
 .ap-items li[hidden]{display:none!important}
 
@@ -161,29 +144,13 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 /* Why a row matches the participant filter: recorded relationships, never inferred ownership */
 .ap-reasons{display:flex;flex-wrap:wrap;gap:0 8px;font-weight:400;font-size:11.5px;color:var(--oc-muted)}
 .ap-group>summary .ap-reasons{width:100%;padding-left:24px}
-/* A task-parent's own recorded people (assignee chip, relay line) stay in its summary, visible while folded */
-.ap-group>summary .ap-summary-sub{width:100%;margin-top:0;padding-left:24px;font-weight:400;min-width:0}
 .ap-reasons>*+*::before{content:"·";margin-right:8px}
 .ap-focus-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 /* Canonical task rows are navigation targets (tabindex -1): ring for keyboard focus or a readiness jump */
 .ap-items li:focus{outline:none}
 .ap-items li:focus-visible,.ap-items li[data-nav-target]:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 
-/* Readiness (active plans): recorded prerequisites only, read-only */
-.ap-readiness{padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
-.ap-readiness .ap-note:empty{display:none}
-.ap-ready-group{display:flex;flex-direction:column;gap:4px;min-width:0}
-.ap-ready-group+.ap-ready-group{border-top:1px solid var(--oc-border);padding-top:8px}
-.ap-ready-sub{margin-top:4px;padding-left:10px;border-left:2px dashed color-mix(in srgb,var(--oc-muted) 60%,transparent)}
-.ap-ready-title{margin:0;font-size:12px;font-weight:600}
-.ap-ready-list{display:flex;flex-direction:column;gap:8px}
-.ap-ready-entry{display:flex;flex-direction:column;gap:2px;min-width:0}
-.ap-ready-head{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;align-items:start}
-.ap-ready-head .ap-ready-link{font-size:13px;font-weight:500;color:var(--oc-fg);text-align:left;line-height:1.4}
-.ap-ready-link{overflow-wrap:anywhere;text-align:left;text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 35%,transparent);text-underline-offset:2px}
-.ap-ready-meta,.ap-ready-deps,.ap-ready-entry>p{margin-left:27px}
-.ap-ready-meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:11.5px;color:var(--oc-muted);min-width:0}
-.ap-ready-meta>*{min-width:0;overflow-wrap:anywhere}
+.ap-ready-link{overflow-wrap:anywhere;text-align:left;font-size:inherit}
 .ap-ready-who b{font-weight:500;color:var(--oc-fg)}
 /* A session link is softer than a recorded assignment: muted name, never the assignee styling */
 .ap-ready-links{display:inline-flex;flex-direction:column;gap:2px}
@@ -194,34 +161,71 @@ summary:focus-visible,.ap-link:focus-visible,pre:focus-visible,.ap-tasks-h:focus
 .ap-ready-dep .ap-glyph{width:12px;height:12px;font-size:8px;align-self:center;margin-top:0}
 .ap-ready-ref{overflow-wrap:anywhere;font-family:var(--oc-mono);font-size:11px}
 span.ap-ready-ref{font-family:inherit;font-size:inherit}
-/* Needs you: reported blockers lead readiness; read-only, literal text, no new controls */
-.ap-ny{padding-bottom:8px;border-bottom:1px solid var(--oc-border)}
-.ap-ny:not([data-count="0"])>.ap-ready-title{display:flex;align-items:center;gap:6px}
-.ap-ny:not([data-count="0"])>.ap-ready-title::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--oc-warning);flex:none}
-.ap-ny .ap-ready-list{gap:10px}
-.ap-ny-entry .ap-ready-head{grid-template-columns:18px minmax(0,1fr) auto}
 .ap-ny-cat{align-self:start;margin-top:1px;padding:0 7px;border:1px solid transparent;border-radius:999px;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap;background:color-mix(in srgb,var(--oc-warning) 16%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
 .ap-ny-cat:is([data-category="unknown"],[data-category="unclassified"]){background:color-mix(in srgb,var(--oc-fg) 7%,transparent);color:var(--oc-muted)}
-.ap-ny-facts{margin:2px 0 0 27px;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:12px;min-width:0}
-.ap-ny-facts>div{display:contents}
-.ap-ny-facts dt{color:var(--oc-muted)}
-.ap-ny-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
-.ap-ny-facts .ap-ny-unknown,.ap-ny-facts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
-.ap-ny-facts .ap-elapsed{color:var(--oc-fg);font-size:12px}
-@media(max-width:300px){.ap-ny-facts{grid-template-columns:minmax(0,1fr)}.ap-ny-facts dd{margin-bottom:3px}}
-@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}.ap-ny:not([data-count="0"])>.ap-ready-title::before{background:CanvasText}}
+@media(forced-colors:active){.ap-ny-cat{border-color:CanvasText}}
 
-/* Status glyph: shape + colour + hidden text, never colour alone */
-.ap-glyph{width:16px;height:16px;margin-top:1px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;line-height:1;flex:none}
-.ap-glyph[data-status="pending"]{border:1.5px solid color-mix(in srgb,var(--oc-muted) 75%,transparent)}
-.ap-glyph[data-status="done"]{background:var(--oc-success);color:var(--oc-bg)}
-.ap-glyph[data-status="done"]::after{content:"";width:6px;height:3px;border-left:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:translateY(-1px) rotate(-45deg)}
-.ap-glyph[data-status="working"]{border:1.5px solid var(--oc-info)}
-.ap-glyph[data-status="working"]::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--oc-info)}
-.ap-glyph[data-status="blocked"]{background:var(--oc-warning);color:var(--oc-bg)}
-.ap-glyph[data-status="blocked"]::after{content:"!"}
-.ap-glyph[data-status="skipped"]{border:1.5px dashed color-mix(in srgb,var(--oc-muted) 70%,transparent)}
-.ap-glyph[data-status="skipped"]::after{content:"";width:6px;height:1.5px;background:var(--oc-muted)}
+/* Shared primitives (primitives.ts, docs/ui.md Shared primitives). Host tokens only. Orange
+   (warning/primary in many themes) is kept for Blocked, primary actions and focus, never for
+   selection, links or decoration. */
+/* Status marks: inline SVG, one shape per state + a spoken name (or adjacent words), never colour alone */
+.ap-mark{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;color:color-mix(in srgb,var(--oc-muted) 85%,transparent)}
+.ap-mark-svg,.ap-icon-svg{display:block;width:100%;height:100%;overflow:visible}
+.ap-mark:is([data-status="done"],[data-status="ready"]){color:var(--oc-success)}
+.ap-mark[data-status="working"]{color:var(--oc-info)}
+.ap-mark[data-status="blocked"]{color:var(--oc-warning)}
+.ap-mark[data-status="skipped"]{color:var(--oc-muted)}
+.ap-mark .ap-mark-cut{stroke:var(--oc-bg)}
+.ap-mark circle.ap-mark-cut{fill:var(--oc-bg);stroke:none}
+.ap-glyph{margin-top:1px}
+/* A mark has no text baseline: in baseline-aligned rows it centres on the first line instead of lifting it */
+.ap-status-row>.ap-mark{align-self:center;margin-top:0}
+.ap-icon{display:inline-grid;place-items:center;flex:none;width:16px;height:16px}
+@media(forced-colors:active){.ap-mark,.ap-icon{forced-color-adjust:none}.ap-mark[data-status],.ap-icon[data-icon]{color:CanvasText}.ap-mark .ap-mark-cut{stroke:Canvas}.ap-mark circle.ap-mark-cut{fill:Canvas}}
+
+/* State chips: legend and (as toggle buttons) filter. Selection is neutral, not orange. */
+.ap-state-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.ap-state-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px 2px 7px;border:1px solid var(--oc-border);border-radius:999px;background:transparent;color:var(--oc-muted);font:inherit;font-size:12px;line-height:1.3;font-variant-numeric:tabular-nums;text-align:start}
+.ap-state-chip .ap-mark{width:14px;height:14px}
+.ap-state-chip-n{color:var(--oc-fg);font-weight:600}
+.ap-state-chip-label{min-width:0;overflow-wrap:anywhere}
+button.ap-state-chip{cursor:pointer}
+button.ap-state-chip:hover{background:var(--oc-hover);border-color:color-mix(in srgb,var(--oc-fg) 22%,var(--oc-border))}
+button.ap-state-chip[aria-pressed="true"]{background:var(--oc-selection,var(--oc-hover));border-color:color-mix(in srgb,var(--oc-fg) 55%,var(--oc-border));color:var(--oc-selection-fg,var(--oc-fg))}
+button.ap-state-chip[aria-pressed="true"] .ap-state-chip-label{font-weight:500}
+button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+@media(forced-colors:active){.ap-state-chip{border-color:CanvasText}button.ap-state-chip[aria-pressed="true"]{border:2px solid Highlight;padding:1px 9px 1px 6px}}
+
+/* ⓘ info disclosure: generic explanations only; opens on focus or click, never hover alone */
+.ap-info{position:relative;display:inline-flex;vertical-align:middle;flex:none}
+.ap-info-btn{display:inline-grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:none;color:var(--oc-muted);cursor:pointer}
+.ap-info-btn .ap-icon{width:15px;height:15px}
+.ap-info-btn:hover,.ap-info[data-open]>.ap-info-btn{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-info-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-info-content{position:absolute;z-index:20;top:calc(100% + 4px);left:0;transform:translateX(var(--ap-info-shift,0px));width:max-content;max-width:min(20rem,calc(100vw - 16px));padding:10px 12px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated,var(--oc-bg));color:var(--oc-elevated-fg,var(--oc-fg));box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 14%,transparent);font-size:12px;font-weight:400;line-height:1.5;letter-spacing:normal;text-transform:none;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.ap-info-content[hidden]{display:none}
+.ap-info-content:focus{outline:none}
+.ap-info-content p+p{margin-top:6px}
+@media(forced-colors:active){.ap-info-content{border-color:CanvasText}}
+
+/* ⋯ plan actions: the SDK menu with a visible ⋯ and a spoken "Plan actions" */
+.ap-actions{display:inline-flex;flex:none}
+/* The kit's own size rules load later; the extra class keeps a readable, foreground ⋯ */
+.ap-actions .oc-sdk-btn.ap-actions-btn{min-width:28px;height:26px;padding:0 6px;color:var(--oc-fg);font-size:18px;font-weight:700;line-height:1}
+.ap-actions .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-actions .oc-sdk-popup{min-width:min(13rem,calc(100vw - 16px))!important;max-width:calc(100vw - 16px);max-height:min(560px,calc(100vh - 16px))}
+.ap-actions .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+
+/* Compact warnings: always visible, wrap rather than clip; words carry the meaning */
+.ap-warn{display:flex;align-items:flex-start;gap:6px;min-width:0;font-size:11.5px;line-height:1.45;color:var(--oc-fg)}
+.ap-warn>.ap-icon{width:14px;height:14px;margin-top:1px;color:var(--oc-warning-text,var(--oc-warning))}
+.ap-warn[data-tone="error"]>.ap-icon{color:var(--oc-error-text,var(--oc-error))}
+.ap-warn[data-tone="info"]>.ap-icon{color:var(--oc-info-text,var(--oc-info))}
+.ap-warn-text{min-width:0;overflow-wrap:anywhere}
+.ap-warn-badge{display:inline-flex;align-items:center;max-width:100%;padding:0 6px;border-radius:5px;font-size:11px;font-weight:500;line-height:18px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="error"]{background:color-mix(in srgb,var(--oc-error) 14%,transparent);color:var(--oc-error-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="info"]{background:color-mix(in srgb,var(--oc-info) 14%,transparent);color:var(--oc-info-text,var(--oc-fg))}
+@media(forced-colors:active){.ap-warn-badge{border:1px solid CanvasText}.ap-warn[data-tone]>.ap-icon{color:CanvasText}}
 
 /* Session chips */
 /* When name and state don't fit on one line, the state wraps below instead of squeezing the name */
@@ -235,8 +239,10 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-people{display:flex;flex-direction:column;gap:6px}
 .ap-person{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center}
 .ap-person .ap-small{grid-column:1/-1}
-.ap-link{background:none;border:0;padding:0;color:var(--oc-primary-text,var(--oc-primary));cursor:pointer;font-size:11.5px}
-.ap-link:hover{text-decoration:underline}
+/* Ordinary links are text, not alarms: foreground with a dotted underline that turns solid on hover
+   (orange is the warning/primary colour in several host themes) */
+.ap-link{background:none;border:0;padding:0;color:var(--oc-fg);cursor:pointer;font-size:11.5px;text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 55%,transparent);text-underline-offset:2px}
+.ap-link:hover{text-decoration-style:solid}
 
 /* Sub-agents: Ran (host facts), Claimed (child-reported) and Accepted (plan task status) stay
    apart on every row. Static (no motion): a run is not reported work. Nesting reads from indentation
@@ -383,7 +389,8 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-cleanup-confirm h3{font-size:13px}
 .ap-cleanup-title{font-weight:600;overflow-wrap:anywhere}
 .ap-cleanup-error{padding:10px 12px;border-left:2px solid var(--oc-warning);color:var(--oc-warning-text,var(--oc-warning));background:var(--oc-muted-surface);border-radius:4px}
-[data-testid="cleanup-delete"] button{color:var(--oc-error-text,var(--oc-fg))}
+/* The visible Delete button only; in ⋯ the hook names the menu holder, whose destructive item the kit colours */
+[data-testid="cleanup-delete"]:not(.ap-actions-hold) button{color:var(--oc-error-text,var(--oc-fg))}
 .ap-cleanup button:focus-visible,[data-testid="cleanup-modes"] button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
 .ap-details{border-top:1px solid var(--oc-border);padding-top:8px;font-size:11.5px;color:var(--oc-muted)}
 .ap-details>summary{cursor:pointer;width:fit-content}
@@ -393,23 +400,186 @@ span.ap-ready-ref{font-family:inherit;font-size:inherit}
 .ap-facts .ap-mono{font-family:var(--oc-mono);font-size:11px}
 .ap-details ul{margin-top:6px;display:flex;flex-direction:column;gap:2px}
 
+/* Calm progress (rail and board Progress): one header, one bar, state chips, one grouped list.
+   Every task appears once; details open in the row. Host tokens only; orange stays for Blocked,
+   primary and focus. No motion beyond the existing reported-progress gate. */
+.ap-plan{gap:12px}
+.ap-plan-head{gap:3px}
+.ap-plan-top{display:flex;align-items:flex-start;gap:4px 6px;min-width:0}
+.ap-plan-lead{flex:1 1 auto;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px;min-width:0}
+.ap-plan-lead .ap-plan-title{min-width:0;overflow-wrap:anywhere}
+.ap-plan-title-pick{cursor:pointer}
+.ap-plan-top>.ap-info,.ap-plan-top>.ap-actions,.ap-actions-hold{flex:none}
+.ap-actions-hold{display:inline-flex}
+.ap-actions-hold:empty{display:none}
+.ap-meta>.ap-warn-badge::before{content:none}
+/* Title-picker: the SDK select, drawn as a quiet "⌄ 1 of 3" beside the title (its name says which plan) */
+.ap-title-picker{display:inline-flex;min-width:0}
+.ap-title-picker .oc-sdk-select{display:inline-flex;width:auto}
+.ap-title-picker .oc-sdk-field-label,.ap-title-picker .oc-sdk-trigger-value{display:none}
+.ap-title-picker .oc-sdk-trigger{display:inline-flex;align-items:center;gap:3px;width:auto;min-width:0;height:24px;padding:0 6px;border:0;border-radius:6px;background:transparent;box-shadow:none;color:var(--oc-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+.ap-title-picker .oc-sdk-trigger:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-title-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:0}
+.ap-title-picker .oc-sdk-trigger-chevron{order:-1}
+.ap-title-picker .oc-sdk-popup{width:min(22rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
+.ap-title-picker .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
+.ap-title-picker .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
+.ap-rail-pick{display:flex;align-items:center;gap:6px;min-width:0}
+/* done/total and the bar on one line */
+.ap-progress-line{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 10px}
+.ap-progress-line .ap-fraction{flex:none;align-items:baseline;gap:0}
+.ap-progress-line .ap-fraction strong{font-size:20px}
+.ap-fraction-total{color:var(--oc-muted);font-size:13px;font-variant-numeric:tabular-nums}
+.ap-progress-line .ap-seg{flex:1 1 48px;height:8px;min-width:0}
+.ap-chip-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.ap-quals{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ap-quals:empty{display:none}
+/* Task list */
+.ap-tasks{position:relative;gap:4px}
+/* Tasks heading: a programmatic focus fallback only; it shows itself while it has focus */
+.ap-tasks-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);width:fit-content;padding:0 4px}
+.ap-tasks-h:not(:focus){position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ap-tasks-h:focus{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--oc-muted-surface);font-size:12px}
+.ap-filter-line:empty{display:none}
+.ap-filter-line>*+span::before{content:"·";margin-right:10px;color:var(--oc-muted)}
+.ap-filter-text{font-weight:500;overflow-wrap:anywhere}
+.ap-filter-line .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-pgroup+.ap-pgroup{margin-top:8px}
+.ap-pgroup-box{display:flex;flex-direction:column;min-width:0}
+.ap-pgroup-h{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--oc-muted);padding:2px 0}
+.ap-pgroup-rows{display:flex;flex-direction:column}
+.ap-fold>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:28px;padding:0 6px;margin-left:-6px;border-radius:6px;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none}
+.ap-fold>summary::-webkit-details-marker{display:none}
+.ap-fold>summary:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-fold>summary .ap-icon{width:14px;height:14px;transform:rotate(-90deg)}
+.ap-fold[open]>summary .ap-icon{transform:none}
+.ap-fold>summary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+/* One task row: status mark, title, its reported time or readiness word, a chevron; facts open in place */
+.ap-trow-li{min-width:0}
+/* A long title keeps its line; its time/wait wraps below, right-aligned, instead of squeezing it */
+.ap-trow>summary.ap-trow-line{display:flex;flex-wrap:wrap;align-items:center;column-gap:9px;row-gap:0;min-height:32px;margin:0 -6px;padding:4px 6px;border-radius:6px;font-weight:400}
+.ap-trow>summary.ap-trow-line::before{content:none}
+.ap-trow>summary.ap-trow-line:hover{background:var(--oc-hover)}
+.ap-trow-line>.ap-mark{margin-top:0}
+.ap-trow-title{flex:1 1 10rem;min-width:0;line-height:1.4;overflow-wrap:anywhere}
+.ap-trow-line>.ap-context{flex:none}
+.ap-trow-li[data-status="skipped"] .ap-trow-title{color:var(--oc-muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--oc-muted) 60%,transparent)}
+.ap-trow-li[data-status="done"]>.ap-trow>summary .ap-trow-title{color:var(--oc-muted)}
+.ap-trow-end{flex:0 1 auto;margin-left:auto;display:inline-flex;align-items:center;gap:6px;min-width:0}
+.ap-trow-meta{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px 6px;min-width:0;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
+/* 400% reflow: a long reported time may wrap rather than widen the page */
+.ap-trow-meta .ap-elapsed,.ap-trow-meta>*{white-space:normal;overflow-wrap:anywhere;text-align:end}
+/* A reported wait is a duration, not reported work: not the working blue */
+.ap-trow-meta .ap-elapsed:not([data-testid^="elapsed-"]){color:var(--oc-muted)}
+.ap-trow-ready{color:var(--oc-success-text,var(--oc-success))}
+.ap-trow-meta .ap-ny-cat{align-self:center;margin-top:0}
+.ap-trow-end>.ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-trow[open]>summary .ap-trow-end>.ap-icon{transform:rotate(180deg)}
+.ap-trow-li>.ap-trow[open]{margin:2px -6px 4px;padding:0 6px 10px;border-radius:8px;background:color-mix(in srgb,var(--oc-fg) 4%,transparent)}
+.ap-trow-li>.ap-trow[open]>summary{margin:0 -6px}
+.ap-trow-body{display:flex;flex-direction:column;gap:8px;padding:2px 0 0 25px;min-width:0}
+.ap-rfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;font-size:12px;min-width:0}
+.ap-rfacts>div{display:contents}
+.ap-rfacts dt{color:var(--oc-muted)}
+.ap-rfacts dd{margin:0;min-width:0;overflow-wrap:anywhere;white-space:pre-line}
+.ap-rfacts>p{grid-column:1/-1}
+.ap-rfacts .ap-ny-unknown{color:var(--oc-muted);font-style:italic}
+.ap-rfacts .ap-elapsed{color:var(--oc-fg);font-size:12px;white-space:normal}
+.ap-rfacts .ap-elapsed[data-kind="unknown"]{color:var(--oc-muted);font-style:italic}
+.ap-rfacts .ap-ready-deps{gap:3px}
+.ap-rfacts .ap-ready-dep{display:grid;grid-template-columns:12px minmax(0,1fr);column-gap:6px;align-items:baseline}
+.ap-rfacts .ap-ready-dep>:nth-child(n+3){grid-column:2}
+.ap-rfacts .ap-ready-dep>.ap-glyph{align-self:start;margin-top:3px}
+.ap-rfacts .ap-ready-who{white-space:normal}
+.ap-rfacts-term{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px}
+.ap-rfacts-term .ap-info-btn{width:20px;height:20px}
+.ap-rfacts-lines{display:flex;flex-direction:column;gap:2px}
+.ap-rfacts .ap-reasons{font-size:12px}
+@media(max-width:300px){.ap-rfacts,.ap-facts{grid-template-columns:minmax(0,1fr)}.ap-rfacts dd{margin-bottom:4px}.ap-trow-body{padding-left:0}}
+.ap-rcopy-open{display:inline-flex;align-items:center;gap:6px;width:fit-content;max-width:100%;white-space:normal;text-align:start;min-height:26px;padding:0 9px;border:1px solid var(--oc-border);border-radius:6px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12px;cursor:pointer}
+.ap-rcopy-open:hover{background:var(--oc-hover)}
+.ap-rcopy-open .ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-rcopy-open:focus-visible,.ap-rcopy .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-rcopy-preview{background:var(--oc-bg);border:1px solid var(--oc-border)}
+/* Plan order: the recorded hierarchy, indented under its groups */
+.ap-tree{display:flex;flex-direction:column;margin-left:8px;padding-left:12px;border-left:1px solid var(--oc-border)}
+.ap-tgroup>summary{font-weight:600}
+/* Plan panels opened from ⋯ (Task view, Plan document, Sessions) */
+.ap-panel{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
+.ap-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ap-panel-h:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+.ap-panel .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-panel .ap-doc pre{background:var(--oc-bg)}
+/* One compact session row; the Sessions panel holds every participant */
+.ap-sessions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 12px;padding-top:10px;border-top:1px solid var(--oc-border)}
+.ap-sessions .ap-people{flex:1 1 14rem;min-width:0}
+.ap-sessions .ap-person .ap-small{display:none}
+.ap-sessions-more{font-size:12px;color:var(--oc-muted)}
+.ap-sessions-more:hover{color:var(--oc-fg)}
+.ap-link:focus-visible{box-shadow:0 0 0 2px var(--oc-focus)}
+/* Calm roster (rail and board): running rows on one line each, every other record folded */
+.ap-census-calm{gap:6px}
+.ap-census-calm .ap-census-head{flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:2px 10px}
+.ap-census-title{display:inline-flex;align-items:center;gap:2px}
+.ap .ap-census-calm .ap-obs-row.ap-obs-xrow:not([data-compact]){padding-top:0;padding-bottom:0}
+.ap-census-calm .ap-obs-line time{display:inline}
+.ap-census-calm .ap-sub-summary{flex:1 1 auto}
+.ap-census-calm .ap-obs-list>.ap-obs-row+.ap-obs-row{border-top:0}
+.ap-obs-xrow{padding:0 0 0 calc((var(--depth,1) - 1) * 14px)}
+.ap-obs-xrow[data-depth]:not([data-depth="1"])::before{top:10px}
+.ap-obs-x>summary.ap-obs-line{display:flex;flex-wrap:wrap;align-items:center;column-gap:8px;row-gap:0;min-height:30px;margin:0 -6px;padding:3px 6px;border-radius:6px;list-style:none;cursor:pointer;font-size:12.5px}
+.ap-obs-x>summary::-webkit-details-marker{display:none}
+.ap-obs-x>summary:hover{background:var(--oc-hover)}
+.ap-obs-x>summary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+.ap-obs-line>.ap-obs-title{flex:1 1 8rem;font-weight:400;white-space:normal;overflow:visible;overflow-wrap:anywhere}
+.ap-obs-end{flex:0 1 auto;margin-left:auto;display:inline-flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:0 8px;min-width:0;font-size:11.5px}
+.ap-obs-agent{color:var(--oc-muted)}
+.ap-obs-end>.ap-obs{min-width:0;overflow-wrap:anywhere}
+.ap-obs-end>.ap-icon{width:14px;height:14px;color:var(--oc-muted)}
+.ap-obs-x[open]>summary .ap-obs-end>.ap-icon{transform:rotate(180deg)}
+.ap-obs-body{display:flex;flex-direction:column;gap:4px;padding:2px 0 8px}
+.ap-obs-body>.ap-link{align-self:flex-start}
+.ap-warn-list{display:flex;flex-direction:column;gap:3px;padding:0}
+.ap-warn-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+
 /* Status section */
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
 html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap[data-surface="status"]{padding:4px 0 10px;gap:8px}
-/* Status-only compact SDK select. Keep its label association and popup behavior. */
-.ap-status-picker .oc-sdk-select{flex-direction:row;align-items:center;gap:8px}
-.ap-status-picker .oc-sdk-field-label{flex:none;white-space:nowrap}
-.ap-status-picker .oc-sdk-trigger{margin-left:auto;max-width:65%;height:24px;padding:0 8px}
-.ap-status-picker .oc-sdk-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
-.ap-status-picker .oc-sdk-popup{width:min(24rem,calc(100vw - 16px));max-height:min(320px,calc(100vh - 40px))}
-.ap-status-picker .oc-sdk-option-label{white-space:normal;overflow-wrap:anywhere}
-.ap-status-picker .oc-sdk-option-hint{flex:0 1 auto;max-width:45%;white-space:normal}
-.ap-status-plan{display:flex;flex-direction:column;gap:6px}
-.ap-status-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* Compact Work Status: one title (the featured-plan picker beside it), the whole-plan bar, "3/8"
+   with informational chips, at most two focus rows, a compact meta line and "+N more plans".
+   Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
+.ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
+/* Title, picker and badge share the first line: a long title wraps in its own column, so the picker
+   (and the popup it opens) stays near the top of the auto-height frame. */
+.ap-status-head{display:grid;grid-template-columns:minmax(0,max-content) auto auto;justify-content:start;align-items:start;gap:2px 6px;min-width:0}
+.ap-status-title{font-weight:600;line-height:1.35;min-width:0;overflow-wrap:anywhere}
+/* A 24 x 24 px target (WCAG 2.2 target size), centred on the title's first line; the negative block
+   margins keep that line no taller than the title itself */
+.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px;margin-block:-3px}
+.ap-status-head>span:not(.ap-status-title){align-self:start}
+.ap-status-progress{gap:6px}
+.ap-status-progress .ap-seg{height:5px}
+.ap-status-counts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;font-size:12px}
+.ap-status-fraction{font-variant-numeric:tabular-nums}
+.ap-status-fraction strong{font-size:13px;font-weight:600}
+/* Informational chips here: mark, count and word inline, no pill (nothing to press) */
+.ap-status-counts .ap-state-chip{min-height:0;padding:0;border:0;gap:4px;font-size:12px}
+.ap-status-counts .ap-state-chip .ap-mark{width:12px;height:12px}
+.ap-status-focus{display:flex;flex-direction:column;gap:3px;min-width:0}
 .ap-status-row{display:flex;align-items:baseline;gap:8px;min-width:0}
-.ap-status-row .ap-grow{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ap-status-more{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--oc-border);padding-top:6px}
+.ap-status-row .ap-grow{min-width:0;overflow-wrap:anywhere}
+.ap-status-meta{font-size:11px}
+.ap-status-more{width:fit-content;font-size:12px;color:var(--oc-muted)}
+.ap-status-more:hover{color:var(--oc-fg)}
+/* Work Status has no side padding (the host owns its gutters): roster lines keep inside the frame */
+.ap[data-surface="status"] .ap-obs-x>summary.ap-obs-line{margin:0;padding:3px 0;min-height:26px}
+.ap[data-surface="status"] .ap-census-calm{gap:4px}
+.ap[data-surface="status"] .ap-obs-line>.ap-obs-title{flex:1 1 auto}
+.ap[data-surface="status"] .ap-obs-end{font-size:11px;gap:0 6px}
+/* A wrapped title keeps its mark on the first line */
+.ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
 /* Page */
 .ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:1280px;margin:0 auto}
@@ -420,6 +590,8 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-plan-list .oc-sdk-row{min-height:52px}
 .ap-detail{min-width:0;padding:16px;border-radius:var(--oc-radius,12px);background:color-mix(in srgb,var(--oc-fg) 3%,transparent)}
 .ap-detail-tabs{margin-bottom:4px}
+/* Four tabs (Progress, Document, History, Map) wrap at 400% zoom instead of scrolling the last ones out of view */
+.ap-detail-tabs .oc-sdk-tabs{flex-wrap:wrap}
 
 /* Board search: labelled form, explicit scope, removable chips, grouped hits. No motion. */
 .ap-search-area{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -459,6 +631,55 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-hit-title{overflow-wrap:anywhere;min-width:0}
 .ap-hit-id{font-family:var(--oc-font-mono,monospace);font-size:11px;color:var(--oc-muted);overflow-wrap:anywhere}
 .ap-hit:focus-visible,.ap-chip-remove:focus-visible,.ap-search :is(button,input):focus-visible,.ap-search .oc-sdk-trigger:focus-visible,.ap-search-area button:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+/* Board bar: Current / Archived, one search field and Filters; everything else waits in Filters.
+   Concrete states (problem, pending edit, chips, outcome, warnings) stay visible below it. */
+.ap-board-bar-wrap{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ap-board-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-width:0}
+.ap-board-bar>[data-testid="cleanup-modes"]{flex:none;gap:2px}
+.ap-board-bar .ap-search{flex:1 1 22rem;min-width:0}
+.ap-board-bar .ap-search-row{position:relative;flex-wrap:nowrap;align-items:center;gap:6px}
+.ap-board-bar .ap-search-field{flex:1 1 auto;min-width:0}
+.ap-filters-owner{flex:none;margin-left:auto}
+.ap-filters-trigger{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--oc-border);border-radius:7px;background:var(--oc-bg);color:var(--oc-fg);font:inherit;font-size:12.5px;white-space:nowrap;cursor:pointer}
+.ap-filters-trigger:hover{background:var(--oc-hover)}
+.ap-filters-trigger[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover))}
+.ap-filters-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
+.ap-filters-trigger .ap-icon{width:15px;height:15px;color:var(--oc-muted)}
+.ap-filters-count{min-width:18px;height:18px;padding:0 5px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-muted-surface);font-size:11px;font-weight:600;line-height:16px;text-align:center;font-variant-numeric:tabular-nums}
+/* A nonmodal panel under the bar, across its width on a narrow board */
+.ap-filters-panel{position:absolute;z-index:30;top:calc(100% + 6px);right:0;width:min(44rem,100%);display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background:var(--oc-elevated,var(--oc-bg));color:var(--oc-elevated-fg,var(--oc-fg));box-shadow:0 12px 32px color-mix(in srgb,var(--oc-fg) 16%,transparent);text-align:start}
+.ap-filters-panel[hidden]{display:none}
+.ap-filters-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ap-filters-h{margin:0;padding:0 2px;font-size:13px;font-weight:600;border-radius:4px}
+.ap-filters-h:focus{outline:none;box-shadow:0 0 0 2px var(--oc-focus)}
+.ap-filters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(12rem,100%),1fr));gap:10px 12px;min-width:0}
+.ap-filters-grid>[data-testid="filters"]{grid-column:1/-1;display:grid;grid-template-columns:subgrid;gap:inherit}
+.ap-filters-panel .ap-filters>div{min-width:0;max-width:none}
+.ap-filters-panel .oc-sdk-select,.ap-filters-panel .oc-sdk-trigger{width:100%;min-width:0}
+.ap-filters-panel .oc-sdk-popup{max-width:calc(100vw - 16px)}
+.ap-filters-panel .ap-search-help,.ap-filters-panel .ap-search-scope{max-width:none}
+.ap-filters-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;padding-top:10px;border-top:1px solid var(--oc-border)}
+.ap-filters-foot>.ap-note{flex:1 1 16rem}
+.ap-filters-panel :is(button,.oc-sdk-trigger):focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+@media(forced-colors:active){.ap-filters-panel,.ap-filters-trigger{border-color:CanvasText}}
+.ap-search-strip{display:flex;flex-direction:column;gap:6px;min-width:0}
+/* Plan list: project groups of calm rows (mark, title, done/total, mini bar); Finished folds */
+.ap-board-project{gap:2px}
+.ap-board-project>.ap-h{padding:0 8px 2px}
+.ap-plan-list .oc-sdk-row{min-height:44px;gap:10px}
+.ap-plan-list .oc-sdk-row-title{white-space:normal;overflow-wrap:anywhere}
+.ap-plan-mark{width:15px;height:15px}
+.ap-plan-mark[data-plan="failed"]{color:var(--oc-error)}
+.ap-mini-bar{height:3px;margin-top:5px;max-width:16rem}
+.ap-mini-bar>i{min-width:2px}
+.ap-mini-bar>i+i{margin-left:1px}
+.ap-fold-toggle{display:inline-flex;align-items:center;gap:6px;width:fit-content;min-height:30px;padding:0 8px;border:0;border-radius:6px;background:none;color:var(--oc-muted);font:inherit;font-size:12.5px;cursor:pointer}
+.ap-fold-toggle:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-fold-toggle:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-fold-toggle .ap-icon{width:14px;height:14px;transform:rotate(-90deg)}
+.ap-fold-toggle[aria-expanded="true"] .ap-icon{transform:none}
+.ap-board-fold[hidden]{display:none}
+@media(forced-colors:active){.ap-fold-toggle{border:1px solid CanvasText}}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;

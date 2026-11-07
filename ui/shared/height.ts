@@ -83,9 +83,9 @@ export class HeightSync {
   private check(generation: number, want: number, before: number, attempt: number) {
     if (attempt >= HEIGHT_RETRY_FRAMES.length) return;
     this.cancel = this.host.afterFrames(HEIGHT_RETRY_FRAMES[attempt], () => {
-      this.cancel = null;
       // A newer paint owns the height now.
       if (generation !== this.generation || this.disposed) return;
+      this.cancel = null;
       const frame = this.host.actual();
       // Applied, or the host changed the frame in response (a clamp also counts): done.
       if (Math.abs(frame - want) <= 1 || frame !== before) { this.settled = { want, frame }; return; }

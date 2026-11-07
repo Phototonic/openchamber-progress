@@ -131,7 +131,7 @@ function objectIdentity(file) {
 function reparsePaths(paths, parents) {
   const fresh = new Map;
   const pending = paths.filter((p) => !scope || reparseCache.get(p)?.identity !== objectIdentity(p));
-  const before = pending.map(objectIdentity), stats = pending.map(snapshot), results = pending.length ? query(pending) : [];
+  const before = pending.map(objectIdentity), stats = pending.map(snapshot), results = pending.length ? windowsSecurityQuery(pending) : [];
   pending.forEach((p, i) => {
     const after = objectIdentity(p);
     if (after !== before[i])
@@ -147,7 +147,8 @@ function reparsePaths(paths, parents) {
     throw new PlatformError("unsafe-parent");
   return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
 }
-function query(paths, create = []) {
+var securityQueryAttempted = false;
+function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
     throw new PlatformError("windows-security-unavailable");
@@ -157,7 +158,17 @@ function query(paths, create = []) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const child = spawnSync(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input: JSON.stringify({ paths, create }), encoding: "utf8", env, windowsHide: true, shell: false, timeout: 1e4, maxBuffer: 1024 * 1024 });
+  const input = JSON.stringify({ paths, create });
+  const firstQuery = !securityQueryAttempted;
+  const run = () => spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: firstQuery ? 30000 : 1e4, maxBuffer: 1024 * 1024 });
+  let child;
+  try {
+    child = run();
+  } finally {
+    securityQueryAttempted = true;
+  }
+  if (firstQuery && child.error?.code === "ETIMEDOUT")
+    child = run();
   if (child.error || child.status !== 0)
     throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results;
@@ -180,7 +191,7 @@ function windowsSecurity(paths) {
   }
   const files = [...pending.keys()];
   if (files.length) {
-    const results = query(files);
+    const results = windowsSecurityQuery(files);
     files.forEach((file, i) => {
       const after = snapshot(file), before = pending.get(file);
       if (after.split(":").slice(0, 2).join(":") !== before.split(":").slice(0, 2).join(":"))
@@ -283,7 +294,7 @@ function privateDirectory(file, recursive = false) {
     if (!recursive && missing.length > 1)
       throw new PlatformError("path-unverified");
     if (missing.length) {
-      const results = query(missing, missing);
+      const results = windowsSecurityQuery(missing, missing);
       if (results.some((r) => !r.private))
         throw new PlatformError("private-permissions");
       missing.forEach((p) => cache.delete(p));
@@ -482,6 +493,14 @@ function readBindingInner(file) {
 function verifyStore(store, b) {
   const envelope = store.list({ limit: 1 });
   requireProgress(envelope.storeId === b.storeId && envelope.sources.some((s) => s.id === b.source.id && s.configRoot === b.source.configRoot && s.dataRoot === b.source.dataRoot && s.verified === b.source.verified), "binding");
+}
+
+// shared/javascript-literal.ts
+function javascriptLiteral(value) {
+  const json = JSON.stringify(value);
+  if (json === undefined)
+    throw new TypeError("Value has no JSON representation");
+  return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
 // setup/lifecycle.ts
@@ -3751,7 +3770,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   if (old) {
     manifest = { ...old.manifest, active: release, releases: { ...old.manifest.releases, [release]: { version: payload.version, files: releaseHash } } };
   } else {
-    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${JSON.stringify(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${JSON.stringify(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);
@@ -3779,7 +3798,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "0.7.0";
+var RELEASE = "1.0.0";
 
 // setup/cli.ts
 try {

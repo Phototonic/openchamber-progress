@@ -4,11 +4,13 @@
 // started. Never attaches to an existing browser or uses a real profile. Synthetic SDK-shell
 // coverage only: not native-host, relay or native-Windows certification.
 // Usage: node --experimental-strip-types tests/browser/preview-summaries-qa.ts --artifacts <dir> [--chromium <path>]
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PLANS, startPreviewFixture, type Fault } from './preview-summaries-fixture.ts';
+import { progressInput } from './progress-qa.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -106,24 +108,25 @@ try {
     }
   };
   const click = async (s: string, selector: string) => {
-    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(12,r.height/2)]})()`);
+    const point = await evaluate<[number, number] | null>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(12,r.height/2)]})()`);
     if (!point) throw new Error(`missing ${selector} in ${s}`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
   };
   const show = async (s: string, width: number) => { await evaluate(`qa.show('${s}',${width});true`); await wait(s, `w.innerWidth===${width}`, `${s} width ${width}`); };
   const theme = async (mode: 'light' | 'dark') => { await evaluate(`qa.theme('${mode}');true`); await frames(); };
-  const context = (id: string | null) => evaluate(`qa.context(${JSON.stringify(id)});true`);
+  const context = (id: string | null) => evaluate(`qa.context(${javascriptLiteral(id)});true`);
+  const progressUi = progressInput({ guest, wait, click, key });
   const scope = (s: string) => (s === 'page' ? '[data-testid="plan-detail"] ' : 'article.ap-plan ');
   const hook = (s: string, id: string) => `${scope(s)}[data-testid="${id}"]`;
   const has = (s: string, id: string) => `!!d.querySelector('${hook(s, id)}')`;
   const text = (s: string) => guest<string | null>(s, `return d.querySelector('${hook(s, 'summary-text')}')?.value??null`);
   const status = (s: string) => guest<string>(s, `return d.querySelector('${hook(s, 'summary-preview')}')?.textContent??''`);
   const copyEnabled = (s: string) => `d.querySelector('${hook(s, 'summary-copy')}')?.disabled===false`;
-  const showsText = (s: string, value: string) => `d.querySelector('${hook(s, 'summary-text')}')?.value===${JSON.stringify(value)}&&${copyEnabled(s)}`;
+  const showsText = (s: string, value: string) => `d.querySelector('${hook(s, 'summary-text')}')?.value===${javascriptLiteral(value)}&&${copyEnabled(s)}`;
   const loading = (s: string) => `${has(s, 'summary-preview')}&&!${has(s, 'summary-text')}&&d.querySelector('${hook(s, 'summary-copy')}')?.disabled===true&&d.querySelector('${hook(s, 'summary-preview')}').textContent.includes('Loading complete plan')`;
-  const announced = (s: string, words: string) => `(()=>{const n=d.querySelector('${hook(s, 'summary-status')}');return !!n&&n.getAttribute('role')==='status'&&n.getAttribute('aria-live')==='polite'&&n.textContent===${JSON.stringify(words)}})()`;
+  const announced = (s: string, words: string) => `(()=>{const n=d.querySelector('${hook(s, 'summary-status')}');return !!n&&n.getAttribute('role')==='status'&&n.getAttribute('aria-live')==='polite'&&n.textContent===${javascriptLiteral(words)}})()`;
   const clipboard = () => evaluate<string>('navigator.clipboard.readText()');
-  const setClipboard = (value: string) => evaluate(`navigator.clipboard.writeText(${JSON.stringify(value)}).then(()=>true)`);
+  const setClipboard = (value: string) => evaluate(`navigator.clipboard.writeText(${javascriptLiteral(value)}).then(()=>true)`);
   const SENTINEL = 'synthetic clipboard sentinel';
   /** Side effects a preview/copy action must never cause. Fixture setup is counted separately. */
   const effects = () => evaluate<{ document: number; history: number; mutations: number; navigation: number }>(`({document:qa.requests.filter(q=>q.path==='/v1/document').length,history:qa.requests.filter(q=>q.path==='/v1/history').length,mutations:qa.requests.filter(q=>q.method!=='GET').length,navigation:qa.messages.filter(m=>m.type==='open-session').length})`);
@@ -138,7 +141,7 @@ try {
   const noOverflow = (s: string) => guest<boolean>(s, `const cw=d.documentElement.clientWidth;if(d.documentElement.scrollWidth>cw)return false;const t=d.querySelector('${hook(s, 'summary-text')}');if(t&&t.scrollWidth>t.clientWidth+1)return false;return [...d.querySelectorAll('${scope(s)}.ap-summary button,${scope(s)}.ap-summary textarea')].every(n=>{const r=n.getBoundingClientRect();return r.left>=-0.5&&r.right<=cw+0.5})`);
   const shot = async (s: string, name: string, scrollTo: string) => {
     check(`${name}:no-horizontal-overflow`, await noOverflow(s));
-    await guest(s, `d.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({block:'start'});return true`);
+    await guest(s, `d.querySelector(${javascriptLiteral(scrollTo)})?.scrollIntoView({block:'start'});return true`);
     await frames();
     const r = await evaluate<number[]>(`(()=>{const r=document.querySelector('section[data-surface="${s}"]').getBoundingClientRect();return [Math.max(0,r.x-8),Math.max(0,r.y-8),r.width+16,Math.min(r.height+16,innerHeight)]})()`);
     const png = await c.send('Page.captureScreenshot', { format: 'png', clip: { x: r[0], y: r[1], width: r[2], height: r[3], scale: 1 } });
@@ -148,14 +151,14 @@ try {
   /** Bounded wait until no forwarded service request is still awaiting its reply. */
   const flightDone = async () => { if (!(await evaluate<boolean>(`new Promise(r=>{const end=Date.now()+5000;const t=()=>qa.flight===0?r(true):Date.now()>end?r(false):setTimeout(t,40);t()})`))) throw new Error('service requests did not quiesce'); };
   const row = (id: string) => `[data-testid="plan-row-${id}"][data-source="source-fixture"]`;
-  const selectBoard = async (id: string) => { await click('page', row(id)); await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="plan-${id}"]')&&${has('page', 'summary-progress')}`, `board selects ${id}`); };
+  const selectBoard = async (id: string) => { await click('page', row(id)); await progressUi.list('page',{id,source:'source-fixture'}); await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="plan-${id}"]')&&${has('page', 'plan-actions')}`, `board selects ${id}`); };
 
   /** Open a preview with a real click, assert exact formatter text and copy it with a real click. */
   async function openAndCopy(s: string, mode: 'progress' | 'handoff', plan: string, label: string) {
     const expected = (await fx.expected(plan, mode))!;
     await setClipboard(SENTINEL);
     await quiet(`${label}:${mode}`, async () => {
-      await click(s, hook(s, `summary-${mode}`));
+      await progressUi.action(s, `summary-${mode}`);
       await wait(s, showsText(s, expected), `${mode} preview text`);
       check(`${label}:${mode}:preview-equals-formatter`, (await text(s)) === expected, ['Preview value equals formatter output over an actual authenticated service read']);
       check(`${label}:${mode}:opening-does-not-copy`, (await clipboard()) === SENTINEL);
@@ -173,7 +176,8 @@ try {
   // ------------------------------------------------ Step 1a: rail, light, 360px
   await show('panel', 360);
   await context(PLANS.summary.session);
-  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-summary"]')&&${has('panel', 'summary-progress')}`, 'rail shows F1');
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-summary"]')&&${has('panel', 'plan-actions')}`, 'rail shows F1');
   const progress = await openAndCopy('panel', 'progress', 'P-summary', 'S1:rail');
   check('S1:rail:progress-fields', progress.includes('Progress: 5/9 done; 4 remaining; 1 skipped') && !progress.includes('Origin session:') && !progress.includes('## Not started'), ['Server counts; progress omits handoff sections']);
   await shot('panel', 'progress-rail-light', 'article.ap-plan');
@@ -203,14 +207,14 @@ try {
     check('S2:copy-focus-after-failure', await guest<boolean>('panel', `return d.activeElement?.dataset?.testid==='summary-copy'`), ['Focus returns to Copy after a failed write']);
     await guest('panel', `delete w.navigator.clipboard.writeText;Object.defineProperty(w.navigator,'clipboard',{configurable:true,get:()=>undefined});return true`);
     // A distinct preview generation so the absent-API status is a new announcement.
-    await click('panel', hook('panel', 'summary-handoff'));
+    await progressUi.action('panel', 'summary-handoff');
     await wait('panel', showsText('panel', handoff));
     await click('panel', hook('panel', 'summary-copy'));
     await wait('panel', announced('panel', failed), 'absent API reports failure');
     check('S2:absent-api-not-success', (await clipboard()) === SENTINEL, ['Absent and rejecting clipboard APIs report failure, never success']);
     await click('panel', hook('panel', 'summary-text'));
     await key('a', 1, 2);
-    const selected = await guest('panel', `const t=d.querySelector('${hook('panel', 'summary-text')}');return {focused:d.activeElement===t,all:t.selectionStart===0&&t.selectionEnd===t.value.length,equal:t.value.slice(t.selectionStart,t.selectionEnd)===${JSON.stringify(handoff)},readOnly:t.readOnly}`);
+    const selected = await guest('panel', `const t=d.querySelector('${hook('panel', 'summary-text')}');return {focused:d.activeElement===t,all:t.selectionStart===0&&t.selectionEnd===t.value.length,equal:t.value.slice(t.selectionStart,t.selectionEnd)===${javascriptLiteral(handoff)},readOnly:t.readOnly}`);
     check('S2:keyboard-select-all-equals-preview', selected.focused && selected.all && selected.equal && selected.readOnly, ['Ctrl+A in the read-only textarea selects the full preview value'], selected);
     await shot('panel', 'clipboard-fallback', 'article.ap-plan .ap-summary');
     await guest('panel', `delete w.navigator.clipboard;return !!w.navigator.clipboard?.writeText`);
@@ -226,23 +230,27 @@ try {
   if (await guest<boolean>('panel', `return ${has('panel', 'summary-close')}`)) { await click('panel', hook('panel', 'summary-close')); await wait('panel', `!${has('panel', 'summary-preview')}`); }
   await theme('dark');
   await show('panel', 280);
-  await wait('panel', `${has('panel', 'summary-progress')}&&getComputedStyle(d.body).backgroundColor!=='rgb(250, 250, 250)'`, 'dark rail');
+  await wait('panel', `${has('panel', 'plan-actions')}&&getComputedStyle(d.body).backgroundColor!=='rgb(250, 250, 250)'`, 'dark rail');
   await quiet('S3:keyboard', async () => {
-    const active = () => guest<string>('panel', `return d.activeElement?.dataset?.testid??d.activeElement?.tagName??''`);
+    const active = () => guest<string>('panel', `return d.activeElement?.closest('[data-testid]')?.dataset.testid??d.activeElement?.tagName??''`);
     await guest('panel', `w.focus();d.activeElement?.blur?.();d.querySelector('article.ap-plan').scrollIntoView({block:'start'});return true`);
     let steps = 0;
-    while ((await active()) !== 'summary-progress' && steps < 40) { await key('Tab'); steps++; }
-    check('S3:tab-reaches-progress', (await active()) === 'summary-progress', [`Reached Copy progress update by Tab`]);
+    while ((await active()) !== 'plan-actions' && steps < 40) { await key('Tab'); steps++; }
+    check('S3:tab-reaches-actions', (await active()) === 'plan-actions', ['Reached Plan actions by Tab']);
     const ring = () => guest<boolean>('panel', `const n=d.activeElement,cs=getComputedStyle(n);return n.matches(':focus-visible')&&(cs.boxShadow!=='none'||cs.outlineStyle!=='none')`);
     check('S3:focus-visible-progress', await ring());
-    await key('Tab');
-    check('S3:tab-reaches-handoff', (await active()) === 'summary-handoff');
-    await key('Tab', 1, 8);
+    await key('Enter');
+    await wait('panel', `d.querySelector('[role="menu"]')`, 'Plan actions opened by Enter');
+    await key('Home');
+    await wait('panel', `d.activeElement?.getAttribute('role')==='menu'&&d.activeElement.getAttribute('aria-activedescendant')?.endsWith('-summary-progress')`);
+    await key('ArrowDown');
+    check('S3:arrow-reaches-handoff', await guest('panel', `return d.activeElement?.getAttribute('role')==='menu'&&d.activeElement.getAttribute('aria-activedescendant')?.endsWith('-summary-handoff')`));
+    await key('Home');
     await key('Enter');
     const expected = (await fx.expected('P-summary', 'progress'))!;
     await wait('panel', showsText('panel', expected), 'Enter opens progress preview');
-    check('S3:enter-opens-progress', (await active()) === 'summary-progress', ['Focus stays on the opening action across the preview paint']);
-    await key('Tab'); await key('Tab');
+    check('S3:enter-opens-progress', (await active()) === 'plan-actions', ['Focus returns to the surviving menu trigger']);
+    for (let n=0;n<40&&(await active())!=='summary-text';n++) await key('Tab');
     check('S3:tab-reaches-text', (await active()) === 'summary-text');
     await key('Tab');
     check('S3:tab-reaches-copy', (await active()) === 'summary-copy');
@@ -259,13 +267,14 @@ try {
     await key('Tab');
     check('S3:tab-reaches-close', (await active()) === 'summary-close');
     await key('Enter');
-    await wait('panel', `!${has('panel', 'summary-preview')}&&d.activeElement?.dataset?.testid==='summary-progress'`, 'Close returns focus');
-    results.push({ id: 'S3:close-returns-focus', pass: true, facts: ['Enter on Close returns focus to Copy progress update'] });
-    await key('Tab');
+    await wait('panel', `!${has('panel', 'summary-preview')}&&!!d.activeElement?.closest('[data-testid="plan-actions"]')`, 'Close returns focus');
+    results.push({ id: 'S3:close-returns-focus', pass: true, facts: ['Enter on Close returns focus to Plan actions'] });
     await key(' ');
+    await wait('panel', `d.querySelector('[role="menu"]')`);
+    await key('Home'); await key('ArrowDown'); await key(' ');
     const handoffText = (await fx.expected('P-summary', 'handoff'))!;
     await wait('panel', showsText('panel', handoffText), 'Space opens handoff preview');
-    await key('Tab');
+    for (let n=0;n<40&&(await active())!=='summary-text';n++) await key('Tab');
     await key('a', 1, 2);
     check('S3:narrow-text-selectable', await guest<boolean>('panel', `const t=d.activeElement;return t?.dataset?.testid==='summary-text'&&t.selectionStart===0&&t.selectionEnd===t.value.length`));
     await click('panel', hook('panel', 'summary-close'));
@@ -284,9 +293,9 @@ try {
   // ------------------------------------------------ Step 3b: narrow light board (no extra screenshot)
   await theme('light');
   await show('page', 360);
-  await wait('page', `${has('page', 'summary-progress')}`, 'narrow board detail');
+  await wait('page', `${has('page', 'plan-actions')}`, 'narrow board detail');
   await quiet('S3:board-narrow', async () => {
-    await click('page', hook('page', 'summary-progress'));
+    await progressUi.action('page', 'summary-progress');
     await wait('page', showsText('page', (await fx.expected('P-summary', 'progress'))!));
     check('S3:board-narrow-light-no-overflow', await noOverflow('page'), ['360px light board: preview wraps, controls inside width']);
   });
@@ -295,9 +304,10 @@ try {
   await show('page', 1100);
   await evaluate(`qa.holds.push({tag:'f2',surface:'page',path:'/v1/plan',plan:'P-paged',cursor:true});true`);
   await click('page', row('P-paged'));
-  await wait('page', `qa.held.some(h=>h.tag==='f2')&&${has('page', 'summary-handoff')}&&d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-paged"]')`, 'F2 continuation held');
+  await wait('page', `qa.held.some(h=>h.tag==='f2')&&${has('page', 'plan-actions')}&&d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-paged"]')`, 'F2 continuation held');
+  await progressUi.list('page'); // Explicit Progress wins before the held edge-bearing detail settles D8.
   await quiet('S4:f2', async () => {
-    await click('page', hook('page', 'summary-handoff'));
+    await progressUi.action('page', 'summary-handoff');
     await wait('page', loading('page'), 'F2 loading');
     check('S4:f2-held-no-copyable-prefix', await guest<boolean>('page', `return !${has('page', 'summary-text')}&&!${has('page', 'summary-only')}&&d.querySelector('${hook('page', 'summary-copy')}').disabled`), ['Held continuation: loading, Copy disabled, no partial text']);
     await evaluate(`qa.release('f2')`);
@@ -331,7 +341,7 @@ try {
     const refreshed = await evaluate<boolean>(`(async()=>{const end=Date.now()+30000;while(Date.now()<end){if(qa.requests.slice(${mark}).filter(q=>q.surface==='page'&&q.path==='/v1/plan'&&q.query?.plan==='P-paged'&&q.query?.cursor).length>=2&&qa.flight===0)return true;await new Promise(r=>setTimeout(r,40))}return false})()`);
     check('S4:f4-background-failed-refresh-observed', refreshed, ['Two further background reads failed at the same identity while summary-only was shown']);
     await frames();
-    const stable = await guest('page', `const t=d.querySelector('${hook('page', 'summary-text')}');return {text:t?.value===${JSON.stringify(summaryOnly)},generation:t?.dataset.generation===${JSON.stringify(generation)},copy:${copyEnabled('page')},selected:!!t&&d.activeElement===t&&t.selectionStart===0&&t.selectionEnd===t.value.length,summaryOnlyButton:${has('page', 'summary-only')},retry:${has('page', 'summary-retry')}}`);
+    const stable = await guest('page', `const t=d.querySelector('${hook('page', 'summary-text')}');return {text:t?.value===${javascriptLiteral(summaryOnly)},generation:t?.dataset.generation===${javascriptLiteral(generation)},copy:${copyEnabled('page')},selected:!!t&&d.activeElement===t&&t.selectionStart===0&&t.selectionEnd===t.value.length,summaryOnlyButton:${has('page', 'summary-only')},retry:${has('page', 'summary-retry')}}`);
     check('S4:f4-summary-only-stable-through-failed-refresh', stable.text && stable.generation && stable.copy && stable.selected && !stable.summaryOnlyButton && stable.retry, ['Chosen summary-only text, generation, selection and enabled Copy unchanged; Retry still offered'], stable);
     await setClipboard(SENTINEL);
     await click('page', hook('page', 'summary-copy'));
@@ -351,7 +361,7 @@ try {
   await wait('page', `d.querySelector('${row('P-paged')}')`);
   await quiet('S4:initial', async () => {
     await selectBoard('P-paged');
-    await click('page', hook('page', 'summary-progress'));
+    await progressUi.action('page', 'summary-progress');
     await wait('page', `${has('page', 'summary-retry')}&&d.querySelector('${hook('page', 'summary-preview')}').textContent.includes('The progress store returned busy (HTTP 503).')`, 'initial failure');
     check('S4:initial-failure-retry-only', await guest<boolean>('page', `return !${has('page', 'summary-only')}&&!${has('page', 'summary-text')}&&d.querySelector('${hook('page', 'summary-copy')}').disabled`), ['Initial-page failure: Retry only, nothing copyable']);
     await evaluate(`qa.faults=[];true`);
@@ -362,10 +372,11 @@ try {
   // ------------------------------------------------ Step 5a: rail progress-revision race + retained callback
   await show('panel', 360);
   await context(PLANS.race.session);
-  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-race"]')&&${has('panel', 'summary-progress')}`, 'rail shows race plan');
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-race"]')&&${has('panel', 'plan-actions')}`, 'rail shows race plan');
   await quiet('S5:rail-race', async () => {
     const first = (await fx.expected('P-race', 'progress'))!;
-    await click('panel', hook('panel', 'summary-progress'));
+    await progressUi.action('panel', 'summary-progress');
     await wait('panel', showsText('panel', first));
     await guest('panel', `window.qaOld=d.querySelector('${hook('panel', 'summary-copy')}');return true`);
     await setClipboard(SENTINEL);
@@ -377,6 +388,7 @@ try {
     await frames();
     check('S5:retained-copy-inert', (await clipboard()) === SENTINEL && !(await status('panel')).includes('Markdown copied.'), ['Retained old Copy button writes nothing and announces nothing']);
     await context(PLANS.summary.session);
+    await progressUi.list('panel',{id:'P-summary',source:'source-fixture'});
     await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-summary"]')&&!${has('panel', 'summary-preview')}`, 'rail B has no preview');
     await evaluate(`qa.release('race')`);
     await flightDone();
@@ -385,21 +397,23 @@ try {
     await context(null);
     await wait('panel', `d.querySelector('[data-testid="unscoped-state"]')&&!d.querySelector('[data-testid="summary-preview"]')`, 'rail null');
     await context(PLANS.race.session);
-    await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-race"]')&&${has('panel', 'summary-progress')}&&!${has('panel', 'summary-preview')}`, 'rail back: preview ephemeral');
+    await progressUi.list('panel');
+    await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-race"]')&&${has('panel', 'plan-actions')}&&!${has('panel', 'summary-preview')}`, 'rail back: preview ephemeral');
     const second = (await fx.expected('P-race', 'progress'))!;
-    await click('panel', hook('panel', 'summary-progress'));
+    await progressUi.action('panel', 'summary-progress');
     await wait('panel', showsText('panel', second));
-    check('S5:rail-switch-regenerates', second !== first && await guest<boolean>('panel', `return d.querySelector('article.ap-plan[data-testid="plan-P-race"]').dataset.revision===${JSON.stringify(String(fx.revision('P-race')))}`), ['A→B→null→A: preview retired; reopened text is for the new revision']);
+    check('S5:rail-switch-regenerates', second !== first && await guest<boolean>('panel', `return d.querySelector('article.ap-plan[data-testid="plan-P-race"]').dataset.revision===${javascriptLiteral(String(fx.revision('P-race')))}`), ['A→B→null→A: preview retired; reopened text is for the new revision']);
   });
 
   // ------------------------------------------------ Step 5b: cleanup-revision change without progress revision
   const archiveRevision = fx.revision('P-archive');
   // Rail: the session's only plan stays selected, so the same selection must refresh and rebind.
   await context(PLANS.archive.session);
-  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-archive"]')&&${has('panel', 'summary-handoff')}`, 'rail shows archive plan');
+  await progressUi.list('panel');
+  await wait('panel', `d.querySelector('article.ap-plan[data-testid="plan-P-archive"]')&&${has('panel', 'plan-actions')}`, 'rail shows archive plan');
   await quiet('S5:cleanup-race-rail', async () => {
     const expected = (await fx.expected('P-archive', 'handoff'))!;
-    await click('panel', hook('panel', 'summary-handoff'));
+    await progressUi.action('panel', 'summary-handoff');
     await wait('panel', showsText('panel', expected));
     const generation = await guest<string>('panel', `return d.querySelector('${hook('panel', 'summary-text')}').dataset.generation`);
     await evaluate(`qa.holds.push({tag:'list',surface:'panel',path:'/v1/plans',before:true});true`);
@@ -410,26 +424,26 @@ try {
     check('S5:cleanup-revision-only', fx.revision('P-archive') === archiveRevision && fx.cleanupState('P-archive')?.state === 'visible', ['Cleanup revision moved; progress revision unchanged']);
     results.push({ id: 'S5:cleanup-change-retires-text', pass: true, facts: ['Same rail selection: old text retired, loading while the re-read is held'] });
     await evaluate(`qa.release('detail')`);
-    await wait('panel', `${showsText('panel', expected)}&&d.querySelector('${hook('panel', 'summary-text')}').dataset.generation!==${JSON.stringify(generation)}`, 'cleanup change regenerates');
+    await wait('panel', `${showsText('panel', expected)}&&d.querySelector('${hook('panel', 'summary-text')}').dataset.generation!==${javascriptLiteral(generation)}`, 'cleanup change regenerates');
     results.push({ id: 'S5:cleanup-change-regenerates', pass: true, facts: ['Cleanup-only change regenerated the same-selection preview'] });
   });
   // Board: the existing cleanup contract evicts the affected selection; its preview retires with it.
   await show('page', 1100);
   await selectBoard('P-archive');
   await quiet('S5:cleanup-race-board', async () => {
-    await click('page', hook('page', 'summary-handoff'));
+    await progressUi.action('page', 'summary-handoff');
     await wait('page', showsText('page', (await fx.expected('P-archive', 'handoff'))!));
     await fx.bounce('P-archive');
     await wait('page', `!d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-archive"]')&&!d.querySelector('[data-testid="summary-preview"]')&&d.querySelector('${row('P-archive')}')`, 'board cleanup change retires preview');
     results.push({ id: 'S5:board-cleanup-change-retires-preview', pass: true, facts: ['Board: cleanup-only change evicts the selection (existing cleanup contract) and retires its preview; no stale text'] });
     await selectBoard('P-archive');
-    await click('page', hook('page', 'summary-handoff'));
+    await progressUi.action('page', 'summary-handoff');
     await wait('page', showsText('page', (await fx.expected('P-archive', 'handoff'))!), 'board reselect regenerates');
   });
 
   // ------------------------------------------------ Step 5c: archive → Archived plans → copy (archived) → restore
   const mutations0 = (await effects()).mutations;
-  await click('page', '[data-testid="cleanup-archive"] button');
+  await progressUi.action('page', 'cleanup-archive');
   await wait('page', `d.querySelector('[data-testid="cleanup-notice"]')&&!d.querySelector('${row('P-archive')}')`, 'archived via UI');
   await wait('page', `!d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-archive"]')&&!d.querySelector('[data-testid="summary-preview"]')`, 'removed selection retires preview');
   await click('page', '[data-testid="cleanup-archived"] button');
@@ -438,7 +452,7 @@ try {
   const archived = await openAndCopy('page', 'handoff', 'P-archive', 'S5:archived');
   check('S5:archived-title', archived.startsWith('Plan: Completed export example (P\\-archive) (archived)\nLifecycle: Finished'), ['Archived plan readable; regenerated title carries (archived)']);
   await shot('page', 'archived-handoff', '[data-testid="plan-detail"]');
-  await click('page', '[data-testid="cleanup-restore"] button');
+  await progressUi.action('page', 'cleanup-restore');
   await wait('page', `!d.querySelector('${row('P-archive')}')`, 'restored out of archived list');
   await click('page', '[data-testid="cleanup-visible"] button');
   await wait('page', `d.querySelector('${row('P-archive')}')`);
@@ -451,9 +465,9 @@ try {
   // ------------------------------------------------ Step 5d: delete during detail continuation → actual not-found
   await evaluate(`qa.holds.push({tag:'detail',surface:'page',path:'/v1/plan',plan:'P-delete',cursor:true,before:true});true`);
   await click('page', row('P-delete'));
-  await wait('page', `qa.held.some(h=>h.tag==='detail')&&d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-delete"]')&&${has('page', 'summary-handoff')}`, 'delete plan continuation held');
+  await wait('page', `qa.held.some(h=>h.tag==='detail')&&d.querySelector('[data-testid="plan-detail"] [data-testid="plan-P-delete"]')&&${has('page', 'plan-actions')}`, 'delete plan continuation held');
   await quiet('S5:delete', async () => {
-    await click('page', hook('page', 'summary-handoff'));
+    await progressUi.action('page', 'summary-handoff');
     await wait('page', loading('page'));
     await evaluate(`qa.holds.push({tag:'list',surface:'page',path:'/v1/plans',before:true});true`);
     await flightDone();

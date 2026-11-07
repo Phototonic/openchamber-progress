@@ -57,7 +57,7 @@ if(process.argv[2]!=='--worker'){
   git(['init','--initial-branch=main']);
   // Read-only ignore proof occurs in this disposable repository, never the source repo.
   for(const entry of runtimeEntries){const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,1,`runtime entry ignored: ${entry}`);}
-  for(const entry of ['build/artifacts/future.zip','build/service/progress-binding.json','build/service/scratch.js','build/service/.env.example','build/companion/runtime.sqlite','build/setup/scratch.js','node_modules/private','evidence/private','AGENTS.md','.slim/plan','.env.local']){
+  for(const entry of ['build/artifacts/future.zip','build/service/progress-binding.json','build/service/scratch.js','build/service/.env.example','build/companion/runtime.sqlite','build/setup/scratch.js','node_modules/private','evidence/private','.slim/plan','.env.local']){
     const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,0,`local data trackable: ${entry}`);
   }
   const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};

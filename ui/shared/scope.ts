@@ -30,6 +30,18 @@ export function contextScope(plans: PlanView[], sessionId: string | null | undef
 /** Keep the user's choice while it exists; otherwise the most relevant plan. */
 export const pickPlan = (plans: PlanView[], selected: string | null | undefined) => plans.find((p) => p.key === selected) ?? plans[0] ?? null;
 
+/** Presentation only: partition an already scoped project's rows, never its search results.
+ * Archived browsing exposes every row directly. Failure is not completion. Both buckets
+ * preserve caller order and the original source-qualified plan objects/counts.
+ */
+export function partitionBoardPlans<T extends Pick<PlanView, 'lifecycle'>>(plans: readonly T[], archived: boolean): { current: T[]; finished: T[] } {
+  const current: T[] = [], finished: T[] = [];
+  for (const plan of plans) {
+    (!archived && (plan.lifecycle === 'completed' || plan.lifecycle === 'cancelled') ? finished : current).push(plan);
+  }
+  return { current, finished };
+}
+
 export interface Place { projectKey: string; projectLabel: string; worktreeKey: string; worktreeLabel: string }
 
 /**

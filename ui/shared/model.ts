@@ -297,7 +297,16 @@ export type JumpKind = 'working' | 'blocked';
 export type ParticipantFilter = { kind: 'all' } | { kind: 'none' } | { kind: 'session'; sessionId: string };
 export const ALL_PARTICIPANTS: ParticipantFilter = { kind: 'all' };
 /** Frame-local reading state of one plan detail (app.ts owns its lifetime). */
-export interface ReadingState { status: StatusFilter; participant: ParticipantFilter; cursor: Record<JumpKind, string | null> }
+export type ProgressState = ItemStatus | 'ready' | 'waiting';
+export type ProgressOrder = 'attention' | 'plan';
+export interface ReadingState {
+  status: StatusFilter; participant: ParticipantFilter; cursor: Record<JumpKind, string | null>;
+  /** List-only fields; never broaden the Map's existing status predicate. */
+  state?: ProgressState | null;
+  order?: ProgressOrder;
+  doneOpen?: boolean;
+  skippedOpen?: boolean;
+}
 
 const UNFINISHED: ReadonlySet<ItemStatus> = new Set(['pending', 'working', 'blocked']);
 /** Membership predicate for a status filter; null when nothing is filtered. Never consults dependencies, age or lifecycle. */

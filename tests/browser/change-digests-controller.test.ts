@@ -104,6 +104,7 @@ function frame(label: string, svc: Proxy, device: Device, options: { account?: s
   };
   const exports: any = {};
   runInNewContext(APP, {
+    AbortController,
     exports, document, navigator: {}, crypto: globalThis.crypto, queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
     window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
     require: (name: string) => {
@@ -116,7 +117,7 @@ function frame(label: string, svc: Proxy, device: Device, options: { account?: s
       if (name === './path.ts') return path;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
-      if (name === './components.ts') return { el: node, refreshLabels() {} };
+      if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};

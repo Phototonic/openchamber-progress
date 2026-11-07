@@ -1,4 +1,5 @@
-import { mountList, mountSelect, mountTabs, type Tone } from '@openchamber/sdk/ui';
+import { mountList, mountTabs, type Tone } from '@openchamber/sdk/ui';
+import { mountLiveSelect, preserveLiveSelects } from '../shared/live-select.ts';
 import { startView, type ViewContext } from '../shared/app.ts';
 import {
   button, detailsBlock, documentBlock, el, emptyBlock, failureBlock, failureFacts, historyBlock, loadingBlock, partState, planDetail, planHeader, recordedLabel, retryRead, revealCurrentTask, staleBlock, testid, type Env,
@@ -13,19 +14,22 @@ import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { LIFECYCLE_LABEL, summarize, type PlanView, type SearchHitView } from '../shared/model.ts';
 import {
-  ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf, projectsFor, searchFilterOptions, type Filters, type Option,
+  ALL, applyFilters, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, partitionBoardPlans, pickPlan, placeOf, projectsFor, searchFilterOptions, type Filters, type Option,
 } from '../shared/scope.ts';
 import { criteriaKey, queryProblem, searchable, SearchController, type SearchCriteria, type SearchViewState } from '../shared/search.ts';
 import {
-  announceSearch, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, searchForm, statusLine, unavailableNote, type ChipKind, type SearchDraft,
+  announceSearch, boardBar, chipsBlock, NO_DRAFT, resultsBlock, scopeLine, statusLine, unavailableNote, type ChipKind, type SearchDraft,
 } from '../shared/search-view.ts';
 import { officialMainBlock } from '../shared/official.ts';
 import { captureOffNote, initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { ReportingHealth } from '../shared/reporting-health.ts';
 import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
+import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
+import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '../shared/primitives.ts';
 
-type Tab = 'progress' | 'document' | 'history';
+type Tab = 'progress' | 'document' | 'history' | 'map';
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
 type Submitted = { key: string; owner: string; criteria: SearchCriteria };
 /**
@@ -113,16 +117,92 @@ function selectedPlan(vc: ViewContext<Ui>) {
   const v = searching(vc);
   return v ? searchPlan(vc, v) : pickPlan(visiblePlans(vc), vc.ui.selected);
 }
+/** The board's own reading scope (filters or search run; never the host session). */
+function readingScope(vc: ViewContext<Ui>) {
+  const v = searching(vc);
+  return v ? `board-search:${v.run}` : `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}`;
+}
+/** Fourth tab: the dependency map of the selected plan. View as list returns to Progress in this frame. */
+const viewChoice = new DefaultViewChoice();
+const chooseTab = (vc: ViewContext<Ui>, tab: Tab) => {
+  const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
+  if (plan) viewChoice.choose(viewReadingKey(vc, readingScope(vc), plan), tab === 'progress' ? 'list' : tab);
+  vc.setUi({ tab });
+};
+const boardMap = createMapFrame<Ui>('board', (vc) => chooseTab(vc, 'progress'));
+const progressTab = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="detail-tabs"] [role="tab"][data-id="progress"]');
+
+/**
+ * Frame-local board disclosures (docs/ui.md Fullscreen page): never stored, never per plan.
+ * `finished`: open Finished folds by exact project key, for one board reading (account + store/
+ * binding, Current/Archived, board filters, submitted search). `filtersOpen`: the Filters panel,
+ * for one account + store/binding and mode, so choosing a location inside it keeps it open.
+ * `reveal`: the last explicit selection already given a chance to open its fold.
+ */
+const board = { key: '', finished: new Map<string, boolean>(), filtersKey: '', filtersOpen: false, reveal: 0 };
+let boardEpoch = 0;
+/** Where focus goes once after the next paint (the control that acted was replaced). */
+let boardFocus: { to: 'trigger' | 'panel' } | { to: 'fold'; project: string; notice?: string } | null = null;
+function boardFor(vc: ViewContext<Ui>) {
+  const owner = ownerOf(vc);
+  const key = JSON.stringify([owner, vc.ui.archived, vc.ui.filters, vc.ui.search?.key ?? null]);
+  if (key !== board.key) { board.key = key; board.finished = new Map(); }
+  const filtersKey = JSON.stringify([owner, vc.ui.archived]);
+  if (filtersKey !== board.filtersKey) { board.filtersKey = filtersKey; board.filtersOpen = false; }
+  return board;
+}
+function resetBoard() { boardEpoch++; board.key = ''; board.finished = new Map(); board.filtersKey = ''; board.filtersOpen = false; board.reveal = 0; boardFocus = null; }
+// An outside press may focus/activate another control in this same root. Keep
+// that native target connected through click delivery, then dismiss without a
+// focus command. Keyboard focus departure still dismisses immediately.
+let outsideFiltersPress: string | null = null;
+document.addEventListener('pointerdown', (event) => {
+  outsideFiltersPress = null;
+  if (!board.filtersOpen) return;
+  const owner = document.querySelector('.ap-filters-owner');
+  if (owner && event.target instanceof Node && owner.contains(event.target)) return;
+  outsideFiltersPress = board.filtersKey;
+}, true);
+const endFiltersPress = () => {
+  const key = outsideFiltersPress;
+  if (key === null) return;
+  requestAnimationFrame(() => {
+    if (outsideFiltersPress !== key) return;
+    outsideFiltersPress = null;
+    if (board.filtersKey === key && board.filtersOpen) {
+      board.filtersOpen = false; boardFocus = null;
+      // The outside click may just have opened another SDK popup. Close only
+      // Filters, not the root/control that received that click.
+      const owner = document.querySelector<HTMLElement>('[data-live-popup]');
+      if (owner?.dataset.livePopup === key) {
+        const panel = owner.querySelector<HTMLElement>('[data-testid="board-filters"]');
+        if (panel) panel.hidden = true;
+        owner.querySelector('[data-testid="board-filters-trigger"]')?.setAttribute('aria-expanded', 'false');
+      }
+    }
+  });
+};
+document.addEventListener('pointerup', endFiltersPress, true);
+document.addEventListener('pointercancel', endFiltersPress, true);
+window.addEventListener('blur', endFiltersPress);
 
 // Fullscreen board: every plan in the connected store, filtered by project/worktree/session.
 startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
   initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
+  prepareUi: (vc) => {
+    const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
+    const decision = resolveDefaultView(viewChoice, vc, readingScope(vc), plan);
+    const tab = decision.view === 'list' ? 'progress' : decision.view;
+    return vc.ui.tab === tab ? null : { tab };
+  },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
   actionPlan: selectedPlan,
   forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
   beforeUiChange: (previous, next) => {
+    if (JSON.stringify([previous.filters, previous.search?.key]) !== JSON.stringify([next.filters, next.search?.key])) boardEpoch++;
+    if (previous.archived !== next.archived) resetBoard();
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
     if (scope(previous) !== scope(next)) { captures.retire(); reporting.retire(); }
   },
@@ -135,18 +215,19 @@ startView<Ui>({
   },
   wantDetails: (vc) => {
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
-    const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || pendingTask?.key === p.key) ? [p] : [];
+    const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
   },
   // Task reading follows the board's own scope and selection (never the host session); the
-  // Progress/Document/History tabs of one selection share it. A search run is its own scope.
+  // Progress/Document/History/Map tabs of one selection share it. A search run is its own scope.
   reading: (vc) => {
     const p = selectedPlan(vc); if (!p) return null;
-    const v = searching(vc);
-    return { plan: p.key, scope: v ? `board-search:${v.run}` : `board:${JSON.stringify([vc.ui.archived, vc.ui.filters])}` };
+    return { plan: p.key, scope: readingScope(vc) };
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
-  retire: (reason) => { captures.retire(); reporting.retire(); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
+  get refreshed() { return boardMap.refreshed; },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
@@ -158,53 +239,82 @@ startView<Ui>({
     const old = document.getElementById('ap-search-q') as HTMLInputElement | null;
     caret = old && document.activeElement === old ? [old.selectionStart, old.selectionEnd] : null;
     if (!ui.search && search.active) search.clear();
+    // The map belongs to the selected plan's reading; graph work runs only while Map is the shown tab.
+    const mapPlan = read ? selectedPlan(vc) : null;
+    boardMap.sync(vc, mapPlan, readingScope(vc), ui.tab === 'map' && !!mapPlan);
     root.append(el('h1', 'ap-sr', 'Agent progress'));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
     const mode = (archived: boolean) => { endSearch(); vc.setUi({ archived, selected: null, filters: NO_FILTERS, reveal: 0, search: null, draft: NO_DRAFT, problem: null }); };
     button(modes, 'cleanup-visible', 'Current plans', () => mode(false), ui.archived ? 'ghost' : 'outline');
     button(modes, 'cleanup-archived', 'Archived plans', () => mode(true), ui.archived ? 'outline' : 'ghost', vc.health?.ready === true && !vc.health.planCleanup);
     modes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(i === (ui.archived ? 1 : 0))));
-    root.append(modes);
-    const notice = cleanupNotice(vc); if (notice) root.append(notice);
-    if (vc.health?.ready && !vc.health.planCleanup) root.append(testid(el('p', 'ap-note', 'Plan cleanup is unavailable with this service version.'), 'cleanup-unavailable'));
+    const notice = cleanupNotice(vc);
+    const cleanupOff = vc.health?.ready && !vc.health.planCleanup ? testid(el('p', 'ap-note', 'Plan cleanup is unavailable with this service version.'), 'cleanup-unavailable') : null;
     // The official-main notice does not depend on companion setup or the store.
     const official = officialMainBlock(vc);
     if (!read) {
+      root.append(modes);
+      if (notice) root.append(notice);
+      if (cleanupOff) root.append(cleanupOff);
       if (failure) root.append(failureBlock(failure, retryRead(vc)));
       else if (vc.health && !vc.health.ready) { if (official) root.append(official); root.append(setupBlock(vc)); }
       else if (!(ui.archived && vc.health?.ready && !vc.health.planCleanup)) root.append(loadingBlock());
       footer(root, vc, null);
       return;
     }
+    const capable = vc.health?.planTaskSearch === 1;
+    const v = capable ? searching(vc) : null;
+    if (v) search.membership(env.live);
+    const empty = !v && !read.plans.length && ui.filters.session === ALL;
+    // Location selects live in Filters: browsing applies them on choice, a search reruns with them.
+    let locations: HTMLElement | null = null;
+    const filters = normalizeFilters(read.plans, env.live, ui.filters, env.boundSource);
+    if (v) {
+      const c = v.criteria;
+      const f = { project: c.project, worktree: c.worktree, session: c.session };
+      // Choices: live locations plus those this frame has seen; never a full-library census.
+      const options = searchFilterOptions([...read.plans, ...v.page.hits.map((h) => h.plan)], env.live, f, c.labels, env.boundSource);
+      locations = filterBar(f, options, (patch) => { const next = { ...f, ...patch }; runSearch(vc, { ...c, ...next, labels: labelsFor(vc, next, c.labels) }); });
+    } else if (!empty) {
+      const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: 0 });
+      locations = filterBar(filters, filterOptions(read.plans, env.live, filters, read.plans, env.boundSource), setFilter);
+    }
+    // The bar first (Current / Archived, search, Filters); concrete states right below it.
+    root.append(boardTop(vc, v, modes, locations, capable));
+    if (notice) root.append(notice);
+    if (cleanupOff) root.append(cleanupOff);
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
     if (official) root.append(official);
     if (!read.captureEnabled) {
       const note = captureOffNote(vc.setup);
-      const p = testid(el('p', 'ap-doc-warn', note.text), 'capture-off');
+      const p = testid(warningLine(note.text), 'capture-off');
       p.dataset.reason = note.reason;
       root.append(p);
     }
-    const capable = vc.health?.planTaskSearch === 1;
-    const v = capable ? searching(vc) : null;
-    if (v) search.membership(env.live);
-    root.append(capable ? searchArea(vc, v) : unavailableNote());
-    if (v) { searchBoard(root, vc, v); footer(root, vc, selectedPlan(vc)); return; }
-    if (!read.plans.length && ui.filters.session === ALL) {
+    if (v) { root.append(searchStrip(v)); searchBoard(root, vc, v); footer(root, vc, selectedPlan(vc)); return; }
+    if (empty) {
       root.append(emptyBlock('empty-state', ui.archived ? 'No archived plans' : 'No plans recorded here', ui.archived ? 'Finished plans you archive will appear here. Their history stays available.' : 'New reports appear here. Finished work may be in Archived plans.'));
       footer(root, vc, null);
       return;
     }
-    const filters = normalizeFilters(read.plans, env.live, ui.filters, env.boundSource);
-    const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: 0 });
-    const options = filterOptions(read.plans, env.live, filters, read.plans, env.boundSource);
-    root.append(filterBar(filters, options, setFilter));
+    if (filters.project !== ALL || filters.worktree !== ALL || filters.session !== ALL) {
+      const row = testid(el('div', 'ap-search-chips'), 'search-chips');
+      button(row, 'search-clear', 'Clear search and filters', clearAll, 'ghost');
+      root.append(row);
+    }
 
     const visible = applyFilters(read.plans, env.live, filters, env.boundSource);
     const plan = pickPlan(visible, ui.selected);
+    const b = boardFor(vc);
+    // An explicit selection of a plan inside a closed Finished fold opens that fold once (never on polls).
+    if (ui.reveal && ui.reveal !== b.reveal) {
+      b.reveal = ui.reveal;
+      if (plan && !ui.archived && (plan.lifecycle === 'completed' || plan.lifecycle === 'cancelled')) b.finished.set(placeOf(plan, env.live, env.boundSource).projectKey, true);
+    }
     const board = el('div', 'ap-board');
-    board.append(planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: ++reveals })));
+    board.append(planList(visible, plan, env, (key) => vc.setUi({ selected: key, reveal: ++reveals }), ui.archived, b));
     const detail = testid(el('section', 'ap-detail'), 'plan-detail');
     detail.setAttribute('aria-label', 'Plan detail');
     if (plan) detailPane(detail, vc, plan, filters.session);
@@ -233,12 +343,41 @@ startView<Ui>({
     const input = root.querySelector<HTMLInputElement>('#ap-search-q');
     if (caret && input && document.activeElement === input) input.setSelectionRange(caret[0], caret[1]);
     currentTask(root, vc);
+    boardMap.afterPaint(root, vc, vc.read ? selectedPlan(vc) : null, progressTab);
+    // Once: the Filters trigger or heading after it closed or opened, or a fold's own toggle (its
+    // shared hook would otherwise restore to the first project's).
+    const f = boardFocus;
+    boardFocus = null;
+    if (f) {
+      const target = f.to === 'trigger' ? root.querySelector<HTMLElement>('[data-testid="board-filters-trigger"]')
+        : f.to === 'panel' ? root.querySelector<HTMLElement>('#ap-board-filters-h')
+        : [...root.querySelectorAll<HTMLElement>('[data-testid="board-finished-toggle"]')].find((n) => n.dataset.project === (f.to === 'fold' ? f.project : '')) ?? null;
+      target?.focus({ preventScroll: true });
+      if (f.to === 'fold' && f.notice && target && document.activeElement === target) say(f.notice);
+    }
     if (!vc.ui.reveal || vc.ui.reveal === revealed) return;
     revealed = vc.ui.reveal;
     if (window.matchMedia('(min-width: 820px)').matches) return;
     root.querySelector('[data-testid="plan-detail"]')?.scrollIntoView({ block: 'start' });
   },
+  preserveFocus: (previous, next) => { preserveMapFocus(previous, next); preserveLiveSelects(previous, next); focusRegroupedPlan(previous, next); },
 });
+
+/** A poll may move a pointer-focused active row into a closed Finished fold.
+ * Preserve the user's fold choice; hand focus to its toggle once instead of
+ * asking the generic restorer to focus the hidden replacement row.
+ */
+function focusRegroupedPlan(previous: HTMLElement, next: HTMLElement) {
+  const active = previous.ownerDocument.activeElement as HTMLElement | null;
+  if (!document.hasFocus() || !active?.matches('[data-testid^="plan-row-"][data-source][data-lifecycle="active"]') || !previous.contains(active) || active.closest('[hidden]')) return;
+  const before = active.closest<HTMLElement>('[data-testid="plan-list"]');
+  const list = next.querySelector<HTMLElement>('[data-testid="plan-list"]');
+  if (!before || !list || before.dataset.boardReading !== list.dataset.boardReading) return;
+  const row = [...list.querySelectorAll<HTMLElement>('[data-testid^="plan-row-"][data-source]')].find(n => n.dataset.testid === active.dataset.testid && n.dataset.source === active.dataset.source);
+  const fold = row?.closest<HTMLElement>('[data-testid="board-finished"][hidden]');
+  if (!fold?.dataset.project || (row?.dataset.lifecycle !== 'completed' && row?.dataset.lifecycle !== 'cancelled')) return;
+  boardFocus = { to: 'fold', project: fold.dataset.project, notice: 'The plan moved to Finished, so focus moved to this project’s Finished toggle.' };
+}
 
 const trusted = (p: PlanView, env: Env) => env.boundSource !== null && p.sourceId === env.boundSource;
 
@@ -315,37 +454,65 @@ function clearAll() {
   say(`Search and filters cleared. Showing all ${vc.ui.archived ? 'archived' : 'current'} plans.`);
 }
 
-/** Form, explicit scope and (while searching) chips and the last outcome. */
-function searchArea(vc: ViewContext<Ui>, v: SearchViewState | null) {
-  const area = testid(el('section', 'ap-search-area'), 'search');
-  area.setAttribute('aria-label', 'Search');
+/**
+ * The board bar: Current / Archived, the search field and Filters (docs/ui.md Board search). A
+ * service without search keeps Current / Archived and Filters with the location selects only.
+ */
+function boardTop(vc: ViewContext<Ui>, v: SearchViewState | null, modes: HTMLElement, locations: HTMLElement | null, capable: boolean) {
+  const b = boardFor(vc);
+  const filtersKey = b.filtersKey;
+  const epoch = boardEpoch;
   const submitted = v?.criteria ?? null;
-  area.append(searchForm({
-    text: () => draftText(vc), setText: (q) => setText(vc, q),
-    draft: vc.ui.draft, setDraft: (patch) => vc.updateUi((u) => ({ draft: { ...u.draft, ...patch } })),
-    submit: submitDraft, submitted, problem: vc.ui.problem, sources: vc.read?.sources ?? [], archived: vc.ui.archived,
+  const draft = vc.ui.draft;
+  const f = submitted ?? vc.ui.filters;
+  const active = (capable ? [draft.lifecycle, draft.status, draft.source].filter((x) => x !== ALL).length : 0) + [f.project, f.worktree, f.session].filter((x) => x !== ALL).length;
+  // Every callback is bound to the Filters identity it was painted under.
+  const setOpen = (open: boolean, focus: 'trigger' | 'panel' | null) => {
+    if (!area.isConnected || board.filtersKey !== filtersKey || boardEpoch !== epoch) return;
+    if (!open && focus === null && outsideFiltersPress === filtersKey) return;
+    if (board.filtersOpen === open && focus === null) return;
+    board.filtersOpen = open; boardFocus = focus ? { to: focus } : null; frame?.updateUi(() => ({}));
+  };
+  const area = testid(el('section', 'ap-search-area'), capable ? 'search' : 'board-bar');
+  area.setAttribute('aria-label', capable ? 'Search' : 'Filter plans');
+  area.append(boardBar({
+    current: () => area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch,
+    modes, locations, active, open: b.filtersOpen, setOpen,
+    scope: capable ? scopeLine(submitted, vc.ui.archived) : null,
+    search: capable ? {
+      text: () => draftText(vc), setText: (q) => setText(vc, q),
+      draft, setDraft: (patch) => { if (area.isConnected && board.filtersKey === filtersKey && boardEpoch === epoch) vc.updateUi((u) => ({ draft: { ...u.draft, ...patch } })); },
+      // Search from inside Filters closes it and returns focus to its trigger; Enter in the field keeps Filters as it is.
+      submit: () => {
+        if (!area.isConnected || board.filtersKey !== filtersKey || boardEpoch !== epoch) return;
+        const fromPanel = !!document.activeElement?.closest('#ap-board-filters');
+        if (fromPanel) { board.filtersOpen = false; boardFocus = { to: 'trigger' }; }
+        submitDraft();
+        if (fromPanel) frame?.updateUi(() => ({}));
+      },
+      submitted, problem: vc.ui.problem, sources: vc.read?.sources ?? [], archived: vc.ui.archived,
+    } : null,
   }));
-  area.append(scopeLine(submitted, vc.ui.archived));
-  if (v) {
-    const unavailable = new Set<ChipKind>();
-    for (const part of v.blockedParts) unavailable.add(part);
-    if (v.criteria.source !== ALL && !vc.read?.sources.some((s) => s.id === v.criteria.source)) unavailable.add('source');
-    area.append(chipsBlock(v.criteria, unavailable, { remove: removeChip, clearAll }), statusLine(v));
-  } else if (vc.ui.filters.project !== ALL || vc.ui.filters.worktree !== ALL || vc.ui.filters.session !== ALL) {
-    const row = testid(el('div', 'ap-search-chips'), 'search-chips');
-    button(row, 'search-clear', 'Clear search and filters', clearAll, 'ghost');
-    area.append(row);
-  }
+  const popup = area.querySelector<HTMLElement>('[data-live-popup]');
+  if (popup) popup.dataset.livePopup = filtersKey;
+  if (!capable) area.append(unavailableNote());
   return area;
+}
+
+/** While searching: the removable constraint chips and the last explicit outcome, outside Filters. */
+function searchStrip(v: SearchViewState) {
+  const vc = frame!;
+  const strip = el('div', 'ap-search-strip');
+  const unavailable = new Set<ChipKind>();
+  for (const part of v.blockedParts) unavailable.add(part);
+  if (v.criteria.source !== ALL && !vc.read?.sources.some((s) => s.id === v.criteria.source)) unavailable.add('source');
+  strip.append(chipsBlock(v.criteria, unavailable, { remove: removeChip, clearAll }), statusLine(v));
+  return strip;
 }
 
 function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState) {
   const { env, ui } = vc;
   const c = v.criteria;
-  const f = { project: c.project, worktree: c.worktree, session: c.session };
-  // Choices: live locations plus those this frame has seen; never a full-library census.
-  const options = searchFilterOptions([...(vc.read?.plans ?? []), ...v.page.hits.map((h) => h.plan)], env.live, f, c.labels, env.boundSource);
-  root.append(filterBar(f, options, (patch) => { const next = { ...f, ...patch }; runSearch(vc, { ...c, ...next, labels: labelsFor(vc, next, c.labels) }); }));
   const board = el('div', 'ap-board');
   board.append(resultsBlock(v, env, {
     selected: openedHit && openedHit.key === ui.selected ? openedHit : null,
@@ -378,6 +545,12 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
   if (previous && previous !== hit.plan.key) opened = [...opened.filter((k) => k !== previous && k !== hit.plan.key), previous].slice(-RECENT_OPENED);
   openedHit = { key: hit.plan.key, item: task?.id ?? null };
   pendingTask = task ? { key: hit.plan.key, item: task.id, title: task.title, stage: 'search', run: v.run, message: `Search result: ${task.title}` } : null;
+  const request = search.selectedPlan();
+  if (request) {
+    const key = viewReadingKey(vc, readingScope(vc), request);
+    viewChoice.identify(key);
+    if (task) viewChoice.choose(key, 'list');
+  }
   vc.setUi({ selected: hit.plan.key, tab: 'progress', reveal: ++reveals });
 }
 
@@ -385,10 +558,41 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
 function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, compareSession: string | null) {
   const { env, ui } = vc;
   const tabs = testid(el('div', 'ap-detail-tabs'), 'detail-tabs');
-  mountTabs(tabs, { items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }], activeId: ui.tab, onChange: (id) => { captures.retire(); vc.setUi({ tab: id as Tab }); } });
+  mountTabs(tabs, {
+    items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }, { id: 'map', label: 'Map' }],
+    activeId: ui.tab,
+    // D8 wiring (S2-H): the active tab comes from the frame's default-view decision (Progress or
+    // Map), and every actual tab activation records the explicit choice, including re-activating
+    // the provisional Progress tab (a changed-value callback alone does not see that).
+    onChange: (id) => { captures.retire(); if (id === 'map') boardMap.enter(); else if (ui.tab === 'map') boardMap.leave(); chooseTab(vc, id as Tab); },
+  });
+  // SDK changed-value callbacks omit reactivation of the provisional Progress tab.
+  // Record that real activation too, before any late complete detail can settle D8.
+  const reselect = (event: Event) => {
+    if (event instanceof KeyboardEvent && event.key !== 'Enter' && event.key !== ' ') return;
+    const tab = (event.target as Element).closest<HTMLElement>('[role="tab"][data-id]');
+    if (tab?.dataset.id === ui.tab) chooseTab(vc, ui.tab);
+  };
+  tabs.addEventListener('click', reselect, true);
+  tabs.addEventListener('keydown', reselect, true);
+  // The Map tab owns a pending List → Map task handoff while focus stays on it (like the rail's switch).
+  tabs.querySelector('[role="tab"][data-id="map"]')?.setAttribute('data-map-focus-owner', '');
   detail.append(tabs);
   const docHooks = { get: () => vc.document(plan), request: () => vc.requestDocument(plan) };
-  if (ui.tab === 'document') {
+  // One run visit for this plan's verified coordinator, shared by the separate roster and map cards.
+  const runRequest = vc.read && (ui.tab === 'progress' || ui.tab === 'map') ? runClaim(vc.read, plan.ownerSessionId, plan) : null;
+  const runs = runRequest && trusted(plan, env) ? vc.runs(runRequest) : null;
+  const census = trusted(plan, env) ? censusFor(plan.ownerSessionId, plan.directory, vc.live) : null;
+  const roster = () => (census && vc.read ? subagentsBlock({
+    surface: 'page', plan, census, facts: planFacts(plan, vc.detail(plan), env.boundSource),
+    runs, verified: true, currentSession: null, liveSeq: vc.live.seq, env,
+  }) : null);
+  if (ui.tab === 'map') {
+    const host = testid(el('div', 'ap-map-host'), 'map-host');
+    detail.append(host);
+    boardMap.paint(host, vc, { plan, scope: readingScope(vc), runs: runRequest ? { request: runRequest.request, panel: runs } : null, census: censusFor(plan.ownerSessionId, plan.directory, vc.live) });
+    const r = roster(); if (r) detail.append(r);
+  } else if (ui.tab === 'document') {
     const article = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
     article.dataset.source = plan.sourceId;
     article.append(planHeader(plan, env), documentBlock(plan, env, 'inline', docHooks));
@@ -409,13 +613,14 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     article.append(historyBlock(plan, vc.history(plan), env));
     detail.append(article);
   } else {
-    detail.append(planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading }));
+    // D8 wiring (S2-H): pass `pending: true` while this reading's default view is undecided, so
+    // only the loading placeholder paints (no complete rows) until Progress or Map is settled.
+    const article = planDetail(plan, env, { detail: vc.detail(plan), summary: vc.summary(plan), retryDetail: vc.retry, document: docHooks }, { document: 'omit', compareSession, reading: vc.reading, pending: viewChoice.current.pending });
+    // An explicit task focus/reveal or pointer selection here is what the Map tab opens on.
+    boardMap.listTargets(article);
+    detail.append(article);
     // Rooted in this plan's verified coordinator session; a plan from another setup borrows nothing.
-    const census = trusted(plan, env) && vc.read ? subagentsBlock({
-      surface: 'page', plan, census: censusFor(plan.ownerSessionId, plan.directory, vc.live), facts: planFacts(plan, vc.detail(plan), env.boundSource),
-      runs: vc.runs(runClaim(vc.read, plan.ownerSessionId, plan)), verified: true, currentSession: null, liveSeq: vc.live.seq, env,
-    }) : null;
-    if (census) detail.append(census);
+    const r = roster(); if (r) detail.append(r);
   }
   detail.append(cleanupBlock(vc, plan));
 }
@@ -465,7 +670,7 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
       return;
     }
     pendingTask = { ...intent, stage: 'reveal' };
-    vc.setUi({ tab: 'progress' });
+    chooseTab(vc, 'progress');
     return;
   }
   if (vc.ui.tab !== 'progress') { pendingTask = null; return; }
@@ -497,11 +702,79 @@ function footer(root: HTMLElement, vc: ViewContext<Ui>, plan: PlanView | null) {
 
 function select(parent: Element, id: string, label: string, value: string, options: Option[], onChange: (v: string) => void, searchable = false) {
   const holder = testid(el('div'), id);
-  mountSelect(holder, { label, value, options, onChange, searchable: searchable && options.length > 8 });
+  const epoch = boardEpoch;
+  mountLiveSelect(holder, { label, value, options, onChange, searchable: searchable && options.length > 8 }, () => boardEpoch === epoch);
   parent.append(holder);
 }
 
-function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSelect: (key: string) => void) {
+/** A plan's status at a glance: one mark shape per lifecycle (and reported work), named. */
+function planMark(p: PlanView) {
+  const kind: MarkStatus = p.lifecycle === 'completed' ? 'done' : p.lifecycle === 'cancelled' ? 'skipped' : p.lifecycle === 'failed' ? 'blocked' : p.working.length ? 'working' : 'pending';
+  const label = p.lifecycle === 'active' ? (p.working.length ? 'In progress' : 'Active') : LIFECYCLE_LABEL[p.lifecycle];
+  const mark = statusMark(kind, { label, className: 'ap-plan-mark' });
+  mark.dataset.plan = p.lifecycle;
+  return mark;
+}
+
+/**
+ * One project's rows in the kit listbox (keyboard, active descendant, selection), each with its
+ * mark, title, whole-plan done/total and a decorative mini bar. Location, owner session and live
+ * state are part of the row's name; a closed lifecycle, another or unverified setup stay visible
+ * as badges.
+ */
+function planRows(plans: PlanView[], selected: PlanView | null, env: Env, onSelect: (key: string) => void, label: string) {
+  const holder = el('div', 'ap-plan-rows');
+  mountList(holder, {
+    ariaLabel: label,
+    // Partitions retain this scoped read's objects. A matching key from another
+    // list/read must not seed an SDK active option that this list cannot own.
+    selectedId: selected && plans.includes(selected) ? selected.key : null,
+    onSelect,
+    items: plans.map((p) => {
+      const s = summarize(p);
+      const other = env.boundSource === null || p.sourceId !== env.boundSource;
+      const badge: { label: string; tone: Tone } | undefined = p.lifecycle === 'failed' ? { label: LIFECYCLE_LABEL.failed, tone: 'error' }
+        : p.lifecycle === 'cancelled' ? { label: LIFECYCLE_LABEL.cancelled, tone: 'neutral' }
+        : env.unverifiedSources.has(p.sourceId) ? { label: 'Unverified setup', tone: 'warning' }
+        : other ? { label: 'Other setup', tone: 'neutral' } : undefined;
+      return { id: p.key, title: p.title, meta: s.total ? `${s.done}/${s.total}` : '—', badge };
+    }),
+  });
+  const rows = holder.querySelectorAll<HTMLElement>('[role="option"]');
+  plans.forEach((p, i) => {
+    const row = rows[i];
+    if (!row) return;
+    row.dataset.testid = `plan-row-${p.id}`;
+    row.dataset.source = p.sourceId;
+    row.dataset.lifecycle = p.lifecycle;
+    row.prepend(planMark(p));
+    const main = row.querySelector<HTMLElement>('.oc-sdk-row-main');
+    if (!main) return;
+    const s = summarize(p);
+    const bar = segmentedBar(s, '');
+    if (bar) {
+      // Decorative: the row's done/total says it; no second progress-bar hook per row.
+      delete bar.dataset.testid;
+      bar.removeAttribute('role');
+      bar.removeAttribute('aria-label');
+      bar.setAttribute('aria-hidden', 'true');
+      bar.classList.add('ap-mini-bar');
+      main.append(bar);
+    }
+    const place = placeOf(p, env.live, env.boundSource);
+    const trustedPlan = trusted(p, env);
+    const live = trustedPlan ? liveLabel(coverageFor(p.ownerSessionId, p.directory, env.live)).label : 'from another OpenCode setup';
+    main.append(el('span', 'ap-sr', `, ${place.worktreeLabel}, ${recordedLabel(p, env)(p.ownerSessionId)}, ${live}`));
+  });
+  return holder;
+}
+
+/**
+ * Plans by project. In Current plans each project's Finished and Cancelled plans fold into one
+ * "Finished · N" disclosure (D7; failed plans stay prominent); Archived plans shows every row.
+ * Folds belong to this board reading; collapsing never deselects, archives or filters.
+ */
+function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSelect: (key: string) => void, archived: boolean, b: typeof board) {
   const wrap = testid(el('nav', 'ap-plan-list'), 'plan-list');
   wrap.setAttribute('aria-label', 'Plans');
   wrap.dataset.scrollKey = 'plan-list';
@@ -516,31 +789,41 @@ function planList(plans: PlanView[], selected: PlanView | null, env: Env, onSele
     g.plans.push(p);
     groups.set(place.projectKey, g);
   }
+  const boardKey = b.key;
+  wrap.dataset.boardReading = boardKey;
+  let index = 0;
   for (const [key, g] of groups) {
-    const section = testid(el('section', 'ap-section'), `project-${key}`);
-    section.append(el('h2', 'ap-h', g.label));
-    const holder = el('div');
-    mountList(holder, {
-      ariaLabel: `Plans in ${g.label}`,
-      selectedId: selected?.key ?? null,
-      onSelect,
-      items: g.plans.map((p) => {
-        const s = summarize(p);
-        const place = placeOf(p, env.live, env.boundSource);
-        const cov = coverageFor(p.ownerSessionId, p.directory, env.live);
-        const other = env.boundSource === null || p.sourceId !== env.boundSource;
-        const badge: { label: string; tone: Tone } = p.lifecycle !== 'active'
-          ? { label: LIFECYCLE_LABEL[p.lifecycle], tone: p.lifecycle === 'completed' ? 'success' : p.lifecycle === 'failed' ? 'error' : 'neutral' }
-          : env.unverifiedSources.has(p.sourceId) ? { label: 'Unverified setup', tone: 'warning' }
-          : other ? { label: 'Other setup', tone: 'neutral' } : { label: liveLabel(cov).label, tone: liveLabel(cov).tone };
-        return { id: p.key, title: p.title, subtitle: `${place.worktreeLabel} · ${recordedLabel(p, env)(p.ownerSessionId)}`, meta: s.total ? `${s.done}/${s.total}` : '—', badge };
-      }),
-    });
-    g.plans.forEach((p, i) => {
-      const row = holder.querySelectorAll<HTMLElement>('[role="option"]')[i];
-      if (row) { row.dataset.testid = `plan-row-${p.id}`; row.dataset.source = p.sourceId; }
-    });
-    section.append(holder);
+    const n = index++;
+    const section = testid(el('section', 'ap-section ap-board-project'), 'board-project');
+    section.dataset.project = key;
+    section.append(el('h3', 'ap-h', g.label));
+    const { current, finished } = partitionBoardPlans(g.plans, archived);
+    if (current.length) section.append(planRows(current, selected, env, onSelect, `Plans in ${g.label}`));
+    if (finished.length) {
+      const open = b.finished.get(key) ?? false;
+      const id = `ap-finished-${n}`;
+      const toggle = testid(el('button', 'ap-fold-toggle'), 'board-finished-toggle');
+      toggle.type = 'button';
+      toggle.dataset.project = key;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-controls', id);
+      toggle.append(icon('chevron-down'), el('span', '', `Finished · ${finished.length}`));
+      const note = el('span', 'ap-sr', `${plural(finished.length, 'finished or cancelled plan', 'finished or cancelled plans')} loaded here. Search finds them too.`);
+      note.id = `${id}-note`;
+      toggle.setAttribute('aria-describedby', note.id);
+      toggle.addEventListener('click', () => {
+        if (board.key !== boardKey) return;
+        board.finished.set(key, !open);
+        boardFocus = { to: 'fold', project: key };
+        frame?.updateUi(() => ({}));
+      });
+      const fold = testid(el('div', 'ap-board-fold'), 'board-finished');
+      fold.id = id;
+      fold.dataset.project = key;
+      fold.hidden = !open;
+      fold.append(planRows(finished, selected, env, onSelect, `Finished and cancelled plans in ${g.label}`));
+      section.append(toggle, note, fold);
+    }
     wrap.append(section);
   }
   if (!plans.length) wrap.append(testid(el('p', 'ap-note', 'No plans match.'), 'list-empty'));

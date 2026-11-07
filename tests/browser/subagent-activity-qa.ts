@@ -3,11 +3,14 @@
 // rendered-UI evidence, not native-host proof, screen-reader certification or installation.
 // node --experimental-strip-types tests/browser/subagent-activity-qa.ts [CDP_PORT] [--fixture 47873] [--out DIR] [--only smoke]
 // Without CDP_PORT it launches and later stops its own isolated headless Chromium (never downloads one).
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
+import { progressInput } from './progress-qa.ts';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { once } from 'node:events';
 
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -36,9 +39,13 @@ const results: { id: string; pass: boolean; facts?: unknown }[] = [];
 const remote: string[] = [];
 const problems: string[] = [];
 let ws: WebSocket | null = null;
-const cleanup = () => {
+const cleanup = async () => {
   try { ws?.close(); } catch { /* closed */ }
-  if (chrome?.pid) { try { process.kill(-chrome.pid, 'SIGTERM'); } catch { /* gone */ } }
+  if (chrome?.pid && chrome.exitCode === null && chrome.signalCode === null) {
+    const exited = once(chrome, 'exit');
+    try { process.kill(-chrome.pid, 'SIGTERM'); } catch { /* already exiting */ }
+    await exited;
+  }
   if (profile) rmSync(profile, { recursive: true, force: true });
 };
 
@@ -80,7 +87,7 @@ try {
     for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: k, code: k === ' ' ? 'Space' : k, windowsVirtualKeyCode: KEYS[k] ?? 0, modifiers: shift ? 8 : 0, ...(type === 'keyDown' && k === 'Enter' ? { text: '\r' } : type === 'keyDown' && k === ' ' ? { text: ' ' } : {}) });
   };
   const click = async (s: string, selector: string) => {
-    const xy = await evaluate<[number, number]>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${JSON.stringify(selector)});if(!n)throw Error(${JSON.stringify(`Missing ${selector}`)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(12,a.width/2),a.y+b.y+a.height/2]})()`);
+    const xy = await evaluate<[number, number]>(`(()=>{const f=frame('${s}'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error(${javascriptLiteral(`Missing ${selector}`)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(12,a.width/2),a.y+b.y+a.height/2]})()`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: xy[0], y: xy[1], button: 'left', clickCount: 1 });
   };
   const viewport = async (width: number, height = 1000) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); };
@@ -106,23 +113,20 @@ try {
     results.push({ id: `${name}: captured`, pass: true, facts: { frameHeight: fit.height, clip: rect.map(Math.round) } });
     writeFileSync(join(out, `${name}.png`), Buffer.from(img.data, 'base64'));
   };
-  const text = (s: string, sel: string) => guest<string | null>(s, `return d.querySelector(${JSON.stringify(sel)})?.textContent??null`);
+  const text = (s: string, sel: string) => guest<string | null>(s, `return d.querySelector(${javascriptLiteral(sel)})?.textContent??null`);
   const sec = '[data-testid="subagent-activity"]';
+  const progressUi = progressInput({ guest, wait, click });
   const row = (session: string) => `${sec} [data-session="${session}"]`;
   const fact = (session: string, f: string) => `${row(session)} [data-fact="${f}"]`;
-  const has = (s: string, sel: string) => guest<boolean>(s, `return !!d.querySelector(${JSON.stringify(sel)})`);
+  const has = (s: string, sel: string) => guest<boolean>(s, `return !!d.querySelector(${javascriptLiteral(sel)})`);
   const sectionText = (s: string) => guest<string>(s, `return (d.querySelector('${sec}')?.textContent??'').replace(/\\s+/g,' ')`);
-  const runRequests = (root: string) => evaluate<number>(`qa.requests.filter(q=>q.path.startsWith('/v1/subagent-runs')&&(q.query?.root===${JSON.stringify(root)}||q.method==='POST')).length`);
+  const runRequests = (root: string) => evaluate<number>(`qa.requests.filter(q=>q.path.startsWith('/v1/subagent-runs')&&(q.query?.root===${javascriptLiteral(root)}||q.method==='POST')).length`);
   const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 
-  /** Selects the page row of that source; the list can repaint under the pointer, so verify and retry. */
+  /** One activation, then the selected reading's accepted complete detail. */
   const selectPlan = async (source: string, id = 'plan-alpha') => {
-    for (let i = 0; i < 4; i++) {
-      await click('page', `[data-testid="plan-row-${id}"][data-source="${source}"]`);
-      const ok = await evaluate(`(async()=>{for(let i=0;i<40;i++){const a=frame('page').contentDocument.querySelector('[data-testid="plan-detail"] article');if(a?.dataset.source==='${source}'&&a.dataset.testid==='plan-${id}')return true;await new Promise(r=>setTimeout(r,25))}return false})()`);
-      if (ok) return;
-    }
-    throw new Error(`Could not select the ${source} plan`);
+    await click('page', `[data-testid="plan-row-${id}"][data-source="${source}"]`);
+    await wait('page', `d.querySelector('article[data-testid="plan-${id}"][data-source="${source}"] .ap-tasks[data-complete]')`, 'selected complete reading');
   };
   /** Clutter the owner reported must never come back. */
   const noClutter = async (s: string, label: string) => {
@@ -140,7 +144,8 @@ try {
   // Run facts and host activity arrive separately; wait for both (N1's host-reported wait).
   await wait('panel', `d.querySelector('${fact('C2', 'accepted')}') && d.querySelector('${row('N1')}')?.dataset.ran==='waiting' && d.querySelector('[data-testid="subagent-count"]')`, 'rail roster');
   const featured = await guest<string[]>('panel', `return [...d.querySelectorAll('${sec} > .ap-obs-list > li')].map(n=>n.dataset.session+':'+n.dataset.ran)`);
-  check('rail features waiting, running and task-linked children only (E1 idle without tasks is not listed)', JSON.stringify(featured) === JSON.stringify(['N1:waiting', 'C1:active', 'C2:finished']), featured);
+  check('rail features only running children; waiting and task-linked records remain reachable', JSON.stringify(featured) === JSON.stringify(['C1:active']) && await guest('panel', `return !!d.querySelector('[data-testid="observed-more"] ${row('N1')},[data-testid="observed-more"] [data-session="N1"]')&&!!d.querySelector('[data-testid="observed-more"] [data-session="C2"]')`), featured);
+  await progressUi.records('panel');
   check('summary parts', JSON.stringify(await guest('panel', `return [...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.textContent)`)) === JSON.stringify(['1 waiting on you', '1 running', '4 finished', '1 failed', '1 interrupted', '1 unknown']));
   const c1 = (await text('panel', fact('C1', 'ran')))!.replace(/\s+/g, ' ');
   check('C1 Ran: Running with its real host start, not a receipt', /^RanRunning · started 4 minutes ago$/.test(c1), c1);
@@ -150,12 +155,24 @@ try {
   check('literal markup in description and claim', await guest('panel', `const r=d.querySelector('${row('C2')}');return !r.querySelector('b,i')&&r.querySelector('.ap-obs-title').textContent==='<b>Review</b> the release note'`) === true);
   check('no Claimed or Accepted line without those facts (C1 has no claim)', !(await has('panel', fact('C1', 'claimed'))) && (await text('panel', fact('C1', 'accepted'))) === 'Accepted2 tasks reported: 1 done, 1 in progress');
   await noClutter('panel', 'rail');
-  check('complete history: no coverage or cap warning at all', !(await has('panel', '[data-testid="subagent-about"]')));
+  check('complete history: no coverage or cap warning at all', !(await has('panel', '[data-testid="subagent-coverage"]')) && await has('panel', '[data-testid="info-trigger"][aria-label="About sub-agent records"]'));
+  await click('panel', '[data-testid="info-trigger"][aria-label="About sub-agent records"]');
+  check('record meanings reachable by accessible info', await guest('panel', `const b=d.querySelector('[aria-label="About sub-agent records"]'),n=d.getElementById(b.getAttribute('aria-controls'));return b.getAttribute('aria-expanded')==='true'&&n.textContent.includes('A finished run is not a finished task.')&&n.textContent.includes('Claimed')&&n.textContent.includes('Accepted')`));
+  await evaluate(`qa.context('A');true`);
+  await guest('panel', `return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
+  check('roster info survives same-reading repaint', await guest('panel', `return d.querySelector('[aria-label="About sub-agent records"]')?.getAttribute('aria-expanded')==='true'`));
+  await evaluate(`qa.context(null);true`);
+  await wait('panel', `!d.querySelector('[data-testid="subagent-activity"]')`, 'retired rail reading');
+  await evaluate(`qa.context('A');true`);
+  await wait('panel', `d.querySelector('[aria-label="About sub-agent records"]')&&d.querySelector('${row('N1')}')?.dataset.ran==='waiting'`, 'returned roster reading');
+  check('roster info does not resurrect after reading retirement', await guest('panel', `return d.querySelector('[aria-label="About sub-agent records"]')?.getAttribute('aria-expanded')==='false'`));
+  await key('Escape');
   await shot('panel', 'rail-mixed', 4000, true);
 
   // Keyboard: Tab reaches an Open control; focus survives a repaint; Enter opens that child.
-  await guest('panel', `const h=d.querySelector('${sec} h2');h.setAttribute('tabindex','-1');h.focus();return true`);
-  await key('Tab');
+  await progressUi.records('panel');
+  await guest('panel', `w.focus();d.querySelector('${row('N1')} details > summary').focus();return true`);
+  for(let n=0;n<8;n++) { await key('Tab'); if(await guest('panel', `return d.activeElement?.dataset.testid==='open-observed-N1'`)) break; }
   const firstOpen = await guest<string>('panel', `return d.activeElement?.dataset.testid`);
   check('Tab reaches the first featured Open control', firstOpen === 'open-observed-N1', firstOpen);
   await evaluate(`qa.set('C2',{title:'Restricted reviewer (renamed)'});true`);
@@ -166,12 +183,14 @@ try {
   check('keyboard Enter opens that child only', JSON.stringify(await evaluate('qa.opened')) === JSON.stringify([{ surface: 'panel', id: 'N1' }]));
 
   // 2. Earlier disclosure: failed/interrupted rows, then the history page on request.
+  await click('panel', '[data-testid="observed-more"] > summary');
   await guest('panel', `d.querySelector('[data-testid="observed-more"] summary').focus();return true`);
   await key('Enter');
   await wait('panel', `d.querySelector('[data-testid="observed-more"]').open && d.querySelector('[data-testid="observed-more"] [data-ran="failed"]')`, 'earlier list opened by keyboard');
-  check('earlier summary counts the rest', (await text('panel', '[data-testid="observed-more"] summary')) === 'Earlier sub-agents · 6');
-  const earlier = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="observed-more"] li')].map(n=>n.querySelector('.ap-obs-label').textContent)`);
-  check('failed and interrupted stay distinct from finished', earlier.includes('Failed: SyntheticFailure') && earlier.includes('Interrupted: stopped by the user') && earlier.filter((x) => x === 'Finished').length === 2, earlier);
+  check('records summary counts all nonrunning records', (await text('panel', '[data-testid="observed-more"] > summary')) === 'Other records · 8');
+  await progressUi.records('panel');
+  const earlier = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="observed-more"] li')].map(n=>n.querySelector('[data-fact="ran"] .ap-obs-label').textContent)`);
+  check('failed and interrupted stay distinct from finished', earlier.includes('Failed: SyntheticFailure') && earlier.includes('Interrupted: stopped by the user') && earlier.filter((x) => x === 'Finished').length === 3, earlier);
   await shot('panel', 'failed-interrupted', 4000, true);
   const historyBefore = await runRequests('A');
   await guest('panel', `d.querySelector('[data-testid="subagent-more"]').focus();return true`);
@@ -230,11 +249,20 @@ try {
   await wait('status', `d.querySelector('${row('M-live')}') && d.querySelector('[data-testid="subagent-count"]')`, 'status 213');
   const many = await guest<string[]>('status', `return [...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].map(n=>n.textContent)`);
   check('213 children: compact truthful summary', JSON.stringify(many) === JSON.stringify(['1 running', '205 finished', '4 failed', '2 interrupted', '1 unknown']), many);
-  check('213 children: one featured row, the rest folded', (await guest<number>('status', `return d.querySelectorAll('${sec} > .ap-obs-list > li').length`)) === 1 && (await text('status', '[data-testid="observed-more"] summary')) === 'Earlier sub-agents · 212');
+  check('213 children: one featured row, the rest folded', (await guest<number>('status', `return d.querySelectorAll('${sec} > .ap-obs-list > li').length`)) === 1 && (await text('status', '[data-testid="observed-more"] summary')) === 'Other records · 212');
   check('213 children: no warning line on the card', !(await has('status', '[data-testid="subagent-coverage"]')));
   await noClutter('status', 'status 213');
   const card = await guest<number>('status', `return Math.round(d.querySelector('${sec}').getBoundingClientRect().height)`);
   check('213 children: the card section stays compact', card < 140, card);
+  // Real in-place disclosure: the guest, not the screenshot helper, must resize the frame.
+  const beforeDisclosure = await evaluate(`({height:frame('status').clientHeight,resizes:qa.resizes.length})`);
+  await click('status', `${row('M-live')} details > summary`);
+  await wait('status', `d.querySelector('${row('M-live')} details')?.open&&Math.abs(d.defaultView.innerHeight-Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height))<=1`, 'opened roster row fits actual Status frame');
+  const afterDisclosure = await evaluate(`({height:frame('status').clientHeight,resizes:qa.resizes.slice(${beforeDisclosure.resizes})})`);
+  check('Status roster disclosure grows frame to its whole content', afterDisclosure.height > beforeDisclosure.height, afterDisclosure);
+  check('Status roster disclosure asks once when applied', afterDisclosure.resizes.length === 1 && !afterDisclosure.resizes[0].dropped, afterDisclosure);
+  await click('status', `${row('M-live')} details > summary`);
+  await wait('status', `!d.querySelector('${row('M-live')} details')?.open&&Math.abs(d.defaultView.innerHeight-Math.ceil(d.querySelector('[data-testid="progress-root"]').getBoundingClientRect().height))<=1`, 'closed roster row shrinks actual Status frame');
   await shot('status', 'status-213');
   // Paging in the rail: keyboard, bounded steps, focus kept on the pager.
   await show('panel');
@@ -258,10 +286,11 @@ try {
   await show('page', 1100);
   await wait('page', `d.querySelector('[data-testid="plan-row-plan-alpha"]')`, 'board');
   await selectPlan('src-local');
-  await wait('page', `d.querySelector('[data-testid="plan-detail"] ${row('C1')}') && d.querySelector('[data-testid="plan-detail"] [data-testid="observed-more"]')`, 'page roster');
-  await guest('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="observed-more"]').open=true;return true`);
+  await wait('page', `d.querySelector('[data-testid="plan-detail"] .ap-tasks[data-complete]') && d.querySelector('[data-testid="plan-detail"] ${sec}[data-state="ready"] ${row('C1').replace(sec+' ', '')}[data-run]') && d.querySelector('[data-testid="plan-detail"] [data-testid="observed-more"]')`, 'page recorded roster and complete reading');
+  await progressUi.records('page');
   await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-more"]')`, 'page earlier');
-  await click('page', '[data-testid="plan-detail"] [data-testid="subagent-more"]');
+  await guest('page', `w.focus();d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-more"]').focus();return true`);
+  await key('Enter');
   await wait('page', `d.querySelector('[data-testid="plan-detail"] [data-session="OLD2"]')`, 'page history expanded');
   await noClutter('page', 'page');
   await shot('page', 'page-history-expanded');
@@ -282,8 +311,9 @@ try {
   check('reload and identical callbacks leave C1 Running', (await text('panel', `${fact('C1', 'ran')} .ap-obs-label`)) === 'Running');
   await guest('panel', `d.querySelector('${row('C1')}').__steady=true;return true`);
   const startText = (await text('panel', `${fact('C1', 'ran')} time`))!;
+  const startTime = await guest<string>('panel', `return d.querySelector('${fact('C1', 'ran')} time').dateTime`);
   await guest('panel', `const off=95000,n=w.Date.now.bind(w.Date),p=w.performance.now.bind(w.performance);w.Date.now=()=>n()+off;w.performance.now=()=>p()+off;return true`);
-  await wait('panel', `d.querySelector('${fact('C1', 'ran')} time')?.textContent!==${JSON.stringify(startText)}`, 'label ticker advanced the start age', 40_000);
+  await wait('panel', `d.querySelector('${fact('C1', 'ran')} time')?.textContent!==${javascriptLiteral(startText)}`, 'label ticker advanced the start age', 40_000);
   const steady = await guest<{ same: boolean; label: string; state: string; time: string }>('panel', `const r=d.querySelector('${row('C1')}');return {same:r.__steady===true,label:r.querySelector('.ap-obs-label').textContent,state:r.querySelector('.ap-obs').dataset.state,time:r.querySelector('time').textContent}`);
   check('steady run past 60 s: same node (no repaint), still Running, only its age moved', steady.same && steady.label === 'Running' && steady.state === 'active' && steady.time !== startText, { ...steady, startText });
   await shot('panel', 'steady-running', 4000, true);
@@ -292,7 +322,7 @@ try {
   await wait('panel', `d.querySelector('[data-testid="empty-state"]')`, 'away');
   await evaluate(`qa.context('A');true`);
   await wait('panel', `d.querySelector('${fact('C1', 'ran')} .ap-obs-label')?.textContent==='Running'`, 'back');
-  check('view re-entry: still Running from the same real start', (await text('panel', `${fact('C1', 'ran')} time`)) === steady.time);
+  check('view re-entry: still Running from the same real start', await guest('panel', `return d.querySelector('${fact('C1', 'ran')} time').dateTime===${javascriptLiteral(startTime)}`), { startTime });
   // A valid host status change updates it promptly; tasks stay as reported.
   await evaluate(`qa.set('C1',{activity:'waiting-permission'});true`);
   await wait('panel', `d.querySelector('${fact('C1', 'ran')} .ap-obs-label')?.textContent==='Waiting for permission'`, 'host change applies');
@@ -302,18 +332,17 @@ try {
   // 8. Absent capability, capture off, recovery unavailable: short honest notes, no fake zeros.
   await evaluate(`qa.capable=false;true`);
   await wait('panel', `d.querySelector('${sec}')?.dataset.state==='host-only'`, 'capability absent', 20_000);
-  check('absent capability: host-only roster with its note, no recorded counts', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('aren’t available') && !(await sectionText('panel')).includes('finished'));
+  check('absent capability: host-only roster with its note, no recorded counts', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('aren’t available') && !(await text('panel', '[data-testid="subagent-count"]'))!.includes('finished'));
   await evaluate(`qa.capable=true;qa.capture=false;qa.bump();true`);
   await wait('panel', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('capture-off')`, 'capture off', 20_000);
   check('capture off: records stay readable with a short note', !!(await text('panel', fact('C2', 'claimed'))));
   await evaluate(`qa.capture=true;qa.runs.A.recovery={state:'unavailable',reason:null,token:null};qa.bump();true`);
   await wait('panel', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('history-unavailable')`, 'recovery unavailable', 20_000);
-  await guest('panel', `d.querySelector('[data-testid="subagent-about"]').open=true;return true`);
-  check('recovery unavailable: says so inside the compact disclosure', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('until the companion is running'));
+  check('recovery unavailable: visible warning outside closed info', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('until the companion is running') && await guest('panel', `return !d.querySelector('[data-testid="subagent-coverage"]').closest('details,[data-testid="info-content"]')`));
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
 
   // Incomplete host coverage: retained rows give no current activity; recorded Running stays; disclosed.
-  await guest('panel', `const a=d.querySelector('[data-testid="subagent-about"]');if(a)a.open=false;return true`);
+  await key('Escape');
   check('full coverage: N1 waiting on you, no coverage note', (await sectionText('panel')).includes('waiting on you') && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-activity-unavailable')`)));
   // The host's periodic reload of that complete snapshot: still current, no note, no flicker.
   await evaluate(`qa.reloadStart();true`);
@@ -342,7 +371,6 @@ try {
   await wait('panel', `d.querySelector('[data-testid="subagent-retry-history"]')`, 'Retry offered after bounded automatic attempts', 45_000);
   check('busy history request: retried automatically, bounded to three attempts, then Retry offered', (await posts()) - postsBefore === 3 && (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('couldn’t be requested'), { attempts: (await posts()) - postsBefore });
   await evaluate(`qa.reconcileError=null;true`);
-  await guest('panel', `d.querySelector('[data-testid="subagent-about"]').open=true;return true`);
   await click('panel', '[data-testid="subagent-retry-history"]');
   await wait('panel', `!d.querySelector('[data-testid="subagent-retry-history"]')`, 'manual Retry started');
   // The button gives way to "Loading older history…" as the request starts; wait for the service to record it.
@@ -351,7 +379,7 @@ try {
   const retried = (await posts()) - postsBefore;
   check('manual Retry sends one request and clears the offer', retried === 4 && !(await has('panel', '[data-testid="subagent-retry-history"]')), { attempts: retried, all: await evaluate(`qa.requests.filter(q=>q.path.endsWith('/reconcile')).map(q=>q.surface+':'+q.method+':'+(q.query===undefined))`) });
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
-  await wait('panel', `!d.querySelector('[data-testid="subagent-about"]')`, 'history complete again');
+  await wait('panel', `!d.querySelector('[data-testid="subagent-coverage"]')`, 'history complete again');
 
   // Host row limit: more than 128 host-listed descendants are disclosed, never shown as complete.
   await evaluate(`qa.context('M');for(let i=0;i<129;i++)qa.ws.sessions['proj-alpha'].push({id:'T'+i,title:'Host worker '+i,projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:100+i,updatedAt:0,archivedAt:null,worktree:null,activity:i===128?'waiting-question':'running',outcome:null,items:[]});qa.push('sessions');true`);
@@ -370,7 +398,7 @@ try {
   await evaluate(`qa.set('M-live',{activity:'idle'});qa.runs.M.saved=qa.runs.M.useful;n=900;qa.runs.M.useful=Array.from({length:51},(_,i)=>run('M','P'+i,'running',{ago:1+i,plan:'plan-many',description:'Parallel batch '+i,agent:'migrator'}));for(let i=0;i<51;i++)qa.ws.sessions['proj-alpha'].push({id:'P'+i,title:'Parallel batch '+i,projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:300+i,updatedAt:0,archivedAt:null,worktree:null,activity:'running',outcome:null,items:[]});qa.bump();qa.push('sessions');true`);
   await show('panel');
   await wait('panel', `d.querySelector('[data-testid="subagent-count"]')?.textContent.includes('51 running') && d.querySelector('[data-testid="observed-more"]')`, '51 running children');
-  await guest('panel', `d.querySelector('[data-testid="observed-more"]').open=true;return true`);
+  await progressUi.records('panel');
   for (let i = 0; i < 8 && !(await has('panel', `${sec} [data-session="P50"][data-run]`)); i++) {
     if (!(await has('panel', '[data-testid="subagent-more"]'))) break;
     await click('panel', '[data-testid="subagent-more"]');
@@ -427,4 +455,4 @@ try {
 } catch (error) {
   if ((error as Error).message === 'smoke-done') console.log(JSON.stringify({ smoke: true, results }, null, 2));
   else { console.error(JSON.stringify({ passed: false, error: (error as Error).message, results: results.slice(-5), problems: problems.slice(0, 5) }, null, 2)); process.exitCode = 1; }
-} finally { cleanup(); }
+} finally { await cleanup(); }

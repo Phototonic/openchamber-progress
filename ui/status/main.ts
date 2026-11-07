@@ -1,15 +1,17 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
-import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, progressBlock, retryRead, testid } from '../shared/components.ts';
+import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, retryRead, testid, type Env } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
-import { clockTime } from '../shared/format.ts';
+import { clockTime, plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
-import { blockedWork, currentWork, LIFECYCLE_LABEL, showsLiveness, summarize } from '../shared/model.ts';
+import { LIFECYCLE_LABEL, showsLiveness, summarize, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
 import { officialMainLine } from '../shared/official.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
+import { segmentedBar, stateChip, warningLine, type MarkStatus } from '../shared/primitives.ts';
 import { StatusSelection } from './selection.ts';
+import { projectStatus, type StatusProjection } from './projection.ts';
 import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
 
 type Ui = { selection: StatusSelection };
@@ -77,14 +79,28 @@ startView<Ui>({
     }
     if (!plan) return;
     const rest = scope.plans.filter((p) => p.key !== plan.key);
+    const p = projectStatus(plan, vc.detail(plan), env.view);
+    const box = testid(el('section', 'ap-status-plan'), `plan-${plan.id}`);
+    box.dataset.source = plan.sourceId;
+    box.dataset.lifecycle = plan.lifecycle;
+    box.dataset.revision = String(plan.revision);
+    if (showsLiveness(plan.lifecycle, p.summary, env.view)) box.dataset.motion = 'on';
+    // One title. With several plans the title is the featured-plan picker: a quiet "⌄ Automatic"
+    // trigger beside it (the rail's title-picker look) whose popup keeps Automatic and every plan.
+    const head = el('div', 'ap-status-head');
+    // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
+    const title = testid(el('span', 'ap-status-title', plan.title), 'status-plan-title');
+    title.tabIndex = -1;
+    head.append(title);
+    let openPicker: (() => void) | null = null;
     if (scope.plans.length > 1) {
-      const holder = testid(el('div', 'ap-picker ap-status-picker'), 'status-plan-selector');
+      const holder = testid(el('div', 'ap-picker ap-title-picker ap-status-pick'), 'status-plan-selector');
       mountSelect(holder, {
         label: 'Featured plan',
         value: selected ?? 'automatic',
         options: [
           { id: 'automatic', label: 'Automatic', hint: 'Prefer reported working tasks' },
-          ...scope.plans.map((p) => ({ id: p.key, label: p.title, hint: p.lifecycle === 'active' ? `${p.working.length} working` : LIFECYCLE_LABEL[p.lifecycle] })),
+          ...scope.plans.map((x) => ({ id: x.key, label: x.title, hint: x.lifecycle === 'active' ? `${x.working.length} working` : LIFECYCLE_LABEL[x.lifecycle] })),
         ],
         onChange: (key) => vc.updateUi((ui) => {
           // A picker from a retired store/context cannot restore its old choice.
@@ -92,59 +108,39 @@ startView<Ui>({
           return { selection: ui.selection };
         }),
       });
-      // The compact value may truncate; keep its full text available on hover too.
-      holder.querySelector('button')?.setAttribute('title', selected ? plan.title : 'Automatic');
-      root.append(holder);
-    }
-    const d = vc.detail(plan);
-    const detail = d?.state === 'ready' && d.value.revision === plan.revision ? d.value : null;
-    const box = testid(el('section', 'ap-status-plan'), `plan-${plan.id}`);
-    box.dataset.source = plan.sourceId;
-    box.dataset.lifecycle = plan.lifecycle;
-    box.dataset.revision = String(plan.revision);
-    const summary = summarize(plan, detail);
-    if (showsLiveness(plan.lifecycle, summary, env.view)) box.dataset.motion = 'on';
-    const head = el('div', 'ap-status-row');
-    // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
-    const title = testid(el('span', 'ap-status-title ap-grow', plan.title), 'status-plan-title');
-    title.tabIndex = -1;
-    head.append(title);
-    if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan));
-    box.append(head, progressBlock(summary, true));
-    if (detail) {
-      const working = currentWork(detail);
-      const focus = working.length ? working : blockedWork(detail);
-      if (focus.length) {
-        const now = testid(el('div', 'ap-status-row'), 'current-work');
-        now.append(glyph(focus[0].status), el('span', 'ap-grow', `${working.length ? '' : 'Blocked: '}${focus[0].title}`));
-        const elapsed = elapsedLabel(plan, focus[0], detail, env);
-        if (elapsed) now.append(elapsed);
-        if (focus.length > 1) now.append(el('span', 'ap-muted ap-small', `+${focus.length - 1}`));
-        box.append(now);
+      const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
+      if (trigger) {
+        trigger.removeAttribute('aria-labelledby');
+        trigger.setAttribute('aria-label', `Featured plan: ${plan.title}, ${selected ? 'chosen' : 'chosen automatically'}. ${plural(scope.plans.length, 'plan', 'plans')}; choose another`);
+        trigger.prepend(el('span', 'ap-title-picker-hint', selected ? 'Chosen' : 'Automatic'));
+        openPicker = () => trigger.click();
+        // The title reads as the picker too (pointer only; the trigger is the keyboard control).
+        title.classList.add('ap-plan-title-pick');
+        title.addEventListener('click', () => trigger.click());
       }
-    } else if (plan.working.length) {
-      box.append(testid(el('div', 'ap-status-row ap-muted ap-small', `${plan.working.length} in progress`), 'current-work'));
+      head.append(holder);
     }
-    const meta = el('div', 'ap-meta');
+    if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan));
+    box.append(head, statusProgress(p, plan));
+    const quals = qualifiers(p, read.captureEnabled, failure && vc.lastGoodAt ? clockTime(vc.lastGoodAt, env.locale) : null);
+    if (quals) box.append(quals);
+    const focus = focusRows(p, plan, env);
+    if (focus) box.append(focus);
+    // Age and live state, one compact line; other titles and working/lifecycle hints are in the picker.
+    const meta = el('div', 'ap-meta ap-status-meta');
     meta.append(age(plan.reportedAt, env, 'Updated '), el('span', '', liveLabel(coverageFor(plan.ownerSessionId, plan.directory, env.live)).label));
-    if (!read.captureEnabled) meta.append(testid(el('span', '', 'Capture off'), 'capture-off'));
-    if (failure && vc.lastGoodAt) meta.append(testid(el('span', '', `Not refreshed since ${clockTime(vc.lastGoodAt, env.locale)}`), 'stale-banner'));
     box.append(meta);
+    if (rest.length && openPicker) {
+      const open = openPicker;
+      const more = testid(el('button', 'ap-link ap-status-more'), 'more-plans');
+      more.type = 'button';
+      more.textContent = `+${plural(rest.length, 'more plan', 'more plans')}`;
+      more.setAttribute('aria-label', `${plural(rest.length, 'more plan', 'more plans')} in this session: choose the featured plan`);
+      more.addEventListener('click', () => open());
+      box.append(more);
+    }
     root.append(box);
 
-    if (rest.length) {
-      const more = testid(el('ul', 'ap-status-more'), 'more-plans');
-      more.setAttribute('aria-label', 'Other plans');
-      for (const p of rest.slice(0, 2)) {
-        const s = summarize(p);
-        const li = testid(el('li', 'ap-status-row'), `plan-${p.id}`);
-        li.dataset.source = p.sourceId;
-        li.append(el('span', 'ap-grow', p.title), el('span', 'ap-muted ap-small', p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : 'No tasks') : LIFECYCLE_LABEL[p.lifecycle]));
-        more.append(li);
-      }
-      if (rest.length > 2) more.append(el('li', 'ap-note', `${rest.length - 2} more`));
-      root.append(more);
-    }
     // After the featured plan and its picker, so sub-agents never displace them.
     const session = vc.session?.id;
     if (session && read.binding.verified && plan.sourceId === env.boundSource) {
@@ -167,6 +163,78 @@ startView<Ui>({
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') sync.hidden(); else sync.visible(); });
       addEventListener('pagehide', () => sync.dispose());
     }
-    heights.request(Math.ceil(root.getBoundingClientRect().height));
+    let height = Math.ceil(root.getBoundingClientRect().height);
+    heights.request(height);
+    // A roster row or record list opened in place changes the height without a repaint: ask once
+    // per actual disclosure change (the same bounded HeightSync), never per row or chip.
+    const sync = heights;
+    root.addEventListener('toggle', () => {
+      if (!root.isConnected) return;
+      const next = Math.ceil(root.getBoundingClientRect().height);
+      // Restored open disclosures can deliver their queued toggle after paint.
+      // The paint already reported that layout; only a new layout needs a request.
+      if (next === height) return;
+      height = next;
+      sync.request(height);
+    }, true);
   },
 });
+
+/**
+ * The bar (whole plan), then "3/8" and the counts as informational chips (no list to filter):
+ * guidance (in progress, needs you, ready, waiting) only from complete current active detail;
+ * otherwise the reported statuses. Without complete detail only the list's in-progress count.
+ */
+function statusProgress(p: StatusProjection, plan: PlanView) {
+  const s: PlanSummary = p.summary;
+  const wrap = el('div', 'ap-progress ap-status-progress');
+  const bar = segmentedBar(s, `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`);
+  if (bar) wrap.append(bar);
+  const line = el('div', 'ap-status-counts');
+  const counts = testid(el('span', 'ap-status-fraction'), 'counts');
+  Object.assign(counts.dataset, { done: String(s.done), total: String(s.total), remaining: String(s.remaining), skipped: String(s.skipped) });
+  if (s.total) counts.append(el('strong', '', String(s.done)), el('span', 'ap-muted', `/${s.total}`), el('span', 'ap-sr', ` done, ${s.remaining} remaining${s.skipped ? `, ${s.skipped} skipped` : ''}`));
+  else counts.append(el('span', 'ap-muted', summaryText(s)));
+  line.append(counts);
+  const r = p.reported;
+  const guided = p.ready !== null && p.waiting !== null && r !== null;
+  const chips: [MarkStatus, number, string][] = guided
+    ? [['working', r.working, 'in progress'], ['blocked', r.blocked, 'needs you'], ['ready', p.ready!, 'ready'], ['waiting', p.waiting!, 'waiting'], ['skipped', r.skipped, 'skipped']]
+    : r ? [['working', r.working, 'in progress'], ['blocked', r.blocked, 'blocked'], ['pending', r.pending, 'pending'], ['skipped', r.skipped, 'skipped']]
+    : plan.lifecycle === 'active' ? [['working', plan.working.length, 'in progress']] : [];
+  for (const [state, count, label] of chips) { const c = stateChip({ state, count, label }); if (c) line.append(c); }
+  wrap.append(line);
+  return wrap;
+}
+
+/** Concrete states beside the counts they qualify; never behind an explanation. */
+function qualifiers(p: StatusProjection, captureEnabled: boolean, staleAt: string | null) {
+  const box = el('div', 'ap-quals');
+  if (staleAt) box.append(testid(warningLine(`Not refreshed since ${staleAt}. Counts may be out of date.`, 'warning', 'div'), 'stale-banner'));
+  if (!captureEnabled) box.append(testid(warningLine('Capture off: these are the last reported counts.', 'info', 'div'), 'capture-off'));
+  if (p.detailUnavailable) box.append(testid(warningLine('Task details couldn’t be loaded.', 'warning', 'div'), 'status-detail-unavailable'));
+  const r = p.readiness;
+  if (r.state === 'invalid') box.append(testid(warningLine('Ready and waiting are unavailable for this report.', 'warning', 'div'), 'status-readiness-invalid'));
+  else if (r.state === 'ready' && r.incomplete) box.append(testid(warningLine('Some recorded prerequisites aren’t in this plan.', 'warning', 'div'), 'status-readiness-incomplete'));
+  return box.childNodes.length ? box : null;
+}
+
+/** At most two rows, first reported blocked then first reported working; each task once. */
+function focusRows(p: StatusProjection, plan: PlanView, env: Env) {
+  if (!p.detail) {
+    // Detail still loading: the list's own count only (no fabricated rows or zeros).
+    return null;
+  }
+  if (!p.focus.length) return null;
+  const list = testid(el('ul', 'ap-status-focus'), 'current-work');
+  list.setAttribute('aria-label', 'Needs attention and in progress');
+  for (const item of p.focus) {
+    const li = testid(el('li', 'ap-status-row'), `status-focus-${item.id}`);
+    li.dataset.status = item.status;
+    li.append(glyph(item.status), el('span', 'ap-grow', item.title));
+    const elapsed = elapsedLabel(plan, item, p.detail, env);
+    if (elapsed) li.append(elapsed);
+    list.append(li);
+  }
+  return list;
+}

@@ -2,7 +2,8 @@
 
 The board's **Reporting health** action explains observed installation, loaded companion and capture state alongside a selected stored report. It does not restart OpenCode, test a model, create reports or inspect conversations. When a reload is required, restart OpenCode yourself when convenient; other already-running instances may retain earlier files. A previewable support summary excludes folders, identifiers and user content. See [reporting observations](contracts.md#reporting-health-observations) for the evidence and privacy limits.
 
-Package versions use the 0.x line; protocol/schema remain 2. Read this checkout or
+Package versions follow semantic versioning from 1.0.0; protocol/schema remain 2,
+independent of the package version. Read this checkout or
 distribution's version from its included [package.json](../package.json).
 [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
 identifies published tags and assets after main promotion and successful workflow
@@ -272,6 +273,9 @@ reads the selection at setup time (not module-import cache time), validates
 hashes and delegates setup. The previous runnable release stays intact until the
 switch and is retained for recovery. File/parent sync precedes acknowledgement.
 No runtime npm/Bun dependency fetch or consumer TypeScript compilation.
+Values embedded in the discovery loader are serialized as JavaScript literals
+with HTML delimiters and Unicode line separators escaped; filesystem paths
+retain their original values when the loader runs.
 
 Interrupted staging/activation is not silently cleaned or relabeled success.
 Inspect distinguishes staged files/releases, unreferenced finalized releases and
@@ -483,6 +487,18 @@ compiler, PowerShell module or consumer dependency install. The service and
 companion invoke a fixed noninteractive, profile-free script with UTF-8 JSON
 through stdin; folder text is never executable command text. Missing or blocked
 PowerShell produces an explicit setup/privacy error.
+
+The first security query in each loaded runtime (the service and the companion
+each have their own) has a 30-second timeout per attempt, allowing headroom for a
+slow cold PowerShell launch. Only its first timed-out attempt is retried, exactly
+once with identical inputs: at most 60 seconds of configured wait, once per loaded
+runtime. This first-query budget is consumed
+even on failure. Every later query uses a single 10-second attempt with no retry.
+These bounds exclude process termination/OS overhead and are not deadlines for
+an entire setup operation. Non-zero exits, other spawn errors and malformed
+results are never retried. Both first-query attempts timing out still reports
+`windows-security-unavailable` with reason `timeout`; no path is accepted without
+a completed, successfully parsed security result.
 
 Use one account and local NTFS storage. Config/data roots must be owned by that
 account. The dedicated store, payload and service-state roots must have private

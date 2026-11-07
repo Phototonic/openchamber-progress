@@ -7,28 +7,49 @@
 
 **See the plan. Follow the work. Know what was actually reported.**
 
-An [OpenChamber](https://github.com/openchamber/openchamber) extension with an OpenCode companion for explicit, structured agent progress. Keep your existing planning workflow and bring its checklist, current work, and contributions into one place.
+Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) extension that turns your agents' plans into a calm, live progress view. One glance tells you what's done, what's running, what's blocked and what needs you. When you want more, the detail is one click away.
 
-> **Early access · Linux and native Windows capture · OpenChamber ≥ 2.5.1**
->
-> OpenCode **2.1.4** is the tested capture version; broader compatibility is not established.
-> Native Windows uses the operating system's built-in PowerShell for private-file checks; no extra executable, compiler, or package installation is required. See the [Windows support boundary](docs/setup.md#native-windows).
+<p align="center">
+  <img src="docs/images/readme/board.png" alt="The dependency map on the fullscreen board: task cards joined by prerequisite arrows, with reported working, ready, blocked and unlocks-next counts and the selected task's prerequisites" width="860">
+</p>
 
-## Three ways to follow along
+## Why you'll like it
 
-| View | What you get |
-| --- | --- |
-| **Session panel** | The selected session's plan, task hierarchy, current work, and main/child contributions. |
-| **Work Status** | A compact progress summary alongside your work. |
-| **Fullscreen board** | Recorded plans across projects, worktrees, and sessions, with filters and detail. |
+- **At a glance, then in depth.** A single grouped list, *Now*, *Needs you*, *Up next*, with finished work folded away. Expand any task for its reason, next step, prerequisites and who's on it.
+- **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view.
+- **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
+- **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
+- **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
+- **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
+- **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.
 
-- **Plans, not just activity:** done, remaining, blocked, and skipped work stay distinct from session activity.
-- **Your document stays yours:** optionally bind a plan document for read-only capture; the companion never edits it.
-- **Honest gaps:** report age, missing reports, incomplete coverage, and unavailable connections stay visible.
+## Three places to follow along
 
-Progress comes from **deliberate reports**, not passive observation or inferred completion. The loaded, enabled companion offers best-effort reporting guidance when its tool is available—no special agent name, manual skill load, or prompt edit is required. Guidance cannot guarantee participation or track every model or subagent.
+<table>
+  <tr>
+    <th width="50%">Right rail</th>
+    <th width="50%">Work Status</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/readme/rail.png" alt="Right rail: plan title with picker, progress bar, state chips and a grouped task list" width="300"></td>
+    <td align="center"><img src="docs/images/readme/work-status.png" alt="Work Status: featured plan title, mini bar, chips, the blocked and working task, and +2 more plans" width="322"></td>
+  </tr>
+  <tr>
+    <td>The current session's plan, right beside your chat.</td>
+    <td>A compact summary of the plan that matters most right now.</td>
+  </tr>
+  <tr>
+    <th colspan="2">Fullscreen board</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/images/readme/board-search.png" alt="Fullscreen board: a search for release across every plan, with matching plans and tasks listed beside the selected plan's grouped progress" width="820"></td>
+  </tr>
+  <tr>
+    <td colspan="2">Every plan across projects, worktrees and sessions, with search, filters, history and the dependency map.</td>
+  </tr>
+</table>
 
-## Quick start
+## Get started
 
 1. In **OpenChamber → Settings → Extensions**, install from this Git URL:
 
@@ -36,46 +57,32 @@ Progress comes from **deliberate reports**, not passive observation or inferred 
    https://github.com/Phototonic/openchamber-progress.git
    ```
 
-2. Open **Agent progress → Setup**. Review or edit the suggested OpenCode config/data folders and dedicated progress-store folder. Suggestions are not proof of the effective OpenCode paths.
-3. **Inspect**, review the resolved targets and full-user host-service privilege, then explicitly confirm companion installation.
-4. Follow the activation notice and reload/restart OpenCode **when safe**. Opening a new session alone is not a reliable reload. Begin work with an agent that can use `agent_progress_report`.
+2. Open **Agent progress → Setup**, review the suggested folders, then confirm installing the OpenCode companion.
+3. Restart OpenCode when it's safe, and start working. The companion guides agents that can use `agent_progress_report` to report their plans, with no special prompts or agent names. Reporting is best-effort; it depends on the model taking part.
 
-The public Git distribution uses **`main`** and includes built runtime files: **no dependency install or compilation is needed for users**. A locally built extension ZIP can also be installed through Settings; it includes the companion payload and setup utility. Tagged ZIP downloads are available from [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases) after the main release workflow succeeds.
+No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
-The version in [package.json](package.json) identifies the selected checkout or distribution. A `dev` checkout can contain unreleased changes even when its version matches a published tag. Use the release’s tag and assets for published contents, and [CHANGELOG.md](CHANGELOG.md) for release history.
+**Works with:** OpenChamber 2.5.1 or later · OpenCode 2.1.4 (tested capture version) · Linux and native Windows.
 
-## Before you enable capture
+## Good to know
 
-> **Separate lifecycle:** disable or remove the companion **before uninstalling the extension** if capture must stop. Closing or uninstalling the extension alone does not stop capture. Removing the companion retains the database and history; there is no automatic purge.
+- **Removing it takes two steps.** Disable or remove the companion *before* uninstalling the extension; uninstalling the extension alone doesn't stop capture.
+- **Your data stays local.** Plans live in a private SQLite store on your machine. It can contain plan text and project paths, so treat it, and any screenshots, as private.
+- **One small network check.** The views check GitHub's public metadata for the latest official version. This is informational only; nothing installs itself.
+- **Updates are always your call.** Extension and companion updates are offered in Settings and applied only when you confirm.
 
-- **One host and account.** Capture and the host service must share the same local filesystem and account. Web/relay viewers can see that host's data; they do not enable capture on a different host or isolated container.
-- **Private work stays in a host-local SQLite store.** It can contain plan text and source/project paths. Treat the store, diagnostics, and screenshots as sensitive.
-- **Not entirely offline.** Visible progress views check GitHub's public repository metadata for the official `main` version. This is informational, not an automatic install or source switch.
-- **Elapsed is reported time.** Working labels measure a continuous *reported-working* interval—not CPU/model time, an ETA, or proof that execution continues. Incomplete history is labelled “at least.”
+The [setup guide](docs/setup.md) covers each of these in full.
 
-## Updating
+## Learn more
 
-1. Review available extension updates in **Settings → Extensions**, then choose whether to install. The official-main version notice does not change a selected branch, tag, fork, or ZIP source.
-2. If the extension offers a different bundled companion, choose **Review update**. Inspect versions and existing folders, then explicitly confirm. A newer installed companion is a downgrade warning, not an automatic replacement.
-3. Follow the reload notice and restart OpenCode **when safe**. Installed files and loaded code are separate states; OpenCode is never restarted automatically.
-
-Companion updates preserve the configured store and history. See [setup and lifecycle details](docs/setup.md#bundled-companion-detection).
-
-### Automated releases
-
-Maintainer-approved **higher package versions reaching `main`** are configured to run checks and automatically publish matching `v<version>` tags and ZIP assets. Release notes use GitHub's native **What's Changed**, applicable **New Contributors**, and **Full Changelog** sections—not a custom all-commits list. Same-version docs/CI pushes, including the earlier 0.2.5 automation setup, do **not** create a tag or release. OpenChamber's update notice still checks the `main` manifest, not GitHub Releases.
-
-## Go deeper
-
-- [Setup, diagnostics, disable/removal, and distribution](docs/setup.md)
-- [Progress views and their limits](docs/ui.md)
+- [Setup, updates, diagnostics and removal](docs/setup.md)
+- [The progress views in detail](docs/ui.md)
 - [Reporting and API contracts](docs/contracts.md)
-- [Tested compatibility and bounded evidence](docs/compatibility.md)
-- [Contributing and development commands](CONTRIBUTING.md)
-- [Logo assets, usage and attribution](docs/images/brand/README.md)
-
-The technical guides retain historical validation notes; early access does not imply complete platform/model coverage or the absence of long-running issues.
+- [Tested compatibility](docs/compatibility.md)
+- [Contributing, development and releases](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+- [Logo assets and usage](docs/images/brand/README.md)
 
 ## License
 
-Project code is available under the [MIT License](LICENSE). Bundled dependencies and adaptations retain their own terms: see the [third-party notices](THIRD_PARTY_NOTICES.md) for grants, credits, full-license references, and documented provenance/interpretation limits.
+[MIT](LICENSE). Bundled dependencies keep their own terms; see the [third-party notices](THIRD_PARTY_NOTICES.md).

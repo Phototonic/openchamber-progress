@@ -1,13 +1,16 @@
 // DOM building blocks shared by the three surfaces. Every string lands through textContent.
-import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpinner, type SelectOption, type Tone } from '@openchamber/sdk/ui';
+import { mountBadge, mountBanner, mountButton, mountEmpty, mountSelect, mountSpinner, type MenuItem, type SelectOption, type Tone } from '@openchamber/sdk/ui';
 import type { Loadable, ReadingView, SummaryView } from './app.ts';
+import { deriveDependencies } from './dependency-derivation.ts';
 import { absoluteTime, baseName, clockTime, elapsedText, plural, relativeAge } from './format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, sessionLabel, type Coverage, type LiveSnapshot } from './live.ts';
-import { assignment, attention, blockedWait, readiness, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry, type ReadinessGroup } from './readiness.ts';
+import { assignment, attention, blockedWait, reportsFor, type Attention, type InvalidReason, type Prerequisite, type ReadinessEntry } from './readiness.ts';
 import {
-  ALL_PARTICIPANTS, blockedWork, currentWork, DOCUMENT_STATE_TEXT, elapsedAt, jumpTargets, LIFECYCLE_LABEL, nextJump, participantIndex, participants, relationsOf, showsLiveness, STATUS_LABEL, summarize, summaryText, taskMatch, taskProjection,
-  type BlockerCategory, type BranchSummary, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type Relation, type StoreRead, type TaskProjection,
+  ALL_PARTICIPANTS, DOCUMENT_STATE_TEXT, elapsedAt, jumpTargets, LIFECYCLE_LABEL, nextJump, participantIndex, participants, relationsOf, showsLiveness, STATUS_LABEL, summarize, summaryText, taskProjection,
+  type BlockerCategory, type DocumentBody, type HistoryEntry, type ItemNode, type ItemView, type JumpKind, type ParticipantFilter, type ParticipantIndex, type PlanDetail, type PlanSummary, type PlanView, type ProgressState, type Relation, type StoreRead, type TaskProjection,
 } from './model.ts';
+import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips, statusMark, warningBadge, warningLine, type InfoHandle } from './primitives.ts';
+import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 
@@ -98,12 +101,12 @@ function workingText(text: string) {
   return t;
 }
 
+/**
+ * A task's status mark (primitives.ts), named for assistive technology. Keeps the `ap-glyph` row
+ * hook; a working task is "Reported working", never "Running".
+ */
 export function glyph(status: ItemView['status']) {
-  const g = el('span', 'ap-glyph');
-  g.dataset.status = status;
-  g.setAttribute('role', 'img');
-  g.setAttribute('aria-label', STATUS_LABEL[status]);
-  return g;
+  return statusMark(status, { className: 'ap-glyph' });
 }
 
 export function chip(state: string, tone: 'info' | 'warning' | 'neutral', name?: string) {
@@ -124,9 +127,15 @@ export function lifecycleBadge(plan: PlanView) {
   return b;
 }
 
-/** The at-a-glance progress story: big fraction, segmented bar, legend. */
+/** The bar's spoken summary: done of total, remaining, skipped (never counted as done), then working and blocked. */
+const barLabel = (s: PlanSummary) => `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`;
+
+/**
+ * The at-a-glance progress line: done/total and the segmented bar. The state chips (stateChipRow)
+ * are its legend. `compact` keeps Work Status's one-line counts.
+ */
 export function progressBlock(s: PlanSummary, compact = false) {
-  const wrap = el('div', 'ap-progress');
+  const wrap = el('div', compact ? 'ap-progress' : 'ap-progress ap-progress-line');
   const counts = testid(el('div', compact ? 'ap-row' : 'ap-fraction'), 'counts');
   counts.dataset.done = String(s.done);
   counts.dataset.total = String(s.total);
@@ -137,36 +146,14 @@ export function progressBlock(s: PlanSummary, compact = false) {
     if (s.working) line.append(' · ', workingText(`${s.working} in progress`));
     if (s.blocked) line.append(` · ${s.blocked} blocked`);
     counts.append(line);
+  } else if (s.total === 0) counts.append(el('span', 'ap-muted', summaryText(s)));
+  else {
+    const n = el('strong', '', String(s.done));
+    counts.append(n, el('span', 'ap-fraction-total', `/${s.total}`), el('span', 'ap-sr', ` done, ${s.remaining} remaining`));
   }
-  else if (s.total === 0) counts.append(el('span', '', summaryText(s)));
-  else counts.append(el('strong', '', `${s.done}/${s.total}`), el('span', '', `done · ${s.remaining} remaining${s.skipped ? ` · ${s.skipped} skipped` : ''}`));
   wrap.append(counts);
-  if (s.total > 0) {
-    const bar = el('div', 'ap-seg');
-    bar.setAttribute('role', 'img');
-    bar.setAttribute('aria-label', `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`);
-    for (const [k, n] of [['done', s.done], ['working', s.working], ['blocked', s.blocked]] as const) {
-      if (!n) continue;
-      const seg = el('i');
-      seg.dataset.k = k;
-      seg.style.width = `${(Math.min(n, s.total) / s.total) * 100}%`;
-      bar.append(seg);
-    }
-    wrap.append(bar);
-    if (!compact) {
-      const legend = el('div', 'ap-legend');
-      legend.setAttribute('aria-hidden', 'true');
-      const pending = Math.max(0, s.remaining - s.working - s.blocked);
-      for (const [k, label, n] of [['done', 'done', s.done], ['working', 'in progress', s.working], ['blocked', 'blocked', s.blocked], ['pending', 'pending', pending]] as const) {
-        if (!n) continue;
-        const item = el('span');
-        item.dataset.k = k;
-        item.append(el('i'), k === 'working' ? workingText(`${n} ${label}`) : document.createTextNode(`${n} ${label}`));
-        legend.append(item);
-      }
-      wrap.append(legend);
-    }
-  }
+  const bar = segmentedBar(s, barLabel(s));
+  if (bar) wrap.append(bar);
   return wrap;
 }
 
@@ -197,63 +184,75 @@ function navButton(plan: PlanView, sessionId: string, cov: Coverage, env: Env) {
   return b;
 }
 
-export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' = 'h2') {
+/** A ⋯ plan-actions entry supplied by a surface (for example the rail's Details). */
+export interface PlanAction { id: string; label: string; run: () => void; disabled?: boolean; destructive?: boolean }
+
+/**
+ * The ⋯ of the plan detail painted for one reading view (a fresh object every paint), so actions
+ * rendered later in the same paint (cleanup) can join it. A paint without that detail (Map,
+ * Document, History) has none, and the caller keeps its own controls.
+ */
+const MENU_SLOTS = new WeakMap<object, { plan: string; add: (actions: PlanAction[], focusHook?: string) => void }>();
+
+/**
+ * Adds secondary actions to this paint's ⋯ Plan actions for `plan`. `focusHook` names the ⋯ holder
+ * for a controller that returns focus to that hook (for example after a cancelled confirmation).
+ * False when this paint has no plan detail menu for `plan`.
+ */
+export function offerPlanActions(reading: object | null, plan: PlanView, actions: PlanAction[], focusHook?: string) {
+  const slot = reading ? MENU_SLOTS.get(reading) : undefined;
+  if (!slot || slot.plan !== plan.key) return false;
+  slot.add(actions, focusHook);
+  return true;
+}
+
+/**
+ * The plan header: one title (the rail's title-picker trigger sits beside it), lifecycle, the ⋯
+ * plan actions and an optional ⓘ; then one compact meta line. Source warnings stay visible.
+ */
+export function planHeader(plan: PlanView, env: Env, headingLevel: 'h2' | 'h3' = 'h2', o: { picker?: HTMLElement | null; actions?: HTMLElement | null; info?: HTMLElement | null } = {}) {
   const head = el('header', 'ap-plan-head');
-  const top = el('div', 'ap-row ap-between');
+  const top = el('div', 'ap-plan-top');
+  const lead = el('div', 'ap-plan-lead');
   // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
-  const title = testid(el(headingLevel, 'ap-plan-title ap-grow', plan.title), 'plan-title');
+  const title = testid(el(headingLevel, 'ap-plan-title', plan.title), 'plan-title');
   title.tabIndex = -1;
-  top.append(title);
+  lead.append(title);
+  if (o.picker) {
+    // The title reads as the picker: a pointer press on it opens the same native trigger.
+    title.classList.add('ap-plan-title-pick');
+    title.addEventListener('click', () => o.picker!.querySelector<HTMLButtonElement>('.oc-sdk-trigger')?.click());
+    lead.append(o.picker);
+  }
+  top.append(lead);
   if (plan.lifecycle !== 'active') top.append(lifecycleBadge(plan));
+  if (o.info) top.append(o.info);
+  if (o.actions) top.append(o.actions);
   const meta = el('div', 'ap-meta');
   meta.append(el('span', '', planLocation(plan, env.live, env.boundSource)), age(plan.reportedAt, env, 'Updated '));
-  if (env.boundSource !== null && plan.sourceId !== env.boundSource) meta.append(testid(el('span', '', 'From another OpenCode setup'), 'other-source'));
-  if (env.unverifiedSources.has(plan.sourceId)) meta.append(testid(el('span', 'ap-doc-warn', 'Unverified OpenCode setup'), 'unverified-source'));
+  if (env.boundSource !== null && plan.sourceId !== env.boundSource) meta.append(testid(warningBadge('From another OpenCode setup', 'info'), 'other-source'));
+  if (env.unverifiedSources.has(plan.sourceId)) meta.append(testid(warningBadge('Unverified OpenCode setup'), 'unverified-source'));
   head.append(top, meta);
   return head;
 }
 
-function currentWorkBlock(plan: PlanView, detail: PlanDetail, env: Env) {
-  const working = currentWork(detail);
-  const blocked = blockedWork(detail);
-  if (!working.length && !blocked.length) return null;
-  const box = testid(el('section', 'ap-now'), 'current-work');
-  box.setAttribute('aria-label', 'Current work');
-  box.append(el('span', 'ap-now-label', working.length ? 'Now' : 'Blocked'));
-  for (const item of [...working, ...blocked].slice(0, 4)) {
-    const row = el('div', 'ap-now-item');
-    row.append(glyph(item.status), el('strong', '', item.title));
-    const elapsed = elapsedLabel(plan, item, detail, env);
-    if (elapsed) row.append(elapsed);
-    const who = assigneeOf(item, detail);
-    if (who && who !== plan.ownerSessionId) row.append(sessionChip(plan, who, env).node);
-    box.append(row);
+/**
+ * The rail's title-picker: the SDK select, shown as "⌄ 1 of 3" beside the plan title. Its name
+ * says which plan of how many is shown; every option keeps its full title in the popup.
+ */
+export function planPicker(o: { title: string; index: number; count: number; value: string; options: SelectOption[]; onChange: (key: string) => void; standalone?: boolean }) {
+  const holder = testid(el('div', 'ap-picker ap-title-picker'), 'plan-selector');
+  mountSelect(holder, { label: `${o.count} plans`, value: o.value, options: o.options, onChange: o.onChange });
+  const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
+  if (trigger) {
+    trigger.removeAttribute('aria-labelledby');
+    trigger.setAttribute('aria-label', `Plan ${o.index} of ${o.count}: ${o.title}. Choose another plan`);
+    trigger.prepend(el('span', 'ap-title-picker-hint', `${o.standalone ? 'Plan ' : ''}${o.index} of ${o.count}`));
   }
-  const rest = working.length + blocked.length - 4;
-  if (rest > 0) box.append(el('span', 'ap-note', `and ${rest} more`));
-  return box;
+  return holder;
 }
 
 const assigneeOf = (item: ItemView, detail: PlanDetail) => item.assigneeSessionId ?? detail.links.find((l) => l.itemIds.includes(item.id))?.sessionId;
-const NO_BRANCH: BranchSummary = { done: 0, total: 0, remaining: 0, skipped: 0, working: 0, blocked: 0, rows: 0, matching: 0, context: 0, hidden: 0, hiddenWorking: 0, hiddenBlocked: 0 };
-
-/**
- * A branch's descendant facts, visible even while it is folded: full working/blocked (never
- * filtered), task rows hidden by a filter, and (only while closed, style.ts) the shown rows it folds.
- */
-function branchLine(b: BranchSummary, view: TaskProjection, closed: boolean) {
-  const line = el('span', 'ap-branch');
-  const parts: HTMLElement[] = [];
-  if (b.working) { const s = el('span', '', `${b.working} in progress`); s.dataset.k = 'working'; parts.push(s); }
-  if (b.blocked) { const s = el('span', '', `${b.blocked} blocked`); s.dataset.k = 'blocked'; parts.push(s); }
-  if (closed && parts.length) { const s = el('span', '', 'Last reported:'); s.dataset.k = 'lead'; parts.unshift(s); }
-  if (view.filtered && b.hidden) parts.push(el('span', '', `${b.hidden} hidden by filter`));
-  const shown = b.matching + b.context;
-  if (shown) parts.push(el('span', 'ap-folded', `${plural(shown, 'task', 'tasks')} folded`));
-  if (!parts.length) return null;
-  line.append(...parts);
-  return line;
-}
 
 /** The participant filter of one paint, with the plan's recorded relationships. */
 interface Attribution { filter: ParticipantFilter; index: ParticipantIndex }
@@ -277,98 +276,6 @@ function reasonsLine(item: ItemView, who: Attribution) {
   for (const r of relations) line.append(el('span', '', RELATION_TEXT[r]));
   return line;
 }
-
-/**
- * A task's recorded people, source-safe: its assignee chip (link fallback, never the owner) and
- * one "Reported by … for …" relay line. A `span` inside a task-parent's summary, else a `div`.
- */
-function taskFacts(item: ItemView, plan: PlanView, detail: PlanDetail, env: Env, tag: 'div' | 'span') {
-  const sub = el(tag, tag === 'span' ? 'ap-item-sub ap-summary-sub' : 'ap-item-sub');
-  const who = assigneeOf(item, detail);
-  const label = recordedLabel(plan, env);
-  if (who && who !== plan.ownerSessionId) sub.append(sessionChip(plan, who, env).node);
-  const relay = detail.contributions.find((x) => x.mode === 'parent-relay' && x.itemIds.includes(item.id));
-  if (relay) sub.append(testid(el('span', '', `Reported by ${label(relay.reporterSessionId)} for ${label(relay.attributedSessionId)}`), `relay-${item.id}`));
-  return sub.childNodes.length ? sub : null;
-}
-
-function itemRow(node: ItemNode, plan: PlanView, detail: PlanDetail, env: Env, view: TaskProjection, by: Attribution | null): HTMLLIElement {
-  const { item } = node;
-  const li = testid(el('li'), `${item.kind === 'group' ? 'group' : 'item'}-${item.id}`);
-  li.dataset.status = item.status;
-  // Filtered rows stay materialized in the one canonical tree; hidden ones leave tab and accessibility order.
-  const state = view.rows.get(item.id) ?? 'match';
-  if (view.filtered) li.dataset.focus = state;
-  if (state === 'hidden') li.hidden = true;
-  const reasons = by && by.filter.kind !== 'all' && state === 'match' && item.kind === 'task' ? reasonsLine(item, by) : null;
-  // A named, programmatically focusable destination for in-detail task navigation (not a tab stop).
-  if (item.kind === 'task') li.tabIndex = -1;
-  if (item.kind === 'group' || node.children.length) {
-    const b = view.branches.get(item.id) ?? NO_BRANCH;
-    Object.assign(li.dataset, { working: String(b.working), blocked: String(b.blocked), filterHidden: String(b.hidden), folded: String(b.matching + b.context) });
-    const details = el('details', 'ap-group');
-    details.open = true;
-    details.dataset.testid = `${item.kind === 'group' ? 'group' : 'item'}-toggle-${item.id}`;
-    const summary = el('summary');
-    if (item.kind === 'task') summary.append(glyph(item.status));
-    summary.append(el('span', 'ap-grow', item.title));
-    if (state === 'context' && item.kind === 'task') summary.append(el('span', 'ap-context', 'shown for context'));
-    summary.append(el('span', 'ap-count', b.total ? `${b.done}/${b.total}` : ''));
-    const facts = item.kind === 'task' ? taskFacts(item, plan, detail, env, 'span') : null;
-    if (facts) summary.append(facts);
-    if (reasons) summary.append(reasons);
-    const line = branchLine(b, view, plan.lifecycle !== 'active');
-    if (line) summary.append(line);
-    const ul = el('ul');
-    for (const c of node.children) ul.append(itemRow(c, plan, detail, env, view, by));
-    details.append(summary, ul);
-    li.append(details);
-    return li;
-  }
-  const row = el('div', 'ap-item');
-  row.dataset.status = item.status;
-  const body = el('div');
-  body.append(el('div', 'ap-item-title', item.title));
-  const sub = taskFacts(item, plan, detail, env, 'div');
-  if (sub) body.append(sub);
-  if (reasons) body.append(reasons);
-  row.append(glyph(item.status), body);
-  li.append(row);
-  return li;
-}
-
-/** Tasks heading; also the programmatic focus fallback of task-reading restoration (app.ts). */
-function tasksHeading() {
-  const h = el('h3', 'ap-h ap-tasks-h', 'Tasks');
-  h.tabIndex = -1;
-  return h;
-}
-
-export function itemList(plan: PlanView, detail: PlanDetail, env: Env, reading: ReadingView | null = null) {
-  const section = el('section', 'ap-section ap-tasks');
-  // Painted from complete detail, even without task rows (app.ts: not a loading gap).
-  section.dataset.complete = '';
-  section.append(tasksHeading());
-  if (!detail.items.length) { section.append(el('p', 'ap-note', 'This plan has no tasks yet.')); return section; }
-  const index = reading ? participantIndex(plan, detail) : null;
-  const who = reading && index ? { filter: reading.participant, index } : null;
-  const view = taskProjection(detail.items, reading && index ? taskMatch(reading, index) : null);
-  const label = recordedLabel(plan, env);
-  if (reading && who) section.append(taskControls(plan, view, reading, who, label));
-  if (!view.totals.rows) section.append(testid(el('p', 'ap-note', 'No task rows are recorded in this plan, only groups.'), 'focus-no-tasks'));
-  else if (reading && who && view.filtered && !view.totals.matching) section.append(noMatches(view, reading, who, label));
-  const ul = testid(el('ul', 'ap-items'), `items-${plan.id}`);
-  ul.setAttribute('aria-label', `Tasks in ${plan.title}`);
-  for (const node of view.tree) ul.append(itemRow(node, plan, detail, env, view, who));
-  section.append(ul);
-  return section;
-}
-
-const JUMP_COPY: Record<JumpKind, { active: [string, string, string]; closed: [string, string, string] }> = {
-  // [button with targets, button without, notice prefix]
-  working: { active: ['Jump to in progress', 'No tasks in progress', 'In progress'], closed: ['Jump to reported in progress', 'No tasks reported in progress', 'Reported in progress'] },
-  blocked: { active: ['Jump to blocked', 'No blocked tasks', 'Blocked'], closed: ['Jump to reported blocked', 'No tasks reported blocked', 'Reported blocked'] },
-};
 
 /**
  * Session names from the current host only for a plan of the verified bound source; a foreign or
@@ -406,75 +313,8 @@ function participantSelect(plan: PlanView, reading: ReadingView, who: Attributio
   return holder;
 }
 
-/**
- * Task view: Show all / Unfinished, a participant choice, bulk disclosure and whole-plan jumps.
- * Reading-only: nothing here sends a request, stores a preference or changes reported work.
- */
-function taskControls(plan: PlanView, view: TaskProjection, reading: ReadingView, who: Attribution, label: (id: string) => string) {
-  const box = testid(el('div', 'ap-focus'), 'focus-controls');
-  box.setAttribute('role', 'group');
-  box.setAttribute('aria-label', 'Task view');
-  const bar = el('div', 'ap-focus-bar');
-  const modes = testid(el('div', 'ap-focus-set'), 'focus-mode');
-  modes.setAttribute('role', 'group');
-  modes.setAttribute('aria-label', 'Show tasks');
-  modes.dataset.mode = reading.status;
-  for (const [status, label] of [['all', 'Show all'], ['unfinished', 'Unfinished']] as const) {
-    const holder = button(modes, `focus-mode-${status}`, label, () => reading.set({ status }), reading.status === status ? 'outline' : 'ghost');
-    holder.querySelector('button')?.setAttribute('aria-pressed', String(reading.status === status));
-  }
-  const bulk = el('div', 'ap-focus-set');
-  for (const [id, label, open] of [['focus-expand-all', 'Expand all', true], ['focus-collapse-all', 'Collapse all', false]] as const) {
-    const holder: HTMLElement = button(bulk, id, label, () => setDisclosures(holder, plan, open), 'ghost');
-  }
-  const jumps = el('div', 'ap-focus-set');
-  for (const kind of ['working', 'blocked'] as const) {
-    const targets = jumpTargets(view, kind);
-    const copy = JUMP_COPY[kind][plan.lifecycle === 'active' ? 'active' : 'closed'];
-    const holder: HTMLElement = button(jumps, `focus-jump-${kind}`, targets.length ? `${copy[0]} (${targets.length})` : copy[1], () => jump(holder, plan, kind, targets, reading, copy[2]), 'ghost', !targets.length);
-    holder.dataset.count = String(targets.length);
-  }
-  bar.append(modes, participantSelect(plan, reading, who, label), bulk, jumps);
-  const t = view.totals;
-  const summary = testid(el('p', 'ap-note ap-focus-summary'), 'focus-summary');
-  Object.assign(summary.dataset, { rows: String(t.rows), matching: String(t.matching), context: String(t.context), hidden: String(t.hidden), hiddenWorking: String(t.hiddenWorking), hiddenBlocked: String(t.hiddenBlocked) });
-  if (!view.filtered) summary.textContent = t.rows ? `Showing all ${plural(t.rows, 'task', 'tasks')}.` : '';
-  else {
-    const hiddenWork = [t.hiddenWorking ? `${t.hiddenWorking} in progress` : '', t.hiddenBlocked ? `${t.hiddenBlocked} blocked` : ''].filter(Boolean).join(', ');
-    const whom = who.filter.kind === 'session' ? ` for ${participantText(who.filter, label)}` : who.filter.kind === 'none' ? ' with no participant recorded' : '';
-    summary.textContent = `${plural(t.matching, 'matching task', 'matching tasks')}${whom}${t.context ? ` · ${t.context} shown for context` : ''} · ${t.hidden} hidden by filter${hiddenWork ? ` (${hiddenWork})` : ''}. Totals, Now, Readiness and Sessions cover the whole plan.`;
-  }
-  const notice = testid(el('p', 'ap-note ap-focus-notice'), 'focus-notice');
-  notice.setAttribute('role', 'status');
-  box.append(bar, summary, notice);
-  return box;
-}
-
-/** No task matches: header, full totals and controls stay; one action shows every task again. */
-function noMatches(view: TaskProjection, reading: ReadingView, who: Attribution, label: (id: string) => string) {
-  const box = testid(el('div', 'ap-focus-empty'), 'focus-empty');
-  box.append(el('p', '', 'No tasks match the task filter.'));
-  if (who.filter.kind === 'session' && !who.index.sessions.includes(who.filter.sessionId)) {
-    box.append(el('p', 'ap-note', `This plan no longer records ${participantText(who.filter, label)} on any task.`));
-  }
-  box.append(el('p', 'ap-note', `${plural(view.totals.hidden, 'task row is', 'task rows are')} hidden by it. They are still in the plan, and the totals above count every task.`));
-  // The button leaves with this empty state: once, hand focus to the owning Tasks heading with a
-  // short notice (docs/ui.md Restoration), unless focus already moved elsewhere.
-  button(box, 'focus-clear', 'Clear task filters', () => reading.set(CLEARED, (root) => {
-    const active = document.activeElement;
-    if (!document.hasFocus() || (active && active !== document.body)) return;
-    const article = root.querySelector<HTMLElement>('article[data-reading]');
-    const heading = article?.querySelector<HTMLElement>('.ap-tasks-h');
-    if (!heading) return;
-    heading.focus({ preventScroll: true });
-    const notice = article!.querySelector<HTMLElement>('[data-testid="focus-notice"]');
-    if (notice) notice.textContent = 'Task filters cleared, so focus moved to Tasks.';
-  }), 'outline');
-  return box;
-}
-
-/** Both task filters back to their defaults. */
-const CLEARED = { status: 'all', participant: ALL_PARTICIPANTS } as const;
+/** Every task filter back to its default (Show all, All participants, no state chip). */
+const CLEARED = { status: 'all', participant: ALL_PARTICIPANTS, state: null } as const;
 
 /** Plan article of the current paint that holds `control`, for this exact plan, source and revision. */
 function articleOf(control: HTMLElement, plan: PlanView) {
@@ -483,11 +323,18 @@ function articleOf(control: HTMLElement, plan: PlanView) {
 }
 
 /** Expand all / Collapse all: every task disclosure of this plan (filtered branches too), nothing else. */
-function setDisclosures(control: HTMLElement, plan: PlanView, open: boolean) {
+function setDisclosures(control: HTMLElement, plan: PlanView, reading: ReadingView, open: boolean) {
   const article = articleOf(control, plan);
-  if (!article) return;
-  for (const d of article.querySelectorAll<HTMLDetailsElement>('ul.ap-items details.ap-group')) if (d.open !== open) d.open = open;
+  if (!article || !reading.current()) return;
+  reading.remember({ doneOpen: open, skippedOpen: open });
+  for (const d of article.querySelectorAll<HTMLDetailsElement>('ul.ap-items details.ap-group, ul.ap-items details.ap-fold')) if (d.open !== open) d.open = open;
 }
+
+const JUMP_COPY: Record<JumpKind, { active: [string, string, string]; closed: [string, string, string] }> = {
+  // [button with targets, button without, notice prefix]
+  working: { active: ['Jump to in progress', 'No tasks in progress', 'In progress'], closed: ['Jump to reported in progress', 'No tasks reported in progress', 'Reported in progress'] },
+  blocked: { active: ['Jump to blocked', 'No blocked tasks', 'Blocked'], closed: ['Jump to reported blocked', 'No tasks reported blocked', 'Reported blocked'] },
+};
 
 /** Next reported working/blocked task of the whole plan, in hierarchy order, wrapping. */
 function jump(control: HTMLElement, plan: PlanView, kind: JumpKind, targets: ItemView[], reading: ReadingView, label: string) {
@@ -496,16 +343,19 @@ function jump(control: HTMLElement, plan: PlanView, kind: JumpKind, targets: Ite
   const next = article && state ? nextJump(targets, state.cursor[kind]) : null;
   if (!article || !state || !next) return;
   reading.remember({ cursor: { ...state.cursor, [kind]: next.item.id } });
-  revealTask(article, plan, next.item.id, 'focus-notice', `${label}${targets.length > 1 ? ` ${next.index + 1} of ${targets.length}` : ''}: ${next.item.title}`);
+  revealTask(article, plan, next.item.id, `${label}${targets.length > 1 ? ` ${next.index + 1} of ${targets.length}` : ''}: ${next.item.title}`);
 }
 
-/** Who is involved: the main session and its children, live state kept apart from task status. */
-export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env) {
+/**
+ * Who is involved. `compact`: one footer row for the main session (live state and a verified Open),
+ * and a count of the other sessions, whose full facts are in the Sessions panel (⋯ → Sessions).
+ */
+export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env, compact = false, openAll?: () => void) {
   const list = participants(plan, detail);
-  const section = testid(el('section', 'ap-section'), 'contributors');
-  section.append(el('h3', 'ap-h', list.length > 1 ? 'Sessions' : 'Session'));
+  const section = testid(el('section', compact ? 'ap-section ap-sessions' : 'ap-section'), 'contributors');
+  if (!compact) section.append(el('h3', 'ap-h', list.length > 1 ? 'Sessions' : 'Session'));
   const wrap = el('div', 'ap-people');
-  for (const p of list) {
+  for (const p of compact ? list.slice(0, 1) : list) {
     const { cov, node } = sessionChip(plan, p.sessionId, env);
     const row = testid(el('div', 'ap-person'), `contributor-${p.sessionId}`);
     row.dataset.role = p.role;
@@ -517,6 +367,12 @@ export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env)
     wrap.append(row);
   }
   section.append(wrap);
+  if (compact && list.length > 1 && openAll) {
+    const more = testid(el('button', 'ap-link ap-sessions-more', `${plural(list.length - 1, 'more session', 'more sessions')}`), 'sessions-more');
+    more.type = 'button';
+    more.addEventListener('click', openAll);
+    section.append(more);
+  }
   return section;
 }
 
@@ -593,30 +449,32 @@ const READINGS = new WeakMap<Element, ReadingView>();
  */
 function showTask(control: HTMLElement, plan: PlanView, itemId: string) {
   const article = articleOf(control, plan);
-  if (article) revealTask(article, plan, itemId, 'readiness-notice', '');
+  if (article) revealTask(article, plan, itemId, '');
 }
 
 /**
- * The one navigation path (readiness links and jumps). It searches the whole plan: a target a task
- * filter hides clears the filters once and is revealed after that repaint, announced as such.
- * Opens ancestors, focuses the row and scrolls it into view once, instantly.
+ * The one navigation path (prerequisite links, jumps, History and search hand-offs). It searches
+ * the whole plan: a target a task filter hides clears every task filter once and is revealed after
+ * that repaint, announced as such. Opens its fold and ancestors, focuses the row and scrolls it
+ * into view once, instantly.
  */
-function revealTask(article: HTMLElement, plan: PlanView, itemId: string, noticeId: 'readiness-notice' | 'focus-notice', message: string) {
+function revealTask(article: HTMLElement, plan: PlanView, itemId: string, message: string) {
   const target = [...article.querySelectorAll<HTMLElement>('[data-testid^="item-"]')].find((n) => n.tagName === 'LI' && n.dataset.testid === `item-${itemId}`);
-  const own = article.querySelector<HTMLElement>(`[data-testid="${noticeId}"]`);
   const notice = article.querySelector<HTMLElement>('[data-testid="focus-notice"]');
-  if (!target) { if (own) own.textContent = 'That task is no longer shown in this plan.'; return; }
+  if (!target) { if (notice) notice.textContent = 'That task is no longer shown in this plan.'; return; }
   const reading = READINGS.get(article);
-  // A row kept only as context does not match either, so it also shows the whole plan again.
-  if (target.closest('[hidden]') || target.dataset.focus === 'context') {
+  // A row kept only as context, or a blocker kept in view, is not a filter match either, so an
+  // explicit reveal shows the whole plan again (a matching target keeps the filters).
+  if (target.closest('[hidden]') || target.dataset.focus === 'context' || target.dataset.focus === 'retained') {
     if (!reading) return;
     reading.set(CLEARED, (root) => {
       const next = [...root.querySelectorAll<HTMLElement>('article.ap-plan')].find((a) => a.dataset.testid === article.dataset.testid && a.dataset.source === article.dataset.source && a.dataset.revision === article.dataset.revision);
-      if (next) revealTask(next, plan, itemId, 'focus-notice', `Showing all tasks so this task is visible.${message ? ` ${message}` : ''}`);
+      if (next) revealTask(next, plan, itemId, `Showing all tasks so this task is visible.${message ? ` ${message}` : ''}`);
     });
     return;
   }
-  for (const n of article.querySelectorAll<HTMLElement>('[data-testid="readiness-notice"],[data-testid="focus-notice"]')) n.textContent = '';
+  if (notice) notice.textContent = '';
+  // Opening a Done/Skipped fold records it in the reading (its toggle listener), so it stays open.
   for (let d = target.parentElement?.closest('details'); d && article.contains(d); d = d.parentElement?.closest('details')) if (!d.open) d.open = true;
   target.dataset.navTarget = '';
   target.addEventListener('blur', () => { delete target.dataset.navTarget; }, { once: true });
@@ -630,7 +488,7 @@ function revealTask(article: HTMLElement, plan: PlanView, itemId: string, notice
  * article (same plan ID, source and revision), never a same-ID task elsewhere.
  */
 export function revealCurrentTask(article: HTMLElement, plan: PlanView, itemId: string, message: string) {
-  if (articleOf(article, plan)) revealTask(article, plan, itemId, 'focus-notice', message);
+  if (articleOf(article, plan)) revealTask(article, plan, itemId, message);
 }
 
 function navLink(plan: PlanView, itemId: string, text: string, name: string) {
@@ -643,7 +501,7 @@ function navLink(plan: PlanView, itemId: string, text: string, name: string) {
 }
 
 /** Status glyph whose meaning is spoken by the adjacent status text instead. */
-const quietGlyph = (status: ItemView['status']) => { const g = glyph(status); g.removeAttribute('role'); g.removeAttribute('aria-label'); g.setAttribute('aria-hidden', 'true'); return g; };
+const quietGlyph = (status: ItemView['status']) => statusMark(status, { decorative: true, className: 'ap-glyph' });
 
 function prerequisiteRow(plan: PlanView, p: Prerequisite) {
   const li = el('li', 'ap-ready-dep');
@@ -671,19 +529,22 @@ function categoryTag(item: ItemView) {
 /**
  * How long the task has been reported blocked, from the reply's blocked timing anchored to the
  * service clock and advanced by the frame's label ticker (refreshLabels). Unknown and unavailable
- * never read as zero; this is reported status, not real-world waiting or activity.
+ * never read as zero; this is reported status, not real-world waiting or activity. `hook`: the
+ * row's expanded facts carry the test hook; its one-line copy on the collapsed row does not.
  */
-function blockedWaitLabel(item: ItemView, detail: PlanDetail, env: Env) {
+function blockedWaitLabel(item: ItemView, detail: PlanDetail, env: Env, hook = true) {
   const w = blockedWait(detail, item);
   if (w.kind === 'unknown' || w.kind === 'unavailable') {
-    const s = testid(el('span', 'ap-elapsed', w.kind === 'unknown' ? 'Unknown' : 'Unavailable'), `blocked-elapsed-${item.id}`);
+    const s = el('span', 'ap-elapsed', w.kind === 'unknown' ? 'Unknown' : 'Unavailable');
+    if (hook) testid(s, `blocked-elapsed-${item.id}`);
     s.dataset.kind = 'unknown';
     s.dataset.timing = w.kind;
     s.title = w.kind === 'unknown' ? 'The progress service couldn’t tell when this task was reported blocked.' : 'This progress service doesn’t report waiting times.';
     return s;
   }
   const a = w.anchor;
-  const t = testid(el('time', 'ap-elapsed'), `blocked-elapsed-${item.id}`);
+  const t = el('time', 'ap-elapsed');
+  if (hook) testid(t, `blocked-elapsed-${item.id}`);
   t.dateTime = a.since;
   Object.assign(t.dataset, { kind: a.kind, timing: a.kind, elapsed: String(a.elapsedAtRead), received: String(a.receivedAt) });
   const at = absoluteTime(a.since, env.locale);
@@ -692,107 +553,6 @@ function blockedWaitLabel(item: ItemView, detail: PlanDetail, env: Env) {
   return t;
 }
 
-/** Category-independent facts of a Needs you row: reason, next action and reported wait, each explicit when unknown. */
-function needsYouFacts(item: ItemView, detail: PlanDetail, env: Env) {
-  const b = item.reportedBlocker;
-  const reported = b?.state === 'reported' ? b : null;
-  const dl = testid(el('dl', 'ap-ny-facts'), `needs-you-facts-${item.id}`);
-  dl.dataset.details = b ? b.state : 'unknown';
-  const row = (id: string, term: string, value: string | Node, unknown: boolean) => {
-    const dd = testid(el('dd', unknown ? 'ap-ny-unknown' : ''), id);
-    if (unknown) dd.dataset.unknown = '';
-    dd.append(value);
-    const pair = el('div');
-    pair.append(el('dt', '', term), dd);
-    dl.append(pair);
-  };
-  if (b?.state === 'invalid') row(`needs-you-details-${item.id}`, 'Details', 'Reported details couldn’t be read', true);
-  else {
-    row(`needs-you-reason-${item.id}`, 'Reason', reported?.reason ?? 'Unknown', !reported?.reason);
-    row(`needs-you-next-${item.id}`, 'Next action', reported?.nextAction ?? 'Unknown', !reported?.nextAction);
-  }
-  row(`needs-you-wait-${item.id}`, 'Reported wait', blockedWaitLabel(item, detail, env), false);
-  return dl;
-}
-
-function readinessEntry(plan: PlanView, entry: ReadinessEntry, env: Env, compareSession: string | null, detail: PlanDetail) {
-  const { item } = entry;
-  const needsYou = entry.group === 'blocked';
-  const li = testid(el('li', needsYou ? 'ap-ready-entry ap-ny-entry' : 'ap-ready-entry'), `readiness-entry-${item.id}`);
-  Object.assign(li.dataset, { source: plan.sourceId, plan: plan.id, item: item.id, group: entry.group });
-  const head = el('div', 'ap-ready-head');
-  head.append(glyph(item.status), navLink(plan, item.id, item.title, `Show task: ${item.title}`));
-  if (needsYou) head.append(categoryTag(item));
-  li.append(head);
-  if (needsYou) li.append(needsYouFacts(item, detail, env));
-  // Labels from the current host only for the verified bound source; a foreign same-ID session
-  // must not borrow this host's titles.
-  const trusted = trustedSource(plan, env);
-  const label = recordedLabel(plan, env);
-  const meta = el('div', 'ap-ready-meta');
-  if (entry.parent.kind === 'known') meta.append(el('span', '', `In ${entry.parent.title}`));
-  else if (entry.parent.kind === 'unknown') meta.append(el('span', '', 'Parent group unavailable'));
-  const state = (id: string) => (trusted ? liveLabel(coverageFor(id, plan.directory, env.live)).label : 'from another OpenCode setup');
-  const who = assignment(entry, compareSession, plan.sourceId, env.boundSource);
-  li.dataset.assignment = who.kind;
-  if (who.kind === 'none' && entry.linkedSessionIds.length) {
-    // A session link is context only: it is never shown as, or compared like, an assignment.
-    li.dataset.linked = entry.linkedSessionIds.join(' ');
-    const holder = testid(el('span', 'ap-ready-links'), `readiness-link-${item.id}`);
-    for (const id of entry.linkedSessionIds) {
-      const line = el('span', 'ap-ready-who');
-      line.dataset.session = id;
-      line.append('Linked to ', el('b', '', label(id)), ` · ${state(id)} (no recorded assignment)`);
-      holder.append(line);
-    }
-    meta.append(holder);
-  } else if (who.kind === 'none') meta.append(el('span', '', 'No assignee recorded'));
-  else if (who.kind === 'selected') meta.append(testid(el('span', '', 'Assigned to the selected session'), `readiness-assignee-${item.id}`));
-  else {
-    // Plain wrapping text (no truncating chip): the name must stay readable at narrow widths.
-    const holder = testid(el('span', 'ap-ready-who'), `readiness-assignee-${item.id}`);
-    holder.append('Assigned to ', el('b', '', label(who.sessionId)), ` · ${state(who.sessionId)}`);
-    meta.append(holder);
-  }
-  // Who supplied the current details: their own server-recorded provenance, never inferred from
-  // the task's report history below (those reporters did not necessarily write this text).
-  const b = needsYou && item.reportedBlocker?.state === 'reported' ? item.reportedBlocker : null;
-  if (b) {
-    const by = testid(el('span', 'ap-ready-who'), `needs-you-source-${item.id}`);
-    by.dataset.blockerReport = b.mode;
-    if (b.mode === 'parent-relay') by.append('Details reported by ', el('b', '', label(b.reporterSessionId)), ' for ', el('b', '', label(b.attributedSessionId)));
-    else by.append('Details reported directly by ', el('b', '', label(b.reporterSessionId)));
-    meta.append(by);
-  }
-  for (const r of entry.reports) {
-    const text = r.mode === 'parent-relay' ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
-    const span = el('span', '', text);
-    span.dataset.report = r.mode;
-    meta.append(span);
-  }
-  if (needsYou && entry.reporterFallback) {
-    const span = el('span', '', `Last reported by ${label(entry.reporterFallback)} · report mode unavailable`);
-    span.dataset.report = 'reporter';
-    meta.append(span);
-  }
-  if (meta.childNodes.length) li.append(meta);
-  if (entry.recorded !== 'listed') li.append(el('p', 'ap-ready-none', 'No prerequisites recorded'));
-  else {
-    const deps = el('ul', 'ap-ready-deps');
-    deps.setAttribute('aria-label', `Prerequisites of ${item.title}`);
-    for (const p of entry.prerequisites) deps.append(prerequisiteRow(plan, p));
-    li.append(deps);
-  }
-  if (entry.incomplete) li.append(el('p', 'ap-doc-warn', 'A recorded prerequisite is unavailable, so this task can’t be shown as ready.'));
-  return li;
-}
-
-const READINESS_GROUPS: Record<ReadinessGroup, { title: string; note?: string }> = {
-  ready: { title: 'Ready to start' },
-  waiting: { title: 'Waiting on prerequisites' },
-  skipped: { title: 'Waiting — skipped prerequisite', note: 'A skipped prerequisite doesn’t count as done.' },
-  blocked: { title: 'Needs you', note: 'Reported as blocked. Each stays here until an agent reports otherwise. A wait can be for another session or person.' },
-};
 /** What an empty Needs you may claim: only a current read with capture on is "no reported blockers". */
 const NEEDS_YOU_EMPTY: Record<Extract<Attention, { state: 'ready' }>['qualifier'], string> = {
   current: 'No reported blockers.',
@@ -805,73 +565,6 @@ const INVALID_COPY: Record<InvalidReason, string> = {
   cycle: 'some tasks list each other as prerequisites',
 };
 
-function readinessGroup(plan: PlanView, group: ReadinessGroup, entries: ReadinessEntry[], env: Env, compareSession: string | null, detail: PlanDetail, heading: 'h4' | 'h5' = 'h4') {
-  const box = testid(el('div', `ap-ready-group${heading === 'h5' ? ' ap-ready-sub' : ''}`), `readiness-${group}`);
-  box.dataset.count = String(entries.length);
-  const copy = READINESS_GROUPS[group];
-  box.append(el(heading, 'ap-ready-title', `${copy.title} · ${entries.length}`));
-  if (copy.note && entries.length) box.append(el('p', 'ap-note', copy.note));
-  if (!entries.length) { if (group === 'ready') box.append(el('p', 'ap-note', 'No tasks are ready from the recorded information.')); return box; }
-  const ul = el('ul', 'ap-ready-list');
-  if (group === 'blocked') ul.setAttribute('aria-label', `Reported blockers in ${plan.title}`);
-  for (const e of entries) ul.append(readinessEntry(plan, e, env, compareSession, detail));
-  box.append(ul);
-  return box;
-}
-
-/**
- * Needs you: the readiness Blocked group, renamed and always present for a ready readiness, so an
- * active plan's blocker summary is never hidden by task filters or by an empty list. One row per
- * reported blocked task in stored order; no new action, request or timer.
- */
-function needsYouGroup(plan: PlanView, a: Extract<Attention, { state: 'ready' }>, env: Env, compareSession: string | null, detail: PlanDetail) {
-  const box = readinessGroup(plan, 'blocked', a.rows, env, compareSession, detail);
-  box.classList.add('ap-ny');
-  box.dataset.testid = 'needs-you';
-  box.dataset.qualifier = a.qualifier;
-  if (!a.rows.length) box.append(testid(el('p', a.qualifier === 'current' ? 'ap-note' : 'ap-doc-warn', NEEDS_YOU_EMPTY[a.qualifier]), 'needs-you-empty'));
-  else if (a.qualifier === 'capture-off') box.querySelector('.ap-ready-title')!.after(testid(el('p', 'ap-doc-warn', 'Capture is off: these are the last reported blockers, not current guidance.'), 'needs-you-qualifier'));
-  return box;
-}
-
-/**
- * Read-only readiness of an active plan's tasks, from recorded prerequisites only. Closed plans
- * get nothing; pending, failed or inconsistent detail never shows an empty or ready list.
- */
-export function readinessBlock(plan: PlanView, detail: Loadable<PlanDetail> | null, env: Env, compareSession: string | null) {
-  const r = readiness(plan, detail);
-  if (r.state === 'closed') return null;
-  const section = testid(el('section', 'ap-section ap-readiness'), 'readiness');
-  section.dataset.state = r.state;
-  section.setAttribute('aria-label', 'Task readiness');
-  section.append(el('h3', 'ap-h', 'Readiness'));
-  // No partial list and no "no reported blockers" claim until every task has loaded.
-  if (r.state === 'loading') { section.append(el('p', 'ap-note', 'Readiness and reported blockers appear once every task has loaded.')); return section; }
-  if (r.state === 'unavailable') { section.append(el('p', 'ap-note', 'Readiness and reported blockers are unavailable because the tasks could not be loaded.')); return section; }
-  if (r.state === 'invalid') {
-    section.dataset.reason = r.reason;
-    section.append(el('p', 'ap-doc-warn', `Readiness is unavailable for this report: ${INVALID_COPY[r.reason]}. The tasks are shown below as reported.`));
-    return section;
-  }
-  const value = (detail as Extract<Loadable<PlanDetail>, { state: 'ready' }>).value;
-  if (!env.view.fresh) { section.dataset.stale = 'true'; section.append(el('p', 'ap-doc-warn', 'Last reported readiness. It may be out of date and isn’t a current recommendation.')); }
-  const notice = testid(el('p', 'ap-note'), 'readiness-notice');
-  notice.setAttribute('role', 'status');
-  // Needs you leads: reported blockers stay in view however long the ready list grows.
-  section.append(notice, needsYouGroup(plan, attention(r, env.view) as Extract<Attention, { state: 'ready' }>, env, compareSession, value));
-  section.append(el('p', 'ap-note', 'Based on recorded prerequisites only. Other prerequisites may not be recorded.'));
-  if (r.incomplete) section.append(el('p', 'ap-doc-warn', 'Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.'));
-  section.append(readinessGroup(plan, 'ready', r.groups.ready, env, compareSession, value));
-  if (r.groups.waiting.length || r.groups.skipped.length) {
-    const waiting = readinessGroup(plan, 'waiting', r.groups.waiting, env, compareSession, value);
-    waiting.querySelector('.ap-ready-title')!.textContent = `${READINESS_GROUPS.waiting.title} · ${r.groups.waiting.length + r.groups.skipped.length}`;
-    waiting.dataset.count = String(r.groups.waiting.length + r.groups.skipped.length);
-    if (r.groups.skipped.length) waiting.append(readinessGroup(plan, 'skipped', r.groups.skipped, env, compareSession, value, 'h5'));
-    section.append(waiting);
-  }
-  return section;
-}
-
 export interface DetailHooks {
   detail: Loadable<PlanDetail> | null;
   summary?: SummaryView | null;
@@ -879,11 +572,666 @@ export interface DetailHooks {
   document: { get: () => Loadable<DocumentBody> | null; request: () => void };
 }
 
+/** One painted plan detail: everything a row, chip or panel needs, computed once per paint. */
+interface Paint {
+  plan: PlanView;
+  detail: PlanDetail;
+  env: Env;
+  proj: ProgressProjection;
+  reading: ReadingView | null;
+  compareSession: string | null;
+  byId: Map<string, ItemView>;
+  entries: Map<string, ReadinessEntry>;
+  /** Unlocks next per task; only for an active plan with valid recorded dependencies. */
+  unlocks: ReadonlyMap<string, ReadonlySet<string>> | null;
+  who: Attribution | null;
+  label: (id: string) => string;
+  trusted: boolean;
+}
+
+/** Group titles: guidance for an active plan's complete valid detail, reported statuses otherwise. */
+const GROUP_TITLE: Record<ProgressSection, [guided: string, reported: string]> = {
+  now: ['Now', 'Reported working'],
+  'needs-you': ['Needs you', 'Reported blocked'],
+  'up-next': ['Up next', 'Pending'],
+  done: ['Done', 'Done'],
+  skipped: ['Skipped', 'Skipped'],
+};
+
+/** Chip words, in display order. A chip is a whole-plan count, never a filtered total. */
+const CHIP_WORD: [ProgressState, string, string][] = [
+  // [state, guided word, reported word]
+  ['working', 'in progress', 'in progress'],
+  ['blocked', 'needs you', 'blocked'],
+  ['ready', 'ready', 'ready'],
+  ['waiting', 'waiting', 'waiting'],
+  ['pending', 'pending', 'pending'],
+  ['done', 'done', 'done'],
+  ['skipped', 'skipped', 'skipped'],
+];
+const STATE_WORD: Record<ProgressState, string> = { working: 'In progress', blocked: 'Blocked', ready: 'Ready to start', waiting: 'Waiting on prerequisites', pending: 'Pending', done: 'Done', skipped: 'Skipped' };
+
+/** Frame-local, never stored: which ⓘ explanations and plan panels are open, and a task copy preview. */
+const openInfo = new Set<string>();
+// Handles belong to a DOM paint, not to its persistent open-state key. Keep the
+// current owner after commit too: task facts can create explanations on toggle.
+let infoPaint: HTMLElement | null = null;
+const infoHandles = new Map<HTMLElement | null, Set<InfoHandle>>();
+export function beginInfoPaint(root: HTMLElement) { infoPaint = root; infoHandles.set(root, new Set()); }
+/** Called after replacement, before focus restoration. Disposing is not a user close. */
+export function commitInfoPaint(root: HTMLElement) {
+  for (const [owner, handles] of infoHandles) if (owner !== root) {
+    for (const handle of handles) handle.dispose();
+    infoHandles.delete(owner);
+  }
+}
+/** Release an in-place subtree before removing it; open-state keys remain reading-local. */
+export function disposeInfoWithin(root: HTMLElement) {
+  for (const handles of infoHandles.values()) for (const handle of handles) {
+    if (!root.contains(handle.root)) continue;
+    handle.dispose();
+    handles.delete(handle);
+  }
+}
+type PanelKind = 'task-view' | 'document' | 'sessions';
+let panel: { plan: string; kind: PanelKind } | null = null;
+let copy: { plan: string; item: string; generation: number; status: string; text?: string } | null = null;
+let copyGeneration = 0;
+let readingEpoch = 0;
+/** Called by the reading owner, including transitions that never paint a plan detail. */
+export function retireReadingUi() {
+  readingEpoch++;
+  for (const handles of infoHandles.values()) for (const handle of handles) handle.dispose();
+  infoHandles.clear();
+  infoPaint = null;
+  openInfo.clear();
+  panel = null;
+  copy = null;
+}
+
+/** An ⓘ explanation whose open state survives this frame's repaints (same key), never stored. */
+export function info(key: string, label: string, content: string | string[] | Node) {
+  const epoch = readingEpoch;
+  const owner = infoPaint;
+  const h = infoDisclosure({ label, content, open: openInfo.has(key), onToggle: (open) => { if (epoch !== readingEpoch || owner !== infoPaint) return; if (open) openInfo.add(key); else openInfo.delete(key); } });
+  h.root.dataset.info = key;
+  let handles = infoHandles.get(infoPaint);
+  if (!handles) infoHandles.set(infoPaint, handles = new Set());
+  handles.add(h);
+  return h.root;
+}
+
+/** Repaint this reading, then run `then` once on the new root. */
+const repaint = (p: Paint, then?: (root: HTMLElement) => void) => p.reading?.set({}, then);
+const articleIn = (root: HTMLElement, plan: PlanView) => [...root.querySelectorAll<HTMLElement>('article.ap-plan[data-reading]')].find((a) => a.dataset.testid === `plan-${plan.id}` && a.dataset.source === plan.sourceId) ?? null;
+const focusIn = (plan: PlanView, selector: string) => (root: HTMLElement) => articleIn(root, plan)?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+
+/** State chips: legend and filter (one state at a time; choosing it again clears it). Zero chips are absent. */
+function stateChipRow(p: Paint) {
+  const { proj, reading } = p;
+  const selected = reading?.state ?? null;
+  const chips = CHIP_WORD.map(([state, guided, reported]) => stateChip({
+    state, count: proj.counts.get(state) ?? 0, label: proj.guidance ? guided : reported, pressed: selected === state,
+    onToggle: reading ? () => reading.set({ state: selected === state ? null : state }, focusIn(p.plan, `[data-testid="state-chip"][data-state="${state}"]`)) : undefined,
+  }));
+  const group = stateChips('Filter tasks by state', chips);
+  if (!group) return null;
+  const row = el('div', 'ap-chip-row');
+  row.append(group);
+  // The explanation follows the last chip in the same wrapping flow.
+  group.append(info(`${p.plan.key}|counts`, 'About these counts', proj.guidance
+    ? ['Counts cover every task in this plan, whatever filter is shown.', 'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.', 'Needs you lists tasks reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person.']
+    : ['Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.']));
+  return row;
+}
+
+/** Concrete qualifications, always visible as compact lines (never behind ⓘ). */
+function qualifiers(p: Paint) {
+  const box = testid(el('div', 'ap-quals'), 'progress-qualifiers');
+  const r = p.proj.readiness;
+  box.dataset.readiness = r.state;
+  if (r.state === 'invalid') { box.dataset.reason = r.reason; box.append(testid(warningLine(`Readiness is unavailable for this report: ${INVALID_COPY[r.reason]}. The tasks are shown as reported.`), 'readiness-invalid')); }
+  if (r.state !== 'ready') return box;
+  const a = attention(r, p.env.view) as Extract<Attention, { state: 'ready' }>;
+  box.dataset.qualifier = a.qualifier;
+  if (!p.env.view.fresh) { box.dataset.stale = 'true'; box.append(testid(warningLine('Last reported readiness. It may be out of date and isn’t a current recommendation.'), 'readiness-stale')); }
+  if (!a.rows.length && a.qualifier !== 'current') box.append(testid(warningLine(NEEDS_YOU_EMPTY[a.qualifier]), 'needs-you-empty'));
+  else if (a.rows.length && a.qualifier === 'capture-off') box.append(testid(warningLine('Capture is off: these are the last reported blockers, not current guidance.'), 'needs-you-qualifier'));
+  if (r.incomplete) box.append(testid(warningLine('Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.'), 'readiness-incomplete'));
+  return box;
+}
+
+/** The filter line: what an active filter shows, kept blockers counted apart, and one Clear. */
+function filterLine(p: Paint) {
+  const { proj, reading } = p;
+  const line = testid(el('div', 'ap-filter-line'), 'focus-summary');
+  const tasks = [...proj.rows.values()].filter((r) => r.item.kind === 'task').length;
+  Object.assign(line.dataset, { rows: String(tasks), matching: String(proj.matching), retained: String(proj.retained), context: String(proj.context), hidden: String(proj.hidden) });
+  if (!proj.filtered || !reading) return line;
+  const parts: string[] = [];
+  if (reading.state) parts.push(`${proj.guidance && reading.state === 'blocked' ? 'Needs you' : STATE_WORD[reading.state]}${(proj.counts.get(reading.state) ?? 0) === 0 ? ' (no tasks have this state now)' : ''}`);
+  if (reading.status === 'unfinished') parts.push('Unfinished');
+  if (reading.participant.kind !== 'all' && p.who) parts.push(reading.participant.kind === 'none' ? 'No participant recorded' : `Participant ${participantText(reading.participant, p.label)}`);
+  const text = el('span', 'ap-filter-text', `${parts.join(' · ')}: ${proj.matching} of ${plural(tasks, 'task', 'tasks')}`);
+  line.append(text);
+  if (proj.retained) line.append(el('span', 'ap-filter-kept', `${plural(proj.retained, 'blocked task', 'blocked tasks')} kept in view`));
+  if (proj.context) line.append(el('span', 'ap-muted', `${proj.context} shown for context`));
+  button(line, 'focus-clear-filters', 'Clear filters', () => clearFilters(p), 'ghost');
+  return line;
+}
+
+/** Clear every task filter; the button leaves, so focus goes to the Tasks heading once with a short notice. */
+function clearFilters(p: Paint) {
+  p.reading?.set(CLEARED, (root) => {
+    const active = document.activeElement;
+    if (!document.hasFocus() || (active && active !== document.body)) return;
+    const article = articleIn(root, p.plan);
+    const heading = article?.querySelector<HTMLElement>('.ap-tasks-h');
+    if (!heading) return;
+    heading.focus({ preventScroll: true });
+    const notice = article!.querySelector<HTMLElement>('[data-testid="focus-notice"]');
+    if (notice) notice.textContent = 'Task filters cleared, so focus moved to Tasks.';
+  });
+}
+
+/** No task matches: full counts and controls stay; kept blockers stay listed; one action clears. */
+function noMatches(p: Paint) {
+  const box = testid(el('div', 'ap-focus-empty'), 'focus-empty');
+  box.append(el('p', '', p.proj.retained ? 'No tasks match the filter. Blocked tasks stay listed below.' : 'No tasks match the filter.'));
+  const f = p.reading?.participant;
+  if (f?.kind === 'session' && p.who && !p.who.index.sessions.includes(f.sessionId)) box.append(el('p', 'ap-note', `This plan no longer records ${participantText(f, p.label)} on any task.`));
+  box.append(el('p', 'ap-note', 'They are still in the plan, and the counts above cover every task.'));
+  button(box, 'focus-clear', 'Clear task filters', () => clearFilters(p), 'outline');
+  return box;
+}
+
+/** The right-hand line of a collapsed row: elapsed, reported wait, readiness word. */
+function rowMeta(p: Paint, row: ProgressRow) {
+  const { item } = row;
+  const meta = el('span', 'ap-trow-meta');
+  if (item.status === 'working') { const e = elapsedLabel(p.plan, item, p.detail, p.env); if (e) meta.append(e); }
+  else if (item.status === 'blocked' && p.proj.guidance) meta.append(categoryTag(item), blockedWaitLabel(item, p.detail, p.env, false));
+  else if (row.state === 'ready') { const w = el('span', 'ap-trow-ready', 'Ready'); w.setAttribute('aria-hidden', 'true'); meta.append(w); }
+  else if (row.state === 'waiting') {
+    const open = (item.dependencies ?? []).filter((id) => p.byId.get(id)?.status !== 'done').length;
+    if (open) meta.append(el('span', 'ap-muted', `Waits on ${open}`));
+  }
+  if (item.status === 'blocked' && item.reportedBlocker?.state === 'invalid') meta.append(testid(warningLine('Reported details couldn’t be read', 'warning', 'span'), `task-blocker-warning-${item.id}`));
+  return meta.childNodes.length ? meta : null;
+}
+
+/** Recorded prerequisites of any task, in recorded order (done ones too); never inferred. */
+function prerequisitesOf(p: Paint, item: ItemView): Prerequisite[] {
+  const entry = p.entries.get(item.id);
+  if (entry) return entry.prerequisites;
+  return (item.dependencies ?? []).map((id): Prerequisite => {
+    const dep = p.byId.get(id);
+    return !dep ? { kind: 'unresolved', id } : dep.kind === 'task' ? { kind: 'task', id, status: dep.status, title: dep.title } : { kind: 'not-task', id, title: dep.title };
+  });
+}
+
 /**
- * `compareSession`: the session readiness compares recorded assignees with (rail: the selected
- * host session; board: an explicit session filter). Null keeps neutral assignee labels.
+ * The expanded facts of one task, each labelled, and their plain text for Copy details. Reason,
+ * next step and wait for a reported blocker; recorded prerequisites (with what "none recorded"
+ * means behind ⓘ); Unlocks next; group; assignee (or "Not recorded"); every distinct report.
  */
-export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null }) {
+function rowFacts(p: Paint, row: ProgressRow) {
+  const { item } = row;
+  const dl = testid(el('dl', 'ap-rfacts'), `task-facts-${item.id}`);
+  const text: [string, string][] = [];
+  const add = (term: string | Node, value: Node | string, plain: string, id?: string) => {
+    const pair = el('div');
+    const dt = el('dt');
+    dt.append(term);
+    const dd = el('dd');
+    if (id) testid(dd, id);
+    dd.append(value);
+    pair.append(dt, dd);
+    dl.append(pair);
+    // A term with an ⓘ copies as its own word, never the explanation's text.
+    text.push([typeof term === 'string' ? term : (term as HTMLElement).dataset?.term ?? '', plain]);
+    return dd;
+  };
+  text.push(['Status', row.state ? STATE_WORD[row.state] : STATUS_LABEL[item.status]]);
+  // Reported blocker details: the same facts and hooks as before, now in the row.
+  if (item.status === 'blocked') {
+    const b = item.reportedBlocker;
+    const reported = b?.state === 'reported' ? b : null;
+    dl.dataset.details = b ? b.state : 'unknown';
+    testid(dl, `needs-you-facts-${item.id}`);
+    const unknown = (dd: HTMLElement, is: boolean) => { if (is) { dd.dataset.unknown = ''; dd.classList.add('ap-ny-unknown'); } };
+    if (b?.state === 'invalid') unknown(add('Details', 'Reported details couldn’t be read', 'Reported details couldn’t be read', `needs-you-details-${item.id}`), true);
+    else {
+      unknown(add('Reason', reported?.reason ?? 'Unknown', reported?.reason ?? 'Unknown', `needs-you-reason-${item.id}`), !reported?.reason);
+      unknown(add('Next step', reported?.nextAction ?? 'Unknown', reported?.nextAction ?? 'Unknown', `needs-you-next-${item.id}`), !reported?.nextAction);
+    }
+    const wait = blockedWaitLabel(item, p.detail, p.env);
+    add('Reported wait', wait, wait.textContent ?? '', `needs-you-wait-${item.id}`);
+  }
+  if (item.status === 'working') { const e = elapsedLabel(p.plan, item, p.detail, p.env); if (e) { testid(e, `task-elapsed-${item.id}`); add('Reported working', e, e.textContent ?? ''); } }
+  // Needs first: every recorded prerequisite in recorded order, including done ones.
+  const prereqs = prerequisitesOf(p, item);
+  const needsTerm = el('span', 'ap-rfacts-term');
+  needsTerm.dataset.term = 'Needs first';
+  needsTerm.append('Needs first', info(`${p.plan.key}|needs|${item.id}`, `About prerequisites of ${item.title}`, ['Only prerequisites an agent recorded are listed. Others may not be recorded, so “No prerequisites recorded” doesn’t mean there are none.', 'A blocked task doesn’t mean anyone must act; it stays blocked until an agent reports otherwise.']));
+  if (!prereqs.length) add(needsTerm, el('span', 'ap-ready-none', 'No prerequisites recorded'), 'No prerequisites recorded');
+  else {
+    const ul = el('ul', 'ap-ready-deps');
+    ul.setAttribute('aria-label', `Prerequisites of ${item.title}`);
+    for (const pr of prereqs) ul.append(prerequisiteRow(p.plan, pr));
+    add(needsTerm, ul, prereqs.map((pr) => pr.kind === 'task' ? `${pr.title} (${STATUS_LABEL[pr.status]})` : pr.kind === 'not-task' ? `${pr.title} (a group)` : `${pr.id} (unavailable)`).join('; '));
+  }
+  if (p.entries.get(item.id)?.incomplete) dl.append(el('p', 'ap-doc-warn', 'A recorded prerequisite is unavailable, so this task can’t be shown as ready.'));
+  // Unlocks next: tasks whose last unfinished recorded prerequisite this is (if it were reported done).
+  const unlocks = [...p.unlocks?.get(item.id) ?? []].map((id) => p.byId.get(id)).filter((i): i is ItemView => !!i);
+  if (unlocks.length) {
+    const ul = el('ul', 'ap-ready-deps');
+    ul.setAttribute('aria-label', `Tasks ${item.title} would unlock`);
+    for (const u of unlocks) { const li = el('li', 'ap-ready-dep'); li.append(quietGlyph(u.status), navLink(p.plan, u.id, u.title, `Show task: ${u.title}`), el('span', 'ap-muted', STATUS_LABEL[u.status])); ul.append(li); }
+    const term = el('span', 'ap-rfacts-term');
+    term.dataset.term = 'Unlocks';
+    term.append('Unlocks', info(`${p.plan.key}|unlocks|${item.id}`, `About what ${item.title} unlocks`, 'If this task is reported done, each task listed would have every recorded prerequisite done. From recorded prerequisites only; not permission to start.'));
+    add(term, ul, unlocks.map((u) => u.title).join('; '));
+  }
+  // Group context (attention order shows tasks outside their hierarchy).
+  if (item.parentId) {
+    const parent = p.byId.get(item.parentId);
+    add('Group', parent ? parent.title : 'Parent group unavailable', parent ? parent.title : 'Parent group unavailable');
+  }
+  // Assignee: recorded assignment only; a link is context, never an assignment.
+  const state = (id: string) => (p.trusted ? liveLabel(coverageFor(id, p.plan.directory, p.env.live)).label : 'from another OpenCode setup');
+  const who = assignment({ assigneeSessionId: item.assigneeSessionId ?? null }, p.compareSession, p.plan.sourceId, p.env.boundSource);
+  const linked = item.assigneeSessionId ? [] : [...new Set(p.detail.links.filter((l) => l.itemIds.includes(item.id)).map((l) => l.sessionId))];
+  if (who.kind === 'none') {
+    const dd = add('Assignee', 'Not recorded', 'Not recorded', `task-assignee-${item.id}`);
+    dd.dataset.assignment = 'none';
+    if (linked.length) {
+      const holder = testid(el('span', 'ap-ready-links'), `readiness-link-${item.id}`);
+      for (const id of linked) { const line = el('span', 'ap-ready-who'); line.dataset.session = id; line.append('Linked to ', el('b', '', p.label(id)), ` · ${state(id)} (no recorded assignment)`); holder.append(line); }
+      dd.append(holder);
+      text[text.length - 1][1] += `; linked to ${linked.map(p.label).join(', ')} (no recorded assignment)`;
+    }
+  } else {
+    const name = who.kind === 'selected' ? 'the selected session' : p.label(who.sessionId);
+    const holder = testid(el('span', 'ap-ready-who'), `readiness-assignee-${item.id}`);
+    holder.append(el('b', '', who.kind === 'selected' ? 'The selected session' : name), who.kind === 'other' ? ` · ${state(who.sessionId)}` : '');
+    const dd = add('Assignee', holder, holder.textContent ?? '', `task-assignee-${item.id}`);
+    dd.dataset.assignment = who.kind;
+  }
+  // Provenance: blocker-detail authorship and each distinct task report, joined only when the
+  // recorded tuples (mode, reporter, attributed session) are the same, never by name alone.
+  const lines: { text: string; report?: string; blocker?: string }[] = [];
+  const b = item.status === 'blocked' && item.reportedBlocker?.state === 'reported' ? item.reportedBlocker : null;
+  const reports = reportsFor(item.id, p.detail.contributions);
+  const describe = (mode: string, reporter: string, attributed: string) => mode === 'parent-relay' ? `reported by ${p.label(reporter)} for ${p.label(attributed)}` : `reported directly by ${p.label(reporter)}`;
+  let joined = false;
+  if (b) {
+    const same = reports.find((r) => r.mode === b.mode && r.reporterSessionId === b.reporterSessionId && r.attributedSessionId === b.attributedSessionId);
+    if (same && reports.length === 1) { lines.push({ text: `Details and task ${describe(b.mode, b.reporterSessionId, b.attributedSessionId)}`, report: same.mode, blocker: b.mode }); joined = true; }
+    else lines.push({ text: `Details ${describe(b.mode, b.reporterSessionId, b.attributedSessionId)}`, blocker: b.mode });
+  }
+  if (!joined) for (const r of reports) lines.push({ text: `Task ${describe(r.mode, r.reporterSessionId, r.attributedSessionId)}`, report: r.mode });
+  if (!reports.length && item.reporterSessionId) lines.push({ text: `Last reported by ${p.label(item.reporterSessionId)} · report mode unavailable`, report: 'reporter' });
+  if (lines.length) {
+    const holder = el('span', 'ap-rfacts-lines');
+    for (const l of lines) {
+      const s = el('span', '', l.text);
+      if (l.report) s.dataset.report = l.report;
+      if (l.blocker) { testid(s, `needs-you-source-${item.id}`); s.dataset.blockerReport = l.blocker; }
+      holder.append(s);
+    }
+    add('Reported', holder, lines.map((l) => l.text).join('; '));
+  }
+  if (p.who && p.who.filter.kind !== 'all' && row.visibility === 'match') add('Participant', reasonsLine(item, p.who), relationsOf(p.who.index, item.id, p.who.filter).map((r) => RELATION_TEXT[r]).join('; ') || 'No participant recorded');
+  return { dl, text };
+}
+
+/** Copy details: a local preview of this row's displayed facts, explicit copy, manual-copy recovery. */
+function copyBox(p: Paint, item: ItemView, text: [string, string][]) {
+  const holder = el('div', 'ap-rcopy');
+  const open = copy?.plan === p.plan.key && copy.item === item.id;
+  if (!open) {
+    const b = testid(el('button', 'ap-rcopy-open', 'Copy details…'), `task-copy-${item.id}`);
+    b.type = 'button';
+    b.prepend(icon('copy'));
+    b.addEventListener('click', () => { if (!p.reading?.current()) return; copy = { plan: p.plan.key, item: item.id, generation: ++copyGeneration, status: '' }; repaint(p, focusIn(p.plan, `[data-testid="task-copy-text-${CSS.escape(item.id)}"]`)); });
+    holder.append(b);
+    return holder;
+  }
+  const body = [item.title, ...text.map(([k, v]) => `${k}: ${v}`)].join('\n');
+  // A changed displayed text is a new preview generation, even within one reading.
+  // A held clipboard write for the old text may finish, but cannot confirm this text.
+  if (copy!.text !== body) copy = { plan: p.plan.key, item: item.id, generation: ++copyGeneration, status: '', text: body };
+  const box = testid(el('div', 'ap-summary-preview ap-rcopy-preview'), `task-copy-preview-${item.id}`);
+  const status = testid(el('p', 'ap-note', copy!.status || 'Review before sharing: this is the recorded text exactly as shown.'), `task-copy-status-${item.id}`);
+  status.setAttribute('role', 'status');
+  const label = el('label', 'ap-summary-label', 'Task details (read-only)');
+  const area = testid(el('textarea', 'ap-summary-text'), `task-copy-text-${item.id}`);
+  area.readOnly = true; area.value = body; area.rows = Math.min(10, body.split('\n').length + 1); area.spellcheck = false;
+  area.dataset.taskCopyGeneration = String(copy!.generation);
+  label.append(area);
+  const controls = el('div', 'ap-row');
+  const preview = copy;
+  const finish = (ok: boolean) => { if (!preview || copy !== preview || !p.reading?.current()) return; preview.status = ok ? 'Copied.' : 'Clipboard unavailable. Select and copy the text above.'; repaint(p); };
+  button(controls, `task-copy-confirm-${item.id}`, 'Copy', () => {
+    if (copy !== preview || !p.reading?.current()) return;
+    try { const c = globalThis.navigator?.clipboard; if (!c?.writeText) { finish(false); return; } void c.writeText(body).then(() => finish(true), () => finish(false)); } catch { finish(false); }
+  }, 'outline');
+  button(controls, `task-copy-close-${item.id}`, 'Close', () => { if (copy !== preview || !p.reading?.current()) return; copy = null; repaint(p, focusIn(p.plan, `[data-testid="task-copy-${CSS.escape(item.id)}"]`)); }, 'ghost');
+  box.append(status, label, controls);
+  holder.append(box);
+  return holder;
+}
+
+/** One canonical task row: `li[item-ID]` (the programmatic target) and its expandable facts. */
+function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null): HTMLLIElement {
+  const { item } = row;
+  const li = testid(el('li', 'ap-trow-li'), `item-${item.id}`);
+  li.dataset.status = item.status;
+  if (row.state) li.dataset.state = row.state;
+  if (p.proj.filtered) li.dataset.focus = row.visibility;
+  if (row.visibility === 'hidden') li.hidden = true;
+  // A named, programmatically focusable destination for in-detail navigation (not a tab stop).
+  li.tabIndex = -1;
+  const details = testid(el('details', 'ap-group ap-trow'), `item-toggle-${item.id}`);
+  // A task with children (plan order) starts open, like a branch; a plain row starts closed.
+  details.open = !!children;
+  const summary = el('summary', 'ap-trow-line');
+  const mark = statusMark(row.state ?? item.status, { className: 'ap-glyph' });
+  summary.append(mark, el('span', 'ap-trow-title', item.title));
+  if (row.visibility === 'retained') summary.append(el('span', 'ap-context', 'kept in view'));
+  else if (row.visibility === 'context') summary.append(el('span', 'ap-context', 'shown for context'));
+  // Time/wait and the chevron wrap together, so neither is left alone on a line.
+  const end = el('span', 'ap-trow-end');
+  const meta = rowMeta(p, row);
+  if (meta) end.append(meta);
+  end.append(icon('chevron-down'));
+  summary.append(end);
+  // The facts exist only while the row is open: a collapsed row (and its focused canonical `li`)
+  // reads as its line alone (status, title, time/wait/readiness word), never the expanded facts or
+  // their ⓘ explanations. Built fresh on open (this paint's controls), removed on close.
+  const body = el('div', 'ap-trow-body');
+  const fill = () => {
+    if (!details.open) { disposeInfoWithin(body); body.replaceChildren(); return; }
+    if (body.childNodes.length) return;
+    const { dl, text } = rowFacts(p, row);
+    body.append(dl, copyBox(p, item, text));
+  };
+  details.addEventListener('toggle', fill);
+  fill();
+  details.append(summary, body);
+  if (children) details.append(children);
+  li.append(details);
+  return li;
+}
+
+/** Plan order: the recorded hierarchy (groups with their counts), each task its one canonical row. */
+function treeRow(p: Paint, node: ItemNode, branches: TaskProjection['branches']): HTMLLIElement {
+  const { item } = node;
+  const row = p.proj.rows.get(item.id) ?? { item, state: null, section: null, visibility: 'match' as const };
+  const kids = node.children.length ? el('ul', 'ap-tree') : null;
+  for (const c of node.children) kids!.append(treeRow(p, c, branches));
+  if (item.kind === 'task') {
+    const li = taskRow(p, row, kids);
+    if (kids) { const b = branches.get(item.id); if (b) branchCounts(li, b, p.plan.lifecycle); }
+    return li;
+  }
+  const li = testid(el('li', 'ap-trow-li'), `group-${item.id}`);
+  li.dataset.status = item.status;
+  if (p.proj.filtered) li.dataset.focus = row.visibility;
+  if (row.visibility === 'hidden') li.hidden = true;
+  const b = branches.get(item.id);
+  if (b) Object.assign(li.dataset, { working: String(b.working), blocked: String(b.blocked) });
+  const details = testid(el('details', 'ap-group ap-tgroup'), `group-toggle-${item.id}`);
+  details.open = true;
+  const summary = el('summary');
+  summary.append(el('span', 'ap-grow', item.title));
+  details.append(summary);
+  if (kids) details.append(kids);
+  li.append(details);
+  if (b) branchCounts(li, b, p.plan.lifecycle);
+  return li;
+}
+
+/** Filter exclusion and disclosure folding are distinct from full descendant progress. */
+function branchCounts(li: HTMLElement, counts: NonNullable<ReturnType<TaskProjection['branches']['get']>>, lifecycle: PlanView['lifecycle']) {
+  const details = li.querySelector<HTMLDetailsElement>(':scope > details');
+  const summary = details?.querySelector(':scope > summary');
+  if (!details || !summary) return;
+  Object.assign(li.dataset, { working: String(counts.working), blocked: String(counts.blocked), filterHidden: String(counts.hidden) });
+  summary.append(el('span', 'ap-count', counts.total ? `${counts.done}/${counts.total}` : ''));
+  if (counts.working || counts.blocked) {
+    const progress = el('span', 'ap-branch');
+    if (lifecycle !== 'active') progress.append('Last reported: ');
+    if (counts.working) { const s = el('span', '', `${counts.working} in progress`); s.dataset.k = 'working'; progress.append(s); }
+    if (counts.blocked) { const s = el('span', '', `${counts.blocked} blocked`); s.dataset.k = 'blocked'; progress.append(s); }
+    summary.append(progress);
+  }
+  const line = el('span', 'ap-branch ap-muted');
+  summary.append(line);
+  const update = () => {
+    const folded = details.open ? 0 : counts.rows - counts.hidden;
+    li.dataset.folded = String(folded);
+    const parts = [];
+    if (counts.hidden) parts.push(`${plural(counts.hidden, 'task', 'tasks')} hidden by filters`);
+    if (counts.context) parts.push(`${plural(counts.context, 'task', 'tasks')} shown for context`);
+    if (folded) parts.push(`${plural(folded, 'task', 'tasks')} folded`);
+    line.textContent = parts.join(' · ');
+    line.hidden = !parts.length;
+  };
+  details.addEventListener('toggle', update);
+  update();
+}
+
+/**
+ * The attention groups: Now, Needs you, Up next, then Done and Skipped folded. One `ul.ap-items`
+ * root holds every canonical row (the reading's restoration root); a group with no shown rows is
+ * hidden, never drawn empty. Done/Skipped folds belong to the reading (doneOpen/skippedOpen): their
+ * hook sits on the owning wrapper, not on the `details`, so the generic disclosure memory leaves them alone.
+ */
+function attentionList(p: Paint, ul: HTMLElement) {
+  for (const g of p.proj.groups) {
+    if (!g.rows.length) continue;
+    const li = el('li', 'ap-pgroup');
+    li.setAttribute('role', 'none');
+    const shown = g.rows.filter((r) => r.visibility !== 'hidden').length;
+    if (!shown) li.hidden = true;
+    const box = testid(el('div', 'ap-pgroup-box'), `progress-group-${g.id}`);
+    box.dataset.count = String(g.rows.length);
+    box.dataset.shown = String(shown);
+    const title = GROUP_TITLE[g.id][p.proj.guidance ? 0 : 1];
+    const rows = el('ul', 'ap-pgroup-rows');
+    rows.setAttribute('aria-label', title);
+    for (const r of g.rows) rows.append(taskRow(p, r));
+    if (g.id === 'done' || g.id === 'skipped') {
+      const fold = el('details', 'ap-fold');
+      fold.open = !g.folded;
+      box.dataset.folded = String(g.folded);
+      const summary = el('summary', 'ap-pgroup-h');
+      summary.append(icon('chevron-down'), `${title} · ${g.rows.length}`);
+      fold.append(summary, rows);
+      const field = g.id === 'done' ? 'doneOpen' : 'skippedOpen';
+      // Record only a change from how this paint drew it (a person or a reveal), not the
+      // browser's own toggle for the initial state, so a chip-opened fold doesn't stay open after.
+      let drawn = fold.open;
+      fold.addEventListener('toggle', () => { if (fold.open === drawn) return; drawn = fold.open; if (p.reading?.current()) p.reading.remember({ [field]: fold.open }); });
+      box.append(fold);
+    } else {
+      box.append(el('h4', 'ap-pgroup-h', title), rows);
+    }
+    li.append(box);
+    ul.append(li);
+  }
+}
+
+/** Tasks heading: visually quiet, the programmatic focus fallback of task-reading restoration (app.ts). */
+function tasksHeading() {
+  const h = el('h3', 'ap-tasks-h', 'Tasks');
+  h.tabIndex = -1;
+  return h;
+}
+
+/**
+ * The one canonical task list of a complete detail: attention groups (default) or the recorded
+ * hierarchy (plan order), never both. Filtered-out rows stay materialized with `hidden`.
+ */
+function taskList(p: Paint) {
+  const section = el('section', 'ap-section ap-tasks');
+  // Painted from complete detail, even without task rows (app.ts: not a loading gap).
+  section.dataset.complete = '';
+  section.dataset.readiness = p.proj.readiness.state;
+  section.append(tasksHeading());
+  const notice = testid(el('p', 'ap-note ap-focus-notice'), 'focus-notice');
+  notice.setAttribute('role', 'status');
+  section.append(filterLine(p), notice);
+  if (!p.detail.items.length) { section.append(el('p', 'ap-note', 'This plan has no tasks yet.')); return section; }
+  const taskCount = p.detail.items.filter((i) => i.kind === 'task').length;
+  if (!taskCount) section.append(testid(el('p', 'ap-note', 'No task rows are recorded in this plan, only groups.'), 'focus-no-tasks'));
+  else if (p.proj.filtered && !p.proj.matching) section.append(noMatches(p));
+  const ul = testid(el('ul', 'ap-items'), `items-${p.plan.id}`);
+  // Group-only plans and Plan order show the recorded hierarchy; otherwise attention groups.
+  const plan = p.reading?.order === 'plan' || !taskCount;
+  ul.dataset.order = plan ? 'plan' : 'attention';
+  if (plan) {
+    ul.setAttribute('aria-label', `Tasks in ${p.plan.title}, in plan order`);
+    const { branches } = taskProjection(p.detail.items, p.proj.filtered ? i => { const v = p.proj.rows.get(i.id)?.visibility; return v === 'match' || v === 'retained'; } : null);
+    for (const node of p.proj.tree) ul.append(treeRow(p, node, branches));
+  } else {
+    ul.setAttribute('role', 'none');
+    attentionList(p, ul);
+  }
+  section.append(ul);
+  return section;
+}
+
+/** Task view options (⋯ → Task view): the bulk and filter controls, in an ordinary labelled region. */
+function taskViewPanel(p: Paint) {
+  const reading = p.reading!;
+  const box = testid(el('section', 'ap-panel ap-focus'), 'focus-controls');
+  box.setAttribute('aria-label', 'Task view');
+  const head = el('div', 'ap-panel-head');
+  const h = testid(el('h3', 'ap-h ap-panel-h', 'Task view'), 'task-view-heading');
+  h.tabIndex = -1;
+  head.append(h);
+  button(head, 'task-view-close', 'Close', () => closePanel(p), 'ghost');
+  box.append(head);
+  escapeCloses(box, p);
+  const bar = el('div', 'ap-focus-bar');
+  const pair = (id: string, label: string, entries: [string, string, boolean, () => void][]) => {
+    const set = testid(el('div', 'ap-focus-set'), id);
+    set.setAttribute('role', 'group');
+    set.setAttribute('aria-label', label);
+    for (const [hook, text, pressed, run] of entries) button(set, hook, text, run, pressed ? 'outline' : 'ghost').querySelector('button')?.setAttribute('aria-pressed', String(pressed));
+    return set;
+  };
+  const modes = pair('focus-mode', 'Show tasks', [['focus-mode-all', 'Show all', reading.status === 'all', () => reading.set({ status: 'all' })], ['focus-mode-unfinished', 'Unfinished', reading.status === 'unfinished', () => reading.set({ status: 'unfinished' })]]);
+  modes.dataset.mode = reading.status;
+  const order = reading.order ?? 'attention';
+  const orders = pair('focus-order', 'Order', [['focus-order-attention', 'By attention', order === 'attention', () => reading.set({ order: 'attention' })], ['focus-order-plan', 'Plan order', order === 'plan', () => reading.set({ order: 'plan' })]]);
+  orders.dataset.order = order;
+  bar.append(modes, orders);
+  if (p.who) bar.append(participantSelect(p.plan, reading, p.who, p.label));
+  const bulk = el('div', 'ap-focus-set');
+  for (const [id, label, open] of [['focus-expand-all', 'Expand all', true], ['focus-collapse-all', 'Collapse all', false]] as const) {
+    const holder: HTMLElement = button(bulk, id, label, () => setDisclosures(holder, p.plan, reading, open), 'ghost');
+  }
+  const jumps = el('div', 'ap-focus-set');
+  const hierarchy = taskProjection(p.detail.items, null);
+  for (const kind of ['working', 'blocked'] as const) {
+    const targets = jumpTargets(hierarchy, kind);
+    const words = JUMP_COPY[kind][p.plan.lifecycle === 'active' ? 'active' : 'closed'];
+    const holder: HTMLElement = button(jumps, `focus-jump-${kind}`, targets.length ? `${words[0]} (${targets.length})` : words[1], () => jump(holder, p.plan, kind, targets, reading, words[2]), 'ghost', !targets.length);
+    holder.dataset.count = String(targets.length);
+  }
+  bar.append(bulk, jumps);
+  box.append(bar);
+  return box;
+}
+
+/** Escape closes a plan panel (focus returns to ⋯), unless a popup inside it already used the key. */
+function escapeCloses(box: HTMLElement, p: Paint) {
+  box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); closePanel(p); } });
+}
+
+function closePanel(p: Paint) {
+  if (!p.reading?.current()) return;
+  panel = null;
+  repaint(p, focusIn(p.plan, '[data-testid="plan-actions"] button'));
+}
+function openPanel(p: Paint, kind: PanelKind) {
+  if (!p.reading?.current()) return;
+  panel = { plan: p.plan.key, kind };
+  repaint(p, focusIn(p.plan, `[data-testid="plan-panel-${kind}"] .ap-panel-h, [data-testid="task-view-heading"]`));
+}
+
+/** A plan panel opened from ⋯: a labelled region with a heading focus target and Close. */
+function plainPanel(p: Paint, kind: PanelKind, title: string, content: HTMLElement) {
+  const box = testid(el('section', 'ap-panel'), `plan-panel-${kind}`);
+  box.setAttribute('aria-label', title);
+  const head = el('div', 'ap-panel-head');
+  const h = el('h3', 'ap-h ap-panel-h', title);
+  h.tabIndex = -1;
+  head.append(h);
+  button(head, `plan-panel-${kind}-close`, 'Close', () => closePanel(p), 'ghost');
+  box.append(head, content);
+  escapeCloses(box, p);
+  return box;
+}
+
+/** The ⋯ plan actions: copies, task view, order, document, sessions and any surface entries. */
+function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 'disclosure' | 'inline' | 'omit', extra: PlanAction[], fallback: { reading: ReadingView | null }) {
+  const items: MenuItem[] = [];
+  const runs = new Map<string, () => void>();
+  const add = (id: string, label: string, run: () => void, disabled = false) => { items.push({ id, label, disabled }); runs.set(id, run); };
+  const summary = hooks.summary;
+  if (summary) {
+    add('summary-progress', 'Copy progress update…', () => summary.open('progress'));
+    add('summary-handoff', 'Copy handoff…', () => summary.open('handoff'));
+  }
+  if (p?.reading) {
+    if (items.length) items.push({ separator: true });
+    const r = p.reading;
+    add('task-view', 'Task view options…', () => openPanel(p, 'task-view'));
+    add('order', r.order === 'plan' ? 'Show by attention' : 'Show in plan order', () => r.set({ order: r.order === 'plan' ? 'attention' : 'plan' }));
+    add('expand-all', 'Expand all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, r, true); });
+    add('collapse-all', 'Collapse all tasks', () => { const a = document.querySelector<HTMLElement>(`article.ap-plan[data-testid="plan-${CSS.escape(plan.id)}"][data-source="${CSS.escape(plan.sourceId)}"]`); if (a) setDisclosures(a, plan, r, false); });
+  }
+  const panels: MenuItem[] = [];
+  if (docMode === 'disclosure' && p) { panels.push({ id: 'document', label: 'Plan document' }); runs.set('document', () => openPanel(p, 'document')); }
+  if (p && fallback.reading) { panels.push({ id: 'sessions', label: 'Sessions' }); runs.set('sessions', () => openPanel(p, 'sessions')); }
+  for (const a of extra) { panels.push({ id: a.id, label: a.label, disabled: a.disabled }); runs.set(a.id, a.run); }
+  if (panels.length) { if (items.length) items.push({ separator: true }); items.push(...panels); }
+  // A holder, so later actions of the same paint can join (or create) the menu.
+  const holder = el('span', 'ap-actions-hold');
+  let menu: ReturnType<typeof planActions> | null = null;
+  const mount = () => {
+    if (!items.length) return;
+    if (menu) { menu.menu.update({ items: [...items] }); return; }
+    menu = planActions({ items: [...items], onSelect: (id) => runs.get(id)?.() });
+    holder.append(menu.root);
+  };
+  mount();
+  if (fallback.reading) MENU_SLOTS.set(fallback.reading, {
+    plan: plan.key,
+    add: (actions, focusHook) => {
+      if (!actions.length) return;
+      if (items.length) items.push({ separator: true });
+      for (const a of actions) { items.push({ id: a.id, label: a.label, disabled: a.disabled, destructive: a.destructive }); runs.set(a.id, a.run); }
+      if (focusHook) holder.dataset.testid = focusHook;
+      mount();
+    },
+  });
+  return holder;
+}
+
+/**
+ * `compareSession`: the session assignments compare with (rail: the selected host session;
+ * board: an explicit session filter). Null keeps neutral assignee labels.
+ * `picker`: the rail's title-picker. `actions`: surface-specific ⋯ entries. `info`: an ⓘ for the
+ * header (for example the rail's contributing-session note). `pending`: the frame's default view is
+ * still being decided (docs/ui.md Default view): only the loading placeholder, never complete rows.
+ */
+export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options: { document: 'disclosure' | 'inline' | 'omit'; heading?: 'h2' | 'h3'; compareSession?: string | null; reading?: ReadingView | null; picker?: HTMLElement | null; actions?: PlanAction[]; info?: HTMLElement | null; pending?: boolean }) {
   const root = testid(el('article', 'ap-plan'), `plan-${plan.id}`);
   root.dataset.lifecycle = plan.lifecycle;
   root.dataset.source = plan.sourceId;
@@ -891,34 +1239,61 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   const reading = options.reading ?? null;
   // Its task disclosures, logical focus and anchor follow this reading identity (app.ts).
   if (reading) { root.dataset.reading = ''; READINGS.set(root, reading); }
-  const ready = hooks.detail?.state === 'ready' && hooks.detail.value.revision === plan.revision ? hooks.detail.value : null;
+  if (panel && panel.plan !== plan.key) panel = null;
+  if (copy && copy.plan !== plan.key) copy = null;
+  const value = hooks.detail?.state === 'ready' && hooks.detail.value.revision === plan.revision ? hooks.detail.value : null;
+  const ready = options.pending ? null : value;
+  const proj = ready && reading ? progressProjection(plan, ready, reading) : ready ? progressProjection(plan, ready, { status: 'all', participant: ALL_PARTICIPANTS, cursor: { working: null, blocked: null } }) : null;
   const summary = summarize(plan, ready);
   if (showsLiveness(plan.lifecycle, summary, env.view)) root.dataset.motion = 'on';
-  root.append(planHeader(plan, env, options.heading), progressBlock(summary));
-  if (hooks.summary) root.append(summaryBlock(hooks.summary));
-  if (ready) {
-    const now = currentWorkBlock(plan, ready, env);
-    if (now) root.append(now);
+  let paint: Paint | null = null;
+  if (ready && proj) {
+    const r = proj.readiness;
+    const entries = new Map<string, ReadinessEntry>();
+    if (r.state === 'ready') for (const list of Object.values(r.groups)) for (const e of list) entries.set(e.item.id, e);
+    const derived = proj.guidance ? deriveDependencies(ready.items) : null;
+    const index = reading ? participantIndex(plan, ready) : null;
+    paint = {
+      plan, detail: ready, env, proj, reading, compareSession: options.compareSession ?? null,
+      byId: new Map(ready.items.map((i) => [i.id, i])), entries,
+      unlocks: derived?.state === 'valid' ? new Map([...derived.tasks].map(([id, t]) => [id, t.unlocksNext])) : null,
+      who: reading && index ? { filter: reading.participant, index } : null,
+      label: recordedLabel(plan, env), trusted: trustedSource(plan, env),
+    };
   }
-  const readinessSection = readinessBlock(plan, hooks.detail, env, options.compareSession ?? null);
-  if (readinessSection) root.append(readinessSection);
-  if (ready) root.append(itemList(plan, ready, env, reading));
+  const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading });
+  root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));
+  const progress = progressBlock(summary);
+  root.append(progress);
+  if (paint) { const chips = stateChipRow(paint); if (chips) root.append(chips); root.append(qualifiers(paint)); }
+  if (hooks.summary) { const s = summaryBlock(hooks.summary); if (s) root.append(s); }
+  if (paint && panel?.plan === plan.key) {
+    if (panel.kind === 'task-view' && reading) root.append(taskViewPanel(paint));
+    else if (panel.kind === 'document' && options.document === 'disclosure') root.append(plainPanel(paint, 'document', 'Plan document', documentBlock(plan, env, 'inline', hooks.document)));
+    else if (panel.kind === 'sessions') root.append(plainPanel(paint, 'sessions', 'Sessions', peopleBlock(plan, ready, env)));
+  }
+  if (paint) root.append(taskList(paint));
   else {
     // No task controls until complete matching detail exists: loading or failed is never "no matches".
     const tasks = el('section', 'ap-section ap-tasks');
     tasks.append(tasksHeading(), partState('detail-loading', 'tasks', hooks.detail?.state === 'error' ? hooks.detail : null, hooks.retryDetail));
     root.append(tasks);
   }
-  root.append(peopleBlock(plan, ready, env));
-  if (options.document !== 'omit') root.append(documentBlock(plan, env, options.document, hooks.document));
+  // One compact session row; the Sessions panel holds every participant.
+  if (!(panel?.plan === plan.key && panel.kind === 'sessions')) root.append(peopleBlock(plan, ready, env, true, paint ? () => openPanel(paint!, 'sessions') : undefined));
+  if (options.document === 'inline') root.append(documentBlock(plan, env, 'inline', hooks.document));
   return root;
 }
 
-/** Plain selectable Markdown. Async state and all action authority stay in the controller. */
+/**
+ * The summary preview, opened from ⋯ (Copy progress update / Copy handoff). Plain selectable
+ * Markdown; async state and all action authority stay in the controller. Null while closed.
+ */
 function summaryBlock(view: SummaryView) {
+  const state = view.preview;
+  if (!state) return null;
   const section = el('section', 'ap-summary');
   section.setAttribute('aria-label', 'Plan summaries');
-  const actions = el('div', 'ap-row');
   const action = (parent: HTMLElement, id: string, label: string, run: () => void, disabled = false) => {
     const holder = button(parent, id, label, run, 'outline', disabled);
     // Hooks and focus belong to the native control, not the kit's wrapper.
@@ -927,11 +1302,6 @@ function summaryBlock(view: SummaryView) {
     if (control) control.dataset.testid = id;
     return control;
   };
-  action(actions, 'summary-progress', 'Copy progress update', () => view.open('progress'));
-  action(actions, 'summary-handoff', 'Copy handoff', () => view.open('handoff'));
-  section.append(actions);
-  const state = view.preview;
-  if (!state) return section;
   const box = testid(el('div', 'ap-summary-preview'), 'summary-preview');
   box.append(el('h3', 'ap-h', state.mode === 'progress' ? 'Progress update preview' : 'Handoff preview'));
   const status = testid(el('p', 'ap-note', state.status || state.message || 'Review the Markdown, then copy it.'), 'summary-status');
@@ -951,7 +1321,11 @@ function summaryBlock(view: SummaryView) {
   action(controls, 'summary-copy', 'Copy Markdown', view.copy, state.text === null || state.copying);
   if (state.canRetry) action(controls, 'summary-retry', 'Retry', view.retry);
   if (state.canSummaryOnly) action(controls, 'summary-only', 'Preview summary only', view.summaryOnly);
-  action(controls, 'summary-close', 'Close', view.close);
+  // Close returns to the surviving ⋯ trigger (the menu item that opened it is gone).
+  const close = action(controls, 'summary-close', 'Close', () => {
+    close?.closest('article.ap-plan')?.querySelector<HTMLElement>('[data-testid="plan-actions"] button')?.focus({ preventScroll: true });
+    view.close();
+  });
   box.append(controls); section.append(box);
   return section;
 }
