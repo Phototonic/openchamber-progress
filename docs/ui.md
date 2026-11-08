@@ -53,7 +53,11 @@ filters, typed/submitted search, disclosures and map selection/pan/zoom survive.
 Disclosures are retained even when another frame owns focus. Generated session
 and main-checkout names follow the language; recorded session/worktree names stay
 literal during workspace reloads and after their choices become unavailable.
-They neither report progress nor mark History reviewed. Document restoration,
+Choosing a different search session uses that option's own label, including
+sessions discovered only in search results; a retained title belongs only to its
+recorded session ID. Visible map counts use the selected locale, while machine
+attributes such as `data-count` and revision identifiers keep their raw values.
+Language changes neither report progress nor mark History reviewed. Document restoration,
 including a retained read error, does not retry solely for translation; explicit
 opening/Retry and ordinary data refresh keep their own behavior. External changes
 do not steal focus and respect an independent open SDK popup's repaint boundary.

@@ -296,7 +296,7 @@ startView<Ui>({
       const f = { project: c.project, worktree: c.worktree, session: c.session };
       // Choices: live locations plus those this frame has seen; never a full-library census.
       const options = searchFilterOptions([...read.plans, ...v.page.hits.map((h) => h.plan)], env.live, f, c.labels, env.boundSource, env.locale);
-      locations = filterBar(f, options, (patch) => { const next = { ...f, ...patch }; runSearch(vc, { ...c, ...next, labels: labelsFor(vc, next, c.labels) }); }, env.locale);
+      locations = filterBar(f, options, (patch) => { const next = { ...f, ...patch }; runSearch(vc, { ...c, ...next, labels: labelsFor(vc, next, c.labels, options.sessions.find(o => o.id === next.session)) }); }, env.locale);
     } else if (!empty) {
       const setFilter = (patch: Partial<Filters>) => vc.setUi({ filters: { ...filters, ...patch }, reveal: 0 });
       locations = filterBar(filters, filterOptions(read.plans, env.live, filters, read.plans, env.boundSource, env.locale), setFilter, env.locale);
@@ -433,21 +433,21 @@ function boardFilters(vc: ViewContext<Ui>): Filters {
   if (s) return { project: s.project, worktree: s.worktree, session: s.session };
   return vc.read ? normalizeFilters(vc.read.plans, vc.env.live, vc.ui.filters, vc.env.boundSource) : NO_FILTERS;
 }
-function labelsFor(vc: ViewContext<Ui>, f: Filters, previous: SearchCriteria['labels'] = {}): SearchCriteria['labels'] {
-  // Ask for each unselected dimension so unavailable-choice decoration never becomes its name.
+function labelsFor(vc: ViewContext<Ui>, f: Filters, previous: SearchCriteria['labels'] = {}, selectedSession?: Option): SearchCriteria['labels'] {
+  // Location names omit unavailable decoration; session names retain the selected option's origin.
   const options = (part: keyof Filters) => searchFilterOptions(vc.read?.plans ?? [], vc.env.live, { ...f, [part]: ALL }, previous, vc.env.boundSource, vc.env.locale);
   const name = (list: Option[], id: string, old?: string) => (id === ALL ? undefined : list.find((x) => x.id === id)?.label ?? old);
-  const session = options('session').sessions.find((x) => x.id === f.session);
+  const session = selectedSession ?? searchFilterOptions(vc.read?.plans ?? [], vc.env.live, f, previous, vc.env.boundSource, vc.env.locale).sessions.find((x) => x.id === f.session);
   const titled = f.session !== ALL && session && !session.sessionGenerated;
   const retainedTitle = previous.sessionId === f.session && !previous.sessionGenerated ? previous.session : undefined;
   const labels: SearchCriteria['labels'] = {
     project: name(options('project').projects, f.project, previous.project),
     worktree: name(options('worktree').worktrees, f.worktree, previous.worktree),
-    session: titled ? session?.label : retainedTitle ?? name(options('session').sessions, f.session, previous.session),
+    session: f.session === ALL ? undefined : titled ? session?.label : retainedTitle ?? session?.label,
   };
   if (f.session !== ALL) {
     labels.sessionId = f.session;
-    if (!titled && !retainedTitle && (session || previous.sessionGenerated)) labels.sessionGenerated = true;
+    if (!titled && !retainedTitle) labels.sessionGenerated = true;
   }
   return labels;
 }

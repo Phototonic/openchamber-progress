@@ -199,3 +199,44 @@ test('unverified owners keep generated labels and cannot contribute live childre
     assert.equal(h.exports.labelsFor(vc, scope.NO_FILTERS).session, undefined);
   }
 });
+
+test('choosing a result-only session never reuses the previous session title', () => {
+  const h = surfaceHarness('page');
+  const plans = [{ ownerSessionId: 'A', directory: '/example', sourceId: 'source-alpha' }];
+  const snapshot: any = { ...live.EMPTY_LIVE, sessions: new Map([['alpha', { state: 'ready', records: [
+    { id: 'A', title: 'Owner A', directory: '/example', projectId: 'alpha' },
+  ] }]]) };
+  const vc = { read: { plans }, env: { locale: 'en', boundSource: 'source-alpha', live: snapshot } };
+  const before = { ...scope.NO_FILTERS, session: 'A' };
+  const previous = h.exports.labelsFor(vc, before);
+  const retained = JSON.stringify(previous);
+  const result = { ownerSessionId: 'B', directory: '/example', sourceId: 'source-alpha' };
+  const choices = scope.searchFilterOptions([...plans, result] as any, snapshot, before, previous, 'source-alpha', 'en');
+  const selected = choices.sessions.find(o => o.id === 'B');
+  assert.equal(selected?.label, 'Session B');
+  const next = { ...before, session: 'B' };
+  for (const option of [selected, undefined]) {
+    const labels = h.exports.labelsFor(vc, next, previous, option);
+    const criteria: any = { ...next, q: 'user query', source: scope.ALL, lifecycle: scope.ALL, status: scope.ALL, archived: false, labels };
+    assert.equal(labels.sessionId, 'B');
+    assert.equal(chipLabel('session', criteria, 'en'), 'Session: Session B');
+    assert.equal(chipLabel('session', criteria, 'ru'), 'Сессия: Сессия B');
+    assert.equal(criteriaKey(criteria), criteriaKey({ ...criteria, labels: {} }));
+  }
+  assert.equal(JSON.stringify(previous), retained);
+});
+
+test('the selected option retains its literal title only for the matching session identity', () => {
+  const h = surfaceHarness('page');
+  const vc = { read: { plans: [] }, env: { locale: 'ru', boundSource: 'source-alpha', live: live.EMPTY_LIVE } };
+  const f = { ...scope.NO_FILTERS, session: 'B' };
+  const previous = { sessionId: 'A', session: 'Owner A', sessionGenerated: false };
+  const selected = { id: 'B', label: 'Owner B <literal>', sessionGenerated: false };
+  const labels = h.exports.labelsFor(vc, f, previous, selected);
+  assert.equal(chipLabel('session', { ...f, labels } as any, 'ru'), 'Сессия: Owner B <literal>');
+  const kept = h.exports.labelsFor(vc, f, labels);
+  assert.equal(chipLabel('session', { ...f, labels: kept } as any, 'ru'), 'Сессия: Owner B <literal>');
+  const changed = h.exports.labelsFor(vc, { ...f, session: 'C' }, labels);
+  assert.equal(chipLabel('session', { ...f, session: 'C', labels: changed } as any, 'ru'), 'Сессия: Сессия C');
+  assert.equal(h.exports.labelsFor(vc, scope.NO_FILTERS, labels).session, undefined);
+});

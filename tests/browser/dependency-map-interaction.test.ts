@@ -18,6 +18,16 @@ test('map announcements carry facts and render Russian without changing recorded
   for (const [count, word] of [[0, 'задач'], [1, 'задача'], [2, 'задачи'], [5, 'задач'], [11, 'задач'], [21, 'задача']] as const)
     assert.equal(mapAnnouncementText({ kind: 'filters', count }, 'ru'), `Показано: ${count} ${word}. Расположение не изменено.`);
 });
+test('map announcements format the supported 1000-task count without changing English or facts', () => {
+  const filters = Object.freeze({ kind: 'filters' as const, count: 1000 });
+  const fit = Object.freeze({ kind: 'fit' as const, count: 1000 });
+  assert.equal(mapAnnouncementText(filters, 'ru'), 'Показано: 1\u00a0000 задач. Расположение не изменено.');
+  assert.equal(mapAnnouncementText(fit, 'ru'), 'Вся карта: 1\u00a0000 задач в поле зрения; действующие фильтры не изменены.');
+  assert.equal(mapAnnouncementText(filters, 'en'), '1000 tasks shown. Layout unchanged.');
+  assert.equal(mapAnnouncementText(fit, 'en'), 'Fit all: 1000 visible tasks; active filters unchanged.');
+  assert.equal(filters.count, 1000);
+  assert.equal(fit.count, 1000);
+});
 test('Russian map speech distinguishes readiness guidance and reported status; plural messages are whole', () => {
   const selection = { kind: 'selection' as const, title: '<Literal task>', status: 'pending' as const, guidance: true, ready: true, skipped: false, up: 1, down: 2, hidden: 5 };
   assert.equal(mapAnnouncementText(selection, 'ru'), '<Literal task>. Готова, только по записанным зависимостям. Прямые записанные зависимости: 1 зависимость; прямые зависимые задачи: 2 задачи. Фильтрами скрыто: 5 связей.');

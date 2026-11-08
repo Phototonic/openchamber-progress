@@ -16,6 +16,7 @@ import type { RunsPanel } from './runs.ts';
 import type { RunRequest } from '../../shared/subagent-runs.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+import { formatCount } from './format.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
 import type { MapTaskAttribution } from './dependency-map-attribution.ts';
@@ -113,7 +114,7 @@ const EN = {
   noTaskPrerequisites: 'No task-to-task prerequisites recorded', groupArrows: '. Group prerequisites are listed as group context, never drawn as arrows.',
   arrows: 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.',
   filters: 'Map filters', showTasks: 'Show tasks', all: 'Show all', unfinished: 'Unfinished', allGroups: 'All groups', noGroup: 'No group recorded', groupGone: 'Chosen group is no longer recorded', group: 'Group',
-  filtered: (visible: number, tasks: string, hidden: string, arrows: string) => `Showing ${visible} of ${tasks} · ${hidden}${arrows ? ` and ${arrows}` : ''} hidden by filters`,
+  filtered: (visible: string, tasks: string, hidden: string, arrows: string) => `Showing ${visible} of ${tasks} · ${hidden}${arrows ? ` and ${arrows}` : ''} hidden by filters`,
   allShown: (tasks: string, arrows: string) => `Showing all ${tasks}${arrows ? ` and ${arrows}` : ''}`,
   taskMap: 'Task map', mapView: 'Map view', zoom: (z: string) => `Zoom ${z}`, zoomOut: 'Zoom out', zoomIn: 'Zoom in', fit: 'Fit all', current: 'Focus current work',
   moved: (where: string) => `View moved ${where}.`, left: 'left', up: 'up', down: 'down', right: 'right', panLeft: 'Pan left', panUp: 'Pan up', panDown: 'Pan down', panRight: 'Pan right',
@@ -205,8 +206,11 @@ function mapNoun(n: number, kind: keyof typeof EN.counts, language: InterfaceLan
   const index = ({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[category] ?? 3;
   return COPY[language].counts[kind][index];
 }
+function mapNumber(n: number, language: InterfaceLanguage) {
+  return language === 'en' ? String(n) : formatCount(n, language);
+}
 function mapCount(n: number, kind: keyof typeof EN.counts, language: InterfaceLanguage) {
-  return `${n} ${mapNoun(n, kind, language)}`;
+  return `${mapNumber(n, language)} ${mapNoun(n, kind, language)}`;
 }
 /** World padding around the full-plan layout; slot coordinates (data-x/y) stay unpadded. */
 const PAD = 28;
@@ -643,7 +647,7 @@ export function createDependencyMapView(): DependencyMapView {
       stats.setAttribute('aria-label', c.work);
       const stat = (kind: Mark, count: number, text: string) => {
         const li = el('li', 'ap-map-stat'); li.dataset.kind = kind; li.dataset.count = String(count);
-        li.append(mark(kind), el('strong', '', String(count)), ` ${text}`);
+        li.append(mark(kind), el('strong', '', mapNumber(count, language)), ` ${text}`);
         stats.append(li);
       };
       stat('working', working, c.working);
@@ -651,7 +655,7 @@ export function createDependencyMapView(): DependencyMapView {
       if (blocked) stat('blocked', blocked, c.blocked);
       if (unlocks.size) {
         const li = el('li', 'ap-map-stat'); li.dataset.kind = 'unlocks'; li.dataset.count = String(unlocks.size);
-        li.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · `, el('strong', '', String(unlocks.size)), ` ${mapNoun(unlocks.size, 'task', language)}`);
+        li.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · `, el('strong', '', mapNumber(unlocks.size, language)), ` ${mapNoun(unlocks.size, 'task', language)}`);
         stats.append(li);
       }
       summary.append(stats);
@@ -696,7 +700,7 @@ export function createDependencyMapView(): DependencyMapView {
     Object.assign(hidden.dataset, { tasks: String(hiddenTasks), edges: String(hiddenEdges) });
     if (tasks.length) {
       hidden.textContent = hiddenTasks
-        ? c.filtered(visible.size, count(tasks.length, 'task'), count(hiddenTasks, 'task'), hiddenEdges ? count(hiddenEdges, 'arrow') : '')
+        ? c.filtered(mapNumber(visible.size, language), count(tasks.length, 'task'), count(hiddenTasks, 'task'), hiddenEdges ? count(hiddenEdges, 'arrow') : '')
         : c.allShown(count(tasks.length, 'task'), edges.length ? count(edges.length, 'arrow') : '');
     }
     controls.append(hidden);
@@ -889,7 +893,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (who.live) card.dataset.live = who.live.kind;
         const foot = el('span', 'ap-map-card-foot');
         foot.append(el('span', 'ap-map-card-group', path.length ? path[path.length - 1] : ''));
-        if (unlocks.length) { const u = el('span', 'ap-map-card-unlocks'); u.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · ${unlocks.length}`); foot.append(u); }
+        if (unlocks.length) { const u = el('span', 'ap-map-card-unlocks'); u.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · ${mapNumber(unlocks.length, language)}`); foot.append(u); }
         card.append(statusRow, title);
         if (who.card) {
           card.dataset.who = '';
@@ -1011,7 +1015,7 @@ export function createDependencyMapView(): DependencyMapView {
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
         const sec = testid(el('div', 'ap-map-rel'), testId);
         sec.dataset.related = kindOf;
-        sec.append(el('h4', 'ap-map-rel-h', `${label} (${ids.length})`));
+        sec.append(el('h4', 'ap-map-rel-h', `${label} (${mapNumber(ids.length, language)})`));
         if (!ids.length) { sec.append(el('p', 'ap-note', none)); return sec; }
         const ul = el('ul', 'ap-map-rel-list');
         for (const rid of ids) {
@@ -1088,7 +1092,7 @@ export function createDependencyMapView(): DependencyMapView {
     if (groupOwned.length || (!tasks.length && groups.length)) {
       const details = testid(el('details', 'ap-map-groups'), 'map-group-context');
       if (!tasks.length || !edges.length) details.open = true;
-      details.append(el('summary', '', `${c.groupContext} (${groups.length})`));
+      details.append(el('summary', '', `${c.groupContext} (${mapNumber(groups.length, language)})`));
       const ul = el('ul', 'ap-map-group-list');
       for (const g of groups) {
         const li = el('li');
@@ -1403,14 +1407,14 @@ export const LIVE_HEDGE = 'Session activity only: the assigned session is active
 const ATTRIBUTION_EN = {
   unavailable: 'Unavailable in this view', unavailableNote: 'Assignment provenance couldn’t be checked for this picture. That doesn’t mean the task is unassigned.',
   notShown: 'Not shown', activityUnavailable: 'Session activity isn’t available in this view.',
-  more: (n: number) => ` and ${n} more`, assigned: (name: string) => `Assigned to ${name}`,
+  more: (n: string) => ` and ${n} more`, assigned: (name: string) => `Assigned to ${name}`,
   unverified: (name: string) => `Unverified assignee · ${name}`, linkedCard: (name: string, more: string) => `Linked to ${name}${more} · no verified delegation`,
   recorded: (name: string) => `Recorded assignee ${name} · delegation provenance unavailable`, noAssignee: 'No assignee recorded',
   verified: (r: number) => `Verified delegation, current for revision ${r}.`,
   unverifiedNote: 'No verified delegation is recorded for this revision, so the map doesn’t say Assigned. That doesn’t mean the task is unassigned.',
   linksNote: 'Only session links name this task. A link is not an assignment.', linked: (name: string) => `Linked to ${name}`, unverifiedLink: (name: string) => `Linked to ${name} · no verified delegation`,
   relay: (reporter: string, attributed: string) => `Reported by ${reporter} for ${attributed}`, direct: (reporter: string) => `Reported directly by ${reporter}`,
-  reports: (text: string, n: number) => `${text} · ${n} reports`, lastReporter: (name: string) => `Last reported by ${name} · report mode unavailable`,
+  reports: (text: string, n: string) => `${text} · ${n} reports`, lastReporter: (name: string) => `Last reported by ${name} · report mode unavailable`,
   active: 'Assigned session active now', waiting: 'Assigned session waiting for input now', hedge: LIVE_HEDGE,
   historical: (r: number) => `Hidden while the map shows revision ${r} as last reported.`,
   assignmentOnly: 'Shown only for a verified assignment.', runsUnavailable: 'This view’s run records aren’t available.', latestUnproven: 'This view’s run records don’t confirm the assigned session’s latest run.', inactive: 'The assigned session’s latest recorded run isn’t active now.',
@@ -1440,7 +1444,7 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
   };
   const verified = a.assignment;
   const kind: MapAttributionKind = verified ? 'assigned' : a.recordedAssignee ? 'recorded' : a.links.length ? 'linked' : 'none';
-  const more = (n: number) => n > 1 ? c.more(n - 1) : '';
+  const more = (n: number) => n > 1 ? c.more(mapNumber(n - 1, language)) : '';
   const card = kind === 'assigned' ? c.assigned(label(verified!.childSessionId))
     // Qualifier first: a truncated card line must still never read as a verified assignment.
     : kind === 'recorded' ? c.unverified(label(a.recordedAssignee!))
@@ -1460,7 +1464,7 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
     const text = relay ? c.relay(label(r.reporterSessionId), label(r.attributedSessionId)) : c.direct(label(r.reporterSessionId));
     const line = lines.get(key); if (line) line.n++; else lines.set(key, { text, n: 1 });
   }
-  const reports = [...lines.values()].map(({ text, n }) => n > 1 ? c.reports(text, n) : text);
+  const reports = [...lines.values()].map(({ text, n }) => n > 1 ? c.reports(text, mapNumber(n, language)) : text);
   if (!reports.length && a.reporter) reports.push(c.lastReporter(label(a.reporter)));
   const proven = a.live.proven && current && !!verified ? a.live : null;
   const live = proven ? proven.kind === 'active'

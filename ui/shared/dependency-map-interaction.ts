@@ -2,6 +2,7 @@
 import { anchorSelection, neighbour, relations, type MapLayout, type Transform } from './dependency-map-layout.ts';
 import { statusMatch, type ItemView, type StatusFilter } from './model.ts';
 import type { InterfaceLanguage } from './i18n.ts';
+import { formatCount } from './format.ts';
 
 export type MapAnnouncement =
   | { kind: 'selection'; title: string; status: ItemView['status']; guidance: boolean; ready: boolean; skipped: boolean; up: number; down: number; hidden: number }
@@ -26,8 +27,8 @@ const ANNOUNCEMENTS = {
     'focused-removed': 'Задача в фокусе больше не записана. Фокус перенесён на следующий доступный элемент карты.',
     'list-removed': 'Эта задача из списка больше не записана на карте.',
     current: 'Показана текущая работа по отчётам; действующие фильтры не изменены.',
-    filters: (n: number, tasks: string) => `Показано: ${n} ${tasks}. Расположение не изменено.`,
-    fit: (n: number, tasks: string) => `Вся карта: ${n} ${tasks} в поле зрения; действующие фильтры не изменены.`,
+    filters: (n: number, tasks: string) => `Показано: ${formatCount(n, 'ru')} ${tasks}. Расположение не изменено.`,
+    fit: (n: number, tasks: string) => `Вся карта: ${formatCount(n, 'ru')} ${tasks} в поле зрения; действующие фильтры не изменены.`,
     working: 'Сообщено: в работе', blocked: 'Явно заблокирована', ready: 'Готова, только по записанным зависимостям',
     skipped: 'Ожидает пропущенную записанную зависимость', waiting: 'Ожидает записанные зависимости',
     reported: { pending: 'Сообщено: ожидает', working: 'Сообщено: в работе', blocked: 'Сообщено: заблокирована', done: 'Сообщено: выполнена', skipped: 'Сообщено: пропущена' },
