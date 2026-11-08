@@ -2,12 +2,21 @@
 // coverage, grouped results and explicit actions. Untrusted titles land through textContent only.
 import { mountSearchField, mountSpinner, type SelectOption } from '@openchamber/sdk/ui';
 import { mountLiveSelect } from './live-select.ts';
-import { button, el, emptyBlock, FAILURE_COPY, glyph, planLocation, testid, type Env } from './components.ts';
+import { button, el, emptyBlock, failureCopy, glyph, planLocation, testid, type Env } from './components.ts';
+import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { icon } from './primitives.ts';
 import { plural } from './format.ts';
-import { LIFECYCLE_LABEL, STATUS_LABEL, type ItemStatus, type Lifecycle, type SearchHitView, type SearchPlanView, type SourceView } from './model.ts';
+import { lifecycleLabel, statusLabel, type ItemStatus, type Lifecycle, type SearchHitView, type SearchPlanView, type SourceView } from './model.ts';
 import { ALL } from './scope.ts';
-import { BLOCKED_TEXT, breadcrumb, narrowed, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
+import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
+import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+
+const EN = {
+  searchPlans: 'Search plans and tasks', searchTitles: 'Search titles and IDs', filters: 'Filters', close: 'Close', planStatus: 'Plan status', anyPlan: 'Any plan status', taskStatus: 'Task status', anyTask: 'Any task status', source: 'Recorded source', allSources: 'All recorded sources', unverified: 'unverified', unavailable: 'not available here', search: 'Search', constraints: 'Search constraints', clear: 'Clear search and filters', results: 'Search results', retry: 'Retry', removeProject: 'Remove project filter', removeWorktree: 'Remove worktree filter', searching: 'Searching recorded plans', noMatch: 'No plans or tasks match', uncertain: 'No matches in the plans and locations that could be checked', tryOther: 'Try other words, or remove a constraint. Filters and Clear search stay above.', noneYet: 'No matches found yet; more recorded plans remain unchecked.', previous: 'Previous results', next: 'Next results', busy: 'Searching…', refresh: 'Refresh search', more: 'Load more results', continue: 'Continue searching', help: 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).', apply: 'Plan status, task status and source apply when you search. Location choices apply right away.', pending: 'Not searched yet: these results are for the previous search. Press Search to update them.', unavailableService: 'Search is unavailable with this service version. The board below still lists plans as before.', allPlans: 'all recorded plans in this store', archived: 'archived plans only', current: 'current plans (archived plans excluded)', location: 'in the chosen project or worktree', sessionScope: 'where the chosen session is the owner, linked or a recorded contributor', scopeNote: 'Ordinary board list pages are not the search scope.', words: 'Words', sourceChip: 'Source', project: 'Project', worktree: 'Worktree', session: 'Session', remove: 'Remove', continued: 'Continued from the previous results', planMatch: 'The plan’s own title or ID matches', changed: 'Changed since found', openPlan: 'Open plan', showTask: 'Show task', inside: 'In', setup: 'unverified setup', noTasks: 'no counted tasks', exhausted: 'Every recorded plan in this scope was checked, as searched; reports may change, so this is not a live census.', partial: 'More recorded plans remain unchecked. Counts so far are not totals.', checking: 'Checking that these earlier results are still current…',
+};
+const COPY = { en: EN, ru: {
+  searchPlans: 'Поиск планов и задач', searchTitles: 'Поиск по названиям и ID', filters: 'Фильтры', close: 'Закрыть', planStatus: 'Статус плана', anyPlan: 'Любой статус плана', taskStatus: 'Статус задачи', anyTask: 'Любой статус задачи', source: 'Записанный источник', allSources: 'Все записанные источники', unverified: 'не подтверждён', unavailable: 'недоступно здесь', search: 'Найти', constraints: 'Условия поиска', clear: 'Очистить поиск и фильтры', results: 'Результаты поиска', retry: 'Повторить', removeProject: 'Убрать фильтр проекта', removeWorktree: 'Убрать фильтр рабочего дерева', searching: 'Поиск записанных планов', noMatch: 'Нет подходящих планов или задач', uncertain: 'Нет совпадений среди проверенных планов и расположений', tryOther: 'Попробуйте другие слова или уберите условие. Фильтры и очистка поиска остаются выше.', noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.', previous: 'Предыдущие результаты', next: 'Следующие результаты', busy: 'Поиск…', refresh: 'Обновить поиск', more: 'Загрузить ещё результаты', continue: 'Продолжить поиск', help: 'Каждое слово должно присутствовать в собственном названии или ID одного плана или задачи, в любом порядке. Регистр не учитывается; диакритика учитывается (café и cafe различаются).', apply: 'Статусы плана, задачи и источник применяются при поиске. Расположения применяются сразу.', pending: 'Поиск ещё не выполнен: это результаты предыдущего поиска. Нажмите «Найти» для обновления.', unavailableService: 'Эта версия сервиса не поддерживает поиск. Список планов ниже работает как прежде.', allPlans: 'всех записанных планов в этом хранилище', archived: 'только архивные планы', current: 'текущие планы (без архивных)', location: 'в выбранном проекте или рабочем дереве', sessionScope: 'где выбранная сессия — владелец, связанная сессия или записанный участник', scopeNote: 'Обычные страницы списка планов не ограничивают область поиска.', words: 'Слова', sourceChip: 'Источник', project: 'Проект', worktree: 'Рабочее дерево', session: 'Сессия', remove: 'Убрать', continued: 'Продолжение предыдущих результатов', planMatch: 'Совпадает собственное название или ID плана', changed: 'Изменилось после поиска', openPlan: 'Открыть план', showTask: 'Показать задачу', inside: 'В', setup: 'настройка не подтверждена', noTasks: 'нет учитываемых задач', exhausted: 'Все записанные планы этой области проверены на момент поиска; отчёты могут меняться, это не живая перепись.', partial: 'Ещё не все записанные планы проверены. Промежуточные числа не являются итоговыми.', checking: 'Проверка актуальности предыдущих результатов…',
+} } satisfies Record<InterfaceLanguage, typeof EN>;
 
 export interface SearchDraft { lifecycle: Lifecycle | typeof ALL; status: ItemStatus | typeof ALL; source: string }
 export const NO_DRAFT: SearchDraft = { lifecycle: ALL, status: ALL, source: ALL };
@@ -54,8 +63,6 @@ export interface BoardBarHooks {
   setOpen: (open: boolean, focus: 'trigger' | 'panel' | null) => void;
 }
 
-const HELP = 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).';
-
 /**
  * The board bar (docs/ui.md Board search): Current / Archived, one labelled search field and a
  * Filters trigger. Typing changes only the draft (no request, no repaint); Enter in the field
@@ -64,14 +71,15 @@ const HELP = 'Every word must appear in the same plan’s or task’s own title 
  * until Search), the location selects (applied on choice), the help and the explicit scope, and
  * Search. It stays in the document while closed (`hidden`), so the field keeps its description.
  */
-export function boardBar(h: BoardBarHooks) {
+export function boardBar(h: BoardBarHooks, locale = 'en') {
+  const language = resolveLanguage('auto', locale), copy = COPY[language];
   const bar = el('div', 'ap-board-bar');
   bar.append(h.modes);
   const s = h.search;
   const form = testid(el(s ? 'form' : 'div', 'ap-search'), s ? 'search-form' : 'board-filter-bar');
   if (form instanceof HTMLFormElement && s) {
     form.setAttribute('role', 'search');
-    form.setAttribute('aria-label', 'Search plans and tasks');
+    form.setAttribute('aria-label', copy.searchPlans);
     form.noValidate = true;
     form.addEventListener('submit', (event) => { event.preventDefault(); s.submit(); });
   }
@@ -80,10 +88,10 @@ export function boardBar(h: BoardBarHooks) {
   if (s) {
     const field = el('div', 'ap-search-field');
     // Named for assistive technology; the field's placeholder carries the same words visibly.
-    const label = el('label', 'ap-search-label ap-sr', 'Search titles and IDs');
+    const label = el('label', 'ap-search-label ap-sr', copy.searchTitles);
     label.htmlFor = 'ap-search-q';
     const holder = testid(el('div'), 'search-query');
-    mountSearchField(holder, { value: s.text(), label: 'Search titles and IDs', placeholder: 'Search titles and IDs', onChange: (q) => { s.setText(q); pending(); } });
+    mountSearchField(holder, { value: s.text(), label: copy.searchTitles, placeholder: copy.searchTitles, onChange: (q) => { s.setText(q); pending(); } });
     const input = holder.querySelector('input');
     if (input) {
       input.id = 'ap-search-q';
@@ -109,9 +117,9 @@ export function boardBar(h: BoardBarHooks) {
   trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-expanded', String(h.open));
   trigger.setAttribute('aria-controls', 'ap-board-filters');
-  trigger.append(icon('filter'), el('span', '', 'Filters'));
+   trigger.append(icon('filter'), el('span', '', copy.filters));
   if (h.active) { const n = el('span', 'ap-filters-count', String(h.active)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
-  trigger.setAttribute('aria-label', h.active ? `Filters, ${h.active} active` : 'Filters');
+   trigger.setAttribute('aria-label', h.active ? (language === 'ru' ? `Фильтры, активно: ${h.active}` : `Filters, ${h.active} active`) : copy.filters);
   trigger.addEventListener('click', () => {
     // Outside pointer dismissal can hide this owner without rebuilding it, so
     // the live expanded state, not this paint's captured `h.open`, is current.
@@ -125,11 +133,11 @@ export function boardBar(h: BoardBarHooks) {
   panel.setAttribute('aria-labelledby', 'ap-board-filters-h');
   panel.hidden = !h.open;
   const head = el('div', 'ap-filters-head');
-  const title = el('h2', 'ap-filters-h', 'Filters');
+  const title = el('h2', 'ap-filters-h', copy.filters);
   title.id = 'ap-board-filters-h';
   title.tabIndex = -1;
   head.append(title);
-  button(head, 'board-filters-close', 'Close', () => h.setOpen(false, 'trigger'), 'ghost');
+  button(head, 'board-filters-close', copy.close, () => h.setOpen(false, 'trigger'), 'ghost');
   panel.append(head);
   const grid = el('div', 'ap-filters-grid');
   if (s) {
@@ -138,26 +146,26 @@ export function boardBar(h: BoardBarHooks) {
       mountLiveSelect(box, { label: name, value, options, onChange: (v) => { set(v); } }, h.current);
       grid.append(box);
     };
-    pick('search-lifecycle', 'Plan status', s.draft.lifecycle, [{ id: ALL, label: 'Any plan status' }, ...LIFECYCLES.map((l) => ({ id: l, label: LIFECYCLE_LABEL[l] }))], (v) => s.setDraft({ lifecycle: v as SearchDraft['lifecycle'] }));
-    pick('search-task-status', 'Task status', s.draft.status, [{ id: ALL, label: 'Any task status' }, ...STATUSES.map((t) => ({ id: t, label: STATUS_LABEL[t] }))], (v) => s.setDraft({ status: v as SearchDraft['status'] }));
+    pick('search-lifecycle', copy.planStatus, s.draft.lifecycle, [{ id: ALL, label: copy.anyPlan }, ...LIFECYCLES.map((l) => ({ id: l, label: lifecycleLabel(l, language) }))], (v) => s.setDraft({ lifecycle: v as SearchDraft['lifecycle'] }));
+    pick('search-task-status', copy.taskStatus, s.draft.status, [{ id: ALL, label: copy.anyTask }, ...STATUSES.map((t) => ({ id: t, label: statusLabel(t, language) }))], (v) => s.setDraft({ status: v as SearchDraft['status'] }));
     if (s.sources.length > 1 || s.draft.source !== ALL) {
       const known = s.sources.some((x) => x.id === s.draft.source);
-      pick('search-source', 'Recorded source', s.draft.source, [{ id: ALL, label: 'All recorded sources' }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : `${x.id} (unverified)` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: `${s.draft.source} (not available here)` }])], (v) => s.setDraft({ source: v }));
+      pick('search-source', copy.source, s.draft.source, [{ id: ALL, label: copy.allSources }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : `${x.id} (${copy.unverified})` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: `${s.draft.source} (${copy.unavailable})` }])], (v) => s.setDraft({ source: v }));
     }
   }
   if (h.locations) grid.append(h.locations);
   panel.append(grid);
   if (s) {
-    const help = testid(el('p', 'ap-note ap-search-help', HELP), 'search-help');
+    const help = testid(el('p', 'ap-note ap-search-help', copy.help), 'search-help');
     help.id = 'ap-search-help';
     panel.append(help);
   }
   if (h.scope) panel.append(h.scope);
   if (s) {
     const foot = el('div', 'ap-filters-foot');
-    foot.append(el('p', 'ap-note', 'Plan status, task status and source apply when you search. Location choices apply right away.'));
+    foot.append(el('p', 'ap-note', copy.apply));
     const submit = el('div', 'ap-search-submit');
-    button(submit, 'search-submit', 'Search', () => { s.submit(); }, 'default');
+    button(submit, 'search-submit', copy.search, () => { s.submit(); }, 'default');
     foot.append(submit);
     panel.append(foot);
   }
@@ -176,13 +184,13 @@ export function boardBar(h: BoardBarHooks) {
   const box = el('div', 'ap-board-bar-wrap');
   box.append(bar);
   if (s?.problem) {
-    const p = testid(el('p', 'ap-doc-warn', s.problem), 'search-problem');
+    const p = testid(el('p', 'ap-doc-warn', queryProblem(s.text(), language) ?? s.problem), 'search-problem');
     p.setAttribute('role', 'alert');
     box.append(p);
   }
   if (s) {
     // Visible outside the closed Filters: the shown results are for an earlier search.
-    const edit = testid(el('p', 'ap-note', 'Not searched yet: these results are for the previous search. Press Search to update them.'), 'search-pending-edit');
+    const edit = testid(el('p', 'ap-note', copy.pending), 'search-pending-edit');
     box.append(edit);
     pending = () => { edit.hidden = !draftDiffers(s.text(), s.draft, s.submitted); };
     pending();
@@ -190,66 +198,74 @@ export function boardBar(h: BoardBarHooks) {
   return box;
 }
 
-const sourceText = (c: Pick<SearchCriteria, 'source'>) => (c.source === ALL ? 'all recorded plans in this store' : `plans recorded by source ${c.source}`);
+const sourceText = (c: Pick<SearchCriteria, 'source'>, language: InterfaceLanguage) => (c.source === ALL ? COPY[language].allPlans : language === 'ru' ? `планов, записанных источником ${c.source}` : `plans recorded by source ${c.source}`);
 /** What is searched, in words; stays visible with zero, failed or unavailable results. */
-export function scopeText(c: SearchCriteria) {
-  const parts = [`Searching ${sourceText(c)}`, c.archived ? 'archived plans only' : 'current plans (archived plans excluded)'];
-  if (narrowed(c)) parts.push('in the chosen project or worktree');
-  if (c.session !== ALL) parts.push('where the chosen session is the owner, linked or a recorded contributor');
-  return `${parts.join(', ')}. Ordinary board list pages are not the search scope.`;
+export function scopeText(c: SearchCriteria, locale = 'en') {
+  const language = resolveLanguage('auto', locale), copy = COPY[language];
+  const parts = [`${language === 'ru' ? 'Поиск' : 'Searching'} ${sourceText(c, language)}`, c.archived ? copy.archived : copy.current];
+  if (narrowed(c)) parts.push(copy.location);
+  if (c.session !== ALL) parts.push(copy.sessionScope);
+  return `${parts.join(', ')}. ${copy.scopeNote}`;
 }
-export function scopeLine(c: SearchCriteria | null, archived: boolean) {
+export function scopeLine(c: SearchCriteria | null, archived: boolean, locale = 'en') {
+  const language = resolveLanguage('auto', locale);
   const p = testid(el('p', 'ap-note ap-search-scope'), 'search-scope');
-  p.textContent = c ? scopeText(c) : `Search checks ${archived ? 'every archived plan' : 'every current plan'} recorded in this store, not only the plans listed below.`;
+  p.textContent = c ? scopeText(c, language) : language === 'ru' ? `Поиск проверяет ${archived ? 'все архивные планы' : 'все текущие планы'}, записанные в хранилище, а не только перечисленные ниже.` : `Search checks ${archived ? 'every archived plan' : 'every current plan'} recorded in this store, not only the plans listed below.`;
   return p;
 }
 
 export interface ChipHooks { remove: (kind: ChipKind) => void; clearAll: () => void }
-export function chipLabel(kind: ChipKind, c: SearchCriteria) {
-  if (kind === 'q') return `Words: ${c.q.trim()}`;
-  if (kind === 'source') return `Source: ${c.source}`;
-  if (kind === 'lifecycle') return `Plan status: ${LIFECYCLE_LABEL[c.lifecycle as Lifecycle]}`;
-  if (kind === 'status') return `Task status: ${STATUS_LABEL[c.status as ItemStatus]}`;
-  if (kind === 'project') return `Project: ${c.labels.project ?? c.project}`;
-  if (kind === 'worktree') return `Worktree: ${c.labels.worktree ?? c.worktree}`;
-  return `Session: ${c.labels.session ?? c.session}`;
+export function chipLabel(kind: ChipKind, c: SearchCriteria, locale = 'en') {
+  const language = resolveLanguage('auto', locale), copy = COPY[language];
+  if (kind === 'q') return `${copy.words}: ${c.q.trim()}`;
+  if (kind === 'source') return `${copy.sourceChip}: ${c.source}`;
+  if (kind === 'lifecycle') return `${copy.planStatus}: ${lifecycleLabel(c.lifecycle as Lifecycle, language)}`;
+  if (kind === 'status') return `${copy.taskStatus}: ${statusLabel(c.status as ItemStatus, language)}`;
+  if (kind === 'project') return `${copy.project}: ${c.labels.project ?? c.project}`;
+  if (kind === 'worktree') return `${copy.worktree}: ${c.worktree.startsWith('root:') ? (language === 'ru' ? 'Основная рабочая копия' : 'Main checkout') : c.labels.worktree ?? c.worktree}`;
+  return `${copy.session}: ${c.labels.sessionGenerated ? sessionLabel(c.session, EMPTY_LIVE, language) : c.labels.session ?? c.session}`;
 }
 export const chipsOf = (c: SearchCriteria): ChipKind[] => (['q', 'source', 'lifecycle', 'status', 'project', 'worktree', 'session'] as ChipKind[]).filter((k) => (k === 'q' ? c.q.trim() !== '' : c[k] !== ALL));
 
 /** One removable chip per submitted constraint, then Clear search and filters. */
-export function chipsBlock(c: SearchCriteria, unavailable: ReadonlySet<ChipKind>, h: ChipHooks) {
+export function chipsBlock(c: SearchCriteria, unavailable: ReadonlySet<ChipKind>, h: ChipHooks, locale = 'en') {
+  const language = resolveLanguage('auto', locale), copy = COPY[language];
   const wrap = testid(el('div', 'ap-search-chips'), 'search-chips');
   wrap.setAttribute('role', 'group');
-  wrap.setAttribute('aria-label', 'Search constraints');
+  wrap.setAttribute('aria-label', copy.constraints);
   const list = el('ul', 'ap-chip-list');
   for (const kind of chipsOf(c)) {
     const li = testid(el('li', 'ap-search-chip'), `search-chip-${kind}`);
     if (unavailable.has(kind)) li.dataset.available = 'false';
     const b = el('button', 'ap-chip-remove');
     b.type = 'button';
-    const text = chipLabel(kind, c);
+    const text = chipLabel(kind, c, language);
     const x = el('span', 'ap-chip-x', '×');
     x.setAttribute('aria-hidden', 'true');
-    b.append(el('span', '', unavailable.has(kind) ? `${text} (not available here)` : text), x);
-    b.setAttribute('aria-label', `Remove ${text}`);
+    b.append(el('span', '', unavailable.has(kind) ? `${text} (${copy.unavailable})` : text), x);
+    b.setAttribute('aria-label', `${copy.remove} ${text}`);
     b.addEventListener('click', () => h.remove(kind));
     li.append(b);
     list.append(li);
   }
   wrap.append(list);
-  button(wrap, 'search-clear', 'Clear search and filters', h.clearAll, 'ghost');
+  button(wrap, 'search-clear', copy.clear, h.clearAll, 'ghost');
   return wrap;
 }
 
 let announcer: HTMLElement | null = null;
 let announced = 0;
+let announcedText = '';
+let announcement = 0;
 /**
  * One persistent polite region outside the repainted root speaks each explicit outcome once, never
- * per poll or repaint (a freshly inserted live region is announced unreliably).
+ * per poll or unchanged repaint; language changes refresh its text (new live regions are unreliable).
  */
 export function announceSearch(id: number, text: string) {
-  if (!id || !text || id === announced) return;
+  if (!id || !text || (id === announced && text === announcedText)) return;
   announced = id;
+  announcedText = text;
+  const version = ++announcement;
   if (!announcer?.isConnected) {
     announcer = testid(el('p', 'ap-sr'), 'search-announcer');
     announcer.setAttribute('role', 'status'); announcer.setAttribute('aria-live', 'polite'); announcer.setAttribute('aria-atomic', 'true');
@@ -257,41 +273,42 @@ export function announceSearch(id: number, text: string) {
   }
   const node = announcer;
   node.textContent = '';
-  requestAnimationFrame(() => { if (announced === id) node.textContent = text; });
+  requestAnimationFrame(() => { if (announcement === version) node.textContent = announcedText; });
 }
 
 const plansText = (n: number) => plural(n, 'plan', 'plans');
 const tasksText = (n: number) => plural(n, 'matching task', 'matching tasks');
 
 /** Matched plans / matching tasks (accumulated) apart from this page's shown results and context rows. */
-export function countsBlock(v: SearchViewState) {
+export function countsBlock(v: SearchViewState, language: InterfaceLanguage = 'en') {
   const box = testid(el('div', 'ap-search-counts'), 'search-counts');
   const final = v.exhausted && v.countsCurrent && !v.coverage.gapped && !v.stop;
   Object.assign(box.dataset, { matchedPlans: String(v.counts.matchedPlans), matchingTasks: String(v.counts.matchingTasks), shown: String(v.page.hits.length), context: String(v.page.contextRows), final: String(final), current: String(v.countsCurrent) });
-  const found = `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
-  const lead = !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
+  const found = language === 'ru' ? `Планов: ${v.counts.matchedPlans} · подходящих задач: ${v.counts.matchingTasks}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
+  const lead = language === 'ru' ? `${!v.countsCurrent ? 'Подсчитано до изменения результатов' : final ? 'Найдено' : v.exhausted ? 'Найдено в проверенных планах' : 'Пока найдено'}: ${found}` : !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
   box.append(el('p', 'ap-search-found', lead));
   const shown = v.page.hits.length;
-  box.append(el('p', 'ap-note', `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
+  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${shown}, страница ${v.page.number}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${v.page.contextRows}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
   return box;
 }
 
 /** Record-scan completeness, skipped records, location interpretation and change qualifiers, kept apart. */
-export function coverageBlock(v: SearchViewState) {
+export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 'en') {
+  const copy = COPY[language], ru = language === 'ru';
   const box = testid(el('div', 'ap-note ap-search-coverage'), 'search-coverage');
   box.dataset.state = v.exhausted ? (v.coverage.gapped ? 'gapped' : 'exhausted') : 'partial';
   if (v.coverage.gapped) box.dataset.gapped = 'true';
   const lines: string[] = [];
-  lines.push(v.exhausted ? 'Every recorded plan in this scope was checked, as searched; reports may change, so this is not a live census.' : 'More recorded plans remain unchecked. Counts so far are not totals.');
-  if (v.coverage.gapped) lines.push(`Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
+  lines.push(v.exhausted ? copy.exhausted : copy.partial);
+  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${v.coverage.skippedRecords})` : ''}, поэтому поиск неполон.` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
   if (narrowed(v.criteria)) {
     // "Searched all" only once the scan is exhausted; a partial scan qualifies locations alone.
     const lead = v.exhausted ? 'Searched all recorded plans; project' : 'Project';
-    lines.push(`${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
+    lines.push(ru ? `${v.exhausted ? 'Проверены все записанные планы; принадлежность' : 'Принадлежность'} к проекту определяется только известными этому окну расположениями${v.discoveryIncomplete ? ', а некоторые здесь ещё неизвестны' : ''}.` : `${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
   }
-  if (v.removed) lines.push(`${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
-  if (v.changedKeys) lines.push(`${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
-  if (!v.page.checked) lines.push('Checking that these earlier results are still current…');
+  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${v.removed}.` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
+  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${v.changedKeys}.` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
+  if (!v.page.checked) lines.push(copy.checking);
   for (const line of lines) box.append(el('p', '', line));
   return box;
 }
@@ -303,15 +320,17 @@ export interface ResultHooks {
 }
 
 const hitMeta = (plan: SearchPlanView, env: Env) => {
-  const parts = [plan.id, planLocation({ ...plan, working: [], document: { state: 'unavailable', checklistSynchronized: false, currentFile: 'not-rechecked' } }, env.live, env.boundSource)];
-  if (plan.lifecycle !== 'active') parts.push(LIFECYCLE_LABEL[plan.lifecycle]);
-  if (env.boundSource === null || plan.sourceId !== env.boundSource) parts.push(`source ${plan.sourceId}`);
-  if (!plan.sourceVerified) parts.push('unverified setup');
-  parts.push(plan.counts.total ? `${plan.counts.done}/${plan.counts.total} done (whole plan)` : 'no counted tasks');
+  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru';
+  const parts = [plan.id, planLocation({ ...plan, working: [], document: { state: 'unavailable', checklistSynchronized: false, currentFile: 'not-rechecked' } }, env.live, env.boundSource, language)];
+  if (plan.lifecycle !== 'active') parts.push(lifecycleLabel(plan.lifecycle, language));
+  if (env.boundSource === null || plan.sourceId !== env.boundSource) parts.push(`${ru ? 'источник' : 'source'} ${plan.sourceId}`);
+  if (!plan.sourceVerified) parts.push(copy.setup);
+  parts.push(plan.counts.total ? `${plan.counts.done}/${plan.counts.total} ${ru ? 'выполнено (весь план)' : 'done (whole plan)'}` : copy.noTasks);
   return parts.join(' · ');
 };
 
 function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
+  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru';
   const section = testid(el('section', 'ap-hit-group'), `search-group-${g.plan.sourceId}/${g.plan.id}`);
   Object.assign(section.dataset, { source: g.plan.sourceId, plan: g.plan.id });
   if (g.changed) section.dataset.changed = 'true';
@@ -321,16 +340,16 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   if (h.selected?.key === g.plan.key && !h.selected.item) head.setAttribute('aria-current', 'true');
   head.append(el('span', 'ap-hit-title', g.plan.title), el('span', 'ap-hit-meta', hitMeta(g.plan, env)));
   const notes: string[] = [];
-  if (g.continued) notes.push('Continued from the previous results');
-  if (g.planOnly) notes.push('The plan’s own title or ID matches');
-  if (g.changed) notes.push('Changed since found');
+  if (g.continued) notes.push(copy.continued);
+  if (g.planOnly) notes.push(copy.planMatch);
+  if (g.changed) notes.push(copy.changed);
   if (notes.length) head.append(el('span', 'ap-hit-note', notes.join(' · ')));
-  head.setAttribute('aria-label', `Open plan: ${g.plan.title}`);
+  head.setAttribute('aria-label', `${copy.openPlan}: ${g.plan.title}`);
   head.addEventListener('click', () => h.openPlan(g.hits[0] ?? { plan: g.plan, planMatched: true, task: null, ancestors: [], omittedAncestors: 0, continued: g.continued, classified: null }));
   section.append(head);
   if (g.hits.length) {
     const list = el('ul', 'ap-hit-tasks');
-    list.setAttribute('aria-label', `Matching tasks in ${g.plan.title}`);
+    list.setAttribute('aria-label', ru ? `Подходящие задачи в ${g.plan.title}` : `Matching tasks in ${g.plan.title}`);
     for (const hit of g.hits) {
       const t = hit.task!;
       const li = el('li');
@@ -339,22 +358,22 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
       Object.assign(b.dataset, { source: g.plan.sourceId, plan: g.plan.id, item: t.id, status: t.status, kind: 'task' });
       if (h.selected?.key === g.plan.key && h.selected.item === t.id) b.setAttribute('aria-current', 'true');
       const line = el('span', 'ap-hit-line');
-      const g1 = glyph(t.status); g1.setAttribute('aria-hidden', 'true'); g1.removeAttribute('role'); g1.removeAttribute('aria-label');
+      const g1 = glyph(t.status, language); g1.setAttribute('aria-hidden', 'true'); g1.removeAttribute('role'); g1.removeAttribute('aria-label');
       const body = el('span', 'ap-hit-body');
       const head = el('span', 'ap-hit-head');
-      head.append(el('span', 'ap-hit-title', t.title), el('span', 'ap-muted', STATUS_LABEL[t.status]), el('code', 'ap-hit-id', t.id));
+      head.append(el('span', 'ap-hit-title', t.title), el('span', 'ap-muted', statusLabel(t.status, language)), el('code', 'ap-hit-id', t.id));
       body.append(head);
       const crumb = breadcrumb(hit);
       if (crumb.head.length) {
         const c = testid(el('span', 'ap-hit-context'), 'search-context');
         c.dataset.omitted = String(crumb.omitted);
-        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [`… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
-        c.textContent = `In: ${parts.join(' › ')}`;
+        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [ru ? `… ещё: ${crumb.omitted}` : `… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
+        c.textContent = `${copy.inside}: ${parts.join(' › ')}`;
         body.append(c);
       }
       line.append(g1, body);
       b.append(line);
-      b.setAttribute('aria-label', `Show task: ${t.title}, ${STATUS_LABEL[t.status]}, in plan ${g.plan.title}`);
+      b.setAttribute('aria-label', `${copy.showTask}: ${t.title}, ${statusLabel(t.status, language)}, ${ru ? 'в плане' : 'in plan'} ${g.plan.title}`);
       b.addEventListener('click', () => h.openTask(hit));
       li.append(b);
       list.append(li);
@@ -368,13 +387,14 @@ export interface ActionHooks { more: () => void; retry: () => void; refresh: () 
 
 /** Grouped results for the shown page, with explicit continuation and recovery actions. */
 export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & ActionHooks) {
+  const language = resolveLanguage('auto', env.locale), copy = COPY[language];
   const nav = testid(el('nav', 'ap-plan-list ap-search-results'), 'search-results');
-  nav.setAttribute('aria-label', 'Search results');
+  nav.setAttribute('aria-label', copy.results);
   nav.dataset.scrollKey = 'search-results';
   nav.dataset.run = String(v.run);
   nav.dataset.page = String(v.page.number);
   // Owning heading of the results region, present in every result state (focus target, never a Tab stop).
-  const heading = testid(el('h2', 'ap-region-h', 'Search results'), 'search-results-heading');
+  const heading = testid(el('h2', 'ap-region-h', copy.results), 'search-results-heading');
   heading.tabIndex = -1;
   nav.append(heading);
   if (v.blocked) {
@@ -382,52 +402,52 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
     box.setAttribute('role', 'status');
     box.dataset.reason = v.blocked;
     box.dataset.parts = v.blockedParts.join(' ');
-    box.append(el('p', '', BLOCKED_TEXT[v.blocked]));
+    box.append(el('p', '', blockedText(v.blocked, language)));
     const row = el('div', 'ap-row');
-    button(row, 'search-retry', 'Retry', h.retry);
+    button(row, 'search-retry', copy.retry, h.retry);
     // Removing an unavailable project also removes its worktree; an unavailable worktree alone keeps the project.
     const part: LocationPart = v.blockedParts.includes('project') ? 'project' : 'worktree';
-    const remove = button(row, 'search-remove-location', part === 'project' ? 'Remove project filter' : 'Remove worktree filter', () => h.removeLocation(part));
+    const remove = button(row, 'search-remove-location', part === 'project' ? copy.removeProject : copy.removeWorktree, () => h.removeLocation(part));
     remove.dataset.part = part;
-    button(row, 'search-clear-blocked', 'Clear search and filters', h.clearAll, 'ghost');
+    button(row, 'search-clear-blocked', copy.clear, h.clearAll, 'ghost');
     box.append(row);
     nav.append(box);
     return nav;
   }
   if (v.phase === 'loading') {
     const slot = testid(el('div', 'ap-row'), 'search-loading');
-    mountSpinner(slot, { label: 'Searching recorded plans' });
+    mountSpinner(slot, { label: copy.searching });
     nav.append(slot);
     return nav;
   }
-  nav.append(countsBlock(v));
+  nav.append(countsBlock(v, language));
   const shown = v.page.hits.length;
   if (!shown) {
     if (v.exhausted && !v.stop) {
       const certain = !v.coverage.gapped && !(narrowed(v.criteria) && v.discoveryIncomplete);
-      nav.append(emptyBlock('search-empty', certain ? 'No plans or tasks match' : 'No matches in the plans and locations that could be checked', 'Try other words, or remove a constraint. Filters and Clear search stay above.'));
+      nav.append(emptyBlock('search-empty', certain ? copy.noMatch : copy.uncertain, copy.tryOther));
     } else if (v.stop === 'paused' || v.stop === 'hidden') {
-      nav.append(testid(el('p', 'ap-note', 'No matches found yet; more recorded plans remain unchecked.'), 'search-none-yet'));
+      nav.append(testid(el('p', 'ap-note', copy.noneYet), 'search-none-yet'));
     }
   }
   for (const g of v.page.groups) nav.append(groupBlock(g, env, h));
-  nav.append(coverageBlock(v));
+  nav.append(coverageBlock(v, language));
   const actions = testid(el('div', 'ap-row ap-search-actions'), 'search-actions');
-  if (v.hasPrevious) button(actions, 'search-prev', 'Previous results', () => h.page(-1));
-  if (v.hasNext) button(actions, 'search-next', 'Next results', () => h.page(1));
+  if (v.hasPrevious) button(actions, 'search-prev', copy.previous, () => h.page(-1));
+  if (v.hasNext) button(actions, 'search-next', copy.next, () => h.page(1));
   if (v.busy) {
     const slot = testid(el('span', 'ap-row'), 'search-loading');
-    mountSpinner(slot, { label: 'Searching…' });
+    mountSpinner(slot, { label: copy.busy });
     actions.append(slot);
   } else if (v.stop === 'failed') {
-    const copy = v.failure ? FAILURE_COPY[v.failure.kind] : FAILURE_COPY.unavailable;
-    actions.append(testid(el('p', 'ap-doc-warn', `Searching stopped: ${copy.title}. Results so far are shown; nothing was treated as no match.`), 'search-failed'));
-    button(actions, 'search-retry', 'Retry', h.retry);
+    const copy = failureCopy(v.failure?.kind ?? 'unavailable', language);
+    actions.append(testid(el('p', 'ap-doc-warn', language === 'ru' ? `Поиск остановлен: ${copy.title}. Найденные результаты показаны; ошибка не считалась отсутствием совпадений.` : `Searching stopped: ${copy.title}. Results so far are shown; nothing was treated as no match.`), 'search-failed'));
+    button(actions, 'search-retry', COPY[language].retry, h.retry);
   } else if (v.stop === 'conflict' || v.stop === 'changed' || v.stop === 'membership' || v.stop === 'retired' || v.stop === 'identity') {
-    button(actions, 'search-refresh', 'Refresh search', h.refresh);
+    button(actions, 'search-refresh', copy.refresh, h.refresh);
   } else if (!v.hasNext && v.more) {
     const full = shown >= 50;
-    const more = button(actions, 'search-more', full ? 'Load more results' : 'Continue searching', h.more);
+    const more = button(actions, 'search-more', full ? copy.more : copy.continue, h.more);
     more.dataset.action = full ? 'more' : 'continue';
   }
   if (actions.childElementCount) nav.append(actions);
@@ -435,13 +455,15 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
 }
 
 /** Visible copy of the last explicit outcome; only announceSearch speaks it, once. */
-export function statusLine(v: SearchViewState) {
+export function statusLine(v: SearchViewState, locale = 'en') {
+  const language = resolveLanguage('auto', locale);
   const p = testid(el('p', 'ap-note ap-search-status'), 'search-status');
   p.dataset.stop = v.stop ?? 'none';
-  p.textContent = v.status.text;
-  announceSearch(v.status.id, v.status.text);
+  const text = v.status.message ? searchStatusText(v.status.message, language) : v.status.text;
+  p.textContent = text;
+  announceSearch(v.status.id, text);
   return p;
 }
 
 /** Older service: search is plainly unavailable; the board stays as it was. */
-export const unavailableNote = () => testid(el('p', 'ap-note', 'Search is unavailable with this service version. The board below still lists plans as before.'), 'search-unavailable');
+export const unavailableNote = (locale = 'en') => testid(el('p', 'ap-note', COPY[resolveLanguage('auto', locale)].unavailableService), 'search-unavailable');

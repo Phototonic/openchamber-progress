@@ -14,6 +14,15 @@ import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { ExecutionBaselines, rosterFor } from '../../ui/shared/subagents.ts';
 import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
 import { DependencyMapLayout } from '../../ui/shared/dependency-map-layout.ts';
+import { attributionCopy } from '../../ui/shared/dependency-map-view.ts';
+
+test('Russian map attribution preserves unavailable versus unassigned', () => {
+  const c = attributionCopy(undefined, true, 1, id => id, 'ru');
+  assert.equal(c.assignment, 'Недоступно в этом представлении');
+  assert.match(c.assignmentNote!, /не означает, что задача никому не назначена/);
+  assert.equal(c.card, null);
+  assert.equal(c.live, null);
+});
 
 test('map proof: revision, delegation, latest child, scope and roster independence', async t => {
   const f = searchFixture(false); seedMapFixture(f); const fixture = seedMapAttribution(f);
@@ -37,6 +46,25 @@ test('map proof: revision, delegation, latest child, scope and roster independen
     assert.ok(b(base).assignment); assert.equal(b(base).live.proven, true);
     assert.equal(mapAttribution(base).get('C')!.assignment, null); assert.equal(mapAttribution(base).get('C')!.live.proven, false);
     assert.deepEqual(mapAttribution(base).get('C')!.links, ['map-linked']);
+    await t.test('Russian attribution keeps assignment proof, literal labels and session-only activity', () => {
+      const proof = b(base), label = () => '<Literal session>';
+      const en = attributionCopy(proof, true, graph.graph.revision, label);
+      const ru = attributionCopy(proof, true, graph.graph.revision, label, 'ru');
+      assert.equal(ru.card, 'Назначено: <Literal session>');
+      assert.equal(ru.session, en.session);
+      assert.equal(ru.kind, en.kind);
+      assert.equal(ru.live?.text, 'Назначенная сессия сейчас активна');
+      assert.match(ru.activityNote!, /не показывает, что она работает над этой задачей/);
+      assert.equal(attributionCopy(proof, false, graph.graph.revision, label, 'ru').live, null);
+      const linked = attributionCopy({ ...mapAttribution(base).get('C')!, recordedAssignee: null }, true, graph.graph.revision, label, 'ru');
+      assert.equal(linked.kind, 'linked');
+      assert.match(linked.card!, /без подтверждённого делегирования/);
+      assert.equal(linked.live, null);
+      const recorded = attributionCopy({ ...proof, assignment: null, recordedAssignee: 'literal-id', live: { proven: false, reason: 'no-verified-assignment' } }, true, graph.graph.revision, label, 'ru');
+      assert.match(recorded.card!, /^Непроверенный исполнитель/);
+      assert.match(recorded.assignmentNote!, /не означает, что задача никому не назначена/);
+      assert.equal(recorded.live, null);
+    });
     await t.test('successful visit withdraws live proof on failed refresh and restores it on recovery without movement', async () => {
       let fail = false;
       const controller = new RunsController({ visible: () => true, changed() {}, service: () => ({ serviceRequest: async () => fail

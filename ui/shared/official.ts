@@ -6,6 +6,7 @@ import { button, el, testid } from './components.ts';
 import { relativeAge } from './format.ts';
 import type { OfficialMainView } from './model.ts';
 import { readExtensionUpdate, type ServiceHost } from './source.ts';
+import { resolveLanguage } from './i18n.ts';
 
 export const OFFICIAL_MAIN_DISMISSED_KEY = 'official-main-dismissed';
 
@@ -46,40 +47,61 @@ export function officialMainNotice(v: OfficialMainView | null, dismissed: string
 
 export const OFFICIAL_MAIN_HOWTO = 'If this extension was installed from the standard official Git URL, check for updates and update it in OpenChamber Settings → Extensions. A custom branch, tag, fork or ZIP install may not follow main, and this extension can’t tell which source it came from.';
 
-const FAILED: Partial<Record<OfficialMainView['diagnostic'], string>> = { 'rate-limited': 'was rate-limited', timeout: 'timed out' };
+const en = {
+  howto: OFFICIAL_MAIN_HOWTO,
+  title: (candidate:string,installed:string) => `Official main version ${candidate} available · This extension ${installed}`,
+  stale: (failure:string,age:string) => `This may be out of date: the latest check ${failure}; last confirmed ${age}. `,
+  failed: 'did not succeed', limited: 'was rate-limited', timeout: 'timed out',
+  open: 'View official main', dismiss: 'Dismiss',
+  line: (candidate:string,stale:boolean) => `Official main ${candidate} available${stale ? ' · check out of date' : ''}`,
+  hint: (installed:string,stale:boolean) => `${stale ? 'This may be out of date. ' : ''}This extension is ${installed}. Open progress for how to update.`,
+};
+const ru: typeof en = {
+  howto: 'Если расширение установлено по стандартному официальному Git URL, проверьте обновления и обновите его в настройках OpenChamber → Расширения. Установка из другой ветки, тега, форка или ZIP может не следовать main; расширение не может определить источник своей установки.',
+  title: (candidate,installed) => `Доступна версия ${candidate} из официальной main · Это расширение ${installed}`,
+  stale: (failure,age) => `Сведения могут быть устаревшими: последняя проверка ${failure}; последнее подтверждение — ${age}. `,
+  failed: 'не удалась', limited: 'ограничена по частоте запросов', timeout: 'превысила время ожидания',
+  open: 'Открыть официальную main', dismiss: 'Скрыть',
+  line: (candidate,stale) => `Доступна официальная main ${candidate}${stale ? ' · проверка устарела' : ''}`,
+  hint: (installed,stale) => `${stale ? 'Сведения могут быть устаревшими. ' : ''}Версия расширения — ${installed}. Откройте прогресс для инструкций по обновлению.`,
+};
 
 export function officialMainText(n: OfficialMainNotice, locale: string, now = Date.now()) {
-  const title = `Official main version ${n.candidate} available · This extension ${n.installed}`;
-  const stale = n.stale && n.checkedAt ? `This may be out of date: the latest check ${FAILED[n.diagnostic] ?? 'did not succeed'}; last confirmed ${relativeAge(n.checkedAt, now, locale)}. ` : '';
-  return { title, body: `${stale}${OFFICIAL_MAIN_HOWTO}` };
+  const text = resolveLanguage('auto',locale)==='ru'?ru:en;
+  const title = text.title(n.candidate,n.installed);
+  const failure = n.diagnostic==='rate-limited'?text.limited:n.diagnostic==='timeout'?text.timeout:text.failed;
+  const stale = n.stale && n.checkedAt ? text.stale(failure,relativeAge(n.checkedAt, now, locale)) : '';
+  return { title, body: `${stale}${text.howto}` };
 }
 
 interface Hooks { officialMain: OfficialMainView | null; officialMainDismissed: string | null; dismissOfficialMain: (v: string) => void; openOfficialMain: () => void; env: { locale: string } }
 
 /** Rail and page: a quiet info banner with the fixed official link, then Dismiss (this version only). */
 export function officialMainBlock(vc: Hooks) {
+  const text = resolveLanguage('auto',vc.env.locale)==='ru'?ru:en;
   const n = officialMainNotice(vc.officialMain, vc.officialMainDismissed);
   if (!n) return null;
   const wrap = testid(el('section', 'ap-official'), 'extension-update-notice');
   wrap.dataset.stale = String(n.stale);
   wrap.dataset.version = n.candidate;
   const slot = el('div');
-  mountBanner(slot, { tone: 'info', ...officialMainText(n, vc.env.locale), action: { label: 'View official main', onClick: vc.openOfficialMain } });
+  mountBanner(slot, { tone: 'info', ...officialMainText(n, vc.env.locale), action: { label: text.open, onClick: vc.openOfficialMain } });
   slot.querySelector('.oc-sdk-banner-action button')?.setAttribute('data-testid', 'extension-update-open');
   wrap.append(slot);
   const row = el('div', 'ap-row');
-  button(row, 'extension-update-dismiss', 'Dismiss', () => vc.dismissOfficialMain(n.candidate), 'ghost');
+  button(row, 'extension-update-dismiss', text.dismiss, () => vc.dismissOfficialMain(n.candidate), 'ghost');
   wrap.append(row);
   return wrap;
 }
 
 /** Work Status: one compact line into the rail, where the notice and its directions are. */
 export function officialMainLine(vc: Hooks, openRail: () => void) {
+  const text = resolveLanguage('auto',vc.env.locale)==='ru'?ru:en;
   const n = officialMainNotice(vc.officialMain, vc.officialMainDismissed);
   if (!n) return null;
-  const b = testid(el('button', 'ap-link', `Official main ${n.candidate} available${n.stale ? ' · check out of date' : ''}`), 'extension-update-line');
+  const b = testid(el('button', 'ap-link', text.line(n.candidate,n.stale)), 'extension-update-line');
   b.type = 'button';
-  b.title = `${n.stale ? 'This may be out of date. ' : ''}This extension is ${n.installed}. Open progress for how to update.`;
+  b.title = text.hint(n.installed,n.stale);
   b.addEventListener('click', openRail);
   return b;
 }

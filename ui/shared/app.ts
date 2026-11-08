@@ -22,7 +22,7 @@
 import { connectHost, type HostClient, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
-import { cleanupEligible, cleanupError, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
+import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
 import { OFFICIAL_MAIN_URL } from './config.ts';
@@ -36,6 +36,26 @@ import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
+import { LanguageController, type LanguageSnapshot } from './language.ts';
+import type { InterfaceLanguage, LanguagePreference } from './i18n.ts';
+
+const APP_EN = {
+  loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
+  copyFailed: 'Clipboard unavailable. Select and copy the preview text below.',
+  sessionFailed: 'That session could not be opened here.', linkFailed: 'The link could not be opened here.',
+  nearbyFocus: 'The row you were on is no longer shown, so focus moved to a nearby row.',
+  removedFocus: (tasks: boolean) => `The task you were on was removed, so focus moved to ${tasks ? 'Tasks' : 'its group'}.`,
+  focusSuffix: (notice: string, name: string) => `${notice}, so focus moved to ${name}.`,
+};
+const APP_RU: typeof APP_EN = {
+  loading: 'Загрузка полного плана…', copying: 'Копирование…', copied: 'Markdown скопирован.',
+  copyFailed: 'Буфер обмена недоступен. Выделите и скопируйте текст сводки ниже.',
+  sessionFailed: 'Не удалось открыть эту сессию здесь.', linkFailed: 'Не удалось открыть ссылку здесь.',
+  nearbyFocus: 'Строка больше не отображается, поэтому фокус перемещён на соседнюю строку.',
+  removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
+  focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
+};
+const APP_COPY = { en: APP_EN, ru: APP_RU };
 
 export const REFRESH_MS = 3000;
 export const RETRY_MS = 8000;
@@ -78,6 +98,7 @@ export interface ViewContext<U> {
   lastGoodAt: number | null;
   live: LiveSnapshot;
   env: Env;
+  language: LanguageSnapshot & { choose: (preference: LanguagePreference) => void };
   ui: U;
   setUi: (patch: Partial<U>) => void;
   /** Functional update against the latest UI state (safe after an await). */
@@ -134,7 +155,7 @@ export interface ViewContext<U> {
 }
 
 /** See ViewContext.handoff. `notice` is the outcome; ", so focus moved to <heading>." is appended. */
-export interface Handoff { to?: string; heading?: (root: HTMLElement) => HTMLElement | null; notice?: string | ((heading: HTMLElement) => string) }
+export interface Handoff { to?: string; heading?: (root: HTMLElement) => HTMLElement | null; notice?: string | ((heading: HTMLElement, locale?: InterfaceLanguage) => string) }
 
 /** One poll's bounded freshness read in place of the list read; `identity` asks for the list read instead. */
 export type Freshness = (service: ServiceHost) => Promise<FreshnessResult>;
@@ -295,7 +316,7 @@ function applyAnchor(list: Element, anchor: Anchor) {
  * nearest shown ancestor summary, then the Tasks heading after complete removal. A filtered
  * (still recorded) row may use the next/previous shown task; moved focus gets a local notice.
  */
-function restoreLogical(article: Element, list: Element, want: Logical) {
+function restoreLogical(article: Element, list: Element, want: Logical, language: InterfaceLanguage) {
   const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
   const exact = rows.get(want.id);
   let target: HTMLElement | null = exact && shownRow(exact, list) ? (want.summary ? summaryOf(exact) : null) ?? exact : null;
@@ -312,7 +333,7 @@ function restoreLogical(article: Element, list: Element, want: Logical) {
   target ??= article.querySelector<HTMLElement>(TASKS_HEADING);
   target?.focus({ preventScroll: true });
   const notice = article.querySelector('[data-testid="focus-notice"]');
-  if (moved && notice) notice.textContent = exact ? 'The row you were on is no longer shown, so focus moved to a nearby row.' : `The task you were on was removed, so focus moved to ${target?.matches(TASKS_HEADING) ? 'Tasks' : 'its group'}.`;
+  if (moved && notice) notice.textContent = exact ? APP_COPY[language].nearbyFocus : APP_COPY[language].removedFocus(!!target?.matches(TASKS_HEADING));
 }
 
 const scopeKey = (s: ListScope | null) => (s ? `s:${s.session ?? ''}|d:${s.session ? '' : directoryKey(s.directory ?? '')}|a:${s.archived ?? 'exclude'}` : 'none');
@@ -422,6 +443,21 @@ export function startView<U>(spec: ViewSpec<U>) {
   let mainDueAt = 0;
   let disposed = false;
   let renderQueued = false;
+  let languageSignature = '';
+  let localLanguageAction = false;
+  let languageFocus = false;
+  let paintedLanguage: InterfaceLanguage | null = null;
+  let paintedLanguageSignature = '';
+  let languagePaint = false;
+  const language = new LanguageController({ storage: host.storage, changed: () => {
+    const signature = JSON.stringify(language.snapshot());
+    if (disposed || signature === languageSignature) return;
+    languageSignature = signature;
+    // A remote language change is a background paint: leave an independent popup alone.
+    if (localLanguageAction) versions.ui++; else versions.ctx++;
+    schedule();
+  } });
+  if (document.visibilityState === 'hidden') language.hidden();
   /**
    * `revision`: of the value (a read may return a newer one than requested). `requested`: the listed
    * revision the read was started for, so a reply ahead of a lagging list is read once, not on every
@@ -441,7 +477,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let cleanupFocus: string | null = null;
   let handoff: (Handoff & { from: FocusKey }) | null = null;
   /** The hand-off's short notice, kept while focus stays on that heading (repaints rebuild the root). */
-  let handoffNote: { hook: string; text: string } | null = null;
+  let handoffNote: { hook: string; notice: NonNullable<Handoff['notice']> } | null = null;
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
@@ -449,7 +485,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
   let requestedScope = '';
   type PreviewBinding = { selection: string; key: string; plan: PlanView };
-  type Preview = NonNullable<SummaryView['preview']> & { binding: PreviewBinding; result?: DetailResult; historical?: DetailSnapshot; summaryOnly?: boolean };
+  type Preview = Omit<NonNullable<SummaryView['preview']>, 'status'> & { binding: PreviewBinding; language: InterfaceLanguage; copyState: 'idle' | 'copying' | 'copied' | 'failed'; result?: DetailResult; historical?: DetailSnapshot; summaryOnly?: boolean };
   let preview: Preview | null = null;
   let previewGeneration = 0;
   let previewScopeKey: string | null = null;
@@ -473,7 +509,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     return p ? previewBinding(vc, p) : null;
   }
   function freshPreview(binding: PreviewBinding, mode: SummaryMode): Preview {
-    return { binding, mode, generation: ++previewGeneration, text: null, message: 'Loading complete plan…', canRetry: false, canSummaryOnly: false, copying: false, status: '' };
+    const locale = language.snapshot().language;
+    return { binding, mode, language: locale, generation: ++previewGeneration, text: null, message: APP_COPY[locale].loading, canRetry: false, canSummaryOnly: false, copying: false, copyState: 'idle' };
   }
   /** Synchronous retirement also covers two selection changes before the next paint. */
   function reconcilePreview() {
@@ -494,8 +531,16 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
   function preparePreview() {
     reconcilePreview();
-    const bound = preview;
+    let bound = preview;
     if (!bound) return;
+    const locale = language.snapshot().language;
+    if (bound.language !== locale) {
+      const r = bound.result;
+      const text = bound.summaryOnly && bound.historical && r && !r.ok ? formatSummaryOnly(bound.historical, r.cause, locale)
+        : r?.ok && r.snapshot && matchesSnapshot(r.snapshot, bound.binding.plan) ? (bound.mode === 'progress' ? formatProgressUpdate(r, locale) : formatHandoff(r, locale)) : null;
+      const message = !r ? APP_COPY[locale].loading : !r.ok ? describeDetailFailure(r.cause, locale) : text === null ? describeDetailFailure({ kind: 'identity-contract' }, locale) : '';
+      preview = bound = { ...bound, language: locale, text, message, generation: ++previewGeneration, copying: false, copyState: 'idle' };
+    }
     const p = bound.binding.plan;
     const c = details.get(p.key);
     if (!c?.result || c.captureEnabled !== read?.captureEnabled || c.result === bound.result || c.requested !== p.revision && c.revision !== p.revision) return;
@@ -510,10 +555,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     // retired reading generation (including leaving and returning to the same selection).
     const historical = c.generation === cacheGeneration ? r.snapshot ?? c.historical : undefined;
     const valid = historical && matchesSnapshot(historical, p) ? historical : undefined;
-    const text = r.ok && r.snapshot && matchesSnapshot(r.snapshot, p) ? (bound.mode === 'progress' ? formatProgressUpdate(r) : formatHandoff(r)) : null;
+    const text = r.ok && r.snapshot && matchesSnapshot(r.snapshot, p) ? (bound.mode === 'progress' ? formatProgressUpdate(r, locale) : formatHandoff(r, locale)) : null;
     // Replacement retires every callback for the previous displayed string, including pending copy feedback.
-    preview = { ...bound, generation: ++previewGeneration, result: r, historical: valid, text, summaryOnly: false, copying: false, status: '',
-      message: r.ok ? (text === null ? describeDetailFailure({ kind: 'identity-contract' }) : '') : describeDetailFailure(r.cause), canRetry: text === null, canSummaryOnly: !r.ok && !!valid };
+    preview = { ...bound, generation: ++previewGeneration, result: r, historical: valid, text, summaryOnly: false, copying: false, copyState: 'idle',
+      message: r.ok ? (text === null ? describeDetailFailure({ kind: 'identity-contract' }, locale) : '') : describeDetailFailure(r.cause, locale), canRetry: text === null, canSummaryOnly: !r.ok && !!valid };
   }
   function summaryView(p: PlanView): SummaryView | null {
     reconcilePreview();
@@ -525,8 +570,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     const active = () => current() && !!bound && preview === bound;
     const shown = bound?.binding.key === binding.key ? bound : null;
     const text = shown?.text ?? null;
+    const copy = APP_COPY[language.snapshot().language];
+    const status = !shown || shown.copyState === 'idle' ? '' : shown.copyState === 'copying' ? copy.copying : shown.copyState === 'copied' ? copy.copied : copy.copyFailed;
     return {
-      preview: shown ? { generation: shown.generation, mode: shown.mode, text, message: shown.message, canRetry: shown.canRetry, canSummaryOnly: shown.canSummaryOnly, copying: shown.copying, status: shown.status } : null,
+      preview: shown ? { generation: shown.generation, mode: shown.mode, text, message: shown.message, canRetry: shown.canRetry, canSummaryOnly: shown.canSummaryOnly, copying: shown.copying, status } : null,
       open: (mode) => { if (current()) { preview = freshPreview(binding, mode); versions.ui++; schedule(); } },
       close: () => {
         if (!active()) return;
@@ -540,17 +587,17 @@ export function startView<U>(spec: ViewSpec<U>) {
       },
       summaryOnly: () => {
         if (!active() || !bound!.canSummaryOnly || !bound!.historical || !bound!.result || bound!.result.ok || !matchesSnapshot(bound!.historical, p)) return;
-        preview = { ...bound!, generation: ++previewGeneration, text: formatSummaryOnly(bound!.historical, bound!.result.cause), summaryOnly: true, canSummaryOnly: false, status: '' };
+        preview = { ...bound!, generation: ++previewGeneration, text: formatSummaryOnly(bound!.historical, bound!.result.cause, bound!.language), summaryOnly: true, canSummaryOnly: false, copyState: 'idle' };
         versions.ui++; schedule();
       },
       copy: () => {
         // The user click authorizes exactly this immutable displayed string, never a later read.
         if (!active() || text === null || bound!.copying) return;
-        bound!.copying = true; bound!.status = 'Copying…'; versions.ui++; schedule();
+        bound!.copying = true; bound!.copyState = 'copying'; versions.ui++; schedule();
         const finish = (success: boolean) => {
           if (!active()) return; // an OS write cannot be revoked; its retired feedback can be discarded
           bound!.copying = false;
-          bound!.status = success ? 'Markdown copied.' : 'Clipboard unavailable. Select and copy the preview text below.';
+          bound!.copyState = success ? 'copied' : 'failed';
           if (canReturnCopyFocus()) previewFocus = { selection: binding.selection, hook: 'summary-copy', generation: bound!.generation };
           versions.ui++; schedule();
         };
@@ -676,6 +723,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // Visibility can arrive before SDK ready. No consumer context or read belongs to that phase;
     // onReady requests the initial refresh once account/locale/surface authority is available.
     if (!ctx || disposed) return;
+    language.refresh();
     const scope = currentScope();
     const key = scopeKey(scope);
     const fresh = read && identity && readScope === key ? spec.freshness?.(context()) ?? null : null;
@@ -827,7 +875,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // pre-action data as a fresh success; every part/list reply from before this is retired.
     gate.retire(); resetCaches(); forgetPlans(new Set([target.key]));
     read = null; readScope = ''; readSig = ''; failure = null;
-    cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? (action === 'archive' ? 'Plan archived. Find it in Archived plans on the full page.' : action === 'restore' ? 'Plan restored. It is still finished; its history is unchanged.' : 'Stored plan deleted. The original file was not changed.') : cleanupError(result.failure.code)) : null };
+    cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
   }
 
@@ -919,7 +967,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (!labelTimer) labelDue = now + LABEL_TICK_MS;
     labelTimer ??= setTimeout(() => {
       labelTimer = null;
-      if (ctx) refreshLabels(mount!, ctx.locale);
+      if (ctx) refreshLabels(mount!, paintedLanguage ?? language.snapshot().language);
       planLabels();
     }, labelDue - now);
   }
@@ -936,15 +984,21 @@ export function startView<U>(spec: ViewSpec<U>) {
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const env: Env = {
-      locale: ctx!.locale, now: Date.now(), mono: performance.now(), live: live.snapshot,
+      locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
       unverifiedSources: new Set(read ? read.sources.filter((s) => !s.verified).map((s) => s.id) : []),
       view: { fresh: !failure, captureEnabled: read?.captureEnabled ?? false },
       // Components offer this only for sessions the host currently lists and the verified bound source.
-      openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: 'That session could not be opened here.' }).catch(() => {})); },
+      openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
       host, ctx: ctx!, session, directory, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      language: { ...language.snapshot(), choose: (preference) => {
+        languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
+        localLanguageAction = true;
+        language.choose(preference);
+        localLanguageAction = false;
+      } },
       setUi: (patch) => applyUi(patch),
       updateUi: (fn) => applyUi(fn(ui)),
       retry, sessionSubscriptions: live.sessionSubscriptionCount,
@@ -955,6 +1009,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (!canReadPart()) return;
         const k = docKey(p);
         const existing = documents.get(k);
+        if (languagePaint && existing) return;
         if (existing && existing.state !== 'error') return;
         const pending: Loadable<DocumentBody> = { state: 'loading' };
         documents.set(k, pending);
@@ -1006,7 +1061,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       runCleanup: (action, plan) => { if (read && actionContext === cleanupContext()) void runCleanup(action, cleanupTarget(plan, read.storeId, actionContext)); },
       officialMain: official.value, officialMainDismissed: official.dismissed,
       dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
-      openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: 'The link could not be opened here.' }).catch(() => {})); },
+      openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].linkFailed }).catch(() => {})); },
       reading: readingView(),
       summary: summaryView,
       digest: (p) => {
@@ -1068,8 +1123,10 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (cleanup.target && !cleanupBusy && !validTarget(cleanup.target)) cleanup = initialCleanup();
     preparePreview();
     let vc = context();
+    languagePaint = paintedLanguage !== null && paintedLanguageSignature !== languageSignature;
 
-    const focus = focusKey(mount!);
+    const ownsFocus = document.hasFocus?.() ?? true;
+    const focus = ownsFocus ? focusKey(mount!) : null;
     const supportText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
     const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
@@ -1086,14 +1143,14 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (reading && paintedReading === reading && oldArticle) {
       for (const d of oldArticle.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) reading.open.set(d.dataset.testid!, d.open);
       const list = oldArticle.querySelector('ul.ap-items');
-      const active = document.activeElement;
+      const active = ownsFocus ? document.activeElement : null;
       // A painted list is authoritative about what is in view; only a loading paint keeps an earlier
       // anchor. With no task row in view (reading Readiness above them), keep the page offset itself.
       if (list) { const top = document.scrollingElement?.scrollTop ?? 0; reading.anchor = anchorOf(list) ?? (top ? { scroll: top } : null); logical = active ? logicalOf(active, list) : null; }
       onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
       // Readiness (Needs you) controls exist only with complete detail too, so they park the same way.
       taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks,[data-testid="focus-controls"],[data-testid="readiness"]') && oldArticle.contains(active);
-      if (!onFallback) { reading.parked = null; reading.parkedControl = null; }
+      if (ownsFocus && !onFallback) { reading.parked = null; reading.parkedControl = null; }
     }
     const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
     const scrolls = new Map([...mount!.querySelectorAll<HTMLElement>('[data-scroll-key]')].map((n) => [n.dataset.scrollKey!, n.scrollTop]));
@@ -1117,13 +1174,17 @@ export function startView<U>(spec: ViewSpec<U>) {
     digests?.beginPaint(); runs?.beginPaint();
     beginInfoPaint(root);
     spec.paint(root, vc);
+    document.documentElement.lang = vc.env.locale;
     digests?.endPaint(); runs?.endPaint();
     const article = reading ? root.querySelector<HTMLElement>(READING) : null;
     const list = article?.querySelector<HTMLElement>('ul.ap-items') ?? null;
     const complete = !!article?.querySelector(COMPLETE_TASKS);
     for (const d of root.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) {
       const was = d.closest(READING) ? reading?.open.get(d.dataset.testid!) : open.get(d.dataset.testid!);
-      if (was !== undefined && was !== d.open) { d.open = was; d.dispatchEvent(new Event('toggle')); }
+      if (was !== undefined && was !== d.open) {
+        if (languagePaint && d.classList.contains('ap-doc')) d.dataset.languageRestore = 'true';
+        d.open = was; d.dispatchEvent(new Event('toggle'));
+      }
     }
     // Complete detail (even with no task rows) is authoritative about which disclosures still exist.
     if (reading && complete) {
@@ -1166,7 +1227,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         if (want) { reading.parked = want; toTasks(); }
         else if (taskControl && focus) { reading.parkedControl = focus; toTasks(); }
         else if (onFallback) toTasks();
-      } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want); }
+      } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want, language.snapshot().language); }
       else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; backFallback = article.querySelector<HTMLElement>(TASKS_HEADING); }
       else if (want || onFallback || (taskControl && !list)) {
         // Complete detail without the remembered target (e.g. no task rows): nothing stays parked;
@@ -1190,7 +1251,10 @@ export function startView<U>(spec: ViewSpec<U>) {
         note.className = 'ap-note ap-handoff-notice';
         note.dataset.testid = 'focus-handoff-notice';
         note.setAttribute('role', 'status');
-        note.textContent = handoffNote.text;
+        const locale = language.snapshot().language;
+        const text = typeof handoffNote.notice === 'function' ? handoffNote.notice(at, locale) : handoffNote.notice;
+        const name = (at.dataset.handoffName ?? at.textContent ?? '').trim().slice(0, 120);
+        note.textContent = APP_COPY[locale].focusSuffix(text, name);
         (at.parentElement?.matches('.ap-row,.ap-status-row') ? at.parentElement : at).after(note);
       } else handoffNote = null;
     }
@@ -1220,6 +1284,13 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       previewFocus = null;
     }
+    if (languageFocus && !vc.language.pending) {
+      const active = document.activeElement;
+      if ((document.hasFocus?.() ?? true) && (!active || active === document.body || active.closest('[data-testid="interface-language"]'))) {
+        root.querySelector<HTMLButtonElement>('[data-testid="interface-language"] button')?.focus({ preventScroll: true });
+      }
+      languageFocus = false;
+    }
     live.want(spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     const keep = spec.retainParts?.(vc);
@@ -1229,6 +1300,9 @@ export function startView<U>(spec: ViewSpec<U>) {
     // One-shot follow-ups of this reading's own state change (e.g. reveal a task once filters clear).
     for (const then of reading?.then.splice(0) ?? []) then(root);
     planLabels();
+    paintedLanguage = language.snapshot().language;
+    paintedLanguageSignature = languageSignature;
+    languagePaint = false;
   }
 
   /**
@@ -1262,9 +1336,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     // Owning headings carry a stable hook and tabindex=-1 in their components, so a later repaint
     // keeps focus on them; the notice is drawn by the caller's notice step.
     heading.focus({ preventScroll: true });
-    const name = (heading.dataset.handoffName ?? heading.textContent ?? '').trim().slice(0, 120);
-    const notice = typeof h.notice === 'function' ? h.notice(heading) : h.notice;
-    handoffNote = notice && heading.dataset.testid ? { hook: heading.dataset.testid, text: `${notice}, so focus moved to ${name}.` } : null;
+    const notice = typeof h.notice === 'function' ? h.notice(heading, language.snapshot().language) : h.notice;
+    handoffNote = notice && heading.dataset.testid && h.notice ? { hook: heading.dataset.testid, notice: h.notice } : null;
     return heading;
   }
 
@@ -1306,6 +1379,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
     ctx = next;
+    language.ready(next.locale, next.features?.deviceStorage === true);
+    document.documentElement.lang = paintedLanguage ?? language.snapshot().language;
     // Ready is authoritative, not just a theme notification. Adopt both fields before
     // any refresh/onContext callback; later directory/session events repeat this state.
     const nextSession = next.session ?? null;
@@ -1343,13 +1418,15 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (document.visibilityState === 'visible') {
       delete html.dataset.apHidden;
       alignMotion(mount.firstElementChild);
-      if (ctx) refreshLabels(mount, ctx.locale);
+      language.visible();
+      if (ctx) refreshLabels(mount, paintedLanguage ?? language.snapshot().language);
       planLabels();
       if (ctx) planMain();
       digests?.visible();
       retry();
       if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {
+      language.hidden();
       html.dataset.apHidden = '';
       digests?.hidden();
       runs?.hidden();
@@ -1361,10 +1438,11 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
   });
   // Focus return re-reads only the shared review checkpoint of an open digest (coalesced).
-  window.addEventListener('focus', () => { digests?.focus(); });
+  window.addEventListener('focus', () => { language.refresh(); digests?.focus(); });
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;
+    language.dispose();
     digests?.dispose();
     runs?.retire();
     spec.retire?.('dispose');

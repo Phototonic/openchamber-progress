@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DependencyMapInteraction, MAP_ZOOM, zoomAt, fitProjection, type MapInteractionCommand, type MapInteractionInput } from '../../ui/shared/dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_ZOOM, zoomAt, fitProjection, mapAnnouncementText, type MapInteractionCommand, type MapInteractionInput } from '../../ui/shared/dependency-map-interaction.ts';
 import { DependencyMapLayout, neighbour } from '../../ui/shared/dependency-map-layout.ts';
 import type { ItemView } from '../../ui/shared/model.ts';
 import { graphItems } from '../../shared/plan-graph.ts';
@@ -9,6 +9,26 @@ import { largePlanSteps } from '../fixtures/large-plan.ts';
 const metrics = { width: 220, height: 100, columnGap: 70, rowGap: 25 };
 const task = (id: string, dependencies: string[] = [], status: ItemView['status'] = 'pending'): ItemView => ({ id, title: id, kind: 'task', status, dependencies });
 const items = [task('A', [], 'done'), task('B', ['A'], 'working'), task('C', ['A']), task('D', ['B', 'C'])];
+test('map announcements carry facts and render Russian without changing recorded titles', () => {
+  const { c, commands } = setup();
+  c.dispatch({ type: 'select', id: 'B' });
+  const speech = commands.find(n => n.type === 'announce');
+  assert.ok(speech?.type === 'announce' && speech.message?.kind === 'selection');
+  assert.match(mapAnnouncementText(speech.message, 'ru'), /^B\. Сообщено: в работе\./);
+  for (const [count, word] of [[0, 'задач'], [1, 'задача'], [2, 'задачи'], [5, 'задач'], [11, 'задач'], [21, 'задача']] as const)
+    assert.equal(mapAnnouncementText({ kind: 'filters', count }, 'ru'), `Показано: ${count} ${word}. Расположение не изменено.`);
+});
+test('Russian map speech distinguishes readiness guidance and reported status; plural messages are whole', () => {
+  const selection = { kind: 'selection' as const, title: '<Literal task>', status: 'pending' as const, guidance: true, ready: true, skipped: false, up: 1, down: 2, hidden: 5 };
+  assert.equal(mapAnnouncementText(selection, 'ru'), '<Literal task>. Готова, только по записанным зависимостям. Прямые записанные зависимости: 1 зависимость; прямые зависимые задачи: 2 задачи. Фильтрами скрыто: 5 связей.');
+  assert.match(mapAnnouncementText({ ...selection, guidance: false }, 'ru'), /Сообщено: ожидает/);
+  assert.match(mapAnnouncementText({ ...selection, ready: false, skipped: true }, 'ru'), /Ожидает пропущенную записанную зависимость/);
+  assert.match(mapAnnouncementText({ ...selection, status: 'blocked' }, 'ru'), /Явно заблокирована/);
+  assert.match(mapAnnouncementText({ ...selection, status: 'done' }, 'ru'), /Сообщено: выполнена/);
+  assert.equal(mapAnnouncementText({ kind: 'fit', count: 21 }, 'ru'), 'Вся карта: 21 задача в поле зрения; действующие фильтры не изменены.');
+  assert.equal(mapAnnouncementText({ kind: 'filters', count: 1 }), '1 task shown. Layout unchanged.');
+  assert.match(mapAnnouncementText({ kind: 'focused-removed' }, 'ru'), /Задача в фокусе больше не записана/);
+});
 function setup(width = 600) {
   const commands: MapInteractionCommand[] = [], cache = new DependencyMapLayout();
   const c = new DependencyMapInteraction(command => commands.push(command));

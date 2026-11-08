@@ -20,6 +20,18 @@ function real(after: number | undefined, to: number, mutate?: (f: ReturnType<typ
   } finally { f.cleanup(); }
 }
 
+test('Russian digest presentation keeps revisions, counts and recorded task titles', () => {
+  assert.equal(countsText({ done: 1, total: 2, remaining: 1, skipped: 0 }, 'ru'), '1/2 выполнено (50%)');
+  const { request, body } = real(1, 6);
+  const d = parseChangeDigest(body, request);
+  assert.deepEqual(coverageText(d, 'ru'), ['Изменения с ревизии 1 до ревизии 6.']);
+  assert.deepEqual(groupTasks(d.tasks, 'ru').map(g => g.id), groupTasks(d.tasks).map(g => g.id));
+  assert.match(groupTasks(d.tasks, 'ru')[0].title, /[А-Яа-я]/);
+  const reference = d.tasks.flatMap(t => t.references).find(r => r.before && r.after)!;
+  assert.match(referenceText(reference, 'ru'), /[А-Яа-я]/);
+  assert.equal(JSON.stringify(d), JSON.stringify(parseChangeDigest(body, request)));
+});
+
 test('capability is explicit: absent or malformed planChangeDigests is unavailable, never an empty digest', () => {
   for (const planChangeDigests of [undefined, 0, true, '1', 2]) assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planChangeDigests })).planChangeDigests, undefined);
   assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planChangeDigests: 1 })).planChangeDigests, 1);

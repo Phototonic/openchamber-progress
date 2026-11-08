@@ -8,6 +8,7 @@ import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { contextListScope, contextScope, pageListScope, NO_FILTERS, placeOf } from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
@@ -26,9 +27,12 @@ async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r 
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
-function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
+function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void, paintHook?: (vc: ViewContext<Ui>) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
+  const languageStorage: Array<{ op: string; key: string; scope?: string }> = [];
+  let languageValue: unknown;
+  let languageWrite: Promise<void> | null = null;
   const infoPaints: { kind: string; root?: object }[] = [];
   let expanded = false, disclosure = false, livePopup = false;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
@@ -50,7 +54,11 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     if (q.path === '/v1/history') return response({ ...envelope(), data: [], nextCursor: null });
     return response({ error: 'not-found' }, 404);
   };
-  const host = { serviceRequest: (q: GuestRequest) => { requests.push(q); return handler(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} },
+  const host = { serviceRequest: (q: GuestRequest) => { requests.push(q); return handler(q); }, storage: {
+    get: async (key: string, options?: { scope: string }) => { if (key !== 'interface-language.v1') return undefined; languageStorage.push({ op: 'get', key, scope: options?.scope }); return languageValue; },
+    set: async (key: string, value: unknown, options?: { scope: string }) => { if (key === 'interface-language.v1') { languageStorage.push({ op: 'set', key, scope: options?.scope }); await languageWrite; languageValue = value; } },
+    delete: async () => {},
+  },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
@@ -66,6 +74,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './components.ts') return { el: node, refreshLabels() {},
         retireReadingUi() { infoPaints.push({ kind: 'retire' }); },
         beginInfoPaint(root: object) { infoPaints.push({ kind: 'begin', root }); },
@@ -87,16 +96,107 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
     onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
-    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
+    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
   };
   exports.startView(spec);
-  return { requests, paints, contexts, listeners, infoPaints, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, infoPaints, languageStorage, holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
     openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
-    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
+    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture', language = { locale: 'en', supported: false }) => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: language.locale, features: { deviceStorage: language.supported }, surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
   };
 }
+
+test('language reads and focus return are independent of failed progress and use device scope', async () => {
+  const c = controller();
+  c.intercept(async () => { throw new Error('fixture service unavailable'); });
+  try {
+    c.setLanguage({ v: 1, preference: 'ru' });
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    assert.equal(c.vc.language.preference, 'ru');
+    assert.ok(c.vc.failure);
+    assert.ok(c.languageStorage.length > 0);
+    assert.ok(c.languageStorage.every(q => q.scope === 'device'));
+    const progressReads = c.requests.length;
+    c.setLanguage({ v: 1, preference: 'en' });
+    c.listeners.focus();
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    assert.equal(c.requests.length, progressReads, 'focus language check must not retry progress');
+  } finally { c.stop(); }
+});
+
+test('manual language survives context changes, while automatic follows only supported host languages', async () => {
+  const c = controller();
+  try {
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru-RU', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    c.vc.language.choose('en');
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    c.ready('B', '/fixture/Beta', 'other-account', { locale: 'ru', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    c.vc.language.choose('auto');
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    c.ready('B', '/fixture/Beta', 'other-account', { locale: 'de-DE', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+  } finally { c.stop(); }
+});
+
+test('language repaint cannot retry an already failed inline document; explicit retry still can', async () => {
+  let previousLanguage = '';
+  const c = controller(false, undefined, vc => {
+    if (previousLanguage && previousLanguage !== vc.env.locale && vc.read?.plans[0]) vc.requestDocument(vc.read.plans[0]);
+    previousLanguage = vc.env.locale;
+  });
+  c.intercept(async (q, next) => q.path === '/v1/document' ? response({ error: 'busy' }, 503) : next());
+  try {
+    c.ready('A'); await settle();
+    const p = c.vc.read!.plans[0];
+    c.vc.requestDocument(p); await settle();
+    assert.equal(c.vc.document(p)?.state, 'error');
+    const reads = c.requests.filter(q => q.path === '/v1/document').length;
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }); await settle();
+    assert.equal(c.requests.filter(q => q.path === '/v1/document').length, reads);
+    c.vc.requestDocument(p); await settle();
+    assert.equal(c.requests.filter(q => q.path === '/v1/document').length, reads + 1);
+  } finally { c.stop(); }
+});
+
+test('saving, failed save and same-effective-language choice do not retry a retained document error', async () => {
+  let previous = '';
+  const c = controller(false, undefined, vc => {
+    const next = JSON.stringify([vc.language.pending, vc.language.writeError, vc.language.preference]);
+    if (previous && next !== previous && vc.read?.plans[0]) vc.requestDocument(vc.read.plans[0]);
+    previous = next;
+  });
+  c.intercept(async (q, next) => q.path === '/v1/document' ? response({ error: 'busy' }, 503) : next());
+  try {
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true }); await settle();
+    c.vc.requestDocument(c.vc.read!.plans[0]); await settle();
+    const reads = () => c.requests.filter(q => q.path === '/v1/document').length;
+    assert.equal(reads(), 1);
+    let reject!: (e: Error) => void;
+    c.holdLanguageWrite(new Promise<void>((_resolve, no) => { reject = no; }));
+    c.vc.language.choose('ru'); await settle();
+    assert.equal(c.vc.language.pending, true);
+    assert.equal(reads(), 1, 'pending save still uses the old language and must not retry');
+    reject(new Error('synthetic storage refused')); await settle();
+    assert.equal(c.vc.language.writeError, 'saveFailed');
+    assert.equal(reads(), 1, 'failed save must not retry');
+    c.holdLanguageWrite(null);
+    c.vc.language.choose('en'); await settle();
+    assert.equal(c.vc.language.preference, 'en');
+    assert.equal(c.vc.env.locale, 'en');
+    assert.equal(reads(), 1, 'same effective language must not retry');
+  } finally { c.stop(); }
+});
 
 test('background paints preserve a pressed control until release; authority changes still retire immediately', async () => {
   const c = controller();

@@ -6,6 +6,34 @@ import { createProgressServer } from '../../service/server.ts';
 import { CaptureController, type CaptureClaim } from '../../ui/shared/capture-comparison.ts';
 import { parseCaptureIndex, parseCaptureComparison, parseHealth } from '../../ui/shared/adapter.ts';
 import type { ServiceHost } from '../../ui/shared/source.ts';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
+import * as i18n from '../../ui/shared/i18n.ts';
+import type { CapturePanel } from '../../ui/shared/capture-comparison.ts';
+
+/** DOM/SDK seam: tests presentation strings and hooks, not native layout or accessibility support. */
+function renderer() {
+  class Node {
+    dataset: Record<string, string> = {}; attrs: Record<string, string> = {}; children: Node[] = [];
+    readonly tag: string; readonly text: string;
+    constructor(tag: string, text = '') { this.tag = tag; this.text = text; }
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    setAttribute(key: string, value: string) { this.attrs[key] = value; }
+    querySelector(tag: string): Node | null { return this.children.find(n => n.tag === tag) ?? this.children.map(n => n.querySelector(tag)).find(Boolean) ?? null; }
+    get textContent(): string { return this.text + this.children.map(n => n.textContent).join(' '); }
+  }
+  const el = (tag: string, _class = '', text = '') => new Node(tag, text);
+  const exports: { captureComparisonBlock?: (p: CapturePanel, locale: string) => Node } = {};
+  const code = ts.transpileModule(readFileSync(new URL('../../ui/shared/capture-comparison-view.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  runInNewContext(code, { exports, require: (name: string) => {
+    if (name === './i18n.ts') return i18n;
+    if (name === '@openchamber/sdk/ui') return { mountSelect: (holder: Node, props: { label: string; options: { label: string }[] }) => holder.append(el('label', '', props.label), ...props.options.map(o => el('option', '', o.label))) };
+    if (name === './components.ts') return { el, testid: (node: Node, id: string) => { node.dataset.testid = id; return node; }, button: (holder: Node, _id: string, label: string) => { const node = el('span'); node.append(el('button', '', label)); holder.append(node); return node; } };
+    throw Error(`Unexpected renderer dependency: ${name}`);
+  } });
+  return exports.captureComparisonBlock!;
+}
 
 async function fixture() {
   const f=captureFixture(),a=f.record('First\n'),b=f.record('Second\n'),r=f.request();
@@ -15,8 +43,8 @@ async function fixture() {
   const service:ServiceHost={serviceRequest:async q=>{
     calls.push(q.path);const res=await fetch(base+q.path+'?'+new URLSearchParams(q.query),{headers:{authorization:'Bearer fixture-only'}});
     const reply={status:res.status,body:await res.text()};
-    if(fail===q.path){fail=null;return {status:503,body:'{"error":"busy"}'};}
     if(hold===q.path){hold=null;await new Promise<void>(resolve=>{release=resolve;});}
+    if(fail===q.path){fail=null;return {status:503,body:'{"error":"busy"}'};}
     return reply;
   }};
   const controller=new CaptureController({service:current=>({serviceRequest:q=>current()?service.serviceRequest(q):Promise.reject(new Error('retired'))}),visible:()=>visible,changed:()=>{}});
@@ -50,9 +78,79 @@ test('held pair and discovery replies cannot return after hide, account/source c
 test('errors retain choices for retry, but a missing capture clears retained bytes and selection',async()=>{
   const x=await fixture();try{
     x.panel().toggle();await x.until(()=>!!x.panel().result);x.fail('/v1/document-comparison');x.panel().compare();await x.until(()=>!!x.panel().comparisonError);assert.equal(x.panel().before!.id,x.a);assert.equal(x.panel().result,null);
-    x.panel().compare();await x.until(()=>!!x.panel().result);
-    x.f.store.db.prepare('DELETE FROM captures WHERE id=?').run(x.a);x.panel().compare();await x.until(()=>!!x.panel().comparisonError);assert.equal(x.panel().before,null);assert.equal(x.panel().result,null);assert.equal(x.panel().entries.length,0);
+    assert.equal(x.panel().comparisonFailure,'failed');
+    x.panel().compare();await x.until(()=>!!x.panel().result);assert.equal(x.panel().comparisonFailure,null);
+    x.f.store.db.prepare('DELETE FROM captures WHERE id=?').run(x.a);x.panel().compare();await x.until(()=>!!x.panel().comparisonError);assert.equal(x.panel().comparisonFailure,'missing');assert.equal(x.panel().before,null);assert.equal(x.panel().result,null);assert.equal(x.panel().entries.length,0);
   }finally{await x.stop();}
+});
+
+test('capture labels, aria and held errors repaint in Russian without reads or changed capture pins', async () => {
+  const x = await fixture();
+  try {
+    const render = renderer();
+    x.panel().toggle(); await x.until(() => !!x.panel().result);
+    x.hold('/v1/document-comparison'); x.fail('/v1/document-comparison'); x.panel().compare(); await x.until(x.held);
+    render(x.panel(), 'ru'); x.release(); await x.until(() => !!x.panel().comparisonError);
+    const panel = x.panel(), calls = [...x.calls], before = panel.before, after = panel.after;
+    assert.equal(panel.comparisonFailure, 'failed');
+    const en = render(panel, 'en'), ru = render(panel, 'ru');
+    assert.equal(en.attrs['aria-label'], 'Compare recorded captures');
+    assert.equal(ru.attrs['aria-label'], 'Сравнить записанные снимки');
+    assert.match(en.textContent, /The recorded captures could not be read/);
+    assert.match(ru.textContent, /Не удалось прочитать записанные снимки/);
+    assert.match(ru.textContent, /Более старый снимок/);
+    assert.deepEqual(x.calls, calls);
+    assert.equal(x.panel().before, before); assert.equal(x.panel().after, after);
+    assert.equal(x.panel().comparisonError, panel.comparisonError);
+  } finally { await x.stop(); }
+});
+
+test('semantic errors override legacy text and unknown legacy errors use a fixed safe fallback', async () => {
+  const x = await fixture();
+  try {
+    const render = renderer();
+    x.panel().toggle(); await x.until(() => !!x.panel().result);
+    const panel = { ...x.panel(), result: null, indexError: 'unsafe service detail', comparisonError: 'unsafe service detail' };
+    const fallback = render(panel, 'ru').textContent;
+    assert.match(fallback, /Не удалось прочитать записанные снимки/);
+    assert.doesNotMatch(fallback, /unsafe service detail/);
+    for (const [code, message] of [['missing', 'План или снимок больше недоступен'], ['conflict', 'Источник или состояние архива изменились'], ['boundary', 'Граница поиска снимков изменилась']] as const) {
+      assert.match(render({ ...panel, indexFailure: code, comparisonFailure: code }, 'ru').textContent, new RegExp(message));
+      assert.match(render({ ...panel, indexError: null, comparisonError: null, indexFailure: code, comparisonFailure: code }, 'ru').textContent, new RegExp(message));
+    }
+  } finally { await x.stop(); }
+});
+
+test('discovery retains semantic failures and clears them on retry', async () => {
+  const x = await fixture();
+  try {
+    x.fail('/v1/document-captures'); x.panel().toggle(); await x.until(() => !!x.panel().indexError);
+    assert.equal(x.panel().indexFailure, 'failed');
+    x.panel().retryIndex(); await x.until(() => !!x.panel().result);
+    assert.equal(x.panel().indexFailure, null);
+    x.f.record('Third\n'); x.panel().retryIndex(); await x.until(() => !!x.panel().indexError);
+    assert.equal(x.panel().indexFailure, 'boundary');
+    x.panel().refresh(); await x.until(() => !x.panel().loading);
+    assert.equal(x.panel().indexFailure, null);
+    x.claim.request.cleanupRev++;
+    x.panel().toggle(); await x.until(() => !!x.panel().indexError);
+    assert.equal(x.panel().indexFailure, 'conflict');
+  } finally { await x.stop(); }
+});
+
+test('latest document state uses human labels in both languages and a safe unknown label', async () => {
+  const x = await fixture();
+  try {
+    const render = renderer();
+    x.panel().toggle(); await x.until(() => !!x.panel().result);
+    const panel = x.panel(), result = panel.result!;
+    for (const [state, en, ru] of [['non-text', 'not a text file', 'не текстовый файл'], ['changed-during-read', 'changed while being read', 'изменился во время чтения'], ['unexpected service detail', 'unknown', 'неизвестно']]) {
+      const p = { ...panel, result: { ...result, current: { ...result.current, state } } };
+      assert.match(render(p, 'en').textContent, new RegExp(en));
+      assert.match(render(p, 'ru').textContent, new RegExp(ru));
+      assert.doesNotMatch(render(p, 'ru').textContent, new RegExp(state));
+    }
+  } finally { await x.stop(); }
 });
 
 test('discovery has a ten-window action limit and preserves selection while older pages replace options',async()=>{

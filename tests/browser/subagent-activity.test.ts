@@ -34,6 +34,11 @@ function snap(records = ALPHA, extra: Partial<LiveSnapshot> = {}, coverage: { di
   };
 }
 const ready = (c: Census) => { assert.equal(c.state, 'ready'); return c as Extract<Census, { state: 'ready' }>; };
+test('Russian pager uses its explicit language without changing pagination', () => {
+  const roster = { earlier: [], earlierTotal: 21, canPage: true };
+  assert.equal(earlierPager(roster, { paging: false, continuation: false }, 0, 5, 'ru'), 'Показать ещё 5');
+  assert.equal(earlierPager(roster, { paging: true, continuation: false }, 0, 5, 'ru'), 'Загрузка…');
+});
 
 test('census: exact parentage gives the selected root, direct children in creation order and nested ones; nothing else', () => {
   const c = ready(censusFor('A', alpha.directory, snap()));
@@ -316,6 +321,37 @@ test('ran: real host times and justified durations; failed/interrupted/historica
   // A host event that already ended a run is never overridden by later host activity.
   assert.equal(ranOf(run('succeeded'), host('running')).label, 'Finished');
   assert.equal(ranOf(run('unknown', { ran: { dispatchState: 'pending', startedAt: null } }), null).label, 'Dispatched, not confirmed yet');
+});
+
+test('Russian run copy keeps times, machine error codes and host evidence unchanged', () => {
+  const failed = run('failed', { ran: { errorType: 'SyntheticFailure' } });
+  assert.equal(ranOf(failed, null, {}, 'ru').label, 'Ошибка: SyntheticFailure');
+  const stopped = run('interrupted', { ran: { interruptionReason: 'user' } });
+  assert.equal(ranOf(stopped, null, {}, 'ru').label, 'Прерван: остановлен пользователем');
+  const running = run('running');
+  const host = { id: 'K', parentId: 'A', depth: 1, title: 'Literal title', activity: 'waiting-permission' as const, outcome: null, archived: false };
+  const en = ranOf(running, host), ru = ranOf(running, host, {}, 'ru');
+  assert.equal(ru.label, 'Ожидает разрешения');
+  assert.equal(ru.time?.prefix, 'начат ');
+  assert.deepEqual({ ...ru, label: en.label, time: en.time }, en);
+  assert.equal(ru.time?.at, en.time?.at);
+  assert.equal(ranOf(running, { ...host, activity: 'idle' }, {}, 'ru').label, 'Выполняется');
+});
+
+test('language-only roster paint preserves recorded identity, claimed text, acceptance and counts', () => {
+  const child = run('succeeded', { childSessionId: 'C1', description: '<Literal title>', claimed: { oid: 'h-ru', outcome: 'done', summary: '<Literal handoff>', reportedAt: T0 + 126_000, sessionId: 'C1', association: 'execution' } });
+  const facts = planFacts(plan, { state: 'ready', value: detail([items[0], items[1]]) }, plan.sourceId);
+  const v = input({ facts, runs: panel(readOf([child])) });
+  const en = rosterFor(v)!, ru = rosterFor(v, 'ru')!;
+  const a = en.featured.find(e => e.sessionId === 'C1')!, b = ru.featured.find(e => e.sessionId === 'C1')!;
+  assert.equal(b.ran.label, 'Завершён');
+  assert.equal(b.title, '<Literal title>');
+  assert.equal(b.claimed?.summary, '<Literal handoff>');
+  assert.deepEqual(b.accepted, a.accepted);
+  assert.deepEqual(ru.summary.map(({ kind, count }) => [kind, count]), en.summary.map(({ kind, count }) => [kind, count]));
+  assert.deepEqual(ru.notes, en.notes);
+  assert.equal(ru.earlierTotal, en.earlierTotal);
+  assert.equal(b.key, a.key);
 });
 
 test('three layers: a claimed-done child with a blocked task keeps both; finished run is not a finished task', () => {

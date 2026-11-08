@@ -13,6 +13,7 @@ import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { contextListScope } from '../../ui/shared/scope.ts';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
@@ -96,6 +97,7 @@ function controller() {
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };

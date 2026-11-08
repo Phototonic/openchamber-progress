@@ -18,6 +18,8 @@ import * as summaries from '../../ui/shared/summary.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
+import * as i18n from '../../ui/shared/i18n.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { createProgressServer } from '../../service/server.ts';
 import { digestFixture, digestItems } from '../fixtures/change-digests.ts';
@@ -115,6 +117,8 @@ function frame(label: string, svc: Proxy, device: Device, options: { account?: s
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
+      if (name === './i18n.ts') return i18n;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
@@ -173,6 +177,34 @@ async function fixture(run: (b: Backend, svc: Proxy, device: Device) => Promise<
 }
 const keysOf = (device: Device) => [...device.map.keys()];
 const revisionsOf = (device: Device) => [...device.map.values()].map((v: any) => v.revision).sort((a, b) => a - b);
+// The app also reads its independent language preference; only that exact key is not digest work.
+const checkpointOps = (device: Device) => device.log.filter(entry => entry.key !== 'interface-language.v1');
+
+test('digest status translates from pinned semantic facts without review writes or reads', async () => {
+  await fixture(async (_b, svc, device) => {
+    const a = frame('language', svc, device);
+    await a.open(); await ready(a);
+    await a.refresh();
+    const panel = a.panel!, digest = panel.digest;
+    const requests = svc.log.length, storage = device.log.length;
+    assert.equal(panel.statusMessage?.kind, 'refreshed');
+    assert.equal(digestModule.digestStatusText(panel.statusMessage!, 'en'), 'Digest refreshed.');
+    assert.equal(digestModule.digestStatusText(panel.statusMessage!, 'ru'), 'Изменения обновлены.');
+    assert.equal(a.panel!.digest, digest);
+    assert.equal(svc.log.length, requests); assert.equal(device.log.length, storage);
+    assert.equal(device.writes().length, 0);
+    device.fail('set', 'HOST_REJECTED', 'Storage quota exceeded', undefined, true);
+    panel.markReviewed(trusted); await until(() => a.panel!.review === 'failed', 'review failure');
+    const failed = a.panel!, failedRequests = svc.log.length, failedStorage = device.log.length;
+    assert.deepEqual(failed.statusMessage, { kind: 'checkpoint', reason: 'quota' });
+    assert.match(digestModule.digestStatusText(failed.statusMessage!, 'en'), /full.*unchanged/);
+    assert.match(digestModule.digestStatusText(failed.statusMessage!, 'ru'), /заполнено.*не изменена/);
+    assert.equal(a.panel!.digest, digest); assert.equal(failed.reviewedThrough, null);
+    assert.equal(svc.log.length, failedRequests); assert.equal(device.log.length, failedStorage);
+    assert.equal(device.map.size, 0);
+    a.stop();
+  });
+});
 
 test('initial view is not zero changes; polls/idle/focus never acknowledge; only a trusted Mark reviewed writes the displayed target', async () => {
   await fixture(async (b, svc, device) => {
@@ -498,7 +530,7 @@ test('unsupported device storage, denied/quota/malformed records and an older se
     svc.retarget(async (q) => { const r = await relay(q); if (q.path === '/health') { const h = JSON.parse(r.body); delete h.planChangeDigests; return { ...r, body: JSON.stringify(h) }; } return r; });
     const a = frame('A', svc, device); await a.open(); await until(() => a.panel?.state === 'unavailable', 'service');
     assert.deepEqual(a.panel!.unavailable, { reason: 'service' });
-    assert.equal(svc.count('/v1/change-digest'), 0); assert.equal(device.log.length, 0);
+    assert.equal(svc.count('/v1/change-digest'), 0); assert.equal(checkpointOps(device).length, 0);
     a.stop();
   });
 });
@@ -513,7 +545,7 @@ test('History closed and panel/status surfaces: zero digest requests and checkpo
     rail.vc.setUi({ selected: rail.vc.read!.plans[0].key }); status.vc.setUi({ selected: status.vc.read!.plans[0].key });
     for (let i = 0; i < 4; i++) { b.f.change(i % 2 ? 'working' : 'pending'); await page.poll(); await rail.poll(); await status.poll(); }
     assert.equal(svc.count('/v1/change-digest'), 0);
-    assert.equal(device.log.length, 0, 'no checkpoint reads or writes');
+    assert.equal(checkpointOps(device).length, 0, 'no checkpoint reads or writes');
     assert.equal(rail.panel, null); assert.equal(status.panel, null);
     for (const f of [page, rail, status]) f.stop();
   });

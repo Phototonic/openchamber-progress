@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import type { Item, PlanSummary } from '../../shared/progress.ts';
-import { readDetail, MAX_DETAIL_PAGES, MAX_DETAIL_RESTARTS, type CompleteDetailResult, type DetailResult, type ServiceHost } from '../../ui/shared/source.ts';
+import { readDetail, MAX_DETAIL_PAGES, MAX_DETAIL_RESTARTS, type CompleteDetailResult, type DetailFailureCause, type DetailResult, type ServiceHost } from '../../ui/shared/source.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly, markdownLiteral } from '../../ui/shared/summary.ts';
-import { EXPECTED_HANDOFF, EXPECTED_PROGRESS, FORBIDDEN, pagedSummaryItems, SUMMARY_ITEMS, SUMMARY_REQUEST, summaryEnvelope, summaryPage, summaryPlan, summaryReports } from '../fixtures/preview-summaries.ts';
+import { EXPECTED_HANDOFF, EXPECTED_HANDOFF_RU, EXPECTED_PROGRESS, EXPECTED_PROGRESS_RU, EXPECTED_SUMMARY_ONLY_RU, FORBIDDEN, pagedSummaryItems, SUMMARY_ITEMS, SUMMARY_REQUEST, summaryEnvelope, summaryPage, summaryPlan, summaryReports } from '../fixtures/preview-summaries.ts';
 
 const reply = (body: unknown, status = 200): GuestRequestResult => ({ status, body: JSON.stringify(body) });
 const host = (route: (q: GuestRequest) => GuestRequestResult | Promise<GuestRequestResult>): ServiceHost => ({ serviceRequest: async (q) => route(q) });
@@ -15,6 +15,110 @@ async function fixture(items = SUMMARY_ITEMS, extra: Partial<PlanSummary> = {}, 
 }
 function freeze<T>(value: T): T { if (value && typeof value === 'object') { Object.freeze(value); for (const v of Object.values(value)) freeze(v); } return value; }
 function failure(r: DetailResult) { assert.equal(r.ok, false); if (r.ok) throw new Error('expected failure'); return r; }
+
+test('localized summaries keep exact golden Markdown and the same frozen recorded facts', async () => {
+  const r = freeze(await fixture());
+  const before = JSON.stringify(r);
+  assert.equal(formatProgressUpdate(r, 'ru'), EXPECTED_PROGRESS_RU);
+  assert.equal(formatHandoff(r, 'ru'), EXPECTED_HANDOFF_RU);
+  assert.equal(formatSummaryOnly(r.snapshot!, { kind: 'page-cap' }, 'ru'), EXPECTED_SUMMARY_ONLY_RU);
+  assert.equal(formatProgressUpdate(r, 'en'), EXPECTED_PROGRESS);
+  assert.equal(formatHandoff(r, 'en'), EXPECTED_HANDOFF);
+  for (const language of ['en', 'ru'] as const) {
+    for (const text of [formatProgressUpdate(r, language)!, formatHandoff(r, language)!, formatSummaryOnly(r.snapshot!, { kind: 'page-cap' }, language)]) {
+      assert.ok(text.endsWith('\n')); assert.ok(!text.includes('\r'));
+      assert.ok(!text.includes(FORBIDDEN));
+      assert.doesNotMatch(text, /source-summary|captureId|reporterSessionId|objective|child agents/);
+    }
+    assert.equal(formatHandoff({ ...r, detail: { ...r.detail, revision: r.detail.revision + 1 } }, language), null);
+    assert.equal(formatProgressUpdate({ ...r, snapshot: null }, language), null);
+  }
+  assert.equal(JSON.stringify(r), before);
+});
+
+test('localized historical failures use safe fixed copy for every cause and never include detail arrays', async () => {
+  const r = freeze(await fixture());
+  const causes: [DetailFailureCause, string][] = [
+    [{ kind: 'revision-restarts' }, 'Исчерпан лимит перезапусков из-за смены ревизии.'],
+    [{ kind: 'page-cap' }, 'Достигнут предел страниц подробных сведений.'],
+    [{ kind: 'identity-contract' }, 'Отклонены идентичность подробных сведений или контракт ответа.'],
+    [{ kind: 'unreachable-auth' }, 'Сервис недоступен, отключён или отказал в доступе.'],
+    [{ kind: 'not-found' }, 'План не найден.'],
+    ...(['unavailable', 'storage', 'binding', 'corrupt', 'schema', 'busy'] as const).map((code): [DetailFailureCause, string] => [{ kind: 'store', code }, `Хранилище прогресса вернуло ${code} (HTTP 503).`]),
+    [{ kind: 'store', code: 'unknown' }, 'Хранилище прогресса недоступно (HTTP 503).'],
+  ];
+  for (const [cause, expected] of causes) {
+    assert.equal(describeDetailFailure(cause, 'ru'), expected);
+    for (const language of ['en', 'ru'] as const) {
+      const text = formatSummaryOnly(r.snapshot!, cause, language);
+      assert.ok(text.includes(describeDetailFailure(cause, language)));
+      assert.doesNotMatch(text, /Validate import mapping|session-example|Recorded reports|Записанные отчёты|## Текущая работа|## Current work|Suggested next step|Предлагаемый следующий шаг/);
+      assert.ok(!text.includes(FORBIDDEN));
+    }
+  }
+});
+
+test('both languages preserve HTML-looking user literals and safely omit unknown diagnostics', async () => {
+  const title = 'Current work / Текущая работа <script> & *title*\nnext';
+  const r = freeze(await fixture([{ id: FORBIDDEN, title, kind: 'task', status: 'working', reporterSessionId: FORBIDDEN }], { title }, summaryEnvelope({ diagnostics: [FORBIDDEN, '__proto__', 'constructor'] })));
+  for (const language of ['en', 'ru'] as const) {
+    const text = formatHandoff(r, language)!;
+    assert.ok(text.includes(markdownLiteral(title)));
+    assert.ok(!text.includes(FORBIDDEN));
+    assert.doesNotMatch(text, /<script|function|\[object Object\]|__proto__|constructor/);
+    assert.ok(text.includes(language === 'ru' ? 'Записана диагностика сервиса прогресса; подробности недоступны.' : 'A progress-service diagnostic was recorded; details are unavailable.'));
+  }
+});
+
+test('Russian summaries retain count facts, pending limits, prerequisite facts and closed-plan safety', async () => {
+  for (const n of [0, 1, 2, 5, 11, 21]) {
+    const items = pagedSummaryItems(n).map((i): Item => ({ ...i, status: 'pending', dependencies: undefined }));
+    const text = formatHandoff(freeze(await fixture(items)), 'ru')!;
+    assert.ok(text.includes(`Прогресс: 0/${n} выполнено; ${n} осталось; 0 пропущено`));
+    assert.equal(text.includes(`…показано 10 из ${n}`), n > 10);
+    const section = text.split('## Не начато\n')[1].split('\n\n')[0];
+    assert.equal(section.split('\n').filter((line) => line.startsWith('- ')).length, Math.min(n, 10));
+  }
+  const items: Item[] = [
+    { id: 'group', title: 'Group', kind: 'group', status: 'pending' },
+    { id: 'skip', title: 'Skipped title', kind: 'task', status: 'skipped' },
+    { id: 'blocked', title: 'Blocked title', kind: 'task', status: 'blocked' },
+    { id: 'pending', title: 'Pending title', kind: 'task', status: 'pending', dependencies: ['skip', 'group', 'blocked', 'pending', FORBIDDEN] },
+  ];
+  for (const [lifecycle, label] of [['finished', 'Завершён'], ['cancelled', 'Отменён'], ['failed', 'Не удался']] as const) {
+    const text = formatHandoff(freeze(await fixture(items, { lifecycle, cleanup: { state: 'archived', revision: 1 } })), 'ru')!;
+    assert.ok(text.includes(`Состояние: ${label}`)); assert.ok(text.includes('(в архиве)'));
+    assert.ok(text.includes('Skipped title (Пропущено; не считается выполнением)'));
+    assert.ok(text.includes('Group (группа; не задача предварительного условия)'));
+    assert.ok(text.includes('Blocked title (Заблокировано)'));
+    assert.ok(text.includes('Pending title (Не начато)'));
+    assert.ok(text.includes('Задача предварительного условия недоступна'));
+    assert.ok(text.includes('Готовый следующий шаг не записан.'));
+    assert.ok(!text.includes(FORBIDDEN));
+  }
+});
+
+test('Russian freshness warnings cover every document state and safely deduplicate known diagnostics', async () => {
+  const expected = {
+    unbound: 'К этому плану не привязан документ.',
+    denied: 'При последнем отчёте агенту не разрешили прочитать документ плана.',
+    missing: 'При последнем отчёте документ плана отсутствовал.',
+    moved: 'Документ плана перемещён после привязки; агенту нужно привязать его снова.',
+    oversized: 'Документ плана превышает предел размера снимка, поэтому снимок не создан.',
+    'non-text': 'Документ плана не является обычным текстом, поэтому снимок не создан.',
+    unavailable: 'Не удалось прочитать документ плана в этой системе.',
+    'changed-during-read': 'Документ плана изменился во время чтения; снимок будет создан при следующем отчёте.',
+  };
+  for (const state of Object.keys(expected) as (keyof typeof expected)[]) {
+    const r = freeze(await fixture(SUMMARY_ITEMS, { document: { ...summaryPlan().document, state, checklistSynchronized: false } }, summaryEnvelope({ captureEnabled: false, diagnostics: ['capture-disabled', 'historical-capture', 'source-unverified', 'host-source-binding-unverified', FORBIDDEN] })));
+    const text = formatProgressUpdate(r, 'ru')!;
+    assert.ok(text.includes(expected[state]));
+    for (const message of ['Запись прогресса отключена.', 'Снимок документа является историческим.', 'Записанный источник не проверен.', 'Привязка источника хоста не проверена.', 'Записанный контрольный список не синхронизирован.', 'Последний успешный снимок документа сохранён; последняя попытка создания снимка не заменила его.']) {
+      assert.equal(text.split(message).length - 1, 1);
+    }
+    assert.ok(!text.includes(FORBIDDEN));
+  }
+});
 
 test('F1 exact deterministic Markdown, authoritative counts, recorded-report attribution and immutable inputs', async () => {
   const r = freeze(await fixture());
@@ -176,10 +280,13 @@ test('F4 exhausted restarts, page cap and foreign continuations retain first-pag
   }
   for (const r of failures) {
     assert.ok(r.snapshot); assert.ok(!('detail' in r)); assert.ok(!('items' in r.snapshot)); assert.ok(!('contributions' in r.snapshot)); assert.ok(!('links' in r.snapshot));
-    const text = formatSummaryOnly(r.snapshot, r.cause);
-    assert.match(text, /summary-only historical snapshot/); assert.ok(text.includes(describeDetailFailure(r.cause)));
-    assert.doesNotMatch(text, /## Current work|## Not started|Recorded reports:|Origin session:|Suggested next step|Remaining breakdown/);
-    assert.ok(!text.includes(FORBIDDEN));
+    for (const language of ['en', 'ru'] as const) {
+      const text = formatSummaryOnly(r.snapshot, r.cause, language);
+      assert.ok(text.includes(language === 'en' ? 'summary-only historical snapshot' : 'только исторический снимок сводки'));
+      assert.ok(text.includes(describeDetailFailure(r.cause, language)));
+      assert.doesNotMatch(text, /## Current work|## Not started|Recorded reports:|Origin session:|Suggested next step|Remaining breakdown|## Текущая работа|## Не начато|Записанные отчёты:|Исходная сессия:|Предлагаемый следующий шаг|Оставшаяся работа:/);
+      assert.ok(!text.includes(FORBIDDEN));
+    }
   }
   for (const r of failures.slice(2)) assert.equal(r.cause.kind, 'identity-contract');
 });

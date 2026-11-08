@@ -7,7 +7,7 @@
 import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
 import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { DependencyMapInteraction, MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_ZOOM, mapAnnouncementText, type MapAnnouncement, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
 import { mapAttribution } from './dependency-map-attribution.ts';
 import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
@@ -15,7 +15,7 @@ import type { Census } from './census.ts';
 import type { RunsPanel } from './runs.ts';
 import type { RunRequest } from '../../shared/subagent-runs.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
-import { plural } from './format.ts';
+import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
 import type { MapTaskAttribution } from './dependency-map-attribution.ts';
@@ -31,6 +31,7 @@ export interface MapInteractionBinding {
 }
 
 export interface DependencyMapViewInput extends MapSnapshot {
+  language?: InterfaceLanguage;
   /** Frame-local, revision-bound assignment/link/report and live-session proof; never layout input.
    * Absent (map or task entry): provenance/activity unavailable, never “unassigned”. Only a proven
    * live entry on a current picture permits the session-only “Assigned session active now”. */
@@ -85,10 +86,128 @@ export interface DependencyMapView {
 
 /** Card mark: shape + words, colour only reinforces it (style.ts `.ap-map-mark`). */
 type Mark = 'working' | 'ready' | 'waiting' | 'waiting-skipped' | 'blocked' | 'done' | 'skipped' | 'pending';
-const MARK_TEXT: Record<Mark, string> = {
+const MARK_TEXT: Record<InterfaceLanguage, Record<Mark, string>> = { en: {
   working: 'Reported working', ready: 'Ready', waiting: 'Waiting', 'waiting-skipped': 'Waiting on skipped task',
   blocked: 'Explicitly blocked', done: 'Done', skipped: 'Skipped', pending: 'Reported pending',
+}, ru: {
+  working: 'Сообщено: в работе', ready: 'Готова', waiting: 'Ожидает', 'waiting-skipped': 'Ожидает пропущенную задачу',
+  blocked: 'Явно заблокирована', done: 'Выполнена', skipped: 'Пропущена', pending: 'Сообщено: ожидает',
+} };
+const EN = {
+  planView: 'Plan view', list: 'List', map: 'Map', under: 'under 1%', viewList: 'View as list', retry: 'Try again', heading: 'Dependency map',
+  unavailable: 'Map unavailable', notFound: 'This plan is no longer recorded', error: 'Couldn’t read the map', updatingMap: 'Updating the map…', loading: 'Loading the map…',
+  inconsistent: 'The current plan can’t be matched to a consistent dependency picture, so the earlier map is no longer shown. The task list is unaffected.',
+  unsupported: 'The progress service can’t provide the recorded prerequisites this map needs, so nothing is drawn. The task list is unaffected.',
+  missing: 'The progress store no longer has this plan. Choose another plan or return to the list.',
+  failed: 'The dependency map couldn’t be read. Nothing is shown rather than a partial picture.', updating: 'Updating…',
+  changed: ' The plan changed while its map was being read. Waiting for a consistent picture; nothing partial is drawn.',
+  waitingPicture: 'Waiting for the complete plan and its recorded prerequisites. Nothing is drawn until both agree.',
+  revision: (r: number) => `Revision ${r}`, showing: (r: number) => `Showing revision ${r}.`,
+  latestFailed: (r: number) => `Couldn’t read the latest map. Showing revision ${r} as last reported; Ready and Unlocks next are hidden until it can be read.`,
+  retained: (r: number) => ` Showing revision ${r} as last reported. Ready and Unlocks next are hidden until the newer report is matched.`,
+  work: 'Current work', working: 'reported working', ready: 'ready', blocked: 'explicitly blocked', unlocks: 'Unlocks next',
+  guidance: 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start.',
+  closed: 'This plan is closed. Cards show reported status only, without Ready or Unlocks next guidance.',
+  groupsOnly: 'No task cards. This plan records only groups; their context is listed below. ', noTasksYet: 'No task cards. This plan has no recorded tasks yet. ',
+  noPrerequisites: 'No prerequisites recorded for this plan', listOrder: '. Cards are placed in list order, without arrows.',
+  noTaskPrerequisites: 'No task-to-task prerequisites recorded', groupArrows: '. Group prerequisites are listed as group context, never drawn as arrows.',
+  arrows: 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.',
+  filters: 'Map filters', showTasks: 'Show tasks', all: 'Show all', unfinished: 'Unfinished', allGroups: 'All groups', noGroup: 'No group recorded', groupGone: 'Chosen group is no longer recorded', group: 'Group',
+  filtered: (visible: number, tasks: string, hidden: string, arrows: string) => `Showing ${visible} of ${tasks} · ${hidden}${arrows ? ` and ${arrows}` : ''} hidden by filters`,
+  allShown: (tasks: string, arrows: string) => `Showing all ${tasks}${arrows ? ` and ${arrows}` : ''}`,
+  taskMap: 'Task map', mapView: 'Map view', zoom: (z: string) => `Zoom ${z}`, zoomOut: 'Zoom out', zoomIn: 'Zoom in', fit: 'Fit all', current: 'Focus current work',
+  moved: (where: string) => `View moved ${where}.`, left: 'left', up: 'up', down: 'down', right: 'right', panLeft: 'Pan left', panUp: 'Pan up', panDown: 'Pan down', panRight: 'Pan right',
+  sessionOnly: (text: string) => `${text}, session activity only`, groupPath: (path: string) => `Group: ${path}`,
+  direct: (up: string, down: string) => `${up}, ${down}`, hiddenRelated: (n: string) => `${n} hidden by filters`, unlocksFor: (n: string) => `Unlocks next for ${n}`,
+  relative: (name: string, rel: string) => `${name}. ${rel} of the selected task`, upstream: 'Upstream', downstream: 'Downstream',
+  noCards: 'No task cards', emptyMap: 'Task map: no task cards', gone: 'The chosen group is no longer recorded.', noMatches: 'No tasks match these filters.', showAll: 'Show all tasks',
+  selected: 'Selected task', select: 'Select a card to see its recorded prerequisites, dependents and reported details.', noInspect: 'No task cards to inspect.', hidden: 'Hidden by filters',
+  reason: 'Reason', next: 'Next action', assignmentActivity: 'Assignment and activity', assignment: 'Assignment', links: 'Links', reports: 'Reports', noReports: 'No reports recorded', activity: 'Session activity', hiddenSuffix: ' · hidden by filters',
+  prerequisites: 'Recorded prerequisites', none: 'None recorded.', dependents: 'Dependents', noDependents: 'No task records this one as a prerequisite.',
+  chain: (up: string, down: string) => `Highlighted on the map: ${up} it waits on, directly or through others, and ${down} waiting on it.`,
+  unlockHelp: (titles: string) => `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${titles}. That is not permission to start them.`,
+  groupContext: 'Group context', groupHelp: (title: string, deps: string) => `Group “${title}” records its own prerequisites: ${deps}. These belong to the group, not to this task.`,
+  hiddenHelp: (n: string) => `${n} hidden by the current filters. Choosing one shows it again.`,
+  keys: 'Keys in the map: ', arrowKeys: 'Arrow keys', nearest: ' nearest card · ', firstPrerequisite: ' first prerequisite · ', firstDependent: ' first dependent · ', fitKey: ' fit all · ', zoomKey: ' zoom', drag: '. Drag the background or scroll to pan; Tab leaves the map.',
+  selectionHelp: 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).',
+  readinessHelp: 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.',
+  attributionHelp: 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.',
+  groupDeps: (deps: string) => `Records its own prerequisites: ${deps}`, noGroupDeps: 'No group prerequisites recorded', groupMetadata: 'A group’s prerequisites are group metadata. They are not inherited by its tasks and are never drawn as arrows.',
+  selectedMapTask: 'Selected map task', skippedHelp: 'Skipped work never counts as done for its dependents.', blockedHelp: 'An agent reported this task explicitly blocked. It is never shown as ready, whatever its prerequisites.',
+  closedPending: 'Reported pending when the plan closed.', pendingHelp: 'Reported pending. Readiness is hidden until the current revision is matched.',
+  readyDeps: 'Every recorded prerequisite is reported done. Ready describes recorded prerequisites only.', readyNoDeps: 'No prerequisites recorded. Ready describes recorded prerequisites only.',
+  skippedDeps: (titles: string) => `Waiting: a recorded prerequisite was skipped (${titles}), and skipped work never counts as done.`, waitingDeps: (n: string) => `Waiting on ${n}.`,
+  notReported: 'Not reported', invalid: 'Reported details could not be read',
+  counts: {
+    task: ['task', 'tasks', 'tasks', 'tasks'], arrow: ['arrow', 'arrows', 'arrows', 'arrows'],
+    prerequisite: ['direct recorded prerequisite', 'direct recorded prerequisites', 'direct recorded prerequisites', 'direct recorded prerequisites'],
+    dependent: ['direct dependent', 'direct dependents', 'direct dependents', 'direct dependents'], related: ['related task', 'related tasks', 'related tasks', 'related tasks'],
+    upstream: ['upstream task', 'upstream tasks', 'upstream tasks', 'upstream tasks'], downstream: ['downstream task', 'downstream tasks', 'downstream tasks', 'downstream tasks'],
+    hidden: ['related task is', 'related tasks are', 'related tasks are', 'related tasks are'], unfinished: ['unfinished recorded prerequisite', 'unfinished recorded prerequisites', 'unfinished recorded prerequisites', 'unfinished recorded prerequisites'],
+  },
 };
+const RU: typeof EN = {
+  planView: 'Вид плана', list: 'Список', map: 'Карта', under: 'менее 1%', viewList: 'Показать списком', retry: 'Повторить', heading: 'Карта зависимостей',
+  unavailable: 'Карта недоступна', notFound: 'Этот план больше не записан', error: 'Не удалось прочитать карту', updatingMap: 'Обновление карты…', loading: 'Загрузка карты…',
+  inconsistent: 'Не удалось сопоставить текущий план с согласованной картиной зависимостей, поэтому прежняя карта больше не показана. Список задач не изменён.',
+  unsupported: 'Сервис прогресса не предоставляет записанные зависимости, необходимые карте, поэтому ничего не нарисовано. Список задач не изменён.',
+  missing: 'В хранилище прогресса больше нет этого плана. Выберите другой план или вернитесь к списку.',
+  failed: 'Не удалось прочитать карту зависимостей. Вместо частичной картины ничего не показано.', updating: 'Обновление…',
+  changed: ' План изменился во время чтения карты. Ожидание согласованной картины; частичная карта не показана.',
+  waitingPicture: 'Ожидание полного плана и его записанных зависимостей. Карта появится, когда они совпадут.',
+  revision: r => `Редакция ${r}`, showing: r => `Показана редакция ${r}.`,
+  latestFailed: r => `Не удалось прочитать новую карту. Показана редакция ${r} по последнему отчёту; «Готова» и «Открывает далее» скрыты до успешного чтения.`,
+  retained: r => ` Показана редакция ${r} по последнему отчёту. «Готова» и «Открывает далее» скрыты до сопоставления нового отчёта.`,
+  work: 'Текущая работа', working: 'в работе по отчётам', ready: 'готовы', blocked: 'явно заблокированы', unlocks: 'Открывает далее',
+  guidance: 'Только по записанным зависимостям; ни «Готова», ни «Открывает далее» не дают разрешения начинать.',
+  closed: 'Этот план закрыт. Карточки показывают только сообщённый статус, без подсказок «Готова» и «Открывает далее».',
+  groupsOnly: 'Нет карточек задач. В плане записаны только группы; их контекст указан ниже. ', noTasksYet: 'Нет карточек задач. В плане пока не записаны задачи. ',
+  noPrerequisites: 'Для этого плана не записаны зависимости', listOrder: '. Карточки расположены в порядке списка, без стрелок.',
+  noTaskPrerequisites: 'Зависимости между задачами не записаны', groupArrows: '. Зависимости групп указаны как контекст групп и никогда не рисуются стрелками.',
+  arrows: 'Стрелки идут от записанной зависимости к зависящей от неё задаче. Только записанные сведения: не расписание и не доказательство выполнения работы.',
+  filters: 'Фильтры карты', showTasks: 'Показать задачи', all: 'Все', unfinished: 'Незавершённые', allGroups: 'Все группы', noGroup: 'Группа не записана', groupGone: 'Выбранная группа больше не записана', group: 'Группа',
+  filtered: (visible, tasks, hidden, arrows) => `Всего: ${tasks} · показано: ${visible} · фильтрами скрыто: ${hidden}${arrows ? ` и ${arrows}` : ''}`,
+  allShown: (tasks, arrows) => `Показаны все: ${tasks}${arrows ? ` и ${arrows}` : ''}`,
+  taskMap: 'Карта задач', mapView: 'Вид карты', zoom: z => `Масштаб ${z}`, zoomOut: 'Уменьшить', zoomIn: 'Увеличить', fit: 'Вместить всё', current: 'Показать текущую работу',
+  moved: where => `Карта сдвинута ${where}.`, left: 'влево', up: 'вверх', down: 'вниз', right: 'вправо', panLeft: 'Сдвинуть влево', panUp: 'Сдвинуть вверх', panDown: 'Сдвинуть вниз', panRight: 'Сдвинуть вправо',
+  sessionOnly: text => `${text}, только активность сессии`, groupPath: path => `Группа: ${path}`,
+  direct: (up, down) => `${up}, ${down}`, hiddenRelated: n => `Фильтрами скрыто: ${n}`, unlocksFor: n => `Открывает далее: ${n}`,
+  relative: (name, rel) => `${name}. ${rel} относительно выбранной задачи`, upstream: 'Предшествующие', downstream: 'Последующие',
+  noCards: 'Нет карточек задач', emptyMap: 'Карта задач: нет карточек', gone: 'Выбранная группа больше не записана.', noMatches: 'Нет задач по этим фильтрам.', showAll: 'Показать все задачи',
+  selected: 'Выбранная задача', select: 'Выберите карточку, чтобы увидеть записанные зависимости, зависимые задачи и сообщённые сведения.', noInspect: 'Нет карточек задач для просмотра.', hidden: 'Скрыта фильтрами',
+  reason: 'Причина', next: 'Следующее действие', assignmentActivity: 'Назначение и активность', assignment: 'Назначение', links: 'Связи', reports: 'Отчёты', noReports: 'Отчёты не записаны', activity: 'Активность сессии', hiddenSuffix: ' · скрыта фильтрами',
+  prerequisites: 'Записанные зависимости', none: 'Не записаны.', dependents: 'Зависимые задачи', noDependents: 'Ни одна задача не указывает эту как зависимость.',
+  chain: (up, down) => `Выделены на карте: ${up}, которых задача ожидает прямо или косвенно, и ${down}, ожидающих её.`,
+  unlockHelp: titles => `Если сообщить о выполнении, это закроет последнюю незавершённую записанную зависимость для: ${titles}. Это не разрешение начинать их.`,
+  groupContext: 'Контекст групп', groupHelp: (title, deps) => `Группа «${title}» записывает собственные зависимости: ${deps}. Они относятся к группе, а не к этой задаче.`,
+  hiddenHelp: n => `Текущими фильтрами скрыто: ${n}. Выбор задачи снова покажет её.`,
+  keys: 'Клавиши на карте: ', arrowKeys: 'Стрелки', nearest: ' ближайшая карточка · ', firstPrerequisite: ' первая зависимость · ', firstDependent: ' первая зависимая задача · ', fitKey: ' вместить всё · ', zoomKey: ' масштаб', drag: '. Перетаскивайте фон или прокручивайте для сдвига; Tab выводит с карты.',
+  selectionHelp: 'При выборе карточки задачи, которых она ожидает, помечаются как предшествующие (сплошной контур), а ожидающие её — как последующие (двойной контур).',
+  readinessHelp: 'Готова: о выполнении каждой записанной зависимости сообщено. Открывает далее: отчёт о выполнении карточки закроет последнюю незавершённую записанную зависимость другой задачи.',
+  attributionHelp: 'Назначено: подтверждённое делегирование для этой редакции. Непроверенный исполнитель: записан, но без подтверждённого делегирования. Связь с сессией: не назначение. Квадрат перед именем назначенной сессии: по записям запусков этого представления сессия сейчас активна (закрашен) или ожидает ввода (контур). Это не показывает, над какой задачей работает сессия.',
+  groupDeps: deps => `Собственные записанные зависимости: ${deps}`, noGroupDeps: 'Зависимости группы не записаны', groupMetadata: 'Зависимости группы — метаданные группы. Её задачи не наследуют их, и они никогда не рисуются стрелками.',
+  selectedMapTask: 'Выбранная задача карты', skippedHelp: 'Пропущенная работа никогда не считается выполненной для зависимых задач.', blockedHelp: 'Агент явно сообщил о блокировке задачи. Она не показывается готовой независимо от зависимостей.',
+  closedPending: 'На момент закрытия плана сообщено: ожидает.', pendingHelp: 'Сообщено: ожидает. Готовность скрыта до сопоставления текущей редакции.',
+  readyDeps: 'О выполнении каждой записанной зависимости сообщено. «Готова» описывает только записанные зависимости.', readyNoDeps: 'Зависимости не записаны. «Готова» описывает только записанные зависимости.',
+  skippedDeps: titles => `Ожидание: записанная зависимость пропущена (${titles}), а пропущенная работа никогда не считается выполненной.`, waitingDeps: n => `Ожидает: ${n}.`,
+  notReported: 'Не сообщено', invalid: 'Не удалось прочитать сообщённые сведения',
+  counts: {
+    task: ['задача', 'задачи', 'задач', 'задачи'], arrow: ['стрелка', 'стрелки', 'стрелок', 'стрелки'],
+    prerequisite: ['прямая записанная зависимость', 'прямые записанные зависимости', 'прямых записанных зависимостей', 'прямой записанной зависимости'],
+    dependent: ['прямая зависимая задача', 'прямые зависимые задачи', 'прямых зависимых задач', 'прямой зависимой задачи'], related: ['связанная задача', 'связанные задачи', 'связанных задач', 'связанной задачи'],
+    upstream: ['предшествующая задача', 'предшествующие задачи', 'предшествующих задач', 'предшествующей задачи'], downstream: ['последующая задача', 'последующие задачи', 'последующих задач', 'последующей задачи'],
+    hidden: ['связанная задача', 'связанные задачи', 'связанных задач', 'связанной задачи'], unfinished: ['незавершённая записанная зависимость', 'незавершённые записанные зависимости', 'незавершённых записанных зависимостей', 'незавершённой записанной зависимости'],
+  },
+};
+const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU };
+function mapNoun(n: number, kind: keyof typeof EN.counts, language: InterfaceLanguage) {
+  const category = new Intl.PluralRules(language).select(n);
+  const index = ({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[category] ?? 3;
+  return COPY[language].counts[kind][index];
+}
+function mapCount(n: number, kind: keyof typeof EN.counts, language: InterfaceLanguage) {
+  return `${n} ${mapNoun(n, kind, language)}`;
+}
 /** World padding around the full-plan layout; slot coordinates (data-x/y) stay unpadded. */
 const PAD = 28;
 const SVG = 'http://www.w3.org/2000/svg';
@@ -130,15 +249,16 @@ function mapAnnouncer(doc: Document) {
  * Lightweight in-frame switch; no tab or router semantics. Buttons are marked as focus owners so a
  * pending List → Map handoff survives focus staying on the activated switch.
  */
-export function planViewSwitch(presentation: 'list' | 'map', onChange: (next: 'list' | 'map') => void) {
+export function planViewSwitch(presentation: 'list' | 'map', onChange: (next: 'list' | 'map') => void, language: InterfaceLanguage = 'en') {
+  const c = COPY[language];
   ensureMapStyle(document);
   const group = testid(el('div', 'ap-map-switch'), 'plan-view');
   group.setAttribute('role', 'group');
-  const label = el('span', 'ap-map-switch-label', 'Plan view');
+  const label = el('span', 'ap-map-switch-label', c.planView);
   label.id = `ap-plan-view-${++instances}`;
   group.setAttribute('aria-labelledby', label.id);
   const set = el('div', 'ap-map-pair');
-  for (const [mode, text] of [['list', 'List'], ['map', 'Map']] as const) {
+  for (const [mode, text] of [['list', c.list], ['map', c.map]] as const) {
     const holder = button(set, `plan-view-${mode}`, text, () => onChange(mode), presentation === mode ? 'outline' : 'ghost');
     const b = holder.querySelector('button');
     b?.setAttribute('aria-pressed', String(presentation === mode));
@@ -167,15 +287,7 @@ function icon(name: keyof typeof ICONS) {
   svg.append(path);
   return svg;
 }
-/**
- * Singular counts in controller messages ("1 direct prerequisites" → "1 direct prerequisite").
- * Presentation-side until the controller pluralises its own text; a no-op once it does.
- */
-const singular = (text: string) => text
-  .replace(/(^|\D)1 direct prerequisites\b/g, '$11 direct prerequisite').replace(/(^|\D)1 direct dependents\b/g, '$11 direct dependent')
-  .replace(/(^|\D)1 relationships hidden\b/g, '$11 relationship hidden').replace(/(^|\D)1 tasks shown\b/g, '$11 task shown')
-  .replace(/(^|\D)1 visible tasks\b/g, '$11 visible task');
-const zoomText = (zoom: number) => zoom * 100 < 1 ? 'under 1%' : `${Math.round(zoom * 100)}%`;
+const zoomText = (zoom: number, language: InterfaceLanguage) => zoom * 100 < 1 ? COPY[language].under : `${Math.round(zoom * 100)}%`;
 
 function markOf(item: ItemView, fact: DerivedTask | undefined, guidance: boolean): Mark {
   if (item.status !== 'pending') return item.status;
@@ -190,12 +302,6 @@ function mark(kind: Mark) {
   m.setAttribute('aria-hidden', 'true');
   return m;
 }
-
-const STATE_COPY = {
-  loading: 'Loading the map…',
-  unavailable: 'Map unavailable',
-  notFound: 'This plan is no longer recorded',
-} as const;
 
 /** Preserve the focused card across the owner's root commit, not merely its focus key.
  * Other nodes use the ordinary paint. The card gets this paint's attributes, contents
@@ -242,7 +348,7 @@ export function createDependencyMapView(): DependencyMapView {
   // an animation frame, so a throttled window can't hold it back). A
   // selection description is dropped when its own card took focus: the card's name already says
   // it, so it is spoken once (from the focus), not twice. Everything else is spoken.
-  let speech: { text: string; selection: string | null; focus: string | null; identity: string | null; generation: number; timer: ReturnType<typeof setTimeout> | undefined } | null = null;
+  let speech: { text: string; message?: MapAnnouncement; selection: string | null; focus: string | null; identity: string | null; generation: number; timer: ReturnType<typeof setTimeout> | undefined } | null = null;
   // The task a `selection` command named in this turn (cleared at the end of the turn), and the
   // card a pointer press just moved focus onto (cleared once its click has dispatched).
   let turnSelection: string | null = null, pointerFocused: string | null = null;
@@ -257,13 +363,13 @@ export function createDependencyMapView(): DependencyMapView {
     speakFrame = 0; spoken++;
     if (announcer?.textContent) announcer.textContent = '';
   }
-  function queueSpeech(text: string) {
+  function queueSpeech(text: string, message?: MapAnnouncement) {
     const b = binding(); if (!b || !text) return;
     dropSpeech();
     const { identity, generation } = b.state();
     // Reconcile can emit the first List → Map selection before render supplies its
     // ready picture. Resolve the title at delivery, not against the loading input.
-    const item = { text, selection: turnSelection, focus: null as string | null, identity, generation, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+    const item = { text, message, selection: turnSelection, focus: null as string | null, identity, generation, timer: undefined as ReturnType<typeof setTimeout> | undefined };
     if (item.selection && item.selection === pointerFocused) item.focus = item.selection;
     item.timer = setTimeout(() => {
       if (speech !== item) return;
@@ -271,10 +377,9 @@ export function createDependencyMapView(): DependencyMapView {
       const now = binding()?.state();
       if (!now?.active || now.identity !== item.identity || now.generation !== item.generation) return;
       const active = document.activeElement as HTMLElement | null;
-      const title = item.selection ? input?.picture?.detail.detail.items.find(i => i.id === item.selection)?.title : undefined;
       // Only the selection description itself ("<title>. <state>. …") can be dropped.
-      if (title !== undefined && item.text.startsWith(`${title}.`) && item.selection && item.focus === item.selection && document.hasFocus() && active?.matches('.ap-map-card') && active.dataset.task === item.selection) return;
-      announce(item.text);
+      if (item.message?.kind === 'selection' && item.selection && item.focus === item.selection && document.hasFocus() && active?.matches('.ap-map-card') && active.dataset.task === item.selection) return;
+      announce(item.message ? mapAnnouncementText(item.message, input?.language ?? 'en') : item.text);
     }, 0);
     speech = item;
   }
@@ -289,7 +394,7 @@ export function createDependencyMapView(): DependencyMapView {
 
   function announce(raw: string) {
     const node = announcer, b = binding(); if (!node || !raw || !b) return;
-    const text = singular(raw);
+    const text = raw;
     dropSpeech(); // a direct outcome (zoom, pan) is newer than any queued controller message
     // A newer message always wins: it cancels any deferred repeat still waiting for its frame.
     const token = ++spoken;
@@ -311,7 +416,7 @@ export function createDependencyMapView(): DependencyMapView {
     // Slot coordinates are unpadded; the world carries PAD of padding on every side.
     worldNode.style.transform = `translate(${t.x - PAD * t.zoom}px,${t.y - PAD * t.zoom}px) scale(${t.zoom})`;
     worldNode.style.setProperty('--ap-map-zoom', String(t.zoom));
-    if (zoomNode) zoomNode.textContent = zoomText(t.zoom);
+    if (zoomNode) zoomNode.textContent = zoomText(t.zoom, input?.language ?? 'en');
   }
   function scheduleViewport() {
     if (frame) return;
@@ -374,6 +479,8 @@ export function createDependencyMapView(): DependencyMapView {
     // after that, so the restoration's focusin is recognised as passive.
     restoring = true; queueMicrotask(() => { restoring = false; });
     const v = input, b = v.interaction ?? null;
+    const language = v.language ?? 'en', c = COPY[language], marks = MARK_TEXT[language];
+    const count = (n: number, kind: keyof typeof EN.counts) => mapCount(n, kind, language);
     if (b) { listen(host.ownerDocument); announcer = mapAnnouncer(host.ownerDocument); }
     const st = b?.state() ?? null;
     // Unavailable/not found never draw a diagram, even when the coordinator still holds an older
@@ -389,16 +496,16 @@ export function createDependencyMapView(): DependencyMapView {
     region.dataset.tasks = String(layout?.order.length ?? 0); region.dataset.edges = String(layout?.edges.length ?? 0);
     if (b) region.dataset.interactive = '';
 
-    const listButton = (parent: Element) => button(parent, 'map-list', 'View as list', () => v.onList(v.selected), 'outline');
-    const retryButton = (parent: Element) => button(parent, 'map-retry', 'Try again', v.onRetry, 'outline');
+    const listButton = (parent: Element) => button(parent, 'map-list', c.viewList, () => v.onList(v.selected), 'outline');
+    const retryButton = (parent: Element) => button(parent, 'map-retry', c.retry, v.onRetry, 'outline');
 
     // ── No diagram: loading, unavailable, not found, failed. View as list always stays reachable.
     if (!p) {
       const head = el('header', 'ap-map-head');
       const top = el('div', 'ap-map-top');
       const titles = el('div', 'ap-map-titles');
-      titles.append(el('p', 'ap-h', 'Dependency map'));
-      const heading = el('h2', 'ap-plan-title', v.state === 'unavailable' ? STATE_COPY.unavailable : v.state === 'not-found' ? STATE_COPY.notFound : v.state === 'error' ? 'Couldn’t read the map' : v.state === 'updating' ? 'Updating the map…' : STATE_COPY.loading);
+      titles.append(el('p', 'ap-h', c.heading));
+      const heading = el('h2', 'ap-plan-title', v.state === 'unavailable' ? c.unavailable : v.state === 'not-found' ? c.notFound : v.state === 'error' ? c.error : v.state === 'updating' ? c.updatingMap : c.loading);
       heading.id = `${uid}-title`;
       titles.append(heading);
       const actions = el('div', 'ap-map-actions');
@@ -411,15 +518,14 @@ export function createDependencyMapView(): DependencyMapView {
       if (v.state === 'unavailable') {
         state.dataset.tone = 'neutral';
         state.append(el('p', '', retainedUnavailable
-          ? 'The current plan can’t be matched to a consistent dependency picture, so the earlier map is no longer shown. The task list is unaffected.'
-          : 'The progress service can’t provide the recorded prerequisites this map needs, so nothing is drawn. The task list is unaffected.'));
+          ? c.inconsistent : c.unsupported));
       } else if (v.state === 'not-found') {
         state.dataset.tone = 'neutral';
-        state.append(el('p', '', 'The progress store no longer has this plan. Choose another plan or return to the list.'));
+        state.append(el('p', '', c.missing));
       } else if (v.state === 'error') {
         state.dataset.tone = 'warning';
         const row = el('div', 'ap-map-notice-row');
-        row.append(el('p', '', 'The dependency map couldn’t be read. Nothing is shown rather than a partial picture.'));
+        row.append(el('p', '', c.failed));
         retryButton(row);
         state.append(row);
       } else {
@@ -427,10 +533,10 @@ export function createDependencyMapView(): DependencyMapView {
         const row = el('div', 'ap-map-notice-row');
         if (v.state === 'updating') {
           const text = el('p');
-          text.append(el('strong', '', 'Updating…'), ' The plan changed while its map was being read. Waiting for a consistent picture; nothing partial is drawn.');
+          text.append(el('strong', '', c.updating), c.changed);
           row.append(text);
           retryButton(row);
-        } else row.append(el('p', '', 'Waiting for the complete plan and its recorded prerequisites. Nothing is drawn until both agree.'));
+        } else row.append(el('p', '', c.waitingPicture));
         state.append(row);
       }
       region.append(state);
@@ -473,11 +579,11 @@ export function createDependencyMapView(): DependencyMapView {
     const groupOwned = groups.filter(g => g.dependencies?.length);
     const unlocking = (id: string) => guidance && byId.get(id)?.status !== 'skipped' ? [...facts?.get(id)?.unlocksNext ?? []] : [];
     const titleOf = (id: string) => byId.get(id)?.title ?? id;
-    const sessionName = v.label ?? ((sid: string) => sessionLabel(sid, EMPTY_LIVE));
+    const sessionName = v.label ?? ((sid: string) => sessionLabel(sid, EMPTY_LIVE, language));
     const copies = new Map<string, MapAttributionCopy>();
     const attributionOf = (id: string) => {
       let c = copies.get(id);
-      if (!c) copies.set(id, c = attributionCopy(v.attribution?.get(id), v.current, p.graph.revision, sessionName));
+      if (!c) copies.set(id, c = attributionCopy(v.attribution?.get(id), v.current, p.graph.revision, sessionName, language));
       return c;
     };
     const anyAttribution = tasks.some(i => attributionOf(i.id).card);
@@ -494,13 +600,13 @@ export function createDependencyMapView(): DependencyMapView {
     const head = el('header', 'ap-map-head');
     const top = el('div', 'ap-map-top');
     const titles = el('div', 'ap-map-titles');
-    titles.append(el('p', 'ap-h', 'Dependency map'));
+    titles.append(el('p', 'ap-h', c.heading));
     const heading = testid(el('h2', 'ap-plan-title', plan.title), 'map-title');
     heading.id = `${uid}-title`;
     titles.append(heading);
     const meta = el('div', 'ap-meta');
-    meta.append(lifecycleBadge(plan), el('span', '', `Revision ${p.graph.revision}`));
-    titles.append(meta, testid(el('p', 'ap-map-counts', summaryText(summarize(plan, p.detail.detail))), 'map-counts'));
+    meta.append(lifecycleBadge(plan, language), el('span', '', c.revision(p.graph.revision)));
+    titles.append(meta, testid(el('p', 'ap-map-counts', summaryText(summarize(plan, p.detail.detail), language)), 'map-counts'));
     const actions = el('div', 'ap-map-actions');
     listButton(actions);
     top.append(titles, actions);
@@ -512,15 +618,15 @@ export function createDependencyMapView(): DependencyMapView {
     const stateRow = el('div', 'ap-map-notice-row');
     if (v.current && v.state === 'ready') {
       state.dataset.tone = 'none';
-      stateRow.append(el('p', 'ap-sr', `Showing revision ${p.graph.revision}.`));
+      stateRow.append(el('p', 'ap-sr', c.showing(p.graph.revision)));
     } else if (v.state === 'error') {
       state.dataset.tone = 'warning';
-      stateRow.append(el('p', '', `Couldn’t read the latest map. Showing revision ${p.graph.revision} as last reported; Ready and Unlocks next are hidden until it can be read.`));
+      stateRow.append(el('p', '', c.latestFailed(p.graph.revision)));
       retryButton(stateRow);
     } else {
       state.dataset.tone = 'quiet';
       const text = el('p');
-      text.append(el('strong', '', 'Updating…'), ` Showing revision ${p.graph.revision} as last reported. Ready and Unlocks next are hidden until the newer report is matched.`);
+      text.append(el('strong', '', c.updating), c.retained(p.graph.revision));
       stateRow.append(text);
       retryButton(stateRow);
     }
@@ -534,64 +640,64 @@ export function createDependencyMapView(): DependencyMapView {
       const blocked = tasks.filter(i => i.status === 'blocked').length;
       const unlocks = new Set(tasks.flatMap(i => unlocking(i.id)));
       const stats = el('ul', 'ap-map-stats');
-      stats.setAttribute('aria-label', 'Current work');
+      stats.setAttribute('aria-label', c.work);
       const stat = (kind: Mark, count: number, text: string) => {
         const li = el('li', 'ap-map-stat'); li.dataset.kind = kind; li.dataset.count = String(count);
         li.append(mark(kind), el('strong', '', String(count)), ` ${text}`);
         stats.append(li);
       };
-      stat('working', working, 'reported working');
-      stat('ready', ready, 'ready');
-      if (blocked) stat('blocked', blocked, 'explicitly blocked');
+      stat('working', working, c.working);
+      stat('ready', ready, c.ready);
+      if (blocked) stat('blocked', blocked, c.blocked);
       if (unlocks.size) {
         const li = el('li', 'ap-map-stat'); li.dataset.kind = 'unlocks'; li.dataset.count = String(unlocks.size);
-        li.append(el('span', 'ap-map-unlock-icon'), 'Unlocks next · ', el('strong', '', String(unlocks.size)), ` ${unlocks.size === 1 ? 'task' : 'tasks'}`);
+        li.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · `, el('strong', '', String(unlocks.size)), ` ${mapNoun(unlocks.size, 'task', language)}`);
         stats.append(li);
       }
       summary.append(stats);
       // The full definitions sit in the help below the map; the header keeps the one caveat.
-      summary.append(el('p', 'ap-note', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start.'));
+      summary.append(el('p', 'ap-note', c.guidance));
     } else if (!active && tasks.length) {
-      summary.append(el('p', 'ap-note', 'This plan is closed. Cards show reported status only, without Ready or Unlocks next guidance.'));
+      summary.append(el('p', 'ap-note', c.closed));
     }
 
     // Recorded-information qualification and D5 statements.
     const context = testid(el('p', 'ap-map-context'), 'map-context');
     // A taskless plan keeps its explanation AND the dependency statement that is true for it: D5's exact
     // sentence when nothing records prerequisites; group-owned prerequisites get the task-to-task wording.
-    if (!tasks.length) context.append(groups.length ? 'No task cards. This plan records only groups; their context is listed below. ' : 'No task cards. This plan has no recorded tasks yet. ');
-    if (!anyRecorded) context.append(el('strong', '', 'No prerequisites recorded for this plan'), tasks.length ? '. Cards are placed in list order, without arrows.' : '.');
-    else if (!edges.length) context.append(el('strong', '', 'No task-to-task prerequisites recorded'), '. Group prerequisites are listed as group context, never drawn as arrows.');
-    else context.append('Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.');
+    if (!tasks.length) context.append(groups.length ? c.groupsOnly : c.noTasksYet);
+    if (!anyRecorded) context.append(el('strong', '', c.noPrerequisites), tasks.length ? c.listOrder : '.');
+    else if (!edges.length) context.append(el('strong', '', c.noTaskPrerequisites), c.groupArrows);
+    else context.append(c.arrows);
     head.append(state, summary, context);
     region.append(head);
 
     // ── Controls: Show all / Unfinished (the list's pressed pair and predicate) and group subtree filter.
     const controls = el('div', 'ap-map-controls');
     controls.setAttribute('role', 'group');
-    controls.setAttribute('aria-label', 'Map filters');
+    controls.setAttribute('aria-label', c.filters);
     const status = testid(el('div', 'ap-map-pair'), 'map-status');
     status.setAttribute('role', 'group');
-    status.setAttribute('aria-label', 'Show tasks');
+    status.setAttribute('aria-label', c.showTasks);
     status.dataset.mode = v.status;
-    for (const [value, label] of [['all', 'Show all'], ['unfinished', 'Unfinished']] as const) {
+    for (const [value, label] of [['all', c.all], ['unfinished', c.unfinished]] as const) {
       const holder = button(status, `map-status-${value}`, label, () => { if (v.status !== value) v.onStatus(value); }, v.status === value ? 'outline' : 'ghost');
       holder.querySelector('button')?.setAttribute('aria-pressed', String(v.status === value));
     }
     const field = (label: string, control: HTMLSelectElement) => { const f = el('label', 'ap-map-field'); f.append(el('span', 'ap-map-field-label', label), control); return f; };
     const group = testid(el('select', 'ap-map-select'), 'map-group');
     const option = (value: string, label: string) => { const o = el('option', '', label); o.value = value; group.append(o); };
-    option('*', 'All groups'); option('', 'No group recorded');
+    option('*', c.allGroups); option('', c.noGroup);
     for (const g of groups) option(g.id, [...groupPath(g.id), g.title].join(' › '));
-    if (groupGone) option(v.group!, 'Chosen group is no longer recorded');
+    if (groupGone) option(v.group!, c.groupGone);
     group.value = v.group ?? '*'; group.onchange = () => v.onGroup(group.value === '*' ? null : group.value);
-    controls.append(status, field('Group', group));
+    controls.append(status, field(c.group, group));
     const hidden = testid(el('p', 'ap-map-hidden'), 'map-hidden');
     Object.assign(hidden.dataset, { tasks: String(hiddenTasks), edges: String(hiddenEdges) });
     if (tasks.length) {
       hidden.textContent = hiddenTasks
-        ? `Showing ${visible.size} of ${plural(tasks.length, 'task', 'tasks')} · ${plural(hiddenTasks, 'task', 'tasks')}${hiddenEdges ? ` and ${plural(hiddenEdges, 'arrow', 'arrows')}` : ''} hidden by filters`
-        : `Showing all ${plural(tasks.length, 'task', 'tasks')}${edges.length ? ` and ${plural(edges.length, 'arrow', 'arrows')}` : ''}`;
+        ? c.filtered(visible.size, count(tasks.length, 'task'), count(hiddenTasks, 'task'), hiddenEdges ? count(hiddenEdges, 'arrow') : '')
+        : c.allShown(count(tasks.length, 'task'), edges.length ? count(edges.length, 'arrow') : '');
     }
     controls.append(hidden);
     region.append(controls);
@@ -601,7 +707,7 @@ export function createDependencyMapView(): DependencyMapView {
     const stage = el('div', 'ap-map-stage');
     const viewport = testid(el('div', 'ap-map-viewport'), 'map-viewport');
     viewport.setAttribute('role', 'region');
-    viewport.setAttribute('aria-label', 'Task map');
+    viewport.setAttribute('aria-label', c.taskMap);
     const scrollKey = `${plan.key}`;
     const helpId = `${uid}-help`;
     let world: HTMLElement | null = null;
@@ -612,7 +718,7 @@ export function createDependencyMapView(): DependencyMapView {
       const t0 = st!.transform;
       const toolbar = el('div', 'ap-map-toolbar');
       toolbar.setAttribute('role', 'group');
-      toolbar.setAttribute('aria-label', 'Map view');
+      toolbar.setAttribute('aria-label', c.mapView);
       const tool = (id: string, name: keyof typeof ICONS, label: string, run: () => void, text = false) => {
         const t = testid(el('button', 'ap-map-tool'), id);
         t.type = 'button';
@@ -622,22 +728,22 @@ export function createDependencyMapView(): DependencyMapView {
         return t;
       };
       const size = () => ({ w: viewportNode?.clientWidth || 320, h: viewportNode?.clientHeight || 240 });
-      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`Zoom ${zoomText(bb.state().transform.zoom)}.`); };
-      const panBy = (dx: number, dy: number, where: string) => { const bb = binding(); if (bb?.dispatch({ type: 'pan', x: dx, y: dy })) announce(`View moved ${where}.`); };
+      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`); };
+      const panBy = (dx: number, dy: number, where: string) => { const bb = binding(); if (bb?.dispatch({ type: 'pan', x: dx, y: dy })) announce(c.moved(where)); };
       const zoomSet = el('div', 'ap-map-tool-set');
-      zoomNode = testid(el('span', 'ap-map-zoom', zoomText(t0.zoom)), 'map-zoom-level');
-      zoomNode.setAttribute('aria-label', `Zoom ${zoomText(t0.zoom)}`);
-      zoomSet.append(tool('map-zoom-out', 'zoom-out', 'Zoom out', () => zoomBy(1 / MAP_ZOOM.step)), zoomNode, tool('map-zoom-in', 'zoom-in', 'Zoom in', () => zoomBy(MAP_ZOOM.step)));
+      zoomNode = testid(el('span', 'ap-map-zoom', zoomText(t0.zoom, language)), 'map-zoom-level');
+      zoomNode.setAttribute('aria-label', c.zoom(zoomText(t0.zoom, language)));
+      zoomSet.append(tool('map-zoom-out', 'zoom-out', c.zoomOut, () => zoomBy(1 / MAP_ZOOM.step)), zoomNode, tool('map-zoom-in', 'zoom-in', c.zoomIn, () => zoomBy(MAP_ZOOM.step)));
       // Separate flex items so a narrow rail wraps to two rows, not three.
-      const fit = tool('map-fit-all', 'fit', 'Fit all', () => binding()?.dispatch({ type: 'fit' }), true);
-      const current = tool('map-focus-current', 'current', 'Focus current work', () => binding()?.dispatch({ type: 'current' }), true);
+      const fit = tool('map-fit-all', 'fit', c.fit, () => binding()?.dispatch({ type: 'fit' }), true);
+      const current = tool('map-focus-current', 'current', c.current, () => binding()?.dispatch({ type: 'current' }), true);
       const panSet = el('div', 'ap-map-tool-set ap-map-pan');
       const step = () => Math.max(60, Math.round(Math.min(size().w, size().h) * 0.3));
       panSet.append(
-        tool('map-pan-left', 'left', 'Pan left', () => panBy(step(), 0, 'left')),
-        tool('map-pan-up', 'up', 'Pan up', () => panBy(0, step(), 'up')),
-        tool('map-pan-down', 'down', 'Pan down', () => panBy(0, -step(), 'down')),
-        tool('map-pan-right', 'right', 'Pan right', () => panBy(-step(), 0, 'right')));
+        tool('map-pan-left', 'left', c.panLeft, () => panBy(step(), 0, c.left)),
+        tool('map-pan-up', 'up', c.panUp, () => panBy(0, step(), c.up)),
+        tool('map-pan-down', 'down', c.panDown, () => panBy(0, -step(), c.down)),
+        tool('map-pan-right', 'right', c.panRight, () => panBy(-step(), 0, c.right)));
       toolbar.append(zoomSet, fit, current, panSet);
       stage.append(toolbar);
 
@@ -649,7 +755,7 @@ export function createDependencyMapView(): DependencyMapView {
         const modified = e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.key.startsWith('Arrow'));
         if (!bb.dispatch({ type: 'key', key: e.key, canvas, modified, editable: false })) return;
         e.preventDefault();
-        if (e.key === '+' || e.key === '-') announce(`Zoom ${zoomText(bb.state().transform.zoom)}.`);
+        if (e.key === '+' || e.key === '-') announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`);
       });
       // Tab into an off-screen roving card: pan just enough to show it (no selection change). Passive
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
@@ -774,7 +880,7 @@ export function createDependencyMapView(): DependencyMapView {
         const path = groupPath(id);
         const prereqs = inCount.get(id) ?? 0, dependents = outCount.get(id) ?? 0, hiddenRel = hiddenRelCount.get(id) ?? 0;
         const statusRow = el('span', 'ap-map-card-status');
-        statusRow.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
+        statusRow.append(mark(kind), el('span', 'ap-map-card-word', marks[kind]));
         const title = el('span', 'ap-map-card-title', i.title);
         // Attribution line: takes the title's second line inside the same fixed slot (the full title
         // stays in the name and inspector), so its text never moves or resizes anything else.
@@ -783,7 +889,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (who.live) card.dataset.live = who.live.kind;
         const foot = el('span', 'ap-map-card-foot');
         foot.append(el('span', 'ap-map-card-group', path.length ? path[path.length - 1] : ''));
-        if (unlocks.length) { const u = el('span', 'ap-map-card-unlocks'); u.append(el('span', 'ap-map-unlock-icon'), `Unlocks next · ${unlocks.length}`); foot.append(u); }
+        if (unlocks.length) { const u = el('span', 'ap-map-card-unlocks'); u.append(el('span', 'ap-map-unlock-icon'), `${c.unlocks} · ${unlocks.length}`); foot.append(u); }
         card.append(statusRow, title);
         if (who.card) {
           card.dataset.who = '';
@@ -805,14 +911,14 @@ export function createDependencyMapView(): DependencyMapView {
         // The card's name is what a screen reader speaks when a selection focuses it (the map
         // announcer then stays quiet), so it carries title, state and direct counts in full.
         const name = [
-          i.title, MARK_TEXT[kind], who.card ?? '', who.live ? `${who.live.text}, session activity only` : '',
-          path.length ? `Group: ${path.join(' › ')}` : '',
-          `${plural(prereqs, 'direct recorded prerequisite', 'direct recorded prerequisites')}, ${plural(dependents, 'direct dependent', 'direct dependents')}`,
-          hiddenRel ? `${plural(hiddenRel, 'related task', 'related tasks')} hidden by filters` : '',
-          unlocks.length ? `Unlocks next for ${plural(unlocks.length, 'task', 'tasks')}` : '',
+          i.title, marks[kind], who.card ?? '', who.live ? c.sessionOnly(who.live.text) : '',
+          path.length ? c.groupPath(path.join(' › ')) : '',
+          c.direct(count(prereqs, 'prerequisite'), count(dependents, 'dependent')),
+          hiddenRel ? c.hiddenRelated(count(hiddenRel, 'related')) : '',
+          unlocks.length ? c.unlocksFor(count(unlocks.length, 'task')) : '',
         ].filter(Boolean).join('. ');
         baseNames.set(id, name);
-        card.setAttribute('aria-label', rel ? `${name}. ${rel === 'upstream' ? 'Upstream' : 'Downstream'} of the selected task` : name);
+        card.setAttribute('aria-label', rel ? c.relative(name, rel === 'upstream' ? c.upstream : c.downstream) : name);
         // A click whose press moved focus onto this card has already had its name spoken.
         card.onpointerdown = () => { pointerFocused = document.activeElement === card ? null : id; };
         card.onclick = () => { if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null; };
@@ -820,7 +926,7 @@ export function createDependencyMapView(): DependencyMapView {
         // Chain tag: a label on the card's top edge, outside its clipped content, so it never competes
         // with status words or chips. Decorative: the card's name carries the same words.
         if (rel) {
-          const tag = el('span', 'ap-map-card-rel', rel === 'upstream' ? 'Upstream' : 'Downstream');
+          const tag = el('span', 'ap-map-card-rel', rel === 'upstream' ? c.upstream : c.downstream);
           tag.dataset.related = rel; tag.setAttribute('aria-hidden', 'true');
           Object.assign(tag.style, { left: `${slot.x + PAD + m.width - 10}px`, top: `${slot.y + PAD - 8}px` });
           world.append(tag);
@@ -829,13 +935,13 @@ export function createDependencyMapView(): DependencyMapView {
       if (!tasks.length || !visible.size) {
         const empty = testid(el('div', 'ap-map-empty'), 'map-empty');
         if (!tasks.length) {
-          empty.append(el('p', '', 'No task cards'));
+          empty.append(el('p', '', c.noCards));
           // One named focus target for an empty canvas.
-          if (b) { viewport.tabIndex = 0; viewport.dataset.mapEmptyTarget = ''; viewport.setAttribute('aria-label', 'Task map: no task cards'); }
+          if (b) { viewport.tabIndex = 0; viewport.dataset.mapEmptyTarget = ''; viewport.setAttribute('aria-label', c.emptyMap); }
         } else {
-          empty.append(el('p', '', groupGone ? 'The chosen group is no longer recorded.' : 'No tasks match these filters.'));
+          empty.append(el('p', '', groupGone ? c.gone : c.noMatches));
           const clear = el('div', 'ap-map-actions');
-          const holder = button(clear, 'map-clear-filters', 'Show all tasks', () => { if (b) b.dispatch({ type: 'filters', status: 'all', group: null }); else { if (v.status !== 'all') v.onStatus('all'); if (v.group !== null) v.onGroup(null); } }, 'outline');
+          const holder = button(clear, 'map-clear-filters', c.showAll, () => { if (b) b.dispatch({ type: 'filters', status: 'all', group: null }); else { if (v.status !== 'all') v.onStatus('all'); if (v.group !== null) v.onGroup(null); } }, 'outline');
           holder.querySelector('button')?.setAttribute('data-map-empty-target', '');
           empty.append(clear);
         }
@@ -849,29 +955,29 @@ export function createDependencyMapView(): DependencyMapView {
     // ── Inspector: literal text only; relationships are explicit records, never inferred.
     const inspector = testid(el('section', 'ap-map-inspector'), 'map-inspector');
     inspector.setAttribute('aria-labelledby', `${uid}-inspector`);
-    const ih = el('h3', 'ap-h', 'Selected task'); ih.id = `${uid}-inspector`;
+    const ih = el('h3', 'ap-h', c.selected); ih.id = `${uid}-inspector`;
     inspector.append(ih);
     if (!selected) {
       inspector.dataset.selected = '';
-      inspector.append(el('p', 'ap-note', tasks.length ? 'Select a card to see its recorded prerequisites, dependents and reported details.' : 'No task cards to inspect.'));
+      inspector.append(el('p', 'ap-note', tasks.length ? c.select : c.noInspect));
     } else {
       const id = selected.id, fact = facts?.get(id), kind = markOf(selected, fact, guidance);
       inspector.dataset.selected = id;
       const status = el('p', 'ap-map-card-status');
       status.dataset.mark = kind;
-      status.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
-      if (!visible.has(id)) status.append(el('span', 'ap-map-tag', 'Hidden by filters'));
+      status.append(mark(kind), el('span', 'ap-map-card-word', marks[kind]));
+      if (!visible.has(id)) status.append(el('span', 'ap-map-tag', c.hidden));
       inspector.append(status, el('p', 'ap-map-inspector-title', selected.title));
-      const explain = readinessText(selected, fact, guidance, active, titleOf);
+      const explain = readinessText(selected, fact, guidance, active, titleOf, language);
       if (explain) inspector.append(el('p', 'ap-note', explain));
       const factsList = el('dl', 'ap-map-facts');
       const fact2 = (label: string, value: string | Node) => { const d = el('div'); d.append(el('dt', '', label)); const dd = el('dd'); dd.append(value); d.append(dd); factsList.append(d); };
       const path = groupPath(id);
-      fact2('Group', path.length ? path.join(' › ') : 'No group recorded');
+      fact2(c.group, path.length ? path.join(' › ') : c.noGroup);
       if (selected.status === 'blocked') {
         const bl = selected.reportedBlocker;
-        fact2('Reason', blockerPart(bl, 'reason'));
-        fact2('Next action', blockerPart(bl, 'nextAction'));
+        fact2(c.reason, blockerPart(bl, 'reason', language));
+        fact2(c.next, blockerPart(bl, 'nextAction', language));
       }
       inspector.append(factsList);
       // Who: verified assignment, link-only and unverified context, reports and session activity,
@@ -879,7 +985,7 @@ export function createDependencyMapView(): DependencyMapView {
       const who = attributionOf(id);
       const ws = testid(el('div', 'ap-map-rel ap-map-who'), 'map-attribution');
       Object.assign(ws.dataset, { assignment: who.kind, live: who.live?.kind ?? '' });
-      ws.append(el('h4', 'ap-map-rel-h', 'Assignment and activity'));
+      ws.append(el('h4', 'ap-map-rel-h', c.assignmentActivity));
       const whoList = el('dl', 'ap-map-facts');
       const row = (label: string, testId: string, lines: (string | Node)[], note: string | null = null) => {
         const d = testid(el('div'), testId); d.append(el('dt', '', label));
@@ -888,9 +994,9 @@ export function createDependencyMapView(): DependencyMapView {
         if (note) dd.append(el('span', 'ap-map-who-note', note));
         d.append(dd); whoList.append(d);
       };
-      row('Assignment', 'map-attribution-assignment', [who.assignment], who.assignmentNote);
-      if (who.links.length) row('Links', 'map-attribution-links', who.links);
-      if (who.kind !== 'unavailable') row('Reports', 'map-attribution-reports', who.reports.length ? who.reports : ['No reports recorded']);
+      row(c.assignment, 'map-attribution-assignment', [who.assignment], who.assignmentNote);
+      if (who.links.length) row(c.links, 'map-attribution-links', who.links);
+      if (who.kind !== 'unavailable') row(c.reports, 'map-attribution-reports', who.reports.length ? who.reports : [c.noReports]);
       let activity: string | Node = who.activity;
       if (who.live) {
         // The mark is decorative here: the words beside it say the same thing.
@@ -899,7 +1005,7 @@ export function createDependencyMapView(): DependencyMapView {
         words.append(mark, who.live.text);
         activity = words;
       }
-      row('Session activity', 'map-attribution-live', [activity], who.activityNote);
+      row(c.activity, 'map-attribution-live', [activity], who.activityNote);
       ws.append(whoList);
       inspector.append(ws);
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
@@ -917,8 +1023,8 @@ export function createDependencyMapView(): DependencyMapView {
           btn.append(mark(rk));
           const text = el('span', 'ap-map-rel-text');
           text.append(el('span', 'ap-map-rel-title', r.title));
-          const sub = el('span', 'ap-map-rel-sub', MARK_TEXT[rk]);
-          if (!visible.has(rid)) sub.append(' · hidden by filters');
+          const sub = el('span', 'ap-map-rel-sub', marks[rk]);
+          if (!visible.has(rid)) sub.append(c.hiddenSuffix);
           text.append(sub);
           btn.append(text);
           btn.onclick = () => {
@@ -936,27 +1042,27 @@ export function createDependencyMapView(): DependencyMapView {
       const upstream = layout ? edges.filter(([, b]) => b === id).map(([a]) => a) : [];
       const downstream = layout ? edges.filter(([a]) => a === id).map(([, b]) => b) : [];
       const order = (ids: string[]) => layout ? layout.order.filter(n => ids.includes(n)) : ids;
-      inspector.append(relationList('Recorded prerequisites', order(upstream), 'None recorded.', 'map-prerequisites', 'upstream'));
-      inspector.append(relationList('Dependents', order(downstream), 'No task records this one as a prerequisite.', 'map-dependents', 'downstream'));
+      inspector.append(relationList(c.prerequisites, order(upstream), c.none, 'map-prerequisites', 'upstream'));
+      inspector.append(relationList(c.dependents, order(downstream), c.noDependents, 'map-dependents', 'downstream'));
       const chain = (upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0);
-      if (highlight && chain) inspector.append(el('p', 'ap-note ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
+      if (highlight && chain) inspector.append(el('p', 'ap-note ap-map-chain', c.chain(count(upstreamSet?.size ?? 0, 'upstream'), count(downstreamSet?.size ?? 0, 'downstream'))));
       const unlocks = unlocking(id);
       if (unlocks.length) {
         const u = testid(el('div', 'ap-map-rel'), 'map-unlocks');
-        u.append(el('h4', 'ap-map-rel-h', 'Unlocks next'));
-        u.append(el('p', 'ap-note', `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${order(unlocks).map(titleOf).join('; ')}. That is not permission to start them.`));
+        u.append(el('h4', 'ap-map-rel-h', c.unlocks));
+        u.append(el('p', 'ap-note', c.unlockHelp(order(unlocks).map(titleOf).join('; '))));
         inspector.append(u);
       }
       // Ancestor groups' own recorded prerequisites: labelled group metadata, never task arrows.
       const owned = ancestors(id).filter(g => g.kind === 'group' && g.dependencies?.length);
       if (owned.length) {
         const g = testid(el('div', 'ap-map-rel'), 'map-group-prerequisites');
-        g.append(el('h4', 'ap-map-rel-h', 'Group context'));
-        for (const o of owned) g.append(el('p', 'ap-note', `Group “${o.title}” records its own prerequisites: ${(o.dependencies ?? []).map(titleOf).join('; ')}. These belong to the group, not to this task.`));
+        g.append(el('h4', 'ap-map-rel-h', c.groupContext));
+        for (const o of owned) g.append(el('p', 'ap-note', c.groupHelp(o.title, (o.dependencies ?? []).map(titleOf).join('; '))));
         inspector.append(g);
       }
       const hiddenRel = [...upstream, ...downstream].filter(r => !visible.has(r)).length;
-      if (hiddenRel) inspector.append(el('p', 'ap-note', `${plural(hiddenRel, 'related task is', 'related tasks are')} hidden by the current filters. Choosing one shows it again.`));
+      if (hiddenRel) inspector.append(el('p', 'ap-note', c.hiddenHelp(count(hiddenRel, 'hidden'))));
     }
     body.append(inspector);
     region.append(body);
@@ -969,12 +1075,12 @@ export function createDependencyMapView(): DependencyMapView {
         const keys = el('p', 'ap-map-keys');
         const k = (text: string) => el('kbd', '', text);
         const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Drag the background or scroll to pan; Tab leaves the map.');
+        keys.append(el('strong', '', c.keys), k(c.arrowKeys), c.nearest, k('['), c.firstPrerequisite, k(']'), c.firstDependent, k('F'), c.fitKey, nowrap(k('+'), ' ', k('−'), c.zoomKey), c.drag);
         help.append(keys);
-        if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
+        if (layout && edges.length) help.append(el('p', '', c.selectionHelp));
       }
-      if (guidance && tasks.length) help.append(el('p', '', 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
-      if (anyAttribution) help.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
+      if (guidance && tasks.length) help.append(el('p', '', c.readinessHelp));
+      if (anyAttribution) help.append(testid(el('p', '', c.attributionHelp), 'map-attribution-help'));
       region.append(help);
     }
 
@@ -982,16 +1088,16 @@ export function createDependencyMapView(): DependencyMapView {
     if (groupOwned.length || (!tasks.length && groups.length)) {
       const details = testid(el('details', 'ap-map-groups'), 'map-group-context');
       if (!tasks.length || !edges.length) details.open = true;
-      details.append(el('summary', '', `Group context (${groups.length})`));
+      details.append(el('summary', '', `${c.groupContext} (${groups.length})`));
       const ul = el('ul', 'ap-map-group-list');
       for (const g of groups) {
         const li = el('li');
         li.append(el('span', 'ap-map-group-name', [...groupPath(g.id), g.title].join(' › ')));
         const deps = g.dependencies ?? [];
-        li.append(el('span', 'ap-note', deps.length ? `Records its own prerequisites: ${deps.map(titleOf).join('; ')}` : 'No group prerequisites recorded'));
+        li.append(el('span', 'ap-note', deps.length ? c.groupDeps(deps.map(titleOf).join('; ')) : c.noGroupDeps));
         ul.append(li);
       }
-      details.append(ul, el('p', 'ap-note', 'A group’s prerequisites are group metadata. They are not inherited by its tasks and are never drawn as arrows.'));
+      details.append(ul, el('p', 'ap-note', c.groupMetadata));
       region.append(details);
     }
 
@@ -1045,7 +1151,7 @@ export function createDependencyMapView(): DependencyMapView {
           turnSelection = c.id; queueMicrotask(() => { turnSelection = null; });
           markSelected(c.id);
           break;
-        case 'announce': queueSpeech(c.text); break;
+        case 'announce': queueSpeech(c.text, c.message); break;
         case 'focus': {
           if (speech?.selection && speech.selection === c.id) speech.focus = c.id;
           // Focus now (keyboard moves feel immediate), and again after a repaint in this same turn:
@@ -1218,7 +1324,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const state = interaction.value;
       host.dataset.canvasWidth = String(canvasWidth);
       view.render(host, {
-        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
+        ...snapshot, language: resolveLanguage('auto', vc.env.locale), attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
         onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => interaction.leave(true),
@@ -1240,7 +1346,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         const article = [...root.querySelectorAll<HTMLElement>('article.ap-plan[data-reading]')].find(a => a.dataset.testid === `plan-${plan.id}` && a.dataset.source === plan.sourceId);
         if (!article?.querySelector('.ap-tasks[data-complete]')) return; // wait for this reading's complete list
         reveal = null;
-        revealCurrentTask(article, plan, r.id, 'Selected map task');
+        revealCurrentTask(article, plan, r.id, COPY[resolveLanguage('auto', vc.env.locale)].selectedMapTask);
       } else reveal = null;
       // Nothing took focus (no selection, or the row is gone): the frame's List control, never the body.
       const now = document.activeElement;
@@ -1257,16 +1363,17 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   };
 }
 
-function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string): string {
-  if (item.status === 'skipped') return 'Skipped work never counts as done for its dependents.';
-  if (item.status === 'blocked') return 'An agent reported this task explicitly blocked. It is never shown as ready, whatever its prerequisites.';
+function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string, language: InterfaceLanguage): string {
+  const c = COPY[language];
+  if (item.status === 'skipped') return c.skippedHelp;
+  if (item.status === 'blocked') return c.blockedHelp;
   if (item.status !== 'pending') return '';
-  if (!active) return 'Reported pending when the plan closed.';
-  if (!guidance) return 'Reported pending. Readiness is hidden until the current revision is matched.';
+  if (!active) return c.closedPending;
+  if (!guidance) return c.pendingHelp;
   const open = (fact?.prerequisites ?? []).filter(p => p.kind !== 'task' || p.status !== 'done');
-  if (fact?.group === 'ready') return fact.prerequisites.length ? 'Every recorded prerequisite is reported done. Ready describes recorded prerequisites only.' : 'No prerequisites recorded. Ready describes recorded prerequisites only.';
-  if (fact?.group === 'skipped') return `Waiting: a recorded prerequisite was skipped (${open.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => titleOf(p.id)).join('; ')}), and skipped work never counts as done.`;
-  return `Waiting on ${plural(open.length, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}.`;
+  if (fact?.group === 'ready') return fact.prerequisites.length ? c.readyDeps : c.readyNoDeps;
+  if (fact?.group === 'skipped') return c.skippedDeps(open.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => titleOf(p.id)).join('; '));
+  return c.waitingDeps(mapCount(open.length, 'unfinished', language));
 }
 
 /**
@@ -1293,26 +1400,56 @@ export interface MapAttributionCopy {
   activityNote: string | null;
 }
 export const LIVE_HEDGE = 'Session activity only: the assigned session is active in this view’s run records, which doesn’t show that it is working on this task.';
-export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string): MapAttributionCopy {
+const ATTRIBUTION_EN = {
+  unavailable: 'Unavailable in this view', unavailableNote: 'Assignment provenance couldn’t be checked for this picture. That doesn’t mean the task is unassigned.',
+  notShown: 'Not shown', activityUnavailable: 'Session activity isn’t available in this view.',
+  more: (n: number) => ` and ${n} more`, assigned: (name: string) => `Assigned to ${name}`,
+  unverified: (name: string) => `Unverified assignee · ${name}`, linkedCard: (name: string, more: string) => `Linked to ${name}${more} · no verified delegation`,
+  recorded: (name: string) => `Recorded assignee ${name} · delegation provenance unavailable`, noAssignee: 'No assignee recorded',
+  verified: (r: number) => `Verified delegation, current for revision ${r}.`,
+  unverifiedNote: 'No verified delegation is recorded for this revision, so the map doesn’t say Assigned. That doesn’t mean the task is unassigned.',
+  linksNote: 'Only session links name this task. A link is not an assignment.', linked: (name: string) => `Linked to ${name}`, unverifiedLink: (name: string) => `Linked to ${name} · no verified delegation`,
+  relay: (reporter: string, attributed: string) => `Reported by ${reporter} for ${attributed}`, direct: (reporter: string) => `Reported directly by ${reporter}`,
+  reports: (text: string, n: number) => `${text} · ${n} reports`, lastReporter: (name: string) => `Last reported by ${name} · report mode unavailable`,
+  active: 'Assigned session active now', waiting: 'Assigned session waiting for input now', hedge: LIVE_HEDGE,
+  historical: (r: number) => `Hidden while the map shows revision ${r} as last reported.`,
+  assignmentOnly: 'Shown only for a verified assignment.', runsUnavailable: 'This view’s run records aren’t available.', latestUnproven: 'This view’s run records don’t confirm the assigned session’s latest run.', inactive: 'The assigned session’s latest recorded run isn’t active now.',
+};
+const ATTRIBUTION_RU: typeof ATTRIBUTION_EN = {
+  unavailable: 'Недоступно в этом представлении', unavailableNote: 'Происхождение назначения для этой картины проверить не удалось. Это не означает, что задача никому не назначена.',
+  notShown: 'Не показано', activityUnavailable: 'Активность сессии недоступна в этом представлении.',
+  more: n => ` и ещё ${n}`, assigned: name => `Назначено: ${name}`,
+  unverified: name => `Непроверенный исполнитель · ${name}`, linkedCard: (name, more) => `Связь с ${name}${more} · без подтверждённого делегирования`,
+  recorded: name => `Записанный исполнитель ${name} · происхождение делегирования недоступно`, noAssignee: 'Исполнитель не записан',
+  verified: r => `Подтверждённое делегирование, актуальное для редакции ${r}.`,
+  unverifiedNote: 'Для этой редакции не записано подтверждённое делегирование, поэтому карта не говорит «Назначено». Это не означает, что задача никому не назначена.',
+  linksNote: 'Задачу называют только связи с сессиями. Связь — не назначение.', linked: name => `Связь с ${name}`, unverifiedLink: name => `Связь с ${name} · без подтверждённого делегирования`,
+  relay: (reporter, attributed) => `Сообщено из ${reporter} от имени ${attributed}`, direct: reporter => `Сообщено напрямую из ${reporter}`,
+  reports: (text, n) => `${text} · отчётов: ${n}`, lastReporter: name => `Последний отчёт из ${name} · режим отчёта недоступен`,
+  active: 'Назначенная сессия сейчас активна', waiting: 'Назначенная сессия сейчас ожидает ввода', hedge: 'Только активность сессии: назначенная сессия активна по записям запусков этого представления. Это не показывает, что она работает над этой задачей.',
+  historical: r => `Скрыто, пока карта показывает редакцию ${r} по последнему отчёту.`,
+  assignmentOnly: 'Показано только при подтверждённом назначении.', runsUnavailable: 'Записи запусков этого представления недоступны.', latestUnproven: 'Записи запусков этого представления не подтверждают последний запуск назначенной сессии.', inactive: 'Последний записанный запуск назначенной сессии сейчас не активен.',
+};
+const ATTRIBUTION: Record<InterfaceLanguage, typeof ATTRIBUTION_EN> = { en: ATTRIBUTION_EN, ru: ATTRIBUTION_RU };
+export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string, language: InterfaceLanguage = 'en'): MapAttributionCopy {
+  const c = ATTRIBUTION[language];
   if (!a) return {
-    kind: 'unavailable', card: null, session: null, assignment: 'Unavailable in this view',
-    assignmentNote: 'Assignment provenance couldn’t be checked for this picture. That doesn’t mean the task is unassigned.',
-    links: [], reports: [], live: null, activity: 'Not shown', activityNote: 'Session activity isn’t available in this view.',
+    kind: 'unavailable', card: null, session: null, assignment: c.unavailable,
+    assignmentNote: c.unavailableNote,
+    links: [], reports: [], live: null, activity: c.notShown, activityNote: c.activityUnavailable,
   };
   const verified = a.assignment;
   const kind: MapAttributionKind = verified ? 'assigned' : a.recordedAssignee ? 'recorded' : a.links.length ? 'linked' : 'none';
-  const more = (n: number) => n > 1 ? ` and ${n - 1} more` : '';
-  const card = kind === 'assigned' ? `Assigned to ${label(verified!.childSessionId)}`
+  const more = (n: number) => n > 1 ? c.more(n - 1) : '';
+  const card = kind === 'assigned' ? c.assigned(label(verified!.childSessionId))
     // Qualifier first: a truncated card line must still never read as a verified assignment.
-    : kind === 'recorded' ? `Unverified assignee · ${label(a.recordedAssignee!)}`
-    : kind === 'linked' ? `Linked to ${label(a.links[0])}${more(a.links.length)} · no verified delegation` : null;
-  const assignment = kind === 'assigned' ? `Assigned to ${label(verified!.childSessionId)}`
-    : kind === 'recorded' ? `Recorded assignee ${label(a.recordedAssignee!)} · delegation provenance unavailable`
-    : 'No assignee recorded';
-  const assignmentNote = kind === 'assigned' ? `Verified delegation, current for revision ${verified!.validAtRevision}.`
-    : kind === 'recorded' ? 'No verified delegation is recorded for this revision, so the map doesn’t say Assigned. That doesn’t mean the task is unassigned.'
-    : kind === 'linked' ? 'Only session links name this task. A link is not an assignment.' : null;
-  const links = a.links.map(id => verified && id === verified.childSessionId ? `Linked to ${label(id)}` : `Linked to ${label(id)} · no verified delegation`);
+    : kind === 'recorded' ? c.unverified(label(a.recordedAssignee!))
+    : kind === 'linked' ? c.linkedCard(label(a.links[0]), more(a.links.length)) : null;
+  const assignment = kind === 'assigned' ? c.assigned(label(verified!.childSessionId))
+    : kind === 'recorded' ? c.recorded(label(a.recordedAssignee!)) : c.noAssignee;
+  const assignmentNote = kind === 'assigned' ? c.verified(verified!.validAtRevision)
+    : kind === 'recorded' ? c.unverifiedNote : kind === 'linked' ? c.linksNote : null;
+  const links = a.links.map(id => verified && id === verified.childSessionId ? c.linked(label(id)) : c.unverifiedLink(label(id)));
   // One line per distinct reporting identity (mode, reporter, attributed session); repeats by the
   // same identity are counted. Grouping uses session IDs, never display text: two sessions with the
   // same title or a colliding short-ID fallback stay separate lines.
@@ -1320,26 +1457,26 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
   for (const r of a.reports) {
     const relay = r.mode === 'parent-relay';
     const key = JSON.stringify([relay ? 'relay' : 'direct', r.reporterSessionId, relay ? r.attributedSessionId : null]);
-    const text = relay ? `Reported by ${label(r.reporterSessionId)} for ${label(r.attributedSessionId)}` : `Reported directly by ${label(r.reporterSessionId)}`;
+    const text = relay ? c.relay(label(r.reporterSessionId), label(r.attributedSessionId)) : c.direct(label(r.reporterSessionId));
     const line = lines.get(key); if (line) line.n++; else lines.set(key, { text, n: 1 });
   }
-  const reports = [...lines.values()].map(({ text, n }) => n > 1 ? `${text} · ${n} reports` : text);
-  if (!reports.length && a.reporter) reports.push(`Last reported by ${label(a.reporter)} · report mode unavailable`);
+  const reports = [...lines.values()].map(({ text, n }) => n > 1 ? c.reports(text, n) : text);
+  if (!reports.length && a.reporter) reports.push(c.lastReporter(label(a.reporter)));
   const proven = a.live.proven && current && !!verified ? a.live : null;
   const live = proven ? proven.kind === 'active'
-    ? { kind: 'active' as const, text: 'Assigned session active now' }
-    : { kind: 'waiting' as const, text: 'Assigned session waiting for input now' } : null;
+    ? { kind: 'active' as const, text: c.active }
+    : { kind: 'waiting' as const, text: c.waiting } : null;
   const reason = a.live.proven ? 'picture-not-current' : a.live.reason;
-  const activityNote = live ? LIVE_HEDGE : !current || reason === 'picture-not-current' ? `Hidden while the map shows revision ${revision} as last reported.`
-    : reason === 'no-verified-assignment' ? 'Shown only for a verified assignment.'
-    : reason === 'run-scope-unavailable' ? 'This view’s run records aren’t available.'
-    : reason === 'latest-child-not-proven' ? 'This view’s run records don’t confirm the assigned session’s latest run.'
-    : 'The assigned session’s latest recorded run isn’t active now.';
-  return { kind, card, session: verified ? label(verified.childSessionId) : null, assignment, assignmentNote, links, reports, live, activity: live ? live.text : 'Not shown', activityNote };
+  const activityNote = live ? c.hedge : !current || reason === 'picture-not-current' ? c.historical(revision)
+    : reason === 'no-verified-assignment' ? c.assignmentOnly
+    : reason === 'run-scope-unavailable' ? c.runsUnavailable
+    : reason === 'latest-child-not-proven' ? c.latestUnproven : c.inactive;
+  return { kind, card, session: verified ? label(verified.childSessionId) : null, assignment, assignmentNote, links, reports, live, activity: live ? live.text : c.notShown, activityNote };
 }
 
-function blockerPart(b: BlockerView | undefined, part: 'reason' | 'nextAction'): string {
-  if (!b) return 'Not reported';
-  if (b.state === 'invalid') return 'Reported details could not be read';
-  return b[part] ?? 'Not reported';
+function blockerPart(b: BlockerView | undefined, part: 'reason' | 'nextAction', language: InterfaceLanguage): string {
+  const c = COPY[language];
+  if (!b) return c.notReported;
+  if (b.state === 'invalid') return c.invalid;
+  return b[part] ?? c.notReported;
 }
