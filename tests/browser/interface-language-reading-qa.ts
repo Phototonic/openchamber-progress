@@ -7,6 +7,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import { LANGUAGE_KEY } from './interface-language-fixture.ts';
 import { startReadingFixture } from './interface-language-reading-fixture.ts';
+import { S } from './fixtures.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const destination = arg('--artifacts');
@@ -61,7 +62,7 @@ try {
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: point[0], y: point[1], button: 'left', clickCount: 1 });
     await frames();
   };
-  const focus = async (selector: string) => { await guest(`d.querySelector(${literal(selector)}).focus();return true`); await frames(); };
+  const focus = async (selector: string) => { await guest(`const n=d.querySelector(${literal(selector)});n.scrollIntoView({block:'center'});n.focus();return true`); await frames(); };
   const popup = '.oc-sdk-popup [role="listbox"]';
   const trigger = '[data-testid="interface-language"] button[aria-haspopup="listbox"]';
   const choose = async (preference: 'auto' | 'en' | 'ru') => {
@@ -94,6 +95,48 @@ try {
   await wait(`window.qa&&${condition(`!!d.querySelector('[data-testid="plan-row-P-reading"]')`)}`, 'reading board');
   await evaluate(`qa.show('page',1100)`); await frames();
   await change('initial-explicit-English', 'en', 'en');
+
+  const verifyResultOnlySession = () => scenario('result-only-session', async () => {
+    const hellos = await evaluate<number>(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length`);
+    await evaluate(`qa.workspace=q=>q.kind==='projects'?{kind:'projects',state:'ready',projects:[{id:'alpha',name:'Alpha',directory:'/fixture/Alpha'}]}:{kind:q.kind,state:'ready',projectId:q.projectId,worktrees:[],coverage:[{directory:'/fixture/Alpha',state:'ready'}],sessions:q.kind==='sessions'?[{id:${literal(S.M)},title:'Owner A',projectId:'alpha',directory:'/fixture/Alpha',parentId:null,createdAt:1,updatedAt:2,archivedAt:null,worktree:null,activity:'idle',outcome:null,items:[]}]:[]};qa.reload('page')`);
+    await wait(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length>${hellos}&&${condition(`!!d.querySelector('[data-testid="plan-row-P-reading"]')`)}`, 'workspace board');
+    try {
+      await click('[data-testid="board-filters-trigger"]');
+      await focus('[data-testid="filter-session"] button'); await key('Enter');
+      await wait(condition(`!!d.querySelector(${literal(popup)})`), 'owner session popup');
+      await key('Home'); await key('ArrowDown'); await key('Enter');
+      await wait(condition(`!!d.querySelector('[data-testid="board-filters-trigger"]')`), 'owner board committed');
+      if (await guest(`return d.querySelector('[data-testid="board-filters-trigger"]').getAttribute('aria-expanded')!=='true'`)) await click('[data-testid="board-filters-trigger"]');
+      check('result-only-session:literal-prior-owner', await guest(`return d.querySelector('[data-testid="filter-session"] button')?.textContent.includes('Owner A')`));
+      await click('[data-testid="board-filters-close"]');
+      await focus('#ap-search-q'); await send('Input.insertText', { text: 'Resultonly' }); await key('Enter');
+      await wait(condition(`!!d.querySelector('[data-testid$="/P-result"]')&&!d.querySelector('[data-testid="search-loading"]')`), 'result-only owner hit');
+      check('result-only-session:A-matches-search-only-B', await evaluate(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/search').at(-1)?.query.session===${literal(S.M)}`));
+      await click('[data-testid="board-filters-trigger"]');
+      await focus('[data-testid="filter-session"] button'); await key('Enter');
+      await wait(condition(`!!d.querySelector(${literal(popup)})`), 'result session popup');
+      const options = await guest<string[]>(`return [...d.querySelectorAll(${literal(popup + ' [role="option"]')})].map(n=>n.textContent)`);
+      const resultIndex = options.findIndex(text => text.includes('Session …result'));
+      check('result-only-session:generated-option-offered', resultIndex >= 0);
+      await key('Home'); for (let i = 0; i < resultIndex; i++) await key('ArrowDown'); await key('Enter');
+      // Changing the session also reloads its board scope; finish that read before measuring language I/O.
+      await wait(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/plans').at(-1)?.query.session==='session-result'`, 'result owner board read');
+      await frames();
+      await wait(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/search').at(-1)?.query.session==='session-result'&&${condition(`!!d.querySelector('[data-testid="search-results"]')&&!d.querySelector('[data-testid="search-loading"]')`)}`, 'result owner search');
+      check('result-only-session:submitted-owner-B', await evaluate(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/search').at(-1)?.query.session==='session-result'`));
+      const englishChip = await guest(`return d.querySelector('[data-testid="search-chip-session"]')?.textContent`);
+      await change('result-only-session-language', 'ru', 'ru');
+      check('result-only-session:chip-never-reuses-owner-A', englishChip?.includes('Session …result') && !englishChip.includes('Owner A'));
+      check('result-only-session:Russian-generated-chip', await guest(`const t=d.querySelector('[data-testid="search-chip-session"]')?.textContent;return t?.includes('Сессия …result')&&!t.includes('Owner A')`));
+    } finally {
+      await key('Escape');
+      await guest(`d.querySelector('[data-testid="search-clear"] button')?.click();return true`);
+      const hellos = await evaluate<number>(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length`);
+      await evaluate(`delete qa.workspace;qa.reload('page')`);
+      await wait(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length>${hellos}&&${condition(`!!d.querySelector('[data-testid="plan-row-P-reading"]')`)}`, 'default board restored');
+      await choose('en'); await settled('en');
+    }
+  });
 
   // Typed draft, selected status filter, submitted query and retained result identity.
   await click('[data-testid="board-filters-trigger"]');
@@ -235,6 +278,25 @@ try {
   await scenario('independent-picker', async () => { await openPlan('P-reading'); await verifyIndependentPicker(); });
   await key('Escape'); await evaluate(`qa.seed({v:1,preference:'en'});qa.focus('page')`); await settled('en');
   await scenario('errored-document', () => verifyDocumentState('errored'));
+  await verifyResultOnlySession();
+  await scenario('large-map-counts', async () => {
+    await openPlan('P-large'); await click(tab('map'));
+    await wait(condition(`d.querySelector('[data-testid="map-summary"] [data-kind="working"]')?.dataset.count==='1000'`), '1000-task map summary');
+    const count = () => guest(`const n=d.querySelector('[data-testid="map-summary"] [data-kind="working"]');return {raw:n?.dataset.count,text:n?.querySelector('strong')?.textContent}`);
+    check('large-map:English-ungrouped', JSON.stringify(await count()) === JSON.stringify({ raw: '1000', text: '1000' }));
+    await change('large-map-Russian-language', 'ru', 'ru');
+    const russianCount = await count();
+    const russianSummaries = await guest(`return {hidden:d.querySelector('[data-testid="map-hidden"]')?.textContent,counts:d.querySelector('[data-testid="map-counts"]')?.textContent}`);
+    operations.push({ id: 'large-map:Russian-text', ...russianSummaries });
+    await click('[data-testid="map-fit-all"]');
+    await wait(condition(`!!d.querySelector('[data-testid="map-announcer"]')?.textContent`), 'map fit announcement');
+    const russianAnnouncement = await guest(`return d.querySelector('[data-testid="map-announcer"]')?.textContent.includes('1\u00a0000')`);
+    await change('large-map-English-language', 'en', 'en');
+    check('large-map:English-restored-ungrouped', JSON.stringify(await count()) === JSON.stringify({ raw: '1000', text: '1000' }));
+    check('large-map:Russian-grouped-stat-raw-count-preserved', JSON.stringify(russianCount) === JSON.stringify({ raw: '1000', text: '1\u00a0000' }));
+    check('large-map:Russian-heading-and-filter-counts', russianSummaries.hidden === 'Показаны все: 1\u00a0000 задач' && russianSummaries.counts === 'Выполнено: 0 из 1\u00a0000 · Осталось: 1\u00a0000');
+    check('large-map:Russian-fit-announcement-grouped', russianAnnouncement);
+  });
   check('no-runtime-errors-or-external-network', errors.length === 0);
   if (scenarioFailures.length) throw Error(scenarioFailures.join('; '));
 } catch (error) {

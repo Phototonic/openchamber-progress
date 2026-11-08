@@ -13,6 +13,8 @@ export async function startReadingFixture() {
     const source = backend.source.id;
     let oid = 0;
     const apply = (plan: string, request: Record<string, unknown>, text?: string) => backend.store.apply({ plan, rev: backend.store.get(source, plan)?.revision ?? 0, oid: `reading-${++oid}`, ...request }, actor, text === undefined ? undefined : { state: 'captured', path: '/fixture/plan.md', canonicalPath: '/fixture/plan.md', text, hash: digest(text), checkedAt: new Date().toISOString() });
+    for (let chunk = 0; chunk < 20; chunk++) apply('P-large', { op: 'stage', upload: 'reading-large', chunk, items: Array.from({ length: 50 }, (_, i) => ({ id: `L${chunk * 50 + i}`, title: `Large task ${chunk * 50 + i}`, kind: 'task', status: 'working' })) });
+    apply('P-large', { op: 'commit', title: 'Large example', upload: 'reading-large', chunks: 20 });
     apply('P-reading', { op: 'start', title: 'Reading example', source: '/fixture/plan.md', items: [
       { id: 'G', title: 'Reading group', kind: 'group', dependencies: ['A'] },
       { id: 'A', title: 'Export example', kind: 'task', status: 'done', parentId: 'G' },
@@ -25,6 +27,12 @@ export async function startReadingFixture() {
       if (q.path === '/v1/extension-update' || q.path === '/v1/setup') return { status: 404, body: '{"error":"not-found"}' };
       // A valid first page retains its authoritative summary; the continuation really fails.
       if (q.path === '/v1/plan' && q.query?.plan === 'P-history' && q.query.cursor) return { status: 503, body: '{"error":"busy"}' };
+      // The board's frozen loaded list legitimately predates this search-only owner.
+      if (q.path === '/v1/search' && q.query?.q === 'Resultonly' && !backend.store.get(source, 'P-result')) {
+        const resultActor = { ...actor, sessionId: 'session-result' };
+        backend.store.apply({ plan: 'P-result', rev: 0, oid: 'reading-result', op: 'start', title: 'Resultonly example', items: [{ id: 'R', title: 'Resultonly task', kind: 'task', status: 'working' }] }, resultActor);
+        backend.store.apply({ plan: 'P-result', rev: 1, oid: 'reading-result-link', op: 'link', child: S.M, assign: ['R'] }, resultActor, undefined, { ...actor, ancestry: ['session-result'] });
+      }
       const query = new URLSearchParams(q.query ?? {}).toString();
       const reply = await backend.request(q.path + (query ? '?' + query : ''), q.body ? JSON.parse(q.body) : undefined);
       return { status: reply.status, body: await reply.text() };

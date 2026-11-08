@@ -22,6 +22,7 @@ const theme = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffff
  * qa.ready(surface?, patch?) updates locale/features/directory/account via a new ready snapshot.
  * qa.context(session|null), qa.namespace(name), qa.reload(surface), qa.tick(surface?), qa.focus(surface),
  * qa.visible(surface, boolean), qa.show(surface,width), qa.seed(value|undefined, namespace?).
+ * Optional qa.workspace(query) supplies a synthetic subscription snapshot; reload to resubscribe.
  * qa.mode = 'plan'|'empty'|'setup'|'failure'; qa.holds/qa.faults accept
  * {tag?,kind:'storage'|'service',surface?,op?,key?,path?,code?,status?}.
  * Holds capture a read reply BEFORE release (stale-read races); writes commit ON release.
@@ -53,7 +54,7 @@ addEventListener('message',async e=>{
  const result=payload=>send(s,{type:'result',id:m.id,ok:true,payload});
  const reject=(code='HOST_REJECTED')=>send(s,{type:'result',id:m.id,ok:false,code,error:'synthetic-private-error-never-render'});
  if(m.type==='hello'){qa.ready(s);return}
- if(m.type==='workspace-subscribe'){result();send(s,{type:'workspace',payload:{subscriptionId:q.subscriptionId,snapshot:q.query.kind==='projects'?{kind:'projects',state:'ready',projects:[]}:{kind:q.query.kind,state:'ready',projectId:q.query.projectId,sessions:[],worktrees:[],coverage:[]}}});return}
+ if(m.type==='workspace-subscribe'){result();send(s,{type:'workspace',payload:{subscriptionId:q.subscriptionId,snapshot:qa.workspace?qa.workspace(q.query):q.query.kind==='projects'?{kind:'projects',state:'ready',projects:[]}:{kind:q.query.kind,state:'ready',projectId:q.query.projectId,sessions:[],worktrees:[],coverage:[]}}});return}
  if(m.type==='storage'){
   const space=qa.space,device=q.scope==='device';
   const map=device?(qa.maps.get(space)||new Map()):qa.instance; if(device)qa.maps.set(space,map);
