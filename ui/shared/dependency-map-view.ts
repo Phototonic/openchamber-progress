@@ -351,7 +351,7 @@ export function createDependencyMapView(): DependencyMapView {
   }
   // Frame-owned gesture listeners survive root replacement; capture is rebound to each new viewport.
   const onMove = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } }); };
-  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId }); };
+  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' }); };
   const onFocusIn = (e: FocusEvent) => { const t = e.target as Element | null; if (t?.closest) { binding()?.focusOwner(!!t.closest('[data-testid="map-region"],[data-map-focus-owner]')); binding()?.dispatch({ type: 'canvas-focus', id: t.closest<HTMLElement>('[data-testid="map-viewport"] button[data-task]')?.dataset.task ?? null }); } };
   const onBlur = () => binding()?.focusOwner(false);
   function listen(doc: Document) {
@@ -671,7 +671,7 @@ export function createDependencyMapView(): DependencyMapView {
       viewport.addEventListener('lostpointercapture', e => {
         // Root replacement detaches this node: that loss is rebound, not a gesture end.
         const bb = binding();
-        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId });
+        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
       });
       // Wheel/trackpad pans inside the canvas only. Ctrl/Cmd (browser zoom, pinch) is left alone.
       viewport.addEventListener('wheel', e => {
@@ -969,7 +969,7 @@ export function createDependencyMapView(): DependencyMapView {
         const keys = el('p', 'ap-map-keys');
         const k = (text: string) => el('kbd', '', text);
         const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Drag the background or scroll to pan; Tab leaves the map.');
+        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
         help.append(keys);
         if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
       }
@@ -1009,7 +1009,7 @@ export function createDependencyMapView(): DependencyMapView {
         // An active background drag continues on the replacement canvas.
         const dragging = b.state().dragging;
         if (dragging !== null && !viewport.hasPointerCapture(dragging)) {
-          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging }); }
+          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging, cancelled: true }); }
         }
         tryFocus(true);
         return true;

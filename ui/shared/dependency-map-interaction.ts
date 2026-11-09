@@ -56,7 +56,7 @@ export type MapInteractionEvent =
   | { type: 'filters'; status?: StatusFilter; group?: string | null }
   | { type: 'pointer-down'; pointerId: number; point: MapPoint; background: boolean; primary: boolean }
   | { type: 'pointer-move'; pointerId: number; point: MapPoint }
-  | { type: 'pointer-end'; pointerId: number };
+  | { type: 'pointer-end'; pointerId: number; point?: MapPoint; cancelled?: boolean };
 
 export function zoomAt(t: Readonly<Transform>, factor: number, point: MapPoint): Transform {
   if (!Number.isFinite(factor) || factor <= 0 || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return { ...t };
@@ -79,7 +79,7 @@ export function fitProjection(layout: MapLayout, ids: readonly string[], viewpor
 export class DependencyMapInteraction {
   private input: MapInteractionInput | null = null;
   private state: MapInteractionState = this.empty(0);
-  private drag: { id: number; point: MapPoint } | null = null;
+  private drag: { id: number; start: MapPoint; point: MapPoint; moved: boolean } | null = null;
   private explicit: { id: string; serial: number } | null = null;
   private consumed = 0;
   private serial = 0;
@@ -231,6 +231,14 @@ export class DependencyMapInteraction {
     }
     if (focus) this.focus(id);
   }
+  private clearSelection(focus: boolean) {
+    if (!this.state.selected) return;
+    this.pending = null;
+    if (focus) this.focus(this.state.roving);
+    this.state = { ...this.state, selected: null };
+    this.sink({ type: 'selection', id: null });
+    this.sink({ type: 'announce', text: 'Selection cleared.' });
+  }
   private current() {
     const i = this.input; if (!i) return;
     const visible = new Set(this.visible), work = [...i.working, ...i.ready].filter(id => visible.has(id));
@@ -257,16 +265,28 @@ export class DependencyMapInteraction {
       case 'current': this.current(); this.sink({ type: 'announce', text: 'Focused current reported work; active filters unchanged.' }); break;
       case 'zoom': this.viewport(zoomAt(this.state.transform, e.factor, e.point ?? { x: i.viewport.width / 2, y: i.viewport.height / 2 })); break;
       case 'pan': if (Number.isFinite(e.x) && Number.isFinite(e.y)) this.viewport({ ...this.state.transform, x: this.state.transform.x + e.x, y: this.state.transform.y + e.y }); break;
-      case 'pointer-down': if (!e.primary || !e.background || this.drag) return false; this.drag = { id: e.pointerId, point: { ...e.point } }; this.state = { ...this.state, dragging: e.pointerId }; this.sink({ type: 'capture', pointerId: e.pointerId, capture: true }); break;
-      case 'pointer-move': if (this.drag?.id !== e.pointerId) return false; this.dispatch({ type: 'pan', x: e.point.x - this.drag.point.x, y: e.point.y - this.drag.point.y }); this.drag.point = { ...e.point }; break;
-      case 'pointer-end': if (this.drag?.id !== e.pointerId) return false; this.endDrag(); break;
+      case 'pointer-down': if (!e.primary || !e.background || this.drag) return false; this.drag = { id: e.pointerId, start: { ...e.point }, point: { ...e.point }, moved: false }; this.state = { ...this.state, dragging: e.pointerId }; this.sink({ type: 'capture', pointerId: e.pointerId, capture: true }); break;
+      case 'pointer-move': {
+        const drag = this.drag; if (drag?.id !== e.pointerId) return false;
+        if (!drag.moved && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= 5) drag.moved = true;
+        if (drag.moved) { this.dispatch({ type: 'pan', x: e.point.x - drag.point.x, y: e.point.y - drag.point.y }); drag.point = { ...e.point }; }
+        break;
+      }
+      case 'pointer-end': {
+        const drag = this.drag; if (drag?.id !== e.pointerId) return false;
+        const moved = drag.moved || (e.point && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= 5);
+        this.endDrag();
+        if (!e.cancelled && !moved) this.clearSelection(true);
+        break;
+      }
       case 'key': {
         if (!e.canvas || e.modified || e.editable) return false;
         const direction = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' } as const)[e.key as 'ArrowLeft'];
         // Navigate from the card that actually holds focus (pointer focus need not move roving or select).
         const focused = this.focusedTask && this.visible.includes(this.focusedTask) ? this.focusedTask : null;
         const from = focused ?? this.state.roving;
-        if (direction) { const id = from && neighbour(i.layout, from, new Set(this.visible), direction); if (id) this.select(id, true); }
+        if (e.key === 'Escape') this.clearSelection(false);
+        else if (direction) { const id = from && neighbour(i.layout, from, new Set(this.visible), direction); if (id) this.select(id, true); }
         else if (e.key === '[' || e.key === ']') { const id = from && relations(i.layout, from, e.key === '[' ? 'upstream' : 'downstream')[0]; if (id) this.select(id, true, true); }
         else if (e.key.toLowerCase() === 'f') this.dispatch({ type: 'fit' });
         else if (e.key === '+' || e.key === '-') this.dispatch({ type: 'zoom', factor: e.key === '+' ? MAP_ZOOM.step : 1 / MAP_ZOOM.step });

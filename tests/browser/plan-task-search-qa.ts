@@ -593,6 +593,18 @@ try {
         await focusOn(surface, '[data-testid="map-focus-current"]'); await key('Enter'); await frames2();
         const toolSaid = await said(surface);
         check(`interaction:${tag}:toolbar-keyboard-operable`, zin.zoom > t.zoom && panned.x > zin.x && near(panned.y, zin.y) && toolSaid.some(s => /^Zoom /.test(s)) && toolSaid.some(s => /^View moved left/.test(s)) && toolSaid.some(s => /^Focused current reported work/.test(s)), undefined, { t, zin, panned, toolSaid: toolSaid.slice(-4) });
+        // Real background click and Escape clear the inspector and relationship highlights once.
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        let clearPoint = await background(surface); if (!clearPoint) throw Error(`no map background in ${tag}`);
+        let clearHeard = (await said(surface)).length;
+        await mouse('mouseMoved', clearPoint[0], clearPoint[1], { buttons: 0 });
+        await mouse('mousePressed', clearPoint[0], clearPoint[1]); await mouse('mouseReleased', clearPoint[0], clearPoint[1]); await frames2();
+        check(`interaction:${tag}:background-clears`, (await state(surface)).selected === null && await guest(surface, `return !d.querySelector('[data-testid="map-inspector"]').dataset.selected && /Select a card/.test(d.querySelector('[data-testid="map-inspector"]').textContent) && !d.querySelector('[data-related],[data-path]')`) && (await active(surface)).inCanvas && (await said(surface)).slice(clearHeard).filter(s => s === 'Selection cleared.').length === 1);
+        clearHeard = (await said(surface)).length; await key('Escape'); await frames2();
+        check(`interaction:${tag}:repeated-clear-silent`, (await said(surface)).length === clearHeard);
+        await command(surface, { type: 'select', id: 'D' }); await frames2(); await focusOn(surface, '[data-testid="map-card-D"]');
+        clearHeard = (await said(surface)).length; await key('Escape'); await frames2();
+        check(`interaction:${tag}:escape-clears`, (await state(surface)).selected === null && (await active(surface)).task === 'D' && (await said(surface)).slice(clearHeard).filter(s => s === 'Selection cleared.').length === 1);
         // Background drag with a captured pointer across poll repaints; cards never drag.
         await command(surface, { type: 'select', id: 'D' }); await frames2();
         let p = await background(surface); if (!p) throw Error(`no map background in ${tag}`);
@@ -605,7 +617,7 @@ try {
         const after = await state(surface);
         check(`interaction:${tag}:captured-drag-survives-poll-repaint`, mid.captured && mid.dragging !== null && near(after.transform.x, t.x - 40) && near(after.transform.y, t.y - 24) && after.dragging === null && after.selected === 'D', undefined, { mid, t, after: after.transform });
         await mapShot(`${tag}-pan-zoom`, surface);
-        t = after.transform; p = (await background(surface))!;
+        p = (await background(surface))!; await frames2(); t = (await state(surface)).transform;
         await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 30, deltaY: 50 }); await frames2();
         const wheeled = (await state(surface)).transform;
         // Ctrl/Cmd wheel is browser zoom: a labelled synthetic event (real Ctrl+wheel would zoom this
