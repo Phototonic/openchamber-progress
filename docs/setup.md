@@ -42,6 +42,10 @@ Install/update against an already unsupported run store is refused with `schema`
 before selecting a companion or changing the binding, capture or store. If the
 store is upgraded concurrently after that check, `schema` still refuses without
 turning capture off; already-selected files may remain, with no automatic rollback.
+The exact older epochless format-1 shape is a supported activation input, not an
+unsupported store: setup and progress remain available, install/update can select
+the companion, and only its explicit activation migrates run storage. Run reads
+remain unavailable until that activation; service startup is not blocked.
 
 ## Proactive guidance after loading
 

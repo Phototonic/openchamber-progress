@@ -29,6 +29,7 @@ for(const epochless of [false,true])for(const loss of [0,1] as const)test(`forma
     const ro=new Store(f.store.file,{readOnly:true});
     try{
       ro.bindReads(f.source.id,true);
+      assert.equal(ro.subagentRunStorage(),epochless?'activation-required':'previous');
       if(epochless)assert.throws(()=>ro.subagentRuns(r),/schema/);
       else {const v=ro.subagentRuns(r);assert.equal(v.runFormat,1);assert.equal(v.capture.loss,Boolean(loss));assert.equal(v.capture.lossNotice,undefined);}
     }finally{ro.close();}
@@ -41,6 +42,7 @@ for(const epochless of [false,true])for(const loss of [0,1] as const)test(`forma
     }
     assert.deepEqual(durableSnapshot(f.store.db),before,'reads and refused writes leave v1 untouched');
     f.store.installSubagentRuns();const after=durableSnapshot(f.store.db);
+    assert.equal(f.store.subagentRunStorage(),'current');
     for(const [table,rows] of Object.entries(before.data))if(table!=='runs_format')assert.deepEqual(after.data[table],rows,table);
     const v=f.store.subagentRuns(r,5000);assert.equal(v.runFormat,2);assert.equal(v.revision,Number(old.revision)+1);assert.equal(v.capture.loss,Boolean(loss));
     assert.deepEqual(v.capture.lossNotice,{sequence:0,lastLossAt:null,dismissedThrough:0,attention:false});
@@ -59,6 +61,15 @@ test('format singleton replacement rolls back at every destructive boundary',asy
     try{assert.throws(()=>f.store.installSubagentRuns(),/storage/);}finally{f.store.db.exec=exec;f.store.db.prepare=prepare;}
     assert.deepEqual(durableSnapshot(f.store.db),before,'schema, triggers and all values roll back; no staging objects');
     f.store.installSubagentRuns();assert.equal(f.store.subagentRuns(request(f)).runFormat,2);
+  });
+});
+
+test('activation-input classification refuses partial epochless storage and revision overflow without writing',async()=>{
+  for(const sql of ['DROP TRIGGER runs_plan_delete',`UPDATE runs_format SET revision=${Number.MAX_SAFE_INTEGER}`])await fixture(async f=>{
+    versionOneFixture(f.store.db,true);f.store.db.exec(sql);const before=durableSnapshot(f.store.db);
+    assert.throws(()=>f.store.subagentRunStorage(),/schema/);
+    assert.throws(()=>f.store.installSubagentRuns(),/schema/);
+    assert.deepEqual(durableSnapshot(f.store.db),before);
   });
 });
 
@@ -336,7 +347,7 @@ test('extension absence is unavailable, read-only reads never initialize; base w
   try{
     store.registerSource(source);store.bindReads(source.id,true);store.apply({op:'start',plan:'plan',oid:'start',rev:0,title:'Legacy',items:[{id:'task',title:'Task',kind:'task'}]},actor);
     const r={storeId:store.list().storeId,binding:{sourceId:source.id,verified:true},source:source.id,root:'root'};
-    const ro=new Store(file,{readOnly:true});try{ro.bindReads(source.id,true);assert.equal(ro.subagentRuns(r).availability,'unavailable');assert.equal(ro.subagentRunsAvailable(),false);}finally{ro.close();}
+    const ro=new Store(file,{readOnly:true});try{ro.bindReads(source.id,true);assert.equal(ro.subagentRuns(r).availability,'unavailable');assert.equal(ro.subagentRunsAvailable(),false);assert.equal(ro.subagentRunStorage(),'absent');}finally{ro.close();}
     assert.equal(store.db.prepare("SELECT count(*) n FROM sqlite_master WHERE name GLOB 'runs_*'").get()!.n,0);
     const oldSnapshot=store.get(source.id,'plan');store.installSubagentRuns();assert.deepEqual(store.get(source.id,'plan'),oldSnapshot);assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version,2);
     versionOneFixture(store.db);store.installSubagentRuns();

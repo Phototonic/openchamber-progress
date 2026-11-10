@@ -37,7 +37,7 @@ export class SetupController {
     try{next=new Store(b.database);}catch(e){if(e instanceof PlatformError)throw e;const error=storageError(e);throw error.code==='binding'||error.code==='not-found'?new ProgressError('storage'):error;}
     // Validate optional run storage before admitting the store, not later in
     // /health capability discovery where a schema refusal fails host readiness.
-    try{verifyStore(next,b);next.subagentRunsAvailable();next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
+    try{verifyStore(next,b);next.subagentRunStorage();next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
     this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;
   }
   private recordError(e:unknown) {this.error=storageError(e).code;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
@@ -84,12 +84,12 @@ export class SetupController {
     }
     if(action==='install'||action==='update'){
       this.validateDescriptor();
-      // A retained store must be readable before lifecycle selects any payload
-      // or creates an installation. This check never initializes run storage.
+      // A retained store must be readable or an exact supported activation input
+      // before selecting payloads. This check never initializes run storage.
       const database=path.join(targets.storeRoot,'progress.sqlite');
       if(existsSync(database)){
         const probe=new Store(database,{readOnly:true});
-        try{probe.subagentRunsAvailable();}finally{probe.close();}
+        try{probe.subagentRunStorage();}finally{probe.close();}
       }
     }
     const result=lifecycle(action,targets,action==='install'||action==='update'?this.readonlyPayload():undefined);
@@ -103,7 +103,7 @@ export class SetupController {
         // Files may already be selected. Never leave an unacknowledged install
         // writing while the host binding could not be persisted/validated.
         let disabled=false;let control:Store|undefined;
-        try{control=new Store(b.database);verifyStore(control,b);control.subagentRunsAvailable();control.setEnabled(false);disabled=true;}
+        try{control=new Store(b.database);verifyStore(control,b);control.subagentRunStorage();control.setEnabled(false);disabled=true;}
         catch(e){if(e instanceof ProgressError&&e.code==='schema'){this.close();this.recordError(e);throw e;}}
         finally{control?.close();}
         throw new SetupError(disabled?'service-binding-unavailable-capture-disabled':'service-binding-unavailable');

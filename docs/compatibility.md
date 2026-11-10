@@ -651,7 +651,10 @@ whole extension and refuses partial/future schemas without destructive repair.
 Run storage format 2 is upgraded only by matching companion activation. Exact
 epoch-bearing format 1 is read-only-compatible with the new service beforehand,
 without notice metadata; new run mutations refuse until activation. Epochless
-version 1 still needs activation. Both upgrades preserve all evidence and leave
+version 1 still needs activation for run reads (`503 schema`); it is admitted for
+setup and progress, with health200/ready=true but no run-read capability. Its
+exact migration shape is accepted by install/update without migrating it there.
+Both upgrades preserve all evidence and leave
 old loss unknown-date, non-attention. Failed migration rolls back atomically.
 
 The current build meeting a newer run storage format or base schema keeps the

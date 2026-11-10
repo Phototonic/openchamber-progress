@@ -111,6 +111,21 @@ function runFormat(db:DatabaseSync):1|2|null {
   validateRuns(db,version===1?versionOne:definitions,version);return version;
 }
 export function runsInstalled(db:DatabaseSync):boolean {return runFormat(db)!==null;}
+export type RunStorageCompatibility = 'absent'|'current'|'previous'|'activation-required';
+/** Read-only admission/setup classification, not permission to read or mutate runs.
+ * Unsupported shapes throw schema. Activation and run reads retain their own gates. */
+export function runStorageCompatibility(db:DatabaseSync):RunStorageCompatibility {
+  const installed=db.prepare("SELECT name FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if(!installed.length)return 'absent';
+  if(!installed.some(r=>r.name==='runs_observation_epoch')){
+    validateMigrationInput(db,true);return 'activation-required';
+  }
+  return runFormat(db)===2?'current':'previous';
+}
+function validateMigrationInput(db:DatabaseSync,oldEpochless:boolean) {
+  const f=validateRuns(db,oldEpochless?epochless:versionOne,1,!oldEpochless);
+  need(Number(f.revision)<Number.MAX_SAFE_INTEGER,'schema');return f;
+}
 /** Caller owns BEGIN IMMEDIATE. Reads never call this. */
 export function installRuns(db:DatabaseSync) {
   // Explicit companion activation may upgrade only the exact prior extension.
@@ -120,8 +135,7 @@ export function installRuns(db:DatabaseSync) {
     const oldEpochless=!installed.some(r=>r.name==='runs_observation_epoch');
     const version=oldEpochless?1:runFormat(db);
     if(version===2)return;
-    const f=validateRuns(db,oldEpochless?epochless:versionOne,1,!oldEpochless);
-    need(Number(f.revision)<Number.MAX_SAFE_INTEGER,'schema');
+    const f=validateMigrationInput(db,oldEpochless);
     if(oldEpochless){db.exec(definitions.runs_observation_epoch!);db.exec('INSERT INTO runs_observation_epoch VALUES(1,0,0)');}
     // Drop owned references explicitly; no ALTER RENAME may retarget them.
     const triggers=['runs_capture_epoch','runs_plan_delete','runs_progress_change'];

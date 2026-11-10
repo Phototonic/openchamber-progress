@@ -86,6 +86,7 @@ export class Store {
   close() { this.db.close(); }
   installSubagentRuns() { return this.transaction(true,()=>runs.installRuns(this.db)); }
   subagentRunsAvailable() { return this.transaction(false,()=>runs.runsInstalled(this.db)); }
+  subagentRunStorage() { return this.transaction(false,()=>runs.runStorageCompatibility(this.db)); }
   runControl() { return this.transaction(false,()=>runs.runControl(this.db)); }
   beginRunObservation() {return this.transaction(true,()=>runs.beginObservation(this.db));}
   runObservationEpoch() {return this.transaction(false,()=>runs.observationEpoch(this.db));}

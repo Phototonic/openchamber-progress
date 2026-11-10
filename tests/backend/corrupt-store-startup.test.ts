@@ -208,6 +208,53 @@ for(const action of ['update','install'] as const)test(`packaged ${action} refus
   }finally{await running.stop();f.clean();}
 });
 
+test('epochless format 1 keeps compiled service, setup and plans available without admitting run reads',async t=>{
+  const f=fixture();f.seed();
+  const writer=new Store(f.database);writer.installSubagentRuns();
+  versionOneFixture(writer.db,true);writer.close();
+  const before=readFileSync(f.database),binding=readBinding(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json'));
+  const query=new URLSearchParams({storeId:binding.storeId,binding:JSON.stringify({sourceId:f.actor.sourceId,verified:true}),source:f.actor.sourceId,root:'M'});
+  const running=await serve(f);
+  try{
+    await running.start();
+    const health=await running.request('/health'),healthBody=await health.json();
+    const setup=await running.request('/v1/setup'),state=await setup.json();
+    const plan=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`),detail=await plan.json();
+    const runs=await running.request(`/v1/subagent-runs?${query}`),runBody=await runs.json();
+    t.diagnostic(`epochless health ${health.status} ${JSON.stringify(healthBody)}`);
+    t.diagnostic(`epochless setup ${setup.status} ${JSON.stringify({...state,targets:'fixture targets',...(state.reportingIdentity?{reportingIdentity:'fixture identity'}:{})})}`);
+    t.diagnostic(`epochless plan ${plan.status} ${JSON.stringify(plan.status===200?{id:detail.plan.id}:detail)} runs ${runs.status} ${JSON.stringify(runBody)}`);
+    assert.equal(health.status,200);assert.equal(healthBody.ready,true);assert.equal(healthBody.subagentRuns,undefined);assert.ok(!(healthBody.diagnostics??[]).includes('schema'));
+    assert.equal(setup.status,200);assert.equal(state.captureEnabled,true);assert.deepEqual(state.diagnostics,[]);
+    assert.equal(plan.status,200);assert.equal(detail.plan.id,'P1');
+    assert.equal(runs.status,503);assert.deepEqual(runBody,{error:'schema'});
+    assert.deepEqual(readFileSync(f.database),before);
+  }finally{await running.stop();f.clean();}
+});
+
+for(const action of ['update','install'] as const)test(`packaged ${action} accepts an exact epochless activation input without migrating it`,async t=>{
+  const f=fixture();f.seed();
+  if(action==='install')rmSync(path.join(f.targets.configRoot,'plugins/agent-progress'),{recursive:true,force:true});
+  writeFileSync(`${f.root}/compiled/companion/index.js`,`${f.payload.plugin}\n// Synthetic replacement payload\n`);
+  const writer=new Store(f.database);writer.installSubagentRuns();versionOneFixture(writer.db,true);writer.close();
+  const before=readFileSync(f.database),files=installationBytes(f),running=await serve(f);
+  try{
+    await running.start();
+    const reply=await running.request(`/v1/setup/${action}`,f.targets),state=await reply.json();
+    t.diagnostic(`epochless ${action} ${reply.status} ${JSON.stringify(reply.status===200?{configured:state.configured,captureEnabled:state.captureEnabled,activation:state.activation,diagnostics:state.diagnostics}:state)}`);
+    assert.equal(reply.status,200);assert.equal(state.configured,true);assert.equal(state.installed,true);assert.equal(state.captureEnabled,true);assert.ok(!state.diagnostics.includes('schema'));assert.equal(state.activation,'reload-required');
+    assert.notEqual(installationBytes(f)['config/plugins/agent-progress/.ownership.json'],files['config/plugins/agent-progress/.ownership.json']);
+    assert.deepEqual(readBinding(serviceBindingFile(f.env)),readBinding(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json')));
+    assert.deepEqual(readFileSync(f.database),before);
+    if(action==='update'){
+      const activated=spawnSync(process.execPath,['--experimental-strip-types',path.resolve('tests/fixtures/activation.ts'),`${f.targets.configRoot}/plugins/agent-progress/index.js`],{env:f.env,encoding:'utf8',timeout:10000});
+      assert.equal(activated.status,0,activated.stderr);
+      const health=await running.request('/health');assert.equal(health.status,200);assert.equal((await health.json()).subagentRuns,1);
+      const store=new Store(f.database);try{assert.equal(store.subagentRunStorage(),'current');}finally{store.close();}
+    }
+  }finally{await running.stop();f.clean();}
+});
+
 test('schema race after payload selection never disables capture or writes unsupported storage',t=>{
   const f=fixture();f.seed();
   const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
@@ -226,9 +273,9 @@ test('schema race after payload selection never disables capture or writes unsup
   }finally{setup.close();f.clean();}
 });
 
-test('binding persistence failure after selection still disables supported capture',t=>{
+for(const epochless of [false,true])test(`binding persistence failure after selection still disables supported capture (epochless=${epochless})`,t=>{
   const f=fixture();f.seed();
-  const writer=new Store(f.database);writer.installSubagentRuns();writer.close();
+  const writer=new Store(f.database);writer.installSubagentRuns();if(epochless)versionOneFixture(writer.db,true);writer.close();
   const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
   t.mock.method(setup as any,'persist',()=>{throw new Error('Synthetic binding persistence failure');});
   try{

@@ -1257,13 +1257,20 @@ captureEnabled=null and the existing fixed store diagnostic (for example storage
 corrupt or schema). Health returns200/ready=false with fixed diagnostics;
 store-backed reads return503 instead of an unconfigured success.
 Install/update preflight an existing target store's run compatibility read-only
-before selecting payloads or changing the binding. Unsupported run storage
+before selecting payloads or changing the binding. Exact supported activation
+inputs are accepted too, including epochless format 1; preflight never migrates.
+Unsupported (future, foreign or partial) run storage
 returns503/`{"error":"schema"}` with installation, activation and store unchanged.
 If a schema upgrade races selection, the action still refuses with `schema`
 without disabling capture or writing the unsupported store; already-selected
 files/binding may remain and are not automatically rolled back. The existing
 capture-disabling fallback for binding persistence/validation failures applies
-only when the control store's schema is supported.
+only when the control store is readable or an exact supported activation input.
+An exact epochless format-1 store is admitted for setup and progress reads:
+health is200/ready=true without `subagentRuns:1`, not a store-wide `schema`
+failure. Direct run reads still return503/`{"error":"schema"}` until explicit
+companion activation migrates it. The missing capability means run reads are
+unavailable, not that run storage is absent or safe to initialize from a guest.
 Health/setup/read requests each make one bounded open/validation attempt so a
 restored store recovers without restarting; no automatic mutation or retry loop.
 Pending reload survives a service restart. After successful tool/skill/RPC setup,
