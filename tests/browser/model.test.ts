@@ -9,6 +9,7 @@ import { currentWork, elapsedAt, itemTree, participants, showsLiveness, summariz
 import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
 import { CSS } from '../../ui/shared/style.ts';
+import { MAP_CSS } from '../../ui/shared/dependency-map-style.ts';
 import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
 import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
 import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
@@ -548,6 +549,29 @@ test('motion CSS: gated, compositor-only keyframes, stopped by reduced motion (p
   assert.match(CSS, /\[data-ap-hidden\] \*,\[data-ap-hidden\] \*::before,\[data-ap-hidden\] \*::after\{animation:none!important\}/);
   // Readable text token for the status text, with the base colour only as an older-host fallback.
   assert.match(CSS, /\.ap-working-text\{color:var\(--oc-info-text,var\(--oc-info\)\)\}/);
+});
+
+test('map motion CSS: one gated SVG bead flow, dash offset only, on the shared period, never overriding the global stops', () => {
+  const css = MAP_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = css.split('}').map((r) => r.trim());
+  const animated = rules.filter((x) => /(^|[;{])animation(-name)?:/.test(x));
+  // Exactly one animated rule: the separate bead layer, under the region's own reported-work gate.
+  assert.equal(animated.length, 1, animated.join(' | '));
+  assert.match(animated[0], /^\[data-motion="on"\] \.ap-map-flows \.ap-map-bead\{animation:ap-map-flow 2\.4s linear infinite$/);
+  // Its keyframes move only the SVG stroke dash offset, by whole bead spacings (seamless loop).
+  const frames = css.match(/@keyframes [\w-]+\{(?:[^{}]*\{[^{}]*\})+\}/g) ?? [];
+  assert.equal(frames.length, 1);
+  assert.match(frames[0], /^@keyframes ap-map-flow\{/);
+  for (const [, prop] of frames[0].matchAll(/[{;]([a-z-]+):/g)) assert.equal(prop, 'stroke-dashoffset', frames[0]);
+  const spacing = Number(/\.ap-map-bead\{[^}]*stroke-dasharray:0 (\d+)/.exec(css)?.[1]), travel = Number(/to\{stroke-dashoffset:-(\d+)\}/.exec(frames[0])?.[1]);
+  assert.ok(spacing > 0 && travel % spacing === 0, `${travel} px per cycle over ${spacing} px spacing`);
+  // No transitions anywhere in the map, and nothing that could beat the global reduced-motion/hidden stops.
+  assert.ok(!/transition(-[a-z]+)?:(?!none)/.test(css), 'no map transitions');
+  assert.ok(!/animation[^;{}]*!important/.test(css), 'map animation never !important');
+  // The blocked stop bar is static: no animated rule names blocked arrows or the bar.
+  assert.ok(!animated.some((r) => /blocked|stopbar/.test(r)));
+  // The list's own motion stays transform/opacity only (checked above); the map exception is the bead layer.
+  assert.ok(!/stroke-dashoffset/.test(CSS), 'the shared stylesheet never animates dash offsets');
 });
 
 test('elapsed text: whole minutes, hours and days; never seconds; nothing for an impossible value', () => {

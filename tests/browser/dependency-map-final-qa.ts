@@ -213,6 +213,14 @@ export async function productionMapQa(d: Driver) {
       await select(s,'T-10-24');
       const dom=await guest(s,`return {cards:d.querySelectorAll('[data-task]').length,edges:d.querySelectorAll('path[data-from]').length,nodes:d.querySelectorAll('*').length}`);
       check(`${name}:full-plan`,dom.cards===980&&dom.edges===2000,undefined,dom);
+      if(!index){
+        // Arrow motion fallback (docs/ui.md, Arrows): 2,000 arrows exceed the shipped ceiling, so with
+        // motion allowed every bead stays still, opened, fitted or filtered.
+        await c.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});await frames2();
+        const arrows=async(label:string)=>{const r=await guest(s,`const r=d.querySelector('${region}');return {motion:r.dataset.motion??null,fallback:r.dataset.motionFallback??null,beads:r.querySelectorAll('.ap-map-bead').length,animations:r.getAnimations({subtree:true}).length}`);d.facts[`largeArrows-${label}`]=r;check(`${name}:arrows-fallback-${label}`,r.motion===null&&r.fallback==='arrows'&&r.beads>0&&r.animations===0,undefined,r);};
+        await arrows('opened');await activate(s,'map-fit-all');await arrows('fit-all');await group('G-10');await arrows('filtered');await group('*');
+        await c.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});await frames2();
+      }
       await photo(`${name}/map-ready`,s);
       const replay: unknown[]=[],coordinateMaps: unknown[]=[];
       for(const step of fx.largePlan!.steps.slice(1)){
@@ -572,6 +580,7 @@ export async function productionMapQa(d: Driver) {
   }
   d.facts.visibilityResume=resumes;
   for(const r of resumes)check(`${r.surface}:settled-map-resumes-after-hide`,r.selection==='C'&&r.navigation==='D'&&r.toolbar===true&&r.repins===1&&r.extraPins===0&&r.sameRevision===true,undefined,r);
+  await (await import('./dependency-map-arrows-qa.ts')).arrowMotionQa(d, { pickBoard, pickRail, open, list, select, activate, polls, observeSpeech, speech, coords, overflow });
   check('final:no-stored-map-preference',await evaluate(`!qa.storage.some(r=>r.op==='set'&&/map/i.test(r.key??''))`));
   check('final:no-guest-errors',d.pageErrors().length===0,undefined,d.pageErrors());
   save('frame-requests.json',await evaluate(`qa.replies.map(({frame,traffic,path,status,bytes,ms,revision})=>({frame,traffic,path,status,bytes,ms,revision}))`));

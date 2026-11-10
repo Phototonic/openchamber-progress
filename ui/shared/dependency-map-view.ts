@@ -17,7 +17,7 @@ import type { RunRequest } from '../../shared/subagent-runs.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
 import { plural } from './format.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
-import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
+import { showsLiveness, statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
 import type { MapTaskAttribution } from './dependency-map-attribution.ts';
 
 /** The frame's interaction controller, as the view sees it. The controller lives outside the root. */
@@ -65,6 +65,12 @@ export interface DependencyMapViewInput extends MapSnapshot {
    * selected and is absent otherwise; the canvas never resizes for it. 0/absent: stacked inspector.
    */
   panel?: number;
+  /**
+   * Affirmative permission for working-arrow motion from the frame owner (`mapMotionPermitted`):
+   * Map shown in a visible frame, an eligible current picture, and the reported-work gate
+   * (`showsLiveness`). Absent or false: beads stay stationary. Read-only previews never pass it.
+   */
+  motion?: boolean;
 }
 export interface DependencyMapView {
   /** One paint into a (possibly new) host. State/geometry remain frame-owned, not DOM-owned. */
@@ -78,6 +84,9 @@ export interface DependencyMapView {
   clearAnnouncements: () => void;
   /** Close and retire the frame-local help disclosure. */
   clearHelp: () => void;
+  /** Hidden, left or disposed: revoke the stored and painted arrow-motion permission in place
+   * (no repaint). Only a later paint with fresh permission can restore it. */
+  revokeMotion: () => void;
   dispose: () => void;
 }
 /** QA vocabulary: map-region data-{state,current,revision,tasks,edges,highlight}; map-card-ID
@@ -194,6 +203,70 @@ function markOf(item: ItemView, fact: DerivedTask | undefined, guidance: boolean
   return fact?.group === 'ready' ? 'ready' : fact?.group === 'skipped' ? 'waiting-skipped' : 'waiting';
 }
 
+// ── Arrow state (pure; no DOM). One cue per recorded prerequisite → dependent pair, from the
+// reported endpoint statuses of the displayed picture only. Never another frame's picture, session
+// activity or report age.
+type Status = ItemView['status'];
+/** `working`: beads; `blocked`: static stop bar; null: the arrow keeps its existing style. */
+export type ArrowCue = 'working' | 'blocked' | null;
+export function arrowCue(prerequisite: Status | undefined, dependent: Status | undefined): ArrowCue {
+  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'blocked' ? 'working' : null;
+  if (prerequisite === 'blocked') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'blocked' : null;
+  return null;
+}
+/** New cues only for an active, unarchived plan whose displayed picture is current and ready. */
+export function arrowCuesEligible(plan: Pick<PlanView, 'lifecycle' | 'cleanup'>, picture: Pick<MapSnapshot, 'state' | 'current'>): boolean {
+  return plan.lifecycle === 'active' && (plan.cleanup?.state ?? 'visible') === 'visible' && picture.current && picture.state === 'ready';
+}
+/**
+ * Shipped rendering-cost bounds for arrow motion (docs/ui.md, Dependency map › Arrows). Full-plan
+ * task arrows and eligible visible flows are inclusive ceilings; zoom is the inclusive minimum.
+ * The contract's outer bounds are 300 arrows, 24 flows and 50% zoom; these may only be tighter.
+ */
+export const MAP_MOTION_LIMITS = { arrows: 300, flows: 24, zoom: 0.5 } as const;
+export type ArrowMotionFallback = 'arrows' | 'flows' | 'zoom';
+/** Why otherwise permitted motion falls back to stationary beads, or null within every bound. */
+export function arrowMotionFallback(c: { arrows: number; flows: number; zoom: number }, limits: { arrows: number; flows: number; zoom: number } = MAP_MOTION_LIMITS): ArrowMotionFallback | null {
+  if (c.arrows > limits.arrows) return 'arrows';
+  if (c.flows > limits.flows) return 'flows';
+  if (!(c.zoom >= limits.zoom)) return 'zoom';
+  return null;
+}
+/**
+ * Eligible visible flows: working arrows whose endpoints are both shown; while a selection
+ * highlights a chain, only that chain's working arrows (off-chain beads are stationary anyway).
+ */
+export function arrowFlowCount(edges: readonly (readonly [string, string])[], status: (id: string) => Status | undefined, visible: (id: string) => boolean, chain: ((from: string, to: string) => boolean) | null): number {
+  let n = 0;
+  for (const [a, z] of edges) if (visible(a) && visible(z) && arrowCue(status(a), status(z)) === 'working' && (!chain || chain(a, z))) n++;
+  return n;
+}
+/**
+ * The frame owner's affirmative motion permission: Map shown in a visible frame, an eligible
+ * picture, and the existing reported-work gate (last read succeeded, capture on, something
+ * reported working) over the DISPLAYED picture's plan and tasks.
+ */
+export function mapMotionPermitted(snapshot: Pick<MapSnapshot, 'state' | 'current' | 'picture'>, view: { fresh: boolean; captureEnabled: boolean }, shown: boolean, visible: boolean): boolean {
+  const picture = snapshot.picture;
+  if (!shown || !visible || !picture) return false;
+  const plan = picture.detail.plan;
+  if (!arrowCuesEligible(plan, snapshot)) return false;
+  const working = picture.detail.detail.items.filter(i => i.kind === 'task' && i.status === 'working').length;
+  return showsLiveness(plan.lifecycle, { working }, view);
+}
+/** A waiting task's direct recorded prerequisites, each counted once (hidden by filters or not). */
+export function prerequisiteCounts(fact: Pick<DerivedTask, 'prerequisites'> | undefined) {
+  const seen = new Map<string, DerivedTask['prerequisites'][number]>();
+  for (const p of fact?.prerequisites ?? []) if (!seen.has(p.id)) seen.set(p.id, p);
+  const all = [...seen.values()];
+  const task = (s: Status) => all.filter(p => p.kind === 'task' && p.status === s).length;
+  return { unfinished: all.filter(p => p.kind !== 'task' || p.status !== 'done').length, working: task('working'), blocked: task('blocked') };
+}
+/** "1 reported working, 1 explicitly blocked" (zero parts omitted); '' when both are zero. */
+export function prerequisiteStates(c: { working: number; blocked: number }): string {
+  return [c.working ? `${c.working} reported working` : '', c.blocked ? `${c.blocked} explicitly blocked` : ''].filter(Boolean).join(', ');
+}
+
 function mark(kind: Mark) {
   const m = el('span', 'ap-map-mark');
   m.dataset.mark = kind;
@@ -239,6 +312,9 @@ export function createDependencyMapView(): DependencyMapView {
   // Interactive frame-local presentation: current painted nodes, coalesced viewport frame, a pending
   // generation-bound focus action and the last painted canvas position (screen continuity).
   let viewportNode: HTMLElement | null = null, worldNode: HTMLElement | null = null, zoomNode: HTMLElement | null = null;
+  // Arrow motion: the painted region and, when this paint was permitted to move beads, its count
+  // facts. Zoom is the only bound that changes without a paint (applied with the viewport).
+  let regionNode: HTMLElement | null = null, motionCounts: { arrows: number; flows: number } | null = null;
   let frame = 0, releasing = false;
   // True from a paint until the owner has finished restoring its pre-paint focus (same turn):
   // that focusin is passive and must not move the viewport.
@@ -328,6 +404,23 @@ export function createDependencyMapView(): DependencyMapView {
     worldNode.style.transform = `translate(${t.x - PAD * t.zoom}px,${t.y - PAD * t.zoom}px) scale(${t.zoom})`;
     worldNode.style.setProperty('--ap-map-zoom', String(t.zoom));
     if (zoomNode) zoomNode.textContent = zoomText(t.zoom);
+    applyMotion(t.zoom);
+  }
+  /**
+   * The map region's own reported-work gate (`data-motion="on"`, style.ts/app.ts phase). Set only
+   * while this paint's permission and every cost bound hold; otherwise beads are stationary and no
+   * map animation exists. Animations started by setting it join the shared phase (app.ts).
+   */
+  function applyMotion(zoom: number) {
+    const r = regionNode; if (!r) return;
+    const fallback = motionCounts ? arrowMotionFallback({ ...motionCounts, zoom }) : null;
+    if (motionCounts && !fallback && motionCounts.flows > 0) { if (r.dataset.motion !== 'on') r.dataset.motion = 'on'; } else delete r.dataset.motion;
+    if (motionCounts && fallback) r.dataset.motionFallback = fallback; else delete r.dataset.motionFallback;
+  }
+  function revokeMotion() {
+    motionCounts = null;
+    if (input?.motion) input = { ...input, motion: false };
+    applyMotion(0);
   }
   function scheduleViewport() {
     if (frame) return;
@@ -403,6 +496,7 @@ export function createDependencyMapView(): DependencyMapView {
     const retainedUnavailable = !!v.picture && (v.state === 'unavailable' || v.state === 'not-found');
     const p = retainedUnavailable ? null : v.picture, layout = p ? v.layout : null;
     const region = testid(el('article', 'ap-map'), 'map-region');
+    regionNode = region; motionCounts = null;
     if (st?.identity) region.dataset.mapIdentity = st.identity;
     region.dataset.frame = v.frame;
     region.setAttribute('aria-labelledby', `${uid}-title`);
@@ -724,17 +818,29 @@ export function createDependencyMapView(): DependencyMapView {
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false');
       const defs = document.createElementNS(SVG, 'defs');
-      for (const tone of ['open', 'quiet', 'path'] as const) {
+      // Blocked markers add a stop bar just before the arrowhead (same tip, same 0.9 scale).
+      for (const tone of ['open', 'quiet', 'path', 'working', 'blocked', 'blocked-path'] as const) {
+        const bar = tone.startsWith('blocked');
         const marker = document.createElementNS(SVG, 'marker');
         marker.id = `${uid}-arrow-${tone}`;
         marker.setAttribute('class', `ap-map-marker ap-map-marker-${tone}`);
-        for (const [k, val] of [['viewBox', '0 0 10 10'], ['refX', '9'], ['refY', '5'], ['markerWidth', '9'], ['markerHeight', '9'], ['markerUnits', 'userSpaceOnUse'], ['orient', 'auto']]) marker.setAttribute(k, val);
+        for (const [k, val] of [['viewBox', bar ? '-9 -2 19 14' : '0 0 10 10'], ['refX', '9'], ['refY', '5'], ['markerWidth', bar ? '17.1' : '9'], ['markerHeight', bar ? '12.6' : '9'], ['markerUnits', 'userSpaceOnUse'], ['orient', 'auto']]) marker.setAttribute(k, val);
         const head = document.createElementNS(SVG, 'path');
         head.setAttribute('d', 'M 0 0.5 L 10 5 L 0 9.5 z');
         head.setAttribute('class', 'ap-map-arrowhead');
-        marker.append(head); defs.append(marker);
+        marker.append(head);
+        if (bar) { const stop = document.createElementNS(SVG, 'path'); stop.setAttribute('d', 'M -8 -1.5 L -4.5 -1.5 L -4.5 11.5 L -8 11.5 z'); stop.setAttribute('class', 'ap-map-stopbar'); marker.append(stop); }
+        defs.append(marker);
       }
       svg.append(defs);
+      // Working beads that may move live in their own small decorative layer (same size, viewBox and
+      // world transform), so a moving dash never invalidates the full arrow drawing. Off-chain beads
+      // during a selection are stationary and stay with the static drawing.
+      const flowLayer = document.createElementNS(SVG, 'svg');
+      flowLayer.setAttribute('class', 'ap-map-edges ap-map-flows');
+      for (const k of ['width', 'height', 'viewBox']) flowLayer.setAttribute(k, svg.getAttribute(k)!);
+      flowLayer.setAttribute('aria-hidden', 'true'); flowLayer.setAttribute('focusable', 'false');
+      const cues = arrowCuesEligible(plan, v);
       // Spread ports along card sides so converging arrowheads stay distinguishable.
       const ports = (side: 0 | 1) => {
         const by = new Map<string, string[]>();
@@ -746,6 +852,9 @@ export function createDependencyMapView(): DependencyMapView {
       const pitch = m.height + m.rowGap;
       const lastRow = Math.max(0, ...[...layout.positions.values()].map(s => s.row));
       const onPath: SVGPathElement[] = [];
+      const sel = selected?.id;
+      const chainOf = (from: string, to: string) => !highlight || !sel ? null : (to === sel || upstreamSet?.has(to)) && upstreamSet?.has(from) ? 'upstream' as const : (from === sel || downstreamSet?.has(from)) && downstreamSet?.has(to) ? 'downstream' as const : null;
+      const flows = cues ? arrowFlowCount(shownEdges, id => byId.get(id)?.status, id => visible.has(id), highlight && sel ? (a, z) => !!chainOf(a, z) : null) : 0;
       for (const [from, to] of shownEdges) {
         const a = layout.positions.get(from)!, bb = layout.positions.get(to)!;
         const x1 = a.x + m.width + PAD, y1 = a.y + PAD + outPort(from, to);
@@ -764,21 +873,37 @@ export function createDependencyMapView(): DependencyMapView {
         }
         const prereq = byId.get(from)?.status;
         const tone = prereq === 'done' || prereq === 'skipped' ? 'quiet' : 'open';
+        const cue = cues ? arrowCue(prereq, byId.get(to)?.status) : null;
         const path = document.createElementNS(SVG, 'path');
         path.setAttribute('class', 'ap-map-edge');
         path.dataset.tone = tone;
         if (prereq === 'skipped') path.dataset.skipped = 'true';
+        if (cue) path.dataset.arrow = cue;
         path.setAttribute('data-from', from); path.setAttribute('data-to', to);
         path.setAttribute('d', d);
         // An edge lies on the selection's chain when both ends are in its upstream (or downstream) closure.
-        const sel = selected?.id;
-        const way = !highlight || !sel ? null : (to === sel || upstreamSet?.has(to)) && upstreamSet?.has(from) ? 'upstream' : (from === sel || downstreamSet?.has(from)) && downstreamSet?.has(to) ? 'downstream' : null;
+        const way = chainOf(from, to);
         if (way) path.dataset.path = way;
-        path.setAttribute('marker-end', `url(#${uid}-arrow-${way ? 'path' : tone})`);
+        path.setAttribute('marker-end', `url(#${uid}-arrow-${cue === 'blocked' ? way ? 'blocked-path' : 'blocked' : way ? 'path' : cue ?? tone})`);
         if (way) onPath.push(path); else svg.append(path);
+        if (cue === 'working') {
+          // Decorative beads over the canonical edge; never data-from/data-to, so counts stay single.
+          const bead = document.createElementNS(SVG, 'path');
+          bead.setAttribute('class', 'ap-map-bead');
+          bead.setAttribute('d', d);
+          bead.dataset.flowFrom = from; bead.dataset.flowTo = to;
+          if (way) bead.dataset.chain = way;
+          if (highlight && !way) svg.append(bead);
+          else flowLayer.append(bead);
+        }
       }
       svg.append(...onPath); // chain arrows paint above the rest
       world.append(svg);
+      if (flowLayer.firstChild) world.append(flowLayer);
+      region.dataset.flows = String(flows);
+      // Motion needs this paint's affirmative permission and an interactive viewport (zoom bound).
+      motionCounts = v.motion === true && cues && b ? { arrows: edges.length, flows } : null;
+      applyMotion(st?.transform.zoom ?? 0);
 
       for (const id of layout.order) {
         if (!visible.has(id)) continue;
@@ -909,7 +1034,7 @@ export function createDependencyMapView(): DependencyMapView {
       status.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
       if (!visible.has(id)) status.append(el('span', 'ap-map-tag', 'Hidden by filters'));
       inspector.append(status, el('p', 'ap-map-inspector-title', selected.title));
-      const explain = readinessText(selected, fact, guidance, active, titleOf);
+      const explain = readinessText(selected, fact, guidance, active, titleOf, arrowCuesEligible(plan, v));
       if (explain) inspector.append(el('p', 'ap-note', explain));
       const factsList = el('dl', 'ap-map-facts');
       const fact2 = (label: string, value: string | Node) => { const d = el('div'); d.append(el('dt', '', label)); const dd = el('dd'); dd.append(value); d.append(dd); factsList.append(d); };
@@ -1024,6 +1149,7 @@ export function createDependencyMapView(): DependencyMapView {
       if (panel) helpBody.append(el('p', '', 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.'));
     }
     helpBody.append(el('p', '', 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.'));
+    helpBody.append(testid(el('p', '', 'Arrow key. Blue beads: the prerequisite is reported working and the task it points to is still waiting or blocked. Moving beads are a looping sign of reported work, not progress and not proof that the work is happening now; still beads mean the same (they stop when motion is reduced, on large or zoomed-out maps, and outside a selected task’s chain). A bar before the arrowhead: the prerequisite is explicitly blocked. Dashed: the prerequisite was skipped. Faint: the prerequisite is done. Beads and bars appear only on an active plan’s current picture.'), 'map-arrow-key'));
     helpBody.append(el('p', '', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start. Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
     helpBody.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline). An explicitly blocked task is never shown as ready, whatever its prerequisites.'));
     if (selected && highlight && ((upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0))) helpBody.append(el('p', 'ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
@@ -1143,7 +1269,9 @@ export function createDependencyMapView(): DependencyMapView {
     },
     clearAnnouncements,
     clearHelp,
+    revokeMotion,
     dispose() {
+      revokeMotion(); regionNode = null;
       observer?.disconnect(); observer = null; unlisten(); clearAnnouncements(); clearHelp();
       if (frame) cancelAnimationFrame(frame); frame = 0;
       host = null; input = null; viewportNode = worldNode = zoomNode = null; pendingFocus = null; painted = { key: '', viewport: null };
@@ -1266,10 +1394,10 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (identity !== interaction.value.identity) forget();
       interaction.identify(identity);
       if (want && !interaction.value.active) interaction.enter(false);
-      if (!want) { view.clearAnnouncements(); view.clearHelp(); if (interaction.value.active) interaction.leave(); map.pause(); }
+      if (!want) { view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); if (interaction.value.active) interaction.leave(); map.pause(); }
     },
     enter() { cancelListTransition(); reveal = null; interaction.enter(document.hasFocus()); },
-    leave() { cancelListTransition(); reveal = null; view.clearAnnouncements(); view.clearHelp(); interaction.leave(); },
+    leave() { cancelListTransition(); reveal = null; view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); interaction.leave(); },
     listTargets(article) {
       article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
       article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });
@@ -1307,6 +1435,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
         onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
+        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'),
       });
     },
     afterPaint(root, vc, plan, listFocus) {
@@ -1336,6 +1465,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     resetReading: forget,
     retire(reason) {
       cancelListTransition();
+      view.revokeMotion();
       if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); shown = false; }
       else if (reason === 'hidden') { view.clearAnnouncements(); view.clearHelp(); map.pause(); interaction.leave(); }
       else forget();
@@ -1343,16 +1473,21 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   };
 }
 
-function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string): string {
+/** `cues`: the picture is eligible for arrow state (active, unarchived, current), so the waiting
+ * explanation may also name its reported-working and explicitly blocked direct prerequisites. */
+export function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string, cues = false): string {
   if (item.status === 'skipped') return 'Skipped work never counts as done for its dependents.';
   if (item.status === 'blocked') return '';
   if (item.status !== 'pending') return '';
   if (!active) return 'Reported pending when the plan closed.';
   if (!guidance) return 'Reported pending. Readiness is hidden until the current revision is matched.';
-  const open = (fact?.prerequisites ?? []).filter(p => p.kind !== 'task' || p.status !== 'done');
+  const counts = prerequisiteCounts(fact), states = cues ? prerequisiteStates(counts) : '';
   if (fact?.group === 'ready') return fact.prerequisites.length ? 'Every recorded prerequisite is reported done. Ready describes recorded prerequisites only.' : 'No prerequisites recorded. Ready describes recorded prerequisites only.';
-  if (fact?.group === 'skipped') return `Waiting: a recorded prerequisite was skipped (${open.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => titleOf(p.id)).join('; ')}), and skipped work never counts as done.`;
-  return `Waiting on ${plural(open.length, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}.`;
+  if (fact?.group === 'skipped') {
+    const skipped = [...new Set(fact.prerequisites.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => p.id))];
+    return `Waiting: a recorded prerequisite was skipped (${skipped.map(titleOf).join('; ')}), and skipped work never counts as done.${states ? ` Its unfinished recorded prerequisites include ${states}.` : ''}`;
+  }
+  return `Waiting on ${plural(counts.unfinished, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}${states ? `: ${states}` : ''}.`;
 }
 
 /**
