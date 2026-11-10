@@ -72,7 +72,10 @@ export const MAP_CSS = `
 .ap-map-tool:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-icon{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .ap-map-zoom{min-width:3.6em;text-align:center;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
-.ap-map-help{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
+.ap-map-help{min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
+.ap-map-help-trigger{cursor:pointer;width:fit-content;color:var(--oc-fg);font-weight:600}
+.ap-map-help-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-map-help-body{display:flex;flex-direction:column;gap:4px;padding:8px 0}
 .ap-map-help strong{color:var(--oc-fg);font-weight:600}
 .ap-map-keys{line-height:1.9}
 .ap-map-keys .ap-map-nowrap{white-space:nowrap}

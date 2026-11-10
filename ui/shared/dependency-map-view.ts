@@ -70,6 +70,8 @@ export interface DependencyMapView {
   command: (command: MapInteractionCommand) => void;
   /** Retire delivered and pending speech without removing the persistent live region. */
   clearAnnouncements: () => void;
+  /** Close and retire the frame-local help disclosure. */
+  clearHelp: () => void;
   dispose: () => void;
 }
 /** QA vocabulary: map-region data-{state,current,revision,tasks,edges,highlight}; map-card-ID
@@ -249,6 +251,12 @@ export function createDependencyMapView(): DependencyMapView {
   // Each painted card's name without the selection-relative Upstream/Downstream phrase.
   let baseNames = new Map<string, string>();
   const binding = () => input?.interaction ?? null;
+  let helpNode: HTMLDetailsElement | null = null, helpIdentity: string | null = null;
+  let removeHelpListeners = () => {};
+  let outsidePointer: number | null = null, outsideTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelOutside() { if (outsideTimer !== null) clearTimeout(outsideTimer); outsideTimer = null; outsidePointer = null; }
+  function clearHelp() { removeHelpListeners(); removeHelpListeners = () => {}; cancelOutside(); if (helpNode) helpNode.open = false; helpNode = null; helpIdentity = null; }
+
 
   function dropSpeech() { if (speech) clearTimeout(speech.timer); speech = null; }
   function clearAnnouncements() {
@@ -369,6 +377,9 @@ export function createDependencyMapView(): DependencyMapView {
 
   function paint() {
     observer?.disconnect(); observer = null;
+    const previousHelp = helpNode, previousIdentity = helpIdentity;
+    const wasOpen = previousHelp?.open ?? false;
+    removeHelpListeners(); removeHelpListeners = () => {}; helpNode = null;
     baseNames = new Map();
     if (!host || !input) return;
     // The owner restores focus synchronously after attaching this paint's root; this microtask runs
@@ -481,7 +492,6 @@ export function createDependencyMapView(): DependencyMapView {
       if (!c) copies.set(id, c = attributionCopy(v.attribution?.get(id), v.current, p.graph.revision, sessionName));
       return c;
     };
-    const anyAttribution = tasks.some(i => attributionOf(i.id).card);
     const selected = v.selected && byId.get(v.selected)?.kind === 'task' ? byId.get(v.selected)! : null;
     // Upstream/downstream emphasis: fresh on-demand closure walks for the selection only.
     const upstreamSet = selected && layout ? v.facts?.upstream(selected.id) ?? null : null;
@@ -550,8 +560,7 @@ export function createDependencyMapView(): DependencyMapView {
         stats.append(li);
       }
       summary.append(stats);
-      // The full definitions sit in the help below the map; the header keeps the one caveat.
-      summary.append(el('p', 'ap-note', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start.'));
+
     } else if (!active && tasks.length) {
       summary.append(el('p', 'ap-note', 'This plan is closed. Cards show reported status only, without Ready or Unlocks next guidance.'));
     }
@@ -563,7 +572,7 @@ export function createDependencyMapView(): DependencyMapView {
     if (!tasks.length) context.append(groups.length ? 'No task cards. This plan records only groups; their context is listed below. ' : 'No task cards. This plan has no recorded tasks yet. ');
     if (!anyRecorded) context.append(el('strong', '', 'No prerequisites recorded for this plan'), tasks.length ? '. Cards are placed in list order, without arrows.' : '.');
     else if (!edges.length) context.append(el('strong', '', 'No task-to-task prerequisites recorded'), '. Group prerequisites are listed as group context, never drawn as arrows.');
-    else context.append('Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.');
+    else context.hidden = true;
     head.append(state, summary, context);
     region.append(head);
 
@@ -889,7 +898,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (note) dd.append(el('span', 'ap-map-who-note', note));
         d.append(dd); whoList.append(d);
       };
-      row('Assignment', 'map-attribution-assignment', [who.assignment], who.assignmentNote);
+      row('Assignment', 'map-attribution-assignment', [who.assignment], who.kind === 'assigned' ? null : who.assignmentNote);
       if (who.links.length) row('Links', 'map-attribution-links', who.links);
       if (who.kind !== 'unavailable') row('Reports', 'map-attribution-reports', who.reports.length ? who.reports : ['No reports recorded']);
       let activity: string | Node = who.activity;
@@ -900,7 +909,7 @@ export function createDependencyMapView(): DependencyMapView {
         words.append(mark, who.live.text);
         activity = words;
       }
-      row('Session activity', 'map-attribution-live', [activity], who.activityNote);
+      row('Session activity', 'map-attribution-live', [activity], who.live || who.activityNote === VERIFIED_ACTIVITY_NOTE ? null : who.activityNote);
       ws.append(whoList);
       inspector.append(ws);
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
@@ -939,13 +948,12 @@ export function createDependencyMapView(): DependencyMapView {
       const order = (ids: string[]) => layout ? layout.order.filter(n => ids.includes(n)) : ids;
       inspector.append(relationList('Recorded prerequisites', order(upstream), 'None recorded.', 'map-prerequisites', 'upstream'));
       inspector.append(relationList('Dependents', order(downstream), 'No task records this one as a prerequisite.', 'map-dependents', 'downstream'));
-      const chain = (upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0);
-      if (highlight && chain) inspector.append(el('p', 'ap-note ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
+
       const unlocks = unlocking(id);
       if (unlocks.length) {
         const u = testid(el('div', 'ap-map-rel'), 'map-unlocks');
         u.append(el('h4', 'ap-map-rel-h', 'Unlocks next'));
-        u.append(el('p', 'ap-note', `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${order(unlocks).map(titleOf).join('; ')}. That is not permission to start them.`));
+        u.append(el('p', 'ap-note', `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${order(unlocks).map(titleOf).join('; ')}.`));
         inspector.append(u);
       }
       // Ancestor groups' own recorded prerequisites: labelled group metadata, never task arrows.
@@ -962,22 +970,55 @@ export function createDependencyMapView(): DependencyMapView {
     body.append(inspector);
     region.append(body);
 
-    // ── Help: keys (interactive), reading the highlights and the guidance definitions moved from the header.
-    if (b || (guidance && tasks.length) || anyAttribution) {
-      const help = testid(el('div', 'ap-map-help'), 'map-help');
-      help.id = helpId;
-      if (b) {
-        const keys = el('p', 'ap-map-keys');
-        const k = (text: string) => el('kbd', '', text);
-        const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
-        help.append(keys);
-        if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
-      }
-      if (guidance && tasks.length) help.append(el('p', '', 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
-      if (anyAttribution) help.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
-      region.append(help);
+    // A native disclosure needs no global popup machinery. Keep it open across same-reading
+    // repaints, and retire its outside listeners on every repaint, leave or disposal.
+    const help = testid(el('details', 'ap-map-help'), 'map-help');
+    const identity = st?.identity ?? plan.key;
+    help.open = !!wasOpen && previousIdentity === identity && (st?.active ?? true);
+    const summaryHelp = testid(el('summary', 'ap-map-help-trigger', 'Map help and definitions'), 'map-help-trigger');
+    help.append(summaryHelp);
+    const helpBody = el('div', 'ap-map-help-body');
+    if (b) {
+      const keys = el('p', 'ap-map-keys');
+      const k = (text: string) => el('kbd', '', text);
+      const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
+      keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
+      helpBody.append(keys);
     }
+    helpBody.append(el('p', '', 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.'));
+    helpBody.append(el('p', '', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start. Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
+    helpBody.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline). An explicitly blocked task is never shown as ready, whatever its prerequisites.'));
+    if (selected && highlight && ((upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0))) helpBody.append(el('p', 'ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
+    if (selected) {
+      const who = attributionOf(selected.id);
+      if (who.kind === 'assigned' && who.assignmentNote) helpBody.append(el('p', '', who.assignmentNote));
+      if (who.live) helpBody.append(el('p', '', LIVE_HEDGE));
+      else if (who.activityNote === VERIFIED_ACTIVITY_NOTE) helpBody.append(el('p', '', 'Session activity is shown only for a verified assignment.'));
+    }
+    helpBody.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
+    help.append(helpBody);
+    // Do not collapse on pointerdown: the in-flow disclosure would move the pressed control
+    // before pointerup. A click has a fixed target; for canceled/non-click gestures close after
+    // pointerup, with the pending action surviving a same-reading repaint.
+    const outside = (event: Event) => event.target instanceof Node && !help.contains(event.target);
+    const closeOutside = () => { cancelOutside(); if (helpNode?.open && helpIdentity === identity) helpNode.open = false; };
+    const onOutsideDown = (event: PointerEvent) => { if (help.open && outside(event)) { cancelOutside(); outsidePointer = event.pointerId; } };
+    const onOutsideUp = (event: PointerEvent) => {
+      if (outsidePointer !== event.pointerId) return;
+      outsidePointer = null;
+      outsideTimer = setTimeout(closeOutside, 0);
+    };
+    const onOutsideCancel = (event: PointerEvent) => { if (outsidePointer === event.pointerId) closeOutside(); };
+    const onOutsideClick = (event: MouseEvent) => { if (help.open && outside(event)) closeOutside(); };
+    const onHelpKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && help.open) { event.preventDefault(); cancelOutside(); help.open = false; summaryHelp.focus(); } };
+    const doc = help.ownerDocument;
+    doc.addEventListener('pointerdown', onOutsideDown, true); doc.addEventListener('pointerup', onOutsideUp, true);
+    doc.addEventListener('pointercancel', onOutsideCancel, true); doc.addEventListener('click', onOutsideClick, true);
+    help.addEventListener('keydown', onHelpKey);
+    removeHelpListeners = () => { doc.removeEventListener('pointerdown', onOutsideDown, true); doc.removeEventListener('pointerup', onOutsideUp, true); doc.removeEventListener('pointercancel', onOutsideCancel, true); doc.removeEventListener('click', onOutsideClick, true); help.removeEventListener('keydown', onHelpKey); };
+    helpNode = help; helpIdentity = identity;
+    region.insertBefore(help, controls);
+    if (b) { const description = el('p', 'ap-sr', 'Use arrow keys to navigate cards. Open Map help and definitions for all map keys.'); description.id = helpId; region.append(description); }
 
     // ── Group context: legal group-owned prerequisites stay inspectable without becoming arrows.
     if (groupOwned.length || (!tasks.length && groups.length)) {
@@ -1063,8 +1104,9 @@ export function createDependencyMapView(): DependencyMapView {
       }
     },
     clearAnnouncements,
+    clearHelp,
     dispose() {
-      observer?.disconnect(); observer = null; unlisten(); clearAnnouncements();
+      observer?.disconnect(); observer = null; unlisten(); clearAnnouncements(); clearHelp();
       if (frame) cancelAnimationFrame(frame); frame = 0;
       host = null; input = null; viewportNode = worldNode = zoomNode = null; pendingFocus = null; painted = { key: '', viewport: null };
     },
@@ -1166,7 +1208,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
     refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
   });
-  const forget = () => { cancelListTransition(); view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
+  const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
@@ -1186,10 +1228,10 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (identity !== interaction.value.identity) forget();
       interaction.identify(identity);
       if (want && !interaction.value.active) interaction.enter(false);
-      if (!want) { view.clearAnnouncements(); if (interaction.value.active) interaction.leave(); map.pause(); }
+      if (!want) { view.clearAnnouncements(); view.clearHelp(); if (interaction.value.active) interaction.leave(); map.pause(); }
     },
     enter() { cancelListTransition(); reveal = null; interaction.enter(document.hasFocus()); },
-    leave() { cancelListTransition(); reveal = null; view.clearAnnouncements(); interaction.leave(); },
+    leave() { cancelListTransition(); reveal = null; view.clearAnnouncements(); view.clearHelp(); interaction.leave(); },
     listTargets(article) {
       article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
       article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });
@@ -1222,7 +1264,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
-        onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => interaction.leave(true),
+        onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
       });
     },
     afterPaint(root, vc, plan, listFocus) {
@@ -1252,7 +1294,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     retire(reason) {
       cancelListTransition();
       if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); shown = false; }
-      else if (reason === 'hidden') { view.clearAnnouncements(); map.pause(); interaction.leave(); }
+      else if (reason === 'hidden') { view.clearAnnouncements(); view.clearHelp(); map.pause(); interaction.leave(); }
       else forget();
     },
   };
@@ -1260,7 +1302,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
 
 function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string): string {
   if (item.status === 'skipped') return 'Skipped work never counts as done for its dependents.';
-  if (item.status === 'blocked') return 'An agent reported this task explicitly blocked. It is never shown as ready, whatever its prerequisites.';
+  if (item.status === 'blocked') return '';
   if (item.status !== 'pending') return '';
   if (!active) return 'Reported pending when the plan closed.';
   if (!guidance) return 'Reported pending. Readiness is hidden until the current revision is matched.';
@@ -1293,6 +1335,7 @@ export interface MapAttributionCopy {
   activity: string;
   activityNote: string | null;
 }
+const VERIFIED_ACTIVITY_NOTE = 'Shown only for a verified assignment.';
 export const LIVE_HEDGE = 'Session activity only: the assigned session is active in this view’s run records, which doesn’t show that it is working on this task.';
 export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string): MapAttributionCopy {
   if (!a) return {
@@ -1332,7 +1375,7 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
     : { kind: 'waiting' as const, text: 'Assigned session waiting for input now' } : null;
   const reason = a.live.proven ? 'picture-not-current' : a.live.reason;
   const activityNote = live ? LIVE_HEDGE : !current || reason === 'picture-not-current' ? `Hidden while the map shows revision ${revision} as last reported.`
-    : reason === 'no-verified-assignment' ? 'Shown only for a verified assignment.'
+    : reason === 'no-verified-assignment' ? VERIFIED_ACTIVITY_NOTE
     : reason === 'run-scope-unavailable' ? 'This view’s run records aren’t available.'
     : reason === 'latest-child-not-proven' ? 'This view’s run records don’t confirm the assigned session’s latest run.'
     : 'The assigned session’s latest recorded run isn’t active now.';
