@@ -84,7 +84,7 @@ normal account token; OpenChamber 2.5.2 / Electron 44.9.3 / Node 24.22.0, with
 bundled OpenCode 2.1.4 / Bun 1.4.4 / Node compatibility 26.3.0 / SQLite 3.53.4.
 Standalone development Node 24.19.0 uses SQLite 3.53.3 and is supplementary evidence.
 Development checks accept Node 24.x >= 24.19.0; later 24.x releases are not
-separately certified. CI remains pinned to exactly Node 24.19.0.
+separately certified. CI's release gate remains pinned to exactly Node 24.19.0; a second job runs the newest 24.x.
 
 The native OpenCode run uses a credential-free scripted provider and the real
 registered tool/guidance/runtime: start/read/change/finish, fresh document capture,

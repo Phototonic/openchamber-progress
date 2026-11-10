@@ -185,7 +185,11 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert.match(text,/-Credential \$credential -LoadUserProfile -WindowStyle Hidden/);
   assert.match(text,/group: publish-v\$\{\{ needs.portable.outputs.version \}\}/);
   assert.match(text,/cancel-in-progress: false/);assert(!/^concurrency:/m.test(text));
-  assert.equal((text.match(/persist-credentials: false/g)??[]).length,3);
+  // Only test jobs may cancel, only for a superseded pull-request run; publish keeps its own serialized group.
+  assert.equal((text.match(/cancel-in-progress:/g)??[]).length,4);
+  assert.equal((text.match(/cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/g)??[]).length,3);
+  assert.match(text,/publish:\n(?:    [^\n]*\n)*?    concurrency:\n      group: publish-v[^\n]+\n      cancel-in-progress: false/);
+  assert.equal((text.match(/persist-credentials: false/g)??[]).length,4);
   assert.equal((text.match(/name: tested-release-\$\{\{ github.sha \}\}/g)??[]).length,2);
   assert.match(text,/ref: \$\{\{ github.sha \}\}/);
   assert.match(text,/needs.portable.outputs.eligible == 'true'/);

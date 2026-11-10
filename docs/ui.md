@@ -85,7 +85,7 @@ adds plan/task search (see Board search).
 ## Build and checks
 
 Use Node 24.x >= 24.19.0 on PATH. Checks were tested on 24.19.0; later 24.x
-releases are accepted but not separately certified. CI uses exactly 24.19.0.
+releases are accepted but not separately certified. CI's release gate uses exactly 24.19.0; a second job runs the newest 24.x.
 
 ```sh
 node_modules/.bin/tsc -p ui/tsconfig.json --noEmit
