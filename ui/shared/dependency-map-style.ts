@@ -1,9 +1,11 @@
 // Map-only guest CSS, injected by dependency-map-view.ts once per document. Kept out of the shared
 // stylesheet so Work Status, which never mounts the map, ships no map code.
-// Colours come only from host tokens; the shared stylesheet's reduced-motion rule still applies.
+// Colours come only from host tokens; the shared stylesheet's reduced-motion and hidden-frame rules
+// (!important, style.ts) still stop the one map animation, so it never sets !important itself.
 export const MAP_CSS = `
-/* Dependency map (one renderer for board and rail). Static: no transitions or animation, so
-   reduced motion has nothing to remove; viewport changes and anchoring apply instantly.
+/* Dependency map (one renderer for board and rail). No transitions: viewport changes and anchoring
+   apply instantly. The only motion is working-arrow beads, under the map region's own reported-work
+   gate (see Arrow state below); cards, marks, layout and the selection panel never animate.
    Status is always words + a distinct mark shape; colour only reinforces it. Card slots come inline
    from the full-plan layout, so filters hide cards in place and status never changes card size. */
 .ap-map{container:ap-map/inline-size;display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -127,6 +129,26 @@ export const MAP_CSS = `
 .ap-map-edge[data-path]{stroke:var(--oc-primary);stroke-width:2.25;opacity:1}
 .ap-map-marker-path .ap-map-arrowhead{fill:var(--oc-primary)}
 .ap-map-chain{font-size:11.5px}
+/* Arrow state (eligible pictures only: active, unarchived, current; dependency-map-view.ts arrowCue).
+   Working: round blue beads over a faint blue line with a blue head. Blocked: static warning line with
+   a stop bar just before the head, never animated. Selection keeps chain colour and width; beads and
+   the bar keep the state's shape (the bar keeps its warning colour). Off-chain beads recede, still. */
+.ap-map-edge[data-arrow="working"]{stroke:color-mix(in srgb,var(--oc-info) 34%,var(--oc-bg));stroke-width:1.5}
+.ap-map-edge[data-arrow="blocked"]{stroke:var(--oc-warning);stroke-width:2}
+.ap-map-edge[data-arrow="working"][data-path]{stroke:color-mix(in srgb,var(--oc-primary) 40%,var(--oc-bg));stroke-width:2.25}
+.ap-map-edge[data-arrow="blocked"][data-path]{stroke:var(--oc-primary);stroke-width:2.5}
+.ap-map-bead{fill:none;stroke:var(--oc-info);stroke-width:3.4;stroke-linecap:round;stroke-dasharray:0 10;pointer-events:none}
+.ap-map-bead[data-chain]{stroke:var(--oc-primary);stroke-width:4}
+.ap-map[data-highlight] .ap-map-bead:not([data-chain]){opacity:.3}
+.ap-map-marker-working .ap-map-arrowhead{fill:var(--oc-info)}
+.ap-map-marker-blocked .ap-map-arrowhead{fill:var(--oc-warning)}
+.ap-map-marker-blocked-path .ap-map-arrowhead{fill:var(--oc-primary)}
+.ap-map-stopbar{fill:var(--oc-warning)}
+/* Motion: only the separate bead layer, only under the region's [data-motion="on"] (permission +
+   cost bounds, dependency-map-view.ts applyMotion), on the shared 2.4 s reported-work phase (app.ts).
+   A steady linear loop of 40 px = four bead spacings per cycle: seamless, never a fill or a percentage. */
+[data-motion="on"] .ap-map-flows .ap-map-bead{animation:ap-map-flow 2.4s linear infinite}
+@keyframes ap-map-flow{from{stroke-dashoffset:0}to{stroke-dashoffset:-40}}
 .ap-map-card-status{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;font-weight:600;line-height:16px}
 .ap-map-card-word{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--oc-muted)}
 :is(.ap-map-card,.ap-map-card-status)[data-mark="working"] .ap-map-card-word{color:var(--oc-info-text,var(--oc-info))}
@@ -219,6 +241,16 @@ export const MAP_CSS = `
 .ap-map .ap-map-marker-path .ap-map-arrowhead{fill:Highlight}
 .ap-map-edge,.ap-map-edge[data-tone="quiet"]{stroke:CanvasText}
 .ap-map-arrowhead,.ap-map-marker-open .ap-map-arrowhead,.ap-map-marker-quiet .ap-map-arrowhead{fill:CanvasText}
+/* Arrow state without colour: round beads, a thicker blocked line with its bar, dashes for skipped;
+   chain lines, beads and heads in Highlight. */
+.ap-map .ap-map-edge[data-arrow="working"]:not([data-path]){stroke:CanvasText;stroke-width:1}
+.ap-map .ap-map-edge[data-arrow="working"][data-path]{stroke:Highlight;stroke-width:1.5}
+.ap-map .ap-map-edge[data-arrow="blocked"]:not([data-path]){stroke:CanvasText;stroke-width:2.5}
+.ap-map .ap-map-bead{stroke:CanvasText}
+.ap-map .ap-map-bead[data-chain]{stroke:Highlight}
+.ap-map :is(.ap-map-marker-working,.ap-map-marker-blocked) .ap-map-arrowhead{fill:CanvasText}
+.ap-map .ap-map-marker-blocked-path .ap-map-arrowhead{fill:Highlight}
+.ap-map .ap-map-stopbar{fill:CanvasText}
 .ap-map-stat,.ap-map-tag,.ap-map-card-unlocks{border:1px solid CanvasText}
 .ap-map-notice:is([data-tone="quiet"],[data-tone="warning"]){border-left-color:CanvasText}
 .ap-map-mark[data-mark]{border-color:CanvasText;background:Canvas}
