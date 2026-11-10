@@ -447,6 +447,63 @@ generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
 clean real directories or reuse real profiles; no server restart is authorized.
 
+### Isolated desktop upgrade rehearsal
+
+On 2026-11-10, the released **1.0.0** extension and built companion from
+`v1.0.0` were installed on a real isolated Linux **OpenChamber 2.7.0** desktop
+host using independent **OpenCode 2.2.6**. Settings → Extensions → Add extension
+accepted a clean tracked-file folder projection; sessions/service permissions
+were approved, and the extension's own setup/review/confirmation flow installed
+the companion. The real plugin loader activated it and created format 1. The
+current tracked build was installed through the same folder UI's **Reinstall**
+flow, which requested permissions again. Both package versions were 1.0.0:
+this was folder replacement, not the version-based extension update offer.
+
+Content was explicitly synthetic: the release's Store APIs seeded one working
+plan, one succeeded dispatch and a recorded gap, using real, unprompted host
+parent/child sessions. Passive metadata recovery also retained an unknown
+historical child, giving two rows (one dispatch, one historical session). No
+agent/model execution is claimed; provider credentials were empty at the initial
+and final checks, and no model prompt was sent.
+
+Before companion update, the current rail showed **Different companion build
+available** and **Review update**. Review displayed installed/bundled version
+1.0.0 and **Same version number, different files: updating selects the bundled
+files.** Confirming Update left format 1 and the retained rows unchanged. The
+rail then said **OpenCode has not loaded the current companion files yet. Restart
+OpenCode when convenient so agents use them** (followed by its running-session
+caveat). Settings → General → **Restart OpenCode** restarted only this isolated
+host's managed runtime. Activation migrated to format 2 and preserved the plan,
+both rows and their counts. The rail's neutral **Partial** cue expanded to
+**Some run information wasn’t recorded. This happened before the update; the
+date is unknown.** Work Status showed Sub-agents counts but no gap-attention line;
+the stored notice had null date, sequence 0 and `attention: false`.
+
+Rollback through the real folder Reinstall/grant flow made the released extension
+show **Progress service is not responding**, **It may still be starting. Try again
+in a moment.**, and **Try again** in both observed surfaces. The host service proxy
+returned HTTP 502, `SERVICE_FAILED`, **The extension's service failed to start.**
+Retry and an isolated OpenCode restart did not recover it. No companion rollback
+control was available in this failure state, so the current companion remained
+installed; a desktop companion downgrade was not forced or tested. Schema, plan,
+run rows and loss metadata stayed intact. The operational store was not
+byte-identical: the still-current companion's recovery job/lease housekeeping
+also changed, alongside epoch/revision bookkeeping. Restoring the current folder,
+approving its grants and restarting the isolated runtime recovered the rail and
+Work Status; service health returned HTTP 200 with `ready: true`.
+
+The released UI's suggestion that this persistent incompatibility may merely be
+startup delay is a rollback UX limitation, not evidence that retry can repair it.
+No product code was changed. The launch used a fresh private HOME/XDG/profile,
+the extracted AppImage, an empty inherited environment, private loopback ports,
+and the existing Wayland socket. Owned-process checks found no real-home
+environment/FD/cwd/writable-map references or inherited sensitive configuration;
+the stable live desktop PIDs/start times/listeners were unchanged before and after
+cleanup. All owned desktop/runtime/service processes were stopped. This does not
+certify the standalone board-page entry (only the rail and Work Status were
+observed), ZIP/Git installation, version-driven update discovery, model-driven
+runs, desktop companion downgrade, Windows or macOS.
+
 ## Sub-agent activity — tested native and workspace signals
 
 The initial credential-free feasibility probe targets OpenCode **2.1.4**,

@@ -333,6 +333,20 @@ This is a real isolated OpenCode loader check, not an OpenChamber desktop update
 or Windows/macOS check; recording inputs were synthetic and no model was used.
 See the [rehearsal scope](compatibility.md#isolated-built-release-upgrade-rehearsal).
 
+The [isolated OpenChamber 2.7.0 desktop rehearsal](compatibility.md#isolated-desktop-upgrade-rehearsal)
+also confirmed the same-version **Review update** → confirmation → **Update**
+flow. Selecting the bundled companion files did not migrate the store until
+Settings → General → **Restart OpenCode** loaded them. Folder **Reinstall**
+requested extension permissions again; it was not the version-based update offer.
+
+Rolling the extension back after migration can prevent its service from starting
+and hide setup controls behind **Progress service is not responding** / **It may
+still be starting. Try again in a moment.** In the desktop rehearsal, retry and
+restart did not repair that incompatible released extension. Restoring the matching
+current extension recovered access without rewriting the stored plan/run facts.
+Keep the upgraded store intact rather than interpreting this startup wording as
+permission to reset it or downgrade its schema.
+
 ## Disable, enable, remove after extension uninstall
 
 Installed package includes a self-contained remove.js utility and descriptor:
