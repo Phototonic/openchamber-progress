@@ -14,5 +14,5 @@ A bullet from an outside contributor's PR ends with
 List first-time contributors in a final `## New contributors` section, one bullet
 each: `- [@login](https://github.com/login) made their first contribution in #123`.
 Omit that section when there are none. The preparer and reviewer check credits;
-automation does not query GitHub or validate the section's structure.
+CI offers a non-blocking version-bump reminder in the job summary; see release preparation for the local command and limitations.
 Historical notes need not be backfilled. A README-only directory is valid.

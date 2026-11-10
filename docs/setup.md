@@ -108,7 +108,8 @@ and validation. Runtime promotion requires complete builds:
    becomes `Agent Progress v<version>: <headline>`, and its curated Markdown body
    is the entire release body, with no generated change list. The preparer and
    reviewer check outside-contributor thanks and a final New contributors section
-   when applicable; automation does not check credits. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
+   when applicable. CI posts a non-blocking reminder on version bumps; credits
+   remain editorial and never gate publication. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
    for the format, validation, body comparison and no-overwrite recovery policy.
    Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
    bootstrap an empty release history. Automation never bumps versions or commits

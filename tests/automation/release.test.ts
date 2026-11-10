@@ -162,6 +162,12 @@ test('curated title/body only, exact tested SHA, complete publication, read-only
   assert.equal(f.release.name,expectedName);assert.equal(f.release.body,expectedBody);assert.equal(f.release.body,f.release.body.trimEnd());
   const count=f.writes.length;await publish(candidate,f.files,f.api);assert.equal(f.writes.length,count);
 });
+test('publisher performs no pull-request reads',async()=>{
+  const f=fixture();await publish(candidate,f.files,async(m,p,b)=>{
+    assert(!p.startsWith('/pulls'),'Publisher must not query pull requests');return f.api(m,p,b);
+  });
+  assert.equal(f.release.draft,false);
+});
 test('fresh create responses and published retries accept only CRLF and trailing whitespace normalization',async()=>{
   for(const normalize of [(s:string)=>s+'\n',(s:string)=>s.replaceAll('\n','\r\n')+'\r\n \t']) {
     const f=fixture();
