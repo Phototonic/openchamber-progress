@@ -4,9 +4,11 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-11-10
+## [1.1.1] - 2026-11-10
 
 A roomier dependency map and quieter sub-agent warnings. Run storage moves to format 2; see Changed for the one-way upgrade.
+
+Version 1.1.0 reached `main` without a tag or release, because the publisher could not read a compiled entry larger than 1 MiB from Git history. 1.1.1 is the same set of changes with that fixed, and is the first published release after 1.0.0.
 
 ### Added
 
@@ -29,6 +31,7 @@ A roomier dependency map and quieter sub-agent warnings. Run storage moves to fo
 
 ### Fixed
 
+- Release publication reads compiled entries from Git history in full. The eligibility check used Node's default 1 MiB child-output buffer, which the service entry now exceeds, so the 1.1.0 promotion was refused as unavailable history and nothing was published.
 - A store whose run storage format is newer than the installed version supports is reported as incompatible ("Progress data needs an update") with setup reachable, not as a service that may still be starting. Run storage is classified read-only on admission; a companion install or update against an unsupported store is refused before anything changes, and the capture-disabling fallback checks and writes in one transaction (#75).
 - The older activation-only format-1 run storage no longer fails the health check; it is admitted so its companion can be updated and migrate it (#75).
 - Keyboard focus moves to the surviving cue or the Sub-agents heading when a background update removes a focused coverage control (#69).
@@ -190,8 +193,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.1
 [1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...v0.6.1
