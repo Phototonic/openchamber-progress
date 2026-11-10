@@ -11,7 +11,7 @@ const sha='a'.repeat(40),before='b'.repeat(40),candidate={version:'0.2.6',sha};
 const event={ref:'refs/heads/main',before,after:sha,repository:{full_name:canonical}};
 const notes=readFileSync(new URL('./fixtures/release-notes/9.8.7.md',import.meta.url),'utf8');
 const expectedName='Agent Progress v0.2.6: Follow the work more clearly';
-const expectedBody='## Improvements\n\n- Board: **Clearer progress.** See what needs attention.\n\n';
+const expectedBody='## Improvements\n\n- Board: **Clearer progress.** See what needs attention.';
 const publish=(c:Candidate,files:Map<string,Buffer>,api:API)=>publisher(c,files,api,source());
 function source(old='0.2.5',next='0.2.6',compiled=next) {
   return (revision:string,file:string) => {
@@ -60,11 +60,19 @@ test('notes are read only at the candidate commit and normalize CRLF determinist
   assert.deepEqual(calls,[[sha,'release-notes/0.2.6.md']]);
   assert.throws(()=>parseReleaseNotes(candidate.version,'release-notes/0.2.7.md',notes),/Invalid release notes path/);
 });
+test('entire curated body has no trailing whitespace and uses the full character limit',()=>{
+  const text=`# Title\n\n${'é'.repeat(125000)}\n \n`;
+  const parsed=parseReleaseNotes('9.8.7','release-notes/9.8.7.md',text);
+  assert.equal([...parsed.body].length,125000);assert.equal(parsed.body,parsed.body.trimEnd());
+  assert.throws(()=>parseReleaseNotes('9.8.7','release-notes/9.8.7.md',text.replace('é','éé')),/Release notes body too long/);
+  const optional='# Title\n\n## Fixes\n- Board: Clearer progress.\n\n## New contributors\n\n- [@contributor](https://github.com/contributor) made their first contribution in #123\n';
+  assert(parseReleaseNotes('9.8.7','release-notes/9.8.7.md',optional).body.endsWith('in #123'));
+});
 test('missing and malformed eligible notes refuse before any API access or write',async()=>{
   const invalid=['','Plain headline\nBody','## Wrong level\nBody','# \nBody','# Title', '# Title\n \n',
     '# Title\rBody\nText','# Title\tbad\nBody','# Title\nBad\u0000body','# Title\nBad\u007fbody',
     '# Title\u0085bad\nBody','# Title\u2028bad\nBody','# Title\u202ebad\nBody',
-    '# Title \nBody','# Title ###\nBody',`# ${'x'.repeat(256)}\nBody`,`# Title\n${'x'.repeat(125000)}`];
+    '# Title \nBody','# Title ###\nBody',`# ${'x'.repeat(256)}\nBody`,`# Title\n${'x'.repeat(125001)}`];
   for(const text of [undefined,...invalid]) {
     const f=fixture();let calls=0;
     const read=(rev:string,file:string)=>{
@@ -130,9 +138,9 @@ function fixture() {
     if(method==='POST'&&path==='/git/tags') {tag={message:body.message,object:{type:'commit',sha:body.object}};return {sha:before};}
     if(method==='POST'&&path==='/git/refs') {assert.equal(ref,null,'must not replace ref');ref={object:{type:'tag',sha:body.sha}};return ref;}
     if(method==='POST'&&path==='/releases') {
-      assert.equal(body.generate_release_notes,true);assert.equal(body.draft,true);assert.equal(body.target_commitish,sha);
+      assert.equal(body.generate_release_notes,false);assert.equal(body.draft,true);assert.equal(body.target_commitish,sha);
       assert.equal(body.name,expectedName);assert.equal(body.body,expectedBody);
-      release={...body,body:body.body+"## What's Changed\n\nProvider-owned list\n",id:10,author:{login:'github-actions[bot]'},assets:[]};return structuredClone(release);
+      release={...body,id:10,author:{login:'github-actions[bot]'},assets:[]};return structuredClone(release);
     }
     if(method==='UPLOAD') {
       if(fault==='upload'&&release.assets.length===1) throw Error('upload unavailable');
@@ -149,10 +157,43 @@ function fixture() {
   };
   return {files,api,writes,reads,fail:(value:string|undefined)=>{fault=value;},get release(){return release;},set release(value){release=value;},get ref(){return ref;},set ref(value){ref=value;},get tag(){return tag;},bytes};
 }
-test('curated title/body plus native notes, exact tested SHA, complete publication, read-only rerun',async()=>{
+test('curated title/body only, exact tested SHA, complete publication, read-only rerun',async()=>{
   const f=fixture();await publish(candidate,f.files,f.api);assert.equal(f.release.draft,false);
-  assert.equal(f.release.name,expectedName);assert(f.release.body.startsWith(expectedBody));assert(f.release.body.includes("What's Changed"));
+  assert.equal(f.release.name,expectedName);assert.equal(f.release.body,expectedBody);assert.equal(f.release.body,f.release.body.trimEnd());
   const count=f.writes.length;await publish(candidate,f.files,f.api);assert.equal(f.writes.length,count);
+});
+test('fresh create responses and published retries accept only CRLF and trailing whitespace normalization',async()=>{
+  for(const normalize of [(s:string)=>s+'\n',(s:string)=>s.replaceAll('\n','\r\n')+'\r\n \t']) {
+    const f=fixture();
+    await publish(candidate,f.files,async(m,p,b)=>{
+      const response=await f.api(m,p,b);
+      if(m==='POST'&&p==='/releases') {f.release.body=normalize(f.release.body);return structuredClone(f.release);}
+      return response;
+    });
+    assert.equal(f.release.draft,false);assert.equal(f.release.body,normalize(expectedBody));
+    f.writes.length=0;await publish(candidate,f.files,f.api);assert.equal(f.writes.length,0);
+  }
+});
+test('draft and published retries refuse substantive stored-body differences with zero writes',async()=>{
+  for(const draft of [true,false]) {
+    const f=fixture();if(draft)f.fail('upload');
+    try {await publish(candidate,f.files,f.api);} catch {assert(draft);}
+    for(const body of ['Edited body','\n'+expectedBody,expectedBody.replace('## Improvements','## Improvements '),null]) {
+      f.release.body=body;f.writes.length=0;
+      await assert.rejects(publish(candidate,f.files,f.api),/Release body collision/);
+      assert.equal(f.writes.length,0);
+    }
+  }
+});
+test('substantively altered create response refuses before uploading assets or publishing',async()=>{
+  const f=fixture();
+  await assert.rejects(publish(candidate,f.files,async(m,p,b)=>{
+    const response=await f.api(m,p,b);
+    if(m==='POST'&&p==='/releases') {f.release.body='Altered body';return structuredClone(f.release);}
+    return response;
+  }),/Release body collision/);
+  assert.equal(f.release.draft,true);
+  assert(!f.writes.some(w=>w.startsWith('UPLOAD')||w.startsWith('PATCH')));
 });
 test('foreign tag and foreign release collisions are never adopted',async()=>{
   const f=fixture();f.ref={object:{type:'commit',sha:before}};
@@ -167,9 +208,9 @@ test('middle upload failure leaves draft; matching retry resumes without overwri
   const f=fixture();f.fail('upload');await assert.rejects(publish(candidate,f.files,f.api));
   assert.equal(f.release.draft,true);assert.equal(f.release.assets.length,1);
   assert.equal(await f.api('GET',`/releases/tags/v${candidate.version}`),null);
-  f.release.body='Provider-normalized or maintainer-edited body';
+  f.release.body=expectedBody.replaceAll('\n','\r\n')+'\r\n ';
   f.fail(undefined);await publish(candidate,f.files,f.api);assert.equal(f.release.draft,false);
-  assert.equal(f.release.body,'Provider-normalized or maintainer-edited body');
+  assert.equal(f.release.body,expectedBody.replaceAll('\n','\r\n')+'\r\n ');
   assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,5);
   assert.equal(f.writes.filter(w=>w==='POST /releases').length,1,'Retry must resume existing draft, never create a second one');
   assert(f.reads.includes('/releases/10'),'Draft is resumed by discovered ID');
@@ -281,7 +322,7 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert.match(text,/ref: \$\{\{ github.sha \}\}/);
   assert.match(text,/needs.portable.outputs.eligible == 'true'/);
 });
-test('HTTP adapter sends JSON/native notes and binary assets only to fixed GitHub endpoints; errors stay sanitized',async()=>{
+test('HTTP adapter sends JSON/curated notes and binary assets only to fixed GitHub endpoints; errors stay sanitized',async()=>{
   const original=globalThis.fetch;
   const requests:{url:string;init:RequestInit}[]=[];
   let status=200;
@@ -292,7 +333,7 @@ test('HTTP adapter sends JSON/native notes and binary assets only to fixed GitHu
   };
   try {
     const api=githubAPI('synthetic-token');
-    const body={name:expectedName,body:expectedBody+'Literal $(ignored) and ${{ ignored }}',generate_release_notes:true,draft:true};
+    const body={name:expectedName,body:expectedBody+'Literal $(ignored) and ${{ ignored }}',generate_release_notes:false,draft:true};
     await api('POST','/releases',body);
     assert.equal(requests[0].url,`https://api.github.com/repos/${canonical}/releases`);
     assert.deepEqual(JSON.parse(requests[0].init.body as string),body);
