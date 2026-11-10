@@ -18,7 +18,7 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 
 ## Local development
 
-Use **Node.js 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. Linux integration uses OpenCode 2.1.4 and OpenChamber 2.5.1; native Windows validation uses OpenCode 2.1.4 and OpenChamber 2.5.2. These are tested configurations, not proof of every newer runtime. Linux package checks also need system `zip` and `unzip`.
+Use **Node.js 24.x >= 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. Node 24.19.0 is the tested baseline and CI uses exactly 24.19.0; later 24.x releases are accepted but not separately certified. Linux integration was tested with OpenCode 2.1.4 and OpenChamber 2.5.1; native Windows validation used OpenCode 2.1.4 and OpenChamber 2.5.2. Current native runtime tests use the OpenCode baseline below. These are tested configurations, not proof of every newer runtime. Linux package checks also need system `zip` and `unzip`.
 
 For native Windows development, use the built-in Windows PowerShell 5.1 and local NTFS storage. No native helper or compiler is part of the runtime. After the frozen dependency install, run `node --experimental-strip-types --test tests/backend/windows-platform.test.ts`, the root/UI typechecks, and the relevant browser tests. The Windows suite creates and cleans isolated private fixtures under a fresh drive-root folder; it does not use a live profile or model. Foreign-owner and persisted callback-ACE fixtures explicitly skip if the account/OS cannot create them; pure descriptor policy still runs. The existing Linux isolation/auth/performance helpers are not Windows tests. ZIP production can remain on Linux; Windows consumers install the built outputs without compiling.
 
@@ -46,7 +46,7 @@ node --experimental-strip-types --test tests/browser/*.test.ts
 node --experimental-strip-types --test tests/automation/*.test.ts
 ```
 
-Some backend runtime tests require an independent OpenCode 2.1.4 binary and Linux isolation tools (`unshare -Urn` and `ip`). See the [compatibility guide](docs/compatibility.md#agnostic-activation-historical024-package-validation) and the relevant test's prerequisites before running them. Never use a live profile, copy authentication, restart a real instance, or call a paid model just to run a test. Report unavailable prerequisites and skipped checks honestly.
+Some backend runtime tests require an independent OpenCode **2.x >= 2.2.2** binary and Linux isolation tools (`unshare -Urn` and `ip`). OpenCode 2.2.2 is the tested baseline; later 2.x releases are accepted but not separately certified. See the [compatibility guide](docs/compatibility.md#progress-resume-capsule-verification) and the relevant test's prerequisites before running them. Never use a live profile, copy authentication, restart a real instance, or call a paid model just to run a test. Report unavailable prerequisites and skipped checks honestly.
 
 ### Portable CI — fresh disposable checkout only
 

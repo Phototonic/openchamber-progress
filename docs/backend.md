@@ -587,7 +587,8 @@ client exposure and model compliance remain outside native delivery guarantees.
 
 ### Compaction-only progress resume
 
-Portable Store/installed-adapter checks (Node24.19.0, existing dependencies):
+Portable Store/installed-adapter checks (Node 24.x >= 24.19.0, existing dependencies;
+tested on 24.19.0, later 24.x accepted but not separately certified):
 
 ```sh
 node --experimental-strip-types --test tests/backend/progress-resume-store.test.ts tests/backend/progress-resume-activation.test.ts tests/backend/production-contract.test.ts tests/backend/progress-activation-contract.test.ts

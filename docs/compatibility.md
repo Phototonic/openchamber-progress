@@ -83,6 +83,8 @@ Measured Windows environment: Windows 11 Pro x64, build 26300.9711, local NTFS,
 normal account token; OpenChamber 2.5.2 / Electron 44.9.3 / Node 24.22.0, with
 bundled OpenCode 2.1.4 / Bun 1.4.4 / Node compatibility 26.3.0 / SQLite 3.53.4.
 Standalone development Node 24.19.0 uses SQLite 3.53.3 and is supplementary evidence.
+Development checks accept Node 24.x >= 24.19.0; later 24.x releases are not
+separately certified. CI remains pinned to exactly Node 24.19.0.
 
 The native OpenCode run uses a credential-free scripted provider and the real
 registered tool/guidance/runtime: start/read/change/finish, fresh document capture,
@@ -132,7 +134,9 @@ live backend outcomes are in `backend-auth-live.json` and
 
 Bun1.3.14 manages tooling/build only; TypeScript5.9.3, @types/node24.19.2,
 @openchamber/sdk2.5.1, @opencode/plugin2.1.4; `bun.lock` pins transitives.
-Node24.19.0 runs backend tests and standalone HTTP smoke. Independent downloaded
+Node24.19.0 ran backend tests and standalone HTTP smoke for this probe. Current
+checks accept Node 24.x >= 24.19.0, without separate certification of later 24.x.
+Independent downloaded
 OpenCode2.1.4 embeds Bun1.4.4 (Node compatibility version26.3.0).
 OpenChamber2.5.1 was observed spawning its service with Electron44.9.3 as
 Node24.22.0, no Bun. The actual service opens the shared SQLite DB; SQLite3.53.4
@@ -194,8 +198,8 @@ The primary context still receives recurring generic guidance when eligible.
 No patch-body or content parsing is implied. Local diagnostic evidence and the
 exact bounded coverage are in `evidence/activation/{native-host.md,coverage.md}`.
 
-Run the production activation and native tests with Node24.19.0 and existing Bun;
-the native probe requires the independent 2.1.4 binary plus working rootless
+Run the production activation and native tests with Node 24.x >= 24.19.0 and existing Bun;
+the native probe requires an independent OpenCode 2.x >= 2.2.2 binary plus working rootless
 `unshare -Urn` and `ip`. It fails rather than falling back to an online provider.
 `ACTIVATION_COMPANION_ENTRY=build/companion/index.js` selects those verbatim
 companion bytes and sibling guidance, with the observer separately loaded. Use
@@ -212,17 +216,19 @@ node --experimental-strip-types --test tests/backend/progress-activation-runtime
 ## Progress resume capsule verification
 
 The separately named `progress resume` native case verifies production activation
-and Store lookup on pinned OpenCode **2.2.2** at the actual outgoing scripted-provider
+and Store lookup on OpenCode **2.x >= 2.2.2** at the actual outgoing scripted-provider
 boundary. It uses direct synthetic Store construction and local plugin loading,
 not installation. The observer records metadata and the synthetic recovery section
 from actual outgoing system parts; it never manufactures recovery in regression
 mode or retains conversation/summary text. No real model or provider credentials
-are used. The test requires Node24.19.0, existing Bun/dependencies, working rootless
+are used. Node 24.19.0 and OpenCode 2.2.2 are the tested baselines; later 24.x/2.x
+releases are accepted but not separately certified. The test requires Node 24.x
+>= 24.19.0, existing Bun/dependencies, working rootless
 `unshare -Urn`/`ip`, and the already-present independent binary below. A missing or
 wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
-The host pin is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
+The host range is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
 `@openchamber/sdk` **2.5.1**. Verified independent2.2.2 archive SHA-256:
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
 executable SHA-256:
@@ -318,7 +324,7 @@ recovery. Early live refusals and later accepted z.ai root/native/move/compactio
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
 
-### Current native proof pin — 2.2.2
+### Current native proof baseline — 2.2.2
 
 Verified on 2026-10-30: the official URL above now supplies an archive whose SHA-256 is
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`.
@@ -326,7 +332,8 @@ The extracted independent executable reports `opencode v2.2.2`; its SHA-256 is
 `4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
 The archive remains `cli.tar.gz` and the executable remains `opencode` in the
 disposable `/tmp/opencode/agent-progress-probe-cli` fixture directory. Native runtime
-tests now require 2.2.2; installed plugin/client SDK packages remain pinned to
+tests require OpenCode 2.x >= 2.2.2; later 2.x releases are accepted but not
+separately certified. Installed plugin/client SDK packages remain pinned to
 2.1.4, independently of the runtime binary. Earlier observations in this guide
 remain historical and do not certify the new host.
 

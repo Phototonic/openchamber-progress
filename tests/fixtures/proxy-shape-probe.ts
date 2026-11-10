@@ -11,11 +11,12 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { Store } from '../../shared/store.ts';
 import { DISPATCH_OBSERVATION, TRACKER_OBSERVATION } from '../../plugin/activation.ts';
+import { requireRuntimeVersion } from './runtime-version.ts';
 
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const root = process.argv[3];
 if (process.argv[2] !== '--driver') {
-  assert.equal(process.version, 'v24.19.0');
+  requireRuntimeVersion('node', process.version);
   const fixture = fs.mkdtempSync('/tmp/opencode/proxy-shape-'); fs.chmodSync(fixture, 0o700);
   try {
     for (let dir = path.dirname(fixture);; dir = path.dirname(dir)) {
@@ -48,7 +49,8 @@ if (process.argv[2] !== '--driver') {
     // Entirely synthetic fixture events; normalize opaque IDs and omit any private paths.
     const ids = new Map<string, string>();
     const clean = (value: any): any => typeof value === 'string' ? value.replaceAll(fixture, '<fixture>').replace(/ses_[A-Za-z0-9]+/g, id => { if (!ids.has(id)) ids.set(id, `session-${ids.size + 1}`); return ids.get(id)!; }) : Array.isArray(value) ? value.map(clean) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, clean(v)])) : value;
-    fs.writeFileSync(`${evidence}/${process.env.PROXY_CODEMODE === '1' ? 'codemode' : 'direct'}.json`, JSON.stringify({ runtime: '2.2.2', nativeSha256: createHash('sha256').update(fs.readFileSync(binary)).digest('hex'), companionSha256, companionMode: process.env.ACTIVATION_COMPANION_ENTRY ? 'verbatim-built' : 'source-built', syntheticOnly: true, externalTrackerCalled: false, typedMetadataReplay: process.env.PROXY_TYPED_REPLAY === '1', driverExit: status, records: clean(records) }, null, 2) + '\n');
+    const runtime = fs.existsSync(`${fixture}/runtime-version.json`) ? JSON.parse(fs.readFileSync(`${fixture}/runtime-version.json`, 'utf8')) : null;
+    fs.writeFileSync(`${evidence}/${process.env.PROXY_CODEMODE === '1' ? 'codemode' : 'direct'}.json`, JSON.stringify({ runtime, node: process.version, nativeSha256: createHash('sha256').update(fs.readFileSync(binary)).digest('hex'), companionSha256, companionMode: process.env.ACTIVATION_COMPANION_ENTRY ? 'verbatim-built' : 'source-built', syntheticOnly: true, externalTrackerCalled: false, typedMetadataReplay: process.env.PROXY_TYPED_REPLAY === '1', driverExit: status, records: clean(records) }, null, 2) + '\n');
     assert.throws(() => process.kill(-child.pid!, 0), (e: any) => e.code === 'ESRCH');
     assert.equal(status, 0, 'native diagnostic driver');
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
@@ -56,7 +58,9 @@ if (process.argv[2] !== '--driver') {
   assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[4]); assert.deepEqual(Object.keys(networkInterfaces()), ['lo']);
   assert.equal(spawnSync('/usr/sbin/ip', ['route', 'show', 'default'], { encoding: 'utf8' }).stdout.trim(), '');
   const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', PROXY_SHAPE_ROOT: root };
-  assert.equal(spawnSync(binary, ['--version'], { env, encoding: 'utf8' }).stdout.trim(), 'opencode v2.2.2');
+  const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
+  assert.equal(version.status, 0);
+  fs.writeFileSync(`${root}/runtime-version.json`, JSON.stringify(requireRuntimeVersion('opencode', version.stdout)));
   const host = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '18765'], { cwd: `${root}/project`, env, stdio: 'ignore' });
   const client = OpenCode.make({ baseUrl: 'http://127.0.0.1:18765', headers: { authorization: `Basic ${Buffer.from('opencode:synthetic-local-only').toString('base64')}` } });
   const location = { directory: `${root}/project` };
