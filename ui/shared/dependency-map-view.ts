@@ -232,10 +232,10 @@ export function createDependencyMapView(): DependencyMapView {
   let frame = 0, releasing = false;
   // True from a paint until the owner has finished restoring its pre-paint focus (same turn):
   // that focusin is passive and must not move the viewport.
-  let restoring = false;
+  let restoring = false, suppressFocusReveal = false;
   // Latest announcement token and its deferred repeat frame, if any.
   let spoken = 0, speakFrame = 0;
-  let pendingFocus: { id: string | null; generation: number } | null = null;
+  let pendingFocus: { id: string | null; generation: number; reveal?: boolean } | null = null;
   let painted = { key: '', viewport: null as HTMLElement | null };
   let listening: Document | null = null, announcer: HTMLElement | null = null;
   // Controller speech waits one task (after this turn's focus and any repaint's restore; a timer, not
@@ -339,8 +339,9 @@ export function createDependencyMapView(): DependencyMapView {
       target.tabIndex = 0;
     } else if (target.tagName === 'H2') target.tabIndex = -1;
     applyViewport();
-    target.focus({ preventScroll: true });
-    revealInPage(target);
+    suppressFocusReveal = want.reveal === false;
+    try { target.focus({ preventScroll: true }); } finally { suppressFocusReveal = false; }
+    if (want.reveal !== false) revealInPage(target);
     return true;
   }
   function capture(pointerId: number, on: boolean) {
@@ -351,7 +352,7 @@ export function createDependencyMapView(): DependencyMapView {
   }
   // Frame-owned gesture listeners survive root replacement; capture is rebound to each new viewport.
   const onMove = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } }); };
-  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId }); };
+  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' }); };
   const onFocusIn = (e: FocusEvent) => { const t = e.target as Element | null; if (t?.closest) { binding()?.focusOwner(!!t.closest('[data-testid="map-region"],[data-map-focus-owner]')); binding()?.dispatch({ type: 'canvas-focus', id: t.closest<HTMLElement>('[data-testid="map-viewport"] button[data-task]')?.dataset.task ?? null }); } };
   const onBlur = () => binding()?.focusOwner(false);
   function listen(doc: Document) {
@@ -655,7 +656,7 @@ export function createDependencyMapView(): DependencyMapView {
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
       viewport.addEventListener('focusin', e => {
         const card = e.target as HTMLElement, bb = binding();
-        if (!bb || restoring || !card.classList.contains('ap-map-card')) return;
+        if (!bb || restoring || suppressFocusReveal || !card.classList.contains('ap-map-card')) return;
         const r = card.getBoundingClientRect(), box = viewport.getBoundingClientRect(), inset = 8;
         const shift = (start: number, end: number, lo: number, hi: number) => start < lo + inset ? lo + inset - start : end > hi - inset ? Math.max(lo + inset - start, hi - inset - end) : 0;
         const dx = shift(r.left, r.right, box.left, box.right), dy = shift(r.top, r.bottom, box.top, box.bottom);
@@ -671,7 +672,7 @@ export function createDependencyMapView(): DependencyMapView {
       viewport.addEventListener('lostpointercapture', e => {
         // Root replacement detaches this node: that loss is rebound, not a gesture end.
         const bb = binding();
-        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId });
+        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
       });
       // Wheel/trackpad pans inside the canvas only. Ctrl/Cmd (browser zoom, pinch) is left alone.
       viewport.addEventListener('wheel', e => {
@@ -969,7 +970,7 @@ export function createDependencyMapView(): DependencyMapView {
         const keys = el('p', 'ap-map-keys');
         const k = (text: string) => el('kbd', '', text);
         const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Drag the background or scroll to pan; Tab leaves the map.');
+        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
         help.append(keys);
         if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
       }
@@ -1009,7 +1010,7 @@ export function createDependencyMapView(): DependencyMapView {
         // An active background drag continues on the replacement canvas.
         const dragging = b.state().dragging;
         if (dragging !== null && !viewport.hasPointerCapture(dragging)) {
-          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging }); }
+          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging, cancelled: true }); }
         }
         tryFocus(true);
         return true;
@@ -1052,7 +1053,7 @@ export function createDependencyMapView(): DependencyMapView {
           // the owner restores its pre-paint focus after replacing the root. The action always ends
           // with this turn (after any repaint's restore has run), consumed or not: a missing target
           // or a placeholder paint can never leave it waiting for a later poll.
-          const want = pendingFocus = { id: c.id, generation: c.generation };
+          const want = pendingFocus = { id: c.id, generation: c.generation, reveal: c.reveal };
           tryFocus(false);
           queueMicrotask(() => queueMicrotask(() => { if (pendingFocus === want) pendingFocus = null; }));
           break;
