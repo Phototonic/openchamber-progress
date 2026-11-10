@@ -320,6 +320,19 @@ Pre-run base schema-2 writers retain their independent progress compatibility,
 not format-2 run-writing capability. Recording gaps remain permanently disclosed
 as incomplete coverage; ageing or dismissing attention never deletes history.
 
+The isolated Linux OpenCode 2.2.6 built-release rehearsal confirms this boundary:
+updating the released 1.0.0 companion leaves format 1 and `reload-required` until
+the real location reload activates the current companion. Reinstalling 1.0.0
+after migration and reloading makes that companion fail activation with
+`Error: schema`; its status RPC is unavailable. Setup can still show
+`installed: true` and `captureEnabled: true` alongside `reload-required` and
+`rollback-payloads-retained`—those flags do not prove capture is active. The
+matching current service can still read the intact upgraded store. Restore the
+matching companion and explicitly reload to recover; do not downgrade the store.
+This is a real isolated OpenCode loader check, not an OpenChamber desktop update-UI
+or Windows/macOS check; recording inputs were synthetic and no model was used.
+See the [rehearsal scope](compatibility.md#isolated-built-release-upgrade-rehearsal).
+
 ## Disable, enable, remove after extension uninstall
 
 Installed package includes a self-contained remove.js utility and descriptor:

@@ -696,11 +696,55 @@ create and populate format-1 stores, with and without recorded loss; current
 activation preserves their run evidence and counts and migrates old loss as
 undated, non-attention evidence. The frozen format-1 fixture is checked against
 the release-created schema. These history-based tests require the `v1.0.0` tag
-and fail with fetch instructions if it is missing. These checks use controlled
+and fail with fetch instructions if it is missing. These portable checks use controlled
 host seams, not a real host or the release's built service/companion entries. Controlled
 backend time, two connections and authenticated HTTP cover attention and fenced
 dismissal; no live profile or model is used. This is not a new native-host or Windows claim;
 the native observations and screenshot limits above remain historical.
+
+### Isolated built-release upgrade rehearsal
+
+On 2026-11-10, `tests/backend/subagent-upgrade-runtime.test.ts` rehearsed the
+released **1.0.0 built companion** from `v1.0.0` on an independent Linux
+**OpenCode 2.2.6** runtime. Both the released and current tracked companion entries
+were installed verbatim through the lifecycle installer; neither was wrapped or
+patched. The real plugin loader created format 1, then migrated to format 2 only
+after lifecycle update and an explicit `POST /api/location/reload`. This also
+exercises a same-package-version update with different payload fingerprints.
+Before reload, setup returned `activation: "reload-required"`; health, setup and
+run GETs through the current **built service** left the format-1 store unchanged.
+
+Two fresh isolated stores cover no loss and recorded loss. Host sessions and
+parent/child lineage are real. Recording inputs are **synthetic**: a separate
+diagnostic plugin delivers before/after and execution-event inputs to the
+release's source capture implementation using real host identity lookups. It
+does not prompt or execute a native subagent/model loop. The loss variant calls
+that release capture's unavailable path. Migration itself is performed by the
+unchanged current built companion inside the real loader, not by the diagnostic
+plugin or a test call to the migration method. Run rows/counts survive, revisions
+advance, and old loss remains undated with `attention: false`. Authenticated run
+GETs exercise the current packaged service entry, not just a Store seam.
+
+After putting the released companion back and reloading, plugin inventory reports
+`status: "failed"`, with error first line `Error: schema`; its status RPC returns
+`RPC is unavailable: agent-progress-status`. Setup still reports `installed: true`, `captureEnabled: true`,
+`activation: "reload-required"` and `diagnostics: ["rollback-payloads-retained"]`:
+installed/enabled is not proof of active capture. The **current** built service
+continues to return HTTP 200 and format 2 for run reads. Schema, run evidence,
+loss metadata and other durable facts remain intact; disposing the outgoing
+matching observer can advance the epoch allocator and revision. Restoring the
+current companion and reloading restores active capture registration and
+`activation: "control-applies-to-loaded-instances"`, without a down-migration or
+backup restoration.
+
+The repeatable test uses a fresh HOME/XDG/cache/state/runtime/temp tree, rejects
+ancestor/system configuration, uses OS-assigned loopback ports and synthetic local
+passwords, checks empty credentials, rejects/counts model/transport attempts, and
+stops its owned runtime/service processes and removes its fixture. It needs the
+independent runtime and release tag and is excluded from portable CI. This is not
+a real OpenChamber desktop host, extension update-UI, native model-driven dispatch,
+Windows or macOS certification, nor a rerun of all native regression families on
+2.2.6.
 
 Recorded native execution events distinguish succeeded/failed/interrupted from
 SDK idle/completed. Historical native `outcome` with `time.idle` is labelled a
