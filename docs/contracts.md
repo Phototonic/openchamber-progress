@@ -1259,13 +1259,15 @@ store-backed reads return503 instead of an unconfigured success.
 Install/update preflight an existing target store's run compatibility read-only
 before selecting payloads or changing the binding. Exact supported activation
 inputs are accepted too, including epochless format 1; preflight never migrates.
-Unsupported (future, foreign or partial) run storage
+Unsupported (future, foreign or partial) run storage found by preflight
 returns503/`{"error":"schema"}` with installation, activation and store unchanged.
-If a schema upgrade races selection, the action still refuses with `schema`
-without disabling capture or writing the unsupported store; already-selected
-files/binding may remain and are not automatically rolled back. The existing
-capture-disabling fallback for binding persistence/validation failures applies
-only when the control store is readable or an exact supported activation input.
+Preflight does not cover another process upgrading the store during the action:
+store or installation changes may occur before admission subsequently refuses
+the unsupported store with `schema`. No automatic rollback restores those changes.
+The capture-disabling fallback for binding persistence/validation failures checks
+run compatibility and disables capture in one immediate transaction. It never
+disables an unsupported store; readable stores and exact supported activation
+inputs retain the existing fallback behavior.
 An exact epochless format-1 store is admitted for setup and progress reads:
 health is200/ready=true without `subagentRuns:1`, not a store-wide `schema`
 failure. Direct run reads still return503/`{"error":"schema"}` until explicit

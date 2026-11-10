@@ -284,6 +284,33 @@ for(const epochless of [false,true])test(`binding persistence failure after sele
   }finally{setup.close();f.clean();}
 });
 
+test('fallback rechecks schema atomically when another connection upgrades before its capture write',t=>{
+  const f=fixture();f.seed();
+  const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
+  let failed=false,upgraded=false,future:Buffer|undefined;
+  t.mock.method(setup as any,'persist',()=>{failed=true;throw new Error('Synthetic binding persistence failure');});
+  const list=Store.prototype.list;
+  t.mock.method(Store.prototype,'list',function(this:Store,...args:Parameters<Store['list']>){
+    const value=list.apply(this,args);
+    if(failed){
+      const exec=this.db.exec.bind(this.db);
+      t.mock.method(this.db,'exec',(sql:string)=>{
+        // With the old two-step guard this is after classification committed;
+        // with the atomic method it is before the guarded transaction starts.
+        if(sql==='BEGIN IMMEDIATE'&&!upgraded){futureRunFormat(f.database);future=readFileSync(f.database);upgraded=true;}
+        return exec(sql);
+      });
+    }
+    return value;
+  });
+  try{
+    let failure:any;try{setup.run('update',f.targets);}catch(e){failure=e;}
+    assert.equal(upgraded,true);assert.ok(future);
+    t.diagnostic(`interleaved fallback ${failure?.code} storeChanged=${!readFileSync(f.database).equals(future)}`);
+    assert.equal(failure?.code,'schema');assert.deepEqual(readFileSync(f.database),future);
+  }finally{setup.close();f.clean();}
+});
+
 test('binding persistence failure racing a schema upgrade cannot disable unsupported capture',t=>{
   const f=fixture();f.seed();
   const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));

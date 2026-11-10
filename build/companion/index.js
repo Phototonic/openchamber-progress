@@ -27171,6 +27171,12 @@ class Store {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
     });
   }
+  disableCaptureIfSupported() {
+    this.transaction(true, () => {
+      runStorageCompatibility(this.db);
+      this.db.prepare("UPDATE meta SET enabled=0 WHERE singleton=1").run();
+    });
+  }
   installDelegationControl() {
     this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
       INSERT OR IGNORE INTO delegation_control VALUES(1,0);

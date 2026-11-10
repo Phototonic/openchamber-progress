@@ -657,15 +657,18 @@ exact migration shape is accepted by install/update without migrating it there.
 Both upgrades preserve all evidence and leave
 old loss unknown-date, non-attention. Failed migration rolls back atomically.
 
-The current build meeting a newer run storage format or base schema keeps the
+During admission and reads, the current build meeting a newer run storage format
+or base schema keeps the
 service host-ready with health200/ready=false and `schema` diagnostics, retains
 setup status, and refuses store-backed routes with `503 schema` without changing
 store bytes. Guests show “Progress data needs an update”, not a startup delay.
 This does not change the released 1.0.0 rollback behaviour described below.
 Service-controlled install/update also checks existing run storage before any
-installation change and refuses unsupported formats with `503 schema`. A schema
-race after selection never invokes capture disabling or rewrites that store;
-selection itself is not automatically rolled back.
+installation change and refuses unsupported formats with `503 schema`. This is
+only a preflight: a concurrent upgrade during the action can leave store or
+installation changes before admission refuses the unsupported store, with no
+automatic rollback. The fallback's compatibility check and capture disabling
+share one immediate transaction and never disable an unsupported store.
 
 Mixed versions have distinct limits:
 

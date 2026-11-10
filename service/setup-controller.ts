@@ -84,6 +84,7 @@ export class SetupController {
     }
     if(action==='install'||action==='update'){
       this.validateDescriptor();
+      lifecycle('inspect',targets);
       // A retained store must be readable or an exact supported activation input
       // before selecting payloads. This check never initializes run storage.
       const database=path.join(targets.storeRoot,'progress.sqlite');
@@ -103,7 +104,7 @@ export class SetupController {
         // Files may already be selected. Never leave an unacknowledged install
         // writing while the host binding could not be persisted/validated.
         let disabled=false;let control:Store|undefined;
-        try{control=new Store(b.database);verifyStore(control,b);control.subagentRunStorage();control.setEnabled(false);disabled=true;}
+        try{control=new Store(b.database);verifyStore(control,b);control.disableCaptureIfSupported();disabled=true;}
         catch(e){if(e instanceof ProgressError&&e.code==='schema'){this.close();this.recordError(e);throw e;}}
         finally{control?.close();}
         throw new SetupError(disabled?'service-binding-unavailable-capture-disabled':'service-binding-unavailable');

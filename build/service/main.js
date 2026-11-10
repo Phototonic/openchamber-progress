@@ -3003,6 +3003,12 @@ class Store {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
     });
   }
+  disableCaptureIfSupported() {
+    this.transaction(true, () => {
+      runStorageCompatibility(this.db);
+      this.db.prepare("UPDATE meta SET enabled=0 WHERE singleton=1").run();
+    });
+  }
   installDelegationControl() {
     this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);
       INSERT OR IGNORE INTO delegation_control VALUES(1,0);
@@ -26677,6 +26683,7 @@ class SetupController {
     }
     if (action === "install" || action === "update") {
       this.validateDescriptor();
+      lifecycle("inspect", targets);
       const database = path7.join(targets.storeRoot, "progress.sqlite");
       if (existsSync5(database)) {
         const probe = new Store(database, { readOnly: true });
@@ -26704,8 +26711,7 @@ class SetupController {
         try {
           control = new Store(b.database);
           verifyStore(control, b);
-          control.subagentRunStorage();
-          control.setEnabled(false);
+          control.disableCaptureIfSupported();
           disabled = true;
         } catch (e2) {
           if (e2 instanceof ProgressError && e2.code === "schema") {
