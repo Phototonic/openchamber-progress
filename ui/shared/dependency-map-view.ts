@@ -906,7 +906,7 @@ export function createDependencyMapView(): DependencyMapView {
         words.append(mark, who.live.text);
         activity = words;
       }
-      row('Session activity', 'map-attribution-live', [activity], who.live ? null : who.activityNote);
+      row('Session activity', 'map-attribution-live', [activity], who.live || who.activityNote === VERIFIED_ACTIVITY_NOTE ? null : who.activityNote);
       ws.append(whoList);
       inspector.append(ws);
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
@@ -990,6 +990,7 @@ export function createDependencyMapView(): DependencyMapView {
       const who = attributionOf(selected.id);
       if (who.kind === 'assigned' && who.assignmentNote) helpBody.append(el('p', '', who.assignmentNote));
       if (who.live) helpBody.append(el('p', '', LIVE_HEDGE));
+      else if (who.activityNote === VERIFIED_ACTIVITY_NOTE) helpBody.append(el('p', '', 'Session activity is shown only for a verified assignment.'));
     }
     helpBody.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
     help.append(helpBody);
@@ -1317,6 +1318,7 @@ export interface MapAttributionCopy {
   activity: string;
   activityNote: string | null;
 }
+const VERIFIED_ACTIVITY_NOTE = 'Shown only for a verified assignment.';
 export const LIVE_HEDGE = 'Session activity only: the assigned session is active in this view’s run records, which doesn’t show that it is working on this task.';
 export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string): MapAttributionCopy {
   if (!a) return {
@@ -1356,7 +1358,7 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
     : { kind: 'waiting' as const, text: 'Assigned session waiting for input now' } : null;
   const reason = a.live.proven ? 'picture-not-current' : a.live.reason;
   const activityNote = live ? LIVE_HEDGE : !current || reason === 'picture-not-current' ? `Hidden while the map shows revision ${revision} as last reported.`
-    : reason === 'no-verified-assignment' ? 'Shown only for a verified assignment.'
+    : reason === 'no-verified-assignment' ? VERIFIED_ACTIVITY_NOTE
     : reason === 'run-scope-unavailable' ? 'This view’s run records aren’t available.'
     : reason === 'latest-child-not-proven' ? 'This view’s run records don’t confirm the assigned session’s latest run.'
     : 'The assigned session’s latest recorded run isn’t active now.';

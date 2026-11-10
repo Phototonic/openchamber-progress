@@ -328,7 +328,12 @@ try {
       const i = await inspector('page');
       check('attribution:render:inspector-provenance-unavailable', i.assignment === 'recorded' && i.assignmentText.startsWith('Recorded assignee Session map-linked · delegation provenance unavailable') && i.assignmentText.includes('doesn’t mean the task is unassigned'));
       check('attribution:render:inspector-link-context', i.links === 'Linked to Session map-linked · no verified delegation');
-      check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity.startsWith('Not shown') && i.activity.endsWith('Shown only for a verified assignment.'));
+      check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity === 'Not shown' && await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return !h.open&&!d.querySelector('[data-testid="map-inspector"]').innerText.includes('Shown only for a verified assignment.')`));
+      await mapShot('review-help-collapsed', 'page');
+      await click('page', '[data-testid="map-help-trigger"]'); await frames2();
+      check('attribution:render:help-explains-verified-activity', await guest('page', `const h=d.querySelector('[data-testid="map-help"]');return h.open&&h.innerText.includes('Session activity is shown only for a verified assignment.')`));
+      await mapShot('review-help-open', 'page');
+      await click('page', '[data-testid="map-help-trigger"]'); await frames2();
       check('attribution:render:no-active-assertion-without-proof', await guest('page', `return !d.querySelector('[data-testid="map-help"]').textContent.includes('Session activity only: the assigned session is active')`));
     }
     await mapShot('provenance-unavailable', 'page');
