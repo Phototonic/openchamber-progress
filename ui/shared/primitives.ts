@@ -377,7 +377,8 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
   return { root, menu, trigger, dispose: () => menu.dispose() };
 }
 
-export type WarningTone = 'warning' | 'error' | 'info';
+/** `neutral`: a muted ⓘ mark, for a qualification that is routine rather than a warning. */
+export type WarningTone = 'warning' | 'error' | 'info' | 'neutral';
 
 /**
  * A compact, always-visible qualification line (stale, capture off, partial coverage, read
@@ -386,7 +387,7 @@ export type WarningTone = 'warning' | 'error' | 'info';
 export function warningLine(text: string, tone: WarningTone = 'warning', tag: 'p' | 'div' | 'span' = 'p'): HTMLElement {
   const line = node(tag, 'ap-warn');
   line.dataset.tone = tone;
-  line.append(icon(tone === 'info' ? 'info' : 'warning'), node('span', 'ap-warn-text', text));
+  line.append(icon(tone === 'info' || tone === 'neutral' ? 'info' : 'warning'), node('span', 'ap-warn-text', text));
   return line;
 }
 

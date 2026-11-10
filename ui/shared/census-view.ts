@@ -4,7 +4,7 @@
 // a plan in scope and something useful to show. Words and shapes carry each state; colour only
 // reinforces it. No label here expires: the frame ticker only moves time text.
 import { age, el, info, testid, type Env } from './components.ts';
-import { icon, warningLine } from './primitives.ts';
+import { icon, warningLine, type WarningTone } from './primitives.ts';
 import { elapsedText, plural } from './format.ts';
 import { STATUS_LABEL } from './model.ts';
 import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
@@ -152,7 +152,15 @@ const NOTE: Record<RosterNote['kind'], string> = {
   'host-activity-unavailable': 'OpenChamber’s session list is reloading or incomplete, so current activity (waiting, running again, idle now) isn’t shown; recorded runs are unchanged.',
 };
 
-function summaryNode(r: Roster) {
+/**
+ * Rail and board: routine qualifications go behind the "Partial" cue beside the counts; the others
+ * (unavailable or failed reads, capture off, history loading or unavailable, withheld current
+ * activity) stay visible lines. Work Status keeps its own one short line (notesNode).
+ */
+const ROUTINE: ReadonlySet<RosterNote['kind']> = new Set<RosterNote['kind']>(['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off']);
+export const routineNote = (n: RosterNote) => ROUTINE.has(n.kind);
+
+function summaryNode(r: Roster, compact: boolean) {
   const p = testid(el('p', 'ap-sub-summary'), 'subagent-count');
   p.title = r.recorded ? 'Runs recorded for this session and its sub-agents. A finished run is not a finished task.' : 'Sub-agents OpenChamber lists now; no run records were available.';
   for (const s of r.summary) {
@@ -164,39 +172,19 @@ function summaryNode(r: Roster) {
     p.append(part);
   }
   if (r.soFar) p.append(el('span', 'ap-sub-part ap-muted', 'so far'));
-  // Counts from host-listed children stop at the census limit: never shown as complete.
-  if (r.hostTruncated) p.append(testid(el('span', 'ap-sub-part ap-muted', 'more not checked'), 'subagent-truncated'));
+  // Counts from host-listed children stop at the census limit: never shown as complete. Rail and
+  // board say so through the "Partial" cue instead.
+  if (r.hostTruncated && compact) p.append(testid(el('span', 'ap-sub-part ap-muted', 'more not checked'), 'subagent-truncated'));
   return p;
 }
 
-function notesNode(r: Roster, runs: RunsPanel | null, compact: boolean) {
-  const notes = r.notes;
-  if (compact) {
-    // One short line for genuine unavailability only; detail lives in the rail.
-    const n = notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
-    if (!n) return null;
-    const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : n.kind === 'host-truncated' ? 'Not every sub-agent is checked.' : 'Run records unavailable.'), 'subagent-coverage');
-    p.dataset.notes = n.kind;
-    return p;
-  }
-  if (!notes.length) return null;
-  const d = testid(el('details', 'ap-obs-more ap-sub-about'), 'subagent-about');
-  d.append(el('summary', '', notes.some((n) => n.kind === 'history-loading') ? 'Loading older history…' : 'About these records'));
-  const list = testid(el('ul', 'ap-sub-notes'), 'subagent-coverage');
-  list.dataset.notes = notes.map((n) => n.kind).join(' ');
-  for (const n of notes) {
-    const li = el('li', '', NOTE[n.kind]);
-    if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
-      const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? 'Load more history' : 'Retry history'), 'subagent-retry-history');
-      b.type = 'button';
-      b.disabled = runs.reconciling;
-      b.addEventListener('click', () => runs.retryHistory());
-      li.append(' ', b);
-    }
-    list.append(li);
-  }
-  d.append(list);
-  return d;
+/** Work Status: one short line for genuine unavailability only; detail lives in the rail. */
+function notesNode(r: Roster) {
+  const n = r.notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
+  if (!n) return null;
+  const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : n.kind === 'host-truncated' ? 'Not every sub-agent is checked.' : 'Run records unavailable.'), 'subagent-coverage');
+  p.dataset.notes = n.kind;
+  return p;
 }
 
 /**
@@ -241,24 +229,73 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
   return more;
 }
 
-/** Rail and board: the concrete coverage states as visible compact lines (generic prose is behind ⓘ). */
-function coverageNode(r: Roster, runs: RunsPanel | null) {
-  if (!r.notes.length) return null;
-  const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
-  list.dataset.notes = r.notes.map((n) => n.kind).join(' ');
-  for (const n of r.notes) {
-    const li = el('li');
-    li.append(warningLine(NOTE[n.kind], n.kind === 'history-loading' || n.kind === 'capture-off' || n.kind === 'history-off' ? 'info' : 'warning', 'span'));
-    if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
-      const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? 'Load more history' : 'Retry history'), 'subagent-retry-history');
-      b.type = 'button';
-      b.disabled = runs.reconciling;
-      b.addEventListener('click', () => runs.retryHistory());
-      li.append(b);
-    }
-    list.append(li);
+/**
+ * One coverage line, with Load more / Retry history where the read offers it. A started request
+ * replaces the line and its button with the visible "Loading older sub-agent history…"; the frame's
+ * focus restoration then hands focus to the cue or the heading (app.ts, coverage fallback).
+ */
+function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null) {
+  const li = el('li');
+  li.append(warningLine(NOTE[n.kind], tone, 'span'));
+  if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
+    const b = testid(el('button', 'ap-link', n.kind === 'history-partial' ? 'Load more history' : 'Retry history'), 'subagent-retry-history');
+    b.type = 'button';
+    // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
+    if (runs.reconciling) b.setAttribute('aria-disabled', 'true');
+    b.addEventListener('click', () => { if (!runs.reconciling) runs.retryHistory(); });
+    li.append(b);
   }
+  return li;
+}
+
+/** Rail and board: the notes that stay visible compact lines (the routine ones are behind the cue). */
+function coverageNode(notes: RosterNote[], runs: RunsPanel | null) {
+  if (!notes.length) return null;
+  const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
+  list.dataset.notes = notes.map((n) => n.kind).join(' ');
+  for (const n of notes) list.append(noteItem(n, visibleTone(n), runs));
   return list;
+}
+
+/** Visible lines keep their tones: information for loading and capture off, a warning otherwise. */
+const visibleTone = (n: RosterNote): WarningTone => n.kind === 'history-loading' || n.kind === 'capture-off' ? 'info' : 'warning';
+/**
+ * Notes behind the cue are routine, so they carry a muted mark, never orange. One place decides,
+ * so a single note (such as a recent storage loss) can later take the warning tone.
+ */
+export const cueTone = (_n: RosterNote): WarningTone => 'neutral';
+
+const CUE = 'subagent-coverage-cue';
+let cueCount = 0;
+
+/**
+ * Rail and board: the muted "Partial" cue after the counts, a native button that expands the
+ * routine notes inline below the header (`aria-expanded`/`aria-controls`; closed by default, no
+ * hover or popover). The button sits in the counts' wrapping row and the notes below the header,
+ * so they cannot share one `details`. Like a `details[data-testid]` across a repaint (app.ts), the open
+ * state carries over from the painted cue of the same scope; focus returns through its test ID.
+ */
+function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string) {
+  const id = `ap-sub-cue-${cueCount += 1}`;
+  const button = testid(el('button', 'ap-sub-cue'), CUE);
+  button.type = 'button';
+  button.dataset.scope = scope;
+  // Not the counts' tooltip: the cue's words and its notes say what it means.
+  button.title = '';
+  button.setAttribute('aria-controls', id);
+  // Named "Partial sub-agent coverage"; its expanded state says whether the notes are shown.
+  button.append(el('span', '', 'Partial'), el('span', 'ap-sr', ' sub-agent coverage'), icon('chevron-down'));
+  const region = testid(el('div', 'ap-sub-cue-notes'), 'subagent-coverage-notes');
+  region.id = id;
+  region.dataset.notes = notes.map((n) => n.kind).join(' ');
+  const list = el('ul', 'ap-sub-notes ap-warn-list');
+  for (const n of notes) list.append(noteItem(n, cueTone(n), runs));
+  region.append(list);
+  const set = (open: boolean) => { button.setAttribute('aria-expanded', String(open)); region.hidden = !open; };
+  const painted = document.querySelector<HTMLElement>(`[data-testid="${CUE}"]`);
+  set(painted?.dataset.scope === scope && painted.getAttribute('aria-expanded') === 'true');
+  button.addEventListener('click', () => set(button.getAttribute('aria-expanded') !== 'true'));
+  return { button, region };
 }
 
 const ABOUT = [
@@ -280,11 +317,28 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   section.setAttribute('aria-label', 'Sub-agents');
   const head = el('div', 'ap-census-head');
   const title = el('div', 'ap-census-title');
-  title.append(el(v.surface === 'page' ? 'h3' : 'h2', 'ap-h', 'Sub-agents'));
-  if (!compact) title.append(info('subagent-records', 'About sub-agent records', ABOUT));
+  const heading = el(v.surface === 'page' ? 'h3' : 'h2', 'ap-h', 'Sub-agents');
+  title.append(heading);
+  // Rail and board: plan and selected session. A focused coverage control that a repaint removes
+  // hands focus on only within the same scope (app.ts, coverage fallback).
+  const scope = JSON.stringify([v.plan!.sourceId, v.plan!.id, v.currentSession]);
+  if (!compact) {
+    section.dataset.scope = scope;
+    // Where focus lands when a repaint removes a focused coverage control (never a Tab stop).
+    testid(heading, 'subagent-heading').tabIndex = -1;
+    title.append(info('subagent-records', 'About sub-agent records', ABOUT));
+  }
   head.append(title);
-  if (r.summary.length) head.append(summaryNode(r));
+  const counts = r.summary.length ? summaryNode(r, compact) : null;
+  if (counts) head.append(counts);
   section.append(head);
+  const routine = compact ? [] : r.notes.filter(routineNote);
+  if (routine.length) {
+    const cue = coverageCue(routine, v.runs, scope);
+    // The last item of the counts' wrapping row, so it stays beside them at any width.
+    (counts ?? head).append(cue.button);
+    section.append(cue.region);
+  }
   const now = r.featured.filter(running);
   if (now.length) {
     const list = el('ul', 'ap-obs-list');
@@ -294,7 +348,7 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
-  const notes = compact ? notesNode(r, v.runs, true) : coverageNode(r, v.runs);
+  const notes = compact ? notesNode(r) : coverageNode(r.notes.filter((n) => !routineNote(n)), v.runs);
   if (notes) section.append(notes);
   return section;
 }
