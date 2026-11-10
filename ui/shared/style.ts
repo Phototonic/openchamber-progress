@@ -551,13 +551,15 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
    with informational chips, at most two focus rows, a compact meta line and "+N more plans".
    Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
 .ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
-/* Title, picker and badge share the first line: a long title wraps in its own column, so the picker
-   (and the popup it opens) stays near the top of the auto-height frame. */
-.ap-status-head{display:grid;grid-template-columns:minmax(0,max-content) auto auto;justify-content:start;align-items:start;gap:2px 6px;min-width:0}
+/* A short title shares its line with the picker and badge; a long title takes the full width,
+   with the remaining controls wrapping below rather than reserving a column. */
+.ap-status-head{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;min-width:0}
 .ap-status-title{font-weight:600;line-height:1.35;min-width:0;overflow-wrap:anywhere}
-/* A 24 x 24 px target (WCAG 2.2 target size), centred on the title's first line; the negative block
-   margins keep that line no taller than the title itself */
-.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px;margin-block:-3px}
+/* A 24 x 24 px target (WCAG 2.2 target size). */
+.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px}
+/* A wrapped title can put the trigger midway down a short auto-height frame. Keep the
+   fixed popup inside that frame even when neither side of the trigger has enough room. */
+.ap-status-pick .oc-sdk-popup{top:8px!important;max-height:calc(100vh - 16px)}
 .ap-status-head>span:not(.ap-status-title){align-self:start}
 .ap-status-progress{gap:6px}
 .ap-status-progress .ap-seg{height:5px}

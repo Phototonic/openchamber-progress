@@ -86,7 +86,7 @@ startView<Ui>({
     box.dataset.revision = String(plan.revision);
     if (showsLiveness(plan.lifecycle, p.summary, env.view)) box.dataset.motion = 'on';
     // One title. With several plans the title is the featured-plan picker: a quiet "⌄ Automatic"
-    // trigger beside it (the rail's title-picker look) whose popup keeps Automatic and every plan.
+    // trigger beside it when space permits, otherwise below, whose popup keeps Automatic and every plan.
     const head = el('div', 'ap-status-head');
     // Owning heading of a recovered read (docs/ui.md Restoration): a focus target, never a Tab stop.
     const title = testid(el('span', 'ap-status-title', plan.title), 'status-plan-title');
