@@ -22,7 +22,7 @@ function runChild(scenario:object,timeout=10_000) {
 }
 
 test('owner-only release and real notes need no contributor credit; advice does not run for a non-bump',async()=>{
-  const result=await runReminder({},fixture(Array.from({length:17},(_,i)=>pull(i+1,canonical.split('/')[0])),readFileSync('release-notes/1.1.0.md','utf8')));
+  const result=await runReminder({},fixture(Array.from({length:17},(_,i)=>pull(i+1,canonical.split('/')[0])),readFileSync('release-notes/1.1.1.md','utf8')));
   assert(result.text.includes('Merged pull requests in range: 17.'));assert(result.text.includes('No outside contributors found.'));assert.equal(result.warning,false);
   const skipped=await runReminder({}, {load:()=>null,api:async()=>{throw Error('must not read');}});
   assert.equal(skipped.text,'Release credit reminder: package version did not increase.');
