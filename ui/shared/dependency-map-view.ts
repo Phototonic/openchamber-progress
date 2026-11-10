@@ -232,10 +232,10 @@ export function createDependencyMapView(): DependencyMapView {
   let frame = 0, releasing = false;
   // True from a paint until the owner has finished restoring its pre-paint focus (same turn):
   // that focusin is passive and must not move the viewport.
-  let restoring = false;
+  let restoring = false, suppressFocusReveal = false;
   // Latest announcement token and its deferred repeat frame, if any.
   let spoken = 0, speakFrame = 0;
-  let pendingFocus: { id: string | null; generation: number } | null = null;
+  let pendingFocus: { id: string | null; generation: number; reveal?: boolean } | null = null;
   let painted = { key: '', viewport: null as HTMLElement | null };
   let listening: Document | null = null, announcer: HTMLElement | null = null;
   // Controller speech waits one task (after this turn's focus and any repaint's restore; a timer, not
@@ -339,8 +339,9 @@ export function createDependencyMapView(): DependencyMapView {
       target.tabIndex = 0;
     } else if (target.tagName === 'H2') target.tabIndex = -1;
     applyViewport();
-    target.focus({ preventScroll: true });
-    revealInPage(target);
+    suppressFocusReveal = want.reveal === false;
+    try { target.focus({ preventScroll: true }); } finally { suppressFocusReveal = false; }
+    if (want.reveal !== false) revealInPage(target);
     return true;
   }
   function capture(pointerId: number, on: boolean) {
@@ -655,7 +656,7 @@ export function createDependencyMapView(): DependencyMapView {
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
       viewport.addEventListener('focusin', e => {
         const card = e.target as HTMLElement, bb = binding();
-        if (!bb || restoring || !card.classList.contains('ap-map-card')) return;
+        if (!bb || restoring || suppressFocusReveal || !card.classList.contains('ap-map-card')) return;
         const r = card.getBoundingClientRect(), box = viewport.getBoundingClientRect(), inset = 8;
         const shift = (start: number, end: number, lo: number, hi: number) => start < lo + inset ? lo + inset - start : end > hi - inset ? Math.max(lo + inset - start, hi - inset - end) : 0;
         const dx = shift(r.left, r.right, box.left, box.right), dy = shift(r.top, r.bottom, box.top, box.bottom);
@@ -1052,7 +1053,7 @@ export function createDependencyMapView(): DependencyMapView {
           // the owner restores its pre-paint focus after replacing the root. The action always ends
           // with this turn (after any repaint's restore has run), consumed or not: a missing target
           // or a placeholder paint can never leave it waiting for a later poll.
-          const want = pendingFocus = { id: c.id, generation: c.generation };
+          const want = pendingFocus = { id: c.id, generation: c.generation, reveal: c.reveal };
           tryFocus(false);
           queueMicrotask(() => queueMicrotask(() => { if (pendingFocus === want) pendingFocus = null; }));
           break;

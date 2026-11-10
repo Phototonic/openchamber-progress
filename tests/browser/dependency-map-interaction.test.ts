@@ -209,7 +209,7 @@ test('background click and Escape clear once; drags and interrupted pointers ret
   down(1); end(1, 12);
   assert.equal(c.value.selected, null);
   assert.deepEqual(commands.filter(x => x.type === 'announce').map(x => x.text), ['Selection cleared.']);
-  assert.ok(commands.some(x => x.type === 'focus' && x.id === 'B'));
+  assert.ok(commands.some(x => x.type === 'focus' && x.id === 'B' && x.reveal === false));
   commands.length = 0; down(2); end(2); c.dispatch({ type: 'key', key: 'Escape', canvas: true });
   assert.equal(commands.filter(x => x.type === 'announce').length, 0);
   c.dispatch({ type: 'select', id: 'B' }); commands.length = 0;

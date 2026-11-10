@@ -42,7 +42,7 @@ export type MapInteractionCommand =
   | { type: 'selection'; id: string | null }
   | { type: 'filters'; status: StatusFilter; group: string | null }
   | { type: 'announce'; text: string }
-  | { type: 'focus'; id: string | null; generation: number }
+  | { type: 'focus'; id: string | null; generation: number; reveal?: boolean }
   | { type: 'capture'; pointerId: number; capture: boolean }
   | { type: 'list'; id: string | null };
 export type MapInteractionEvent =
@@ -200,7 +200,7 @@ export class DependencyMapInteraction {
     const ids = this.visible;
     this.state = { ...this.state, roving: this.state.selected && ids.includes(this.state.selected) ? this.state.selected : ids.includes(this.state.roving ?? '') ? this.state.roving : ids[0] ?? null };
   }
-  private focus(id: string | null) { this.sink({ type: 'focus', id, generation: this.state.generation }); }
+  private focus(id: string | null, reveal = true) { this.sink({ type: 'focus', id, generation: this.state.generation, ...(reveal ? {} : { reveal: false }) }); }
   private filters(status: StatusFilter, group: string | null) {
     this.state = { ...this.state, status, group }; this.rove();
     this.sink({ type: 'filters', status, group });
@@ -234,7 +234,7 @@ export class DependencyMapInteraction {
   private clearSelection(focus: boolean) {
     if (!this.state.selected) return;
     this.pending = null;
-    if (focus) this.focus(this.state.roving);
+    if (focus) this.focus(this.state.roving, false);
     this.state = { ...this.state, selected: null };
     this.sink({ type: 'selection', id: null });
     this.sink({ type: 'announce', text: 'Selection cleared.' });
