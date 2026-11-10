@@ -231,10 +231,10 @@ function recordsNode(r: Roster, v: SubagentsView, rest: SubagentEntry[], agent =
 
 /**
  * One coverage line, with Load more / Retry history where the read offers it. A started request
- * replaces the line and its button with the visible "Loading older sub-agent history…", so focus on the
- * button first moves to `landing` (what stays), never to the document body.
+ * replaces the line and its button with the visible "Loading older sub-agent history…"; the frame's
+ * focus restoration then hands focus to the cue or the heading (app.ts, coverage fallback).
  */
-function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null, landing: () => HTMLElement) {
+function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null) {
   const li = el('li');
   li.append(warningLine(NOTE[n.kind], tone, 'span'));
   if (runs && ((n.kind === 'history-partial' || n.kind === 'history-failed') && n.token || n.kind === 'history-request-failed')) {
@@ -242,22 +242,18 @@ function noteItem(n: RosterNote, tone: WarningTone, runs: RunsPanel | null, land
     b.type = 'button';
     // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
     if (runs.reconciling) b.setAttribute('aria-disabled', 'true');
-    b.addEventListener('click', () => {
-      if (runs.reconciling) return;
-      if (b.ownerDocument.activeElement === b) landing().focus({ preventScroll: true });
-      runs.retryHistory();
-    });
+    b.addEventListener('click', () => { if (!runs.reconciling) runs.retryHistory(); });
     li.append(b);
   }
   return li;
 }
 
 /** Rail and board: the notes that stay visible compact lines (the routine ones are behind the cue). */
-function coverageNode(notes: RosterNote[], runs: RunsPanel | null, heading: HTMLElement) {
+function coverageNode(notes: RosterNote[], runs: RunsPanel | null) {
   if (!notes.length) return null;
   const list = testid(el('ul', 'ap-sub-notes ap-warn-list'), 'subagent-coverage');
   list.dataset.notes = notes.map((n) => n.kind).join(' ');
-  for (const n of notes) list.append(noteItem(n, visibleTone(n), runs, () => heading));
+  for (const n of notes) list.append(noteItem(n, visibleTone(n), runs));
   return list;
 }
 
@@ -279,7 +275,7 @@ let cueCount = 0;
  * so they cannot share one `details`. Like a `details[data-testid]` across a repaint (app.ts), the open
  * state carries over from the painted cue of the same scope; focus returns through its test ID.
  */
-function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string, heading: HTMLElement) {
+function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string) {
   const id = `ap-sub-cue-${cueCount += 1}`;
   const button = testid(el('button', 'ap-sub-cue'), CUE);
   button.type = 'button';
@@ -293,9 +289,7 @@ function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string,
   region.id = id;
   region.dataset.notes = notes.map((n) => n.kind).join(' ');
   const list = el('ul', 'ap-sub-notes ap-warn-list');
-  // Load more history ends the partial note; the cue stays only while other routine notes remain.
-  const stays = notes.some((n) => n.kind !== 'history-partial');
-  for (const n of notes) list.append(noteItem(n, cueTone(n), runs, () => stays ? button : heading));
+  for (const n of notes) list.append(noteItem(n, cueTone(n), runs));
   region.append(list);
   const set = (open: boolean) => { button.setAttribute('aria-expanded', String(open)); region.hidden = !open; };
   const painted = document.querySelector<HTMLElement>(`[data-testid="${CUE}"]`);
@@ -325,8 +319,12 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   const title = el('div', 'ap-census-title');
   const heading = el(v.surface === 'page' ? 'h3' : 'h2', 'ap-h', 'Sub-agents');
   title.append(heading);
+  // Rail and board: plan and selected session. A focused coverage control that a repaint removes
+  // hands focus on only within the same scope (app.ts, coverage fallback).
+  const scope = JSON.stringify([v.plan!.sourceId, v.plan!.id, v.currentSession]);
   if (!compact) {
-    // Where focus lands when a history request removes the focused button (never a Tab stop).
+    section.dataset.scope = scope;
+    // Where focus lands when a repaint removes a focused coverage control (never a Tab stop).
     testid(heading, 'subagent-heading').tabIndex = -1;
     title.append(info('subagent-records', 'About sub-agent records', ABOUT));
   }
@@ -336,7 +334,7 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   section.append(head);
   const routine = compact ? [] : r.notes.filter(routineNote);
   if (routine.length) {
-    const cue = coverageCue(routine, v.runs, JSON.stringify([v.plan!.sourceId, v.plan!.id, v.currentSession]), heading);
+    const cue = coverageCue(routine, v.runs, scope);
     // The last item of the counts' wrapping row, so it stays beside them at any width.
     (counts ?? head).append(cue.button);
     section.append(cue.region);
@@ -350,7 +348,7 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   }
   const records = recordsNode(r, v, r.featured.filter((e) => !running(e)), !compact);
   if (records) section.append(records);
-  const notes = compact ? notesNode(r) : coverageNode(r.notes.filter((n) => !routineNote(n)), v.runs, heading);
+  const notes = compact ? notesNode(r) : coverageNode(r.notes.filter((n) => !routineNote(n)), v.runs);
   if (notes) section.append(notes);
   return section;
 }
