@@ -689,8 +689,15 @@ separate Node process, a read-only reopen, DDL/write rollback, real SQLite/HTTP
 reads and the actual companion registration with controlled native get/list
 metadata. They preserve existing progress snapshots and verify persistent
 capture-generation fencing. Additional isolated tests exercise the unmodified
-preceding run-aware binary's v1 reads, migration rollback recovery, upgraded-store
-health/capture refusal and subsequent recovery with the new code. Controlled
+released 1.0.0 runtime's v1 reads, migration rollback recovery, upgraded-store
+health/capture refusal and subsequent recovery with the new code. A separate
+process uses that release's source and actual companion capture registration to
+create and populate format-1 stores, with and without recorded loss; current
+activation preserves their run evidence and counts and migrates old loss as
+undated, non-attention evidence. The frozen format-1 fixture is checked against
+the release-created schema. These history-based tests require the `v1.0.0` tag
+and fail with fetch instructions if it is missing. These checks use controlled
+host seams, not a real host or the release's built service/companion entries. Controlled
 backend time, two connections and authenticated HTTP cover attention and fenced
 dismissal; no live profile or model is used. This is not a new native-host or Windows claim;
 the native observations and screenshot limits above remain historical.
