@@ -5,12 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { eligibility, canonical, publish, assetNames, assets, githubAPI, type API } from '../../scripts/release.ts';
+import { eligibility, canonical, publish as publisher, parseReleaseNotes, releaseNotes, validateReleaseNotes, assetNames, assets, githubAPI, type API, type Candidate } from '../../scripts/release.ts';
 
 const sha='a'.repeat(40),before='b'.repeat(40),candidate={version:'0.2.6',sha};
 const event={ref:'refs/heads/main',before,after:sha,repository:{full_name:canonical}};
+const notes=readFileSync(new URL('./fixtures/release-notes/9.8.7.md',import.meta.url),'utf8');
+const expectedName='Agent Progress v0.2.6: Follow the work more clearly';
+const expectedBody='## Improvements\n\n- Board: **Clearer progress.** See what needs attention.\n\n';
+const publish=(c:Candidate,files:Map<string,Buffer>,api:API)=>publisher(c,files,api,source());
 function source(old='0.2.5',next='0.2.6',compiled=next) {
   return (revision:string,file:string) => {
+    if(file===`release-notes/${next}.md`) return notes;
     if(file==='package.json') return JSON.stringify({version:revision===before?old:next});
     if(file==='shared/release.ts') return `export const RELEASE = '${next}';`;
     if(file==='build/companion/package.json') return JSON.stringify({version:compiled});
@@ -35,7 +40,7 @@ test('actual multi-commit Git push compares event before, not HEAD parent',()=>{
   try {
     git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
     function commit(v:string) {
-      for(const file of ['package.json','shared/release.ts','build/companion/package.json','build/setup/main.js','build/service/main.js']) {
+      for(const file of ['package.json','shared/release.ts','build/companion/package.json','build/setup/main.js','build/service/main.js',`release-notes/${v}.md`]) {
         mkdirSync(join(root,file,'..'),{recursive:true});writeFileSync(join(root,file),source(v,v)(sha,file));
       }
       git('add','.');git('commit','-qm','Fixture');return git('rev-parse','HEAD');
@@ -43,8 +48,64 @@ test('actual multi-commit Git push compares event before, not HEAD parent',()=>{
     const start=commit('0.2.5');commit('0.2.6');writeFileSync(join(root,'note'),'fixture');git('add','.');git('commit','-qm','Same version');const end=git('rev-parse','HEAD');
     const read=(rev:string,file:string)=>git('show',`${rev}:${file}`);
     assert.deepEqual(eligibility({...event,before:start,after:end},'push',end,canonical,read),{version:'0.2.6',sha:end});
+    writeFileSync(join(root,'release-notes/0.2.6.md'),'malformed uncommitted replacement');
+    assert.deepEqual(releaseNotes({version:'0.2.6',sha:end},read),{name:expectedName,body:expectedBody});
     assert.equal(eligibility({...event,before:git('rev-parse','HEAD^'),after:end},'push',end,canonical,read),null);
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('notes are read only at the candidate commit and normalize CRLF deterministically',()=>{
+  const calls:string[][]=[];
+  assert.deepEqual(releaseNotes(candidate,(rev,file)=>{calls.push([rev,file]);return notes.replaceAll('\n','\r\n');}),{name:expectedName,body:expectedBody});
+  assert.deepEqual(calls,[[sha,'release-notes/0.2.6.md']]);
+  assert.throws(()=>parseReleaseNotes(candidate.version,'release-notes/0.2.7.md',notes),/Invalid release notes path/);
+});
+test('missing and malformed eligible notes refuse before any API access or write',async()=>{
+  const invalid=['','Plain headline\nBody','## Wrong level\nBody','# \nBody','# Title', '# Title\n \n',
+    '# Title\rBody\nText','# Title\tbad\nBody','# Title\nBad\u0000body','# Title\nBad\u007fbody',
+    '# Title\u0085bad\nBody','# Title\u2028bad\nBody','# Title\u202ebad\nBody',
+    '# Title \nBody','# Title ###\nBody',`# ${'x'.repeat(256)}\nBody`,`# Title\n${'x'.repeat(125000)}`];
+  for(const text of [undefined,...invalid]) {
+    const f=fixture();let calls=0;
+    const read=(rev:string,file:string)=>{
+      if(file.startsWith('release-notes/')) {if(text===undefined)throw Error('private fixture detail');return text;}
+      return source()(rev,file);
+    };
+    assert.throws(()=>eligibility(event,'push',sha,canonical,read));
+    await assert.rejects(publisher(candidate,f.files,async(m,p,b)=>{calls++;return f.api(m,p,b);},read));
+    assert.equal(calls,0);assert.equal(f.writes.length,0);
+  }
+});
+test('portable notes check validates all paths and catches bumps on PR/dev event ranges, not old same-version pushes',()=>{
+  const list=()=>['release-notes/README.md','release-notes/0.2.6.md'];
+  validateReleaseNotes(sha,before,source(),list);
+  validateReleaseNotes(sha,undefined,source(),()=>[]);
+  validateReleaseNotes(sha,undefined,()=>{throw Error('README must not be parsed');},()=>['release-notes/README.md']);
+  for(const file of ['release-notes/v0.2.6.md','release-notes/0.02.6.md','release-notes/0.2.md','release-notes/9007199254740992.0.0.md','release-notes/nested/0.2.6.md','release-notes/extra.txt']) {
+    assert.throws(()=>validateReleaseNotes(sha,undefined,()=>notes,()=>[file]));
+  }
+  assert.throws(()=>validateReleaseNotes(sha,undefined,()=>'',list));
+  const missing=(rev:string,file:string)=>{if(file.startsWith('release-notes/'))throw Error('absent');return source()(rev,file);};
+  assert.throws(()=>validateReleaseNotes(sha,before,missing,()=>[]),/Required release notes unavailable/);
+  const current=(rev:string,file:string)=>{if(file.startsWith('release-notes/'))throw Error('must not read notes');return source('1.0.0','1.0.0')(rev,file);};
+  validateReleaseNotes(sha,before,current,()=>[]);
+  assert.equal(eligibility(event,'push',sha,canonical,current),null);
+  assert.equal(eligibility({...event,ref:'refs/heads/dev'},'push',sha,canonical,current),null);
+});
+test('publisher refuses a different release name on both draft and published retries',async()=>{
+  for(const draft of [true,false]) {
+    const f=fixture();if(draft)f.fail('upload');
+    try {await publish(candidate,f.files,f.api);} catch {assert(draft);}
+    f.release.name='Agent Progress v0.2.6: Foreign headline';const count=f.writes.length;
+    await assert.rejects(publish(candidate,f.files,f.api),/Release name collision/);
+    assert.equal(f.writes.length,count);
+  }
+});
+test('pre-existing release named with the bare tag is a collision with zero writes',async()=>{
+  const f=fixture();
+  f.release={id:22,tag_name:`v${candidate.version}`,target_commitish:sha,name:`v${candidate.version}`,draft:false,author:{login:'github-actions[bot]'},assets:[]};
+  await assert.rejects(publish(candidate,f.files,f.api),/Release name collision/);
+  assert.equal(f.writes.length,0);
 });
 
 function fixture() {
@@ -70,8 +131,8 @@ function fixture() {
     if(method==='POST'&&path==='/git/refs') {assert.equal(ref,null,'must not replace ref');ref={object:{type:'tag',sha:body.sha}};return ref;}
     if(method==='POST'&&path==='/releases') {
       assert.equal(body.generate_release_notes,true);assert.equal(body.draft,true);assert.equal(body.target_commitish,sha);
-      assert(!('body' in body),'native notes must not be rewritten');
-      release={...body,id:10,author:{login:'github-actions[bot]'},assets:[]};return structuredClone(release);
+      assert.equal(body.name,expectedName);assert.equal(body.body,expectedBody);
+      release={...body,body:body.body+"## What's Changed\n\nProvider-owned list\n",id:10,author:{login:'github-actions[bot]'},assets:[]};return structuredClone(release);
     }
     if(method==='UPLOAD') {
       if(fault==='upload'&&release.assets.length===1) throw Error('upload unavailable');
@@ -79,6 +140,7 @@ function fixture() {
       const id=next++;bytes.set(id,body);release.assets.push({id,name,size:body.length,state:'uploaded'});return {};
     }
     if(method==='PATCH') {
+      assert.deepEqual(body,{draft:false},'must never overwrite release name or body');
       assert.equal(release.assets.length,files.size,'publish only complete set');
       if(fault==='publish') throw Error('publish failed');
       release.draft=false;if(fault==='lost') throw Error('response lost');return structuredClone(release);
@@ -87,8 +149,9 @@ function fixture() {
   };
   return {files,api,writes,reads,fail:(value:string|undefined)=>{fault=value;},get release(){return release;},set release(value){release=value;},get ref(){return ref;},set ref(value){ref=value;},get tag(){return tag;},bytes};
 }
-test('native notes, exact tested SHA, complete publication, verified rerun has zero writes',async()=>{
+test('curated title/body plus native notes, exact tested SHA, complete publication, read-only rerun',async()=>{
   const f=fixture();await publish(candidate,f.files,f.api);assert.equal(f.release.draft,false);
+  assert.equal(f.release.name,expectedName);assert(f.release.body.startsWith(expectedBody));assert(f.release.body.includes("What's Changed"));
   const count=f.writes.length;await publish(candidate,f.files,f.api);assert.equal(f.writes.length,count);
 });
 test('foreign tag and foreign release collisions are never adopted',async()=>{
@@ -104,14 +167,33 @@ test('middle upload failure leaves draft; matching retry resumes without overwri
   const f=fixture();f.fail('upload');await assert.rejects(publish(candidate,f.files,f.api));
   assert.equal(f.release.draft,true);assert.equal(f.release.assets.length,1);
   assert.equal(await f.api('GET',`/releases/tags/v${candidate.version}`),null);
+  f.release.body='Provider-normalized or maintainer-edited body';
   f.fail(undefined);await publish(candidate,f.files,f.api);assert.equal(f.release.draft,false);
+  assert.equal(f.release.body,'Provider-normalized or maintainer-edited body');
   assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,5);
   assert.equal(f.writes.filter(w=>w==='POST /releases').length,1,'Retry must resume existing draft, never create a second one');
   assert(f.reads.includes('/releases/10'),'Draft is resumed by discovered ID');
 });
+test('lost draft creation response resumes the empty draft without creating another release',async()=>{
+  const f=fixture();
+  await assert.rejects(publish(candidate,f.files,async(m,p,b)=>{
+    const result=await f.api(m,p,b);
+    if(m==='POST'&&p==='/releases') throw Error('draft creation response lost');
+    return result;
+  }),/draft creation response lost/);
+  assert.equal(f.release.draft,true);assert.equal(f.release.assets.length,0);
+  assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,0);
+  assert.equal(await f.api('GET',`/releases/tags/v${candidate.version}`),null);
+  await publish(candidate,f.files,f.api);
+  assert.equal(f.release.draft,false);assert.equal(f.release.assets.length,f.files.size);
+  assert.equal(f.writes.filter(w=>w==='POST /releases').length,1);
+  assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,f.files.size);
+  assert(f.reads.includes('/releases?per_page=100&page=1'));
+  assert(f.reads.includes('/releases/10'),'Retry must discover and resume the draft by ID');
+});
 test('provider-shaped foreign drafts and ambiguous matches refuse before any write',async()=>{
   const f=fixture();
-  f.release={id:22,tag_name:'v0.2.6',target_commitish:sha,name:'v0.2.6',draft:true,author:{login:'foreign-owner'},assets:[]};
+  f.release={id:22,tag_name:'v0.2.6',target_commitish:sha,name:expectedName,draft:true,author:{login:'foreign-owner'},assets:[]};
   assert.equal(await f.api('GET','/releases/tags/v0.2.6'),null);
   await assert.rejects(publish(candidate,f.files,f.api));assert.equal(f.writes.length,0);
   const g=fixture();g.fail('upload');await assert.rejects(publish(candidate,g.files,g.api));
@@ -148,7 +230,12 @@ test('malformed or duplicate paginated release identities fail closed without wr
 });
 test('notes/create failure and publish failure never claim success',async()=>{
   const f=fixture();await assert.rejects(publish(candidate,f.files,async(m,p,b)=>{if(p==='/releases'&&m==='POST')throw Error('notes unavailable');return f.api(m,p,b);}));assert.equal(f.release,null);
+  await publish(candidate,f.files,f.api);assert.equal((await f.api('GET','/releases/10')).draft,false);
+  assert.equal(f.writes.filter(w=>w==='POST /git/refs').length,1,'Tag-only retry must not replace the tag');
   const g=fixture();g.fail('publish');await assert.rejects(publish(candidate,g.files,g.api));assert.equal(g.release.draft,true);
+  const uploads=g.writes.filter(w=>w.startsWith('UPLOAD')).length;
+  g.fail(undefined);await publish(candidate,g.files,g.api);assert.equal(g.release.draft,false);
+  assert.equal(g.writes.filter(w=>w.startsWith('UPLOAD')).length,uploads,'Complete draft retry must not replace assets');
 });
 test('lost final response reconciles read-only; published missing/tampered assets fail closed',async()=>{
   const f=fixture();f.fail('lost');await assert.rejects(publish(candidate,f.files,f.api));assert.equal(f.release.draft,false);
@@ -205,9 +292,10 @@ test('HTTP adapter sends JSON/native notes and binary assets only to fixed GitHu
   };
   try {
     const api=githubAPI('synthetic-token');
-    await api('POST','/releases',{generate_release_notes:true,draft:true});
+    const body={name:expectedName,body:expectedBody+'Literal $(ignored) and ${{ ignored }}',generate_release_notes:true,draft:true};
+    await api('POST','/releases',body);
     assert.equal(requests[0].url,`https://api.github.com/repos/${canonical}/releases`);
-    assert.deepEqual(JSON.parse(requests[0].init.body as string),{generate_release_notes:true,draft:true});
+    assert.deepEqual(JSON.parse(requests[0].init.body as string),body);
     await api('UPLOAD','/releases/10/assets?name=fixture.zip',Buffer.from([1,2,3]));
     assert.equal(requests[1].url,`https://uploads.github.com/repos/${canonical}/releases/10/assets?name=fixture.zip`);
     assert.equal(requests[1].init.method,'POST');
