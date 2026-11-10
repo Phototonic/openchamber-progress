@@ -124,6 +124,7 @@ export class Store {
   }); }
   subagentRuns(request:runs.RunRequest,now?:number) { return this.transaction(false,()=>runs.readRuns(this.db,this.readBinding,request,now)); }
   requestRunReconciliation(request:runs.ReconcileRequest) { return this.transaction(true,()=>runs.requestReconciliation(this.db,this.readBinding,request)); }
+  dismissRunLoss(request:runs.DismissLossRequest,now?:number) { return this.transaction(true,()=>runs.dismissLoss(this.db,this.readBinding,request,now)); }
   pendingRunRecovery(source:string) { return this.transaction(false,()=>runs.pendingRecovery(this.db,source)); }
   pendingRunRecoveryAt(source:string,directory:string) {return this.transaction(false,()=>runs.pendingRecoveryAt(this.db,source,directory));}
   maintainRunRecovery(source:string,directory:string,producer:string,now=Date.now()) {return this.transaction(true,()=>runs.recoveryMaintenance(this.db,source,directory,producer,now));}

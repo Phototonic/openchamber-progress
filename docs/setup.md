@@ -295,6 +295,31 @@ source/store IDs for supported SDK clients. Initial backend validation proved it
 runtime, including update/reload, without model calls. A service cannot discover
 real source auth merely to probe activation; credential-transfer helpers are test-only.
 
+The matching companion explicitly upgrades private run storage to format 2 on
+activation; GETs, health checks and ordinary opens never migrate it. Exact current
+format-1 run data remains readable beforehand, but new-service reconciliation and
+dismissal require activation. Ship the matching service/guest outputs together,
+after the muted-disclosure prerequisite with no intervening release. Explicitly
+reload already-running old run-aware companions when convenient; never restart
+them automatically. Installation success alone does not prove that reload.
+
+Until reloaded, an already-running older companion can still advance the
+observation epoch allocator and run revision when it reconnects or disposes,
+retiring held read cursors. This does not grant new continuity evidence or clear
+incomplete coverage. It cannot record, clear or dismiss recording-gap state,
+change the format, or perform its other guarded run writes. Existing loss,
+sequence and dismissal checkpoint stay intact. Reloading with the matching
+companion ends this old-observer behaviour.
+
+Before activation, reverting code needs no store change. After upgrade, older
+run-aware binaries may reject health/capture with a schema error. Keep the store
+intact and recover forward with format-2-capable binaries; there is no automatic
+down-migration, loss reset, fence deletion or restoration of stale backups. An
+older backup may discard later progress and needs separate owner authorization.
+Pre-run base schema-2 writers retain their independent progress compatibility,
+not format-2 run-writing capability. Recording gaps remain permanently disclosed
+as incomplete coverage; ageing or dismissing attention never deletes history.
+
 ## Disable, enable, remove after extension uninstall
 
 Installed package includes a self-contained remove.js utility and descriptor:

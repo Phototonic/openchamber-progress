@@ -5,7 +5,7 @@ import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { BLOCKER_LIMITS, LIMITS, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
-import type { ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
+import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
   AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
@@ -621,7 +621,7 @@ export function parseCleanupReceipt(body: string, request: CleanupRequest, actio
  * Sub-agent runs revision 1 (docs/contracts.md): a bounded, identity-checked read. Ran, Claimed and
  * Accepted stay separate facts; none of them is task-report authority.
  */
-export const RUN_ROUTES = { read: '/v1/subagent-runs', reconcile: '/v1/subagent-runs/reconcile' } as const;
+export const RUN_ROUTES = { read: '/v1/subagent-runs', reconcile: '/v1/subagent-runs/reconcile', dismissLoss: '/v1/subagent-runs/dismiss-loss' } as const;
 /** Mirrors RUN_LIMITS (shared/subagent-runs.ts) without importing its storage code into a guest. */
 export const RUN_READ_LIMITS = { page: 50, responseBytes: 262144, cursorBytes: 4096, text: 200, token: 80 } as const;
 export function runQuery(r: RunRequest, cursor?: string) {
@@ -635,6 +635,32 @@ const DISPATCH_STATES = ['pending', 'returned', 'failed-unconfirmed', 'unconfirm
 const RECOVERY_STATES = ['not-requested', 'pending', 'running', 'complete', 'partial', 'failed', 'unavailable'];
 const COVERAGE_REASONS = ['legacy-unavailable', 'history-not-reconciled', 'partial-history', 'capture-loss', 'traversal-limit'];
 const runTime = (v: unknown): v is number => isInt(v) && v >= 0;
+/** Notice age is evaluated against service time, never the browser clock. */
+function runCapture(cap: unknown, format: unknown, available: boolean, readAt: number): asserts cap is RunRead['capture'] {
+  check(isRec(cap) && typeof cap.enabled === 'boolean' && cap.state === (available ? 'last-known' : 'unavailable') && typeof cap.loss === 'boolean', 'Unreadable capture state.');
+  check(available ? format === 1 || format === 2 : format === null, 'Unreadable run format.');
+  if (format !== 2) { check(cap.lossNotice === undefined, 'Unexpected recording-gap metadata.'); return; }
+  const n = cap.lossNotice;
+  check(isRec(n) && runTime(n.sequence) && runTime(n.dismissedThrough) && n.dismissedThrough <= n.sequence && typeof n.attention === 'boolean', 'Unreadable recording-gap metadata.');
+  check(n.sequence === 0 ? n.lastLossAt === null && n.dismissedThrough === 0 : cap.loss && runTime(n.lastLossAt) && n.lastLossAt <= 8_640_000_000_000_000, 'Contradictory recording-gap state.');
+  const attention = cap.loss && n.lastLossAt !== null && Math.max(0, readAt - (n.lastLossAt as number)) < 86_400_000 && n.sequence > n.dismissedThrough;
+  check(n.attention === attention, 'Contradictory recording-gap attention.');
+}
+export function dismissLossBody(r: DismissLossRequest) {
+  check(runTime(r.observedLossSequence) && r.observedLossSequence > 0, 'Invalid recording-gap fence.');
+  return JSON.stringify({ storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: r.source, root: r.root, observedLossSequence: r.observedLossSequence });
+}
+export function parseDismissLossReply(body: string, r: DismissLossRequest): DismissLossReply {
+  check(body.length <= RUN_READ_LIMITS.responseBytes && new TextEncoder().encode(body).length <= RUN_READ_LIMITS.responseBytes, 'The recording-gap reply exceeds its limit.');
+  const v: unknown = JSON.parse(body); check(isRec(v), 'Unreadable recording-gap reply.'); versions(v);
+  const b = v.sourceBinding;
+  check(v.storeId === r.storeId && v.source === r.source && v.root === r.root && isRec(b) && b.sourceId === r.binding.sourceId && b.verified === r.binding.verified, 'The recording-gap identity changed.');
+  check(v.runFormat === 2 && runTime(v.revision) && runTime(v.readAt) && v.acknowledgedLossSequence === r.observedLossSequence && typeof v.coalesced === 'boolean', 'Unreadable recording-gap acknowledgement.');
+  runCapture(v.capture, v.runFormat, true, v.readAt);
+  check(v.capture.lossNotice!.dismissedThrough >= r.observedLossSequence, 'The recording gap was not acknowledged.');
+  check(v.coalesced || v.capture.lossNotice!.sequence === r.observedLossSequence && v.capture.lossNotice!.dismissedThrough === r.observedLossSequence, 'Contradictory recording-gap acknowledgement.');
+  return v as unknown as DismissLossReply;
+}
 const runText = (v: unknown, max: number = RUN_READ_LIMITS.text) => v === null || (isStr(v) && v.length <= max);
 function runRow(v: unknown): RunRow {
   check(isRec(v) && isStr(v.id) && identifier(v.id) && (v.kind === 'dispatch' || v.kind === 'historical-session') && isStr(v.source) && isStr(v.parentSessionId) && identifier(v.parentSessionId)
@@ -660,10 +686,11 @@ export function parseRunRead(body: string, r: RunRequest): RunRead {
     && isRec(b) && b.sourceId === r.binding.sourceId && b.verified === r.binding.verified, 'The sub-agent run reading identity changed.');
   check(['ready', 'unavailable'].includes(String(v.availability)) && (v.subagentRuns === 1) === (v.availability === 'ready') && runTime(v.readAt) && runTime(v.revision), 'Unreadable sub-agent run availability.');
   const cap = v.capture, rec = v.recovery, counts = v.counts, cov = v.coverage;
-  check(isRec(cap) && typeof cap.enabled === 'boolean' && ['last-known', 'unavailable'].includes(String(cap.state)) && typeof cap.loss === 'boolean', 'Unreadable capture state.');
+  runCapture(cap, v.runFormat, v.availability === 'ready', v.readAt as number);
   check(isRec(rec) && RECOVERY_STATES.includes(String(rec.state)) && [null, 'budget', 'capture-disabled', 'capture-unavailable'].includes(rec.reason as null) && (rec.token === null || isStr(rec.token) && identifier(rec.token)), 'Unreadable recovery state.');
   check(isRec(counts) && ['children', 'runs', 'historicalSessions', 'running', 'succeeded', 'failed', 'interrupted', 'unknown'].every((k) => runTime(counts[k])), 'Unreadable run counts.');
   check(isRec(cov) && cov.scope === 'retained' && typeof cov.complete === 'boolean' && Array.isArray(cov.reasons) && cov.reasons.every((x) => COVERAGE_REASONS.includes(String(x))) && cov.complete === (cov.reasons.length === 0), 'Unreadable run coverage.');
+  check(cap.loss === cov.reasons.includes('capture-loss'), 'Contradictory recording-gap coverage.');
   check(Array.isArray(v.data) && v.data.length <= RUN_READ_LIMITS.page && (v.nextCursor === null || isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= RUN_READ_LIMITS.cursorBytes), 'Unreadable run page.');
   const data = v.data.map(runRow);
   check(new Set(data.map((x) => x.id)).size === data.length && data.every((x) => x.source === r.source), 'A run row does not belong to this reading.');

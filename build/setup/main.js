@@ -712,7 +712,7 @@ function canonical(value) {
 
 // shared/subagent-runs.ts
 var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, observationEpochs: 32, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
-var definitions2 = {
+var versionOne = {
   runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
   runs_observation_epoch: "CREATE TABLE runs_observation_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch INTEGER NOT NULL, invalid_through INTEGER NOT NULL)",
   runs_rows: "CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
@@ -734,40 +734,71 @@ var definitions2 = {
 var normalized2 = (s) => s.trim().replace(/\s+/g, " ");
 var integer = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
 var obj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-function runsInstalled(db) {
+var timestamp = (v) => integer(v) && v <= 8640000000000000;
+var definitions2 = { ...versionOne, runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=2), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)), last_loss_at INTEGER, loss_sequence INTEGER NOT NULL, dismissed_loss_sequence INTEGER NOT NULL)" };
+var epochless = { ...versionOne };
+delete epochless.runs_observation_epoch;
+epochless.runs_capture_epoch = epochless.runs_capture_epoch.replace(" UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;", "");
+function validateRuns(db, expected, version, epochs = true) {
+  const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  requireProgress(rows.length === Object.keys(expected).length, "schema");
+  for (const r2 of rows)
+    requireProgress(typeof r2.name === "string" && expected[r2.name] !== undefined && normalized2(String(r2.sql)) === normalized2(expected[r2.name]), "schema");
+  const f = db.prepare("SELECT * FROM runs_format").all();
+  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === version && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
+  const r = f[0];
+  if (version === 2)
+    requireProgress(integer(r.loss_sequence) && integer(r.dismissed_loss_sequence) && r.dismissed_loss_sequence <= r.loss_sequence && (r.loss_sequence === 0 ? r.last_loss_at === null && r.dismissed_loss_sequence === 0 : r.loss === 1 && timestamp(r.last_loss_at)), "schema");
+  if (epochs) {
+    const e = db.prepare("SELECT * FROM runs_observation_epoch").all();
+    requireProgress(e.length === 1 && e[0].singleton === 1 && integer(e[0].epoch) && integer(e[0].invalid_through) && e[0].invalid_through <= e[0].epoch, "schema");
+  }
+  return r;
+}
+function runFormat(db) {
   const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
   if (!rows.length)
-    return false;
-  requireProgress(rows.length === Object.keys(definitions2).length, "schema");
-  for (const r of rows)
-    requireProgress(typeof r.name === "string" && definitions2[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(definitions2[r.name]), "schema");
-  const f = db.prepare("SELECT * FROM runs_format").all();
-  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === 1 && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
-  const epochs = db.prepare("SELECT * FROM runs_observation_epoch").all();
-  requireProgress(epochs.length === 1 && epochs[0].singleton === 1 && integer(epochs[0].epoch) && integer(epochs[0].invalid_through) && Number(epochs[0].invalid_through) <= Number(epochs[0].epoch), "schema");
-  return true;
+    return null;
+  const format = rows.find((r) => r.name === "runs_format");
+  const version = normalized2(String(format?.sql)) === normalized2(versionOne.runs_format) ? 1 : 2;
+  validateRuns(db, version === 1 ? versionOne : definitions2, version);
+  return version;
+}
+function runsInstalled(db) {
+  return runFormat(db) !== null;
 }
 function installRuns(db) {
   const installed = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
-  if (installed.length && !installed.some((r) => r.name === "runs_observation_epoch")) {
-    const prior = { ...definitions2 };
-    delete prior.runs_observation_epoch;
-    prior.runs_capture_epoch = prior.runs_capture_epoch.replace(" UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;", "");
-    requireProgress(installed.length === Object.keys(prior).length && installed.every((r) => typeof r.name === "string" && prior[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(prior[r.name])), "schema");
-    db.exec(definitions2.runs_observation_epoch);
-    db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
-    db.exec("DROP TRIGGER runs_capture_epoch");
-    db.exec(definitions2.runs_capture_epoch);
-  }
-  if (runsInstalled(db))
+  if (installed.length) {
+    const oldEpochless = !installed.some((r) => r.name === "runs_observation_epoch");
+    const version = oldEpochless ? 1 : runFormat(db);
+    if (version === 2)
+      return;
+    const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
+    requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+    if (oldEpochless) {
+      db.exec(definitions2.runs_observation_epoch);
+      db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+    }
+    const triggers = ["runs_capture_epoch", "runs_plan_delete", "runs_progress_change"];
+    for (const name of triggers)
+      db.exec(`DROP TRIGGER ${name}`);
+    db.exec("DROP TABLE runs_format");
+    db.exec(definitions2.runs_format);
+    db.prepare("INSERT INTO runs_format VALUES(1,2,?,?,?,NULL,0,0)").run(Number(f.revision) + 1, f.generation, f.loss);
+    for (const name of triggers)
+      db.exec(definitions2[name]);
+    validateRuns(db, definitions2, 2);
     return;
+  }
   for (const sql of Object.values(definitions2))
     db.exec(sql);
-  db.exec("INSERT INTO runs_format VALUES(1,1,0,0,0)");
+  db.exec("INSERT INTO runs_format VALUES(1,2,0,0,0,NULL,0,0)");
   db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+  validateRuns(db, definitions2, 2);
 }
 function runControl(db) {
-  requireProgress(runsInstalled(db), "schema");
+  requireProgress(runFormat(db) === 2, "schema");
   const r = db.prepare("SELECT enabled,generation FROM meta JOIN runs_format USING(singleton)").get();
   return { enabled: r.enabled === 1, generation: Number(r.generation) };
 }
@@ -775,7 +806,9 @@ function bump(db) {
   db.exec("UPDATE runs_format SET revision=revision+1 WHERE singleton=1");
 }
 function loss(db) {
-  db.exec("UPDATE runs_format SET loss=1,revision=revision+1 WHERE singleton=1");
+  const now = Date.now(), f = db.prepare("SELECT loss_sequence,revision FROM runs_format WHERE singleton=1").get();
+  requireProgress(timestamp(now) && integer(f.loss_sequence) && f.loss_sequence < Number.MAX_SAFE_INTEGER && integer(f.revision) && f.revision < Number.MAX_SAFE_INTEGER, "schema");
+  db.prepare("UPDATE runs_format SET loss=1,last_loss_at=?,loss_sequence=loss_sequence+1,revision=revision+1 WHERE singleton=1").run(now);
 }
 function observationEpoch(db) {
   return Number(db.prepare("SELECT epoch FROM runs_observation_epoch WHERE singleton=1").get().epoch);
@@ -784,12 +817,14 @@ function observationInterrupted(db, epoch) {
   return epoch <= Number(db.prepare("SELECT invalid_through FROM runs_observation_epoch WHERE singleton=1").get().invalid_through);
 }
 function beginObservation(db) {
+  runControl(db);
   db.exec("UPDATE runs_observation_epoch SET epoch=epoch+1 WHERE singleton=1");
   bump(db);
   return observationEpoch(db);
 }
 function runCaptureUnavailable(db) {
   if (runsInstalled(db)) {
+    runControl(db);
     db.exec("UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1");
     loss(db);
   }
@@ -1621,6 +1656,14 @@ function budgetReadRow(run) {
   row(JSON.stringify(stored));
   requireProgress(typeof latestForChild === "boolean" && fits(), "corrupt");
 }
+function captureState(enabled, f, now) {
+  const capture = { enabled, state: f ? "last-known" : "unavailable", loss: f?.loss === 1 };
+  if (f?.version === 2) {
+    const sequence = Number(f.loss_sequence), lastLossAt = f.last_loss_at, dismissedThrough = Number(f.dismissed_loss_sequence);
+    capture.lossNotice = { sequence, lastLossAt, dismissedThrough, attention: capture.loss && lastLossAt !== null && Math.max(0, now - lastLossAt) < 86400000 && sequence > dismissedThrough };
+  }
+  return capture;
+}
 function readRuns(db, binding, r, now = Date.now()) {
   const m = identity(db, binding, r);
   requireProgress(r.view === undefined || r.view === "useful" || r.view === "history");
@@ -1636,11 +1679,11 @@ function readRuns(db, binding, r, now = Date.now()) {
     const state = cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined;
     requireProgress((state?.generation ?? 0) === r.cleanupRev && state?.state !== "deleted", "conflict");
   }
-  const installed = runsInstalled(db), f = installed ? db.prepare("SELECT revision,loss FROM runs_format").get() : undefined;
+  const format = runFormat(db), installed = format !== null, f = installed ? db.prepare("SELECT * FROM runs_format").get() : undefined;
   const job = installed ? db.prepare("SELECT state,CASE WHEN length(CAST(token AS BLOB))<=80 THEN token END AS token,CASE WHEN length(CAST(reason AS BLOB))<=80 THEN reason END AS reason,length(CAST(token AS BLOB)) AS token_bytes,length(CAST(reason AS BLOB)) AS reason_bytes FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root) : undefined;
   if (job)
     requireProgress(["pending", "running", "complete", "partial", "failed"].includes(String(job.state)) && (job.token_bytes === null || Number(job.token_bytes) <= 80) && (job.reason_bytes === null || Number(job.reason_bytes) <= 80) && [null, "budget", "capture-disabled", "capture-unavailable"].includes(job.reason) && (job.token === null || identifier(job.token)), "corrupt");
-  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: installed ? 1 : null, availability: installed ? "ready" : "unavailable", readAt: now, revision: Number(f?.revision ?? 0), capture: { enabled: m.enabled === 1, state: installed ? "last-known" : "unavailable", loss: f?.loss === 1 }, recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
+  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: format, availability: installed ? "ready" : "unavailable", readAt: now, revision: Number(f?.revision ?? 0), capture: captureState(m.enabled === 1, f, now), recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
   if (!installed)
     return out;
   if (!job || job.state !== "complete")
@@ -1709,6 +1752,23 @@ function readRuns(db, binding, r, now = Date.now()) {
   out.coverage.complete = out.coverage.reasons.length === 0;
   requireProgress(Buffer.byteLength(JSON.stringify(out)) <= RUN_LIMITS.responseBytes, "corrupt");
   return out;
+}
+function dismissLoss(db, binding, r, now = Date.now()) {
+  requireProgress(obj(r) && Object.keys(r).length === 5 && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "observedLossSequence"].includes(k)) && integer(r.observedLossSequence) && r.observedLossSequence > 0);
+  const m = identity(db, binding, r);
+  requireProgress(runFormat(db) === 2, "schema");
+  const f = db.prepare("SELECT * FROM runs_format WHERE singleton=1").get();
+  const coalesced = r.observedLossSequence <= Number(f.dismissed_loss_sequence);
+  if (!coalesced) {
+    requireProgress(r.observedLossSequence === f.loss_sequence, "conflict");
+    requireProgress(integer(f.revision) && f.revision < Number.MAX_SAFE_INTEGER, "schema");
+    db.prepare("UPDATE runs_format SET dismissed_loss_sequence=?,revision=revision+1 WHERE singleton=1").run(r.observedLossSequence);
+    f.dismissed_loss_sequence = r.observedLossSequence;
+    f.revision++;
+  }
+  const reply = { protocolVersion: 2, schemaVersion: 2, runFormat: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, revision: Number(f.revision), readAt: now, capture: captureState(m.enabled === 1, f, now), acknowledgedLossSequence: r.observedLossSequence, coalesced };
+  requireProgress(Buffer.byteLength(JSON.stringify(reply)) <= RUN_LIMITS.responseBytes, "corrupt");
+  return reply;
 }
 function requestReconciliation(db, binding, r) {
   requireProgress(obj(r) && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "token"].includes(k)));
@@ -2796,6 +2856,9 @@ class Store {
   }
   requestRunReconciliation(request) {
     return this.transaction(true, () => requestReconciliation(this.db, this.readBinding, request));
+  }
+  dismissRunLoss(request, now) {
+    return this.transaction(true, () => dismissLoss(this.db, this.readBinding, request, now));
   }
   pendingRunRecovery(source) {
     return this.transaction(false, () => pendingRecovery(this.db, source));

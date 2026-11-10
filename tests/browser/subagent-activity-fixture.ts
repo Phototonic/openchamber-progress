@@ -1,7 +1,7 @@
 // Synthetic SDK workspace + service fixture for the sub-agents section, NOT native-host proof.
 // Serves the current built guests (ui/*/main.js) on loopback with a synthetic sub-agent runs
-// revision-1 read (same wire shape as shared/subagent-runs.ts). Every session, plan and title here
-// is synthetic. node --experimental-strip-types tests/browser/subagent-activity-fixture.ts [port]
+// revision-1 read (same wire shape as shared/subagent-runs.ts, run format 2 with recording-gap
+// notices and the dismissal route by default). Every session, plan and title here is synthetic. node --experimental-strip-types tests/browser/subagent-activity-fixture.ts [port]
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { HEALTH, envelope, summary, docRef, setupRead, at } from './fixtures.ts';
@@ -75,7 +75,26 @@ window.qa={session:null,directory:'/fixture/Alpha',capture:true,capable:true,con
   ws:{projectsState:'ready',projects:[{id:'proj-alpha',name:'Alpha',directory:'/fixture/Alpha'},{id:'proj-beta',name:'Beta',directory:'/fixture/Beta'}],
   sessions:${JSON.stringify(sessions)},state:{'proj-alpha':'ready','proj-beta':'ready'},coverage:{'proj-alpha':[{directory:'/fixture/Alpha',state:'ready'}],'proj-beta':[{directory:'/fixture/Beta',state:'ready'}]}}};
 let revision=1;qa.bump=()=>{revision++;return revision};
+// Recording-gap notices (run format 2, service-side as in shared/subagent-runs.ts): store-wide
+// metadata, attention derived at reply time from the SERVICE clock, which tests move with
+// qa.advance (no waiting). Synthetic transport only. A root's own loss flag stands for a gap
+// recorded before dates were kept (sequence 0: unknown date).
+qa.clock=0;const now=()=>Date.now()+qa.clock;qa.advance=(ms)=>{qa.clock+=ms;return now()};
+const fresh=(format=2)=>({format,loss:false,lastLossAt:null,sequence:0,dismissed:0});
+qa.stores={'store-1':fresh(),'store-2':fresh()};qa.heldDismiss=[];qa.dismissError=null;qa.holdDismiss=false;qa.holdReads=false;
+qa.lose=(id=base.storeId)=>{const st=qa.stores[id];st.loss=true;st.sequence++;st.lastLossAt=now();revision++;return st.sequence};
+qa.migrated=(id=base.storeId)=>{qa.stores[id]={...fresh(),loss:true};revision++;return true};
+qa.legacy=(id=base.storeId)=>{qa.stores[id]={...fresh(1),loss:true};revision++;return true};
+qa.clean=(id=base.storeId)=>{qa.stores[id]=fresh();revision++;return true};
+qa.useStore=(id)=>{base.storeId=id;revision++;return true};
+qa.releaseDismiss=()=>{const h=qa.heldDismiss.splice(0);h.forEach(f=>f());return h.length};
+const capture=(st,rootLoss,readAt)=>{const loss=st.loss||rootLoss;
+  return {enabled:qa.capture,state:'last-known',loss,...(st.format===2?{lossNotice:{sequence:st.sequence,lastLossAt:st.lastLossAt,dismissedThrough:st.dismissed,attention:loss&&st.lastLossAt!==null&&Math.max(0,readAt-st.lastLossAt)<86400000&&st.sequence>st.dismissed}}:{})};};
+const dismiss=(r)=>{const st=qa.stores[r.storeId],o=r.observedLossSequence;if(!st||st.format!==2)return {status:400,body:{error:'schema'}};
+  let coalesced=true;if(o>st.dismissed){if(o!==st.sequence)return {status:409,body:{error:'conflict'}};st.dismissed=o;coalesced=false;revision++;}
+  const readAt=now();return {status:200,body:{protocolVersion:2,schemaVersion:2,storeId:r.storeId,sourceBinding:r.binding,source:r.source,root:r.root,runFormat:2,revision,readAt,capture:capture(st,false,readAt),acknowledgedLossSequence:o,coalesced}};};
 const runRead=(q)=>{const binding=JSON.parse(q.binding),root=qa.runs[q.root];if(!root)return null;
+  const st=qa.stores[q.storeId],readAt=now(),loss=st.loss||root.loss;
   const all=[...root.useful,...root.history],count=k=>all.filter(r=>r.ran.state===k).length;
   // As the service: rank each child's rows across the whole root scope before view/page filtering
   // (dispatch over historical; start-or-dispatch, dispatch time, sequence); childless rows false.
@@ -83,10 +102,10 @@ const runRead=(q)=>{const binding=JSON.parse(q.binding),root=qa.runs[q.root];if(
   const later=(a,b)=>{const x=key(a),y=key(b);for(let i=0;i<x.length;i++)if(x[i]!==y[i])return x[i]>y[i];return false;};
   const best=new Map();for(const r of all)if(r.childSessionId){const b=best.get(r.childSessionId);if(!b||later(r,b))best.set(r.childSessionId,r);}
   const pool=q.view==='history'?root.history:root.useful,offset=Number(q.cursor||0),data=pool.slice(offset,offset+50).map(r=>({...r,latestForChild:!!r.childSessionId&&best.get(r.childSessionId)===r}));
-  return {protocolVersion:2,schemaVersion:2,storeId:q.storeId,sourceBinding:binding,source:q.source,root:q.root,plan:q.plan??null,cleanupRev:q.plan?Number(q.cleanupRev):null,view:q.view??'useful',subagentRuns:1,runFormat:1,availability:'ready',readAt:Date.now(),revision,
-   capture:{enabled:qa.capture,state:'last-known',loss:root.loss},recovery:root.recovery,
+  return {protocolVersion:2,schemaVersion:2,storeId:q.storeId,sourceBinding:binding,source:q.source,root:q.root,plan:q.plan??null,cleanupRev:q.plan?Number(q.cleanupRev):null,view:q.view??'useful',subagentRuns:1,runFormat:st.format,availability:'ready',readAt,revision,
+   capture:capture(st,root.loss,readAt),recovery:root.recovery,
    counts:{children:new Set(all.map(r=>r.childSessionId).filter(Boolean)).size,runs:root.useful.length,historicalSessions:root.history.length,running:count('running'),succeeded:count('succeeded'),failed:count('failed'),interrupted:count('interrupted'),unknown:count('unknown')},
-   coverage:{scope:'retained',complete:root.recovery.state==='complete'&&!root.loss,reasons:[...(root.recovery.state==='complete'?[]:['history-not-reconciled']),...(root.loss?['capture-loss']:[])]},
+   coverage:{scope:'retained',complete:root.recovery.state==='complete'&&!loss,reasons:[...(root.recovery.state==='complete'?[]:['history-not-reconciled']),...(loss?['capture-loss']:[])]},
    data,nextCursor:offset+50<pool.length?String(offset+50):null};};
 // Realistic ready context: no integration account is linked (connection is integration link state,
 // not host transport), while the workspace streams are ready.
@@ -127,8 +146,12 @@ addEventListener('message',e=>{const f=[...document.querySelectorAll('iframe')].
   else if(q.path==='/v1/subagent-runs')body=runRead(q.query);
   else if(q.path==='/v1/subagent-runs/reconcile'&&qa.reconcileError){result({status:503,body:JSON.stringify({error:qa.reconcileError})});return;}
   else if(q.path==='/v1/subagent-runs/reconcile'){const r=JSON.parse(q.body),root=qa.runs[r.root];if(root){root.recovery={state:'pending',reason:null,token:null};revision++;body={state:'pending',coalesced:false};}}
+  else if(q.path==='/v1/subagent-runs/dismiss-loss'){
+   // Applied when the reply is released, as a write that commits late would be.
+   const answer=()=>{if(qa.dismissError){result({status:503,body:JSON.stringify({error:qa.dismissError})});return;}const d=dismiss(JSON.parse(q.body));result({status:d.status,body:JSON.stringify(d.body)});};
+   if(qa.holdDismiss)qa.heldDismiss.push(answer);else answer();return;}
   const reply=()=>result({status:body?200:404,body:JSON.stringify(body||{error:'not-found'})});
-  if(qa.hold&&q.path.startsWith('/v1/subagent-runs'))qa.held.push(reply);else reply();
+  if(qa.hold&&q.path.startsWith('/v1/subagent-runs')||qa.holdReads&&q.path==='/v1/subagent-runs')qa.held.push(reply);else reply();
  }else{if(m.type==='resize'&&s==='status'&&m.payload.height>0){const drop=qa.dropResize>0;qa.resizes.push({at:Date.now(),h:m.payload.height,dropped:drop});if(drop)qa.dropResize--;else f.style.height=m.payload.height+'px';}if(m.id)result();}
 });`;
 const server = createServer((req, res) => {

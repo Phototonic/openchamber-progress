@@ -977,9 +977,51 @@ schema and SQL projections. `Store` wraps every run mutation in its existing
 transactions. Extension initialization is explicit companion activation only;
 read-only opens, GETs and `/health` do not initialize it. Exact schema validation
 rejects incomplete, foreign and future extensions. The base user version stays 2.
-Companion activation can upgrade the exact preceding run extension by adding its
-singleton observation-epoch allocator and capture-toggle trigger update. It never
-assigns continuity evidence to epochless old rows. Reads do not perform this upgrade.
+Run storage format 2 adds last-detection wall time, a loss sequence and a dismissal
+checkpoint to the permanent loss bit. Companion activation validates either exact
+version-1 shape, including its singleton values, before any DDL. The epochless
+predecessor first receives the observation-epoch allocator/trigger update, without
+assigning continuity evidence to old rows. In the same transaction, activation
+drops the three owned triggers referencing `runs_format`, replaces that singleton
+table under its original name (no rename/trigger retargeting), preserves generation
+and loss, and increments run revision once to retire cursors. All other evidence
+is preserved; final schema/row validation precedes commit. Any failure rolls back
+the original schema and values. Repeated format-2 activation is a no-op.
+
+Exact epoch-bearing version 1 remains readable without notice metadata until
+activation; epochless version 1 still requires explicit activation. New run
+mutations, including reconciliation admission, require format 2. Independent base
+progress operations remain available. Reads, ordinary opens, health and dismissal
+never migrate. Older run-aware binaries reject format 2; recover forward rather
+than deleting metadata to make an old binary accept the store.
+
+Every committed call to the central loss helper atomically sets permanent loss,
+records backend `Date.now()` milliseconds, increments a safe-integer sequence and
+bumps run revision. This clock is not native event/dispatch time. Unsafe sequence
+increments refuse and roll back. Existing detection classifications below are
+unchanged: silent safe reclamation remains silent; passive failure, continuity,
+contradictory evidence, payload pressure, recovery admission and dropped claims
+still qualify coverage. Persistence remains best effort if the store cannot commit;
+no successful detection date is invented after a write failure.
+
+Fresh or migrated no-loss state has null time and zero sequences. Migrated loss
+retains its bit but also starts with null time/zero sequences, never a migration
+date. A positive sequence requires loss and a nonnegative Date-representable integer
+timestamp; dismissal cannot exceed the sequence. A detection does not reset the
+checkpoint. Service attention is `loss && lastLossAt !== null &&
+max(0, readAt - lastLossAt) < 86_400_000 && sequence > dismissedThrough`.
+Exactly 24 hours is old; backwards wall-clock corrections can extend undismissed
+attention but cannot undo a sequence acknowledgement. Reads/ageing never write or
+change revision. Permanent `capture-loss` coverage remains after ageing/dismissal.
+
+Authenticated `POST /v1/subagent-runs/dismiss-loss` reuses verified store/source/
+known-root identity and `BEGIN IMMEDIATE`; the acknowledgement is store-wide and
+is allowed with capture disabled. A current positive fence advances the checkpoint
+and bumps revision once. A fence already at/below the checkpoint is a successful
+no-op, even after a newer gap; otherwise stale/future fences conflict. Replies carry
+current server-derived capture metadata, not a promise that all warnings are quiet.
+No run facts, tasks, recovery jobs or capture settings change. See the wire contract
+for bounded parsing, errors and mixed-version rules.
 
 `plugin/subagent-runs.ts` is a focused observer called by the existing delegation
 before/after hooks and event subscription. Before capture stores only dispatch

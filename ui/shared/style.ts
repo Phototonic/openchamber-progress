@@ -556,9 +556,19 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-sub-cue:hover{background:var(--oc-hover);color:var(--oc-fg)}
 .ap-sub-cue[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover));color:var(--oc-selection-fg,var(--oc-fg))}
 .ap-sub-cue>.ap-icon{width:12px;height:12px}
-.ap-sub-cue[aria-expanded="true"]>.ap-icon{transform:rotate(180deg)}
+.ap-sub-cue[aria-expanded="true"]>.ap-icon[data-icon="chevron-down"]{transform:rotate(180deg)}
+/* A recording gap that needs attention: the warning tone and a triangle; muted otherwise. */
+.ap-sub-cue[data-tone="warning"]{padding-left:5px;border-color:color-mix(in srgb,var(--oc-warning) 55%,var(--oc-border));background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-sub-cue[data-tone="warning"]:hover,.ap-sub-cue[data-tone="warning"][aria-expanded="true"]{background:color-mix(in srgb,var(--oc-warning) 24%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
 .ap-census .ap-sub-cue:focus-visible{border-radius:999px}
 .ap-sub-cue-notes{padding-left:8px;border-left:2px solid var(--oc-border)}
+/* Dismiss warning under the recording-gap note, aligned with its text (after the 14 px mark). */
+/* The detection date is part of the sentence: it wraps inside it and keeps its full stop. */
+.ap-census .ap-sub-cue-notes time{display:inline}
+.ap-sub-dismiss{flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;min-width:0;padding-left:20px}
+.ap-sub-dismiss-help{min-width:0;color:var(--oc-muted);overflow-wrap:anywhere}
+.ap-sub-dismiss>.ap-link[aria-disabled="true"]{color:var(--oc-muted);cursor:default;text-decoration:none}
+.ap-sub-dismiss>.ap-warn{flex:1 1 100%;margin:0}
 .ap-census-title>.ap-h[tabindex]:focus{outline:none}
 .ap-census-title>.ap-h[tabindex]:focus-visible{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
 @media(forced-colors:active){.ap-sub-cue{border-color:ButtonText;color:ButtonText}.ap-sub-cue[aria-expanded="true"]{border-width:2px;padding:0 2px 0 6px}.ap-census .ap-sub-cue:focus-visible,.ap-census-title>.ap-h[tabindex]:focus-visible{outline:2px solid Highlight;outline-offset:1px}.ap-sub-cue-notes{border-left-color:CanvasText}}
