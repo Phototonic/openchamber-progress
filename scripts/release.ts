@@ -14,8 +14,11 @@ function version(value:unknown):number[] {
   const parts=(value as string).split('.').map(Number);
   assert(parts.every(Number.isSafeInteger),'Invalid version'); return parts;
 }
+/** Upper bound for one file read from Git history: far above any tracked entry, still bounded. */
+export const gitReadLimit=64*1024*1024;
 export function gitFile(sha:string,file:string):string {
-  const result=spawnSync('git',['show',`${sha}:${file}`],{encoding:'utf8'});
+  // Compiled entries exceed Node's default 1 MiB child-output buffer; an overflow reports a null status.
+  const result=spawnSync('git',['show',`${sha}:${file}`],{encoding:'utf8',maxBuffer:gitReadLimit});
   assert.equal(result.status,0,'Required event history unavailable'); return result.stdout;
 }
 type Event = {ref?:string;before?:string;after?:string;repository?:{full_name?:string}};
@@ -46,7 +49,7 @@ export function releaseNotes(candidate:Candidate,read=gitFile):{name:string;body
   return parseReleaseNotes(candidate.version,file,text);
 }
 function gitNotes(sha:string):string[] {
-  const result=spawnSync('git',['ls-tree','-r','--name-only','-z',sha,'--','release-notes'],{encoding:'utf8'});
+  const result=spawnSync('git',['ls-tree','-r','--name-only','-z',sha,'--','release-notes'],{encoding:'utf8',maxBuffer:gitReadLimit});
   assert.equal(result.status,0,'Required event history unavailable');
   return result.stdout.split('\0').filter(Boolean);
 }

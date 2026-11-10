@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { eligibility, canonical, publish as publisher, parseReleaseNotes, releaseNotes, validateReleaseNotes, assetNames, assets, githubAPI, type API, type Candidate } from '../../scripts/release.ts';
+import { gitFile, gitReadLimit, eligibility, canonical, publish as publisher, parseReleaseNotes, releaseNotes, validateReleaseNotes, assetNames, assets, githubAPI, type API, type Candidate } from '../../scripts/release.ts';
 
 const sha='a'.repeat(40),before='b'.repeat(40),candidate={version:'0.2.6',sha};
 const event={ref:'refs/heads/main',before,after:sha,repository:{full_name:canonical}};
@@ -357,4 +357,25 @@ test('HTTP adapter sends JSON/curated notes and binary assets only to fixed GitH
     });
     await assert.rejects(api('GET','/../unexpected'));
   } finally {globalThis.fetch=original;}
+});
+
+// The tracked compiled entries are larger than Node's default 1 MiB child-output
+// buffer. Reading them with the real Git reader must return every byte, and the
+// real eligibility read set must work on the checked-out revision.
+test('real Git reads return tracked compiled entries in full, beyond the default child buffer',()=>{
+  const head=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
+  let largest=0;
+  for(const file of ['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','package.json','shared/release.ts']) {
+    const size=Number(spawnSync('git',['cat-file','-s',`${head}:${file}`],{encoding:'utf8'}).stdout.trim());
+    assert(Number.isSafeInteger(size)&&size>0&&size<gitReadLimit,`${file} must be tracked and within the read limit`);
+    assert.equal(Buffer.byteLength(gitFile(head,file)),size,`${file} must be read in full`);
+    largest=Math.max(largest,size);
+  }
+  // Guards the regression itself: at least one entry really exceeds the old limit.
+  assert(largest>1024*1024,'expected a tracked compiled entry above 1 MiB');
+});
+
+test('eligibility reads the real revision for a canonical main push without a version change',()=>{
+  const head=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
+  assert.equal(eligibility({ref:'refs/heads/main',before:head,after:head,repository:{full_name:canonical}},'push',head,canonical),null);
 });
