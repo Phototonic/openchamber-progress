@@ -789,7 +789,9 @@ After putting the released companion back and reloading, plugin inventory report
 installed/enabled is not proof of active capture. The **current** built service
 continues to return HTTP 200 and format 2 for run reads. Schema, run evidence,
 loss metadata and other durable facts remain intact; disposing the outgoing
-matching observer can advance the epoch allocator and revision. Restoring the
+matching observer can advance the epoch allocator and revision. Live companions
+also renew recovery leases and maintain job/traversal bookkeeping, so preservation
+of these facts is not whole-store byte equality. Restoring the
 current companion and reloading restores active capture registration and
 `activation: "control-applies-to-loaded-instances"`, without a down-migration or
 backup restoration.

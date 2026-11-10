@@ -22,6 +22,31 @@ async function stop(child:ReturnType<typeof spawn>|undefined){
   if(child.pid)assert.throws(()=>process.kill(child.pid!,0),(e:any)=>e.code==='ESRCH','owned child must be gone');
 }
 
+type Snapshot=ReturnType<typeof durableSnapshot>;
+type Boundary='before-reload'|'rollback';
+function preservedRunFacts(snapshot:Snapshot,boundary:Boundary){
+  // The live 3s drain renews leases and schedules/claims/completes metadata scans.
+  // Their leases, jobs and traversal cursors are worker state, not retained facts.
+  const workerTables=['runs_recovery_lease','runs_jobs','runs_recovery_work'];
+  const data=Object.fromEntries(Object.entries(snapshot.data).filter(([name])=>!workerTables.includes(name)));
+  return {schema:snapshot.schema,data:{...data,
+    // Recovery claims/completions can bump revision; every other format field,
+    // including version, generation and all loss metadata, stays strictly checked.
+    runs_format:data.runs_format!.map(({revision,...facts})=>facts),
+    // Only rollback disposes the outgoing observer. Keep its invalidation fence
+    // strict, but allow the epoch allocator to advance when that observer retires.
+    runs_observation_epoch:data.runs_observation_epoch!.map(row=>{
+      if(boundary==='before-reload')return row;
+      const {epoch,...fence}=row;return fence;
+    }),
+  }};
+}
+function assertPreservedRunFacts(before:Snapshot,after:Snapshot,boundary:Boundary){
+  assert.deepEqual(preservedRunFacts(after,boundary),preservedRunFacts(before,boundary),`${boundary}: schema and retained facts are preserved`);
+  assert.ok(Number(after.data.runs_format![0]!.revision)>=Number(before.data.runs_format![0]!.revision),'live recovery revision never regresses');
+  if(boundary==='rollback')assert.ok(Number(after.data.runs_observation_epoch![0]!.epoch)>=Number(before.data.runs_observation_epoch![0]!.epoch),'observer retirement never regresses the epoch');
+}
+
 test('released built companion upgrades only on real isolated loader reload and refuses rollback',{timeout:240000},async()=>{
   const root=fs.mkdtempSync('/tmp/opencode/subagent-upgrade-native-');fs.chmodSync(root,0o700);
   const binary='/tmp/opencode/agent-progress-probe-cli/opencode';
@@ -85,17 +110,19 @@ test('released built companion upgrades only on real isolated loader reload and 
         const read=()=>serviceRead(`/v1/subagent-runs?${query}`);
         assert.equal((await read()).runFormat,1);assert.equal(format().version,1);
         const beforeUpdate=durableSnapshot(store.db);
+        assert.equal(beforeUpdate.data.plans!.length,1,'the rehearsal preserves a populated plan, not just empty storage');
         lifecycle('update',targets,current);installedBytes(current);
         const beforeReload=await serviceRead('/v1/setup');assert.equal(beforeReload.activation,'reload-required');
-        assert.equal(format().version,1);assert.equal((await read()).runFormat,1);
+        assert.equal(format().version,1);const readBeforeReload=await read();assert.equal(readBeforeReload.runFormat,1);
+        assert.deepEqual(readBeforeReload.data,original.data);assert.deepEqual(readBeforeReload.counts,original.counts);assert.deepEqual(readBeforeReload.capture,original.capture);
         const preReload=durableSnapshot(store.db);
-        assert.deepEqual(preReload,beforeUpdate,'install/update, setup, health and run reads never migrate or mutate storage');
+        assertPreservedRunFacts(beforeUpdate,preReload,'before-reload');
         const reload=async()=>{const res=await fetch(`${baseUrl}/api/location/reload?${new URLSearchParams({'location[directory]':location.directory})}`,{method:'POST',headers:{...headers,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(10000)});assert.equal(res.ok,true);await res.arrayBuffer();};
         await reload();await plugin('active');
         await wait(()=>serviceRead('/v1/setup'),v=>v.activation==='control-applies-to-loaded-instances','current companion not acknowledged');
         const upgraded=await read();assert.equal(format().version,2);assert.deepEqual(upgraded.data,original.data);assert.deepEqual(upgraded.counts,original.counts);assert.equal(upgraded.capture.loss,loss);
         assert.deepEqual(upgraded.capture.lossNotice,{sequence:0,lastLossAt:null,dismissedThrough:0,attention:false});
-        assert.deepEqual(durableSnapshot(store.db).data.runs_rows,rows);
+        const afterUpgrade=durableSnapshot(store.db);assert.deepEqual(afterUpgrade.data.runs_rows,rows);assert.deepEqual(afterUpgrade.data.plans,beforeUpdate.data.plans);
         assert.ok(upgraded.revision>original.revision,'migration and real observer disposal/start retire old revisions');
         lifecycle('update',targets,released);installedBytes(released);assert.equal((await serviceRead('/v1/setup')).activation,'reload-required');
         const beforeRollback=durableSnapshot(store.db);
@@ -103,16 +130,7 @@ test('released built companion upgrades only on real isolated loader reload and 
         assert.equal(String((rejected.state as any).error).split('\n')[0],'Error: schema');
         const rollbackSetup=await serviceRead('/v1/setup');assert.equal(rollbackSetup.activation,'reload-required');
         const afterRollback=durableSnapshot(store.db);
-        assert.deepEqual(afterRollback.schema,beforeRollback.schema,'rollback does not rewrite format-2 schema');
-        for(const [table,values] of Object.entries(beforeRollback.data)){
-          if(table==='runs_format')assert.deepEqual(afterRollback.data[table]!.map(({revision,...row})=>row),values.map(({revision,...row})=>row));
-          else if(table==='runs_observation_epoch')assert.deepEqual(afterRollback.data[table]!.map(({epoch,...row})=>row),values.map(({epoch,...row})=>row));
-          else assert.deepEqual(afterRollback.data[table],values,table);
-        }
-        // The outgoing matching observer's disposer may advance the allocator and
-        // revision. Failed old activation must preserve all other durable facts.
-        assert.ok(Number(afterRollback.data.runs_format![0]!.revision)>=Number(beforeRollback.data.runs_format![0]!.revision));
-        assert.ok(Number(afterRollback.data.runs_observation_epoch![0]!.epoch)>=Number(beforeRollback.data.runs_observation_epoch![0]!.epoch));
+        assertPreservedRunFacts(beforeRollback,afterRollback,'rollback');
         assert.equal(format().version,2);assert.deepEqual(durableSnapshot(store.db).data.runs_rows,rows);
         const rolledBack=await read();assert.deepEqual(rolledBack.data,upgraded.data);assert.deepEqual(rolledBack.counts,upgraded.counts);assert.deepEqual(rolledBack.capture,upgraded.capture);
         let statusRpcError:string|undefined;

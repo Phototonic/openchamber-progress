@@ -20,6 +20,8 @@ export function upgradeProbe(ReleasedStore:any,createRunCapture:any,sessionIdent
         // Session IDs and lineage come from the actual host, not a fake identity map.
         const parent=await ctx.session.create({agent:'build',title:'Upgrade fixture parent',model:{providerID:'upgrade-fixture',id:'never-called'}} as any);
         const child=await ctx.session.create({agent:'build',parentID:parent.id,title:'Upgrade fixture child',model:{providerID:'upgrade-fixture',id:'never-called'}} as any);
+        const actor=await sessionIdentity(ctx,b.source,parent.id,'build',{alive:()=>true,signal:new AbortController().signal,sameScope:true});
+        store.apply({op:'start',plan:'upgrade-rehearsal',oid:'seed-upgrade',rev:0,title:'Synthetic upgrade rehearsal',items:[{id:'verify',title:'Verify retained progress',kind:'task',status:'working'}]},actor);
         capture=createRunCapture(ctx,{store,sourceId:b.source.id,identity:(id:any,alive:any,signal:any)=>sessionIdentity(ctx,b.source,id,'build',{alive,signal,sameScope:true})});
         const event={tool:'subagent',sessionID:parent.id,messageID:'message-upgrade',id:'call-upgrade',input:{agent:'build',description:'Synthetic upgrade run'}};
         await capture.before(event);capture.after({...event,status:'completed',result:{output:{sessionID:child.id,status:'completed'}}});await capture.settled();
