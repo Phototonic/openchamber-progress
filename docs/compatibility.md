@@ -83,6 +83,8 @@ Measured Windows environment: Windows 11 Pro x64, build 26300.9711, local NTFS,
 normal account token; OpenChamber 2.5.2 / Electron 44.9.3 / Node 24.22.0, with
 bundled OpenCode 2.1.4 / Bun 1.4.4 / Node compatibility 26.3.0 / SQLite 3.53.4.
 Standalone development Node 24.19.0 uses SQLite 3.53.3 and is supplementary evidence.
+Development checks accept Node 24.x >= 24.19.0; later 24.x releases are not
+separately certified. CI's release gate remains pinned to exactly Node 24.19.0; a second job runs the newest 24.x.
 
 The native OpenCode run uses a credential-free scripted provider and the real
 registered tool/guidance/runtime: start/read/change/finish, fresh document capture,
@@ -132,7 +134,9 @@ live backend outcomes are in `backend-auth-live.json` and
 
 Bun1.3.14 manages tooling/build only; TypeScript5.9.3, @types/node24.19.2,
 @openchamber/sdk2.5.1, @opencode/plugin2.1.4; `bun.lock` pins transitives.
-Node24.19.0 runs backend tests and standalone HTTP smoke. Independent downloaded
+Node24.19.0 ran backend tests and standalone HTTP smoke for this probe. Current
+checks accept Node 24.x >= 24.19.0, without separate certification of later 24.x.
+Independent downloaded
 OpenCode2.1.4 embeds Bun1.4.4 (Node compatibility version26.3.0).
 OpenChamber2.5.1 was observed spawning its service with Electron44.9.3 as
 Node24.22.0, no Bun. The actual service opens the shared SQLite DB; SQLite3.53.4
@@ -194,8 +198,8 @@ The primary context still receives recurring generic guidance when eligible.
 No patch-body or content parsing is implied. Local diagnostic evidence and the
 exact bounded coverage are in `evidence/activation/{native-host.md,coverage.md}`.
 
-Run the production activation and native tests with Node24.19.0 and existing Bun;
-the native probe requires the independent 2.1.4 binary plus working rootless
+Run the production activation and native tests with Node 24.x >= 24.19.0 and existing Bun;
+the native probe requires an independent OpenCode 2.x >= 2.2.2 binary plus working rootless
 `unshare -Urn` and `ip`. It fails rather than falling back to an online provider.
 `ACTIVATION_COMPANION_ENTRY=build/companion/index.js` selects those verbatim
 companion bytes and sibling guidance, with the observer separately loaded. Use
@@ -212,18 +216,21 @@ node --experimental-strip-types --test tests/backend/progress-activation-runtime
 ## Progress resume capsule verification
 
 The separately named `progress resume` native case verifies production activation
-and Store lookup on pinned OpenCode **2.2.2** at the actual outgoing scripted-provider
+and Store lookup on OpenCode **2.x >= 2.2.2** at the actual outgoing scripted-provider
 boundary. It uses direct synthetic Store construction and local plugin loading,
 not installation. The observer records metadata and the synthetic recovery section
 from actual outgoing system parts; it never manufactures recovery in regression
 mode or retains conversation/summary text. No real model or provider credentials
-are used. The test requires Node24.19.0, existing Bun/dependencies, working rootless
+are used. Node 24.19.0 and OpenCode 2.2.2 are the tested baselines; later 24.x/2.x
+releases are accepted but not separately certified. The test requires Node 24.x
+>= 24.19.0, existing Bun/dependencies, working rootless
 `unshare -Urn`/`ip`, and the already-present independent binary below. A missing or
 wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
-The host pin is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
-`@openchamber/sdk` **2.5.1**. Verified independent2.2.2 archive SHA-256:
+The host range is distinct from `@opencode/plugin`/client **2.1.4** and the current
+build dependency `@openchamber/sdk` **2.7.0** (minimum OpenChamber host **2.5.1**).
+Verified independent2.2.2 archive SHA-256:
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
 executable SHA-256:
 `4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
@@ -318,7 +325,7 @@ recovery. Early live refusals and later accepted z.ai root/native/move/compactio
 successes are distinguished in the dated auth safety/review evidence; final
 credential cleanup and zero owned processes/roots were verified.
 
-### Current native proof pin — 2.2.2
+### Current native proof baseline — 2.2.2
 
 Verified on 2026-10-30: the official URL above now supplies an archive whose SHA-256 is
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`.
@@ -326,7 +333,8 @@ The extracted independent executable reports `opencode v2.2.2`; its SHA-256 is
 `4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
 The archive remains `cli.tar.gz` and the executable remains `opencode` in the
 disposable `/tmp/opencode/agent-progress-probe-cli` fixture directory. Native runtime
-tests now require 2.2.2; installed plugin/client SDK packages remain pinned to
+tests require OpenCode 2.x >= 2.2.2; later 2.x releases are accepted but not
+separately certified. Installed plugin/client SDK packages remain pinned to
 2.1.4, independently of the runtime binary. Earlier observations in this guide
 remain historical and do not certify the new host.
 
@@ -438,6 +446,63 @@ remained; CDP9333 and isolated host port closed. The then-retained H contained
 generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
 clean real directories or reuse real profiles; no server restart is authorized.
+
+### Isolated desktop upgrade rehearsal
+
+On 2026-11-10, the released **1.0.0** extension and built companion from
+`v1.0.0` were installed on a real isolated Linux **OpenChamber 2.7.0** desktop
+host using independent **OpenCode 2.2.6**. Settings → Extensions → Add extension
+accepted a clean tracked-file folder projection; sessions/service permissions
+were approved, and the extension's own setup/review/confirmation flow installed
+the companion. The real plugin loader activated it and created format 1. The
+current tracked build was installed through the same folder UI's **Reinstall**
+flow, which requested permissions again. Both package versions were 1.0.0:
+this was folder replacement, not the version-based extension update offer.
+
+Content was explicitly synthetic: the release's Store APIs seeded one working
+plan, one succeeded dispatch and a recorded gap, using real, unprompted host
+parent/child sessions. Passive metadata recovery also retained an unknown
+historical child, giving two rows (one dispatch, one historical session). No
+agent/model execution is claimed; provider credentials were empty at the initial
+and final checks, and no model prompt was sent.
+
+Before companion update, the current rail showed **Different companion build
+available** and **Review update**. Review displayed installed/bundled version
+1.0.0 and **Same version number, different files: updating selects the bundled
+files.** Confirming Update left format 1 and the retained rows unchanged. The
+rail then said **OpenCode has not loaded the current companion files yet. Restart
+OpenCode when convenient so agents use them** (followed by its running-session
+caveat). Settings → General → **Restart OpenCode** restarted only this isolated
+host's managed runtime. Activation migrated to format 2 and preserved the plan,
+both rows and their counts. The rail's neutral **Partial** cue expanded to
+**Some run information wasn’t recorded. This happened before the update; the
+date is unknown.** Work Status showed Sub-agents counts but no gap-attention line;
+the stored notice had null date, sequence 0 and `attention: false`.
+
+Rollback through the real folder Reinstall/grant flow made the released extension
+show **Progress service is not responding**, **It may still be starting. Try again
+in a moment.**, and **Try again** in both observed surfaces. The host service proxy
+returned HTTP 502, `SERVICE_FAILED`, **The extension's service failed to start.**
+Retry and an isolated OpenCode restart did not recover it. No companion rollback
+control was available in this failure state, so the current companion remained
+installed; a desktop companion downgrade was not forced or tested. Schema, plan,
+run rows and loss metadata stayed intact. The operational store was not
+byte-identical: the still-current companion's recovery job/lease housekeeping
+also changed, alongside epoch/revision bookkeeping. Restoring the current folder,
+approving its grants and restarting the isolated runtime recovered the rail and
+Work Status; service health returned HTTP 200 with `ready: true`.
+
+The released UI's suggestion that this persistent incompatibility may merely be
+startup delay is a rollback UX limitation, not evidence that retry can repair it.
+No product code was changed. The launch used a fresh private HOME/XDG/profile,
+the extracted AppImage, an empty inherited environment, private loopback ports,
+and the existing Wayland socket. Owned-process checks found no real-home
+environment/FD/cwd/writable-map references or inherited sensitive configuration;
+the stable live desktop PIDs/start times/listeners were unchanged before and after
+cleanup. All owned desktop/runtime/service processes were stopped. This does not
+certify the standalone board-page entry (only the rail and Work Status were
+observed), ZIP/Git installation, version-driven update discovery, model-driven
+runs, desktop companion downgrade, Windows or macOS.
 
 ## Sub-agent activity — tested native and workspace signals
 
@@ -640,14 +705,121 @@ The additive run extension preserves schema/protocol 2. A missing extension or
 older service is unavailable, not a certified empty archive. A read-only open
 and authenticated GET never install the extension. Activation validates the
 whole extension and refuses partial/future schemas without destructive repair.
-Downgrade leaves additive tables intact; older writers do not produce run facts.
+Run storage format 2 is upgraded only by matching companion activation. Exact
+epoch-bearing format 1 is read-only-compatible with the new service beforehand,
+without notice metadata; new run mutations refuse until activation. Epochless
+version 1 still needs activation for run reads (`503 schema`); it is admitted for
+setup and progress, with health200/ready=true but no run-read capability. Its
+exact migration shape is accepted by install/update without migrating it there.
+Both upgrades preserve all evidence and leave
+old loss unknown-date, non-attention. Failed migration rolls back atomically.
+
+During admission and reads, the current build meeting a newer run storage format
+or base schema keeps the
+service host-ready with health200/ready=false and `schema` diagnostics, retains
+setup status, and refuses store-backed routes with `503 schema` without changing
+store bytes. Guests show “Progress data needs an update”, not a startup delay.
+This does not change the released 1.0.0 rollback behaviour described below.
+Service-controlled install/update also checks existing run storage before any
+installation change and refuses unsupported formats with `503 schema`. This is
+only a preflight: a concurrent upgrade during the action can leave store or
+installation changes before admission refuses the unsupported store, with no
+automatic rollback. The fallback's compatibility check and capture disabling
+share one immediate transaction and never disable an unsupported store.
+
+Mixed versions have distinct limits:
+
+- New service/guest with format 2 support dated, store-wide dismissed attention.
+- Old guests ignore additive notice metadata and retain their original permanent
+  loss presentation; they cannot dismiss or claim complete coverage.
+- New guests with an old service retain muted unknown-date loss without dismissal
+  or a short recent-loss line. This does not prove the loss predates an update.
+- Pre-run base schema-2 writers can still perform independent progress operations;
+  preserved triggers fence capture toggles and remove deleted plan associations.
+- Older **run-aware** services/companions reject the exact new schema. The older
+  service's health path can return `503 schema`, making guests unavailable, not
+  merely hiding the notice. Reload already-running companions explicitly; do not
+  silently restart them or weaken schema checks.
+
+An already-running older companion that has not been reloaded can still advance
+the observation epoch allocator and run revision when it reconnects or disposes.
+This retires held read cursors, but does not grant continuity evidence across a
+gap or invalidate another active observer's token. It cannot record, clear or
+dismiss recording-gap state, change the format, or perform its other guarded run
+writes. Existing loss, detection sequence and dismissal checkpoint remain intact;
+incomplete coverage cannot become complete from that bookkeeping. Reloading the
+companion with the matching version ends this old-observer behaviour.
+
+Before activation, code rollback needs no store change. After activation, keep
+the upgraded store intact and recover forward with format-2-capable binaries.
+No automatic down-migration, metadata/loss/fence deletion or restoration of a stale
+backup is supported. Choosing an older backup could discard subsequent progress
+and requires separate owner authorization. Service and guest outputs ship together
+after the muted-disclosure prerequisite, with no intervening release.
 
 Portable read-seam tests now exercise an unmodified base schema-2 writer in a
 separate Node process, a read-only reopen, DDL/write rollback, real SQLite/HTTP
 reads and the actual companion registration with controlled native get/list
 metadata. They preserve existing progress snapshots and verify persistent
-capture-generation fencing. This is not a new native-host or Windows claim;
+capture-generation fencing. Additional isolated tests exercise the unmodified
+released 1.0.0 runtime's v1 reads, migration rollback recovery, upgraded-store
+health/capture refusal and subsequent recovery with the new code. A separate
+process uses that release's source and actual companion capture registration to
+create and populate format-1 stores, with and without recorded loss; current
+activation preserves their run evidence and counts and migrates old loss as
+undated, non-attention evidence. The frozen format-1 fixture is checked against
+the release-created schema. These history-based tests require the `v1.0.0` tag
+and fail with fetch instructions if it is missing. These portable checks use controlled
+host seams, not a real host or the release's built service/companion entries. Controlled
+backend time, two connections and authenticated HTTP cover attention and fenced
+dismissal; no live profile or model is used. This is not a new native-host or Windows claim;
 the native observations and screenshot limits above remain historical.
+
+### Isolated built-release upgrade rehearsal
+
+On 2026-11-10, `tests/backend/subagent-upgrade-runtime.test.ts` rehearsed the
+released **1.0.0 built companion** from `v1.0.0` on an independent Linux
+**OpenCode 2.2.6** runtime. Both the released and current tracked companion entries
+were installed verbatim through the lifecycle installer; neither was wrapped or
+patched. The real plugin loader created format 1, then migrated to format 2 only
+after lifecycle update and an explicit `POST /api/location/reload`. This also
+exercises a same-package-version update with different payload fingerprints.
+Before reload, setup returned `activation: "reload-required"`; health, setup and
+run GETs through the current **built service** left the format-1 store unchanged.
+
+Two fresh isolated stores cover no loss and recorded loss. Host sessions and
+parent/child lineage are real. Recording inputs are **synthetic**: a separate
+diagnostic plugin delivers before/after and execution-event inputs to the
+release's source capture implementation using real host identity lookups. It
+does not prompt or execute a native subagent/model loop. The loss variant calls
+that release capture's unavailable path. Migration itself is performed by the
+unchanged current built companion inside the real loader, not by the diagnostic
+plugin or a test call to the migration method. Run rows/counts survive, revisions
+advance, and old loss remains undated with `attention: false`. Authenticated run
+GETs exercise the current packaged service entry, not just a Store seam.
+
+After putting the released companion back and reloading, plugin inventory reports
+`status: "failed"`, with error first line `Error: schema`; its status RPC returns
+`RPC is unavailable: agent-progress-status`. Setup still reports `installed: true`, `captureEnabled: true`,
+`activation: "reload-required"` and `diagnostics: ["rollback-payloads-retained"]`:
+installed/enabled is not proof of active capture. The **current** built service
+continues to return HTTP 200 and format 2 for run reads. Schema, run evidence,
+loss metadata and other durable facts remain intact; disposing the outgoing
+matching observer can advance the epoch allocator and revision. Live companions
+also renew recovery leases and maintain job/traversal bookkeeping, so preservation
+of these facts is not whole-store byte equality. Restoring the
+current companion and reloading restores active capture registration and
+`activation: "control-applies-to-loaded-instances"`, without a down-migration or
+backup restoration.
+
+The repeatable test uses a fresh HOME/XDG/cache/state/runtime/temp tree, rejects
+ancestor/system configuration, uses OS-assigned loopback ports and synthetic local
+passwords, checks empty credentials, rejects/counts model/transport attempts, and
+stops its owned runtime/service processes and removes its fixture. It needs the
+independent runtime and release tag and is excluded from portable CI. This is not
+a real OpenChamber desktop host, extension update-UI, native model-driven dispatch,
+Windows or macOS certification, nor a rerun of all native regression families on
+2.2.6.
 
 Recorded native execution events distinguish succeeded/failed/interrupted from
 SDK idle/completed. Historical native `outcome` with `time.idle` is labelled a

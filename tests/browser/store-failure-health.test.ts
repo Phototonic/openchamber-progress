@@ -49,6 +49,33 @@ test('readList classifies a configured binding failure as unavailable with ident
   assert.deepEqual(calls.map(q => q.path), ['/health']);
 });
 
+test('schema diagnostics and 503 replies render incompatible copy; host failure stays unavailable', async () => {
+  let banner: {title:string;body:string}|undefined;
+  const components:any={};
+  runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/components.ts',import.meta.url),'utf8'),{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+  }).outputText,{
+    exports:components,
+    document:{createElement:()=>({dataset:{},setAttribute(){}})},
+    require:(name:string)=>name==='@openchamber/sdk/ui'?{mountBanner:(_slot:unknown,value:typeof banner)=>{banner=value;}}:{},
+  });
+  for(const [reply,kind] of [
+    [response(failedHealth('schema')),'incompatible'],
+    [response({error:'schema'},503),'incompatible'],
+    [response({error:'SERVICE_FAILED',message:"The extension's service failed to start."},502),'unavailable'],
+  ] as const){
+    const result=await source.readList({serviceRequest:async()=>reply},{session:'A'});
+    assert.equal(result.ok,false);if(result.ok)throw Error('expected refusal');
+    assert.equal(result.failure.kind,kind);
+    const block=components.failureBlock(result.failure,()=>{});
+    assert.equal(block.dataset.testid,`state-${kind}`);
+    assert.equal(banner!.title,components.FAILURE_COPY[kind].title);
+    assert.equal(banner!.body,components.FAILURE_COPY[kind].body);
+    assert.equal(banner!.title,kind==='incompatible'?'Progress data needs an update':'Progress service is not responding');
+    assert.equal(banner!.body,kind==='incompatible'?'The progress store uses a format this view does not support. Update the extension and its companion.':'It may still be starting. Try again in a moment.');
+  }
+});
+
 test('readList keeps the unconfigured null read byte-compatible', async () => {
   const calls: GuestRequest[] = [];
   const result = await source.readList({ serviceRequest: async q => { calls.push(q); return response(HEALTH_UNCONFIGURED); } }, { session: 'A' });

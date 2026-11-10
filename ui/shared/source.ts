@@ -3,8 +3,8 @@ import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { planGraphQuery, parsePlanGraph } from './adapter.ts';
 import type { PlanGraphRequest, PlanGraphRead } from './model.ts';
 import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
-import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, RUN_ROUTES, runQuery } from './adapter.ts';
-import type { ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
+import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
+import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
   ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
@@ -346,6 +346,11 @@ export async function readCaptureComparison(host: ServiceHost, request: CaptureR
 export async function readRuns(host: ServiceHost, request: RunRequest, cursor?: string): Promise<CaptureRead<RunRead>> {
   try { return { ok: true, value: parseRunRead(await call(host, RUN_ROUTES.read, runQuery(request, cursor)), request) }; }
   catch (error) { return { ok: false, failure: classify(error) }; }
+}
+/** One explicit store-wide recording-gap acknowledgement, through the same guarded proxy. */
+export async function dismissRunLoss(host: ServiceHost, request: DismissLossRequest): Promise<{ ok: true; value: DismissLossReply } | { ok: false; failure: ReadFailure; conflict: boolean }> {
+  try { return { ok: true, value: parseDismissLossReply(await call(host, RUN_ROUTES.dismissLoss, undefined, 'POST', dismissLossBody(request)), request) }; }
+  catch (error) { return { ok: false, failure: classify(error), conflict: error instanceof HttpError && error.status === 409 }; }
 }
 /** Asks the companion for one bounded metadata-only history pass; the service coalesces repeats. */
 export async function requestReconcile(host: ServiceHost, request: ReconcileRequest): Promise<{ ok: true } | { ok: false; failure: ReadFailure }> {

@@ -4,12 +4,13 @@ import{spawn,spawnSync}from'node:child_process';import{once}from'node:events';im
 import{OpenCode}from'@opencode/client';import{ProgressStatus}from'../../plugin/status.ts';
 import{lifecycle,type Targets}from'../../setup/lifecycle.ts';
 import{SetupController}from'../../service/setup-controller.ts';
+import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
 
-test('QA4 self-contained production install, actual empty2.2.2 plugin activation/update and standalone disable/remove',{timeout:45000},async()=>{
+test('QA4 self-contained production install, actual empty host plugin activation/update and standalone disable/remove',{timeout:45000},async()=>{
   const root=mkdtempSync('/tmp/opencode/agent-progress-production-runtime-');let child:ReturnType<typeof spawn>|undefined;let setup:SetupController|undefined;
   const binary='/tmp/opencode/agent-progress-probe-cli/opencode';
   try{
-    assert.equal(existsSync(binary),true,'approved independent2.2.2 runtime required');
+    assert.equal(existsSync(binary),true,'approved independent runtime required');
     for(let dir=path.dirname(root);;dir=path.dirname(dir)){for(const name of ['opencode.json','opencode.jsonc','.opencode/opencode.json','.opencode/opencode.jsonc'])assert.equal(existsSync(path.join(dir,name)),false,'ancestor config not allowed');if(dir===path.dirname(dir))break;}
     assert.equal(existsSync('/etc/opencode'),false,'system config not allowed');
     for(const dir of ['config/opencode','data/opencode','home','cache','state','runtime','tmp','project','compiled'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
@@ -20,7 +21,7 @@ test('QA4 self-contained production install, actual empty2.2.2 plugin activation
     cpSync(`${targets.configRoot}/plugins/agent-progress/progress-binding.json`,`${root}/service-binding.json`);
     setup=new SetupController(`${root}/service-binding.json`,()=>payload);assert.equal(setup.status().activation,'reload-required');
     const env={PATH:'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,OPENCODE_PASSWORD:'synthetic-local-only-password',DBUS_SESSION_BUS_ADDRESS:'disabled:'};
-    const version=spawnSync(binary,['--version'],{env,encoding:'utf8',stdio:['ignore','pipe','ignore']});assert.match(version.stdout,/2\.2\.2/);
+    const version=spawnSync(binary,['--version'],{env,encoding:'utf8',stdio:['ignore','pipe','ignore']});assert.equal(version.status,0);requireRuntimeVersion('opencode',version.stdout);
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address()as any).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
     child=spawn(binary,['serve','--hostname','127.0.0.1','--port',String(port)],{cwd:`${root}/project`,env,stdio:'ignore'});
     let spawnError=false;child.once('error',()=>{spawnError=true;});

@@ -155,7 +155,7 @@ try {
   check('literal markup in description and claim', await guest('panel', `const r=d.querySelector('${row('C2')}');return !r.querySelector('b,i')&&r.querySelector('.ap-obs-title').textContent==='<b>Review</b> the release note'`) === true);
   check('no Claimed or Accepted line without those facts (C1 has no claim)', !(await has('panel', fact('C1', 'claimed'))) && (await text('panel', fact('C1', 'accepted'))) === 'Accepted2 tasks reported: 1 done, 1 in progress');
   await noClutter('panel', 'rail');
-  check('complete history: no coverage or cap warning at all', !(await has('panel', '[data-testid="subagent-coverage"]')) && await has('panel', '[data-testid="info-trigger"][aria-label="About sub-agent records"]'));
+  check('complete history: no coverage line, Partial cue or cap warning at all', !(await has('panel', '[data-testid="subagent-coverage"]')) && !(await has('panel', '[data-testid="subagent-coverage-cue"]')) && await has('panel', '[data-testid="info-trigger"][aria-label="About sub-agent records"]'));
   await click('panel', '[data-testid="info-trigger"][aria-label="About sub-agent records"]');
   check('record meanings reachable by accessible info', await guest('panel', `const b=d.querySelector('[aria-label="About sub-agent records"]'),n=d.getElementById(b.getAttribute('aria-controls'));return b.getAttribute('aria-expanded')==='true'&&n.textContent.includes('A finished run is not a finished task.')&&n.textContent.includes('Claimed')&&n.textContent.includes('Accepted')`));
   await evaluate(`qa.context('A');true`);
@@ -338,7 +338,7 @@ try {
   check('capture off: records stay readable with a short note', !!(await text('panel', fact('C2', 'claimed'))));
   await evaluate(`qa.capture=true;qa.runs.A.recovery={state:'unavailable',reason:null,token:null};qa.bump();true`);
   await wait('panel', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('history-unavailable')`, 'recovery unavailable', 20_000);
-  check('recovery unavailable: visible warning outside closed info', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('until the companion is running') && await guest('panel', `return !d.querySelector('[data-testid="subagent-coverage"]').closest('details,[data-testid="info-content"]')`));
+  check('recovery unavailable: visible warning outside closed info, still in the warning tone', (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('until the companion is running') && await guest('panel', `const l=d.querySelector('[data-testid="subagent-coverage"] .ap-warn');return !d.querySelector('[data-testid="subagent-coverage"]').closest('details,[data-testid="info-content"]')&&l.dataset.tone==='warning'&&l.querySelector('.ap-icon').dataset.icon==='warning'`));
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
 
   // Incomplete host coverage: retained rows give no current activity; recorded Running stays; disclosed.
@@ -381,14 +381,151 @@ try {
   await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
   await wait('panel', `!d.querySelector('[data-testid="subagent-coverage"]')`, 'history complete again');
 
+  // Routine coverage behind the "Partial" cue (rail and board): closed by default, a native button
+  // that expands the notes inline below the header, kept open across repaints, with Load more
+  // history inside; visible lines stay outside it.
+  const cue = '[data-testid="subagent-coverage-cue"]', cueNotes = '[data-testid="subagent-coverage-notes"]';
+  const cueState = (s: string) => guest<{ expanded: string | null; hidden: boolean; controls: boolean; inHead: boolean; besideCounts: boolean; name: string; focus: string | null; notes: string | null; visible: string | null }>(s, `const b=d.querySelector('${cue}'),n=d.querySelector('${cueNotes}');return {expanded:b?.getAttribute('aria-expanded')??null,hidden:!!n?.hidden,controls:!!b&&d.getElementById(b.getAttribute('aria-controls'))===n,inHead:!!b?.closest('.ap-census-head [data-testid="subagent-count"]'),besideCounts:!!b&&Math.abs(b.getBoundingClientRect().top-[...d.querySelectorAll('[data-testid="subagent-count"] .ap-sub-part')].at(-1).getBoundingClientRect().top)<8,name:b?.textContent??'',focus:d.activeElement?.dataset.testid??null,notes:n?.dataset.notes??null,visible:d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes??null}`);
+  const repainted = async (s: string) => { await guest(s, `d.querySelector('${sec}').__painted=1;return true`); await evaluate(`qa.set('C2',{title:'Reviewer '+Date.now()});qa.bump();true`); await wait(s, `d.querySelector('${sec}')&&!d.querySelector('${sec}').__painted`, 'section repainted'); };
+  await evaluate(`qa.runs.A.loss=true;qa.runs.A.recovery={state:'partial',reason:null,token:'more-1'};qa.bump();true`);
+  await wait('panel', `d.querySelector('${cueNotes}')?.dataset.notes==='capture-loss history-partial'`, 'routine notes behind the cue', 20_000);
+  let cs = await cueState('panel');
+  check('routine notes: one closed Partial cue last in the counts row, no warning lines', cs.expanded === 'false' && cs.hidden && cs.controls && cs.inHead && cs.besideCounts && cs.name === 'Partial sub-agent coverage' && cs.visible === null, cs);
+  check('closed notes are not rendered (out of Tab order and the accessibility tree)', await guest('panel', `return w.getComputedStyle(d.querySelector('${cueNotes}')).display==='none'`) === true);
+  await shot('panel', 'rail-360-cue-closed', 4000, true);
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await key('Enter');
+  cs = await cueState('panel');
+  check('Enter opens the notes; focus stays on the cue', cs.expanded === 'true' && !cs.hidden && cs.focus === 'subagent-coverage-cue', cs);
+  const opened = (await text('panel', cueNotes))!;
+  check('open notes keep their full wording, with Load more history inside', opened.includes('Some run information wasn’t recorded. This happened before the update; the date is unknown.') && opened.includes('only partly loaded') && await has('panel', `${cueNotes} [data-testid="subagent-retry-history"]`), opened);
+  const toneFacts = (s: string) => guest<{ tones: string[]; icons: string[]; muted: boolean }>(s, `const ls=[...d.querySelectorAll('${cueNotes} .ap-warn')],m=w.getComputedStyle(d.querySelector('${sec}')).getPropertyValue('--oc-muted').trim();return {tones:ls.map(l=>l.dataset.tone),icons:ls.map(l=>l.querySelector('.ap-icon').dataset.icon),muted:ls.every(l=>{const c=w.getComputedStyle(l.querySelector('.ap-icon')).color,p=d.createElement('span');p.style.color=m;d.body.append(p);const want=w.getComputedStyle(p).color;p.remove();return c===want})}`);
+  const tones = await toneFacts('panel');
+  check('notes behind the cue are neutral: a muted ⓘ mark, no orange warning triangle', tones.tones.length === 2 && tones.tones.every((t) => t === 'neutral') && tones.icons.every((i) => i === 'info') && tones.muted, tones);
+  check('open notes sit inline below the header and push the rest down (no popover)', await guest('panel', `const h=d.querySelector('${sec} .ap-census-head').getBoundingClientRect(),n=d.querySelector('${cueNotes}'),r=n.getBoundingClientRect(),x=n.nextElementSibling?.getBoundingClientRect();return r.top>=h.bottom-1&&w.getComputedStyle(n).position==='static'&&(!x||x.top>=r.bottom-1)`) === true);
+  await key(' ');
+  check('Space closes it', (await cueState('panel')).expanded === 'false');
+  await key(' ');
+  check('Space opens it again', (await cueState('panel')).expanded === 'true');
+  await key('Tab');
+  check('Tab moves from the cue into its notes: Load more history', await guest('panel', `return d.activeElement?.dataset.testid==='subagent-retry-history'&&!!d.activeElement.closest('${cueNotes}')`) === true);
+  await repainted('panel');
+  cs = await cueState('panel');
+  check('open state and focus on Load more history survive a repaint', cs.expanded === 'true' && !cs.hidden && cs.focus === 'subagent-retry-history', cs);
+  await shot('panel', 'rail-360-cue-open', 4000, true);
+  await show('panel', 600);
+  await shot('panel', 'rail-600-cue-open', 4000, true);
+  await show('panel');
+  await guest('panel', `w.focus();d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  const postsCue = await posts();
+  await key('Enter');
+  await wait('panel', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='history-loading'`, 'loading line after Load more history');
+  await settle(300);
+  cs = await cueState('panel');
+  check('Load more history: one request, a visible loading line, the cue stays open on capture loss with focus on it', (await posts()) - postsCue === 1 && cs.expanded === 'true' && cs.notes === 'capture-loss' && cs.focus === 'subagent-coverage-cue', { ...cs, posts: (await posts()) - postsCue });
+  await shot('panel', 'rail-360-cue-with-visible-line', 4000, true);
+  // Partial history as the only routine note: Load more ends the cue, so focus lands on the heading.
+  await evaluate(`qa.runs.A.loss=false;qa.runs.A.recovery={state:'partial',reason:null,token:'more-2'};qa.bump();true`);
+  await wait('panel', `d.querySelector('${cueNotes}')?.dataset.notes==='history-partial'`, 'partial history only');
+  check('a cue still present keeps its open state through a note change', (await cueState('panel')).expanded === 'true');
+  await guest('panel', `d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  await key('Enter');
+  await wait('panel', `!d.querySelector('${cue}')&&d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='history-loading'`, 'cue gone while loading');
+  await settle(300);
+  check('the last routine note loading: focus lands on the Sub-agents heading, not the document', await guest('panel', `return d.activeElement?.dataset.testid==='subagent-heading'`) === true, await guest('panel', `return d.activeElement?.tagName+'.'+(d.activeElement?.dataset.testid??'')`));
+  // Coverage cleared by a background update (history completed elsewhere, storage loss over), not by
+  // this frame: a focused coverage control that disappears hands focus to the surviving cue, else the
+  // heading; focus elsewhere is never moved.
+  const focused = (s: string) => guest<string | null>(s, `return d.activeElement?.dataset.testid??d.activeElement?.parentElement?.dataset.testid??null`);
+  const notesNow = (kinds: string) => wait('panel', `d.querySelector('${cueNotes}')?.dataset.notes===${javascriptLiteral(kinds)}`, `cue notes: ${kinds}`, 20_000);
+  await evaluate(`qa.runs.A.loss=true;qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared by a background update', 20_000);
+  await settle(200);
+  check('external clear with focus on the cue: focus moves to the Sub-agents heading', await focused('panel') === 'subagent-heading', await focused('panel'));
+  await evaluate(`qa.runs.A.loss=true;qa.runs.A.recovery={state:'partial',reason:null,token:'more-4'};qa.bump();true`);
+  await notesNow('capture-loss history-partial');
+  if ((await cueState('panel')).expanded !== 'true') { await guest('panel', `d.querySelector('${cue}').focus();return true`); await key('Enter'); }
+  await guest('panel', `d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await notesNow('capture-loss');
+  await settle(200);
+  cs = await cueState('panel');
+  check('external clear with focus on Load more history, other notes remaining: focus moves to the open cue', cs.focus === 'subagent-coverage-cue' && cs.expanded === 'true', cs);
+  await evaluate(`qa.runs.A.loss=false;qa.runs.A.recovery={state:'partial',reason:null,token:'more-5'};qa.bump();true`);
+  await notesNow('history-partial');
+  await guest('panel', `d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'last routine note cleared by a background update', 20_000);
+  await settle(200);
+  check('external clear with focus on Load more history as the last note: focus moves to the heading', await focused('panel') === 'subagent-heading', await focused('panel'));
+  await evaluate(`qa.runs.A.loss=true;qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `d.querySelector('[data-testid="observed-more"] > summary').focus();return true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared while focus is elsewhere', 20_000);
+  await settle(200);
+  check('external clear with focus elsewhere: focus stays where it was (not moved to the heading)', await guest('panel', `return d.activeElement?.matches('[data-testid="observed-more"] > summary')`) === true, await focused('panel'));
+  // Focus left this frame (here: the host page) after it was on the cue: never pulled back.
+  await evaluate(`qa.runs.A.loss=true;qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await evaluate(`const h=document.querySelector('section[data-surface="panel"] h1');h.tabIndex=-1;h.focus();true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared while focus is in another frame', 20_000);
+  await settle(200);
+  const outside = await evaluate<{ top: string; panelHeading: boolean }>(`({top:document.activeElement?.tagName,panelHeading:frame('panel').contentDocument.activeElement?.dataset.testid==='subagent-heading'})`);
+  check('external clear with focus outside the frame: focus is not pulled back into it', outside.top === 'H1' && !outside.panelHeading, outside);
+  // Board: the same cue beside the counts, next to a visible line (capture off).
+  await evaluate(`qa.runs.A.loss=true;qa.capture=false;qa.runs.A.recovery={state:'partial',reason:null,token:'more-3'};qa.bump();true`);
+  await show('page', 1100);
+  await selectPlan('src-local');
+  const board = '[data-testid="plan-detail"]';
+  await wait('page', `d.querySelector('${board} ${cueNotes}')?.dataset.notes==='capture-loss history-partial'&&d.querySelector('${board} [data-testid="subagent-coverage"]')?.dataset.notes==='capture-off'`, 'board cue beside a visible line', 20_000);
+  cs = await cueState('page');
+  check('board: closed cue beside the counts; capture off stays a visible line outside it, in its information tone', cs.expanded === 'false' && cs.hidden && cs.inHead && cs.besideCounts && cs.visible === 'capture-off' && (await guest('page', `return d.querySelector('[data-testid="plan-detail"] [data-testid="subagent-coverage"] .ap-warn').dataset.tone`)) === 'info' && !(await guest<boolean>('page', `return !!d.querySelector('[data-testid="subagent-coverage"]').closest('${cueNotes}')`)), cs);
+  await shot('page', 'board-cue-closed-visible-line', 4000, true);
+  await guest('page', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await key('Enter');
+  cs = await cueState('page');
+  check('board: Enter opens the notes with Load more history', cs.expanded === 'true' && !cs.hidden && await has('page', `${cueNotes} [data-testid="subagent-retry-history"]`), cs);
+  const boardTones = await toneFacts('page');
+  check('board: notes behind the cue are neutral too', boardTones.tones.length === 2 && boardTones.tones.every((t) => t === 'neutral') && boardTones.icons.every((i) => i === 'info') && boardTones.muted, boardTones);
+  await repainted('page');
+  check('board: open state survives a repaint', (await cueState('page')).expanded === 'true');
+  await shot('page', 'board-cue-open', 4000, true);
+  await show('page', 390);
+  check('board at 390px with the notes open: no horizontal overflow', !(await guest<boolean>('page', `return d.documentElement.scrollWidth>d.documentElement.clientWidth`)));
+  // Rail reflow (200% and 400% of 360/600 px) and forced colours with the notes open.
+  await show('panel');
+  await wait('panel', `d.querySelector('${cue}')`, 'rail cue');
+  if ((await cueState('panel')).expanded !== 'true') { await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`); await key('Enter'); }
+  for (const width of [300, 180, 150]) {
+    await show('panel', width);
+    const wide = await guest<string[]>('panel', `const cw=d.documentElement.clientWidth;return [...d.querySelectorAll('${sec} *')].filter(n=>n.getBoundingClientRect().right>cw+1).slice(0,6).map(n=>n.tagName+'.'+n.className)`);
+    check(`rail at ${width}px with the notes open: no horizontal overflow`, !(await guest<boolean>('panel', `return d.documentElement.scrollWidth>d.documentElement.clientWidth`)) && !wide.length, wide);
+  }
+  await shot('panel', 'rail-180-cue-open', 4000, true);
+  await show('panel');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await key('Tab', true); await key('Tab');
+  check('forced colours: the focused cue shows a system-colour outline', await guest('panel', `const b=d.activeElement;return b?.dataset.testid==='subagent-coverage-cue'&&w.getComputedStyle(b).outlineStyle==='solid'`) === true);
+  await shot('panel', 'rail-360-cue-forced-colors', 4000, true);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  await evaluate(`qa.runs.A.loss=false;qa.capture=true;qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')&&!d.querySelector('[data-testid="subagent-coverage"]')`, 'quiet again');
+
   // Host row limit: more than 128 host-listed descendants are disclosed, never shown as complete.
   await evaluate(`qa.context('M');for(let i=0;i<129;i++)qa.ws.sessions['proj-alpha'].push({id:'T'+i,title:'Host worker '+i,projectId:'proj-alpha',directory:'/fixture/Alpha',parentId:'M',createdAt:100+i,updatedAt:0,archivedAt:null,worktree:null,activity:i===128?'waiting-question':'running',outcome:null,items:[]});qa.push('sessions');true`);
   await show('panel');
-  await wait('panel', `d.querySelector('[data-testid="subagent-truncated"]') && d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes?.includes('host-truncated')`, 'host row limit disclosed');
-  check('host row limit: summary marked incomplete and About explains it', (await text('panel', '[data-testid="subagent-truncated"]')) === 'more not checked' && (await text('panel', '[data-testid="subagent-coverage"]'))!.includes('more sub-agents than this view checks'));
+  await wait('panel', `d.querySelector('[data-testid="subagent-coverage-notes"]')?.dataset.notes?.includes('host-truncated')`, 'host row limit disclosed');
+  check('host row limit: the Partial cue replaces the summary\'s "more not checked"; its notes explain it', !(await has('panel', '[data-testid="subagent-truncated"]')) && await has('panel', '[data-testid="subagent-coverage-cue"]') && (await text('panel', '[data-testid="subagent-coverage-notes"]'))!.includes('more sub-agents than this view checks'));
   await show('status', 280);
   await wait('status', `d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='host-truncated'`, 'status truncation line');
-  check('host row limit: Work Status short line', (await text('status', '[data-testid="subagent-coverage"]')) === 'Not every sub-agent is checked.');
+  check('host row limit: Work Status unchanged (muted "more not checked", short line, no cue)', (await text('status', '[data-testid="subagent-coverage"]')) === 'Not every sub-agent is checked.' && (await text('status', '[data-testid="subagent-truncated"]')) === 'more not checked' && !(await has('status', '[data-testid="subagent-coverage-cue"]')));
   await evaluate(`qa.ws.sessions['proj-alpha']=qa.ws.sessions['proj-alpha'].filter(s=>!/^T\\d+$/.test(s.id));qa.push('sessions');true`);
   await wait('status', `!d.querySelector('[data-testid="subagent-truncated"]') && !d.querySelector('[data-testid="subagent-coverage"]')`, 'quiet below the limit');
   check('below the limit: no truncation note', true);
@@ -431,6 +568,163 @@ try {
   await wait('status', `d.querySelector('${row('C1')}')`, 'status back on A');
   await show('panel');
   await wait('panel', `d.querySelector('${row('C1')}')`, 'rail back on A');
+
+  // 8b. Recording gaps (run format 2) over the fixture's controlled SERVICE clock and store state
+  // (qa.lose / qa.advance / qa.migrated / qa.legacy / qa.useStore). Synthetic transport, not native.
+  type Loss = { complete: string | null; tone: string | null; expanded: string | null; desc: string | null; triangle: boolean; attention: string | null; date: string | null; text: string | null; iso: string | null; markTone: string | null; dismiss: string | null; help: string | null; status: string | null; statusText: string | null; line: string | null; lineText: string | null; focus: string | null; announced: string | null };
+  const lossState = (s: string) => guest<Loss>(s, `const c=d.querySelector('${sec}'),b=c?.querySelector('${cue}'),n=c?.querySelector('[data-testid="subagent-loss-note"]'),x=c?.querySelector('[data-testid="subagent-dismiss-loss"]'),st=c?.querySelector('[data-testid="subagent-dismiss-status"]'),t=n?.querySelector('[data-testid="subagent-loss-date"]'),l=c?.querySelector('[data-testid="subagent-coverage"]');return {complete:c?.dataset.complete??null,tone:b?.dataset.tone??null,expanded:b?.getAttribute('aria-expanded')??null,desc:b?.getAttribute('aria-describedby')?d.getElementById(b.getAttribute('aria-describedby'))?.textContent??null:null,triangle:!!b?.querySelector('[data-icon="warning"]'),attention:n?.dataset.attention??null,date:n?.dataset.date??null,text:n?.querySelector('.ap-warn-text')?.textContent??null,iso:t?.dateTime??null,markTone:n?.querySelector('.ap-warn')?.dataset.tone??null,dismiss:x?(x.getAttribute('aria-disabled')==='true'?'pending':'ready'):null,help:x?d.getElementById(x.getAttribute('aria-describedby'))?.textContent??null:null,status:st?.dataset.state??null,statusText:st?.textContent??null,line:l?.dataset.notes??null,lineText:l?.textContent??null,focus:d.activeElement?.dataset.testid??null,announced:d.querySelector('[data-testid="subagent-announcer"]')?.textContent??null}`);
+  const lossWait = (s: string, condition: string, label: string) => wait(s, `(()=>{const c=d.querySelector('${sec}'),b=c?.querySelector('${cue}'),n=c?.querySelector('[data-testid="subagent-loss-note"]'),x=c?.querySelector('[data-testid="subagent-dismiss-loss"]'),l=c?.querySelector('[data-testid="subagent-coverage"]');return ${condition}})()`, label, 20_000);
+  const dismissPosts = () => evaluate<number>(`qa.requests.filter(q=>q.path==='/v1/subagent-runs/dismiss-loss').length`);
+  const openCue = async (s: string) => { if ((await lossState(s)).expanded !== 'true') { await guest(s, `w.focus();d.querySelector('${cue}').focus();return true`); await key('Enter'); } };
+  const SENTENCE = 'Some run information wasn’t recorded.';
+  await evaluate(`qa.runs.A.loss=false;qa.clean('store-1');qa.clean('store-2');true`);
+  await show('panel');
+  await lossWait('panel', `c&&!n`, 'no recording gap yet');
+
+  // Recent and undismissed: warning-tone Partial with its description, the stored date, Dismiss warning.
+  const seq1 = await evaluate<number>(`qa.lose()`);
+  const lostAt1 = await evaluate<number>(`qa.stores['store-1'].lastLossAt`);
+  await lossWait('panel', `b?.dataset.tone==='warning'`, 'recent gap: warning tone');
+  let ls = await lossState('panel');
+  check('recent gap: Partial turns warning (triangle and "Recent recording gap."), closed by default, still incomplete', ls.tone === 'warning' && ls.triangle && ls.desc === 'Recent recording gap.' && ls.expanded === 'false' && ls.complete === 'false' && ls.line === null, ls);
+  await click('panel', cue);
+  ls = await lossState('panel');
+  check('pointer opens it: the approved sentence with the stored detection date (machine-readable) and a warning mark', ls.expanded === 'true' && ls.attention === 'true' && ls.date === 'known' && ls.text!.startsWith(`${SENTENCE} Last detected: `) && ls.text!.endsWith('.') && ls.iso === new Date(lostAt1).toISOString() && ls.markTone === 'warning', { ls, lostAt1 });
+  check('Dismiss warning with its approved explanation, inside the open notes', ls.dismiss === 'ready' && ls.help === 'Quiets this warning for this store. New recording gaps will warn again.' && await has('panel', `${cueNotes} [data-testid="subagent-dismiss-loss"]`), ls);
+  check('other routine notes stay neutral beside the attended gap', (await guest<string[]>('panel', `return [...d.querySelectorAll('${cueNotes} li:not([data-testid="subagent-loss-note"]) .ap-warn')].map(l=>l.dataset.tone)`)).every((t) => t === 'neutral'));
+  await shot('panel', 'rail-recent', 4000, true);
+  await show('status', 280);
+  await lossWait('status', `l?.dataset.notes==='capture-loss'`, 'Work Status short loss line');
+  ls = await lossState('status');
+  check('Work Status: the short loss line while attention lasts, no cue and no dismissal', ls.lineText === SENTENCE && ls.tone === null && ls.dismiss === null && ls.complete === 'false', ls);
+  await shot('status', 'status-recent');
+
+  // Keyboard dismissal: a failure keeps everything and says so; a pending request ignores repeats.
+  await show('panel');
+  await openCue('panel');
+  await guest('panel', `w.focus();d.querySelector('[data-testid="subagent-dismiss-loss"]').focus();return true`);
+  await evaluate(`qa.dismissError='busy';true`);
+  await key('Enter');
+  await lossWait('panel', `!!c.querySelector('[data-testid="subagent-dismiss-status"][data-state="error"]')`, 'dismissal failed');
+  await wait('panel', `d.querySelector('[data-testid="subagent-announcer"]')?.textContent==='Couldn’t dismiss the warning. Try again.'`, 'failure announced');
+  ls = await lossState('panel');
+  check('failed dismissal: warning kept, approved failure message, focus kept on Dismiss warning', ls.tone === 'warning' && ls.dismiss === 'ready' && ls.statusText === 'Couldn’t dismiss the warning. Try again.' && ls.focus === 'subagent-dismiss-loss', ls);
+  await evaluate(`qa.dismissError=null;qa.holdDismiss=true;true`);
+  const postsBeforePending = await dismissPosts();
+  await key('Enter');
+  await lossWait('panel', `x?.getAttribute('aria-disabled')==='true'`, 'dismissal pending');
+  await key('Enter');
+  await settle(300);
+  ls = await lossState('panel');
+  check('pending dismissal: aria-disabled (still focusable), one request despite a repeat, no status message', ls.dismiss === 'pending' && ls.focus === 'subagent-dismiss-loss' && ls.status === null && (await dismissPosts()) - postsBeforePending === 1, { ls, posts: (await dismissPosts()) - postsBeforePending });
+  await evaluate(`qa.holdDismiss=false;qa.releaseDismiss();true`);
+  await lossWait('panel', `!x&&b?.dataset.tone==='neutral'`, 'dismissed');
+  await wait('panel', `d.querySelector('[data-testid="subagent-announcer"]')?.textContent==='Warning dismissed.'`, 'success announced');
+  ls = await lossState('panel');
+  check('dismissed: muted Partial, the notes stay open with the dated gap listed, focus moves to the cue, still incomplete', ls.tone === 'neutral' && !ls.triangle && ls.desc === null && ls.expanded === 'true' && ls.attention === 'false' && ls.iso === new Date(lostAt1).toISOString() && ls.markTone === 'neutral' && ls.focus === 'subagent-coverage-cue' && ls.complete === 'false', ls);
+  check('the service recorded the acknowledgement for this store only', await evaluate<boolean>(`qa.stores['store-1'].dismissed===${seq1}&&qa.stores['store-2'].dismissed===0`) === true);
+  await shot('panel', 'rail-dismissed', 4000, true);
+  // Other surfaces learn it on their ordinary refresh.
+  await show('status', 280);
+  await lossWait('status', `!l`, 'Work Status quiet after dismissal');
+  ls = await lossState('status');
+  check('Work Status after dismissal: no loss line, still incomplete', ls.line === null && ls.complete === 'false', ls);
+  await shot('status', 'status-quiet');
+  await show('page', 1100);
+  await lossWait('page', `b?.dataset.tone==='neutral'&&n?.dataset.attention==='false'`, 'board quiet after dismissal');
+  check('board after dismissal: muted Partial, gap still listed, no Dismiss warning, still incomplete', (await lossState('page')).dismiss === null && (await lossState('page')).complete === 'false');
+
+  // A later gap warns again; the earlier success is not repeated.
+  await show('panel');
+  await evaluate(`qa.lose();true`);
+  const lostAt2 = await evaluate<number>(`qa.stores['store-1'].lastLossAt`);
+  await lossWait('panel', `b?.dataset.tone==='warning'&&!!x`, 'later gap warns again');
+  ls = await lossState('panel');
+  check('a later gap warns again with its own date and Dismiss warning', ls.attention === 'true' && ls.iso === new Date(lostAt2).toISOString() && ls.status === null, ls);
+
+  // Stale acknowledgement: a newer gap committed before the request; the reply refuses it.
+  await evaluate(`qa.holdReads=true;true`);
+  await settle(3500);
+  await evaluate(`qa.lose();true`);
+  await openCue('panel');
+  await click('panel', '[data-testid="subagent-dismiss-loss"]');
+  await lossWait('panel', `!!c.querySelector('[data-testid="subagent-dismiss-status"][data-state="conflict"]')`, 'stale dismissal refused');
+  await evaluate(`qa.holdReads=false;qa.release();true`);
+  const lostAt3 = await evaluate<number>(`qa.stores['store-1'].lastLossAt`);
+  await lossWait('panel', `n?.querySelector('[data-testid="subagent-loss-date"]')?.dateTime===${javascriptLiteral(new Date(lostAt3).toISOString())}`, 'the newer gap shown');
+  await wait('panel', `d.querySelector('[data-testid="subagent-announcer"]')?.textContent==='A newer recording gap was detected. Review it before dismissing.'`, 'conflict announced');
+  ls = await lossState('panel');
+  check('conflict: the newer gap stays unacknowledged and shown, with the approved review message', ls.tone === 'warning' && ls.dismiss === 'ready' && ls.statusText === 'A newer recording gap was detected. Review it before dismissing.' && await evaluate<boolean>(`qa.stores['store-1'].dismissed<qa.stores['store-1'].sequence`) === true, ls);
+  await click('panel', '[data-testid="subagent-dismiss-loss"]');
+  await lossWait('panel', `!x&&b?.dataset.tone==='neutral'`, 'pointer dismissal of the reviewed gap');
+  check('pointer dismissal of the reviewed gap: muted, still incomplete', (await lossState('panel')).complete === 'false');
+
+  // Ageing: exactly 24 hours on the service clock quiets it; the date stays; no control, no line.
+  await evaluate(`qa.lose();true`);
+  const lostAt4 = await evaluate<number>(`qa.stores['store-1'].lastLossAt`);
+  await lossWait('panel', `b?.dataset.tone==='warning'`, 'fresh gap before ageing');
+  await evaluate(`qa.advance(86400000);true`);
+  await lossWait('panel', `b?.dataset.tone==='neutral'&&!x`, 'aged out on the service clock');
+  ls = await lossState('panel');
+  check('aged out (24 h of service time): muted, the original date kept, no Dismiss warning, still incomplete', ls.attention === 'false' && ls.iso === new Date(lostAt4).toISOString() && ls.complete === 'false', ls);
+  await show('page', 1100);
+  await lossWait('page', `b?.dataset.tone==='neutral'&&n?.dataset.attention==='false'`, 'board aged');
+  await openCue('page');
+  await shot('page', 'board-old', 4000, true);
+  // An old gap gives Work Status no line; another genuine note keeps its line.
+  await show('status', 280);
+  await lossWait('status', `!l`, 'no old-gap line');
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'loading'}];qa.push('sessions');true`);
+  await lossWait('status', `l?.dataset.notes==='host-activity-unavailable'`, 'other genuine note keeps its line');
+  check('Work Status: an old gap gives no line, withheld activity still does', (await lossState('status')).lineText === 'Current activity unavailable.');
+  await evaluate(`qa.ws.coverage['proj-alpha']=[{directory:'/fixture/Alpha',state:'ready'}];qa.push('sessions');true`);
+  await lossWait('status', `!l`, 'coverage restored');
+
+  // Migrated (date unknown) and an older service (no metadata): muted, no control, no line.
+  for (const [mode, kind, words, shotName] of [['migrated', 'migrated-unknown', 'This happened before the update; the date is unknown.', null], ['legacy', 'legacy-unknown', 'Date unknown.', 'board-legacy']] as const) {
+    await evaluate(`qa.${mode}();true`);
+    await show('page', 1100);
+    await lossWait('page', `n?.dataset.date==='${kind}'`, `${mode} gap on the board`);
+    await openCue('page');
+    ls = await lossState('page');
+    check(`${mode} gap: muted, "${words}", no date element, no Dismiss warning, still incomplete`, ls.tone === 'neutral' && ls.text === `${SENTENCE} ${words}` && ls.iso === null && ls.dismiss === null && ls.complete === 'false', ls);
+    if (shotName) await shot('page', shotName, 4000, true);
+    await show('status', 280);
+    await lossWait('status', `c&&!l`, `${mode}: Work Status quiet`);
+    check(`${mode} gap: no Work Status line, still incomplete`, (await lossState('status')).complete === 'false');
+  }
+
+  // Store-wide, per store: dismissing in store-1 leaves store-2's gap warning.
+  await evaluate(`qa.clock=0;qa.clean('store-1');qa.lose('store-1');qa.lose('store-2');true`);
+  await show('panel');
+  await lossWait('panel', `b?.dataset.tone==='warning'&&!!x`, 'store-1 recent');
+  await openCue('panel');
+  await guest('panel', `w.focus();d.querySelector('[data-testid="subagent-dismiss-loss"]').focus();return true`);
+  await key('Enter');
+  await lossWait('panel', `!x&&b?.dataset.tone==='neutral'`, 'store-1 dismissed');
+  await evaluate(`qa.useStore('store-2');true`);
+  await lossWait('panel', `b?.dataset.tone==='warning'&&!!x`, 'store-2 still warns');
+  check('other store: its gap still warns after store-1 was dismissed', await evaluate<boolean>(`qa.stores['store-2'].dismissed===0&&qa.requests.filter(q=>q.path==='/v1/subagent-runs').at(-1).query.storeId==='store-2'`) === true);
+  await evaluate(`qa.useStore('store-1');true`);
+  await lossWait('panel', `b?.dataset.tone==='neutral'`, 'store-1 still quiet');
+
+  // Dark theme at a narrow rail (200% of 360 px) with a recent gap open.
+  await evaluate(`qa.dark();qa.lose();true`);
+  await show('panel', 180);
+  await lossWait('panel', `b?.dataset.tone==='warning'&&d.documentElement.dataset.ocTheme==='dark'`, 'dark narrow recent');
+  await openCue('panel');
+  check('dark, 180 px rail, gap open: no horizontal overflow', !(await guest<boolean>('panel', `return d.documentElement.scrollWidth>d.documentElement.clientWidth`)));
+  await shot('panel', 'rail-dark-narrow-recent', 4000, true);
+  // The store switch above retired the board's reading: select the plan again, then narrow it.
+  await show('page', 1100);
+  await selectPlan('src-local');
+  await show('page', 390);
+  await lossWait('page', `b?.dataset.tone==='warning'&&!!x`, 'narrow board recent');
+  await openCue('page');
+  check('board at 390 px with the recent gap and Dismiss warning open: no horizontal overflow', !(await guest<boolean>('page', `return d.documentElement.scrollWidth>d.documentElement.clientWidth`)));
+  await evaluate(`qa.clock=0;qa.clean('store-1');qa.clean('store-2');true`);
+  await show('panel');
+  await lossWait('panel', `c&&!n`, 'gaps cleared');
 
   // 9. Narrow + dark + reduced motion; 200% reflow equivalents without horizontal overflow.
   await evaluate(`qa.dark();true`);

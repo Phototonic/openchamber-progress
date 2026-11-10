@@ -131,6 +131,17 @@ export function lifecycleBadge(plan: PlanView) {
 const barLabel = (s: PlanSummary) => `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`;
 
 /**
+ * Every task done (a nonzero total, nothing remaining, none skipped: skipped is never done): the
+ * count gets `data-all-done`, the success colour and a decorative done mark, like the kit's finished
+ * progress caption. The count's own words and the bar's name already say it, so nothing new is spoken.
+ */
+export function allDone(counts: HTMLElement, s: Pick<PlanSummary, 'total' | 'remaining' | 'skipped'>) {
+  if (!(s.total > 0 && s.remaining === 0 && s.skipped === 0)) return;
+  counts.dataset.allDone = 'true';
+  counts.prepend(statusMark('done', { decorative: true, className: 'ap-done-mark' }));
+}
+
+/**
  * The at-a-glance progress line: done/total and the segmented bar. The state chips (stateChipRow)
  * are its legend. `compact` keeps Work Status's one-line counts.
  */
@@ -150,6 +161,7 @@ export function progressBlock(s: PlanSummary, compact = false) {
   else {
     const n = el('strong', '', String(s.done));
     counts.append(n, el('span', 'ap-fraction-total', `/${s.total}`), el('span', 'ap-sr', ` done, ${s.remaining} remaining`));
+    allDone(counts, s);
   }
   wrap.append(counts);
   const bar = segmentedBar(s, barLabel(s));

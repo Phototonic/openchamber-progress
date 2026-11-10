@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { GRAPH_LIMITS } from '../shared/plan-graph.ts';
-import { RUN_LIMITS, parseReconcileBody, type ReconcileRequest, type RunRequest } from '../shared/subagent-runs.ts';
+import { RUN_LIMITS, parseReconcileBody, parseDismissLossBody, type RunRequest } from '../shared/subagent-runs.ts';
 import { parseCaptureBinding } from '../shared/document-captures.ts';
 import { CAPTURE_LIMITS } from '../shared/document-comparison.ts';
 import { timingSafeEqual } from 'node:crypto';
@@ -31,18 +31,18 @@ export function createProgressServer(store: Store | undefined, token: string, un
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       graphRoute=url.pathname==='/v1/plan-graph';
       if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
-      runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile'].includes(url.pathname);
+      runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile','/v1/subagent-runs/dismiss-loss'].includes(url.pathname);
       if(runsRoute) {
         if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
         const active=setup?setup.current():{store,error:unavailableCode};
         if(!active.store)return answer(503,{error:active.error??'storage'});
-        if(url.pathname.endsWith('/reconcile')) {
+        if(url.pathname!=='/v1/subagent-runs') {
           if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
           if(url.search)return answer(404,{error:'not-found'});
           let size=0;const chunks:Buffer[]=[];
           for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>RUN_LIMITS.queryBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
-          let body:ReconcileRequest;try{body=parseReconcileBody(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{throw new ProgressError('invalid');}
-          return answer(200,active.store.requestRunReconciliation(body));
+          let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));}catch{throw new ProgressError('invalid');}
+          return answer(200,url.pathname.endsWith('/dismiss-loss')?active.store.dismissRunLoss(parseDismissLossBody(text)):active.store.requestRunReconciliation(parseReconcileBody(text)));
         }
         if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
         if(req.headers['content-length']&&req.headers['content-length']!=='0'||req.headers['transfer-encoding'])return answer(400,{error:'body-not-allowed'});
@@ -120,7 +120,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
         // The host marks the service ready on /health 200; a configured store that
         // cannot open keeps the process serving fixed error states (503 on store
         // routes, diagnostics here) instead of a host-level service failure.
-        if (currentStore) return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        if (currentStore) {
+          const runs=currentStore.subagentRunStorage();
+          return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        }
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
       }

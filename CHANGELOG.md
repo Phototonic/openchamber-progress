@@ -1,8 +1,37 @@
 # Changelog
 
-All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/). Package versions are independent of the frozen protocol/schema version (currently 2). GitHub Releases additionally carry the native per-release change lists.
+All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/). Package versions are independent of the frozen protocol/schema version (currently 2). GitHub Releases carry curated user-facing notes and editorial contributor credits, without a generated per-PR list.
 
 ## [Unreleased]
+
+## [1.1.0] - 2026-11-10
+
+A roomier dependency map and quieter sub-agent warnings. Run storage moves to format 2; see Changed for the one-way upgrade.
+
+### Added
+
+- Dependency map arrows show the reported state of a dependency in the rail and on the board: travelling beads on an arrow from a prerequisite reported working, and a static warning-coloured line with a stop bar from an explicitly blocked one. Motion stops with capture off, a hidden frame, reduced motion, more than 300 arrows, more than 24 moving arrows or zoom below 50%. This replaces the map's earlier no-animation contract (#73).
+- Sub-agent recording gaps are dated. The run store records when a gap was last detected; a gap under 24 hours old and not dismissed raises attention, and **Dismiss warning** quiets it for the whole store through `POST /v1/subagent-runs/dismiss-loss`, fenced by the detection sequence so a newer gap is never dismissed unseen. Reads add `capture.lossNotice` without changing protocol or schema versions (#70).
+- A **Partial** cue beside the Sub-agents counts on the rail and board holds the routine coverage notes and the Load more history action in an inline disclosure. Notes about something unavailable or failing right now stay visible lines; Work Status keeps its single short line (#69).
+- The dependency map's selection clears with a background click or Escape while keeping the panned view (#61), and its keys, definitions and qualifications sit in a collapsible **Map help** disclosure (#63).
+- Curated, named GitHub releases: the publisher reads `release-notes/<version>.md` at the release commit, names the release `Agent Progress v<version>: <headline>` and uses only those notes, with editorial outside-contributor thanks and first-time contributor listings instead of a generated per-PR list. Portable CI requires the file when a change raises the package version; a separate non-blocking credit reminder assists the preparer and reviewer.
+- Change proposals under `openspec/`, with the first capability spec, `subagent-loss-notices`. The guides in `docs/` remain the contract of record.
+- A native rehearsal test of the 1.0.0 upgrade, reload and rollback on an isolated OpenCode runtime, a test that upgrades a store created by the released 1.0.0, and a recorded desktop rehearsal on an isolated OpenChamber 2.7.0 host (#72, #74).
+
+### Changed
+
+- **Run storage format 2, a one-way upgrade.** Companion activation migrates the store in one transaction; reads never migrate. An existing recording gap becomes undated. Older run-aware versions refuse the upgraded store, and an already-running older companion must be reloaded. `docs/setup.md` and `docs/compatibility.md` describe the boundary (#70).
+- The fullscreen board uses up to 2400 px. On a wide board the Selected task inspector is a panel over the map's right edge shown only while a task is selected, selection keeps the card visible, and Fit all stops at 100% (#68).
+- The segmented progress bar follows the look of the host kit's progress bar: a slimmer track, pill-shaped segments, and a success-coloured count with a done mark when every task is done and none are skipped (#67).
+- The recording-gap note reads "Some run information wasn't recorded.", because the flag is also set for bounded payloads, capacity limits and dropped claims.
+- Long featured-plan titles in Work Status wrap to the available width, with the picker below when needed (#62).
+- The extension SDK pin is 2.7.0, and native runtime tests accept later Node 24.x and OpenCode 2.x releases (#64, #65). CI also runs on the newest Node 24, runs the SDK guest check and cancels superseded runs (#66).
+
+### Fixed
+
+- A store whose run storage format is newer than the installed version supports is reported as incompatible ("Progress data needs an update") with setup reachable, not as a service that may still be starting. Run storage is classified read-only on admission; a companion install or update against an unsupported store is refused before anything changes, and the capture-disabling fallback checks and writes in one transaction (#75).
+- The older activation-only format-1 run storage no longer fails the health check; it is admitted so its companion can be updated and migrate it (#75).
+- Keyboard focus moves to the surviving cue or the Sub-agents heading when a background update removes a focused coverage control (#69).
 
 ## [1.0.0] - 2026-11-06
 
@@ -161,7 +190,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.0...v0.6.1

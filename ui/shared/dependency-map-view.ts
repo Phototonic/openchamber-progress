@@ -7,7 +7,7 @@
 import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
 import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { DependencyMapInteraction, MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_PANEL, MAP_ZOOM, mapPanelWidth, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
 import { mapAttribution } from './dependency-map-attribution.ts';
 import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
@@ -17,7 +17,7 @@ import type { RunRequest } from '../../shared/subagent-runs.ts';
 import { MAP_CSS } from './dependency-map-style.ts';
 import { plural } from './format.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
-import { statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
+import { showsLiveness, statusMatch, summarize, summaryText, type BlockerView, type ItemView, type PlanView, type StatusFilter } from './model.ts';
 import type { MapTaskAttribution } from './dependency-map-attribution.ts';
 
 /** The frame's interaction controller, as the view sees it. The controller lives outside the root. */
@@ -59,6 +59,18 @@ export interface DependencyMapViewInput extends MapSnapshot {
   onCanvasWidth?: (width: number) => void;
   /** S3 interaction. Absent: the read-only S2 presentation (native scroll, every card a Tab stop). */
   interaction?: MapInteractionBinding;
+  /**
+   * Board only, with interaction: the selection panel's width in CSS px (`mapPanelWidth`) once the map
+   * is wide enough for it. The inspector then sits over the canvas's right edge while a task is
+   * selected and is absent otherwise; the canvas never resizes for it. 0/absent: stacked inspector.
+   */
+  panel?: number;
+  /**
+   * Affirmative permission for working-arrow motion from the frame owner (`mapMotionPermitted`):
+   * Map shown in a visible frame, an eligible current picture, and the reported-work gate
+   * (`showsLiveness`). Absent or false: beads stay stationary. Read-only previews never pass it.
+   */
+  motion?: boolean;
 }
 export interface DependencyMapView {
   /** One paint into a (possibly new) host. State/geometry remain frame-owned, not DOM-owned. */
@@ -70,6 +82,11 @@ export interface DependencyMapView {
   command: (command: MapInteractionCommand) => void;
   /** Retire delivered and pending speech without removing the persistent live region. */
   clearAnnouncements: () => void;
+  /** Close and retire the frame-local help disclosure. */
+  clearHelp: () => void;
+  /** Hidden, left or disposed: revoke the stored and painted arrow-motion permission in place
+   * (no repaint). Only a later paint with fresh permission can restore it. */
+  revokeMotion: () => void;
   dispose: () => void;
 }
 /** QA vocabulary: map-region data-{state,current,revision,tasks,edges,highlight}; map-card-ID
@@ -79,6 +96,7 @@ export interface DependencyMapView {
  * map-announcer outside the root; plan-view, plan-view-{list,map}. Attribution (S4): card
  * data-{attribution,live}, map-card-who-ID, map-card-live-ID; inspector map-attribution
  * data-{assignment,live} with map-attribution-{assignment,links,reports,live}; map-attribution-help.
+ * Wide board: map-inspector data-placement="over" (hidden without a selection) and map-inspector-close.
  * No data-reading article.
  * These describe semantic facts, not styling or incidental DOM nesting.
  */
@@ -157,6 +175,7 @@ const ICONS = {
   right: 'M6.5 3.5 11 8l-4.5 4.5',
   up: 'M3.5 9.5 8 5l4.5 4.5',
   down: 'M3.5 6.5 8 11l4.5-4.5',
+  close: 'M4 4l8 8M12 4l-8 8',
 } as const;
 function icon(name: keyof typeof ICONS) {
   const svg = document.createElementNS(SVG, 'svg');
@@ -182,6 +201,70 @@ function markOf(item: ItemView, fact: DerivedTask | undefined, guidance: boolean
   // Ready/Waiting are recorded-prerequisite guidance: only for an active plan's current picture.
   if (!guidance) return 'pending';
   return fact?.group === 'ready' ? 'ready' : fact?.group === 'skipped' ? 'waiting-skipped' : 'waiting';
+}
+
+// ── Arrow state (pure; no DOM). One cue per recorded prerequisite → dependent pair, from the
+// reported endpoint statuses of the displayed picture only. Never another frame's picture, session
+// activity or report age.
+type Status = ItemView['status'];
+/** `working`: beads; `blocked`: static stop bar; null: the arrow keeps its existing style. */
+export type ArrowCue = 'working' | 'blocked' | null;
+export function arrowCue(prerequisite: Status | undefined, dependent: Status | undefined): ArrowCue {
+  if (prerequisite === 'working') return dependent === 'pending' || dependent === 'blocked' ? 'working' : null;
+  if (prerequisite === 'blocked') return dependent === 'pending' || dependent === 'working' || dependent === 'blocked' ? 'blocked' : null;
+  return null;
+}
+/** New cues only for an active, unarchived plan whose displayed picture is current and ready. */
+export function arrowCuesEligible(plan: Pick<PlanView, 'lifecycle' | 'cleanup'>, picture: Pick<MapSnapshot, 'state' | 'current'>): boolean {
+  return plan.lifecycle === 'active' && (plan.cleanup?.state ?? 'visible') === 'visible' && picture.current && picture.state === 'ready';
+}
+/**
+ * Shipped rendering-cost bounds for arrow motion (docs/ui.md, Dependency map › Arrows). Full-plan
+ * task arrows and eligible visible flows are inclusive ceilings; zoom is the inclusive minimum.
+ * The contract's outer bounds are 300 arrows, 24 flows and 50% zoom; these may only be tighter.
+ */
+export const MAP_MOTION_LIMITS = { arrows: 300, flows: 24, zoom: 0.5 } as const;
+export type ArrowMotionFallback = 'arrows' | 'flows' | 'zoom';
+/** Why otherwise permitted motion falls back to stationary beads, or null within every bound. */
+export function arrowMotionFallback(c: { arrows: number; flows: number; zoom: number }, limits: { arrows: number; flows: number; zoom: number } = MAP_MOTION_LIMITS): ArrowMotionFallback | null {
+  if (c.arrows > limits.arrows) return 'arrows';
+  if (c.flows > limits.flows) return 'flows';
+  if (!(c.zoom >= limits.zoom)) return 'zoom';
+  return null;
+}
+/**
+ * Eligible visible flows: working arrows whose endpoints are both shown; while a selection
+ * highlights a chain, only that chain's working arrows (off-chain beads are stationary anyway).
+ */
+export function arrowFlowCount(edges: readonly (readonly [string, string])[], status: (id: string) => Status | undefined, visible: (id: string) => boolean, chain: ((from: string, to: string) => boolean) | null): number {
+  let n = 0;
+  for (const [a, z] of edges) if (visible(a) && visible(z) && arrowCue(status(a), status(z)) === 'working' && (!chain || chain(a, z))) n++;
+  return n;
+}
+/**
+ * The frame owner's affirmative motion permission: Map shown in a visible frame, an eligible
+ * picture, and the existing reported-work gate (last read succeeded, capture on, something
+ * reported working) over the DISPLAYED picture's plan and tasks.
+ */
+export function mapMotionPermitted(snapshot: Pick<MapSnapshot, 'state' | 'current' | 'picture'>, view: { fresh: boolean; captureEnabled: boolean }, shown: boolean, visible: boolean): boolean {
+  const picture = snapshot.picture;
+  if (!shown || !visible || !picture) return false;
+  const plan = picture.detail.plan;
+  if (!arrowCuesEligible(plan, snapshot)) return false;
+  const working = picture.detail.detail.items.filter(i => i.kind === 'task' && i.status === 'working').length;
+  return showsLiveness(plan.lifecycle, { working }, view);
+}
+/** A waiting task's direct recorded prerequisites, each counted once (hidden by filters or not). */
+export function prerequisiteCounts(fact: Pick<DerivedTask, 'prerequisites'> | undefined) {
+  const seen = new Map<string, DerivedTask['prerequisites'][number]>();
+  for (const p of fact?.prerequisites ?? []) if (!seen.has(p.id)) seen.set(p.id, p);
+  const all = [...seen.values()];
+  const task = (s: Status) => all.filter(p => p.kind === 'task' && p.status === s).length;
+  return { unfinished: all.filter(p => p.kind !== 'task' || p.status !== 'done').length, working: task('working'), blocked: task('blocked') };
+}
+/** "1 reported working, 1 explicitly blocked" (zero parts omitted); '' when both are zero. */
+export function prerequisiteStates(c: { working: number; blocked: number }): string {
+  return [c.working ? `${c.working} reported working` : '', c.blocked ? `${c.blocked} explicitly blocked` : ''].filter(Boolean).join(', ');
 }
 
 function mark(kind: Mark) {
@@ -229,13 +312,16 @@ export function createDependencyMapView(): DependencyMapView {
   // Interactive frame-local presentation: current painted nodes, coalesced viewport frame, a pending
   // generation-bound focus action and the last painted canvas position (screen continuity).
   let viewportNode: HTMLElement | null = null, worldNode: HTMLElement | null = null, zoomNode: HTMLElement | null = null;
+  // Arrow motion: the painted region and, when this paint was permitted to move beads, its count
+  // facts. Zoom is the only bound that changes without a paint (applied with the viewport).
+  let regionNode: HTMLElement | null = null, motionCounts: { arrows: number; flows: number } | null = null;
   let frame = 0, releasing = false;
   // True from a paint until the owner has finished restoring its pre-paint focus (same turn):
   // that focusin is passive and must not move the viewport.
-  let restoring = false;
+  let restoring = false, suppressFocusReveal = false;
   // Latest announcement token and its deferred repeat frame, if any.
   let spoken = 0, speakFrame = 0;
-  let pendingFocus: { id: string | null; generation: number } | null = null;
+  let pendingFocus: { id: string | null; generation: number; reveal?: boolean } | null = null;
   let painted = { key: '', viewport: null as HTMLElement | null };
   let listening: Document | null = null, announcer: HTMLElement | null = null;
   // Controller speech waits one task (after this turn's focus and any repaint's restore; a timer, not
@@ -249,6 +335,12 @@ export function createDependencyMapView(): DependencyMapView {
   // Each painted card's name without the selection-relative Upstream/Downstream phrase.
   let baseNames = new Map<string, string>();
   const binding = () => input?.interaction ?? null;
+  let helpNode: HTMLDetailsElement | null = null, helpIdentity: string | null = null;
+  let removeHelpListeners = () => {};
+  let outsidePointer: number | null = null, outsideTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelOutside() { if (outsideTimer !== null) clearTimeout(outsideTimer); outsideTimer = null; outsidePointer = null; }
+  function clearHelp() { removeHelpListeners(); removeHelpListeners = () => {}; cancelOutside(); if (helpNode) helpNode.open = false; helpNode = null; helpIdentity = null; }
+
 
   function dropSpeech() { if (speech) clearTimeout(speech.timer); speech = null; }
   function clearAnnouncements() {
@@ -312,6 +404,23 @@ export function createDependencyMapView(): DependencyMapView {
     worldNode.style.transform = `translate(${t.x - PAD * t.zoom}px,${t.y - PAD * t.zoom}px) scale(${t.zoom})`;
     worldNode.style.setProperty('--ap-map-zoom', String(t.zoom));
     if (zoomNode) zoomNode.textContent = zoomText(t.zoom);
+    applyMotion(t.zoom);
+  }
+  /**
+   * The map region's own reported-work gate (`data-motion="on"`, style.ts/app.ts phase). Set only
+   * while this paint's permission and every cost bound hold; otherwise beads are stationary and no
+   * map animation exists. Animations started by setting it join the shared phase (app.ts).
+   */
+  function applyMotion(zoom: number) {
+    const r = regionNode; if (!r) return;
+    const fallback = motionCounts ? arrowMotionFallback({ ...motionCounts, zoom }) : null;
+    if (motionCounts && !fallback && motionCounts.flows > 0) { if (r.dataset.motion !== 'on') r.dataset.motion = 'on'; } else delete r.dataset.motion;
+    if (motionCounts && fallback) r.dataset.motionFallback = fallback; else delete r.dataset.motionFallback;
+  }
+  function revokeMotion() {
+    motionCounts = null;
+    if (input?.motion) input = { ...input, motion: false };
+    applyMotion(0);
   }
   function scheduleViewport() {
     if (frame) return;
@@ -339,8 +448,9 @@ export function createDependencyMapView(): DependencyMapView {
       target.tabIndex = 0;
     } else if (target.tagName === 'H2') target.tabIndex = -1;
     applyViewport();
-    target.focus({ preventScroll: true });
-    revealInPage(target);
+    suppressFocusReveal = want.reveal === false;
+    try { target.focus({ preventScroll: true }); } finally { suppressFocusReveal = false; }
+    if (want.reveal !== false) revealInPage(target);
     return true;
   }
   function capture(pointerId: number, on: boolean) {
@@ -351,7 +461,7 @@ export function createDependencyMapView(): DependencyMapView {
   }
   // Frame-owned gesture listeners survive root replacement; capture is rebound to each new viewport.
   const onMove = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } }); };
-  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId }); };
+  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' }); };
   const onFocusIn = (e: FocusEvent) => { const t = e.target as Element | null; if (t?.closest) { binding()?.focusOwner(!!t.closest('[data-testid="map-region"],[data-map-focus-owner]')); binding()?.dispatch({ type: 'canvas-focus', id: t.closest<HTMLElement>('[data-testid="map-viewport"] button[data-task]')?.dataset.task ?? null }); } };
   const onBlur = () => binding()?.focusOwner(false);
   function listen(doc: Document) {
@@ -368,6 +478,9 @@ export function createDependencyMapView(): DependencyMapView {
 
   function paint() {
     observer?.disconnect(); observer = null;
+    const previousHelp = helpNode, previousIdentity = helpIdentity;
+    const wasOpen = previousHelp?.open ?? false;
+    removeHelpListeners(); removeHelpListeners = () => {}; helpNode = null;
     baseNames = new Map();
     if (!host || !input) return;
     // The owner restores focus synchronously after attaching this paint's root; this microtask runs
@@ -376,11 +489,14 @@ export function createDependencyMapView(): DependencyMapView {
     const v = input, b = v.interaction ?? null;
     if (b) { listen(host.ownerDocument); announcer = mapAnnouncer(host.ownerDocument); }
     const st = b?.state() ?? null;
+    // Wide board: the selection panel over the canvas's right edge (0: the stacked inspector).
+    const panel = b && v.frame === 'board' ? Math.max(0, v.panel ?? 0) : 0;
     // Unavailable/not found never draw a diagram, even when the coordinator still holds an older
     // picture (e.g. replacement detail without usable identity): no stale map presented as Updating.
     const retainedUnavailable = !!v.picture && (v.state === 'unavailable' || v.state === 'not-found');
     const p = retainedUnavailable ? null : v.picture, layout = p ? v.layout : null;
     const region = testid(el('article', 'ap-map'), 'map-region');
+    regionNode = region; motionCounts = null;
     if (st?.identity) region.dataset.mapIdentity = st.identity;
     region.dataset.frame = v.frame;
     region.setAttribute('aria-labelledby', `${uid}-title`);
@@ -480,7 +596,6 @@ export function createDependencyMapView(): DependencyMapView {
       if (!c) copies.set(id, c = attributionCopy(v.attribution?.get(id), v.current, p.graph.revision, sessionName));
       return c;
     };
-    const anyAttribution = tasks.some(i => attributionOf(i.id).card);
     const selected = v.selected && byId.get(v.selected)?.kind === 'task' ? byId.get(v.selected)! : null;
     // Upstream/downstream emphasis: fresh on-demand closure walks for the selection only.
     const upstreamSet = selected && layout ? v.facts?.upstream(selected.id) ?? null : null;
@@ -549,8 +664,7 @@ export function createDependencyMapView(): DependencyMapView {
         stats.append(li);
       }
       summary.append(stats);
-      // The full definitions sit in the help below the map; the header keeps the one caveat.
-      summary.append(el('p', 'ap-note', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start.'));
+
     } else if (!active && tasks.length) {
       summary.append(el('p', 'ap-note', 'This plan is closed. Cards show reported status only, without Ready or Unlocks next guidance.'));
     }
@@ -562,7 +676,7 @@ export function createDependencyMapView(): DependencyMapView {
     if (!tasks.length) context.append(groups.length ? 'No task cards. This plan records only groups; their context is listed below. ' : 'No task cards. This plan has no recorded tasks yet. ');
     if (!anyRecorded) context.append(el('strong', '', 'No prerequisites recorded for this plan'), tasks.length ? '. Cards are placed in list order, without arrows.' : '.');
     else if (!edges.length) context.append(el('strong', '', 'No task-to-task prerequisites recorded'), '. Group prerequisites are listed as group context, never drawn as arrows.');
-    else context.append('Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.');
+    else context.hidden = true;
     head.append(state, summary, context);
     region.append(head);
 
@@ -655,10 +769,12 @@ export function createDependencyMapView(): DependencyMapView {
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
       viewport.addEventListener('focusin', e => {
         const card = e.target as HTMLElement, bb = binding();
-        if (!bb || restoring || !card.classList.contains('ap-map-card')) return;
+        if (!bb || restoring || suppressFocusReveal || !card.classList.contains('ap-map-card')) return;
         const r = card.getBoundingClientRect(), box = viewport.getBoundingClientRect(), inset = 8;
         const shift = (start: number, end: number, lo: number, hi: number) => start < lo + inset ? lo + inset - start : end > hi - inset ? Math.max(lo + inset - start, hi - inset - end) : 0;
-        const dx = shift(r.left, r.right, box.left, box.right), dy = shift(r.top, r.bottom, box.top, box.bottom);
+        // While the selection panel is open it covers the canvas's right edge: stay clear of it.
+        const right = box.right - (panel && bb.state().selected ? panel + MAP_PANEL.margin : 0);
+        const dx = shift(r.left, r.right, box.left, right), dy = shift(r.top, r.bottom, box.top, box.bottom);
         if (dx || dy) { bb.dispatch({ type: 'pan', x: dx, y: dy }); applyViewport(); }
         revealInPage(card);
       });
@@ -671,7 +787,7 @@ export function createDependencyMapView(): DependencyMapView {
       viewport.addEventListener('lostpointercapture', e => {
         // Root replacement detaches this node: that loss is rebound, not a gesture end.
         const bb = binding();
-        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId });
+        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
       });
       // Wheel/trackpad pans inside the canvas only. Ctrl/Cmd (browser zoom, pinch) is left alone.
       viewport.addEventListener('wheel', e => {
@@ -702,17 +818,29 @@ export function createDependencyMapView(): DependencyMapView {
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false');
       const defs = document.createElementNS(SVG, 'defs');
-      for (const tone of ['open', 'quiet', 'path'] as const) {
+      // Blocked markers add a stop bar just before the arrowhead (same tip, same 0.9 scale).
+      for (const tone of ['open', 'quiet', 'path', 'working', 'blocked', 'blocked-path'] as const) {
+        const bar = tone.startsWith('blocked');
         const marker = document.createElementNS(SVG, 'marker');
         marker.id = `${uid}-arrow-${tone}`;
         marker.setAttribute('class', `ap-map-marker ap-map-marker-${tone}`);
-        for (const [k, val] of [['viewBox', '0 0 10 10'], ['refX', '9'], ['refY', '5'], ['markerWidth', '9'], ['markerHeight', '9'], ['markerUnits', 'userSpaceOnUse'], ['orient', 'auto']]) marker.setAttribute(k, val);
+        for (const [k, val] of [['viewBox', bar ? '-9 -2 19 14' : '0 0 10 10'], ['refX', '9'], ['refY', '5'], ['markerWidth', bar ? '17.1' : '9'], ['markerHeight', bar ? '12.6' : '9'], ['markerUnits', 'userSpaceOnUse'], ['orient', 'auto']]) marker.setAttribute(k, val);
         const head = document.createElementNS(SVG, 'path');
         head.setAttribute('d', 'M 0 0.5 L 10 5 L 0 9.5 z');
         head.setAttribute('class', 'ap-map-arrowhead');
-        marker.append(head); defs.append(marker);
+        marker.append(head);
+        if (bar) { const stop = document.createElementNS(SVG, 'path'); stop.setAttribute('d', 'M -8 -1.5 L -4.5 -1.5 L -4.5 11.5 L -8 11.5 z'); stop.setAttribute('class', 'ap-map-stopbar'); marker.append(stop); }
+        defs.append(marker);
       }
       svg.append(defs);
+      // Working beads that may move live in their own small decorative layer (same size, viewBox and
+      // world transform), so a moving dash never invalidates the full arrow drawing. Off-chain beads
+      // during a selection are stationary and stay with the static drawing.
+      const flowLayer = document.createElementNS(SVG, 'svg');
+      flowLayer.setAttribute('class', 'ap-map-edges ap-map-flows');
+      for (const k of ['width', 'height', 'viewBox']) flowLayer.setAttribute(k, svg.getAttribute(k)!);
+      flowLayer.setAttribute('aria-hidden', 'true'); flowLayer.setAttribute('focusable', 'false');
+      const cues = arrowCuesEligible(plan, v);
       // Spread ports along card sides so converging arrowheads stay distinguishable.
       const ports = (side: 0 | 1) => {
         const by = new Map<string, string[]>();
@@ -724,6 +852,9 @@ export function createDependencyMapView(): DependencyMapView {
       const pitch = m.height + m.rowGap;
       const lastRow = Math.max(0, ...[...layout.positions.values()].map(s => s.row));
       const onPath: SVGPathElement[] = [];
+      const sel = selected?.id;
+      const chainOf = (from: string, to: string) => !highlight || !sel ? null : (to === sel || upstreamSet?.has(to)) && upstreamSet?.has(from) ? 'upstream' as const : (from === sel || downstreamSet?.has(from)) && downstreamSet?.has(to) ? 'downstream' as const : null;
+      const flows = cues ? arrowFlowCount(shownEdges, id => byId.get(id)?.status, id => visible.has(id), highlight && sel ? (a, z) => !!chainOf(a, z) : null) : 0;
       for (const [from, to] of shownEdges) {
         const a = layout.positions.get(from)!, bb = layout.positions.get(to)!;
         const x1 = a.x + m.width + PAD, y1 = a.y + PAD + outPort(from, to);
@@ -742,21 +873,37 @@ export function createDependencyMapView(): DependencyMapView {
         }
         const prereq = byId.get(from)?.status;
         const tone = prereq === 'done' || prereq === 'skipped' ? 'quiet' : 'open';
+        const cue = cues ? arrowCue(prereq, byId.get(to)?.status) : null;
         const path = document.createElementNS(SVG, 'path');
         path.setAttribute('class', 'ap-map-edge');
         path.dataset.tone = tone;
         if (prereq === 'skipped') path.dataset.skipped = 'true';
+        if (cue) path.dataset.arrow = cue;
         path.setAttribute('data-from', from); path.setAttribute('data-to', to);
         path.setAttribute('d', d);
         // An edge lies on the selection's chain when both ends are in its upstream (or downstream) closure.
-        const sel = selected?.id;
-        const way = !highlight || !sel ? null : (to === sel || upstreamSet?.has(to)) && upstreamSet?.has(from) ? 'upstream' : (from === sel || downstreamSet?.has(from)) && downstreamSet?.has(to) ? 'downstream' : null;
+        const way = chainOf(from, to);
         if (way) path.dataset.path = way;
-        path.setAttribute('marker-end', `url(#${uid}-arrow-${way ? 'path' : tone})`);
+        path.setAttribute('marker-end', `url(#${uid}-arrow-${cue === 'blocked' ? way ? 'blocked-path' : 'blocked' : way ? 'path' : cue ?? tone})`);
         if (way) onPath.push(path); else svg.append(path);
+        if (cue === 'working') {
+          // Decorative beads over the canonical edge; never data-from/data-to, so counts stay single.
+          const bead = document.createElementNS(SVG, 'path');
+          bead.setAttribute('class', 'ap-map-bead');
+          bead.setAttribute('d', d);
+          bead.dataset.flowFrom = from; bead.dataset.flowTo = to;
+          if (way) bead.dataset.chain = way;
+          if (highlight && !way) svg.append(bead);
+          else flowLayer.append(bead);
+        }
       }
       svg.append(...onPath); // chain arrows paint above the rest
       world.append(svg);
+      if (flowLayer.firstChild) world.append(flowLayer);
+      region.dataset.flows = String(flows);
+      // Motion needs this paint's affirmative permission and an interactive viewport (zoom bound).
+      motionCounts = v.motion === true && cues && b ? { arrows: edges.length, flows } : null;
+      applyMotion(st?.transform.zoom ?? 0);
 
       for (const id of layout.order) {
         if (!visible.has(id)) continue;
@@ -843,14 +990,39 @@ export function createDependencyMapView(): DependencyMapView {
       }
       viewport.append(world);
     }
-    stage.append(viewport);
+    // Wide board: the canvas and the selection panel share one positioned box (the panel sits over
+    // the canvas's right edge, after the canvas in DOM and Tab order); otherwise the inspector stacks.
+    const canvasBox = panel ? el('div', 'ap-map-canvas') : null;
+    if (canvasBox) { canvasBox.append(viewport); stage.append(canvasBox); } else stage.append(viewport);
     body.append(stage);
 
     // ── Inspector: literal text only; relationships are explicit records, never inferred.
     const inspector = testid(el('section', 'ap-map-inspector'), 'map-inspector');
     inspector.setAttribute('aria-labelledby', `${uid}-inspector`);
     const ih = el('h3', 'ap-h', 'Selected task'); ih.id = `${uid}-inspector`;
-    inspector.append(ih);
+    if (panel) {
+      inspector.dataset.placement = 'over';
+      inspector.style.width = `${panel}px`;
+      // Shown only with a selection: no empty panel (the hint lives in the map help instead).
+      if (!selected) inspector.hidden = true;
+      else {
+        // A focusable, labelled region so long content scrolls by keyboard; never modal. Its scroll
+        // position survives same-selection repaints (the owner's data-scroll-key restoration).
+        inspector.tabIndex = 0;
+        inspector.dataset.scrollKey = `map-inspector|${st?.identity ?? plan.key}|${selected.id}`;
+        const head = el('div', 'ap-map-inspector-head');
+        const close = testid(el('button', 'ap-map-tool ap-map-close'), 'map-inspector-close');
+        close.type = 'button';
+        close.append(icon('close'));
+        close.setAttribute('aria-label', 'Close task details');
+        close.title = 'Close task details';
+        // The same clear-selection action as a background click: “Selection cleared.”, focus to the card.
+        close.onclick = () => { binding()?.dispatch({ type: 'clear' }); };
+        head.append(ih, close);
+        inspector.append(head);
+      }
+    }
+    if (!inspector.firstChild) inspector.append(ih);
     if (!selected) {
       inspector.dataset.selected = '';
       inspector.append(el('p', 'ap-note', tasks.length ? 'Select a card to see its recorded prerequisites, dependents and reported details.' : 'No task cards to inspect.'));
@@ -862,7 +1034,7 @@ export function createDependencyMapView(): DependencyMapView {
       status.append(mark(kind), el('span', 'ap-map-card-word', MARK_TEXT[kind]));
       if (!visible.has(id)) status.append(el('span', 'ap-map-tag', 'Hidden by filters'));
       inspector.append(status, el('p', 'ap-map-inspector-title', selected.title));
-      const explain = readinessText(selected, fact, guidance, active, titleOf);
+      const explain = readinessText(selected, fact, guidance, active, titleOf, arrowCuesEligible(plan, v));
       if (explain) inspector.append(el('p', 'ap-note', explain));
       const factsList = el('dl', 'ap-map-facts');
       const fact2 = (label: string, value: string | Node) => { const d = el('div'); d.append(el('dt', '', label)); const dd = el('dd'); dd.append(value); d.append(dd); factsList.append(d); };
@@ -888,7 +1060,7 @@ export function createDependencyMapView(): DependencyMapView {
         if (note) dd.append(el('span', 'ap-map-who-note', note));
         d.append(dd); whoList.append(d);
       };
-      row('Assignment', 'map-attribution-assignment', [who.assignment], who.assignmentNote);
+      row('Assignment', 'map-attribution-assignment', [who.assignment], who.kind === 'assigned' ? null : who.assignmentNote);
       if (who.links.length) row('Links', 'map-attribution-links', who.links);
       if (who.kind !== 'unavailable') row('Reports', 'map-attribution-reports', who.reports.length ? who.reports : ['No reports recorded']);
       let activity: string | Node = who.activity;
@@ -899,7 +1071,7 @@ export function createDependencyMapView(): DependencyMapView {
         words.append(mark, who.live.text);
         activity = words;
       }
-      row('Session activity', 'map-attribution-live', [activity], who.activityNote);
+      row('Session activity', 'map-attribution-live', [activity], who.live || who.activityNote === VERIFIED_ACTIVITY_NOTE ? null : who.activityNote);
       ws.append(whoList);
       inspector.append(ws);
       const relationList = (label: string, ids: readonly string[], none: string, testId: string, kindOf: 'upstream' | 'downstream') => {
@@ -938,13 +1110,12 @@ export function createDependencyMapView(): DependencyMapView {
       const order = (ids: string[]) => layout ? layout.order.filter(n => ids.includes(n)) : ids;
       inspector.append(relationList('Recorded prerequisites', order(upstream), 'None recorded.', 'map-prerequisites', 'upstream'));
       inspector.append(relationList('Dependents', order(downstream), 'No task records this one as a prerequisite.', 'map-dependents', 'downstream'));
-      const chain = (upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0);
-      if (highlight && chain) inspector.append(el('p', 'ap-note ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
+
       const unlocks = unlocking(id);
       if (unlocks.length) {
         const u = testid(el('div', 'ap-map-rel'), 'map-unlocks');
         u.append(el('h4', 'ap-map-rel-h', 'Unlocks next'));
-        u.append(el('p', 'ap-note', `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${order(unlocks).map(titleOf).join('; ')}. That is not permission to start them.`));
+        u.append(el('p', 'ap-note', `If reported done, this would satisfy the last unfinished recorded prerequisite for: ${order(unlocks).map(titleOf).join('; ')}.`));
         inspector.append(u);
       }
       // Ancestor groups' own recorded prerequisites: labelled group metadata, never task arrows.
@@ -958,25 +1129,60 @@ export function createDependencyMapView(): DependencyMapView {
       const hiddenRel = [...upstream, ...downstream].filter(r => !visible.has(r)).length;
       if (hiddenRel) inspector.append(el('p', 'ap-note', `${plural(hiddenRel, 'related task is', 'related tasks are')} hidden by the current filters. Choosing one shows it again.`));
     }
-    body.append(inspector);
+    if (canvasBox) canvasBox.append(inspector); else body.append(inspector);
     region.append(body);
 
-    // ── Help: keys (interactive), reading the highlights and the guidance definitions moved from the header.
-    if (b || (guidance && tasks.length) || anyAttribution) {
-      const help = testid(el('div', 'ap-map-help'), 'map-help');
-      help.id = helpId;
-      if (b) {
-        const keys = el('p', 'ap-map-keys');
-        const k = (text: string) => el('kbd', '', text);
-        const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
-        keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Drag the background or scroll to pan; Tab leaves the map.');
-        help.append(keys);
-        if (layout && edges.length) help.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline).'));
-      }
-      if (guidance && tasks.length) help.append(el('p', '', 'Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
-      if (anyAttribution) help.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
-      region.append(help);
+    // A native disclosure needs no global popup machinery. Keep it open across same-reading
+    // repaints, and retire its outside listeners on every repaint, leave or disposal.
+    const help = testid(el('details', 'ap-map-help'), 'map-help');
+    const identity = st?.identity ?? plan.key;
+    help.open = !!wasOpen && previousIdentity === identity && (st?.active ?? true);
+    const summaryHelp = testid(el('summary', 'ap-map-help-trigger', 'Map help and definitions'), 'map-help-trigger');
+    help.append(summaryHelp);
+    const helpBody = el('div', 'ap-map-help-body');
+    if (b) {
+      const keys = el('p', 'ap-map-keys');
+      const k = (text: string) => el('kbd', '', text);
+      const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
+      keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
+      helpBody.append(keys);
+      if (panel) helpBody.append(el('p', '', 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.'));
     }
+    helpBody.append(el('p', '', 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.'));
+    helpBody.append(testid(el('p', '', 'Arrow key. Blue beads: the prerequisite is reported working and the task it points to is still waiting or blocked. Moving beads are a looping sign of reported work, not progress and not proof that the work is happening now; still beads mean the same (they stop when motion is reduced, on large or zoomed-out maps, and outside a selected task’s chain). A bar before the arrowhead: the prerequisite is explicitly blocked. Dashed: the prerequisite was skipped. Faint: the prerequisite is done. Beads and bars appear only on an active plan’s current picture.'), 'map-arrow-key'));
+    helpBody.append(el('p', '', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start. Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
+    helpBody.append(el('p', '', 'Selecting a card marks the tasks it waits on as Upstream (solid outline) and the tasks waiting on it as Downstream (double outline). An explicitly blocked task is never shown as ready, whatever its prerequisites.'));
+    if (selected && highlight && ((upstreamSet?.size ?? 0) + (downstreamSet?.size ?? 0))) helpBody.append(el('p', 'ap-map-chain', `Highlighted on the map: ${plural(upstreamSet?.size ?? 0, 'upstream task', 'upstream tasks')} it waits on, directly or through others, and ${plural(downstreamSet?.size ?? 0, 'downstream task', 'downstream tasks')} waiting on it.`));
+    if (selected) {
+      const who = attributionOf(selected.id);
+      if (who.kind === 'assigned' && who.assignmentNote) helpBody.append(el('p', '', who.assignmentNote));
+      if (who.live) helpBody.append(el('p', '', LIVE_HEDGE));
+      else if (who.activityNote === VERIFIED_ACTIVITY_NOTE) helpBody.append(el('p', '', 'Session activity is shown only for a verified assignment.'));
+    }
+    helpBody.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
+    help.append(helpBody);
+    // Do not collapse on pointerdown: the in-flow disclosure would move the pressed control
+    // before pointerup. A click has a fixed target; for canceled/non-click gestures close after
+    // pointerup, with the pending action surviving a same-reading repaint.
+    const outside = (event: Event) => event.target instanceof Node && !help.contains(event.target);
+    const closeOutside = () => { cancelOutside(); if (helpNode?.open && helpIdentity === identity) helpNode.open = false; };
+    const onOutsideDown = (event: PointerEvent) => { if (help.open && outside(event)) { cancelOutside(); outsidePointer = event.pointerId; } };
+    const onOutsideUp = (event: PointerEvent) => {
+      if (outsidePointer !== event.pointerId) return;
+      outsidePointer = null;
+      outsideTimer = setTimeout(closeOutside, 0);
+    };
+    const onOutsideCancel = (event: PointerEvent) => { if (outsidePointer === event.pointerId) closeOutside(); };
+    const onOutsideClick = (event: MouseEvent) => { if (help.open && outside(event)) closeOutside(); };
+    const onHelpKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && help.open) { event.preventDefault(); cancelOutside(); help.open = false; summaryHelp.focus(); } };
+    const doc = help.ownerDocument;
+    doc.addEventListener('pointerdown', onOutsideDown, true); doc.addEventListener('pointerup', onOutsideUp, true);
+    doc.addEventListener('pointercancel', onOutsideCancel, true); doc.addEventListener('click', onOutsideClick, true);
+    help.addEventListener('keydown', onHelpKey);
+    removeHelpListeners = () => { doc.removeEventListener('pointerdown', onOutsideDown, true); doc.removeEventListener('pointerup', onOutsideUp, true); doc.removeEventListener('pointercancel', onOutsideCancel, true); doc.removeEventListener('click', onOutsideClick, true); help.removeEventListener('keydown', onHelpKey); };
+    helpNode = help; helpIdentity = identity;
+    region.insertBefore(help, controls);
+    if (b) { const description = el('p', 'ap-sr', 'Use arrow keys to navigate cards. Open Map help and definitions for all map keys.'); description.id = helpId; region.append(description); }
 
     // ── Group context: legal group-owned prerequisites stay inspectable without becoming arrows.
     if (groupOwned.length || (!tasks.length && groups.length)) {
@@ -1009,7 +1215,7 @@ export function createDependencyMapView(): DependencyMapView {
         // An active background drag continues on the replacement canvas.
         const dragging = b.state().dragging;
         if (dragging !== null && !viewport.hasPointerCapture(dragging)) {
-          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging }); }
+          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging, cancelled: true }); }
         }
         tryFocus(true);
         return true;
@@ -1052,7 +1258,7 @@ export function createDependencyMapView(): DependencyMapView {
           // the owner restores its pre-paint focus after replacing the root. The action always ends
           // with this turn (after any repaint's restore has run), consumed or not: a missing target
           // or a placeholder paint can never leave it waiting for a later poll.
-          const want = pendingFocus = { id: c.id, generation: c.generation };
+          const want = pendingFocus = { id: c.id, generation: c.generation, reveal: c.reveal };
           tryFocus(false);
           queueMicrotask(() => queueMicrotask(() => { if (pendingFocus === want) pendingFocus = null; }));
           break;
@@ -1062,8 +1268,11 @@ export function createDependencyMapView(): DependencyMapView {
       }
     },
     clearAnnouncements,
+    clearHelp,
+    revokeMotion,
     dispose() {
-      observer?.disconnect(); observer = null; unlisten(); clearAnnouncements();
+      revokeMotion(); regionNode = null;
+      observer?.disconnect(); observer = null; unlisten(); clearAnnouncements(); clearHelp();
       if (frame) cancelAnimationFrame(frame); frame = 0;
       host = null; input = null; viewportNode = worldNode = zoomNode = null; pendingFocus = null; painted = { key: '', viewport: null };
     },
@@ -1114,7 +1323,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   const view = createDependencyMapView(), geometry = new DependencyMapLayout();
   let latest: ViewContext<U> | null = null, painting = false, shown = false;
   // Measured canvas, kept across root replacement. Until it is measured, a conservative single-card row.
-  let canvasWidth = 0, canvasHeight = 400;
+  let canvasWidth = 0, canvasHeight = 400, mapWidth = 0;
   let lastLayout: MapLayout | null = null, lastGraph: MapPicture['graph'] | null = null, packedWidth = 0;
   // View as list: reveal the map's selected task once in the canonical list of the same reading.
   let reveal: { id: string | null; identity: string | null } | null = null;
@@ -1165,7 +1374,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     account: vc.ctx.connection?.account ?? '', scope, read: vc.read!, plan, detail: vc.detailResult(plan), health: vc.health,
     refreshSerial: vc.refreshSerial, active: shown, visible: document.visibilityState !== 'hidden', failure: vc.failure,
   });
-  const forget = () => { cancelListTransition(); view.clearAnnouncements(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
+  const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
@@ -1185,10 +1394,10 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (identity !== interaction.value.identity) forget();
       interaction.identify(identity);
       if (want && !interaction.value.active) interaction.enter(false);
-      if (!want) { view.clearAnnouncements(); if (interaction.value.active) interaction.leave(); map.pause(); }
+      if (!want) { view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); if (interaction.value.active) interaction.leave(); map.pause(); }
     },
     enter() { cancelListTransition(); reveal = null; interaction.enter(document.hasFocus()); },
-    leave() { cancelListTransition(); reveal = null; view.clearAnnouncements(); interaction.leave(); },
+    leave() { cancelListTransition(); reveal = null; view.revokeMotion(); view.clearAnnouncements(); view.clearHelp(); interaction.leave(); },
     listTargets(article) {
       article.addEventListener('pointerdown', e => { const row = (e.target as Element).closest<HTMLElement>('li[data-testid^="item-"]'); if (row) interaction.listTarget(row.dataset.testid!.slice(5)); });
       article.addEventListener('focusin', e => { const row = e.target as HTMLElement; if (row.matches('li[data-nav-target][data-testid^="item-"]')) interaction.listTarget(row.dataset.testid!.slice(5)); });
@@ -1200,6 +1409,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const attribution = input.runs ? mapAttribution({ snapshot, request: input.runs.request, runs: input.runs.panel, census: input.census, liveSeq: vc.live.seq ?? 0 }) : new Map();
       const graph = snapshot.picture?.graph ?? null, width = canvasWidth || CARD_METRICS.width;
       // Same graph: reuse the full-plan layout (edgeless packing only re-packs for a new canvas width).
+      // Board selection panel: from the measured map and canvas widths, never from the selection.
+      const panel = mapPanelWidth(frame, mapWidth, canvasWidth);
       const reusable = graph === lastGraph && lastLayout && (lastLayout.edges.length > 0 || packedWidth === width);
       const layout = graph && innerWidth > 0 ? reusable ? lastLayout : geometry.compute(graph.items, CARD_METRICS, width) : null;
       lastLayout = layout; lastGraph = graph; packedWidth = width;
@@ -1211,17 +1422,20 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
             identity: mapReadingKey(claimOf(vc, input.plan, input.scope)), layout, items, current: snapshot.current, guidance,
             working: guidance ? items.filter(n => n.kind === 'task' && n.status === 'working').map(n => n.id) : [],
             ready: guidance ? [...snapshot.picture.facts.tasks].filter(([, f]) => f.group === 'ready').map(([id]) => id) : [],
-            status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight },
+            status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight, cover: panel ? panel + MAP_PANEL.margin : 0 },
+            // The board's large canvas never frames past 100%; the rail keeps its framing unchanged.
+            ...(frame === 'board' ? { framingMax: MAP_ZOOM.fit } : {}),
           });
         } finally { painting = false; }
       }
       const state = interaction.value;
       host.dataset.canvasWidth = String(canvasWidth);
       view.render(host, {
-        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
+        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout, panel,
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
-        onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => interaction.leave(true),
+        onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
+        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'),
       });
     },
     afterPaint(root, vc, plan, listFocus) {
@@ -1229,7 +1443,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (shown) {
         if (!listTransition) reveal = null; // back on Map, unless an explicit departure is crossing paint
         const viewport = root.querySelector<HTMLElement>('[data-testid="map-viewport"]');
-        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; vc.setUi({}); }
+        const width = root.querySelector<HTMLElement>('[data-testid="map-region"]')?.clientWidth ?? 0;
+        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight || width !== mapWidth)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; mapWidth = width; vc.setUi({}); }
         return;
       }
       const r = reveal; if (!r) return;
@@ -1250,23 +1465,29 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
     resetReading: forget,
     retire(reason) {
       cancelListTransition();
+      view.revokeMotion();
       if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); shown = false; }
-      else if (reason === 'hidden') { view.clearAnnouncements(); map.pause(); interaction.leave(); }
+      else if (reason === 'hidden') { view.clearAnnouncements(); view.clearHelp(); map.pause(); interaction.leave(); }
       else forget();
     },
   };
 }
 
-function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string): string {
+/** `cues`: the picture is eligible for arrow state (active, unarchived, current), so the waiting
+ * explanation may also name its reported-working and explicitly blocked direct prerequisites. */
+export function readinessText(item: ItemView, fact: DerivedTask | undefined, guidance: boolean, active: boolean, titleOf: (id: string) => string, cues = false): string {
   if (item.status === 'skipped') return 'Skipped work never counts as done for its dependents.';
-  if (item.status === 'blocked') return 'An agent reported this task explicitly blocked. It is never shown as ready, whatever its prerequisites.';
+  if (item.status === 'blocked') return '';
   if (item.status !== 'pending') return '';
   if (!active) return 'Reported pending when the plan closed.';
   if (!guidance) return 'Reported pending. Readiness is hidden until the current revision is matched.';
-  const open = (fact?.prerequisites ?? []).filter(p => p.kind !== 'task' || p.status !== 'done');
+  const counts = prerequisiteCounts(fact), states = cues ? prerequisiteStates(counts) : '';
   if (fact?.group === 'ready') return fact.prerequisites.length ? 'Every recorded prerequisite is reported done. Ready describes recorded prerequisites only.' : 'No prerequisites recorded. Ready describes recorded prerequisites only.';
-  if (fact?.group === 'skipped') return `Waiting: a recorded prerequisite was skipped (${open.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => titleOf(p.id)).join('; ')}), and skipped work never counts as done.`;
-  return `Waiting on ${plural(open.length, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}.`;
+  if (fact?.group === 'skipped') {
+    const skipped = [...new Set(fact.prerequisites.filter(p => p.kind === 'task' && p.status === 'skipped').map(p => p.id))];
+    return `Waiting: a recorded prerequisite was skipped (${skipped.map(titleOf).join('; ')}), and skipped work never counts as done.${states ? ` Its unfinished recorded prerequisites include ${states}.` : ''}`;
+  }
+  return `Waiting on ${plural(counts.unfinished, 'unfinished recorded prerequisite', 'unfinished recorded prerequisites')}${states ? `: ${states}` : ''}.`;
 }
 
 /**
@@ -1292,6 +1513,7 @@ export interface MapAttributionCopy {
   activity: string;
   activityNote: string | null;
 }
+const VERIFIED_ACTIVITY_NOTE = 'Shown only for a verified assignment.';
 export const LIVE_HEDGE = 'Session activity only: the assigned session is active in this view’s run records, which doesn’t show that it is working on this task.';
 export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string): MapAttributionCopy {
   if (!a) return {
@@ -1331,7 +1553,7 @@ export function attributionCopy(a: MapTaskAttribution | undefined, current: bool
     : { kind: 'waiting' as const, text: 'Assigned session waiting for input now' } : null;
   const reason = a.live.proven ? 'picture-not-current' : a.live.reason;
   const activityNote = live ? LIVE_HEDGE : !current || reason === 'picture-not-current' ? `Hidden while the map shows revision ${revision} as last reported.`
-    : reason === 'no-verified-assignment' ? 'Shown only for a verified assignment.'
+    : reason === 'no-verified-assignment' ? VERIFIED_ACTIVITY_NOTE
     : reason === 'run-scope-unavailable' ? 'This view’s run records aren’t available.'
     : reason === 'latest-child-not-proven' ? 'This view’s run records don’t confirm the assigned session’s latest run.'
     : 'The assigned session’s latest recorded run isn’t active now.';

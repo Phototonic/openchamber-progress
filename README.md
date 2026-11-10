@@ -10,13 +10,13 @@
 Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) extension that turns your agents' plans into a calm, live progress view. One glance tells you what's done, what's running, what's blocked and what needs you. When you want more, the detail is one click away.
 
 <p align="center">
-  <img src="docs/images/readme/board.png" alt="The dependency map on the fullscreen board: task cards joined by prerequisite arrows, with reported working, ready, blocked and unlocks-next counts and the selected task's prerequisites" width="860">
+  <img src="docs/images/readme/map-arrows.gif" alt="Animation of the dependency map on the fullscreen board: task cards joined by prerequisite arrows, under reported working, ready, explicitly blocked and unlocks-next counts. Small blue beads move steadily along the arrows from the two tasks reported working to the tasks waiting on them; the arrow from the explicitly blocked task stays still, in the warning colour, with a stop bar before its arrowhead" width="860">
 </p>
 
 ## Why you'll like it
 
 - **At a glance, then in depth.** A single grouped list, *Now*, *Needs you*, *Up next*, with finished work folded away. Expand any task for its reason, next step, prerequisites and who's on it.
-- **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view.
+- **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view. Blue beads travel along the arrows from a task reported working to the tasks waiting on it, and an arrow from a blocked task ends in a stop bar.
 - **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
 - **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.

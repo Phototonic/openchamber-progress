@@ -684,7 +684,7 @@ function canonical(value) {
 
 // shared/subagent-runs.ts
 var RUN_LIMITS = Object.freeze({ parent: 1024, total: 16384, candidates: 256, candidateAdoptionMs: 300000, observationEpochs: 32, jobs: 64, claims: 256, intents: 128, page: 50, dtoBytes: 4096, responseBytes: 262144, queryBytes: 16384, cursorBytes: 4096, traversal: 2000, depth: 32, calls: 64, elapsedMs: 1e4 });
-function parseReconcileBody(text) {
+function parseRunBody(text, allowed) {
   let value;
   try {
     value = JSON.parse(text);
@@ -719,10 +719,16 @@ function parseReconcileBody(text) {
       }
     }
   }
-  requireProgress(obj(value) && Object.keys(value).every((k) => ["storeId", "binding", "source", "root", "token"].includes(k)));
+  requireProgress(obj(value) && Object.keys(value).every((k) => allowed.includes(k)));
   return value;
 }
-var definitions2 = {
+function parseReconcileBody(text) {
+  return parseRunBody(text, ["storeId", "binding", "source", "root", "token"]);
+}
+function parseDismissLossBody(text) {
+  return parseRunBody(text, ["storeId", "binding", "source", "root", "observedLossSequence"]);
+}
+var versionOne = {
   runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))",
   runs_observation_epoch: "CREATE TABLE runs_observation_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch INTEGER NOT NULL, invalid_through INTEGER NOT NULL)",
   runs_rows: "CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
@@ -744,40 +750,85 @@ var definitions2 = {
 var normalized2 = (s) => s.trim().replace(/\s+/g, " ");
 var integer = (v) => Number.isSafeInteger(v) && Number(v) >= 0;
 var obj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-function runsInstalled(db) {
+var timestamp = (v) => integer(v) && v <= 8640000000000000;
+var definitions2 = { ...versionOne, runs_format: "CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=2), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)), last_loss_at INTEGER, loss_sequence INTEGER NOT NULL, dismissed_loss_sequence INTEGER NOT NULL)" };
+var epochless = { ...versionOne };
+delete epochless.runs_observation_epoch;
+epochless.runs_capture_epoch = epochless.runs_capture_epoch.replace(" UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;", "");
+function validateRuns(db, expected, version, epochs = true) {
+  const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  requireProgress(rows.length === Object.keys(expected).length, "schema");
+  for (const r2 of rows)
+    requireProgress(typeof r2.name === "string" && expected[r2.name] !== undefined && normalized2(String(r2.sql)) === normalized2(expected[r2.name]), "schema");
+  const f = db.prepare("SELECT * FROM runs_format").all();
+  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === version && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
+  const r = f[0];
+  if (version === 2)
+    requireProgress(integer(r.loss_sequence) && integer(r.dismissed_loss_sequence) && r.dismissed_loss_sequence <= r.loss_sequence && (r.loss_sequence === 0 ? r.last_loss_at === null && r.dismissed_loss_sequence === 0 : r.loss === 1 && timestamp(r.last_loss_at)), "schema");
+  if (epochs) {
+    const e = db.prepare("SELECT * FROM runs_observation_epoch").all();
+    requireProgress(e.length === 1 && e[0].singleton === 1 && integer(e[0].epoch) && integer(e[0].invalid_through) && e[0].invalid_through <= e[0].epoch, "schema");
+  }
+  return r;
+}
+function runFormat(db) {
   const rows = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
   if (!rows.length)
-    return false;
-  requireProgress(rows.length === Object.keys(definitions2).length, "schema");
-  for (const r of rows)
-    requireProgress(typeof r.name === "string" && definitions2[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(definitions2[r.name]), "schema");
-  const f = db.prepare("SELECT * FROM runs_format").all();
-  requireProgress(f.length === 1 && f[0].singleton === 1 && f[0].version === 1 && integer(f[0].revision) && integer(f[0].generation) && [0, 1].includes(Number(f[0].loss)), "schema");
-  const epochs = db.prepare("SELECT * FROM runs_observation_epoch").all();
-  requireProgress(epochs.length === 1 && epochs[0].singleton === 1 && integer(epochs[0].epoch) && integer(epochs[0].invalid_through) && Number(epochs[0].invalid_through) <= Number(epochs[0].epoch), "schema");
-  return true;
+    return null;
+  const format = rows.find((r) => r.name === "runs_format");
+  const version = normalized2(String(format?.sql)) === normalized2(versionOne.runs_format) ? 1 : 2;
+  validateRuns(db, version === 1 ? versionOne : definitions2, version);
+  return version;
+}
+function runsInstalled(db) {
+  return runFormat(db) !== null;
+}
+function runStorageCompatibility(db) {
+  const installed = db.prepare("SELECT name FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (!installed.length)
+    return "absent";
+  if (!installed.some((r) => r.name === "runs_observation_epoch")) {
+    validateMigrationInput(db, true);
+    return "activation-required";
+  }
+  return runFormat(db) === 2 ? "current" : "previous";
+}
+function validateMigrationInput(db, oldEpochless) {
+  const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
+  requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+  return f;
 }
 function installRuns(db) {
   const installed = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
-  if (installed.length && !installed.some((r) => r.name === "runs_observation_epoch")) {
-    const prior = { ...definitions2 };
-    delete prior.runs_observation_epoch;
-    prior.runs_capture_epoch = prior.runs_capture_epoch.replace(" UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;", "");
-    requireProgress(installed.length === Object.keys(prior).length && installed.every((r) => typeof r.name === "string" && prior[r.name] !== undefined && normalized2(String(r.sql)) === normalized2(prior[r.name])), "schema");
-    db.exec(definitions2.runs_observation_epoch);
-    db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
-    db.exec("DROP TRIGGER runs_capture_epoch");
-    db.exec(definitions2.runs_capture_epoch);
-  }
-  if (runsInstalled(db))
+  if (installed.length) {
+    const oldEpochless = !installed.some((r) => r.name === "runs_observation_epoch");
+    const version = oldEpochless ? 1 : runFormat(db);
+    if (version === 2)
+      return;
+    const f = validateMigrationInput(db, oldEpochless);
+    if (oldEpochless) {
+      db.exec(definitions2.runs_observation_epoch);
+      db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+    }
+    const triggers = ["runs_capture_epoch", "runs_plan_delete", "runs_progress_change"];
+    for (const name of triggers)
+      db.exec(`DROP TRIGGER ${name}`);
+    db.exec("DROP TABLE runs_format");
+    db.exec(definitions2.runs_format);
+    db.prepare("INSERT INTO runs_format VALUES(1,2,?,?,?,NULL,0,0)").run(Number(f.revision) + 1, f.generation, f.loss);
+    for (const name of triggers)
+      db.exec(definitions2[name]);
+    validateRuns(db, definitions2, 2);
     return;
+  }
   for (const sql of Object.values(definitions2))
     db.exec(sql);
-  db.exec("INSERT INTO runs_format VALUES(1,1,0,0,0)");
+  db.exec("INSERT INTO runs_format VALUES(1,2,0,0,0,NULL,0,0)");
   db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
+  validateRuns(db, definitions2, 2);
 }
 function runControl(db) {
-  requireProgress(runsInstalled(db), "schema");
+  requireProgress(runFormat(db) === 2, "schema");
   const r = db.prepare("SELECT enabled,generation FROM meta JOIN runs_format USING(singleton)").get();
   return { enabled: r.enabled === 1, generation: Number(r.generation) };
 }
@@ -785,7 +836,9 @@ function bump(db) {
   db.exec("UPDATE runs_format SET revision=revision+1 WHERE singleton=1");
 }
 function loss(db) {
-  db.exec("UPDATE runs_format SET loss=1,revision=revision+1 WHERE singleton=1");
+  const now = Date.now(), f = db.prepare("SELECT loss_sequence,revision FROM runs_format WHERE singleton=1").get();
+  requireProgress(timestamp(now) && integer(f.loss_sequence) && f.loss_sequence < Number.MAX_SAFE_INTEGER && integer(f.revision) && f.revision < Number.MAX_SAFE_INTEGER, "schema");
+  db.prepare("UPDATE runs_format SET loss=1,last_loss_at=?,loss_sequence=loss_sequence+1,revision=revision+1 WHERE singleton=1").run(now);
 }
 function observationEpoch(db) {
   return Number(db.prepare("SELECT epoch FROM runs_observation_epoch WHERE singleton=1").get().epoch);
@@ -794,12 +847,14 @@ function observationInterrupted(db, epoch) {
   return epoch <= Number(db.prepare("SELECT invalid_through FROM runs_observation_epoch WHERE singleton=1").get().invalid_through);
 }
 function beginObservation(db) {
+  runControl(db);
   db.exec("UPDATE runs_observation_epoch SET epoch=epoch+1 WHERE singleton=1");
   bump(db);
   return observationEpoch(db);
 }
 function runCaptureUnavailable(db) {
   if (runsInstalled(db)) {
+    runControl(db);
     db.exec("UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1");
     loss(db);
   }
@@ -1631,6 +1686,14 @@ function budgetReadRow(run) {
   row(JSON.stringify(stored));
   requireProgress(typeof latestForChild === "boolean" && fits(), "corrupt");
 }
+function captureState(enabled, f, now) {
+  const capture = { enabled, state: f ? "last-known" : "unavailable", loss: f?.loss === 1 };
+  if (f?.version === 2) {
+    const sequence = Number(f.loss_sequence), lastLossAt = f.last_loss_at, dismissedThrough = Number(f.dismissed_loss_sequence);
+    capture.lossNotice = { sequence, lastLossAt, dismissedThrough, attention: capture.loss && lastLossAt !== null && Math.max(0, now - lastLossAt) < 86400000 && sequence > dismissedThrough };
+  }
+  return capture;
+}
 function readRuns(db, binding, r, now = Date.now()) {
   const m = identity(db, binding, r);
   requireProgress(r.view === undefined || r.view === "useful" || r.view === "history");
@@ -1646,11 +1709,11 @@ function readRuns(db, binding, r, now = Date.now()) {
     const state = cleanupInstalled(db) ? cleanupState(db, r.source, r.plan) : undefined;
     requireProgress((state?.generation ?? 0) === r.cleanupRev && state?.state !== "deleted", "conflict");
   }
-  const installed = runsInstalled(db), f = installed ? db.prepare("SELECT revision,loss FROM runs_format").get() : undefined;
+  const format = runFormat(db), installed = format !== null, f = installed ? db.prepare("SELECT * FROM runs_format").get() : undefined;
   const job = installed ? db.prepare("SELECT state,CASE WHEN length(CAST(token AS BLOB))<=80 THEN token END AS token,CASE WHEN length(CAST(reason AS BLOB))<=80 THEN reason END AS reason,length(CAST(token AS BLOB)) AS token_bytes,length(CAST(reason AS BLOB)) AS reason_bytes FROM runs_jobs WHERE source=? AND root=?").get(r.source, r.root) : undefined;
   if (job)
     requireProgress(["pending", "running", "complete", "partial", "failed"].includes(String(job.state)) && (job.token_bytes === null || Number(job.token_bytes) <= 80) && (job.reason_bytes === null || Number(job.reason_bytes) <= 80) && [null, "budget", "capture-disabled", "capture-unavailable"].includes(job.reason) && (job.token === null || identifier(job.token)), "corrupt");
-  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: installed ? 1 : null, availability: installed ? "ready" : "unavailable", readAt: now, revision: Number(f?.revision ?? 0), capture: { enabled: m.enabled === 1, state: installed ? "last-known" : "unavailable", loss: f?.loss === 1 }, recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
+  const out = { protocolVersion: 2, schemaVersion: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, plan: r.plan ?? null, cleanupRev: r.cleanupRev ?? null, view: r.view ?? "useful", subagentRuns: installed ? 1 : null, runFormat: format, availability: installed ? "ready" : "unavailable", readAt: now, revision: Number(f?.revision ?? 0), capture: captureState(m.enabled === 1, f, now), recovery: { state: job?.state ?? (installed ? "not-requested" : "unavailable"), reason: job?.reason ?? null, token: job?.token ?? null }, counts: { children: 0, runs: 0, historicalSessions: 0, running: 0, succeeded: 0, failed: 0, interrupted: 0, unknown: 0 }, coverage: { scope: "retained", complete: false, reasons: installed ? [] : ["legacy-unavailable"] }, data: [], nextCursor: null };
   if (!installed)
     return out;
   if (!job || job.state !== "complete")
@@ -1719,6 +1782,23 @@ function readRuns(db, binding, r, now = Date.now()) {
   out.coverage.complete = out.coverage.reasons.length === 0;
   requireProgress(Buffer.byteLength(JSON.stringify(out)) <= RUN_LIMITS.responseBytes, "corrupt");
   return out;
+}
+function dismissLoss(db, binding, r, now = Date.now()) {
+  requireProgress(obj(r) && Object.keys(r).length === 5 && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "observedLossSequence"].includes(k)) && integer(r.observedLossSequence) && r.observedLossSequence > 0);
+  const m = identity(db, binding, r);
+  requireProgress(runFormat(db) === 2, "schema");
+  const f = db.prepare("SELECT * FROM runs_format WHERE singleton=1").get();
+  const coalesced = r.observedLossSequence <= Number(f.dismissed_loss_sequence);
+  if (!coalesced) {
+    requireProgress(r.observedLossSequence === f.loss_sequence, "conflict");
+    requireProgress(integer(f.revision) && f.revision < Number.MAX_SAFE_INTEGER, "schema");
+    db.prepare("UPDATE runs_format SET dismissed_loss_sequence=?,revision=revision+1 WHERE singleton=1").run(r.observedLossSequence);
+    f.dismissed_loss_sequence = r.observedLossSequence;
+    f.revision++;
+  }
+  const reply = { protocolVersion: 2, schemaVersion: 2, runFormat: 2, storeId: r.storeId, sourceBinding: { ...binding }, source: r.source, root: r.root, revision: Number(f.revision), readAt: now, capture: captureState(m.enabled === 1, f, now), acknowledgedLossSequence: r.observedLossSequence, coalesced };
+  requireProgress(Buffer.byteLength(JSON.stringify(reply)) <= RUN_LIMITS.responseBytes, "corrupt");
+  return reply;
 }
 function requestReconciliation(db, binding, r) {
   requireProgress(obj(r) && Object.keys(r).every((k) => ["storeId", "binding", "source", "root", "token"].includes(k)));
@@ -2748,6 +2828,9 @@ class Store {
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
   }
+  subagentRunStorage() {
+    return this.transaction(false, () => runStorageCompatibility(this.db));
+  }
   runControl() {
     return this.transaction(false, () => runControl(this.db));
   }
@@ -2823,6 +2906,9 @@ class Store {
   }
   requestRunReconciliation(request) {
     return this.transaction(true, () => requestReconciliation(this.db, this.readBinding, request));
+  }
+  dismissRunLoss(request, now) {
+    return this.transaction(true, () => dismissLoss(this.db, this.readBinding, request, now));
   }
   pendingRunRecovery(source) {
     return this.transaction(false, () => pendingRecovery(this.db, source));
@@ -2915,6 +3001,12 @@ class Store {
   setEnabled(enabled) {
     this.transaction(true, () => {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
+    });
+  }
+  disableCaptureIfSupported() {
+    this.transaction(true, () => {
+      runStorageCompatibility(this.db);
+      this.db.prepare("UPDATE meta SET enabled=0 WHERE singleton=1").run();
     });
   }
   installDelegationControl() {
@@ -23449,6 +23541,19 @@ var OPENCHAMBER_SDK_MANIFEST_API_VERSIONS = [1];
 // node_modules/@openchamber/sdk/dist/host-version.js
 var OPENCHAMBER_ENGINE_PATTERN = /^(>=)?\d+\.\d+\.\d+$/;
 
+// node_modules/@openchamber/sdk/dist/status-view.js
+var GUEST_STATUS_SOURCE_INTERVAL_MIN = 1000;
+var GUEST_STATUS_SOURCE_INTERVAL_MAX = 60000;
+var GUEST_STATUS_VIEW_ROWS_MAX = 16;
+var GUEST_STATUS_VIEW_ACTIONS_MAX = 2;
+var GUEST_STATUS_VIEW_CHIPS_MAX = 6;
+var GUEST_STATUS_VIEW_CHART_POINTS_MAX = 120;
+var GUEST_STATUS_VIEW_SEGMENTS_MIN = 2;
+var GUEST_STATUS_VIEW_SEGMENTS_MAX = 4;
+var GUEST_STATUS_VIEW_TEXT_MAX = 200;
+var GUEST_STATUS_VIEW_NOTE_MAX = 300;
+var GUEST_STATUS_VIEW_ICON = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
 // node_modules/@openchamber/sdk/dist/manifest.js
 var PANEL_ID = /^[a-z][a-z0-9-]*$/;
 var GUEST_SURFACE_DOCKS = ["top", "bottom", "left", "right"];
@@ -23480,8 +23585,41 @@ var resolveIntegrationAuth = (integration) => {
     return "host";
   return integration.oauth ? "oauth" : "token";
 };
-var GUEST_SERVICE_PROVIDES = ["browser", "source-control"];
+var GUEST_SERVICE_PROVIDES = ["browser", "source-control", "notifications", "tracker", "quota", "opencode"];
 var SOURCE_CONTROL_GUEST_ID_MAX = 28;
+var NOTIFICATIONS_GUEST_ID_MAX = 28;
+var QUOTA_GUEST_ID_MAX = 28;
+var QUOTA_PROVIDERS_MAX = 16;
+var OPENCODE_PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var isOpenCodeProviderId = (value) => OPENCODE_PROVIDER_ID.test(value);
+var TRACKER_GUEST_ID_MAX = 28;
+var TRACKER_URL_TEMPLATES_MAX = 8;
+var TRACKER_URL_TEMPLATE_MAX = 256;
+var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
+var TRACKER_URL_TEMPLATE_LITERAL = /^[A-Za-z0-9._~-]+$/;
+var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
+var TRACKER_QUERY_TEMPLATE = /^([A-Za-z0-9_.-]{1,64})=\{id\}$/;
+var isTrackerUrlTemplate = (value) => {
+  if (!value.startsWith("/") || value.length > TRACKER_URL_TEMPLATE_MAX)
+    return false;
+  const queryAt = value.indexOf("?");
+  const pathPart = queryAt === -1 ? value : value.slice(0, queryAt);
+  const queryPart = queryAt === -1 ? null : value.slice(queryAt + 1);
+  const segments = pathPart === "/" ? [] : pathPart.slice(1).split("/");
+  if (segments.some((segment) => segment === "." || segment === ".."))
+    return false;
+  if (segments.some((segment) => !TRACKER_URL_TOKEN_SET.has(segment) && !TRACKER_URL_TEMPLATE_LITERAL.test(segment)))
+    return false;
+  const count = (token) => segments.filter((segment) => segment === token).length;
+  if (count("{segments+}") > 1)
+    return false;
+  if (queryPart === null)
+    return count("{id}") === 1;
+  return TRACKER_QUERY_TEMPLATE.test(queryPart) && count("{id}") === 0;
+};
+var TRACKER_BASE_STATE_FILTERS = ["open", "all"];
+var TRACKER_STATE_FILTERS_MAX = 16;
+var TRACKER_IDENTIFIER_KINDS = ["key-number", "number", "short-code"];
 var SOURCE_CONTROL_DEFAULT_INSTANCES_MAX = 4;
 var SOURCE_CONTROL_URL_TEMPLATES_MAX = 8;
 var SOURCE_CONTROL_URL_TEMPLATE_MAX = 256;
@@ -23503,6 +23641,13 @@ var isGuestFilesystemPattern = (value) => {
   const segments = value.split("/").slice(1);
   return !segments.some((segment) => segment === "" || segment === "..");
 };
+var GUEST_MENTIONS_LABEL_MAX = 40;
+var GUEST_BLOCK_NAME = /^[A-Z][A-Za-z0-9]{1,31}$/;
+var GUEST_BLOCK_ARG_NAME = /^[a-z][A-Za-z0-9]{0,31}$/;
+var GUEST_BLOCKS_MAX = 4;
+var GUEST_BLOCK_ARGS_MAX = 8;
+var GUEST_BLOCK_DESCRIPTION_MAX = 120;
+var GUEST_BLOCK_HEIGHT_MAX = 960;
 var hasGuestPage = (contributes) => Boolean(contributes.panel.entry);
 var isSafeAssetPath = (value) => {
   if (value.includes("\x00") || value.includes("\\") || value.startsWith("/") || value.includes("://")) {
@@ -23515,6 +23660,137 @@ var isSafeAssetPath = (value) => {
   return /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(value);
 };
 var isGuestPackageSvgIcon = (value) => isSafeAssetPath(value) && value.toLowerCase().endsWith(".svg");
+
+// node_modules/@openchamber/sdk/dist/contract.js
+var START_SESSION_SENT = ["sent", "no-model", "skipped", "failed"];
+var GUEST_BLOCK_ANSWER_MAX = 2000;
+var SESSION_LIFECYCLE_PHASES = ["started", "completed", "failure"];
+var GUEST_FILE_ENTRY_KINDS = ["file", "directory", "other"];
+var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
+var GUEST_COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
+var GUEST_TOAST_MAX = 500;
+var GUEST_CLIPBOARD_TEXT_MAX = 32000;
+var GUEST_COMPOSE_TEXT_MAX = 16000;
+var GUEST_ATTACH_ID_MAX = 128;
+var GUEST_ATTACH_TITLE_MAX = 200;
+var GUEST_ATTACH_URL_MAX = 2000;
+var GUEST_ATTACH_TEXT_MAX = 16000;
+var GUEST_ATTACH_AUTHOR_MAX = 80;
+var GUEST_ATTACH_BRANCH_MAX = 200;
+var GUEST_ATTACH_DATA_MAX = 16000;
+var GUEST_ACCOUNT_MAX = 200;
+var GUEST_SESSION_MODEL_MAX = 200;
+var GUEST_SESSION_AGENT_MAX = 80;
+var GUEST_SETTING_VALUE_MAX = 2000;
+var GUEST_REQUEST_PATH_MAX = 2000;
+var GUEST_REQUEST_BODY_MAX = 64000;
+var GUEST_REQUEST_RESPONSE_MAX = 8000000;
+var GUEST_FILE_PATH_MAX = 1024;
+var GUEST_FILE_CONTENT_MAX = 2000000;
+var GUEST_FILE_LIST_MAX = 2000;
+var GUEST_GENERATE_PROMPT_MAX = 64000;
+var GUEST_GENERATE_SYSTEM_MAX = 8000;
+var GUEST_GENERATE_OUTPUT_TOKENS_MAX = 4000;
+var GUEST_GENERATE_TEXT_MAX = 256000;
+var GUEST_GENERATE_LATE_KEEP_MS = 60 * 60000;
+var GUEST_ITEM_MESSAGE_TEXT_MAX = 200000;
+var GUEST_ITEM_SESSION_MAX = 2000000;
+var GUEST_BADGE_MAX = 999;
+var GUEST_FRAME_HEIGHT_MAX = 1e4;
+var GUEST_RESOLVE_ERROR_MAX = 500;
+var HOST_REQUEST_ERROR_CODES = [
+  "HOST_UNAVAILABLE",
+  "HOST_TIMEOUT",
+  "HOST_REJECTED",
+  "DISCONNECTED",
+  "DISABLED",
+  "BAD_PATH",
+  "NO_INTEGRATION",
+  "NO_SERVICE",
+  "SERVICE_FAILED",
+  "REQUEST_FAILED",
+  "RESPONSE_TOO_LARGE",
+  "NO_SESSION",
+  "SESSION_BUSY",
+  "NOT_GRANTED",
+  "NO_DIRECTORY",
+  "NOT_FOUND",
+  "FILE_TOO_LARGE",
+  "DENIED",
+  "NO_MODEL",
+  "MODEL_FAILED",
+  "UNSUPPORTED"
+];
+var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
+var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
+var isHostRequestErrorCode = (value) => hostRequestErrorCodeSet.has(value);
+var resolveHostRequestErrorCode = (value) => value && isHostRequestErrorCode(value) ? value : "HOST_REJECTED";
+var isGuestFilePath = (value) => value.length > 0 && value.length <= GUEST_FILE_PATH_MAX && !value.includes("\x00") && !value.includes("\\");
+var ATTACH_PROVIDER_ID = /^[a-z][a-z0-9-]*$/;
+var SETTING_KEY = /^[a-z][a-z0-9-]*$/;
+var isGuestRequestPath = (value) => {
+  if (!value.startsWith("/") || value.includes("\x00") || value.includes("\\") || value.includes("://")) {
+    return false;
+  }
+  if (value.length > GUEST_REQUEST_PATH_MAX) {
+    return false;
+  }
+  const segments = value.split("/");
+  return !segments.some((segment) => segment === "." || segment === "..");
+};
+var serviceStatusSet = new Set(SERVICE_STATUS_VALUES);
+var fileStatKindSet = new Set(GUEST_FILE_STAT_KINDS);
+var HOST_PUSH_TYPES = new Set([
+  "workspace",
+  "shells",
+  "ready",
+  "directory",
+  "session",
+  "connection",
+  "settings",
+  "session-lifecycle",
+  "item",
+  "resolve",
+  "action",
+  "service-event",
+  "status-control-event",
+  "popover-closed",
+  "file-open",
+  "file-snapshot",
+  "file-saved",
+  "generate-late"
+]);
+
+// node_modules/@openchamber/sdk/dist/session-events.js
+var GUEST_SESSION_EVENT_TYPES = [
+  "turn-finished",
+  "turn-failed",
+  "permission-asked",
+  "question-asked",
+  "turn-started",
+  "session-created",
+  "session-archived",
+  "session-deleted"
+];
+var SESSION_EVENTS_IDLE_MS = 10 * 60000;
+var SESSION_EVENT_ERROR_MAX = 2000;
+var EVENT_TYPES = new Set(GUEST_SESSION_EVENT_TYPES);
+
+// node_modules/@openchamber/sdk/dist/service-host.js
+var SERVICE_PROMPT_MAX = 64000;
+var SERVICE_INSTRUCTIONS_MAX = 4096;
+var SERVICE_EVENT_TOPIC_MAX = 64;
+var SERVICE_STATUS_MESSAGE_MAX = 200;
+var SERVICE_SCHEDULE_IDLE_MS = 10 * 60000;
+var SERVICE_SCHEDULE_MAX = 8;
+var SERVICE_SCHEDULE_CRON_MAX = 64;
+var SERVICE_SCHEDULE_TIMEZONE_MAX = 64;
+var isServiceScheduleCron = (value) => value.length <= SERVICE_SCHEDULE_CRON_MAX && /^[A-Za-z0-9*/,\-?]+(?: +[A-Za-z0-9*/,\-?]+){4}$/.test(value);
+var MENTIONS_IDLE_MS = 10 * 60000;
+var MENTION_TITLE_MAX = 120;
+var MENTION_ID_MAX = 256;
+var MENTION_TEXT_MAX = 16000;
+var SERVICE_ANSWER_MESSAGE_MAX = 2000;
 
 // node_modules/@openchamber/sdk/dist/file-editor.js
 var GUEST_FILE_EDITORS_MAX = 8;
@@ -23574,7 +23850,8 @@ var panelSchema = exports_external.object({
 });
 var integrationSettingSchema = exports_external.object({
   id: exports_external.string().trim().regex(PANEL_ID),
-  label: exports_external.string().trim().min(1)
+  label: exports_external.string().trim().min(1),
+  secret: exports_external.literal(true).optional()
 });
 var integrationOauthSchema = exports_external.object({
   authorizeUrl: exports_external.string().trim().refine(isHttpsUrl),
@@ -23663,7 +23940,13 @@ var serviceSchema = exports_external.object({
   runtime: exports_external.literal("host"),
   permissions: servicePermissionsSchema.optional(),
   provides: exports_external.array(exports_external.enum(GUEST_SERVICE_PROVIDES)).min(1).max(GUEST_SERVICE_PROVIDES.length).refine((roles) => new Set(roles).size === roles.length, { message: "provides entries must be unique" }).optional(),
-  surface: exports_external.literal(true).optional()
+  surface: exports_external.literal(true).optional(),
+  keepRunning: exports_external.literal(true).optional(),
+  schedule: exports_external.array(exports_external.object({
+    id: exports_external.string().trim().regex(PANEL_ID).max(64),
+    cron: exports_external.string().trim().refine(isServiceScheduleCron),
+    timezone: exports_external.string().trim().min(1).max(SERVICE_SCHEDULE_TIMEZONE_MAX).optional()
+  }).strict()).min(1).max(SERVICE_SCHEDULE_MAX).refine((entries) => uniqueBy(entries, (entry2) => entry2.id), { message: "schedule ids must be unique" }).optional()
 });
 var SVG_PATH_DATA = /^[MmLlHhVvCcSsQqTtAaZz0-9eE.,\s+-]+$/;
 var URL_TEMPLATE_LITERAL = /^[A-Za-z0-9._~-]+$/;
@@ -23785,16 +24068,95 @@ var sourceControlSchema = exports_external.object({
     });
   });
 });
+var notificationsTokenSchema = exports_external.object({
+  header: exports_external.enum(["authorization", "private-token"]),
+  scheme: exports_external.enum(["bearer", "token", "basic", "none"]),
+  username: exports_external.boolean().optional(),
+  scopes: exports_external.array(exports_external.string().trim().min(1).max(64)).max(32).optional(),
+  createPath: exports_external.string().trim().max(256).refine(isSafeApiPath, { message: 'must be a path on the instance starting with "/", with no "." or ".." segment' }).optional()
+}).strict().refine((token) => token.header === "private-token" === (token.scheme === "none"), { message: "private-token takes the bare token; authorization takes a bearer, token or basic scheme" }).refine((token) => token.scheme === "basic" === (token.username === true), { message: "the basic scheme needs username: true, and username is only for the basic scheme" });
+var notificationsSchema = exports_external.object({
+  label: literalSchema,
+  instances: exports_external.union([
+    exports_external.object({
+      kind: exports_external.literal("fixed"),
+      origin: exports_external.string().trim().refine(isHttpsOrigin, { message: "must be an https origin with no path, like https://slack.com" })
+    }).strict(),
+    exports_external.object({
+      kind: exports_external.literal("user"),
+      label: literalSchema,
+      placeholder: exports_external.string().trim().max(256).optional()
+    }).strict()
+  ]),
+  token: notificationsTokenSchema
+}).strict();
 var uniqueBy = (items, key) => new Set(items.map(key)).size === items.length;
+var TRACKER_STATE_FILTER = /^[a-z][a-zA-Z0-9-]{0,31}$/;
+var trackerTokenSchema = notificationsTokenSchema;
+var trackerOauthEndpointSchema = exports_external.string().trim().min(1).max(2048).refine((value) => isHttpsUrl(value) || isSafeApiPath(value), { message: 'must be an https URL, or a path on the instance starting with "/"' });
+var trackerSchema = exports_external.object({
+  wire: exports_external.literal(1),
+  label: literalSchema,
+  instances: exports_external.union([
+    exports_external.object({
+      kind: exports_external.literal("fixed"),
+      origin: exports_external.string().trim().refine(isHttpsOrigin, { message: "must be an https origin with no path, like https://tracker.example.com" })
+    }).strict(),
+    exports_external.object({
+      kind: exports_external.literal("user"),
+      label: literalSchema,
+      placeholder: exports_external.string().trim().max(256).optional()
+    }).strict()
+  ]),
+  auth: exports_external.object({
+    token: trackerTokenSchema.optional(),
+    oauth: exports_external.object({
+      authorizeUrl: trackerOauthEndpointSchema,
+      tokenUrl: trackerOauthEndpointSchema,
+      scopes: exports_external.array(exports_external.string().trim().min(1).max(64)).max(32).optional()
+    }).strict().optional()
+  }).strict().refine((auth) => auth.token !== undefined || auth.oauth !== undefined, { message: "declare token, oauth or both" }),
+  capabilities: exports_external.object({
+    multipleAccounts: exports_external.boolean().default(false),
+    stateUpdate: exports_external.boolean().default(false),
+    children: exports_external.boolean().default(false),
+    labels: exports_external.boolean().default(false),
+    priority: exports_external.boolean().default(false),
+    filters: exports_external.object({ people: exports_external.boolean().default(false), priority: exports_external.boolean().default(false) }).strict().default({ people: false, priority: false }),
+    projectMapping: exports_external.boolean().default(false),
+    sessionComments: exports_external.boolean().default(false)
+  }).strict(),
+  stateFilters: exports_external.array(exports_external.string().trim().regex(TRACKER_STATE_FILTER)).min(TRACKER_BASE_STATE_FILTERS.length).max(TRACKER_STATE_FILTERS_MAX).refine((filters) => new Set(filters).size === filters.length, { message: "state filters must be unique" }).refine((filters) => TRACKER_BASE_STATE_FILTERS.every((filter, index) => filters[index] === filter), {
+    message: `state filters start with ${TRACKER_BASE_STATE_FILTERS.map((filter) => `"${filter}"`).join(", ")}`
+  }),
+  identifier: exports_external.enum(TRACKER_IDENTIFIER_KINDS),
+  urls: exports_external.object({
+    item: exports_external.array(exports_external.string().trim().min(1)).min(1).max(TRACKER_URL_TEMPLATES_MAX).refine((templates) => new Set(templates).size === templates.length, { message: "link templates must be unique" })
+  }).strict()
+}).strict().superRefine((value, ctx) => {
+  value.urls.item.forEach((template, index) => {
+    if (isTrackerUrlTemplate(template))
+      return;
+    ctx.addIssue({
+      code: "custom",
+      path: ["urls", "item", index],
+      message: `templates start with "/" and use literal segments and ${TRACKER_URL_TOKENS.join(", ")}, with {id} once, in the path or as "?name={id}".`
+    });
+  });
+});
+var quotaSchema = exports_external.object({
+  providers: exports_external.array(exports_external.string().trim().refine(isOpenCodeProviderId, { message: 'must be an OpenCode provider id, like "openrouter"' })).max(QUOTA_PROVIDERS_MAX).refine((ids) => new Set(ids).size === ids.length, { message: "provider ids must be unique" })
+}).strict();
 var actionSchema = exports_external.object({
   id: exports_external.string().trim().regex(PANEL_ID).max(64),
   label: exports_external.string().trim().min(1).max(GUEST_ACTION_LABEL_MAX),
   icon: exports_external.string().trim().refine(isPanelIcon).optional(),
-  where: exports_external.enum(["message", "session"]),
+  where: exports_external.enum(["message", "session", "selection", "file", "diff"]),
   mode: exports_external.enum(["open", "background"]).optional(),
   roles: exports_external.array(exports_external.enum(["user", "assistant"])).min(1).max(2).optional(),
-  payload: exports_external.array(exports_external.enum(["messages"])).max(1).optional()
-}).refine((value) => value.where === "message" || value.roles === undefined, { path: ["roles"] }).refine((value) => value.where === "session" || value.payload === undefined, { path: ["payload"] });
+  payload: exports_external.array(exports_external.enum(["messages"])).max(1).optional(),
+  display: exports_external.enum(["label", "icon", "both"]).optional()
+}).refine((value) => value.where === "message" || value.roles === undefined, { path: ["roles"] }).refine((value) => value.where === "session" || value.payload === undefined, { path: ["payload"] }).refine((value) => value.where === "selection" || value.display === undefined, { path: ["display"] });
 var actionsSchema = exports_external.array(actionSchema).min(1).max(GUEST_ACTIONS_MAX).refine((actions) => uniqueBy(actions, (action) => action.id), { message: "action ids must be unique" });
 var commandSchema = exports_external.object({
   name: exports_external.string().trim().regex(GUEST_COMMAND_NAME),
@@ -23820,6 +24182,15 @@ var fileEditorSchema = exports_external.object({
   content: exports_external.enum(["text", "binary"]).optional()
 });
 var fileEditorsSchema = exports_external.array(fileEditorSchema).min(1).max(GUEST_FILE_EDITORS_MAX).refine((editors) => uniqueBy(editors, (editor) => editor.id), { message: "file editor ids must be unique" });
+var blockSchema = exports_external.object({
+  name: exports_external.string().trim().regex(GUEST_BLOCK_NAME),
+  description: exports_external.string().trim().min(1).max(GUEST_BLOCK_DESCRIPTION_MAX),
+  args: exports_external.array(exports_external.string().trim().regex(GUEST_BLOCK_ARG_NAME)).max(GUEST_BLOCK_ARGS_MAX).refine((args) => new Set(args).size === args.length, { message: "argument names must be unique" }),
+  entry: exports_external.string().trim().refine((value) => isSafeAssetPath(value) && value.toLowerCase().endsWith(".html")),
+  height: exports_external.number().int().min(24).max(GUEST_BLOCK_HEIGHT_MAX).optional(),
+  answers: exports_external.boolean().optional()
+}).strict();
+var blocksSchema = exports_external.array(blockSchema).min(1).max(GUEST_BLOCKS_MAX).refine((blocks) => uniqueBy(blocks, (block) => block.name), { message: "block names must be unique" });
 var contributesSchema = exports_external.object({
   panel: panelSchema,
   background: exports_external.object({
@@ -23831,12 +24202,16 @@ var contributesSchema = exports_external.object({
     title: exports_external.string().trim().min(1).max(200).optional()
   })]).optional(),
   statusSection: exports_external.union([exports_external.literal(true), exports_external.object({
-    entry: exports_external.string().trim().refine((value) => isSafeAssetPath(value) && value.toLowerCase().endsWith(".html")),
+    entry: exports_external.string().trim().refine((value) => isSafeAssetPath(value) && value.toLowerCase().endsWith(".html")).optional(),
+    source: exports_external.object({
+      path: exports_external.string().trim().refine(isGuestRequestPath),
+      interval: exports_external.number().int().min(GUEST_STATUS_SOURCE_INTERVAL_MIN).max(GUEST_STATUS_SOURCE_INTERVAL_MAX).optional()
+    }).strict().optional(),
     title: exports_external.string().trim().min(1).max(GUEST_STATUS_SECTION_TITLE_MAX).optional(),
     height: exports_external.number().int().min(GUEST_STATUS_SECTION_HEIGHT_MIN).max(GUEST_STATUS_SECTION_HEIGHT_MAX).optional(),
     defaultExpanded: exports_external.boolean().optional(),
     requiresProject: exports_external.boolean().optional()
-  })]).optional(),
+  }).refine((section) => section.entry !== undefined || section.source !== undefined)]).optional(),
   capabilities: exports_external.array(exports_external.enum(DECLARED_GUEST_CAPABILITIES)).max(8).optional(),
   integration: integrationSchema.optional(),
   service: serviceSchema.optional(),
@@ -23846,8 +24221,23 @@ var contributesSchema = exports_external.object({
   commands: commandsSchema.optional(),
   tools: toolsSchema.optional(),
   fileEditors: fileEditorsSchema.optional(),
-  sourceControl: sourceControlSchema.optional()
+  sourceControl: sourceControlSchema.optional(),
+  sessionEvents: exports_external.object({
+    events: exports_external.array(exports_external.enum(GUEST_SESSION_EVENT_TYPES)).min(1).max(GUEST_SESSION_EVENT_TYPES.length).refine((events) => new Set(events).size === events.length, { message: "event types must be unique" }),
+    content: exports_external.literal(true).optional()
+  }).strict().optional(),
+  notifications: notificationsSchema.optional(),
+  tracker: trackerSchema.optional(),
+  quota: quotaSchema.optional(),
+  sessionControl: exports_external.object({ content: exports_external.literal(true).optional(), answers: exports_external.literal(true).optional() }).strict().optional(),
+  instructions: exports_external.literal(true).optional(),
+  skills: exports_external.string().trim().refine(isSafeAssetPath).optional(),
+  opencodePlugin: exports_external.string().trim().refine(isSafeAssetPath).optional(),
+  mentions: exports_external.object({ label: exports_external.string().trim().min(1).max(GUEST_MENTIONS_LABEL_MAX) }).strict().optional(),
+  blocks: blocksSchema.optional()
 });
+var hasStatusSource = (contributes) => Boolean(contributes.statusSection && contributes.statusSection !== true && contributes.statusSection.source);
+var hasStatusFrame = (contributes) => contributes.statusSection === true || Boolean(contributes.statusSection?.entry);
 var runtimeContributions = (contributes) => {
   const declared = [];
   if (contributes.page !== undefined)
@@ -23858,7 +24248,7 @@ var runtimeContributions = (contributes) => {
     declared.push("capabilities");
   if (contributes.integration !== undefined)
     declared.push("integration");
-  if (contributes.service !== undefined && !contributes.service.provides?.length && !contributes.service.surface)
+  if (contributes.service !== undefined && !contributes.service.provides?.length && !contributes.service.surface && !contributes.service.keepRunning && !contributes.service.schedule && !hasStatusSource(contributes) && contributes.sessionEvents === undefined && contributes.mentions === undefined)
     declared.push("service");
   if (contributes.filesystem !== undefined)
     declared.push("filesystem");
@@ -23893,6 +24283,65 @@ var openChamberManifestSchema = exports_external.object({
       });
       return;
     }
+    const providesNotifications = contributes.service?.provides?.includes("notifications") === true;
+    if (providesNotifications !== (contributes.notifications !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: 'service.provides "notifications" and contributes.notifications come together: declare both or neither.'
+      });
+      return;
+    }
+    if (providesNotifications && contributes.panel.id.length > NOTIFICATIONS_GUEST_ID_MAX) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: `A notifications extension's panel.id is at most ${NOTIFICATIONS_GUEST_ID_MAX} characters: OpenChamber names its channel "ext-<panel.id>".`
+      });
+      return;
+    }
+    const providesTracker = contributes.service?.provides?.includes("tracker") === true;
+    if (providesTracker !== (contributes.tracker !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: 'service.provides "tracker" and contributes.tracker come together: declare both or neither.'
+      });
+      return;
+    }
+    if (providesTracker && contributes.panel.id.length > TRACKER_GUEST_ID_MAX) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: `A tracker extension's panel.id is at most ${TRACKER_GUEST_ID_MAX} characters: OpenChamber names its tracker "ext-<panel.id>".`
+      });
+      return;
+    }
+    if (providesTracker && providesSourceControl) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: 'An extension is a Git host ("source-control") or a tracker ("tracker"), never both: the two roles would share the id "ext-<panel.id>".'
+      });
+      return;
+    }
+    const providesQuota = contributes.service?.provides?.includes("quota") === true;
+    if (providesQuota !== (contributes.quota !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: 'service.provides "quota" and contributes.quota come together: declare both or neither.'
+      });
+      return;
+    }
+    if (providesQuota && contributes.panel.id.length > QUOTA_GUEST_ID_MAX) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["service", "provides"],
+        message: `A quota extension's panel.id is at most ${QUOTA_GUEST_ID_MAX} characters: OpenChamber names its usage provider "ext-<panel.id>".`
+      });
+      return;
+    }
     const docked = contributes.panel.dock !== undefined || contributes.panel.size !== undefined;
     if (docked && !(contributes.service?.surface && hasGuestPage(contributes))) {
       ctx.addIssue({
@@ -23909,6 +24358,32 @@ var openChamberManifestSchema = exports_external.object({
         message: 'contributes.statusSection: true reuses panel.entry; without a panel page, name its own { "entry": "<package .html>" }.'
       });
       return;
+    }
+    if (hasStatusSource(contributes) && !contributes.service) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["statusSection", "source"],
+        message: "contributes.statusSection.source is read from the extension's service; declare contributes.service."
+      });
+      return;
+    }
+    if (contributes.sessionEvents !== undefined && !contributes.service) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sessionEvents"],
+        message: "contributes.sessionEvents are posted to the extension's service; declare contributes.service."
+      });
+      return;
+    }
+    for (const key of ["sessionControl", "instructions", "mentions"]) {
+      if (contributes[key] !== undefined && !contributes.service) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `contributes.${key} is served by the extension's service; declare contributes.service.`
+        });
+        return;
+      }
     }
     if (hasGuestPage(contributes))
       return;
@@ -23928,7 +24403,7 @@ var openChamberManifestSchema = exports_external.object({
         });
       return;
     }
-    if (contributes.statusSection || contributes.fileEditors) {
+    if (hasStatusFrame(contributes) || contributes.fileEditors || contributes.blocks) {
       const needsFrame = [];
       if (contributes.page !== undefined)
         needsFrame.push("page");
@@ -23942,7 +24417,7 @@ var openChamberManifestSchema = exports_external.object({
         ctx.addIssue({
           code: "custom",
           path: ["panel"],
-          message: `${needsFrame.map((key) => `contributes.${key}`).join(", ")} needs panel.entry or background.entry; a status section or file editor only hosts itself.`
+          message: `${needsFrame.map((key) => `contributes.${key}`).join(", ")} needs panel.entry or background.entry; a status section, file editor or block only hosts itself.`
         });
       return;
     }
@@ -23966,6 +24441,30 @@ var packageEnvelopeSchema = exports_external.union([
   exports_external.object({ openchamber: exports_external.null() }),
   exports_external.object({ openchamber: exports_external.object({}).passthrough() })
 ]);
+var identityBlockSchema = exports_external.looseObject({
+  id: exports_external.string().optional(),
+  name: exports_external.string().optional(),
+  icon: exports_external.string().optional(),
+  contributes: exports_external.looseObject({ panel: exports_external.looseObject({}).optional() }).optional()
+});
+var liftIdentity = (block) => {
+  const parsed = identityBlockSchema.safeParse(block);
+  if (!parsed.success)
+    return block;
+  const { id, name, icon, contributes, ...rest } = parsed.data;
+  if (id === undefined && name === undefined && icon === undefined)
+    return block;
+  const identity2 = { ...id === undefined ? {} : { id }, ...name === undefined ? {} : { name }, ...icon === undefined ? {} : { icon } };
+  return { ...rest, contributes: { ...contributes, panel: { ...contributes?.panel, ...identity2 } } };
+};
+var envelopeBlockSchema = exports_external.looseObject({ openchamber: identityBlockSchema });
+var withLiftedIdentity = (document) => {
+  const envelope = envelopeBlockSchema.safeParse(document);
+  if (envelope.success)
+    return { ...envelope.data, openchamber: liftIdentity(envelope.data.openchamber) };
+  const bare = identityBlockSchema.safeParse(document);
+  return bare.success && !("openchamber" in bare.data) ? liftIdentity(bare.data) : document;
+};
 var fail = (code, message) => ({
   ok: false,
   code,
@@ -23992,15 +24491,15 @@ var failureFromIssue = (issue2) => {
     return fail("invalid-panel", issue2.message);
   }
   if (path6 === "contributes" || path6 === "contributes.panel") {
-    return fail("missing-panel", "contributes.panel is required.");
+    return fail("missing-panel", "The manifest needs id, name and icon.");
   }
   switch (path6) {
     case "contributes.panel.id":
-      return fail("invalid-panel-id", "panel.id must be kebab-case starting with a letter.");
+      return fail("invalid-panel-id", "id must be kebab-case starting with a letter.");
     case "contributes.panel.name":
-      return fail("invalid-panel-name", "panel.name must be a non-empty string.");
+      return fail("invalid-panel-name", "name must be a non-empty string.");
     case "contributes.panel.icon":
-      return fail("invalid-panel-icon", "panel.icon must be a Remixicon name or a package .svg path.");
+      return fail("invalid-panel-icon", "icon must be a Remixicon name or a package .svg path.");
     case "contributes.panel.entry":
       return fail("invalid-panel-entry", "panel.entry must be a relative path inside the package.");
     case "contributes.panel.dock":
@@ -24016,7 +24515,7 @@ var failureFromIssue = (issue2) => {
     return fail("invalid-page", 'contributes.page must be true or { entry: "<package HTML>", title?: "Page title" }.');
   }
   if (path6 === "contributes.statusSection" || path6.startsWith("contributes.statusSection.")) {
-    return fail("invalid-status-section", issue2.code === "custom" ? issue2.message : `contributes.statusSection must be true or { entry: "<package .html>", title?: "1 to ${GUEST_STATUS_SECTION_TITLE_MAX} characters", height?: ${GUEST_STATUS_SECTION_HEIGHT_MIN} to ${GUEST_STATUS_SECTION_HEIGHT_MAX} }.`);
+    return fail("invalid-status-section", issue2.code === "custom" ? issue2.message : `contributes.statusSection must be true or { entry?: "<package .html>", source?: { path: "/status", interval?: ${GUEST_STATUS_SOURCE_INTERVAL_MIN} to ${GUEST_STATUS_SOURCE_INTERVAL_MAX} }, title?: "1 to ${GUEST_STATUS_SECTION_TITLE_MAX} characters", height?: ${GUEST_STATUS_SECTION_HEIGHT_MIN} to ${GUEST_STATUS_SECTION_HEIGHT_MAX} } with entry, source, or both.`);
   }
   if (path6 === "contributes.background" || path6.startsWith("contributes.background.")) {
     return fail("invalid-background", "contributes.background needs an entry ending in .html inside the package.");
@@ -24034,7 +24533,7 @@ var failureFromIssue = (issue2) => {
     return fail("invalid-origins", `contributes.origins lists 1 to ${GUEST_ORIGINS_MAX} unique https origins like "https://fonts.example.com", without a path.`);
   }
   if (path6.startsWith("contributes.actions")) {
-    return fail("invalid-actions", 'contributes.actions lists up to 8 entries with a unique kebab-case id, a label of 1 to 40 characters, where "message" or "session", optional roles (message only), and optional payload ["messages"] (session only).');
+    return fail("invalid-actions", 'contributes.actions lists up to 8 entries with a unique kebab-case id, a label of 1 to 40 characters, where "message", "session", "selection", "file" or "diff", optional roles (message only), optional payload ["messages"] (session only), and optional display "label", "icon" or "both" (selection only).');
   }
   if (path6.startsWith("contributes.commands")) {
     return fail("invalid-commands", "contributes.commands lists up to 8 entries with a unique name matching /^[a-z][a-z0-9-]{0,23}$/ and an optional description of 1 to 80 characters.");
@@ -24045,6 +24544,27 @@ var failureFromIssue = (issue2) => {
   if (path6.startsWith("contributes.fileEditors")) {
     return fail("invalid-file-editors", `contributes.fileEditors lists 1 to ${GUEST_FILE_EDITORS_MAX} editors with a unique kebab-case id, a title of 1 to ${GUEST_FILE_EDITOR_TITLE_MAX} characters, match: 1 to ${GUEST_FILE_EDITOR_PATTERNS_MAX} file-name patterns (no "/", not only wildcards, like "*.excalidraw"), an entry ending in .html inside the package, and optional content "text" or "binary".`);
   }
+  if (path6 === "contributes.sessionEvents" || path6.startsWith("contributes.sessionEvents.")) {
+    return fail("invalid-session-events", issue2.code === "custom" && path6 === "contributes.sessionEvents" ? issue2.message : `contributes.sessionEvents is { events: [1 to ${GUEST_SESSION_EVENT_TYPES.length} distinct of ${GUEST_SESSION_EVENT_TYPES.map((type) => `"${type}"`).join(", ")}], content?: true }.`);
+  }
+  if (path6 === "contributes.sessionControl" || path6.startsWith("contributes.sessionControl.")) {
+    return fail("invalid-session-control", issue2.code === "custom" ? issue2.message : "contributes.sessionControl is { content?: true, answers?: true }.");
+  }
+  if (path6 === "contributes.instructions") {
+    return fail("invalid-instructions", issue2.code === "custom" ? issue2.message : "contributes.instructions is true.");
+  }
+  if (path6 === "contributes.skills") {
+    return fail("invalid-skills", "contributes.skills is a folder inside the package.");
+  }
+  if (path6 === "contributes.opencodePlugin") {
+    return fail("invalid-opencode-plugin", "contributes.opencodePlugin is a plugin folder inside the package: a directory with a package.json whose entry OpenCode loads.");
+  }
+  if (path6 === "contributes.mentions" || path6.startsWith("contributes.mentions.")) {
+    return fail("invalid-mentions", issue2.code === "custom" ? issue2.message : `contributes.mentions is { label: 1 to ${GUEST_MENTIONS_LABEL_MAX} characters }.`);
+  }
+  if (path6 === "contributes.blocks" || path6.startsWith("contributes.blocks")) {
+    return fail("invalid-blocks", `contributes.blocks lists 1 to ${GUEST_BLOCKS_MAX} components, each with a unique PascalCase name, a description of 1 to ${GUEST_BLOCK_DESCRIPTION_MAX} characters, up to ${GUEST_BLOCK_ARGS_MAX} unique camelCase args, an entry ending in .html inside the package, and an optional height.`);
+  }
   if (path6.startsWith("contributes.integration")) {
     return fail("invalid-integration", "contributes.integration needs a name, description, and oauth, token, or host.");
   }
@@ -24052,10 +24572,22 @@ var failureFromIssue = (issue2) => {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.sourceControl" in GUEST_SERVICES.md for every field.`);
   }
-  if (path6.startsWith("contributes.service")) {
-    return fail("invalid-service", issue2.code === "custom" ? issue2.message : 'contributes.service needs entry, runtime "host", optional permissions, optional provides ("browser", "source-control"), and optional surface (true).');
+  if (path6.startsWith("contributes.notifications")) {
+    const field = fieldPath(issue2.path);
+    return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.notifications" in GUEST_SERVICES.md for every field.`);
   }
-  return fail("missing-panel", "contributes.panel is required.");
+  if (path6.startsWith("contributes.tracker")) {
+    const field = fieldPath(issue2.path);
+    return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.tracker" in GUEST_SERVICES.md for every field.`);
+  }
+  if (path6.startsWith("contributes.quota")) {
+    const field = fieldPath(issue2.path);
+    return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: contributes.quota is { providers: string[] } of up to ${QUOTA_PROVIDERS_MAX} OpenCode provider ids; see "Usage provider" in GUEST_SERVICES.md.`);
+  }
+  if (path6.startsWith("contributes.service")) {
+    return fail("invalid-service", issue2.code === "custom" ? issue2.message : 'contributes.service needs entry, runtime "host", optional permissions, optional provides ("browser", "source-control", "notifications", "tracker", "quota", "opencode"), optional surface (true), optional keepRunning (true), and optional schedule (up to 8 of { id, cron, timezone? }).');
+  }
+  return fail("missing-panel", "The manifest needs id, name and icon.");
 };
 var decodeManifest = (parsed) => {
   if (parsed.success) {
@@ -24069,7 +24601,7 @@ var decodeManifest = (parsed) => {
 };
 var parseManifestJson = (json2) => {
   try {
-    const raw = JSON.parse(json2);
+    const raw = withLiftedIdentity(JSON.parse(json2));
     if (packageEnvelopeSchema.safeParse(raw).success) {
       const parsed = packageManifestSchema.safeParse(raw);
       if (parsed.success) {
@@ -24125,6 +24657,7 @@ var guestWorkspaceSnapshotSchema = exports_external.discriminatedUnion("kind", [
       title: exports_external.string(),
       projectId: identity2,
       directory: identity2,
+      agent: exports_external.string().optional(),
       parentId: identity2.nullable(),
       createdAt: exports_external.number(),
       updatedAt: exports_external.number(),
@@ -24132,7 +24665,8 @@ var guestWorkspaceSnapshotSchema = exports_external.discriminatedUnion("kind", [
       worktree: worktree.nullable(),
       activity: exports_external.enum(["unknown", "idle", "running", "retrying", "waiting-permission", "waiting-question"]),
       outcome: exports_external.enum(["completed", "failed"]).nullable(),
-      items: exports_external.array(exports_external.object({ id: identity2, data: exports_external.json().optional() }))
+      items: exports_external.array(exports_external.object({ id: identity2, data: exports_external.json().optional() })),
+      links: exports_external.array(exports_external.object({ title: exports_external.string(), url: exports_external.string(), kind: exports_external.enum(["issue", "change"]), linkedAt: exports_external.number() })).optional()
     }))
   })
 ]);
@@ -24187,6 +24721,164 @@ var guestStatusControlEventSchema = exports_external.object({
   id: idSchema,
   value: exports_external.string().min(1).max(GUEST_STATUS_CONTROL_VALUE_MAX).optional()
 }).strict();
+// node_modules/@openchamber/sdk/dist/status-view-schemas.js
+var idSchema2 = exports_external.string().regex(GUEST_STATUS_CONTROL_ID);
+var labelSchema2 = exports_external.string().min(1).max(GUEST_STATUS_CONTROL_LABEL_MAX);
+var valueSchema = exports_external.string().min(1).max(GUEST_STATUS_CONTROL_VALUE_MAX);
+var textSchema = exports_external.string().min(1).max(GUEST_STATUS_VIEW_TEXT_MAX);
+var toneSchema = exports_external.enum(["default", "muted", "accent", "success", "warning", "error", "info"]);
+var finite = exports_external.number().finite();
+var isWebUrl = (value) => {
+  try {
+    const url2 = new URL(value);
+    return url2.protocol === "http:" || url2.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+var optionSchema2 = exports_external.object({ value: valueSchema, label: labelSchema2 }).strict();
+var choiceSchema = (kind, min, max) => exports_external.object({
+  kind: exports_external.literal(kind),
+  id: idSchema2,
+  label: labelSchema2,
+  value: valueSchema,
+  options: exports_external.array(optionSchema2).min(min).max(max),
+  disabled: exports_external.boolean().optional()
+}).strict().refine((choice) => new Set(choice.options.map((option) => option.value)).size === choice.options.length, { message: "option values must be unique", path: ["options"] }).refine((choice) => choice.options.some((option) => option.value === choice.value), { message: "value must be one of its options", path: ["value"] });
+var chipSchema = exports_external.object({
+  id: idSchema2,
+  label: labelSchema2,
+  tone: toneSchema.optional(),
+  url: exports_external.string().max(2000).refine(isWebUrl, { message: "chip url must be http(s)" }).optional()
+}).strict();
+var contentSchema = exports_external.union([
+  exports_external.object({ kind: exports_external.literal("bar"), value: finite.min(0).max(100), tone: toneSchema.optional() }).strict(),
+  exports_external.object({
+    kind: exports_external.literal("chart"),
+    values: exports_external.array(finite.min(0)).max(GUEST_STATUS_VIEW_CHART_POINTS_MAX),
+    max: finite.positive().optional(),
+    tone: toneSchema.optional(),
+    unit: exports_external.enum(["bytes", "percent", "count"]).optional(),
+    step: finite.positive().max(3600).optional()
+  }).strict(),
+  exports_external.object({
+    kind: exports_external.literal("chips"),
+    chips: exports_external.array(chipSchema).min(1).max(GUEST_STATUS_VIEW_CHIPS_MAX)
+  }).strict(),
+  exports_external.object({ kind: exports_external.literal("text"), text: textSchema, tone: toneSchema.optional() }).strict(),
+  choiceSchema("segmented", GUEST_STATUS_VIEW_SEGMENTS_MIN, GUEST_STATUS_VIEW_SEGMENTS_MAX)
+]);
+var actionSchema2 = exports_external.union([
+  exports_external.object({
+    kind: exports_external.literal("button"),
+    id: idSchema2,
+    label: labelSchema2,
+    variant: exports_external.enum(["default", "outline", "destructive"]).optional(),
+    confirm: labelSchema2.optional(),
+    disabled: exports_external.boolean().optional()
+  }).strict(),
+  exports_external.object({
+    kind: exports_external.literal("switch"),
+    id: idSchema2,
+    label: labelSchema2,
+    checked: exports_external.boolean(),
+    disabled: exports_external.boolean().optional()
+  }).strict(),
+  choiceSchema("select", 1, GUEST_STATUS_CONTROL_OPTIONS_MAX)
+]);
+var rowSchema = exports_external.union([
+  exports_external.object({
+    kind: exports_external.literal("line"),
+    id: idSchema2,
+    label: labelSchema2,
+    icon: exports_external.string().regex(GUEST_STATUS_VIEW_ICON).optional(),
+    dot: toneSchema.optional(),
+    content: contentSchema.optional(),
+    value: valueSchema.optional(),
+    valueTone: toneSchema.optional(),
+    badge: exports_external.object({ label: labelSchema2, tone: toneSchema.optional() }).strict().optional(),
+    tooltip: textSchema.optional(),
+    actions: exports_external.array(actionSchema2).max(GUEST_STATUS_VIEW_ACTIONS_MAX).optional()
+  }).strict(),
+  exports_external.object({
+    kind: exports_external.literal("note"),
+    id: idSchema2,
+    text: exports_external.string().min(1).max(GUEST_STATUS_VIEW_NOTE_MAX),
+    tone: exports_external.enum(["muted", "info", "warning", "error"]).optional()
+  }).strict()
+]);
+var controlIds = (view) => [
+  ...(view.controls ?? []).map((control) => control.id),
+  ...view.rows.flatMap((row2) => row2.kind === "line" ? [
+    ...(row2.actions ?? []).map((action) => action.id),
+    ...row2.content?.kind === "segmented" ? [row2.content.id] : []
+  ] : [])
+];
+var guestStatusViewSchema = exports_external.object({
+  rows: exports_external.array(rowSchema).max(GUEST_STATUS_VIEW_ROWS_MAX),
+  controls: guestStatusControlsSchema.optional()
+}).strict().refine((view) => new Set(view.rows.map((row2) => row2.id)).size === view.rows.length, { message: "row ids must be unique", path: ["rows"] }).refine((view) => {
+  const ids = controlIds(view);
+  return new Set(ids).size === ids.length;
+}, { message: "control ids must be unique across the view" });
+// node_modules/@openchamber/sdk/dist/service-host-schemas.js
+var prompt = exports_external.string().trim().min(1).max(SERVICE_PROMPT_MAX);
+var sessionId = exports_external.string().trim().min(1).max(256);
+var shortText = exports_external.string().trim().min(1).max(256);
+var directory = exports_external.string().trim().min(1).max(4096);
+var answerMessage = exports_external.string().trim().min(1).max(SERVICE_ANSWER_MESSAGE_MAX);
+var serviceHostCallSchema = exports_external.discriminatedUnion("method", [
+  exports_external.object({
+    method: exports_external.literal("sessions.start"),
+    input: exports_external.object({
+      prompt,
+      projectId: shortText.optional(),
+      directory: directory.optional(),
+      title: shortText.optional(),
+      model: shortText.optional(),
+      variant: shortText.optional(),
+      agent: shortText.optional()
+    }).strict().refine((input2) => !(input2.projectId && input2.directory), { message: "Give projectId or directory, not both" })
+  }).strict(),
+  exports_external.object({ method: exports_external.literal("sessions.send"), input: exports_external.object({ sessionId, prompt }).strict() }).strict(),
+  exports_external.object({ method: exports_external.literal("sessions.retry"), input: exports_external.object({ sessionId }).strict() }).strict(),
+  exports_external.object({ method: exports_external.literal("sessions.status"), input: exports_external.object({ sessionId }).strict() }).strict(),
+  exports_external.object({ method: exports_external.literal("sessions.lastReply"), input: exports_external.object({ sessionId }).strict() }).strict(),
+  exports_external.object({ method: exports_external.literal("sessions.stop"), input: exports_external.object({ sessionId }).strict() }).strict(),
+  exports_external.object({
+    method: exports_external.literal("sessions.answerPermission"),
+    input: exports_external.object({ sessionId, requestId: shortText, decision: exports_external.enum(["allow", "deny"]), message: answerMessage.optional() }).strict()
+  }).strict(),
+  exports_external.object({
+    method: exports_external.literal("sessions.answerForm"),
+    input: exports_external.object({
+      sessionId,
+      formId: shortText,
+      values: exports_external.record(exports_external.string().min(1).max(256), exports_external.union([exports_external.string().max(SERVICE_PROMPT_MAX), exports_external.number(), exports_external.boolean(), exports_external.array(exports_external.string().max(1000)).max(100)])).nullable(),
+      message: answerMessage.optional()
+    }).strict()
+  }).strict(),
+  exports_external.object({
+    method: exports_external.literal("instructions.set"),
+    input: exports_external.object({ directory: directory.nullable(), text: exports_external.string().max(SERVICE_INSTRUCTIONS_MAX) }).strict()
+  }).strict(),
+  exports_external.object({
+    method: exports_external.literal("panels.emit"),
+    input: exports_external.object({ topic: exports_external.string().trim().min(1).max(SERVICE_EVENT_TOPIC_MAX), data: exports_external.json().optional() }).strict()
+  }).strict(),
+  exports_external.object({ method: exports_external.literal("settings.read"), input: exports_external.object({}).strict() }).strict(),
+  exports_external.object({
+    method: exports_external.literal("status.set"),
+    input: exports_external.object({ needsConfiguration: exports_external.string().trim().min(1).max(SERVICE_STATUS_MESSAGE_MAX).nullable() }).strict()
+  }).strict()
+]);
+var mentionItemSchema = exports_external.object({
+  id: exports_external.string().min(1).max(MENTION_ID_MAX),
+  title: exports_external.string().trim().min(1).max(MENTION_TITLE_MAX),
+  subtitle: exports_external.string().trim().min(1).max(MENTION_TITLE_MAX).optional(),
+  url: exports_external.url({ protocol: /^https?$/ }).max(2048).optional()
+});
+var mentionsResolveResultSchema = exports_external.object({ text: exports_external.string().trim().min(1).max(MENTION_TEXT_MAX) });
 // node_modules/@openchamber/sdk/dist/popover.js
 var GUEST_POPOVER_ID = /^[A-Za-z0-9_-]{1,80}$/;
 var GUEST_POPOVER_COORDINATE_MAX = 1e5;
@@ -24271,104 +24963,6 @@ var GUEST_SHELL_ID_MAX = 128;
 var GUEST_SHELLS_MAX = 200;
 var GUEST_SHELL_OUTPUT_TAIL_MAX = 65536;
 var GUEST_SHELL_END_STATUSES = ["exited", "timeout", "killed", "stopped", "unknown"];
-
-// node_modules/@openchamber/sdk/dist/contract.js
-var START_SESSION_SENT = ["sent", "no-model", "skipped", "failed"];
-var SESSION_LIFECYCLE_PHASES = ["started", "completed", "failure"];
-var GUEST_FILE_ENTRY_KINDS = ["file", "directory", "other"];
-var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
-var GUEST_COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
-var GUEST_TOAST_MAX = 500;
-var GUEST_CLIPBOARD_TEXT_MAX = 32000;
-var GUEST_COMPOSE_TEXT_MAX = 16000;
-var GUEST_ATTACH_ID_MAX = 128;
-var GUEST_ATTACH_TITLE_MAX = 200;
-var GUEST_ATTACH_URL_MAX = 2000;
-var GUEST_ATTACH_TEXT_MAX = 16000;
-var GUEST_ATTACH_AUTHOR_MAX = 80;
-var GUEST_ATTACH_BRANCH_MAX = 200;
-var GUEST_ATTACH_DATA_MAX = 16000;
-var GUEST_ACCOUNT_MAX = 200;
-var GUEST_SESSION_MODEL_MAX = 200;
-var GUEST_SESSION_AGENT_MAX = 80;
-var GUEST_SETTING_VALUE_MAX = 2000;
-var GUEST_REQUEST_PATH_MAX = 2000;
-var GUEST_REQUEST_BODY_MAX = 64000;
-var GUEST_REQUEST_RESPONSE_MAX = 8000000;
-var GUEST_FILE_PATH_MAX = 1024;
-var GUEST_FILE_CONTENT_MAX = 2000000;
-var GUEST_FILE_LIST_MAX = 2000;
-var GUEST_GENERATE_PROMPT_MAX = 64000;
-var GUEST_GENERATE_SYSTEM_MAX = 8000;
-var GUEST_GENERATE_OUTPUT_TOKENS_MAX = 4000;
-var GUEST_GENERATE_TEXT_MAX = 256000;
-var GUEST_GENERATE_LATE_KEEP_MS = 60 * 60000;
-var GUEST_ITEM_MESSAGE_TEXT_MAX = 200000;
-var GUEST_ITEM_SESSION_MAX = 2000000;
-var GUEST_BADGE_MAX = 999;
-var GUEST_FRAME_HEIGHT_MAX = 1e4;
-var GUEST_RESOLVE_ERROR_MAX = 500;
-var HOST_REQUEST_ERROR_CODES = [
-  "HOST_UNAVAILABLE",
-  "HOST_TIMEOUT",
-  "HOST_REJECTED",
-  "DISCONNECTED",
-  "DISABLED",
-  "BAD_PATH",
-  "NO_INTEGRATION",
-  "NO_SERVICE",
-  "SERVICE_FAILED",
-  "REQUEST_FAILED",
-  "RESPONSE_TOO_LARGE",
-  "NO_SESSION",
-  "SESSION_BUSY",
-  "NOT_GRANTED",
-  "NO_DIRECTORY",
-  "NOT_FOUND",
-  "FILE_TOO_LARGE",
-  "DENIED",
-  "NO_MODEL",
-  "MODEL_FAILED",
-  "UNSUPPORTED"
-];
-var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
-var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
-var isHostRequestErrorCode = (value) => hostRequestErrorCodeSet.has(value);
-var resolveHostRequestErrorCode = (value) => value && isHostRequestErrorCode(value) ? value : "HOST_REJECTED";
-var isGuestFilePath = (value) => value.length > 0 && value.length <= GUEST_FILE_PATH_MAX && !value.includes("\x00") && !value.includes("\\");
-var ATTACH_PROVIDER_ID = /^[a-z][a-z0-9-]*$/;
-var SETTING_KEY = /^[a-z][a-z0-9-]*$/;
-var isGuestRequestPath = (value) => {
-  if (!value.startsWith("/") || value.includes("\x00") || value.includes("\\") || value.includes("://")) {
-    return false;
-  }
-  if (value.length > GUEST_REQUEST_PATH_MAX) {
-    return false;
-  }
-  const segments = value.split("/");
-  return !segments.some((segment) => segment === "." || segment === "..");
-};
-var serviceStatusSet = new Set(SERVICE_STATUS_VALUES);
-var fileStatKindSet = new Set(GUEST_FILE_STAT_KINDS);
-var HOST_PUSH_TYPES = new Set([
-  "workspace",
-  "shells",
-  "ready",
-  "directory",
-  "session",
-  "connection",
-  "settings",
-  "session-lifecycle",
-  "item",
-  "resolve",
-  "action",
-  "status-control-event",
-  "popover-closed",
-  "file-open",
-  "file-snapshot",
-  "file-saved",
-  "generate-late"
-]);
 
 // node_modules/@openchamber/sdk/dist/protocol.js
 var fileBytesSchema = exports_external.instanceof(Uint8Array).refine((bytes) => bytes.byteLength <= GUEST_FILE_EDITOR_CONTENT_MAX);
@@ -24535,7 +25129,31 @@ var sessionItemSchema = exports_external.object({
   })).optional(),
   truncated: exports_external.boolean().optional()
 }).refine((value) => JSON.stringify(value).length <= GUEST_ITEM_SESSION_MAX);
-var guestItemSchema = exports_external.union([messageItemSchema, sessionItemSchema, attachPayloadSchema]).nullable();
+var selectionItemSchema = exports_external.object({
+  kind: exports_external.literal("selection"),
+  action: exports_external.string().trim().min(1).max(64),
+  sessionId: exports_external.string().min(1),
+  directory: exports_external.string().nullable(),
+  messageId: exports_external.string().min(1),
+  text: exports_external.string().max(GUEST_ITEM_MESSAGE_TEXT_MAX)
+});
+var fileItemSchema = exports_external.object({
+  kind: exports_external.literal("file"),
+  action: exports_external.string().trim().min(1).max(64),
+  directory: exports_external.string().nullable(),
+  path: exports_external.string().min(1),
+  isDirectory: exports_external.boolean()
+});
+var diffItemSchema = exports_external.object({
+  kind: exports_external.literal("diff"),
+  action: exports_external.string().trim().min(1).max(64),
+  directory: exports_external.string().nullable(),
+  path: exports_external.string().min(1),
+  startLine: exports_external.number().int().min(0),
+  endLine: exports_external.number().int().min(0),
+  side: exports_external.enum(["additions", "deletions"]).optional()
+});
+var guestItemSchema = exports_external.union([messageItemSchema, sessionItemSchema, selectionItemSchema, fileItemSchema, diffItemSchema, attachPayloadSchema]).nullable();
 var readyPayloadSchema = exports_external.object({
   theme: exports_external.object({
     mode: exports_external.enum(["light", "dark"]),
@@ -24544,10 +25162,11 @@ var readyPayloadSchema = exports_external.object({
   locale: exports_external.string().min(1),
   directory: exports_external.string().nullable(),
   session: sessionSnapshotSchema,
-  surface: exports_external.enum(["panel", "dialog", "page", "background", "status", "file", "popover"]),
+  surface: exports_external.enum(["panel", "dialog", "page", "background", "status", "file", "popover", "block"]),
   connection: guestConnectionSchema,
   settings: guestSettingsSchema,
   item: guestItemSchema,
+  block: exports_external.object({ name: exports_external.string().min(1), args: exports_external.record(exports_external.string(), exports_external.string()), answered: exports_external.string().nullable() }).optional(),
   popover: exports_external.object({ id: exports_external.string().min(1).max(80), data: guestPopoverDataSchema }).strict().optional(),
   features: exports_external.object({
     deviceStorage: exports_external.literal(true).optional(),
@@ -24678,6 +25297,11 @@ var hostMessageSchema = exports_external.union([
   }),
   exports_external.object({
     ...envelope,
+    type: exports_external.literal("service-event"),
+    payload: exports_external.object({ topic: exports_external.string().min(1), data: exports_external.json() })
+  }),
+  exports_external.object({
+    ...envelope,
     type: exports_external.literal("status-control-event"),
     payload: guestStatusControlEventSchema
   }),
@@ -24696,7 +25320,7 @@ var hostMessageSchema = exports_external.union([
     ...envelope,
     type: exports_external.literal("action"),
     id: exports_external.string().min(1),
-    payload: exports_external.union([messageItemSchema, sessionItemSchema])
+    payload: exports_external.union([messageItemSchema, sessionItemSchema, selectionItemSchema, fileItemSchema, diffItemSchema])
   }),
   exports_external.object({
     ...envelope,
@@ -24783,6 +25407,12 @@ var guestMessageSchema = exports_external.discriminatedUnion("type", [
     payload: exports_external.object({
       url: exports_external.string().trim().min(1).max(GUEST_ATTACH_URL_MAX)
     })
+  }),
+  exports_external.object({
+    ...envelope,
+    type: exports_external.literal("block-answer"),
+    id: exports_external.string().min(1),
+    payload: exports_external.object({ text: exports_external.string().trim().min(1).max(GUEST_BLOCK_ANSWER_MAX) })
   }),
   exports_external.object({
     ...envelope,
@@ -25017,11 +25647,39 @@ var SOURCE_CONTROL_PROVIDER_TARGET_MAX = 4096;
 var SOURCE_CONTROL_OUTBOUND_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 var SOURCE_CONTROL_OUTBOUND_REQUEST_HEADERS = ["accept", "content-type", "if-none-match", "range"];
 var SOURCE_CONTROL_OUTBOUND_BODY_MAX = 1e6;
+var NOTIFICATIONS_PROVIDER_METHODS = ["auth.verify", "auth.probe", "notify"];
+var NOTIFICATIONS_PROVIDER_IDLE_MS = 10 * 60000;
+var TRACKER_PROVIDER_METHODS = [
+  "auth.probe",
+  "auth.verify",
+  "items.list",
+  "items.get",
+  "items.updateState",
+  "items.liveSummaries",
+  "states.list",
+  "containers.list",
+  "comments.create"
+];
+var TRACKER_PROVIDER_IDLE_MS = 10 * 60000;
+var TRACKER_PROVIDER_LIST_MAX = 100;
+var TRACKER_PROVIDER_LIVE_SUMMARIES_MAX = 50;
+var TRACKER_PROVIDER_CONTAINERS_MAX = 500;
+var QUOTA_PROVIDER_METHODS = ["usage.read"];
+var QUOTA_PROVIDER_ERROR_MESSAGE_MAX = 2000;
+var QUOTA_PROVIDER_IDLE_MS = 10 * 60000;
+var QUOTA_PROVIDER_WINDOWS_MAX = 32;
+var QUOTA_PROVIDER_MODELS_MAX = 64;
+var QUOTA_PROVIDER_NAME_MAX = 128;
+var QUOTA_PROVIDER_LABEL_MAX = 128;
 
 // node_modules/@openchamber/sdk/dist/service-provider-schemas.js
 var browserProviderResultSchema = exports_external.union([
   exports_external.object({ ok: exports_external.literal(true), data: exports_external.object({}).passthrough() }),
   exports_external.object({ ok: exports_external.literal(false), error: exports_external.string().min(1).max(2000) })
+]);
+var sessionEventResultSchema = exports_external.union([
+  exports_external.object({ ok: exports_external.literal(true) }).strict(),
+  exports_external.object({ ok: exports_external.literal(false), error: exports_external.string().min(1).max(SESSION_EVENT_ERROR_MAX) }).strict()
 ]);
 var browserControlActionSchema = exports_external.enum(BROWSER_CONTROL_ACTIONS);
 var text = exports_external.string().min(1).max(1024);
@@ -25179,6 +25837,105 @@ var outboundRequestSchema = exports_external.object({
   body: exports_external.string().max(SOURCE_CONTROL_OUTBOUND_BODY_MAX).optional()
 }).strict();
 var sourceControlProviderMethodSchema = exports_external.enum(SOURCE_CONTROL_PROVIDER_METHODS);
+var notificationsAccountSchema = exports_external.object({
+  account: exports_external.object({
+    id: exports_external.string().min(1).max(256),
+    login: exports_external.string().min(1).max(256),
+    name: optionalText
+  })
+});
+var notificationsNotifySchema = exports_external.object({ delivered: exports_external.literal(true) }).strict();
+var notificationsProviderMethodSchema = exports_external.enum(NOTIFICATIONS_PROVIDER_METHODS);
+var trackerText = exports_external.string().min(1).max(1024);
+var trackerTitle = exports_external.string().max(4096);
+var trackerUrl = exports_external.string().min(1).max(2048).refine((value) => /^https?:\/\//i.test(value) && URL.canParse(value), { message: "must be an http(s) URL" });
+var trackerCategory = exports_external.enum(["triage", "backlog", "todo", "in-progress", "done", "canceled"]);
+var trackerPriority = exports_external.enum(["none", "urgent", "high", "medium", "low"]);
+var trackerPerson = exports_external.object({ name: exports_external.string().max(256).nullable(), avatarUrl: exports_external.string().max(2048).nullable() }).strict();
+var trackerContainer = exports_external.object({ id: trackerText, key: exports_external.string().max(64).nullable(), name: exports_external.string().min(1).max(256) }).strict();
+var trackerState = exports_external.object({ id: trackerText.nullable(), name: exports_external.string().max(256), category: trackerCategory.nullable() }).strict();
+var trackerItemFields = {
+  id: trackerText,
+  identifier: exports_external.string().min(1).max(128),
+  title: trackerTitle,
+  url: trackerUrl,
+  state: trackerState.nullable(),
+  priority: trackerPriority.nullable().optional(),
+  labels: exports_external.array(exports_external.object({ id: trackerText, name: exports_external.string().min(1).max(256), color: exports_external.string().max(32).nullable() }).strict()).max(TRACKER_PROVIDER_LIST_MAX).optional(),
+  assignee: trackerPerson.nullable().optional(),
+  container: trackerContainer.nullable().optional(),
+  progress: exports_external.object({ total: exports_external.number().int().nonnegative(), done: exports_external.number().int().nonnegative(), more: exports_external.boolean() }).strict().nullable().optional(),
+  updatedAt: exports_external.string().max(64).nullable().optional()
+};
+var trackerRelatedItemSchema = exports_external.object({ ...trackerItemFields, parent: exports_external.null().optional() }).strict();
+var trackerItemSummarySchema = exports_external.object({ ...trackerItemFields, parent: trackerRelatedItemSchema.nullable().optional() }).strict();
+var trackerCommentSchema = exports_external.object({
+  id: trackerText,
+  body: exports_external.string().max(65536),
+  createdAt: exports_external.string().max(64).nullable(),
+  author: trackerPerson.nullable()
+}).strict();
+var trackerItemSchema = trackerItemSummarySchema.extend({
+  description: exports_external.string().max(262144).nullable().optional(),
+  comments: exports_external.array(trackerCommentSchema).max(TRACKER_PROVIDER_LIST_MAX).optional(),
+  children: exports_external.array(trackerRelatedItemSchema).max(TRACKER_PROVIDER_LIST_MAX).optional(),
+  childrenMore: exports_external.boolean().optional()
+}).strict();
+var trackerAccountSchema = exports_external.object({
+  account: exports_external.object({
+    id: exports_external.string().min(1).max(256),
+    login: exports_external.string().min(1).max(256).nullable(),
+    name: optionalText,
+    avatarUrl: exports_external.string().max(2048).optional()
+  }).strict()
+}).strict();
+var trackerListSchema = exports_external.object({
+  items: exports_external.array(trackerItemSummarySchema).max(TRACKER_PROVIDER_LIST_MAX),
+  cursor: exports_external.string().min(1).max(2048).nullable(),
+  hasMore: exports_external.boolean()
+}).strict();
+var trackerItemDataSchema = exports_external.object({ item: trackerItemSchema.nullable() }).strict();
+var trackerStatesSchema = exports_external.object({
+  states: exports_external.array(exports_external.object({ id: trackerText, name: exports_external.string().min(1).max(256), category: trackerCategory.nullable(), position: exports_external.number() }).strict()).max(TRACKER_PROVIDER_LIST_MAX * 2)
+}).strict();
+var trackerLiveSummariesSchema = exports_external.object({
+  items: exports_external.array(exports_external.object({
+    identifier: exports_external.string().min(1).max(128),
+    title: trackerTitle,
+    state: exports_external.object({ name: exports_external.string().max(256), category: trackerCategory }).strict()
+  }).strict()).max(TRACKER_PROVIDER_LIVE_SUMMARIES_MAX)
+}).strict();
+var trackerContainersSchema = exports_external.object({ containers: exports_external.array(trackerContainer).max(TRACKER_PROVIDER_CONTAINERS_MAX) }).strict();
+var trackerCommentDataSchema = exports_external.object({ comment: exports_external.object({ id: trackerText }).strict().nullable() }).strict();
+var trackerProviderMethodSchema = exports_external.enum(TRACKER_PROVIDER_METHODS);
+var QUOTA_RESERVED_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+var quotaName = exports_external.string().min(1).max(QUOTA_PROVIDER_NAME_MAX).refine((name) => !QUOTA_RESERVED_NAMES.has(name), { message: "reserved name" });
+var quotaLabel = exports_external.string().max(QUOTA_PROVIDER_LABEL_MAX);
+var quotaAmount = exports_external.number().finite().nonnegative();
+var quotaWindowSchema = exports_external.object({
+  usedPercent: quotaAmount.nullable(),
+  windowSeconds: exports_external.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+  resetAt: exports_external.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+  valueLabel: quotaLabel.nullable().optional(),
+  value: exports_external.discriminatedUnion("kind", [
+    exports_external.object({ kind: exports_external.literal("requests"), count: quotaAmount }).strict(),
+    exports_external.object({ kind: exports_external.literal("spend"), spent: quotaAmount, limit: exports_external.number().finite().positive().nullable() }).strict()
+  ]).optional(),
+  creditsUsed: quotaAmount.optional()
+}).strict();
+var quotaWindowsSchema = exports_external.record(quotaName, quotaWindowSchema).refine((windows2) => Object.keys(windows2).length <= QUOTA_PROVIDER_WINDOWS_MAX, { message: `at most ${QUOTA_PROVIDER_WINDOWS_MAX} windows` });
+var quotaUsageSchema = exports_external.object({
+  windows: quotaWindowsSchema,
+  models: exports_external.record(quotaName, exports_external.object({ windows: quotaWindowsSchema }).strict()).refine((models) => Object.keys(models).length <= QUOTA_PROVIDER_MODELS_MAX, { message: `at most ${QUOTA_PROVIDER_MODELS_MAX} models` }).optional()
+}).strict();
+var quotaUsageDataSchema = exports_external.object({
+  ok: exports_external.boolean(),
+  configured: exports_external.boolean(),
+  error: exports_external.string().min(1).max(QUOTA_PROVIDER_ERROR_MESSAGE_MAX).optional(),
+  planLabel: quotaLabel.nullable().optional(),
+  usage: quotaUsageSchema.nullable()
+}).strict();
+var quotaProviderMethodSchema = exports_external.enum(QUOTA_PROVIDER_METHODS);
 // node_modules/@openchamber/sdk/dist/service-surface.js
 var SURFACE_FRAME_MIMES = ["image/jpeg", "image/png"];
 var SURFACE_INPUT_BATCH_MAX = 256;
@@ -25190,23 +25947,24 @@ var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
 
 // node_modules/@openchamber/sdk/dist/service-surface-schemas.js
 var modifiersSchema = exports_external.object({ alt: exports_external.boolean(), ctrl: exports_external.boolean(), meta: exports_external.boolean(), shift: exports_external.boolean() });
-var finite = exports_external.number().finite();
+var finite2 = exports_external.number().finite();
 var surfaceInputEventSchema = exports_external.discriminatedUnion("type", [
   exports_external.object({
     type: exports_external.literal("pointer"),
     action: exports_external.enum(["down", "up", "move"]),
-    x: finite,
-    y: finite,
+    x: finite2,
+    y: finite2,
     button: exports_external.number().int().min(-1).max(4),
     buttons: exports_external.number().int().min(0).max(31),
     modifiers: modifiersSchema
   }),
-  exports_external.object({ type: exports_external.literal("wheel"), x: finite, y: finite, deltaX: finite, deltaY: finite, modifiers: modifiersSchema }),
+  exports_external.object({ type: exports_external.literal("wheel"), x: finite2, y: finite2, deltaX: finite2, deltaY: finite2, modifiers: modifiersSchema }),
   exports_external.object({
     type: exports_external.literal("key"),
     action: exports_external.enum(["down", "up"]),
     key: exports_external.string().min(1).max(64),
     code: exports_external.string().max(64),
+    keyCode: exports_external.number().int().min(0).max(255).optional(),
     modifiers: modifiersSchema
   }),
   exports_external.object({ type: exports_external.literal("text"), text: exports_external.string().min(1).max(SURFACE_TEXT_MAX) })
@@ -25241,7 +25999,7 @@ var surfaceHostMessageSchema = exports_external.discriminatedUnion("type", [
 var surfaceResizeAnswerSchema = exports_external.object({ width: dimension, height: dimension });
 var surfaceClipboardAnswerSchema = exports_external.object({ text: exports_external.string().max(SURFACE_TEXT_MAX) });
 // shared/release.ts
-var RELEASE = "1.0.0";
+var RELEASE = "1.1.0";
 
 // service/extension-updates.ts
 var OFFICIAL_MANIFEST = "https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main";
@@ -25459,14 +26217,14 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
       graphRoute = url2.pathname === "/v1/plan-graph";
       if (graphRoute && req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
-      runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile"].includes(url2.pathname);
+      runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile", "/v1/subagent-runs/dismiss-loss"].includes(url2.pathname);
       if (runsRoute) {
         if (url2.origin !== "http://127.0.0.1")
           return answer(404, { error: "not-found" });
         const active2 = setup ? setup.current() : { store, error: unavailableCode };
         if (!active2.store)
           return answer(503, { error: active2.error ?? "storage" });
-        if (url2.pathname.endsWith("/reconcile")) {
+        if (url2.pathname !== "/v1/subagent-runs") {
           if (req.method !== "POST")
             return answer(405, { error: "method-not-allowed" });
           if (url2.search)
@@ -25482,13 +26240,13 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
             }
             chunks.push(b);
           }
-          let body;
+          let text3;
           try {
-            body = parseReconcileBody(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+            text3 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
           } catch {
             throw new ProgressError("invalid");
           }
-          return answer(200, active2.store.requestRunReconciliation(body));
+          return answer(200, url2.pathname.endsWith("/dismiss-loss") ? active2.store.dismissRunLoss(parseDismissLossBody(text3)) : active2.store.requestRunReconciliation(parseReconcileBody(text3)));
         }
         if (req.method !== "GET")
           return answer(405, { error: "method-not-allowed" });
@@ -25642,8 +26400,10 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         return v;
       };
       if (url2.pathname === "/health") {
-        if (currentStore)
-          return answer(200, { ok: true, ready: true, sqlite: true, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        if (currentStore) {
+          const runs = currentStore.subagentRunStorage();
+          return answer(200, { ok: true, ready: true, sqlite: true, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        }
         if (setup)
           return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         return answer(503, { error: active.error ?? "storage" });
@@ -25837,6 +26597,7 @@ class SetupController {
     }
     try {
       verifyStore(next, b);
+      next.subagentRunStorage();
       next.bindReads(b.source.id, b.source.verified);
     } catch (e) {
       next.close();
@@ -25920,23 +26681,45 @@ class SetupController {
       if (!current || !(windows ? platformSecurityScope(() => sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot)) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
         throw new SetupError("ownership-invalid");
     }
-    if (action === "install" || action === "update")
+    if (action === "install" || action === "update") {
       this.validateDescriptor();
+      lifecycle("inspect", targets);
+      const database = path7.join(targets.storeRoot, "progress.sqlite");
+      if (existsSync5(database)) {
+        const probe = new Store(database, { readOnly: true });
+        try {
+          probe.subagentRunStorage();
+        } finally {
+          probe.close();
+        }
+      }
+    }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
       const b = readBinding(path7.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
-      } catch {
+      } catch (e) {
+        if (e instanceof ProgressError && e.code === "schema") {
+          this.close();
+          this.recordError(e);
+          throw e;
+        }
         let disabled = false;
         let control;
         try {
           control = new Store(b.database);
           verifyStore(control, b);
-          control.setEnabled(false);
+          control.disableCaptureIfSupported();
           disabled = true;
-        } catch {} finally {
+        } catch (e2) {
+          if (e2 instanceof ProgressError && e2.code === "schema") {
+            this.close();
+            this.recordError(e2);
+            throw e2;
+          }
+        } finally {
           control?.close();
         }
         throw new SetupError(disabled ? "service-binding-unavailable-capture-disabled" : "service-binding-unavailable");
