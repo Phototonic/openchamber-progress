@@ -359,6 +359,37 @@ export async function productionMapQa(d: Driver) {
   }
 
   await photo('board-map','page');
+  // Wide board (1920 px): the selection panel sits over the canvas's right edge only while a task is
+  // selected; the canvas never resizes for it; Close clears through the existing action (keyboard only:
+  // the 1920 px frame is wider than the shell window). At 1100 px
+  // the map is narrower than the panel threshold, so the inspector stays stacked below the canvas.
+  check('board:1100:inspector-stacked-without-close',await guest('page',`const i=d.querySelector('${inspector}');return i.dataset.selected==='D'&&i.dataset.placement!=='over'&&getComputedStyle(i).position!=='absolute'&&!d.querySelector('${hook('map-inspector-close')}')`));
+  await evaluate(`Object.assign(document.querySelector('section[data-frame=page]').style,{width:'1920px',flex:'none'});frame('page').style.height='1080px';true`);
+  await wait('page',`w.innerWidth===1920&&d.querySelector('${inspector}')?.dataset.placement==='over'`,'wide board panel');await frames2();
+  const wideCanvas=()=>guest<string>('page',`const v=d.querySelector('${viewport}');return v.clientWidth+'x'+v.clientHeight`);
+  const zoomLevel=()=>guest<number>('page',`return parseFloat(d.querySelector('${hook('map-zoom-level')}').textContent)`);
+  const clearOfPanel=(id:string)=>guest<boolean>('page',`const c=d.querySelector(${literal(hook('map-card-'+id))}).getBoundingClientRect(),p=d.querySelector('${inspector}').getBoundingClientRect(),v=d.querySelector('${viewport}').getBoundingClientRect();return c.right<=p.left&&c.left>=v.left&&c.top>=v.top&&c.bottom<=v.bottom`);
+  check('board:wide:panel-over-canvas-with-selection',await guest('page',`const i=d.querySelector('${inspector}'),r=i.getBoundingClientRect(),v=d.querySelector('${viewport}').getBoundingClientRect();return i.dataset.selected==='D'&&!i.hidden&&r.left>v.left&&r.right<=v.right&&r.top>=v.top&&r.bottom<=v.bottom&&i.tabIndex===0`));
+  check('board:wide:selected-card-clear-of-panel',await clearOfPanel('D'));
+  await guest('page',`d.querySelector(${literal(hook('map-card-D'))}).focus();return true`);await key('Escape');await frames2();
+  check('board:wide:no-panel-without-selection',await guest('page',`const i=d.querySelector('${inspector}');return i.dataset.selected===''&&i.hidden&&!i.getClientRects().length&&[...d.querySelectorAll('${hook('map-help')} p')].some(p=>p.textContent.startsWith('Select a card'))`));
+  await activate('page','map-fit-all');
+  check('board:wide:fit-all-at-most-100',await zoomLevel()<=100,[String(await zoomLevel())]);
+  const canvasBefore=await wideCanvas(),zoomBefore=await zoomLevel();
+  // The right-most card: selecting it pans just enough to clear the panel, at the same zoom.
+  const far=await guest<string>('page',`return [...d.querySelectorAll('${viewport} .ap-map-card')].sort((a,b)=>b.getBoundingClientRect().right-a.getBoundingClientRect().right)[0].dataset.task`);
+  await select('page',far);
+  check('board:wide:canvas-unchanged-on-selection',await wideCanvas()===canvasBefore,[canvasBefore]);
+  check('board:wide:far-right-selection-clear-same-zoom',await clearOfPanel(far)&&await zoomLevel()===zoomBefore,[far]);
+  await key('Tab');check('board:wide:tab-canvas-then-panel',await guest('page',`return d.activeElement?.dataset.testid==='map-inspector'`));
+  await key('Tab');check('board:wide:close-control-named',await guest('page',`const a=d.activeElement;return a?.dataset.testid==='map-inspector-close'&&a.getAttribute('aria-label')==='Close task details'`));
+  const heard=(await speech('page')).length;await key('Enter');await frames2();
+  await wait('page',`w.__speech.length>${heard}`,'clear announcement');
+  check('board:wide:close-clears-announces-and-returns-focus',await guest('page',`return d.querySelector('${inspector}').dataset.selected===''&&d.activeElement?.dataset.task===${literal(far)}`)&&(await speech('page')).slice(heard).join('|')==='Selection cleared.'&&await wideCanvas()===canvasBefore);
+  check('board:wide:no-page-overflow',await overflow('page'));
+  await select('page','D');await photo('board-wide-panel','page');
+  await evaluate(`Object.assign(document.querySelector('section[data-frame=page]').style,{width:'1100px',flex:''});frame('page').style.height='850px';true`);
+  await wait('page',`w.innerWidth===1100&&d.querySelector('${inspector}')?.dataset.placement!=='over'`,'board back at 1100');await frames2();
   for(const width of [600,360,600,360]){
     await d.show(['panel'],width);await ready('panel');await select('panel','B');
     check(`rail:${width}:selected-visible`,await inView('panel','B'));
