@@ -82,16 +82,30 @@ export class SetupController {
     if(['disable','enable','remove-capture'].includes(action)) {
       const current=this.targets();if(!current||!(windows?platformSecurityScope(()=>sameWindowsDirectory(current.configRoot,targets.configRoot)&&sameWindowsDirectory(current.dataRoot,targets.dataRoot)&&sameWindowsDirectory(current.storeRoot,targets.storeRoot)):current.configRoot===targets.configRoot&&current.dataRoot===targets.dataRoot&&current.storeRoot===targets.storeRoot))throw new SetupError('ownership-invalid');
     }
-    if(action==='install'||action==='update')this.validateDescriptor();
+    if(action==='install'||action==='update'){
+      this.validateDescriptor();
+      // A retained store must be readable before lifecycle selects any payload
+      // or creates an installation. This check never initializes run storage.
+      const database=path.join(targets.storeRoot,'progress.sqlite');
+      if(existsSync(database)){
+        const probe=new Store(database,{readOnly:true});
+        try{probe.subagentRunsAvailable();}finally{probe.close();}
+      }
+    }
     const result=lifecycle(action,targets,action==='install'||action==='update'?this.readonlyPayload():undefined);
     if(action==='install'||action==='update') {
       const b=readBinding(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'));
       try{this.persist(b);this.load(b);}
-      catch{
+      catch(e){
+        // Storage may have been upgraded after preflight. The selected companion
+        // also refuses schema; never disable capture through unknown run DDL.
+        if(e instanceof ProgressError&&e.code==='schema'){this.close();this.recordError(e);throw e;}
         // Files may already be selected. Never leave an unacknowledged install
         // writing while the host binding could not be persisted/validated.
         let disabled=false;let control:Store|undefined;
-        try{control=new Store(b.database);verifyStore(control,b);control.setEnabled(false);disabled=true;}catch{}finally{control?.close();}
+        try{control=new Store(b.database);verifyStore(control,b);control.subagentRunsAvailable();control.setEnabled(false);disabled=true;}
+        catch(e){if(e instanceof ProgressError&&e.code==='schema'){this.close();this.recordError(e);throw e;}}
+        finally{control?.close();}
         throw new SetupError(disabled?'service-binding-unavailable-capture-disabled':'service-binding-unavailable');
       }
     }

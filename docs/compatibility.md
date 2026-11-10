@@ -659,6 +659,10 @@ service host-ready with health200/ready=false and `schema` diagnostics, retains
 setup status, and refuses store-backed routes with `503 schema` without changing
 store bytes. Guests show “Progress data needs an update”, not a startup delay.
 This does not change the released 1.0.0 rollback behaviour described below.
+Service-controlled install/update also checks existing run storage before any
+installation change and refuses unsupported formats with `503 schema`. A schema
+race after selection never invokes capture disabling or rewrites that store;
+selection itself is not automatically rolled back.
 
 Mixed versions have distinct limits:
 

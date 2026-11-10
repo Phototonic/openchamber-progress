@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,cpSync,chmodSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,cpSync,chmodSync,readdirSync } from 'node:fs';
 import path from 'node:path';
 import { spawn,spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -10,7 +10,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { SetupController } from '../../service/setup-controller.ts';
 import { serviceBindingFile } from '../../service/state.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
-import { Store } from '../../shared/store.ts';
+import { Store, digest } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
 import type { Actor } from '../../shared/progress.ts';
 import { releasedRuntime } from './subagent-release-support.ts';
@@ -18,6 +18,30 @@ import { versionOneFixture } from './subagent-format-support.ts';
 
 /** Fixed diagnostics only: no paths, exceptions or rejected values in health or error bodies. */
 const fixedCodes=(values:string[])=>values.every(v=>/^[a-z0-9-]+$/.test(v));
+
+function installationBytes(f:ReturnType<typeof fixture>) {
+  const files:Record<string,string>={};
+  const walk=(root:string,relative:string)=>{
+    for(const entry of readdirSync(root,{withFileTypes:true})){
+      const file=path.join(root,entry.name),key=`${relative}/${entry.name}`;
+      if(entry.isDirectory())walk(file,key);else files[key]=digest(readFileSync(file));
+    }
+  };
+  walk(f.targets.configRoot,'config');walk(f.targets.storeRoot,'store');
+  files.binding=digest(readFileSync(serviceBindingFile(f.env)));
+  return files;
+}
+
+function futureRunFormat(database:string) {
+  const writer=new Store(database);
+  try{
+    writer.installSubagentRuns();
+    const ddl=String(writer.db.prepare("SELECT sql FROM sqlite_master WHERE name='runs_format'").get()!.sql);
+    writer.db.exec('BEGIN IMMEDIATE; DROP TABLE runs_format');
+    writer.db.exec(ddl.replace('CHECK(version=2)','CHECK(version=3)'));
+    writer.db.exec('INSERT INTO runs_format VALUES(1,3,0,0,0,NULL,0,0); COMMIT');
+  }finally{writer.close();}
+}
 
 function fixture() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-corrupt-startup-');
@@ -160,6 +184,71 @@ for(const kind of ['base schema','run format'] as const)test(`packaged future ${
     assert.equal((await running.request('/health')).status,200);
     assert.deepEqual(readFileSync(f.database),future);
   }finally{await running.stop();f.clean();}
+});
+
+for(const action of ['update','install'] as const)test(`packaged ${action} refuses future run storage before changing installation or capture`,async t=>{
+  const f=fixture();f.seed();
+  if(action==='install')rmSync(path.join(f.targets.configRoot,'plugins/agent-progress'),{recursive:true,force:true});
+  writeFileSync(`${f.root}/compiled/companion/index.js`,`${f.payload.plugin}\n// Synthetic replacement payload\n`);
+  futureRunFormat(f.database);
+  const before=installationBytes(f),running=await serve(f);
+  try{
+    await running.start();
+    const initial=await(await running.request('/v1/setup')).json();
+    const response=await running.request(`/v1/setup/${action}`,f.targets),body=await response.json();
+    const probe=new DatabaseSync(f.database,{readOnly:true});
+    let enabled:unknown;try{enabled=probe.prepare('SELECT enabled FROM meta').get()!.enabled;}finally{probe.close();}
+    const after=installationBytes(f);
+    t.diagnostic(`${action} ${response.status} ${JSON.stringify(body)} captureEnabled=${enabled} selectionChanged=${before['config/plugins/agent-progress/.ownership.json']!==after['config/plugins/agent-progress/.ownership.json']} bindingChanged=${before.binding!==after.binding} storeChanged=${before['store/progress.sqlite']!==after['store/progress.sqlite']}`);
+    assert.equal(response.status,503);assert.deepEqual(body,{error:'schema'});assert.equal(enabled,1);
+    assert.deepEqual(after,before);
+    const health=await running.request('/health');assert.equal(health.status,200);assert.ok((await health.json()).diagnostics.includes('schema'));
+    const status=await running.request('/v1/setup');assert.equal(status.status,200);const state=await status.json();
+    assert.equal(state.activation,initial.activation);assert.equal(state.installed,initial.installed);assert.ok(state.diagnostics.includes('schema'));
+  }finally{await running.stop();f.clean();}
+});
+
+test('schema race after payload selection never disables capture or writes unsupported storage',t=>{
+  const f=fixture();f.seed();
+  const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
+  const load=(setup as any).load;let future:Buffer|undefined;
+  const mocked=t.mock.method(setup as any,'load',function(this:SetupController,b:unknown){
+    futureRunFormat(f.database);future=readFileSync(f.database);return load.call(this,b);
+  });
+  try{
+    const before=installationBytes(f);
+    assert.throws(()=>setup.run('update',f.targets),(e:any)=>{t.diagnostic(`post-selection refusal ${e.code}`);return e.code==='schema';});
+    mocked.mock.restore();
+    assert.ok(future);assert.deepEqual(readFileSync(f.database),future);
+    const after=installationBytes(f);assert.notEqual(after['config/plugins/agent-progress/.ownership.json'],before['config/plugins/agent-progress/.ownership.json']);
+    assert.equal(setup.current().store,undefined);assert.equal(setup.current().error,'schema');assert.ok(setup.status().diagnostics.includes('schema'));
+    assert.deepEqual(readFileSync(f.database),future);
+  }finally{setup.close();f.clean();}
+});
+
+test('binding persistence failure after selection still disables supported capture',t=>{
+  const f=fixture();f.seed();
+  const writer=new Store(f.database);writer.installSubagentRuns();writer.close();
+  const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
+  t.mock.method(setup as any,'persist',()=>{throw new Error('Synthetic binding persistence failure');});
+  try{
+    assert.throws(()=>setup.run('update',f.targets),(e:any)=>e.code==='service-binding-unavailable-capture-disabled');
+    const store=new Store(f.database);try{assert.equal(store.list().captureEnabled,false);}finally{store.close();}
+  }finally{setup.close();f.clean();}
+});
+
+test('binding persistence failure racing a schema upgrade cannot disable unsupported capture',t=>{
+  const f=fixture();f.seed();
+  const setup=new SetupController(serviceBindingFile(f.env),()=>({...f.payload,plugin:`${f.payload.plugin}\n// Synthetic replacement payload\n`}));
+  let future:Buffer|undefined;
+  t.mock.method(setup as any,'persist',()=>{
+    futureRunFormat(f.database);future=readFileSync(f.database);throw new Error('Synthetic binding persistence failure');
+  });
+  try{
+    assert.throws(()=>setup.run('update',f.targets),(e:any)=>e.code==='schema');
+    assert.ok(future);assert.deepEqual(readFileSync(f.database),future);
+    assert.equal(setup.current().error,'schema');assert.equal(setup.current().store,undefined);
+  }finally{setup.close();f.clean();}
 });
 
 test('released v1.0.0 on format 2 remains alive but fails host health readiness and companion activation',async t=>{

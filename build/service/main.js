@@ -26656,23 +26656,45 @@ class SetupController {
       if (!current || !(windows ? platformSecurityScope(() => sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot)) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
         throw new SetupError("ownership-invalid");
     }
-    if (action === "install" || action === "update")
+    if (action === "install" || action === "update") {
       this.validateDescriptor();
+      const database = path7.join(targets.storeRoot, "progress.sqlite");
+      if (existsSync5(database)) {
+        const probe = new Store(database, { readOnly: true });
+        try {
+          probe.subagentRunsAvailable();
+        } finally {
+          probe.close();
+        }
+      }
+    }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
       const b = readBinding(path7.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
-      } catch {
+      } catch (e) {
+        if (e instanceof ProgressError && e.code === "schema") {
+          this.close();
+          this.recordError(e);
+          throw e;
+        }
         let disabled = false;
         let control;
         try {
           control = new Store(b.database);
           verifyStore(control, b);
+          control.subagentRunsAvailable();
           control.setEnabled(false);
           disabled = true;
-        } catch {} finally {
+        } catch (e2) {
+          if (e2 instanceof ProgressError && e2.code === "schema") {
+            this.close();
+            this.recordError(e2);
+            throw e2;
+          }
+        } finally {
           control?.close();
         }
         throw new SetupError(disabled ? "service-binding-unavailable-capture-disabled" : "service-binding-unavailable");

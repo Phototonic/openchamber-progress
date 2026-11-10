@@ -38,6 +38,10 @@ leaves the store untouched, keeps setup status reachable, and shows “Progress
 data needs an update” through fixed `schema` diagnostics rather than a startup
 delay. Update the extension and companion; restarting or retrying does not make
 an unsupported format compatible. This does not alter released 1.0.0 behaviour.
+Install/update against an already unsupported run store is refused with `schema`
+before selecting a companion or changing the binding, capture or store. If the
+store is upgraded concurrently after that check, `schema` still refuses without
+turning capture off; already-selected files may remain, with no automatic rollback.
 
 ## Proactive guidance after loading
 
