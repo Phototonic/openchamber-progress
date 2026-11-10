@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, mkdirSync, existsSync, copyFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { eligibility, assetNames } from './release.ts';
+import { eligibility, assetNames, validateReleaseNotes } from './release.ts';
 
 // Refuse before reading entries or starting checks: local archives are never disposable.
 if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) {
@@ -16,6 +16,14 @@ function run(command:string, args:string[]) {
   if (spawnSync(command,args,{stdio:'inherit'}).status !== 0) throw new Error('Portable check failed');
 }
 const hash = (file:string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+const event=process.env.GITHUB_EVENT_PATH?JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')):undefined;
+const revision=process.env.GITHUB_SHA??spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
+let candidate:ReturnType<typeof eligibility>=null;
+try {
+  validateReleaseNotes(revision,event?.pull_request?.base?.sha??event?.before);
+  // Validate eligibility before costly checks or packaging, and again in publish.
+  candidate=event?eligibility(event,process.env.GITHUB_EVENT_NAME!,process.env.GITHUB_SHA!,process.env.GITHUB_REPOSITORY!):null;
+} catch { throw new Error('Release notes validation failed; check committed version notes and event history.'); }
 const before = entries.map(hash);
 mkdirSync('/tmp/opencode',{recursive:true});
 console.log(`Native-only tests NOT RUN: ${excluded.join(', ')}`);
@@ -33,7 +41,7 @@ run('bun',['run','package']);
 run('bun',['run','verify:package']);
 console.log('Native GUI/runtime certification NOT RUN; actualHostInstaller: not-run (no external host module supplied).');
 if (process.env.GITHUB_EVENT_PATH) {
-  const result = eligibility(JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')),process.env.GITHUB_EVENT_NAME!,process.env.GITHUB_SHA!,process.env.GITHUB_REPOSITORY!);
+  const result = candidate;
   if (result) {
     mkdirSync('release-assets',{recursive:true});
     const hashes:Record<string,string> = {};

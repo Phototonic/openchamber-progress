@@ -1,4 +1,4 @@
-/** Narrow GitHub release boundary. No dependency installation or custom release notes. */
+/** Narrow GitHub release boundary. Commit-pinned curated notes plus GitHub's native change list; no dependency installation. */
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -20,6 +20,53 @@ export function gitFile(sha:string,file:string):string {
 }
 type Event = {ref?:string;before?:string;after?:string;repository?:{full_name?:string}};
 export type Candidate = {version:string;sha:string};
+export function parseReleaseNotes(v:string,file:string,text:string):{name:string;body:string} {
+  version(v);
+  assert.equal(file,`release-notes/${v}.md`,'Invalid release notes path');
+  // Conservative UTF-8 byte bounds also fit GitHub's character limits.
+  assert(!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text.replaceAll('\r\n','\n').replaceAll('\n','')),'Invalid release notes');
+  const normalized=text.replaceAll('\r\n','\n');
+  const end=normalized.indexOf('\n');
+  const heading=normalized.slice(0,end);
+  assert(end>0&&/^# [^\s#].*$/u.test(heading)&&heading===heading.trimEnd(),'Invalid release notes headline');
+  const headline=heading.slice(2);
+  assert(!/ #+$/.test(headline),'Invalid release notes headline');
+  const name=`Agent Progress v${v}: ${headline}`;
+  assert(Buffer.byteLength(name)<=256,'Release notes title too long');
+  const body=normalized.slice(end+1).trim()+'\n\n';
+  assert(body.trim(),'Empty release notes body');
+  assert(Buffer.byteLength(body)<=125000,'Release notes body too long');
+  return {name,body};
+}
+export function releaseNotes(candidate:Candidate,read=gitFile):{name:string;body:string} {
+  version(candidate.version); assert.match(candidate.sha,shaPattern);
+  const file=`release-notes/${candidate.version}.md`;
+  let text:string;
+  try { text=read(candidate.sha,file); } catch { throw new Error('Required release notes unavailable'); }
+  return parseReleaseNotes(candidate.version,file,text);
+}
+function gitNotes(sha:string):string[] {
+  const result=spawnSync('git',['ls-tree','-r','--name-only','-z',sha,'--','release-notes'],{encoding:'utf8'});
+  assert.equal(result.status,0,'Required event history unavailable');
+  return result.stdout.split('\0').filter(Boolean);
+}
+// Runs on every portable check, including PR merge commits and non-release pushes.
+export function validateReleaseNotes(sha:string,base?:string,read=gitFile,list=gitNotes):void {
+  assert.match(sha,shaPattern);
+  for(const file of list(sha)) {
+    if(file==='release-notes/README.md') continue;
+    const match=/^release-notes\/([^/]+)\.md$/.exec(file);
+    assert(match,'Invalid release notes path');
+    parseReleaseNotes(match[1],file,read(sha,file));
+  }
+  if(base&&!/^0+$/.test(base)) {
+    assert.match(base,shaPattern);
+    const old=version(JSON.parse(read(base,'package.json')).version);
+    const next=JSON.parse(read(sha,'package.json')).version;
+    const parts=version(next);
+    if((parts.map((v,i)=>Math.sign(v-old[i])).find(v=>v!==0)??0)>0) releaseNotes({version:next,sha},read);
+  }
+}
 export function eligibility(event:Event,eventName:string,sha:string,repository:string,read=gitFile):Candidate|null {
   if(eventName!=='push'||event.ref!=='refs/heads/main'||repository!==canonical||event.repository?.full_name!==canonical) return null;
   assert.match(sha,shaPattern); assert.equal(event.after,sha,'Event SHA mismatch');
@@ -33,7 +80,8 @@ export function eligibility(event:Event,eventName:string,sha:string,repository:s
   assert.equal(release?.[1],next,'Source version mismatch');
   assert.equal(JSON.parse(read(sha,'build/companion/package.json')).version,next,'Compiled version mismatch');
   for(const file of ['build/service/main.js','build/setup/main.js']) assert(read(sha,file).includes(`var RELEASE = "${next}";`),'Compiled version mismatch');
-  return order===0?null:{version:next,sha};
+  if(order===0) return null;
+  const candidate={version:next,sha}; releaseNotes(candidate,read); return candidate;
 }
 export const assetNames = (v:string) => [`agent-progress-extension-${v}.zip`,`agent-progress-companion-${v}.zip`,`entries-${v}.sha256`,'sha256.txt'];
 export function assets(directory:string,candidate:Candidate):Map<string,Buffer> {
@@ -67,8 +115,9 @@ type Asset = {id:number;name:string;size:number;state:string};
 type Release = {id:number;tag_name:string;target_commitish:string;name:string;draft:boolean;author:{login:string};assets:Asset[]};
 export type API = (method:string,path:string,body?:unknown)=>Promise<any>;
 // Serialization is provided by the version-scoped publisher job. No overwrite/delete endpoints exist here.
-export async function publish(candidate:Candidate,files:Map<string,Buffer>,api:API):Promise<void> {
+export async function publish(candidate:Candidate,files:Map<string,Buffer>,api:API,read=gitFile):Promise<void> {
   version(candidate.version); assert.match(candidate.sha,shaPattern);
+  const notes=releaseNotes(candidate,read);
   assert.deepEqual([...files.keys()].sort(),assetNames(candidate.version).sort());
   const tag=`v${candidate.version}`;
   const marker=`agent-progress-release-v1:${candidate.sha}:${digest(JSON.stringify([...files].map(([n,b])=>[n,digest(b)]).sort()))}`;
@@ -83,7 +132,7 @@ export async function publish(candidate:Candidate,files:Map<string,Buffer>,api:A
     assert(r&&Number.isSafeInteger(r.id)&&r.id>0,'Invalid release identity');
     assert.equal(typeof r.draft,'boolean'); assert(Array.isArray(r.assets),'Invalid release assets');
     assert.equal(r.tag_name,tag); assert.equal(r.target_commitish,candidate.sha,'Release target collision');
-    assert.equal(r.name,tag); assert.equal(r.author.login,'github-actions[bot]','Foreign release collision');
+    assert.equal(r.name,notes.name,'Release name collision'); assert.equal(r.author.login,'github-actions[bot]','Foreign release collision');
   }
   // The tag endpoint exposes published releases only. Authenticated listing is
   // required to discover interrupted/foreign drafts, including on later pages.
@@ -118,7 +167,9 @@ export async function publish(candidate:Candidate,files:Map<string,Buffer>,api:A
     await api('POST','/git/refs',{ref:`refs/tags/${tag}`,sha:object.sha});
     tagged=await checkTag(); assert(tagged);
   }
-  if(!release) release=await api('POST','/releases',{tag_name:tag,target_commitish:candidate.sha,name:tag,draft:true,generate_release_notes:true});
+  // GitHub prepends body to generated notes. Existing bodies are not compared or
+  // rewritten: the generated suffix is provider-owned, not a deterministic artifact.
+  if(!release) release=await api('POST','/releases',{tag_name:tag,target_commitish:candidate.sha,name:notes.name,body:notes.body,draft:true,generate_release_notes:true});
   assert(release); identity(release);
   async function verify(r:Release,complete:boolean) {
     identity(r); const seen=new Set<string>();
@@ -160,7 +211,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
     assert(candidate,'Publisher requires an eligible canonical main push');
     assert(process.env.GITHUB_TOKEN,'Missing publisher token');
     await publish(candidate,assets('release-assets',candidate),githubAPI(process.env.GITHUB_TOKEN));
-    if(process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,'Verified matching tag and complete published assets. Notes generated by GitHub.\n');
+    if(process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,'Verified matching tag, curated release title and complete published assets. New releases prepend commit-pinned curated notes to GitHub-generated notes; existing bodies are preserved, not verified.\n');
   } catch {
     console.error('Release refused or incomplete. Inspect matching draft/tag/assets read-only before retry; no state was deleted or overwritten.'); process.exitCode=1;
   }
