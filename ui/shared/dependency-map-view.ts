@@ -7,7 +7,7 @@
 import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
 import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { DependencyMapInteraction, MAP_ZOOM, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_PANEL, MAP_ZOOM, mapPanelWidth, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
 import { mapAttribution } from './dependency-map-attribution.ts';
 import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
@@ -59,6 +59,12 @@ export interface DependencyMapViewInput extends MapSnapshot {
   onCanvasWidth?: (width: number) => void;
   /** S3 interaction. Absent: the read-only S2 presentation (native scroll, every card a Tab stop). */
   interaction?: MapInteractionBinding;
+  /**
+   * Board only, with interaction: the selection panel's width in CSS px (`mapPanelWidth`) once the map
+   * is wide enough for it. The inspector then sits over the canvas's right edge while a task is
+   * selected and is absent otherwise; the canvas never resizes for it. 0/absent: stacked inspector.
+   */
+  panel?: number;
 }
 export interface DependencyMapView {
   /** One paint into a (possibly new) host. State/geometry remain frame-owned, not DOM-owned. */
@@ -81,6 +87,7 @@ export interface DependencyMapView {
  * map-announcer outside the root; plan-view, plan-view-{list,map}. Attribution (S4): card
  * data-{attribution,live}, map-card-who-ID, map-card-live-ID; inspector map-attribution
  * data-{assignment,live} with map-attribution-{assignment,links,reports,live}; map-attribution-help.
+ * Wide board: map-inspector data-placement="over" (hidden without a selection) and map-inspector-close.
  * No data-reading article.
  * These describe semantic facts, not styling or incidental DOM nesting.
  */
@@ -159,6 +166,7 @@ const ICONS = {
   right: 'M6.5 3.5 11 8l-4.5 4.5',
   up: 'M3.5 9.5 8 5l4.5 4.5',
   down: 'M3.5 6.5 8 11l4.5-4.5',
+  close: 'M4 4l8 8M12 4l-8 8',
 } as const;
 function icon(name: keyof typeof ICONS) {
   const svg = document.createElementNS(SVG, 'svg');
@@ -388,6 +396,8 @@ export function createDependencyMapView(): DependencyMapView {
     const v = input, b = v.interaction ?? null;
     if (b) { listen(host.ownerDocument); announcer = mapAnnouncer(host.ownerDocument); }
     const st = b?.state() ?? null;
+    // Wide board: the selection panel over the canvas's right edge (0: the stacked inspector).
+    const panel = b && v.frame === 'board' ? Math.max(0, v.panel ?? 0) : 0;
     // Unavailable/not found never draw a diagram, even when the coordinator still holds an older
     // picture (e.g. replacement detail without usable identity): no stale map presented as Updating.
     const retainedUnavailable = !!v.picture && (v.state === 'unavailable' || v.state === 'not-found');
@@ -668,7 +678,9 @@ export function createDependencyMapView(): DependencyMapView {
         if (!bb || restoring || suppressFocusReveal || !card.classList.contains('ap-map-card')) return;
         const r = card.getBoundingClientRect(), box = viewport.getBoundingClientRect(), inset = 8;
         const shift = (start: number, end: number, lo: number, hi: number) => start < lo + inset ? lo + inset - start : end > hi - inset ? Math.max(lo + inset - start, hi - inset - end) : 0;
-        const dx = shift(r.left, r.right, box.left, box.right), dy = shift(r.top, r.bottom, box.top, box.bottom);
+        // While the selection panel is open it covers the canvas's right edge: stay clear of it.
+        const right = box.right - (panel && bb.state().selected ? panel + MAP_PANEL.margin : 0);
+        const dx = shift(r.left, r.right, box.left, right), dy = shift(r.top, r.bottom, box.top, box.bottom);
         if (dx || dy) { bb.dispatch({ type: 'pan', x: dx, y: dy }); applyViewport(); }
         revealInPage(card);
       });
@@ -853,14 +865,39 @@ export function createDependencyMapView(): DependencyMapView {
       }
       viewport.append(world);
     }
-    stage.append(viewport);
+    // Wide board: the canvas and the selection panel share one positioned box (the panel sits over
+    // the canvas's right edge, after the canvas in DOM and Tab order); otherwise the inspector stacks.
+    const canvasBox = panel ? el('div', 'ap-map-canvas') : null;
+    if (canvasBox) { canvasBox.append(viewport); stage.append(canvasBox); } else stage.append(viewport);
     body.append(stage);
 
     // ── Inspector: literal text only; relationships are explicit records, never inferred.
     const inspector = testid(el('section', 'ap-map-inspector'), 'map-inspector');
     inspector.setAttribute('aria-labelledby', `${uid}-inspector`);
     const ih = el('h3', 'ap-h', 'Selected task'); ih.id = `${uid}-inspector`;
-    inspector.append(ih);
+    if (panel) {
+      inspector.dataset.placement = 'over';
+      inspector.style.width = `${panel}px`;
+      // Shown only with a selection: no empty panel (the hint lives in the map help instead).
+      if (!selected) inspector.hidden = true;
+      else {
+        // A focusable, labelled region so long content scrolls by keyboard; never modal. Its scroll
+        // position survives same-selection repaints (the owner's data-scroll-key restoration).
+        inspector.tabIndex = 0;
+        inspector.dataset.scrollKey = `map-inspector|${st?.identity ?? plan.key}|${selected.id}`;
+        const head = el('div', 'ap-map-inspector-head');
+        const close = testid(el('button', 'ap-map-tool ap-map-close'), 'map-inspector-close');
+        close.type = 'button';
+        close.append(icon('close'));
+        close.setAttribute('aria-label', 'Close task details');
+        close.title = 'Close task details';
+        // The same clear-selection action as a background click: “Selection cleared.”, focus to the card.
+        close.onclick = () => { binding()?.dispatch({ type: 'clear' }); };
+        head.append(ih, close);
+        inspector.append(head);
+      }
+    }
+    if (!inspector.firstChild) inspector.append(ih);
     if (!selected) {
       inspector.dataset.selected = '';
       inspector.append(el('p', 'ap-note', tasks.length ? 'Select a card to see its recorded prerequisites, dependents and reported details.' : 'No task cards to inspect.'));
@@ -967,7 +1004,7 @@ export function createDependencyMapView(): DependencyMapView {
       const hiddenRel = [...upstream, ...downstream].filter(r => !visible.has(r)).length;
       if (hiddenRel) inspector.append(el('p', 'ap-note', `${plural(hiddenRel, 'related task is', 'related tasks are')} hidden by the current filters. Choosing one shows it again.`));
     }
-    body.append(inspector);
+    if (canvasBox) canvasBox.append(inspector); else body.append(inspector);
     region.append(body);
 
     // A native disclosure needs no global popup machinery. Keep it open across same-reading
@@ -984,6 +1021,7 @@ export function createDependencyMapView(): DependencyMapView {
       const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
       keys.append(el('strong', '', 'Keys in the map: '), k('Arrow keys'), ' nearest card · ', k('['), ' first prerequisite · ', k(']'), ' first dependent · ', k('Escape'), ' clear selection · ', k('F'), ' fit all · ', nowrap(k('+'), ' ', k('−'), ' zoom'), '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.');
       helpBody.append(keys);
+      if (panel) helpBody.append(el('p', '', 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.'));
     }
     helpBody.append(el('p', '', 'Arrows run from a recorded prerequisite to the task that depends on it. Recorded information only: not a schedule, and not proof that work ran.'));
     helpBody.append(el('p', '', 'From recorded prerequisites only; neither Ready nor Unlocks next is permission to start. Ready: every recorded prerequisite is reported done. Unlocks next: if reported done, a card would satisfy the last unfinished recorded prerequisite of another task.'));
@@ -1157,7 +1195,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   const view = createDependencyMapView(), geometry = new DependencyMapLayout();
   let latest: ViewContext<U> | null = null, painting = false, shown = false;
   // Measured canvas, kept across root replacement. Until it is measured, a conservative single-card row.
-  let canvasWidth = 0, canvasHeight = 400;
+  let canvasWidth = 0, canvasHeight = 400, mapWidth = 0;
   let lastLayout: MapLayout | null = null, lastGraph: MapPicture['graph'] | null = null, packedWidth = 0;
   // View as list: reveal the map's selected task once in the canonical list of the same reading.
   let reveal: { id: string | null; identity: string | null } | null = null;
@@ -1243,6 +1281,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const attribution = input.runs ? mapAttribution({ snapshot, request: input.runs.request, runs: input.runs.panel, census: input.census, liveSeq: vc.live.seq ?? 0 }) : new Map();
       const graph = snapshot.picture?.graph ?? null, width = canvasWidth || CARD_METRICS.width;
       // Same graph: reuse the full-plan layout (edgeless packing only re-packs for a new canvas width).
+      // Board selection panel: from the measured map and canvas widths, never from the selection.
+      const panel = mapPanelWidth(frame, mapWidth, canvasWidth);
       const reusable = graph === lastGraph && lastLayout && (lastLayout.edges.length > 0 || packedWidth === width);
       const layout = graph && innerWidth > 0 ? reusable ? lastLayout : geometry.compute(graph.items, CARD_METRICS, width) : null;
       lastLayout = layout; lastGraph = graph; packedWidth = width;
@@ -1254,14 +1294,16 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
             identity: mapReadingKey(claimOf(vc, input.plan, input.scope)), layout, items, current: snapshot.current, guidance,
             working: guidance ? items.filter(n => n.kind === 'task' && n.status === 'working').map(n => n.id) : [],
             ready: guidance ? [...snapshot.picture.facts.tasks].filter(([, f]) => f.group === 'ready').map(([id]) => id) : [],
-            status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight },
+            status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight, cover: panel ? panel + MAP_PANEL.margin : 0 },
+            // The board's large canvas never frames past 100%; the rail keeps its framing unchanged.
+            ...(frame === 'board' ? { framingMax: MAP_ZOOM.fit } : {}),
           });
         } finally { painting = false; }
       }
       const state = interaction.value;
       host.dataset.canvasWidth = String(canvasWidth);
       view.render(host, {
-        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout,
+        ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: binding, frame, layout, panel,
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
         onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
@@ -1272,7 +1314,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       if (shown) {
         if (!listTransition) reveal = null; // back on Map, unless an explicit departure is crossing paint
         const viewport = root.querySelector<HTMLElement>('[data-testid="map-viewport"]');
-        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; vc.setUi({}); }
+        const width = root.querySelector<HTMLElement>('[data-testid="map-region"]')?.clientWidth ?? 0;
+        if (viewport && (viewport.clientWidth !== canvasWidth || viewport.clientHeight !== canvasHeight || width !== mapWidth)) { canvasWidth = viewport.clientWidth; canvasHeight = viewport.clientHeight; mapWidth = width; vc.setUi({}); }
         return;
       }
       const r = reveal; if (!r) return;
