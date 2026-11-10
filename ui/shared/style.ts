@@ -590,7 +590,10 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
 /* Page */
-.ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:1280px;margin:0 auto}
+/* Wide board on every tab: the plan list and detail tabs keep one position; Progress, Document and
+   History hold their reading width while the Map tab uses the full detail column. */
+.ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:2400px;margin:0 auto}
+.ap-detail:not([data-tab="map"]){max-width:1120px}
 .ap-filters{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end}
 .ap-filters>div{min-width:150px;flex:1 1 150px;max-width:260px}
 .ap-board{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}

@@ -557,6 +557,8 @@ function openHit(vc: ViewContext<Ui>, v: SearchViewState, hit: SearchHitView, ta
 /** Progress / Document / History of one selected plan (board browsing and search alike). */
 function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, compareSession: string | null) {
   const { env, ui } = vc;
+  // Layout hook only: the Map tab uses the full detail column, the text tabs a reading width.
+  detail.dataset.tab = ui.tab;
   const tabs = testid(el('div', 'ap-detail-tabs'), 'detail-tabs');
   mountTabs(tabs, {
     items: [{ id: 'progress', label: 'Progress' }, { id: 'document', label: 'Document' }, { id: 'history', label: 'History' }, { id: 'map', label: 'Map' }],

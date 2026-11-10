@@ -50,8 +50,17 @@ export const MAP_CSS = `
 .ap-map-switch-label{color:var(--oc-muted)}
 .ap-map-switch .oc-sdk-btn:focus-visible,.ap-map-pair .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-body{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;min-width:0}
-@container ap-map (min-width:760px){.ap-map[data-frame="board"] .ap-map-body{grid-template-columns:minmax(0,1fr) minmax(250px,300px)}}
 .ap-map-stage{display:flex;flex-direction:column;min-width:0}
+/* Wide board: the selection panel sits over the canvas's right edge while a task is selected. The
+   frame decides when (MAP_PANEL in dependency-map-interaction.ts) and sets its width inline, so the
+   canvas never resizes for it. No transition or animation, so reduced motion has nothing to remove. */
+.ap-map-canvas{position:relative;min-width:0}
+.ap-map-inspector[hidden]{display:none}
+.ap-map-inspector[data-placement="over"]{position:absolute;z-index:2;top:8px;right:8px;bottom:8px;max-width:calc(100% - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--oc-border);box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 16%,transparent)}
+.ap-map-inspector[data-placement="over"]:focus{outline:none}
+.ap-map-inspector[data-placement="over"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-map-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ap-map-inspector-head .ap-h{margin:0}
 .ap-map-viewport{position:relative;min-width:0;min-height:180px;max-height:clamp(300px,64vh,600px);overflow:auto;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background-color:color-mix(in srgb,var(--oc-fg) 2.5%,var(--oc-bg));background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--oc-fg) 14%,transparent) 1px,transparent 1.5px);background-size:20px 20px;background-attachment:local}
 .ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
 .ap-map-world{position:relative}
@@ -164,7 +173,7 @@ export const MAP_CSS = `
 .ap-map-mark[data-mark="skipped"]{border:1.5px dashed var(--oc-muted)}
 .ap-map-mark[data-mark="skipped"]::after{width:6px;height:1.5px;background:var(--oc-muted)}
 .ap-map-mark[data-mark="pending"]{border:1.5px solid color-mix(in srgb,var(--oc-muted) 75%,transparent)}
-/* Inspector: literal text; stacked in the rail, beside the canvas on a wide board */
+/* Inspector: literal text; stacked in the rail and a narrow board, over the canvas on a wide board */
 .ap-map-inspector{display:flex;flex-direction:column;gap:10px;min-width:0;padding:12px 14px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 .ap-map-inspector .ap-map-card-status{font-size:12px;flex-wrap:wrap}
 .ap-map-inspector-title{font-size:14px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
@@ -204,6 +213,8 @@ export const MAP_CSS = `
 .ap-map-card[data-related]{border-color:CanvasText}
 .ap-map-card-rel{color:CanvasText;border-color:CanvasText}
 .ap-map-toolbar{border-color:CanvasText}
+.ap-map-inspector[data-placement="over"]{border:2px solid CanvasText;background:Canvas;box-shadow:none}
+.ap-map-close{border:1px solid ButtonText;background:ButtonFace;color:ButtonText}
 .ap-map .ap-map-edge[data-path]{stroke:Highlight;stroke-width:3}
 .ap-map .ap-map-marker-path .ap-map-arrowhead{fill:Highlight}
 .ap-map-edge,.ap-map-edge[data-tone="quiet"]{stroke:CanvasText}
