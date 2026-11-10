@@ -38,12 +38,17 @@ function choose(index: number, expected: string) {
   assert.equal(counts.total, '3');
 }
 function measure(width: number) {
-  const result = guest(`const wrap=d.querySelector('[data-testid="status-plan-selector"]'),button=wrap.querySelector('button'),heading=d.querySelector('[data-testid="status-plan-title"]');const b=button.getBoundingClientRect(),h=heading.getBoundingClientRect();return {width:d.documentElement.clientWidth,scroll:d.documentElement.scrollWidth,overlap:h.right>b.left+1&&h.top<b.bottom&&h.bottom>b.top,height:b.height,buttonWidth:b.width,name:button.getAttribute('aria-label'),title:heading.textContent,automatic:button.textContent.includes('Automatic')};`);
+  const result = guest(`const wrap=d.querySelector('[data-testid="status-plan-selector"]'),button=wrap.querySelector('button'),heading=d.querySelector('[data-testid="status-plan-title"]');const b=button.getBoundingClientRect(),h=heading.getBoundingClientRect(),head=heading.parentElement.getBoundingClientRect();return {headWidth:head.width,titleWidth:h.width,titleBottom:h.bottom,pickerTop:b.top,titleScroll:heading.scrollHeight,titleHeight:heading.clientHeight,titleOverflow:getComputedStyle(heading).overflow,lineClamp:getComputedStyle(heading).webkitLineClamp,width:d.documentElement.clientWidth,scroll:d.documentElement.scrollWidth,overlap:h.right>b.left+1&&h.top<b.bottom&&h.bottom>b.top,height:b.height,buttonWidth:b.width,name:button.getAttribute('aria-label'),title:heading.textContent,automatic:button.textContent.includes('Automatic')};`);
   assert.equal(result.width, width);
   assert.ok(result.scroll <= width, 'no horizontal overflow');
   assert.equal(result.overlap, false, 'title and control do not overlap');
   writeFileSync(join(artifacts, 'target-metrics.json'), JSON.stringify(result, null, 2) + '\n');
   assert.ok(result.height >= 24, 'usable title-picker target');
+  assert.ok(result.titleScroll <= result.titleHeight + 1 && result.titleOverflow === 'visible' && result.lineClamp === 'none', 'title is not clipped or clamped');
+  if (result.title === title) {
+    assert.ok(result.titleWidth >= result.headWidth - 1, 'long title spans the head without a reserved picker column');
+    assert.ok(result.pickerTop >= result.titleBottom - 4, 'picker wraps below the long title');
+  }
   assert.ok(result.name.startsWith(`Featured plan: ${result.title}, `), 'full selected title names the picker');
   assert.ok(result.name.includes(result.automatic ? 'chosen automatically' : 'chosen.'), 'automatic/manual choice is named');
   assert.ok(result.name.includes('5 plans; choose another'), 'all-plan context remains accessible');
@@ -91,8 +96,12 @@ for (const width of [280, 360, 480]) {
   const focus = guest(`return {visible:d.activeElement.matches(':focus-visible'),outline:getComputedStyle(d.activeElement).outlineStyle};`);
   assert.equal(focus.visible, true); assert.equal(focus.outline, 'solid');
   if (width === 360) shot('light', width);
+  // The title itself remains a pointer shortcut to the same picker.
+  const titlePoint = evaluate(`(()=>{const f=document.querySelector('iframe'),r=f.contentDocument.querySelector('[data-testid="status-plan-title"]').getBoundingClientRect(),o=f.getBoundingClientRect();return [o.x+r.x+8,o.y+r.y+8]})()`);
+  cdp('click', ...titlePoint.map(String)); wait(`d.querySelector('[role="listbox"]')`); key('Escape'); wait(`!d.querySelector('[role="listbox"]')`);
   choose(5, 'Finished plan');
   assert.equal(guest(`return d.querySelector('.ap-status-plan')?.textContent.includes('Finished');`), true);
+  measurements.push({ state: 'finished', ...measure(width) });
   const finishedReads = evaluate('qa.listReads');
   evaluate('qa.report();true');
   wait(`qa.listReads>${finishedReads} && d.querySelector('.ap-status-title')?.textContent==='Finished plan'`);
@@ -128,6 +137,13 @@ wait(`d.documentElement.clientWidth===360`);
 choose(4, title); key('ArrowDown'); popupFit(); shot('dark-open', 360); key('Escape');
 wait(`!d.querySelector('[role="listbox"]')`);
 measure(360); shot('dark', 360);
+for (const width of [280, 360, 480]) {
+  cdp('viewport', `${width + 32}x760`);
+  evaluate(`document.querySelector('section').style.cssText='width:${width}px;margin:16px';true`);
+  const reads = evaluate('qa.listReads'); evaluate('qa.report();true');
+  wait(`qa.listReads>${reads} && d.documentElement.clientWidth===${width}`);
+  measure(width); shot(`dark-${width}`, width);
+}
 const finalConsole = JSON.parse(cdp('console', '1'));
 assert.deepEqual(finalConsole.entries, []);
 const result = { passed: true, measurements, contexts: 'M/U/directory/unscoped', console: { initial: initialConsole.entries, final: finalConsole.entries }, selected: snapshot() };
