@@ -16,6 +16,10 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 - **`main` is the versioned distribution branch.** Runtime promotions require maintainer approval, a higher matching extension/companion version, and the accepted built guest/backend projection plus distribution and lifecycle checks. Do not bump versions or regenerate unrelated outputs in a routine contribution.
 - The explicitly owner-authorized **launch documentation, licensing, and CI setup on `main`** is a narrow exception, not permission for routine runtime changes or a general direct-push workflow.
 
+### Change proposals
+
+Larger changes to behaviour, storage or compatibility are proposed under `openspec/changes/<name>/` (proposal, design, requirement scenarios and tasks) and validated with `openspec validate <name> --strict`. A proposal describes one change and how it will be delivered; the guides in `docs/` remain the contract of record and are updated in the same change as the behaviour. Small fixes and routine changes need no proposal.
+
 ## Local development
 
 Use **Node.js 24.x >= 24.19.0** and **Bun 1.3.14**; dependencies are pinned in `package.json` and `bun.lock`. Node 24.19.0 is the tested baseline and CI's release gate uses exactly 24.19.0 and a second job runs the newest 24.x; later 24.x releases are accepted but not separately certified. Linux integration was tested with OpenCode 2.1.4 and OpenChamber 2.5.1; native Windows validation used OpenCode 2.1.4 and OpenChamber 2.5.2. Current native runtime tests use the OpenCode baseline below. These are tested configurations, not proof of every newer runtime. Linux package checks also need system `zip` and `unzip`.
