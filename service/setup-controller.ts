@@ -35,7 +35,9 @@ export class SetupController {
   private load(b:Binding) {
     let next:Store;
     try{next=new Store(b.database);}catch(e){if(e instanceof PlatformError)throw e;const error=storageError(e);throw error.code==='binding'||error.code==='not-found'?new ProgressError('storage'):error;}
-    try{verifyStore(next,b);next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
+    // Validate optional run storage before admitting the store, not later in
+    // /health capability discovery where a schema refusal fails host readiness.
+    try{verifyStore(next,b);next.subagentRunsAvailable();next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
     this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;
   }
   private recordError(e:unknown) {this.error=storageError(e).code;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}

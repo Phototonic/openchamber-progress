@@ -33,6 +33,12 @@ restore that snapshot or reset schema2 to undo cleanup. Older readers may show
 archived records; older writers remain fenced. See the
 [reporting and cleanup contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md).
 
+If the current build encounters a newer base schema or run storage format, it
+leaves the store untouched, keeps setup status reachable, and shows “Progress
+data needs an update” through fixed `schema` diagnostics rather than a startup
+delay. Update the extension and companion; restarting or retrying does not make
+an unsupported format compatible. This does not alter released 1.0.0 behaviour.
+
 ## Proactive guidance after loading
 
 With verified companion/source identity, capture enabled and `agent_progress_report`

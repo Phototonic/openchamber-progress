@@ -26572,6 +26572,7 @@ class SetupController {
     }
     try {
       verifyStore(next, b);
+      next.subagentRunsAvailable();
       next.bindReads(b.source.id, b.source.verified);
     } catch (e) {
       next.close();

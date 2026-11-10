@@ -654,6 +654,12 @@ without notice metadata; new run mutations refuse until activation. Epochless
 version 1 still needs activation. Both upgrades preserve all evidence and leave
 old loss unknown-date, non-attention. Failed migration rolls back atomically.
 
+The current build meeting a newer run storage format or base schema keeps the
+service host-ready with health200/ready=false and `schema` diagnostics, retains
+setup status, and refuses store-backed routes with `503 schema` without changing
+store bytes. Guests show “Progress data needs an update”, not a startup delay.
+This does not change the released 1.0.0 rollback behaviour described below.
+
 Mixed versions have distinct limits:
 
 - New service/guest with format 2 support dated, store-wide dismissed attention.

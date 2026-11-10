@@ -13,6 +13,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
 import type { Actor } from '../../shared/progress.ts';
+import { releasedRuntime } from './subagent-release-support.ts';
 
 /** Fixed diagnostics only: no paths, exceptions or rejected values in health or error bodies. */
 const fixedCodes=(values:string[])=>values.every(v=>/^[a-z0-9-]+$/.test(v));
@@ -76,17 +77,76 @@ test('packaged corrupt-store startup becomes ready, answers fixed corrupt 503s a
   }finally{await running.stop();f.clean();}
 });
 
-test('packaged future-schema store startup stays ready and answers fixed schema 503s',async()=>{
+for(const kind of ['base schema','run format'] as const)test(`packaged future ${kind} store stays host-ready without changing bytes`,async t=>{
   const f=fixture();f.seed();
-  const writer=new Store(f.database);writer.db.exec('PRAGMA user_version=999');writer.close();
+  const writer=new Store(f.database);
+  if(kind==='base schema')writer.db.exec('PRAGMA user_version=999');
+  else {
+    writer.installSubagentRuns();
+    const ddl=String(writer.db.prepare("SELECT sql FROM sqlite_master WHERE name='runs_format'").get()!.sql);
+    writer.db.exec('BEGIN IMMEDIATE; DROP TABLE runs_format');
+    writer.db.exec(ddl.replace('CHECK(version=2)','CHECK(version=3)'));
+    writer.db.exec('INSERT INTO runs_format VALUES(1,3,0,0,0,NULL,0,0); COMMIT');
+  }
+  writer.close();
   const future=readFileSync(f.database);
+  const binding=readBinding(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json'));
+  const runQuery=new URLSearchParams({storeId:binding.storeId,binding:JSON.stringify({sourceId:f.actor.sourceId,verified:true}),source:f.actor.sourceId,root:'M'});
   const running=await serve(f);
   try {
-    const health=await running.start();
+    // Probe even non-ready replies so a host-readiness failure is explicit.
+    let healthResponse:Response|undefined;
+    const deadline=Date.now()+8000;
+    while(Date.now()<deadline){try{healthResponse=await running.request('/health');break;}catch{await new Promise(resolve=>setTimeout(resolve,25));}}
+    assert.ok(healthResponse);
+    const health=await healthResponse.json();
+    t.diagnostic(`health ${healthResponse.status} ${JSON.stringify(health)}`);
+    const replies:Array<{status:number;body:unknown}> = [];
+    const plans=await running.request('/v1/plans');const plansBody=await plans.json();
+    t.diagnostic(`plans ${plans.status} ${JSON.stringify(plansBody)}`);
+    replies.push({status:plans.status,body:plansBody});
+    for(const route of [`/v1/plan?source=${f.actor.sourceId}&plan=P1`,`/v1/subagent-runs?${runQuery}`]){
+      const reply=await running.request(route);const body=await reply.json();
+      t.diagnostic(`${route.split('?')[0]} ${reply.status} ${JSON.stringify(body)}`);
+      replies.push({status:reply.status,body});
+    }
+    const setup=await running.request('/v1/setup');const state=await setup.json();
+    t.diagnostic(`setup ${setup.status} ${JSON.stringify({...state,targets:'fixture targets'})}`);
+    assert.equal(healthResponse.status,200);
     assert.equal(health.ok,true);assert.equal(health.ready,false);assert.equal(health.sqlite,false);
     const diagnostics=health.diagnostics as string[];assert.ok(diagnostics.includes('schema'));assert.equal(fixedCodes(diagnostics),true);
-    const plans=await running.request('/v1/plans');assert.equal(plans.status,503);assert.deepEqual(await plans.json(),{error:'schema'});
+    for(const reply of replies){assert.equal(reply.status,503);assert.deepEqual(reply.body,{error:'schema'});}
+    assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.captureEnabled,null);assert.ok(state.diagnostics.includes('schema'));
+    assert.equal((await running.request('/health')).status,200);
     assert.deepEqual(readFileSync(f.database),future);
+  }finally{await running.stop();f.clean();}
+});
+
+test('released v1.0.0 on format 2 remains alive but fails host health readiness and companion activation',async t=>{
+  const f=fixture();f.seed();
+  const writer=new Store(f.database);writer.installSubagentRuns();writer.close();
+  const before=readFileSync(f.database),legacy=releasedRuntime(f.root);
+  assert.equal(spawnSync('bun',['build',`${legacy}/service/main.ts`,'--target=node','--format=esm',`--outfile=${f.root}/compiled/service/main.js`],{stdio:'ignore'}).status,0);
+  assert.equal(spawnSync('bun',['build',`${legacy}/plugin/index.ts`,'--target=node','--format=esm',`--outfile=${f.root}/legacy-plugin/index.js`],{stdio:'ignore'}).status,0);
+  cpSync(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json'),`${f.root}/legacy-plugin/progress-binding.json`);
+  writeFileSync(`${f.root}/legacy-plugin/package.json`,'{"type":"module"}');
+  const running=await serve(f);
+  try{
+    const deadline=Date.now()+8000;let response:Response|undefined;
+    while(Date.now()<deadline){try{response=await running.request('/health');break;}catch{await new Promise(resolve=>setTimeout(resolve,25));}}
+    assert.ok(response);const health=await response.json();t.diagnostic(`release health ${response.status} ${JSON.stringify(health)}`);
+    assert.equal(response.status,503);assert.deepEqual(health,{error:'schema'});
+    const binding=readBinding(`${f.root}/legacy-plugin/progress-binding.json`);
+    const query=new URLSearchParams({storeId:binding.storeId,binding:JSON.stringify({sourceId:f.actor.sourceId,verified:true}),source:f.actor.sourceId,root:'M'});
+    for(const route of ['/v1/setup',`/v1/plan?source=${f.actor.sourceId}&plan=P1`,`/v1/subagent-runs?${query}`]){
+      const reply=await running.request(route);const body=await reply.json();
+      t.diagnostic(`release ${route.split('?')[0]} ${reply.status} ${JSON.stringify(route==='/v1/setup'?{...body,targets:'fixture targets',reportingIdentity:'fixture identity'}:route.startsWith('/v1/plan?')?{plan:body.plan.id}:body)}`);
+      assert.equal(reply.status,route.startsWith('/v1/subagent-runs')?503:200);
+      if(reply.status===503)assert.deepEqual(body,{error:'schema'});
+    }
+    assert.deepEqual(readFileSync(f.database),before);
+    const activation=spawnSync(process.execPath,['--experimental-strip-types',path.resolve('tests/fixtures/activation.ts'),`${f.root}/legacy-plugin/index.js`],{env:f.env,encoding:'utf8',timeout:10000});
+    assert.equal(activation.status,1);assert.match(activation.stderr,/Error: schema/);t.diagnostic('release companion activation exit 1: Error: schema');
   }finally{await running.stop();f.clean();}
 });
 

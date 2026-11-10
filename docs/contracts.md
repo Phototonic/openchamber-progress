@@ -657,6 +657,10 @@ Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET
   configured stores that cannot open (unavailable, corrupt, busy or unknown-schema)
   also stay200/ok:true,ready:false,sqlite:false with their fixed diagnostics — the
   host marks readiness on /health 200 — while store routes keep503 fixed codes.
+  This includes unsupported run storage formats as well as newer base schema
+  versions: admission validates run storage without migration, health reports
+  `schema`, setup status stays reachable, and all store-backed routes refuse
+  with503/`{"error":"schema"}` without changing the store.
 - `/v1/plans?cursor=0&limit=20&source=ID&session=ID&directory=TEXT`: filters optional;
   `{...Envelope,...Page<PlanSummary>}`. Cursor is an offset; continuation reads
   may see newer revisions, not a falsely frozen cross-request snapshot.
@@ -1250,7 +1254,8 @@ only when stable state is absent; stable state always wins. See docs/setup.md.
 Configured store availability is independent of descriptor ownership. A valid
 descriptor with an unreadable store remains configured=true with retained targets,
 captureEnabled=null and the existing fixed store diagnostic (for example storage,
-corrupt or schema). Health/reads return503 instead of an unconfigured success.
+corrupt or schema). Health returns200/ready=false with fixed diagnostics;
+store-backed reads return503 instead of an unconfigured success.
 Health/setup/read requests each make one bounded open/validation attempt so a
 restored store recovers without restarting; no automatic mutation or retry loop.
 Pending reload survives a service restart. After successful tool/skill/RPC setup,
