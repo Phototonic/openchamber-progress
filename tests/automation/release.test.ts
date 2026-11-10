@@ -101,6 +101,12 @@ test('publisher refuses a different release name on both draft and published ret
     assert.equal(f.writes.length,count);
   }
 });
+test('pre-existing release named with the bare tag is a collision with zero writes',async()=>{
+  const f=fixture();
+  f.release={id:22,tag_name:`v${candidate.version}`,target_commitish:sha,name:`v${candidate.version}`,draft:false,author:{login:'github-actions[bot]'},assets:[]};
+  await assert.rejects(publish(candidate,f.files,f.api),/Release name collision/);
+  assert.equal(f.writes.length,0);
+});
 
 function fixture() {
   const files=new Map(assetNames(candidate.version).map(n=>[n,Buffer.from(n)]));
@@ -167,6 +173,23 @@ test('middle upload failure leaves draft; matching retry resumes without overwri
   assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,5);
   assert.equal(f.writes.filter(w=>w==='POST /releases').length,1,'Retry must resume existing draft, never create a second one');
   assert(f.reads.includes('/releases/10'),'Draft is resumed by discovered ID');
+});
+test('lost draft creation response resumes the empty draft without creating another release',async()=>{
+  const f=fixture();
+  await assert.rejects(publish(candidate,f.files,async(m,p,b)=>{
+    const result=await f.api(m,p,b);
+    if(m==='POST'&&p==='/releases') throw Error('draft creation response lost');
+    return result;
+  }),/draft creation response lost/);
+  assert.equal(f.release.draft,true);assert.equal(f.release.assets.length,0);
+  assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,0);
+  assert.equal(await f.api('GET',`/releases/tags/v${candidate.version}`),null);
+  await publish(candidate,f.files,f.api);
+  assert.equal(f.release.draft,false);assert.equal(f.release.assets.length,f.files.size);
+  assert.equal(f.writes.filter(w=>w==='POST /releases').length,1);
+  assert.equal(f.writes.filter(w=>w.startsWith('UPLOAD')).length,f.files.size);
+  assert(f.reads.includes('/releases?per_page=100&page=1'));
+  assert(f.reads.includes('/releases/10'),'Retry must discover and resume the draft by ID');
 });
 test('provider-shaped foreign drafts and ambiguous matches refuse before any write',async()=>{
   const f=fixture();
