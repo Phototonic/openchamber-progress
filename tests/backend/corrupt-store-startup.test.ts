@@ -14,6 +14,7 @@ import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
 import type { Actor } from '../../shared/progress.ts';
 import { releasedRuntime } from './subagent-release-support.ts';
+import { versionOneFixture } from './subagent-format-support.ts';
 
 /** Fixed diagnostics only: no paths, exceptions or rejected values in health or error bodies. */
 const fixedCodes=(values:string[])=>values.every(v=>/^[a-z0-9-]+$/.test(v));
@@ -74,6 +75,45 @@ test('packaged corrupt-store startup becomes ready, answers fixed corrupt 503s a
     const list=await running.request('/v1/plans');assert.equal(list.status,200);const envelope=await list.json() as {storeId:string;data:{id:string}[]};
     assert.equal(envelope.data.length,1);assert.equal(envelope.data[0]!.id,'P1');
     const roundtrip=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`);assert.equal(roundtrip.status,200);
+  }finally{await running.stop();f.clean();}
+});
+
+test('packaged service admits recorded epoch-bearing format 1 without migrating on reads',async t=>{
+  const f=fixture();f.seed();
+  const writer=new Store(f.database);
+  writer.installSubagentRuns();
+  writer.beforeRun({source:f.actor.sourceId,parent:'M',message:'legacy-message',call:'legacy-call'},f.actor,'subagent',{description:'Recorded legacy dispatch'},1000);
+  versionOneFixture(writer.db);
+  writer.close();
+  const before=readFileSync(f.database);
+  const binding=readBinding(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json'));
+  const query=new URLSearchParams({storeId:binding.storeId,binding:JSON.stringify({sourceId:f.actor.sourceId,verified:true}),source:f.actor.sourceId,root:'M'});
+  const running=await serve(f);
+  try{
+    await running.start();
+    const response=await running.request('/health');const health=await response.json();
+    t.diagnostic(`format-1 health ${response.status} ${JSON.stringify(health)}`);
+    assert.equal(response.status,200);assert.equal(health.ready,true);assert.equal(health.sqlite,true);assert.equal(health.subagentRuns,1);
+    assert.ok(!(health.diagnostics??[]).includes('schema'));
+    const setup=await running.request('/v1/setup');const state=await setup.json();
+    t.diagnostic(`format-1 setup ${setup.status} ${JSON.stringify({...state,targets:'fixture targets',reportingIdentity:'fixture identity'})}`);
+    assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.verified,true);assert.equal(state.installed,true);assert.equal(state.captureEnabled,true);
+    assert.deepEqual(state.diagnostics,[]);
+    assert.deepEqual(state.reportingIdentity,{storeId:binding.storeId,sourceId:f.actor.sourceId,verified:true});
+    const plan=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`);const detail=await plan.json();
+    assert.equal(plan.status,200);assert.equal(detail.plan.id,'P1');assert.equal(detail.plan.title,'Last good report');assert.equal(detail.items.data[0].id,'t1');
+    const runs=await running.request(`/v1/subagent-runs?${query}`);const read=await runs.json();
+    t.diagnostic(`format-1 runs ${runs.status} ${JSON.stringify(read)}`);
+    assert.equal(runs.status,200);assert.equal(read.runFormat,1);assert.equal(read.counts.runs,1);
+    // Without a plan filter, useful features running rows only. This pending
+    // dispatch remains counted and is loaded by the guest's history paging.
+    assert.deepEqual(read.data,[]);
+    const history=await running.request(`/v1/subagent-runs?${query}&view=history`);const archive=await history.json();
+    t.diagnostic(`format-1 history ${history.status} ${JSON.stringify(archive)}`);
+    assert.equal(history.status,200);assert.equal(archive.runFormat,1);assert.equal(archive.counts.runs,1);assert.equal(archive.data.length,1);
+    assert.equal(archive.data[0].dispatch.callId,'legacy-call');assert.equal(archive.data[0].description,'Recorded legacy dispatch');
+    assert.equal(archive.data[0].ran.state,'unknown');assert.equal(archive.data[0].ran.dispatchState,'pending');
+    assert.deepEqual(readFileSync(f.database),before);
   }finally{await running.stop();f.clean();}
 });
 
