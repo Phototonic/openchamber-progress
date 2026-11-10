@@ -8,6 +8,7 @@ import { RUN_LIMITS } from '../../shared/subagent-runs.ts';
 import { fixture } from './subagent-test-support.ts';
 import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { versionOneFixture, durableSnapshot } from './subagent-format-support.ts';
+import { releasedRuntime } from './subagent-release-support.ts';
 
 const request=(f:any,extra={})=>({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A',plan:'plan-alpha',cleanupRev:0,...extra});
 const key={source:'source-alpha',parent:'A',message:'message-1',call:'call-1'};
@@ -143,16 +144,12 @@ test('two connections serialize dismissal fences in both commit orders without c
   });
 });
 
-test('unmodified preceding run-aware binary refuses upgraded writes; an already-running observer only advances epochs/revision on reconnect/dispose',async()=>{
+test('unmodified released v1.0.0 runtime refuses upgraded writes; an already-running observer only advances epochs/revision on reconnect/dispose',async()=>{
   await fixture(async f=>{
     f.store.beforeRun(key,f.actor(),'subagent',{},1000);
     for(let n=0;n<50;n++)f.store.beforeRun({...key,call:`old-observer-${n}`},f.actor(),'subagent',{},1000+n);
     await f.restart();versionOneFixture(f.store.db,false,1);
-    const legacy=path.join(path.dirname(f.store.file),'previous-runtime'),base='4e8bf8f';
-    for(const name of execFileSync('git',['ls-tree','-r','--name-only',base,'shared','service','setup','plugin/subagent-runs.ts'],{encoding:'utf8'}).trim().split('\n')){
-      const target=path.join(legacy,name);fs.mkdirSync(path.dirname(target),{recursive:true,mode:0o700});fs.writeFileSync(target,execFileSync('git',['show',`${base}:${name}`]));
-    }
-    fs.symlinkSync(path.resolve('node_modules'),path.join(legacy,'node_modules'),'junction');
+    const legacy=releasedRuntime(path.dirname(f.store.file));
     const {plan,cleanupRev,...r}=request(f);
     const script=`import assert from 'node:assert/strict';import {once} from 'node:events';import {randomUUID} from 'node:crypto';
       import {Store} from './shared/store.ts';import {createProgressServer} from './service/server.ts';import {createRunCapture} from './plugin/subagent-runs.ts';
@@ -194,6 +191,60 @@ test('unmodified preceding run-aware binary refuses upgraded writes; an already-
     assert.equal(f.store.db.prepare('PRAGMA integrity_check').get()!.integrity_check,'ok');assert.deepEqual(f.store.db.prepare('PRAGMA foreign_key_check').all(),[]);
     versionOneFixture(f.store.db,false,1);old('observer');assert.equal(f.store.subagentRuns(r).capture.lossNotice!.dismissedThrough,1);
   });
+});
+
+test('released v1.0.0 creates populated stores that upgrade without losing run evidence',()=>{
+  const root=fs.mkdtempSync('/tmp/opencode/released-run-upgrade-');fs.chmodSync(root,0o700);
+  try{
+    const legacy=releasedRuntime(root);
+    for(const loss of [false,true]){
+      const file=path.join(root,`release-${loss}.sqlite`);
+      const script=`import assert from 'node:assert/strict';
+        import {Store} from './shared/store.ts';import {registerDelegation} from './plugin/delegation.ts';
+        const s=new Store(process.argv[1],{create:true});
+        const root=process.argv[2],source='source-alpha';s.registerSource({id:source,configRoot:root,dataRoot:root,verified:true});s.bindReads(source,true);
+        const actor=(id='A')=>({sourceId:source,sessionId:id,agent:'synthetic',directory:'/synthetic/alpha',projectId:'alpha',parentId:id==='A'?null:'A',ancestry:id==='A'?[]:['A'],verifiedSource:true});
+        s.apply({op:'start',plan:'plan-alpha',oid:'start',rev:0,title:'Released plan',items:[{id:'task-1',title:'First',kind:'task'}]},actor());
+        const hooks=new Map();
+        const binding=await registerDelegation({location:{directory:'/synthetic/alpha'},tool:{hook:async(name,fn)=>{hooks.set(name,fn);return {dispose:async()=>{}};}},event:{subscribe:({signal})=>({async *[Symbol.asyncIterator](){await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));}})}},{store:s,sourceId:source,identity:async id=>actor(id)});
+        try{
+          for(const [i,child] of ['C1','C2'].entries()){
+            const event={tool:'subagent',sessionID:'A',messageID:'message-'+i,id:'call-'+i,input:{agent:'explorer',description:'Released run'}};
+            await hooks.get('execute.before')(event);
+            await hooks.get('execute.after')({...event,status:'completed',result:{output:{sessionID:child,status:'completed'}}});await binding.settledRuns();
+            const start={source,child,id:'start-'+i,sequence:1,at:Date.now()+1000,state:'running',errorType:null,interruptionReason:null};s.observeExecution(start);
+            if(i===0)s.observeExecution({...start,id:'end-'+i,sequence:2,at:start.at+100,state:'succeeded'});
+          }
+          if(process.argv[3]==='true')s.runCaptureUnavailable();
+        }finally{await binding.dispose();}
+        const r={storeId:s.list().storeId,binding:{sourceId:source,verified:true},source,root:'A',plan:'plan-alpha',cleanupRev:0};
+        const view=s.subagentRuns(r,5000);assert.equal(view.runFormat,1);assert.equal(view.capture.loss,process.argv[3]==='true');
+        console.log(JSON.stringify({r,view}));s.close();`;
+      const original=JSON.parse(execFileSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',script,file,root,String(loss)],{cwd:legacy,encoding:'utf8',timeout:15000,stdio:'pipe'}));
+      const store=new Store(file);store.bindReads('source-alpha',true);
+      try{
+        const before=durableSnapshot(store.db);
+        assert.equal(before.data.runs_format![0]!.version,1);
+        // Prove the frozen fixture is the schema actually installed by the release.
+        const copy=path.join(root,`fixture-${loss}.sqlite`);fs.copyFileSync(file,copy);
+        const frozen=new Store(copy);try{versionOneFixture(frozen.db,false,loss?1:0);assert.deepEqual(durableSnapshot(frozen.db),before);}finally{frozen.close();}
+        store.installSubagentRuns();const migrated=durableSnapshot(store.db),view=store.subagentRuns(original.r,5000);
+        for(const [table,rows] of Object.entries(before.data))if(table!=='runs_format')assert.deepEqual(migrated.data[table],rows,table);
+        assert.equal(view.runFormat,2);assert.equal(view.revision,original.view.revision+1);
+        assert.deepEqual(view.data,original.view.data);assert.deepEqual(view.counts,original.view.counts);
+        assert.equal(view.counts.runs,2);assert.equal(view.counts.succeeded,1);assert.equal(view.counts.running,1);
+        assert.equal(view.capture.loss,loss);assert.deepEqual(view.capture.lossNotice,{sequence:0,lastLossAt:null,dismissedThrough:0,attention:false});
+        assert.equal(view.coverage.reasons.includes('capture-loss'),loss);
+        store.installSubagentRuns();assert.deepEqual(durableSnapshot(store.db),migrated,'repeat activation is a no-op');
+        const ro=new Store(file,{readOnly:true});try{ro.bindReads('source-alpha',true);assert.deepEqual(ro.subagentRuns(original.r,5000),view);}finally{ro.close();}
+        execFileSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',`import assert from 'node:assert/strict';import {Store} from './shared/store.ts';
+          const s=new Store(process.argv[1]);s.bindReads('source-alpha',true);const r=JSON.parse(process.argv[2]),{plan,cleanupRev,...identity}=r;
+          try{for(const action of [()=>s.subagentRuns(r),()=>s.installSubagentRuns(),()=>s.runCaptureUnavailable(),()=>s.requestRunReconciliation(identity),()=>s.beforeRun(${JSON.stringify(key)},${JSON.stringify({sourceId:'source-alpha',sessionId:'A',agent:'synthetic',directory:'/synthetic/alpha',projectId:'alpha',parentId:null,ancestry:[],verifiedSource:true})},'subagent',{},2000)])assert.throws(action,/schema/);}finally{s.close();}`,file,JSON.stringify(original.r)],{cwd:legacy,timeout:15000,stdio:'pipe',encoding:'utf8'});
+        assert.deepEqual(durableSnapshot(store.db),migrated,'released reads and writes refuse without mutation');
+        assert.equal(store.db.prepare('PRAGMA integrity_check').get()!.integrity_check,'ok');assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(),[]);
+      }finally{store.close();}
+    }
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
 test('real Store fixture freezes bounded distinct run/session counts and native provenance',()=>{
