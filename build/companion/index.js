@@ -24968,6 +24968,21 @@ function runFormat(db) {
 function runsInstalled(db) {
   return runFormat(db) !== null;
 }
+function runStorageCompatibility(db) {
+  const installed = db.prepare("SELECT name FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (!installed.length)
+    return "absent";
+  if (!installed.some((r) => r.name === "runs_observation_epoch")) {
+    validateMigrationInput(db, true);
+    return "activation-required";
+  }
+  return runFormat(db) === 2 ? "current" : "previous";
+}
+function validateMigrationInput(db, oldEpochless) {
+  const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
+  requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+  return f;
+}
 function installRuns(db) {
   const installed = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
   if (installed.length) {
@@ -24975,8 +24990,7 @@ function installRuns(db) {
     const version = oldEpochless ? 1 : runFormat(db);
     if (version === 2)
       return;
-    const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
-    requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+    const f = validateMigrationInput(db, oldEpochless);
     if (oldEpochless) {
       db.exec(definitions2.runs_observation_epoch);
       db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
@@ -26982,6 +26996,9 @@ class Store {
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
   }
+  subagentRunStorage() {
+    return this.transaction(false, () => runStorageCompatibility(this.db));
+  }
   runControl() {
     return this.transaction(false, () => runControl(this.db));
   }
@@ -27152,6 +27169,12 @@ class Store {
   setEnabled(enabled) {
     this.transaction(true, () => {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
+    });
+  }
+  disableCaptureIfSupported() {
+    this.transaction(true, () => {
+      runStorageCompatibility(this.db);
+      this.db.prepare("UPDATE meta SET enabled=0 WHERE singleton=1").run();
     });
   }
   installDelegationControl() {

@@ -657,6 +657,10 @@ Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET
   configured stores that cannot open (unavailable, corrupt, busy or unknown-schema)
   also stay200/ok:true,ready:false,sqlite:false with their fixed diagnostics — the
   host marks readiness on /health 200 — while store routes keep503 fixed codes.
+  This includes unsupported run storage formats as well as newer base schema
+  versions: admission validates run storage without migration, health reports
+  `schema`, setup status stays reachable, and all store-backed routes refuse
+  with503/`{"error":"schema"}` without changing the store.
 - `/v1/plans?cursor=0&limit=20&source=ID&session=ID&directory=TEXT`: filters optional;
   `{...Envelope,...Page<PlanSummary>}`. Cursor is an offset; continuation reads
   may see newer revisions, not a falsely frozen cross-request snapshot.
@@ -1250,7 +1254,25 @@ only when stable state is absent; stable state always wins. See docs/setup.md.
 Configured store availability is independent of descriptor ownership. A valid
 descriptor with an unreadable store remains configured=true with retained targets,
 captureEnabled=null and the existing fixed store diagnostic (for example storage,
-corrupt or schema). Health/reads return503 instead of an unconfigured success.
+corrupt or schema). Health returns200/ready=false with fixed diagnostics;
+store-backed reads return503 instead of an unconfigured success.
+Install/update preflight an existing target store's run compatibility read-only
+before selecting payloads or changing the binding. Exact supported activation
+inputs are accepted too, including epochless format 1; preflight never migrates.
+Unsupported (future, foreign or partial) run storage found by preflight
+returns503/`{"error":"schema"}` with installation, activation and store unchanged.
+Preflight does not cover another process upgrading the store during the action:
+store or installation changes may occur before admission subsequently refuses
+the unsupported store with `schema`. No automatic rollback restores those changes.
+The capture-disabling fallback for binding persistence/validation failures checks
+run compatibility and disables capture in one immediate transaction. It never
+disables an unsupported store; readable stores and exact supported activation
+inputs retain the existing fallback behavior.
+An exact epochless format-1 store is admitted for setup and progress reads:
+health is200/ready=true without `subagentRuns:1`, not a store-wide `schema`
+failure. Direct run reads still return503/`{"error":"schema"}` until explicit
+companion activation migrates it. The missing capability means run reads are
+unavailable, not that run storage is absent or safe to initialize from a guest.
 Health/setup/read requests each make one bounded open/validation attempt so a
 restored store recovers without restarting; no automatic mutation or retry loop.
 Pending reload survives a service restart. After successful tool/skill/RPC setup,

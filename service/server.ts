@@ -120,7 +120,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
         // The host marks the service ready on /health 200; a configured store that
         // cannot open keeps the process serving fixed error states (503 on store
         // routes, diagnostics here) instead of a host-level service failure.
-        if (currentStore) return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(currentStore.subagentRunsAvailable()?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        if (currentStore) {
+          const runs=currentStore.subagentRunStorage();
+          return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+        }
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
       }

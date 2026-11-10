@@ -33,6 +33,23 @@ restore that snapshot or reset schema2 to undo cleanup. Older readers may show
 archived records; older writers remain fenced. See the
 [reporting and cleanup contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md).
 
+During service admission and reads, if the current build encounters a newer base
+schema or run storage format, it
+leaves the store untouched, keeps setup status reachable, and shows “Progress
+data needs an update” through fixed `schema` diagnostics rather than a startup
+delay. Update the extension and companion; restarting or retrying does not make
+an unsupported format compatible. This does not alter released 1.0.0 behaviour.
+Install/update against an already unsupported run store is refused with `schema`
+before selecting a companion or changing the binding, capture or store. This
+preflight does not cover a concurrent upgrade during the action: store or
+installation changes may occur before admission refuses the store with `schema`,
+with no automatic rollback. The capture-disabling fallback checks compatibility
+and disables capture atomically, so it never disables an unsupported store.
+The exact older epochless format-1 shape is a supported activation input, not an
+unsupported store: setup and progress remain available, install/update can select
+the companion, and only its explicit activation migrates run storage. Run reads
+remain unavailable until that activation; service startup is not blocked.
+
 ## Proactive guidance after loading
 
 With verified companion/source identity, capture enabled and `agent_progress_report`

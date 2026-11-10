@@ -783,6 +783,21 @@ function runFormat(db) {
 function runsInstalled(db) {
   return runFormat(db) !== null;
 }
+function runStorageCompatibility(db) {
+  const installed = db.prepare("SELECT name FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if (!installed.length)
+    return "absent";
+  if (!installed.some((r) => r.name === "runs_observation_epoch")) {
+    validateMigrationInput(db, true);
+    return "activation-required";
+  }
+  return runFormat(db) === 2 ? "current" : "previous";
+}
+function validateMigrationInput(db, oldEpochless) {
+  const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
+  requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+  return f;
+}
 function installRuns(db) {
   const installed = db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
   if (installed.length) {
@@ -790,8 +805,7 @@ function installRuns(db) {
     const version = oldEpochless ? 1 : runFormat(db);
     if (version === 2)
       return;
-    const f = validateRuns(db, oldEpochless ? epochless : versionOne, 1, !oldEpochless);
-    requireProgress(Number(f.revision) < Number.MAX_SAFE_INTEGER, "schema");
+    const f = validateMigrationInput(db, oldEpochless);
     if (oldEpochless) {
       db.exec(definitions2.runs_observation_epoch);
       db.exec("INSERT INTO runs_observation_epoch VALUES(1,0,0)");
@@ -2814,6 +2828,9 @@ class Store {
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
   }
+  subagentRunStorage() {
+    return this.transaction(false, () => runStorageCompatibility(this.db));
+  }
   runControl() {
     return this.transaction(false, () => runControl(this.db));
   }
@@ -2984,6 +3001,12 @@ class Store {
   setEnabled(enabled) {
     this.transaction(true, () => {
       this.db.prepare("UPDATE meta SET enabled=? WHERE singleton=1").run(Number(enabled));
+    });
+  }
+  disableCaptureIfSupported() {
+    this.transaction(true, () => {
+      runStorageCompatibility(this.db);
+      this.db.prepare("UPDATE meta SET enabled=0 WHERE singleton=1").run();
     });
   }
   installDelegationControl() {
@@ -26377,8 +26400,10 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         return v;
       };
       if (url2.pathname === "/health") {
-        if (currentStore)
-          return answer(200, { ok: true, ready: true, sqlite: true, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...currentStore.subagentRunsAvailable() ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        if (currentStore) {
+          const runs = currentStore.subagentRunStorage();
+          return answer(200, { ok: true, ready: true, sqlite: true, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+        }
         if (setup)
           return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         return answer(503, { error: active.error ?? "storage" });
@@ -26572,6 +26597,7 @@ class SetupController {
     }
     try {
       verifyStore(next, b);
+      next.subagentRunStorage();
       next.bindReads(b.source.id, b.source.verified);
     } catch (e) {
       next.close();
@@ -26655,23 +26681,45 @@ class SetupController {
       if (!current || !(windows ? platformSecurityScope(() => sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot)) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
         throw new SetupError("ownership-invalid");
     }
-    if (action === "install" || action === "update")
+    if (action === "install" || action === "update") {
       this.validateDescriptor();
+      lifecycle("inspect", targets);
+      const database = path7.join(targets.storeRoot, "progress.sqlite");
+      if (existsSync5(database)) {
+        const probe = new Store(database, { readOnly: true });
+        try {
+          probe.subagentRunStorage();
+        } finally {
+          probe.close();
+        }
+      }
+    }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
       const b = readBinding(path7.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
-      } catch {
+      } catch (e) {
+        if (e instanceof ProgressError && e.code === "schema") {
+          this.close();
+          this.recordError(e);
+          throw e;
+        }
         let disabled = false;
         let control;
         try {
           control = new Store(b.database);
           verifyStore(control, b);
-          control.setEnabled(false);
+          control.disableCaptureIfSupported();
           disabled = true;
-        } catch {} finally {
+        } catch (e2) {
+          if (e2 instanceof ProgressError && e2.code === "schema") {
+            this.close();
+            this.recordError(e2);
+            throw e2;
+          }
+        } finally {
           control?.close();
         }
         throw new SetupError(disabled ? "service-binding-unavailable-capture-disabled" : "service-binding-unavailable");

@@ -86,6 +86,7 @@ export class Store {
   close() { this.db.close(); }
   installSubagentRuns() { return this.transaction(true,()=>runs.installRuns(this.db)); }
   subagentRunsAvailable() { return this.transaction(false,()=>runs.runsInstalled(this.db)); }
+  subagentRunStorage() { return this.transaction(false,()=>runs.runStorageCompatibility(this.db)); }
   runControl() { return this.transaction(false,()=>runs.runControl(this.db)); }
   beginRunObservation() {return this.transaction(true,()=>runs.beginObservation(this.db));}
   runObservationEpoch() {return this.transaction(false,()=>runs.observationEpoch(this.db));}
@@ -168,6 +169,12 @@ export class Store {
     });
   }
   setEnabled(enabled: boolean) { this.transaction(true, () => { this.db.prepare('UPDATE meta SET enabled=? WHERE singleton=1').run(Number(enabled)); }); }
+  disableCaptureIfSupported() {
+    this.transaction(true,()=>{
+      runs.runStorageCompatibility(this.db);
+      this.db.prepare('UPDATE meta SET enabled=0 WHERE singleton=1').run();
+    });
+  }
   /** Capture generation survives even an off/on interval between observations, including old writers. */
   installDelegationControl() {
     this.transaction(true, () => this.db.exec(`CREATE TABLE IF NOT EXISTS delegation_control(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL);

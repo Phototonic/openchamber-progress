@@ -708,8 +708,24 @@ whole extension and refuses partial/future schemas without destructive repair.
 Run storage format 2 is upgraded only by matching companion activation. Exact
 epoch-bearing format 1 is read-only-compatible with the new service beforehand,
 without notice metadata; new run mutations refuse until activation. Epochless
-version 1 still needs activation. Both upgrades preserve all evidence and leave
+version 1 still needs activation for run reads (`503 schema`); it is admitted for
+setup and progress, with health200/ready=true but no run-read capability. Its
+exact migration shape is accepted by install/update without migrating it there.
+Both upgrades preserve all evidence and leave
 old loss unknown-date, non-attention. Failed migration rolls back atomically.
+
+During admission and reads, the current build meeting a newer run storage format
+or base schema keeps the
+service host-ready with health200/ready=false and `schema` diagnostics, retains
+setup status, and refuses store-backed routes with `503 schema` without changing
+store bytes. Guests show “Progress data needs an update”, not a startup delay.
+This does not change the released 1.0.0 rollback behaviour described below.
+Service-controlled install/update also checks existing run storage before any
+installation change and refuses unsupported formats with `503 schema`. This is
+only a preflight: a concurrent upgrade during the action can leave store or
+installation changes before admission refuses the unsupported store, with no
+automatic rollback. The fallback's compatibility check and capture disabling
+share one immediate transaction and never disable an unsupported store.
 
 Mixed versions have distinct limits:
 
