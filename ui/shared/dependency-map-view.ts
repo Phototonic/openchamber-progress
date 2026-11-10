@@ -253,7 +253,9 @@ export function createDependencyMapView(): DependencyMapView {
   const binding = () => input?.interaction ?? null;
   let helpNode: HTMLDetailsElement | null = null, helpIdentity: string | null = null;
   let removeHelpListeners = () => {};
-  function clearHelp() { removeHelpListeners(); removeHelpListeners = () => {}; if (helpNode) helpNode.open = false; helpNode = null; helpIdentity = null; }
+  let outsidePointer: number | null = null, outsideTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelOutside() { if (outsideTimer !== null) clearTimeout(outsideTimer); outsideTimer = null; outsidePointer = null; }
+  function clearHelp() { removeHelpListeners(); removeHelpListeners = () => {}; cancelOutside(); if (helpNode) helpNode.open = false; helpNode = null; helpIdentity = null; }
 
 
   function dropSpeech() { if (speech) clearTimeout(speech.timer); speech = null; }
@@ -969,7 +971,7 @@ export function createDependencyMapView(): DependencyMapView {
     region.append(body);
 
     // A native disclosure needs no global popup machinery. Keep it open across same-reading
-    // repaints, and retire its one outside listener on every repaint, leave or disposal.
+    // repaints, and retire its outside listeners on every repaint, leave or disposal.
     const help = testid(el('details', 'ap-map-help'), 'map-help');
     const identity = st?.identity ?? plan.key;
     help.open = !!wasOpen && previousIdentity === identity && (st?.active ?? true);
@@ -995,11 +997,25 @@ export function createDependencyMapView(): DependencyMapView {
     }
     helpBody.append(testid(el('p', '', 'Assigned to: a verified delegation for this revision. Unverified assignee: recorded, but without a verified delegation. Linked to: a session link, not an assignment. A square before the assigned session’s name: that session is active now (filled) or waiting for input (outlined) in this view’s run records. It doesn’t show which task the session is working on.'), 'map-attribution-help'));
     help.append(helpBody);
-    const onOutside = (event: Event) => { if (help.open && event.target instanceof Node && !help.contains(event.target)) help.open = false; };
-    const onHelpKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && help.open) { event.preventDefault(); help.open = false; summaryHelp.focus(); } };
-    help.ownerDocument.addEventListener('pointerdown', onOutside, true);
+    // Do not collapse on pointerdown: the in-flow disclosure would move the pressed control
+    // before pointerup. A click has a fixed target; for canceled/non-click gestures close after
+    // pointerup, with the pending action surviving a same-reading repaint.
+    const outside = (event: Event) => event.target instanceof Node && !help.contains(event.target);
+    const closeOutside = () => { cancelOutside(); if (helpNode?.open && helpIdentity === identity) helpNode.open = false; };
+    const onOutsideDown = (event: PointerEvent) => { if (help.open && outside(event)) { cancelOutside(); outsidePointer = event.pointerId; } };
+    const onOutsideUp = (event: PointerEvent) => {
+      if (outsidePointer !== event.pointerId) return;
+      outsidePointer = null;
+      outsideTimer = setTimeout(closeOutside, 0);
+    };
+    const onOutsideCancel = (event: PointerEvent) => { if (outsidePointer === event.pointerId) closeOutside(); };
+    const onOutsideClick = (event: MouseEvent) => { if (help.open && outside(event)) closeOutside(); };
+    const onHelpKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && help.open) { event.preventDefault(); cancelOutside(); help.open = false; summaryHelp.focus(); } };
+    const doc = help.ownerDocument;
+    doc.addEventListener('pointerdown', onOutsideDown, true); doc.addEventListener('pointerup', onOutsideUp, true);
+    doc.addEventListener('pointercancel', onOutsideCancel, true); doc.addEventListener('click', onOutsideClick, true);
     help.addEventListener('keydown', onHelpKey);
-    removeHelpListeners = () => { help.ownerDocument.removeEventListener('pointerdown', onOutside, true); help.removeEventListener('keydown', onHelpKey); };
+    removeHelpListeners = () => { doc.removeEventListener('pointerdown', onOutsideDown, true); doc.removeEventListener('pointerup', onOutsideUp, true); doc.removeEventListener('pointercancel', onOutsideCancel, true); doc.removeEventListener('click', onOutsideClick, true); help.removeEventListener('keydown', onHelpKey); };
     helpNode = help; helpIdentity = identity;
     region.insertBefore(help, controls);
     if (b) { const description = el('p', 'ap-sr', 'Use arrow keys to navigate cards. Open Map help and definitions for all map keys.'); description.id = helpId; region.append(description); }

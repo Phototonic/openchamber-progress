@@ -568,8 +568,30 @@ try {
         check(`help:${tag}:resize-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.documentElement.scrollWidth<=w.innerWidth+1`));
         await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Escape'); await frames2();
         check(`help:${tag}:escape-closes-focus`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'&&w.mapPreview.state.selected==='C'`));
-        await key('Enter'); await frames2(); await click(surface, '[data-testid="map-fit-all"]'); await frames2();
-        check(`help:${tag}:outside-closes`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`));
+        // Start away from Fit all, then click that real control while help is open.
+        await command(surface, { type: 'fit' }); await frames2(); const fitted = (await state(surface)).transform;
+        await command(surface, { type: 'pan', x: -83, y: 27 }); await frames2();
+        await key('Enter'); await frames2(); const fitSpoken = (await said(surface)).length;
+        await click(surface, '[data-testid="map-fit-all"]'); await frames2();
+        check(`help:${tag}:outside-closes-and-fits-once`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`) && JSON.stringify((await state(surface)).transform) === JSON.stringify(fitted) && (await said(surface)).slice(fitSpoken).filter(s => s.startsWith('Fit all:')).length === 1, undefined, { fitted, after: (await state(surface)).transform, spoken: (await said(surface)).slice(fitSpoken) });
+        // Cancellation closes help without triggering the pressed control.
+        await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
+        const beforeCancel = (await state(surface)).transform;
+        await guest(surface, `const n=d.querySelector('[data-testid="map-fit-all"]');n.dispatchEvent(new w.PointerEvent('pointerdown',{bubbles:true,pointerId:72,button:0}));return true`);
+        check(`help:${tag}:press-does-not-shift-control`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open`));
+        await guest(surface, `d.dispatchEvent(new w.PointerEvent('pointercancel',{bubbles:true,pointerId:72}));return true`); await frames2();
+        check(`help:${tag}:cancel-dismisses-without-action`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`) && JSON.stringify((await state(surface)).transform) === JSON.stringify(beforeCancel));
+        await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
+        await guest(surface, `const n=d.querySelector('[data-testid="map-fit-all"]');n.dispatchEvent(new w.PointerEvent('pointerdown',{bubbles:true,pointerId:73,button:0}));d.dispatchEvent(new w.PointerEvent('pointerup',{bubbles:true,pointerId:73}));return true`); await frames2();
+        check(`help:${tag}:non-click-release-dismisses`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`) && JSON.stringify((await state(surface)).transform) === JSON.stringify(beforeCancel));
+        // A background click also clears selection while dismissing help, even if that repaint
+        // replaces the disclosure during the pointer gesture.
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
+        await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
+        const helpBackground = await background(surface); if (!helpBackground) throw Error(`no map background in ${tag}`);
+        await mouse('mouseMoved', helpBackground[0], helpBackground[1], { buttons: 0 }); await mouse('mousePressed', helpBackground[0], helpBackground[1]); await mouse('mouseReleased', helpBackground[0], helpBackground[1]); await frames2();
+        check(`help:${tag}:background-clears-and-dismisses`, (await state(surface)).selected === null && await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`));
+        await command(surface, { type: 'select', id: 'C' }); await frames2();
         await shot(`${tag}-help-collapsed`, '[data-testid="map-region"]', 0, 1400, surface);
         check(`interaction:${tag}:one-persistent-announcer`, await guest(surface, `const a=d.querySelectorAll('[data-testid="map-announcer"]');return a.length===1&&!d.getElementById('root').contains(a[0])&&a[0].getAttribute('aria-live')==='polite'`));
         check(`interaction:${tag}:one-canvas-tab-stop`, await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]'),cards=[...v.querySelectorAll('[data-task]')];return v.getAttribute('role')==='region'&&!!v.getAttribute('aria-label')&&cards.length>0&&cards.every(n=>n.tagName==='BUTTON')&&cards.filter(n=>n.tabIndex===0).length===1&&!d.querySelector('[data-testid="map-region"] [role="application"],[role="tree"],[role="grid"],[role="listbox"]')`));
@@ -592,7 +614,8 @@ try {
         let t = (await state(surface)).transform;
         await key('+'); await frames2();
         check(`interaction:${tag}:plus-zooms`, near((await state(surface)).transform.zoom, Math.min(2, t.zoom * 1.2)));
-        await key('-'); await frames2(); t = (await state(surface)).transform;
+        await key('-'); await frames2();
+        await command(surface, { type: 'pan', x: -19, y: 0 }); await frames2(); t = (await state(surface)).transform;
         await key('+', 1, 2); await key('f', 1, 2); await frames2();
         check(`interaction:${tag}:modified-keys-not-intercepted`, JSON.stringify((await state(surface)).transform) === JSON.stringify(t));
         await key('f'); await frames2();
