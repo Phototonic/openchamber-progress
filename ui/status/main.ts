@@ -1,6 +1,6 @@
 import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
-import { age, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, retryRead, testid, type Env } from '../shared/components.ts';
+import { age, allDone, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, retryRead, testid, type Env } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
 import { clockTime, plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
@@ -195,6 +195,7 @@ function statusProgress(p: StatusProjection, plan: PlanView) {
   Object.assign(counts.dataset, { done: String(s.done), total: String(s.total), remaining: String(s.remaining), skipped: String(s.skipped) });
   if (s.total) counts.append(el('strong', '', String(s.done)), el('span', 'ap-muted', `/${s.total}`), el('span', 'ap-sr', ` done, ${s.remaining} remaining${s.skipped ? `, ${s.skipped} skipped` : ''}`));
   else counts.append(el('span', 'ap-muted', summaryText(s)));
+  allDone(counts, s);
   line.append(counts);
   const r = p.reported;
   const guided = p.ready !== null && p.waiting !== null && r !== null;
