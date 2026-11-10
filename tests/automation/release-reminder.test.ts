@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { canonical } from '../../scripts/release.ts';
 import { baseline, pullRequests, visibleMentions, runReminder, type Context } from '../../scripts/release-credits.ts';
@@ -14,6 +13,13 @@ const release=(tag_name='v1.0.0',draft=false)=>({tag_name,draft,published_at:dra
 const pull=(number:number,login:string|null,sha=head,type='User',merged_at:string|null='2026-01-02T00:00:00Z')=>({number,merge_commit_sha:sha,merged_at,user:login===null?null:{login,type},title:'untrusted title',body:'untrusted body'});
 const first='- [@alice](https://github.com/alice) made their first contribution in #2';
 const fixture=(rows:unknown[],body=context.body)=>({load:()=>({...context,body}),ancestors:()=>[old],api:async(path:string)=>path.startsWith('/releases?')?[release()]:rows});
+function runChild(scenario:object,timeout=10_000) {
+  const root=mkdtempSync(join(tmpdir(),'release-reminder-child-'));
+  try {
+    const file=join(root,'scenario.json');writeFileSync(file,JSON.stringify(scenario));
+    return spawnSync(process.execPath,['--experimental-strip-types',resolve('tests/automation/fixtures/release-reminder-child.ts'),file],{cwd:root,encoding:'utf8',timeout});
+  } finally {rmSync(root,{recursive:true,force:true});}
+}
 
 test('owner-only release and real notes need no contributor credit; advice does not run for a non-bump',async()=>{
   const result=await runReminder({},fixture(Array.from({length:17},(_,i)=>pull(i+1,canonical.split('/')[0])),readFileSync('release-notes/1.1.0.md','utf8')));
@@ -47,6 +53,28 @@ test('mentions count visible text and labels, not code, comments, destinations o
     assert(!visibleMentions(markdown).has('alice'),markdown);
   }
   for(const markdown of ['Thanks to @alice.','[@ALICE](https://github.com/alice)','**@alice**','\\@alice'])assert(visibleMentions(markdown).has('alice'),markdown);
+});
+
+test('angle regions hide attributes and malformed markup without hiding adjacent ordinary mentions',()=>{
+  for(const markdown of ['<a title="@ann">label</a>','<a title="> @ann">label</a>','<<script>script @ann>','<unfinished @ann','<!-- first line\n@ann\nlast line -->','@an<span></span>n']) {
+    assert(!visibleMentions(markdown).has('ann'),markdown);
+  }
+  for(const markdown of ['<<script>script>@ann','@ann<span>text</span>','<span>text</span>@ann','<unfinished\n@ann','<!-- @hidden\n-->@ann']) {
+    assert(visibleMentions(markdown).has('ann'),markdown);
+  }
+});
+
+test('visibility scanning returns promptly on long malformed angles, references, and escapes',()=>{
+  const markdown=[
+    '<'.repeat(125000)+'@hidden\n@ann',
+    ']'.repeat(40000)+' '.repeat(40000)+'['.repeat(40000)+'\n@ann',
+    '\\'.repeat(120000)+'@ann',
+    '<!--'+'<'.repeat(120000)+'@hidden\n-->@ann',
+    'prefix '+Array.from({length:450},(_,i)=>'`'.repeat(i+1)).join(' ')+' @ann',
+  ];
+  const result=runChild({behavior:'visible-mentions',context,markdown},3000);
+  assert.equal(result.error,undefined);assert.equal(result.status,0);assert.equal(result.stderr,'');
+  assert.deepEqual(JSON.parse(result.stdout),markdown.map(()=>['ann']));
 });
 
 test('published baseline ignores stranded and draft tags; failed read clearly falls back to local tags',async()=>{
@@ -102,12 +130,9 @@ test('hostile API fields cannot inject annotations; HTTP reads pin the legacy me
 });
 
 test('actual advisory entry point exits zero on API errors, bad rows, missing history and summary errors',()=>{
-  const moduleURL=pathToFileURL(resolve('scripts/release-credits.ts')).href;
-  for(const mode of ['api','rate','timeout','rows','history','summary','token']) {
-    const env=mode==='summary'?{GITHUB_STEP_SUMMARY:'missing-parent/summary'}:mode==='token'?{GITHUB_ACTIONS:'true'}:{};
-    const api=mode==='api'?'throw Error("private API error synthetic-token");':mode==='rate'?'throw Error("HTTP 403 rate limit");':mode==='timeout'?'throw new DOMException("timeout","TimeoutError");':mode==='summary'?`return path.startsWith('/releases?')?${JSON.stringify([release()])}:[];`:'return [{}];';
-    const code=`import {main} from ${JSON.stringify(moduleURL)}; await main(${JSON.stringify(env)},{load:()=>{${mode==='history'?'throw Error("missing history");':`return ${JSON.stringify(context)};`}},ancestors:()=>[],api:async(path)=>{${api}}});`;
-    const r=spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',code],{encoding:'utf8',timeout:10_000});
+  for(const behavior of ['throw-error','rate-limit','timeout','bad-rows','missing-history','summary','token']) {
+    const env=behavior==='summary'?{GITHUB_STEP_SUMMARY:'missing-parent/summary'}:behavior==='token'?{GITHUB_ACTIONS:'true'}:{};
+    const r=runChild({behavior:behavior==='summary'||behavior==='token'?'ok':behavior,context,releases:[release()],env});
     assert.equal(r.status,0);assert.equal(r.stderr,'');assert.equal(r.stdout.trim(),'Release credit reminder could not be produced (data or history unavailable).');
   }
 });
@@ -115,11 +140,11 @@ test('actual advisory entry point exits zero on API errors, bad rows, missing hi
 test('summary has the same report and annotations use only a constant, not API text',()=>{
   const root=mkdtempSync(join(tmpdir(),'release-reminder-'));
   try {
-    const summary=join(root,'summary'),moduleURL=pathToFileURL(resolve('scripts/release-credits.ts')).href;
-    const code=`import {main} from ${JSON.stringify(moduleURL)};await main(${JSON.stringify({GITHUB_ACTIONS:'true',GITHUB_TOKEN:'synthetic-token',GITHUB_STEP_SUMMARY:summary})},{load:()=>(${JSON.stringify(context)}),ancestors:()=>[${JSON.stringify(old)}],api:async path=>path.startsWith('/releases?')?${JSON.stringify([release()])}:${JSON.stringify([pull(2,'alice')])}});`;
-    const r=spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',code],{encoding:'utf8',timeout:10_000});
+    const summary=join(root,'summary');
+    const r=runChild({behavior:'ok',context,previous:[old],releases:[release()],pulls:[pull(2,'alice')],env:{GITHUB_ACTIONS:'true',GITHUB_TOKEN:'synthetic-token',GITHUB_STEP_SUMMARY:summary}});
     assert.equal(r.status,0);assert.equal(r.stderr,'');
     assert.equal((r.stdout.match(/::warning title=Release credits::/g)??[]).length,1);
+    assert(r.stdout.endsWith('::warning title=Release credits::Review missing or unexpected credits in the release credit reminder.\n'));
     assert(r.stdout.startsWith(readFileSync(summary,'utf8')));assert(!readFileSync(summary,'utf8').includes('::warning'));
   } finally {rmSync(root,{recursive:true,force:true});}
 });

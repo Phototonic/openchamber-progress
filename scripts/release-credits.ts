@@ -55,8 +55,16 @@ export async function pullRequests(api:ReadAPI):Promise<Pull[]> {
   return result;
 }
 function prose(markdown:string):string {
+  // Comments are invisible, including across lines. This is a visibility scan,
+  // not HTML sanitization: notes text is never emitted into the report.
+  let uncommented='';
+  for(let i=0;i<markdown.length;) {
+    if(markdown.startsWith('<!--',i)) {
+      const end=markdown.indexOf('-->',i+4);i=end<0?markdown.length:end+3;
+    } else uncommented+=markdown[i++];
+  }
   let fence='';
-  const text=markdown.replaceAll('\r\n','\n').replace(/<!--[\s\S]*?(?:-->|$)/g,'').split('\n').map(line=>{
+  const text=uncommented.replaceAll('\r\n','\n').split('\n').map(line=>{
     const m=/^ {0,3}(`{3,}|~{3,})/.exec(line);
     if(fence) {if(m&&m[1][0]===fence[0]&&m[1].length>=fence.length&&line.slice(m[0].length).trim()==='')fence='';return '';}
     if(m){fence=m[1];return '';}
@@ -79,16 +87,45 @@ function prose(markdown:string):string {
   return out;
 }
 export function visibleMentions(markdown:string):Set<string> {
-  const text=prose(markdown).replace(/^ {0,3}\[[^\]\n]+\]:[^\n]*(?:\n[ \t]+[^\n]*)*/gm,'');
+  let definition=false;
+  const text=prose(markdown).split('\n').map(line=>{
+    if(/^ {0,3}\[[^\]]+\]:/.test(line)){definition=true;return '';}
+    if(definition&&/^[ \t]+/.test(line))return '';
+    definition=false;return line;
+  }).join('\n');
+  const punctuation=new Set('\\`*{}[]()#+-.!_>@');
   let visible='';
   for(let i=0;i<text.length;i++) {
+    if(text[i]==='<') {
+      // Ignore an angle region through its balanced, unquoted >, or through
+      // the end of this line if incomplete. Nested < cannot expose attributes.
+      // Keep a token boundary instead of joining adjacent login fragments.
+      visible+=' ';
+      let depth=1,quote='';i++;
+      for(;i<text.length&&text[i]!=='\n';i++) {
+        const ch=text[i];
+        if(quote){if(ch===quote)quote='';continue;}
+        if(ch==='"'||ch==="'"){quote=ch;continue;}
+        if(ch==='<')depth++;
+        if(ch==='>'&&!--depth)break;
+      }
+      if(text[i]==='\n')visible+='\n';
+      continue;
+    }
     // Preserve link labels, not destinations (including balanced parentheses).
     if(text[i]===']'&&text[i+1]==='(') {
       visible+=']';let depth=1;i+=2;
       for(;i<text.length;i++) {if(text[i]==='\\'){i++;continue;}if(text[i]==='(')depth++;if(text[i]===')'&&!--depth)break;}
-    } else visible+=text[i];
+    } else if(text[i]===']') {
+      visible+=']';let start=i+1;
+      while(start<text.length&&/\s/u.test(text[start]))start++;
+      if(text[start]==='[') {
+        let end=start+1;while(end<text.length&&text[end]!==']'&&text[end]!=='\n')end++;
+        if(text[end]===']')i=end;
+      }
+    } else if(text[i]==='\\'&&punctuation.has(text[i+1]))visible+=text[++i];
+    else visible+=text[i];
   }
-  visible=visible.replace(/\]\s*\[[^\]\n]*\]/g,']').replace(/<[^>\n]*>/g,'').replace(/\\([\\`*{}\[\]()#+\-.!_>@])/g,'$1');
   return new Set([...visible.matchAll(/(?:^|[^a-z0-9-])@([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?![a-z0-9-])/gi)]
     .map(m=>m[1].toLowerCase()).filter(l=>loginPattern.test(l)));
 }
