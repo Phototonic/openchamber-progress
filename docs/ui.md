@@ -84,8 +84,10 @@ adds plan/task search (see Board search).
 
 ## Build and checks
 
+Use Node 24.x >= 24.19.0 on PATH. Checks were tested on 24.19.0; later 24.x
+releases are accepted but not separately certified. CI uses exactly 24.19.0.
+
 ```sh
-export PATH=$HOME/.nvm/versions/node/v24.19.0/bin:$PATH
 node_modules/.bin/tsc -p ui/tsconfig.json --noEmit
 node --experimental-strip-types --test tests/browser/*.test.ts
 bun run bundle:guest ui/panel/main.ts ui/panel/main.js   # same for status, page

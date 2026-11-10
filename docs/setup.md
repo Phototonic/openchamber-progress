@@ -392,7 +392,8 @@ installation separately. No binding descriptor/private store is shipped.
 
 Alternatively, extract the companion ZIP to a dedicated directory, change into
 that directory and run the inspect/dry-run/install commands above (`node
-build/setup/main.js ...`). Use Node24.19.0 or the already-proved supported host
+build/setup/main.js ...`). Use Node 24.x >= 24.19.0 (tested on 24.19.0; later 24.x
+accepted but not separately certified) or the already-proved supported host
 runtime with built-in SQLite. Native Windows has the additional boundary below.
 Do not assume other platforms or custom runtime channels were verified.
 

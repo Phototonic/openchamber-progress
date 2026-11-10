@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
 
 test('subagent activity isolated native feasibility', { timeout: 660000 }, async t => {
   // Exploratory work is never silently selected by the ordinary regression suite.
@@ -14,7 +15,7 @@ test('subagent activity isolated native feasibility', { timeout: 660000 }, async
     await runNativeRegression(); return;
   }
   assert.equal(phase, 'probe', 'explicit probe or regression phase required');
-  assert.equal(process.version, 'v24.19.0');
+  requireRuntimeVersion('node', process.version);
   const binary = process.env.OPENCODE_BINARY;
   assert.ok(binary && path.isAbsolute(binary), 'explicit independent binary required');
   assert.equal(fs.realpathSync(binary), '/tmp/opencode/agent-progress-probe-cli/opencode');
@@ -24,7 +25,7 @@ test('subagent activity isolated native feasibility', { timeout: 660000 }, async
   const history = previous?.attempts ?? (previous ? [{ invocation: 1, ...previous }] : []);
   const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   const slim = path.join(process.env.HOME!, '.bun/install/cache/oh-my-opencode-slim@2.2.25@@@1');
-  const result: any = { phase, node: process.version, runtime: '2.2.2', plugin: JSON.parse(fs.readFileSync('node_modules/@opencode/plugin/package.json', 'utf8')).version,
+  const result: any = { phase, node: process.version, runtime: null, plugin: JSON.parse(fs.readFileSync('node_modules/@opencode/plugin/package.json', 'utf8')).version,
     sdk: JSON.parse(fs.readFileSync('node_modules/@openchamber/sdk/package.json', 'utf8')).version,
     hashes: { runtime: hash(binary), observerSource: hash('tests/fixtures/subagent-activity-observer.ts'), workspaceDriver: hash('tests/fixtures/subagent-activity-workspace-driver.ts'), slimDriver: hash('tests/fixtures/subagent-activity-slim-driver.ts'), slimWrapper: hash('tests/fixtures/subagent-activity-slim.ts'), hostObserver: hash('tests/browser/subagent-activity-host.ts'), guest: hash('tests/browser/subagent-activity-guest.ts'), lockfile: hash('bun.lock') }, modes: [] };
   assert.equal(result.plugin, '2.1.4'); assert.equal(result.sdk, '2.5.1');
@@ -49,7 +50,7 @@ test('subagent activity isolated native feasibility', { timeout: 660000 }, async
         const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary,
           ...(mode === 'workspace' ? { ACTIVITY_WAYLAND_SOCKET: waylandSocket! } : {}) };
         const versionCheck: ReturnType<typeof spawnSync> = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
-        assert.equal(versionCheck.status, 0); assert.equal(versionCheck.stdout.toString().trim(), 'opencode v2.2.2');
+        assert.equal(versionCheck.status, 0); result.runtime = requireRuntimeVersion('opencode', versionCheck.stdout.toString());
         const agents = Object.fromEntries(['nested-worker', 'restricted-worker', 'slow-worker'].map(id => [id, { mode: 'subagent', description: 'Synthetic probe worker', permissions: [{ action: '*', resource: '*', effect: 'deny' }, ...(id === 'nested-worker' ? [{ action: 'subagent', resource: '*', effect: 'allow' }] : [])] }]));
         fs.writeFileSync(`${root}/config/opencode/opencode.json`, JSON.stringify({ agents }));
         if (mode === 'slim') {

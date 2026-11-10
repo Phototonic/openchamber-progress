@@ -8,8 +8,9 @@ import { createServer } from 'node:net';
 import { OpenCode } from '@opencode/client';
 import { ProgressStatus } from '../../plugin/status.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
+import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
 
-test('pinned runtime rolls back partial native hook/RPC registrations; failed setup leaves no SQLite handle and recovers',{timeout:45000},async()=>{
+test('native runtime rolls back partial native hook/RPC registrations; failed setup leaves no SQLite handle and recovers',{timeout:45000},async()=>{
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-plugin-failure-runtime-');let child:ReturnType<typeof spawn>|undefined;
   try{
     for(let dir=path.dirname(root);;dir=path.dirname(dir)){for(const name of ['opencode.json','opencode.jsonc','.opencode/opencode.json','.opencode/opencode.jsonc'])assert.equal(fs.existsSync(path.join(dir,name)),false,'ancestor config not allowed');if(dir===path.dirname(dir))break;}
@@ -30,7 +31,7 @@ export default {...original,async setup(ctx){
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as any).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
     const env={PATH:'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,OPENCODE_PASSWORD:'synthetic-local-only',DBUS_SESSION_BUS_ADDRESS:'disabled:',PERF_FAILURE_MARKER:`${root}/fail`,PERF_FAILURE_EVENTS:`${root}/events`};
     const binary='/tmp/opencode/agent-progress-probe-cli/opencode';assert.ok(fs.existsSync(binary));
-    const version=spawnSync(binary,['--version'],{env,encoding:'utf8'});assert.equal(version.status,0);assert.equal(version.stdout.trim(),'opencode v2.2.2');
+    const version=spawnSync(binary,['--version'],{env,encoding:'utf8'});assert.equal(version.status,0);requireRuntimeVersion('opencode',version.stdout);
     child=spawn(binary,['serve','--hostname','127.0.0.1','--port',String(port)],{cwd:`${root}/project`,env,stdio:'ignore'});
     const headers={authorization:`Basic ${Buffer.from('opencode:synthetic-local-only').toString('base64')}`};
     const baseUrl=`http://127.0.0.1:${port}`;const client=OpenCode.make({baseUrl,headers});const location={directory:`${root}/project`};const rpc=client.rpc(ProgressStatus);
