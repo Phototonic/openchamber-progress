@@ -33,7 +33,7 @@ const interaction = new DependencyMapInteraction(command => {
   view.command(command);
   if (command.type === 'selection' && !painting) latest?.setUi({ selected: command.id });
   if (command.type === 'filters') { latest?.reading?.set({ status: command.status }); if (!painting) latest?.setUi({ group: command.group }); }
-  if (command.type === 'list') { listReveal = command.id; latest?.setUi({ presentation: 'list' }); }
+  if (command.type === 'list') { view.clearHelp(); listReveal = command.id; latest?.setUi({ presentation: 'list' }); }
 });
 const binding: MapInteractionBinding = { state: () => interaction.value, dispatch: event => interaction.dispatch(event), focusOwner: owns => interaction.focusOwner(owns) };
 if (interactive) flags.mapPreview = {
@@ -59,7 +59,7 @@ startView<Ui>({
   wantProjects: () => flags.__mapAttribution ? ['alpha'] : [], wantDetails: vc => { const p = current(vc); return p ? [p] : []; },
   refreshed: vc => { if (latest) vc.setUi({}); },
   reading: vc => { const p = current(vc); return p ? { plan: p.key, scope: rail ? `rail:${vc.session?.id}` : 'board:all' } : null; },
-  retire: reason => { attribution = new Map(); if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); } else if (reason === 'hidden') { map.pause(); interaction.leave(); } else { map.reset(); geometry.clear(); interaction.reset(); } },
+  retire: reason => { attribution = new Map(); if (reason === 'dispose') { map.dispose(); view.dispose(); interaction.reset(); } else if (reason === 'hidden') { view.clearHelp(); map.pause(); interaction.leave(); } else { view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); } },
   paint(root, vc) {
     latest = vc;
     attribution = new Map();
@@ -78,7 +78,7 @@ startView<Ui>({
     if (interactive) {
       interaction.identify(mapReadingKey(claim));
       // Preview-only placement of the shared Plan view switch (production entries stay unwired until S5).
-      root.append(planViewSwitch(vc.ui.presentation, mode => { if (mode === 'map') interaction.enter(document.hasFocus()); else interaction.leave(); vc.setUi({ presentation: mode }); }));
+      root.append(planViewSwitch(vc.ui.presentation, mode => { if (mode === 'map') interaction.enter(document.hasFocus()); else { view.clearHelp(); interaction.leave(); } vc.setUi({ presentation: mode }); }));
       if (vc.ui.presentation === 'map' && !interaction.value.active) interaction.enter(false);
       if (vc.ui.presentation === 'list') {
         map.pause();
@@ -109,7 +109,7 @@ startView<Ui>({
     view.render(host, { ...snapshot, attribution, label: snapshot.picture ? recordedLabel(snapshot.picture.detail.plan, vc.env) : undefined, interaction: interactive ? binding : undefined, frame: rail ? 'rail' : 'board', layout, facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: interactive ? state.group : vc.ui.group, selected: interactive ? state.selected : vc.ui.selected,
       onSelect: selected => interactive ? interaction.dispatch({ type: 'select', id: selected }) : vc.setUi({ selected }), onStatus: status => interactive ? interaction.dispatch({ type: 'filters', status }) : vc.reading?.set({ status }), onGroup: group => interactive ? interaction.dispatch({ type: 'filters', group }) : vc.setUi({ group }),
       onCanvasWidth: width => { if (interactive || !Number.isFinite(width) || width <= 0 || width === canvasWidth) return; canvasWidth = width; latest?.setUi({}); },
-      onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { if (interactive) interaction.leave(true); } });
+      onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); if (interactive) interaction.leave(true); } });
     if (interactive) cpu.render.push(performance.now() - renderStart);
   },
   afterPaint(root, vc) {

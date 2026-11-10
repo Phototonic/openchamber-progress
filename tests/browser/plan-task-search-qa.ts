@@ -314,8 +314,8 @@ try {
     for (const surface of ['page', 'panel']) {
       await select(surface, 'B');
       const i = await inspector(surface);
-      check(`attribution:render:${surface}:inspector-verified`, i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child') && /Verified delegation, current for revision \d+\./.test(i.assignmentText));
-      check(`attribution:render:${surface}:inspector-live-hedged`, i.live === 'active' && i.activity.startsWith('Assigned session active now') && i.activity.includes('doesn’t show that it is working on this task') && i.liveMark);
+      check(`attribution:render:${surface}:inspector-verified`, i.assignment === 'assigned' && i.assignmentText.startsWith('Assigned to Session map-child') && await guest(surface, `return /Verified delegation, current for revision \\d+\\./.test(d.querySelector('[data-testid=\"map-help\"]').textContent)`));
+      check(`attribution:render:${surface}:inspector-live-hedged`, i.live === 'active' && i.activity.startsWith('Assigned session active now') && i.liveMark && await guest(surface, `return /doesn’t show which task the session is working on/.test(d.querySelector('[data-testid=\"map-attribution-help\"]').textContent)&&/Session activity only: the assigned session is active/.test(d.querySelector('[data-testid=\"map-help\"]').textContent)`));
       const p = (await proof(surface)).B;
       check(`attribution:render:${surface}:inspector-reports-separate`, typeof i.reports === 'string' && !i.reports.includes('Assigned') && (p.reports.length
         ? p.reports.every((r: any) => i.reports.includes(r.mode === 'parent-relay' ? `Reported by Session ${r.reporterSessionId} for Session ${r.attributedSessionId}` : `Reported directly by Session ${r.reporterSessionId}`))
@@ -329,6 +329,7 @@ try {
       check('attribution:render:inspector-provenance-unavailable', i.assignment === 'recorded' && i.assignmentText.startsWith('Recorded assignee Session map-linked · delegation provenance unavailable') && i.assignmentText.includes('doesn’t mean the task is unassigned'));
       check('attribution:render:inspector-link-context', i.links === 'Linked to Session map-linked · no verified delegation');
       check('attribution:render:inspector-no-activity-without-verified', i.live === '' && i.activity.startsWith('Not shown') && i.activity.endsWith('Shown only for a verified assignment.'));
+      check('attribution:render:no-active-assertion-without-proof', await guest('page', `return !d.querySelector('[data-testid="map-help"]').textContent.includes('Session activity only: the assigned session is active')`));
     }
     await mapShot('provenance-unavailable', 'page');
     await select('page', 'I'); await mapShot('linked-no-activity', 'page');
@@ -522,10 +523,12 @@ try {
         const z = (await state(surface)).transform.zoom;
         if (surface === 'panel') { await show(['panel'], width === 360 ? 600 : 360); await frames2(); await show(['panel'], width); await frames2(); check(`interaction:panel-${width}:resize-retains-zoom`, (await state(surface)).transform.zoom === z); }
         // Real shared list and canonical reveal, not a fabricated list. Native switches are preview-only.
+        await click(surface, '[data-testid="map-help-trigger"]'); await frames2();
         await click(surface, '[data-testid="plan-view-list"]');
         await wait(surface, `d.querySelector('[data-testid="item-B"]')`, 'canonical list');
         await click(surface, '[data-testid="item-B"]'); await click(surface, '[data-testid="plan-view-map"]'); await ready(surface);
         check(`interaction:${surface}-${width}:explicit-list-target`, (await state(surface)).selected === 'B');
+        check(`help:${surface}-${width}:list-return-closes`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`));
         await command(surface, { type: 'select', id: 'C' }); await frames2();
         await click(surface, '[data-testid="map-list"] button'); await wait(surface, `d.activeElement?.dataset.testid==='item-C'`, 'canonical map-to-list reveal');
         check(`interaction:${surface}-${width}:canonical-return`, await guest(surface, `return d.querySelectorAll('[data-testid="item-C"]').length===1`));
@@ -548,6 +551,20 @@ try {
         const tag = `${surface}-${width}`;
         await show([surface], width); await ready(surface); await said(surface);
         await command(surface, { type: 'select', id: 'C' }); await frames2();
+        // Native help is closed by default, keyboard discoverable and scoped to this reading.
+        check(`help:${tag}:collapsed-description`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]'),s=h.querySelector('summary'),v=d.querySelector('[data-testid="map-viewport"]');return !h.open&&s.tabIndex===0&&/Map help/.test(s.textContent)&&!!d.getElementById(v.getAttribute('aria-describedby'))`));
+        await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
+        check(`help:${tag}:opens-truthful`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]');return h.open&&/not a schedule/.test(h.innerText)&&/not proof that work ran/.test(h.innerText)&&/neither Ready nor Unlocks next is permission/.test(h.innerText)&&/verified delegation/.test(h.innerText)&&/doesn’t show which task/.test(h.innerText)`));
+        await shot(`${tag}-help-open`, '[data-testid="map-region"]', 0, 1400, surface);
+        await guest(surface, 'w.mapPreview.repaint();return true'); await frames2();
+        check(`help:${tag}:repaint-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'`));
+        await guest(surface, `w.dispatchEvent(new Event('resize'));return true`); await frames2();
+        check(`help:${tag}:resize-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.documentElement.scrollWidth<=w.innerWidth+1`));
+        await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Escape'); await frames2();
+        check(`help:${tag}:escape-closes-focus`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'`));
+        await key('Enter'); await frames2(); await click(surface, '[data-testid="map-fit-all"]'); await frames2();
+        check(`help:${tag}:outside-closes`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`));
+        await shot(`${tag}-help-collapsed`, '[data-testid="map-region"]', 0, 1400, surface);
         check(`interaction:${tag}:one-persistent-announcer`, await guest(surface, `const a=d.querySelectorAll('[data-testid="map-announcer"]');return a.length===1&&!d.getElementById('root').contains(a[0])&&a[0].getAttribute('aria-live')==='polite'`));
         check(`interaction:${tag}:one-canvas-tab-stop`, await guest(surface, `const v=d.querySelector('[data-testid="map-viewport"]'),cards=[...v.querySelectorAll('[data-task]')];return v.getAttribute('role')==='region'&&!!v.getAttribute('aria-label')&&cards.length>0&&cards.every(n=>n.tagName==='BUTTON')&&cards.filter(n=>n.tabIndex===0).length===1&&!d.querySelector('[data-testid="map-region"] [role="application"],[role="tree"],[role="grid"],[role="listbox"]')`));
         // Keyboard entry from the last toolbar control, then scoped keys.
@@ -605,7 +622,7 @@ try {
         const after = await state(surface);
         check(`interaction:${tag}:captured-drag-survives-poll-repaint`, mid.captured && mid.dragging !== null && near(after.transform.x, t.x - 40) && near(after.transform.y, t.y - 24) && after.dragging === null && after.selected === 'D', undefined, { mid, t, after: after.transform });
         await mapShot(`${tag}-pan-zoom`, surface);
-        t = after.transform; p = (await background(surface))!;
+        p = (await background(surface))!; await frames2(); t = (await state(surface)).transform;
         await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: p[0], y: p[1], deltaX: 30, deltaY: 50 }); await frames2();
         const wheeled = (await state(surface)).transform;
         // Ctrl/Cmd wheel is browser zoom: a labelled synthetic event (real Ctrl+wheel would zoom this
@@ -721,8 +738,10 @@ try {
         fx.reportMap('P-map-none', { op: 'revise', items: [{ id: 'A', title: 'First task', kind: 'task' }, { id: 'B', title: 'Second task', kind: 'task' }] });
         const sequence = await evaluate<number>(`qa.reload('page')`);
         await wait('page', `qa.loaded.page===${sequence}&&d.querySelector('${region}')?.dataset.state==='ready'`, 'reloaded map before removal regression');
+        await click('page', '[data-testid="map-help-trigger"]'); await frames2();
         await guest('page', `const picker=d.querySelector('[data-testid="map-plan"]');picker.value='P-map-none';picker.dispatchEvent(new w.Event('change',{bubbles:true}));return true`);
         await wait('page', `d.querySelector('${region}')?.dataset.state==='ready'&&d.querySelector('[data-testid="map-card-A"]')&&d.querySelector('[data-testid="map-card-B"]')&&w.mapPreview.state.selected===null`, 'fresh unselected edgeless map');
+        check(`help:identity-${target}:closed`, await guest('page', `return !d.querySelector('[data-testid="map-help"]').open`));
         if (target === 'canvas') { await focusOn('page', '[data-testid="map-pan-right"]'); await key('Tab'); }
         else await click('page', target === 'toolbar' ? '[data-testid="map-zoom-in"]' : '[data-testid="plan-view-map"] button');
         await frames2();
