@@ -552,6 +552,7 @@ try {
       const mouse = (type: string, x: number, y: number, extra: object = {}) => c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
       const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
       const settled = (surface: string) => wait(surface, `(()=>{const v=d.querySelector('[data-testid="map-viewport"]'),h=d.querySelector('[data-testid="preview-map-host"]');return v&&h&&Number(h.dataset.canvasWidth)===v.clientWidth})()`, 'measured canvas after resize');
+      const clearTransitions: object[] = []; facts.clearViewport = clearTransitions;
       const realInput = async (surface: 'page' | 'panel', width: number) => {
         const tag = `${surface}-${width}`;
         await show([surface], width); await ready(surface); await said(surface);
@@ -559,14 +560,14 @@ try {
         // Native help is closed by default, keyboard discoverable and scoped to this reading.
         check(`help:${tag}:collapsed-description`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]'),s=h.querySelector('summary'),v=d.querySelector('[data-testid="map-viewport"]');return !h.open&&s.tabIndex===0&&/Map help/.test(s.textContent)&&!!d.getElementById(v.getAttribute('aria-describedby'))`));
         await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Enter'); await frames2();
-        check(`help:${tag}:opens-truthful`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]');return h.open&&/not a schedule/.test(h.innerText)&&/not proof that work ran/.test(h.innerText)&&/neither Ready nor Unlocks next is permission/.test(h.innerText)&&/verified delegation/.test(h.innerText)&&/doesn’t show which task/.test(h.innerText)`));
+        check(`help:${tag}:opens-truthful`, await guest(surface, `const h=d.querySelector('[data-testid="map-help"]');return h.open&&/not a schedule/.test(h.innerText)&&/not proof that work ran/.test(h.innerText)&&/neither Ready nor Unlocks next is permission/.test(h.innerText)&&/verified delegation/.test(h.innerText)&&/doesn’t show which task/.test(h.innerText)&&/Escape/.test(h.innerText)&&/Click the background to clear selection/.test(h.innerText)`));
         await shot(`${tag}-help-open`, '[data-testid="map-region"]', 0, 1400, surface);
         await guest(surface, 'w.mapPreview.repaint();return true'); await frames2();
         check(`help:${tag}:repaint-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'`));
         await guest(surface, `w.dispatchEvent(new Event('resize'));return true`); await frames2();
         check(`help:${tag}:resize-preserves-open`, await guest(surface, `return d.querySelector('[data-testid="map-help"]').open&&d.documentElement.scrollWidth<=w.innerWidth+1`));
         await focusOn(surface, '[data-testid="map-help-trigger"]'); await key('Escape'); await frames2();
-        check(`help:${tag}:escape-closes-focus`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'`));
+        check(`help:${tag}:escape-closes-focus`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open&&d.activeElement?.dataset.testid==='map-help-trigger'&&w.mapPreview.state.selected==='C'`));
         await key('Enter'); await frames2(); await click(surface, '[data-testid="map-fit-all"]'); await frames2();
         check(`help:${tag}:outside-closes`, await guest(surface, `return !d.querySelector('[data-testid="map-help"]').open`));
         await shot(`${tag}-help-collapsed`, '[data-testid="map-region"]', 0, 1400, surface);
@@ -615,6 +616,32 @@ try {
         await focusOn(surface, '[data-testid="map-focus-current"]'); await key('Enter'); await frames2();
         const toolSaid = await said(surface);
         check(`interaction:${tag}:toolbar-keyboard-operable`, zin.zoom > t.zoom && panned.x > zin.x && near(panned.y, zin.y) && toolSaid.some(s => /^Zoom /.test(s)) && toolSaid.some(s => /^View moved left/.test(s)) && toolSaid.some(s => /^Focused current reported work/.test(s)), undefined, { t, zin, panned, toolSaid: toolSaid.slice(-4) });
+        // A background click after panning the selected card away must not undo the pan.
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        await focusOn(surface, '[data-testid="map-pan-right"]');
+        let offPoint = await background(surface); if (!offPoint) throw Error(`no map background in ${tag}`);
+        await c.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: offPoint[0], y: offPoint[1], deltaX: 3000, deltaY: 0 }); await frames2();
+        check(`interaction:${tag}:clear-away-setup`, !(await inView(surface, 'D')) && (await state(surface)).selected === 'D');
+        offPoint = await background(surface); if (!offPoint) throw Error(`no map background in ${tag}`);
+        await frames2(); const beforeClear = (await state(surface)).transform, beforeSpeech = (await said(surface)).length;
+        await mouse('mouseMoved', offPoint[0], offPoint[1], { buttons: 0 }); await mouse('mousePressed', offPoint[0], offPoint[1]); await mouse('mouseReleased', offPoint[0], offPoint[1]); await frames2();
+        const afterClear = (await state(surface)).transform;
+        clearTransitions.push({ surface, width, before: beforeClear, after: afterClear });
+        check(`interaction:${tag}:clear-away-keeps-viewport`, JSON.stringify(afterClear) === JSON.stringify(beforeClear) && (await state(surface)).selected === null && (await active(surface)).inCanvas && (await said(surface)).slice(beforeSpeech).filter(s => s === 'Selection cleared.').length === 1 && await guest(surface, `return !d.querySelector('[data-testid="map-inspector"]').dataset.selected&&!d.querySelector('[data-testid="map-viewport"] [data-related], [data-testid="map-viewport"] [data-path]')`), undefined, { beforeClear, afterClear });
+        await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); await frames2();
+        check(`interaction:${tag}:tab-reentry-reveals-after-clear`, (await active(surface)).task === 'D' && await inView(surface, 'D'));
+        // Real background click and Escape clear the inspector and relationship highlights once.
+        await command(surface, { type: 'select', id: 'D' }); await frames2();
+        let clearPoint = await background(surface); if (!clearPoint) throw Error(`no map background in ${tag}`);
+        let clearHeard = (await said(surface)).length;
+        await mouse('mouseMoved', clearPoint[0], clearPoint[1], { buttons: 0 });
+        await mouse('mousePressed', clearPoint[0], clearPoint[1]); await mouse('mouseReleased', clearPoint[0], clearPoint[1]); await frames2();
+        check(`interaction:${tag}:background-clears`, (await state(surface)).selected === null && await guest(surface, `return !d.querySelector('[data-testid="map-inspector"]').dataset.selected && /Select a card/.test(d.querySelector('[data-testid="map-inspector"]').textContent) && !d.querySelector('[data-related],[data-path]')`) && (await active(surface)).inCanvas && (await said(surface)).slice(clearHeard).filter(s => s === 'Selection cleared.').length === 1);
+        clearHeard = (await said(surface)).length; await key('Escape'); await frames2();
+        check(`interaction:${tag}:repeated-clear-silent`, (await said(surface)).length === clearHeard);
+        await command(surface, { type: 'select', id: 'D' }); await frames2(); await focusOn(surface, '[data-testid="map-card-D"]');
+        clearHeard = (await said(surface)).length; await key('Escape'); await frames2();
+        check(`interaction:${tag}:escape-clears`, (await state(surface)).selected === null && (await active(surface)).task === 'D' && (await said(surface)).slice(clearHeard).filter(s => s === 'Selection cleared.').length === 1);
         // Background drag with a captured pointer across poll repaints; cards never drag.
         await command(surface, { type: 'select', id: 'D' }); await frames2();
         let p = await background(surface); if (!p) throw Error(`no map background in ${tag}`);
@@ -634,6 +661,9 @@ try {
         // browser) proves the canvas neither consumes nor cancels it.
         const browserZoomKept = await guest<boolean>(surface, `const v=d.querySelector('[data-testid="map-viewport"]');return v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,ctrlKey:true,bubbles:true,cancelable:true}))&&v.dispatchEvent(new w.WheelEvent('wheel',{deltaY:50,metaKey:true,bubbles:true,cancelable:true}))`); await frames2();
         check(`interaction:${tag}:wheel-pans-canvas-ctrl-wheel-left-to-browser`, near(wheeled.x, t.x - 30) && near(wheeled.y, t.y - 50) && browserZoomKept && JSON.stringify((await state(surface)).transform) === JSON.stringify(wheeled), undefined, { t, wheeled, browserZoomKept });
+        // Bring the selected card into the clipped canvas before hit-testing a card drag.
+        await command(surface, { type: 'select', id: 'D', focus: true }); await frames2();
+        check(`interaction:${tag}:card-drag-target-visible`, await inView(surface, 'D'));
         const card = await evaluate<[number, number]>(`(()=>{const fr=frame('${surface}'),n=fr.contentDocument.querySelector('[data-testid="map-card-D"]');n.scrollIntoView({block:'center'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+r.width/2,o.y+r.y+r.height/2]})()`);
         t = (await state(surface)).transform;
         await mouse('mouseMoved', card[0], card[1], { buttons: 0 }); await mouse('mousePressed', card[0], card[1]); await mouse('mouseMoved', card[0] + 30, card[1] + 20); await mouse('mouseReleased', card[0] + 30, card[1] + 20); await frames2();
