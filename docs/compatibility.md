@@ -228,8 +228,9 @@ releases are accepted but not separately certified. The test requires Node 24.x
 wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
-The host range is distinct from unchanged `@opencode/plugin`/client **2.1.4** and
-`@openchamber/sdk` **2.5.1**. Verified independent2.2.2 archive SHA-256:
+The host range is distinct from `@opencode/plugin`/client **2.1.4** and the current
+build dependency `@openchamber/sdk` **2.7.0** (minimum OpenChamber host **2.5.1**).
+Verified independent2.2.2 archive SHA-256:
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
 executable SHA-256:
 `4452778e23fbda075eb2f83c2574b1d7452af8e347c52b8d9e016838b9c530d9`.
