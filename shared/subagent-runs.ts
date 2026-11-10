@@ -11,9 +11,15 @@ export type RunState = 'unknown'|'running'|'succeeded'|'failed'|'interrupted';
 export type RunReason = 'user'|'shutdown'|'superseded'|'inactivity'|'unknown';
 export interface RunRequest { storeId:string; binding:RunBinding; source:string; root:string; plan?:string; cleanupRev?:number; view?:'useful'|'history'; cursor?:string }
 export interface ReconcileRequest { storeId:string; binding:RunBinding; source:string; root:string; token?:string }
+export interface DismissLossRequest { storeId:string; binding:RunBinding; source:string; root:string; observedLossSequence:number }
+export interface LossNotice { sequence:number; lastLossAt:number|null; dismissedThrough:number; attention:boolean }
+export interface DismissLossReply {
+  protocolVersion:2; schemaVersion:2; runFormat:2; storeId:string; sourceBinding:RunBinding; source:string; root:string;
+  revision:number; readAt:number; capture:RunRead['capture']; acknowledgedLossSequence:number; coalesced:boolean;
+}
 /** JSON.parse alone silently accepts duplicate keys, including escaped spellings. */
-export function parseReconcileBody(text:string):ReconcileRequest {
-  let value:ReconcileRequest;try{value=JSON.parse(text);}catch{need(false);}
+function parseRunBody(text:string,allowed:string[]):Record<string,any> {
+  let value:any;try{value=JSON.parse(text);}catch{need(false);}
   const stack:Array<Set<string>>=[];
   for(let i=0;i<text.length;i++) {
     const ch=text[i];
@@ -25,9 +31,11 @@ export function parseReconcileBody(text:string):ReconcileRequest {
       if(text[next]===':'){const key=JSON.parse(text.slice(start,i+1)) as string;const keys=stack.at(-1);need(keys&&!keys.has(key));keys.add(key);}
     }
   }
-  need(obj(value!)&&Object.keys(value).every(k=>['storeId','binding','source','root','token'].includes(k)));
+  need(obj(value)&&Object.keys(value).every(k=>allowed.includes(k)));
   return value;
 }
+export function parseReconcileBody(text:string):ReconcileRequest {return parseRunBody(text,['storeId','binding','source','root','token']) as ReconcileRequest;}
+export function parseDismissLossBody(text:string):DismissLossRequest {return parseRunBody(text,['storeId','binding','source','root','observedLossSequence']) as DismissLossRequest;}
 interface StoredRunRow {
   id:string; kind:'dispatch'|'historical-session'; source:string; parentSessionId:string; childSessionId:string|null;
   tool:'subagent'|'task'|null; agent:string|null; description:string|null;
@@ -44,9 +52,9 @@ export interface RunRow extends StoredRunRow {
 export type RecoveryState = 'not-requested'|'pending'|'running'|'complete'|'partial'|'failed'|'unavailable';
 export interface RunRead {
   protocolVersion:2; schemaVersion:2; storeId:string; sourceBinding:RunBinding; source:string; root:string;
-  plan:string|null; cleanupRev:number|null; view:'useful'|'history'; subagentRuns:1|null; runFormat:1|null;
+  plan:string|null; cleanupRev:number|null; view:'useful'|'history'; subagentRuns:1|null; runFormat:1|2|null;
   availability:'ready'|'unavailable'; readAt:number; revision:number;
-  capture:{ enabled:boolean; state:'last-known'|'unavailable'; loss:boolean };
+  capture:{ enabled:boolean; state:'last-known'|'unavailable'; loss:boolean; lossNotice?:LossNotice };
   recovery:{ state:RecoveryState; reason:'budget'|'capture-disabled'|'capture-unavailable'|null; token:string|null };
   counts:{ children:number; runs:number; historicalSessions:number; running:number; succeeded:number; failed:number; interrupted:number; unknown:number };
   coverage:{ scope:'retained'; complete:boolean; reasons:Array<'legacy-unavailable'|'history-not-reconciled'|'partial-history'|'capture-loss'|'traversal-limit'> };
@@ -58,7 +66,7 @@ interface StartEvidence { event:ExecutionObservation; epochs:number[]; ambiguous
 interface Candidate { start:ExecutionObservation|null; end:ExecutionObservation|null; startEpoch?:number; endEpoch?:number; startEpochs?:number[]; endEpochs?:number[]; startEvidence?:Record<string,StartEvidence>; ambiguous?:boolean }
 export interface RecoveryJob { source:string; root:string; generation:number; claim:string; requestId:string }
 
-const definitions:Record<string,string> = {
+const versionOne:Record<string,string> = {
   runs_format:'CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)))',
   runs_observation_epoch:'CREATE TABLE runs_observation_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch INTEGER NOT NULL, invalid_through INTEGER NOT NULL)',
   runs_rows:"CREATE TABLE runs_rows(id TEXT PRIMARY KEY, source TEXT NOT NULL, parent TEXT NOT NULL, child TEXT, message TEXT, call TEXT, generation INTEGER NOT NULL, terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), at INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload) AND length(CAST(payload AS BLOB))<=4096), UNIQUE(source,parent,message,call))",
@@ -80,46 +88,70 @@ const definitions:Record<string,string> = {
 const normalized=(s:string)=>s.trim().replace(/\s+/g,' ');
 const integer=(v:unknown):v is number=>Number.isSafeInteger(v)&&Number(v)>=0;
 const obj=(v:unknown):v is Record<string,any>=>!!v&&typeof v==='object'&&!Array.isArray(v);
-export function runsInstalled(db:DatabaseSync):boolean {
+const timestamp=(v:unknown):v is number=>integer(v)&&v<=8_640_000_000_000_000;
+const definitions:Record<string,string>={...versionOne,runs_format:'CREATE TABLE runs_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=2), revision INTEGER NOT NULL, generation INTEGER NOT NULL, loss INTEGER NOT NULL CHECK(loss IN(0,1)), last_loss_at INTEGER, loss_sequence INTEGER NOT NULL, dismissed_loss_sequence INTEGER NOT NULL)'};
+const epochless={...versionOne};delete epochless.runs_observation_epoch;
+epochless.runs_capture_epoch=epochless.runs_capture_epoch!.replace(' UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;','');
+function validateRuns(db:DatabaseSync,expected:Record<string,string>,version:1|2,epochs=true) {
   const rows=db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
-  if(!rows.length)return false;
-  need(rows.length===Object.keys(definitions).length,'schema');
-  for(const r of rows)need(typeof r.name==='string'&&definitions[r.name]!==undefined&&normalized(String(r.sql))===normalized(definitions[r.name]),'schema');
+  need(rows.length===Object.keys(expected).length,'schema');
+  for(const r of rows)need(typeof r.name==='string'&&expected[r.name]!==undefined&&normalized(String(r.sql))===normalized(expected[r.name]),'schema');
   const f=db.prepare('SELECT * FROM runs_format').all();
-  need(f.length===1&&f[0].singleton===1&&f[0].version===1&&integer(f[0].revision)&&integer(f[0].generation)&&[0,1].includes(Number(f[0].loss)),'schema');
-  const epochs=db.prepare('SELECT * FROM runs_observation_epoch').all();
-  need(epochs.length===1&&epochs[0].singleton===1&&integer(epochs[0].epoch)&&integer(epochs[0].invalid_through)&&Number(epochs[0].invalid_through)<=Number(epochs[0].epoch),'schema');
-  return true;
+  need(f.length===1&&f[0].singleton===1&&f[0].version===version&&integer(f[0].revision)&&integer(f[0].generation)&&[0,1].includes(Number(f[0].loss)),'schema');
+  const r=f[0];
+  if(version===2)need(integer(r.loss_sequence)&&integer(r.dismissed_loss_sequence)&&r.dismissed_loss_sequence<=r.loss_sequence&&(r.loss_sequence===0?r.last_loss_at===null&&r.dismissed_loss_sequence===0:r.loss===1&&timestamp(r.last_loss_at)),'schema');
+  if(epochs){const e=db.prepare('SELECT * FROM runs_observation_epoch').all();need(e.length===1&&e[0].singleton===1&&integer(e[0].epoch)&&integer(e[0].invalid_through)&&e[0].invalid_through<=e[0].epoch,'schema');}
+  return r;
 }
+function runFormat(db:DatabaseSync):1|2|null {
+  const rows=db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
+  if(!rows.length)return null;
+  const format=rows.find(r=>r.name==='runs_format');
+  const version=normalized(String(format?.sql))===normalized(versionOne.runs_format!)?1:2;
+  validateRuns(db,version===1?versionOne:definitions,version);return version;
+}
+export function runsInstalled(db:DatabaseSync):boolean {return runFormat(db)!==null;}
 /** Caller owns BEGIN IMMEDIATE. Reads never call this. */
 export function installRuns(db:DatabaseSync) {
   // Explicit companion activation may upgrade only the exact prior extension.
   // GET/read-only opens never migrate, and foreign/partial schemas still fail.
   const installed=db.prepare("SELECT name,sql FROM sqlite_master WHERE name GLOB 'runs_*'").all();
-  if(installed.length&&!installed.some(r=>r.name==='runs_observation_epoch')){
-    const prior={...definitions};delete prior.runs_observation_epoch;
-    prior.runs_capture_epoch=prior.runs_capture_epoch!.replace(' UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;','');
-    need(installed.length===Object.keys(prior).length&&installed.every(r=>typeof r.name==='string'&&prior[r.name]!==undefined&&normalized(String(r.sql))===normalized(prior[r.name]!)),'schema');
-    db.exec(definitions.runs_observation_epoch!);db.exec('INSERT INTO runs_observation_epoch VALUES(1,0,0)');
-    db.exec('DROP TRIGGER runs_capture_epoch');db.exec(definitions.runs_capture_epoch!);
+  if(installed.length){
+    const oldEpochless=!installed.some(r=>r.name==='runs_observation_epoch');
+    const version=oldEpochless?1:runFormat(db);
+    if(version===2)return;
+    const f=validateRuns(db,oldEpochless?epochless:versionOne,1,!oldEpochless);
+    need(Number(f.revision)<Number.MAX_SAFE_INTEGER,'schema');
+    if(oldEpochless){db.exec(definitions.runs_observation_epoch!);db.exec('INSERT INTO runs_observation_epoch VALUES(1,0,0)');}
+    // Drop owned references explicitly; no ALTER RENAME may retarget them.
+    const triggers=['runs_capture_epoch','runs_plan_delete','runs_progress_change'];
+    for(const name of triggers)db.exec(`DROP TRIGGER ${name}`);
+    db.exec('DROP TABLE runs_format');db.exec(definitions.runs_format!);
+    db.prepare('INSERT INTO runs_format VALUES(1,2,?,?,?,NULL,0,0)').run(Number(f.revision)+1,f.generation!,f.loss!);
+    for(const name of triggers)db.exec(definitions[name]!);
+    validateRuns(db,definitions,2);return;
   }
-  if(runsInstalled(db))return;
   for(const sql of Object.values(definitions))db.exec(sql);
-  db.exec('INSERT INTO runs_format VALUES(1,1,0,0,0)');
+  db.exec('INSERT INTO runs_format VALUES(1,2,0,0,0,NULL,0,0)');
   db.exec('INSERT INTO runs_observation_epoch VALUES(1,0,0)');
+  validateRuns(db,definitions,2);
 }
 export function runControl(db:DatabaseSync) {
-  need(runsInstalled(db),'schema');
+  need(runFormat(db)===2,'schema');
   const r=db.prepare('SELECT enabled,generation FROM meta JOIN runs_format USING(singleton)').get()!;
   return {enabled:r.enabled===1,generation:Number(r.generation)};
 }
 function bump(db:DatabaseSync) { db.exec('UPDATE runs_format SET revision=revision+1 WHERE singleton=1'); }
-function loss(db:DatabaseSync) { db.exec('UPDATE runs_format SET loss=1,revision=revision+1 WHERE singleton=1'); }
+function loss(db:DatabaseSync) {
+  const now=Date.now(),f=db.prepare('SELECT loss_sequence,revision FROM runs_format WHERE singleton=1').get()!;
+  need(timestamp(now)&&integer(f.loss_sequence)&&f.loss_sequence<Number.MAX_SAFE_INTEGER&&integer(f.revision)&&f.revision<Number.MAX_SAFE_INTEGER,'schema');
+  db.prepare('UPDATE runs_format SET loss=1,last_loss_at=?,loss_sequence=loss_sequence+1,revision=revision+1 WHERE singleton=1').run(now);
+}
 export function observationEpoch(db:DatabaseSync):number {return Number(db.prepare('SELECT epoch FROM runs_observation_epoch WHERE singleton=1').get()!.epoch);}
 export function observationInterrupted(db:DatabaseSync,epoch:number):boolean {return epoch<=Number(db.prepare('SELECT invalid_through FROM runs_observation_epoch WHERE singleton=1').get()!.invalid_through);}
 /** Allocate durable stream identity; separate observers retain their own token. */
-export function beginObservation(db:DatabaseSync):number {db.exec('UPDATE runs_observation_epoch SET epoch=epoch+1 WHERE singleton=1');bump(db);return observationEpoch(db);}
-export function runCaptureUnavailable(db:DatabaseSync) { if(runsInstalled(db)){db.exec('UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1');loss(db);} }
+export function beginObservation(db:DatabaseSync):number {runControl(db);db.exec('UPDATE runs_observation_epoch SET epoch=epoch+1 WHERE singleton=1');bump(db);return observationEpoch(db);}
+export function runCaptureUnavailable(db:DatabaseSync) { if(runsInstalled(db)){runControl(db);db.exec('UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1');loss(db);} }
 function claimValue(value:unknown):NonNullable<RunRow['claimed']> {
   need(obj(value)&&Object.keys(value).length===6&&Object.keys(value).every(k=>['oid','outcome','summary','reportedAt','sessionId','association'].includes(k))&&identifier(value.oid)&&identifier(value.sessionId)&&['done','partial','blocked'].includes(value.outcome)&&typeof value.summary==='string'&&value.summary.trim().length>0&&value.summary.length<=200&&!/[\u0000\r\n\u2028\u2029]/.test(value.summary)&&integer(value.reportedAt)&&['execution','session-only'].includes(value.association),'corrupt');
   return {oid:value.oid,outcome:value.outcome,summary:value.summary,reportedAt:value.reportedAt,sessionId:value.sessionId,association:value.association};
@@ -690,6 +722,14 @@ function budgetReadRow(run:RunRow) {
   const {latestForChild,...stored}=run;
   row(JSON.stringify(stored));need(typeof latestForChild==='boolean'&&fits(),'corrupt');
 }
+function captureState(enabled:boolean,f:Record<string,unknown>|undefined,now:number):RunRead['capture'] {
+  const capture:RunRead['capture']={enabled,state:f?'last-known':'unavailable',loss:f?.loss===1};
+  if(f?.version===2){
+    const sequence=Number(f.loss_sequence),lastLossAt=f.last_loss_at as number|null,dismissedThrough=Number(f.dismissed_loss_sequence);
+    capture.lossNotice={sequence,lastLossAt,dismissedThrough,attention:capture.loss&&lastLossAt!==null&&Math.max(0,now-lastLossAt)<86_400_000&&sequence>dismissedThrough};
+  }
+  return capture;
+}
 export function readRuns(db:DatabaseSync,binding:RunBinding,r:RunRequest,now=Date.now()):RunRead {
   const m=identity(db,binding,r);need(r.view===undefined||r.view==='useful'||r.view==='history');
   need((r.plan===undefined)===(r.cleanupRev===undefined));
@@ -702,10 +742,10 @@ export function readRuns(db:DatabaseSync,binding:RunBinding,r:RunRequest,now=Dat
     need(plan.owner===r.root||plan.linked===1||incoming||contributed,'not-found');
     const state=cleanupInstalled(db)?cleanupState(db,r.source,r.plan):undefined;need((state?.generation??0)===r.cleanupRev&&state?.state!=='deleted','conflict');
   }
-  const installed=runsInstalled(db),f=installed?db.prepare('SELECT revision,loss FROM runs_format').get():undefined;
+  const format=runFormat(db),installed=format!==null,f=installed?db.prepare('SELECT * FROM runs_format').get():undefined;
   const job=installed?db.prepare('SELECT state,CASE WHEN length(CAST(token AS BLOB))<=80 THEN token END AS token,CASE WHEN length(CAST(reason AS BLOB))<=80 THEN reason END AS reason,length(CAST(token AS BLOB)) AS token_bytes,length(CAST(reason AS BLOB)) AS reason_bytes FROM runs_jobs WHERE source=? AND root=?').get(r.source,r.root):undefined;
   if(job)need(['pending','running','complete','partial','failed'].includes(String(job.state))&&(job.token_bytes===null||Number(job.token_bytes)<=80)&&(job.reason_bytes===null||Number(job.reason_bytes)<=80)&&[null,'budget','capture-disabled','capture-unavailable'].includes(job.reason as any)&&(job.token===null||identifier(job.token)),'corrupt');
-  const out:RunRead={protocolVersion:2,schemaVersion:2,storeId:r.storeId,sourceBinding:{...binding},source:r.source,root:r.root,plan:r.plan??null,cleanupRev:r.cleanupRev??null,view:r.view??'useful',subagentRuns:installed?1:null,runFormat:installed?1:null,availability:installed?'ready':'unavailable',readAt:now,revision:Number(f?.revision??0),capture:{enabled:m.enabled===1,state:installed?'last-known':'unavailable',loss:f?.loss===1},recovery:{state:job?.state as RecoveryState??(installed?'not-requested':'unavailable'),reason:job?.reason as RunRead['recovery']['reason']??null,token:job?.token as string??null},counts:{children:0,runs:0,historicalSessions:0,running:0,succeeded:0,failed:0,interrupted:0,unknown:0},coverage:{scope:'retained',complete:false,reasons:installed?[]:['legacy-unavailable']},data:[],nextCursor:null};
+  const out:RunRead={protocolVersion:2,schemaVersion:2,storeId:r.storeId,sourceBinding:{...binding},source:r.source,root:r.root,plan:r.plan??null,cleanupRev:r.cleanupRev??null,view:r.view??'useful',subagentRuns:installed?1:null,runFormat:format,availability:installed?'ready':'unavailable',readAt:now,revision:Number(f?.revision??0),capture:captureState(m.enabled===1,f,now),recovery:{state:job?.state as RecoveryState??(installed?'not-requested':'unavailable'),reason:job?.reason as RunRead['recovery']['reason']??null,token:job?.token as string??null},counts:{children:0,runs:0,historicalSessions:0,running:0,succeeded:0,failed:0,interrupted:0,unknown:0},coverage:{scope:'retained',complete:false,reasons:installed?[]:['legacy-unavailable']},data:[],nextCursor:null};
   if(!installed)return out;
   if(!job||job.state!=='complete')out.coverage.reasons.push(job&&['partial','failed'].includes(String(job.state))?'partial-history':'history-not-reconciled');
   if(f?.loss===1)out.coverage.reasons.push('capture-loss');
@@ -756,6 +796,20 @@ export function readRuns(db:DatabaseSync,binding:RunBinding,r:RunRequest,now=Dat
   if(rows.length>RUN_LIMITS.page)out.nextCursor=Buffer.from(JSON.stringify({key:identityKey,revision:out.revision,offset:offset+RUN_LIMITS.page})).toString('base64url');
   out.coverage.complete=out.coverage.reasons.length===0;
   need(Buffer.byteLength(JSON.stringify(out))<=RUN_LIMITS.responseBytes,'corrupt');return out;
+}
+/** Caller owns BEGIN IMMEDIATE, shared with all loss detections. */
+export function dismissLoss(db:DatabaseSync,binding:RunBinding,r:DismissLossRequest,now=Date.now()):DismissLossReply {
+  need(obj(r)&&Object.keys(r).length===5&&Object.keys(r).every(k=>['storeId','binding','source','root','observedLossSequence'].includes(k))&&integer(r.observedLossSequence)&&r.observedLossSequence>0);
+  const m=identity(db,binding,r);need(runFormat(db)===2,'schema');
+  const f=db.prepare('SELECT * FROM runs_format WHERE singleton=1').get()!;
+  const coalesced=r.observedLossSequence<=Number(f.dismissed_loss_sequence);
+  if(!coalesced){
+    need(r.observedLossSequence===f.loss_sequence,'conflict');need(integer(f.revision)&&f.revision<Number.MAX_SAFE_INTEGER,'schema');
+    db.prepare('UPDATE runs_format SET dismissed_loss_sequence=?,revision=revision+1 WHERE singleton=1').run(r.observedLossSequence);
+    f.dismissed_loss_sequence=r.observedLossSequence;f.revision++;
+  }
+  const reply:DismissLossReply={protocolVersion:2,schemaVersion:2,runFormat:2,storeId:r.storeId,sourceBinding:{...binding},source:r.source,root:r.root,revision:Number(f.revision),readAt:now,capture:captureState(m.enabled===1,f,now),acknowledgedLossSequence:r.observedLossSequence,coalesced};
+  need(Buffer.byteLength(JSON.stringify(reply))<=RUN_LIMITS.responseBytes,'corrupt');return reply;
 }
 export function requestReconciliation(db:DatabaseSync,binding:RunBinding,r:ReconcileRequest) {
   need(obj(r)&&Object.keys(r).every(k=>['storeId','binding','source','root','token'].includes(k)));identity(db,binding,r);const c=runControl(db);need(c.enabled,'disabled');

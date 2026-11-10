@@ -8,6 +8,7 @@ import { createRunCapture } from '../../plugin/subagent-runs.ts';
 import { sessionIdentity } from '../../plugin/identity.ts';
 import { createProgressServer } from '../../service/server.ts';
 import { fixture, deferred } from './subagent-test-support.ts';
+import { versionOneFixture, durableSnapshot } from './subagent-format-support.ts';
 
 async function serverFixture(run:(f:any)=>Promise<void>) {
   await fixture(async f=>{
@@ -20,6 +21,46 @@ async function serverFixture(run:(f:any)=>Promise<void>) {
     try{await run({...f,token,base,body,query,get,post});}finally{server.closeAllConnections();await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));}
   });
 }
+
+test('authenticated dismissal validates identity and bounds, fences races and persists store-wide while capture is off',async t=>{
+  const now=1_800_000_000_000;t.mock.method(Date,'now',()=>now);
+  await serverFixture(async f=>{
+    f.seed('other-plan','B');f.store.runCaptureUnavailable();
+    const route='/v1/subagent-runs/dismiss-loss',body={...f.body,observedLossSequence:1};
+    const send=(value:any=body,options:{auth?:boolean;raw?:boolean;method?:string;route?:string}={})=>fetch(`${f.base}${options.route??route}`,{method:options.method??'POST',headers:{'content-type':'application/json',...(options.auth===false?{}:{authorization:`Bearer ${f.token}`})},...(options.method==='GET'?{}:{body:options.raw?value:JSON.stringify(value)})});
+    const refusal=async(value:any,status:number,error:string,options={})=>{
+      const before=durableSnapshot(f.store.db),res=await send(value,options);assert.equal(res.status,status);assert.deepEqual(await res.json(),{error});assert.deepEqual(durableSnapshot(f.store.db),before);
+    };
+    await refusal(body,401,'unauthorized',{auth:false});await refusal(body,405,'method-not-allowed',{method:'GET'});await refusal(body,404,'not-found',{route:`${route}?extra=1`});
+    for(const value of [{...body,storeId:'other'},{...body,source:'other'},{...body,binding:{sourceId:f.source.id,verified:false}},{...body,binding:{sourceId:'other',verified:true}},{...body,binding:{...body.binding,extra:1}}])await refusal(value,409,'conflict');
+    await refusal({...body,root:'unknown'},404,'not-found');
+    for(const observedLossSequence of [0,-1,1.5,Number.MAX_SAFE_INTEGER+1,'1',null])await refusal({...body,observedLossSequence},400,'invalid');
+    for(const value of [{...body,extra:1},{...body,observedLossSequence:undefined},{...body,root:''},null,[]])await refusal(value,400,'invalid');
+    const text=JSON.stringify(body);
+    for(const raw of ['{',text.replace('"observedLossSequence":1','"observedLossSequence":1,"observedLossSequence":1'),text.replace('"observedLossSequence":1','"observedLossSequence":1,"observedLossSequen\\u0063e":1'),text.replace('"verified":true','"verified":true,"verif\\u0069ed":true'),Buffer.from([0xff])])await refusal(raw,400,'invalid',{raw:true});
+    await refusal(' '.repeat(16*1024+1),413,'request-too-large',{raw:true});
+    await refusal({...body,observedLossSequence:2},409,'conflict');
+    f.store.runCaptureUnavailable();await refusal(body,409,'conflict');
+    f.store.setEnabled(false);const before=durableSnapshot(f.store.db),res=await send({...body,observedLossSequence:2});assert.equal(res.status,200);const reply=await res.json();
+    assert.deepEqual(reply,{protocolVersion:2,schemaVersion:2,runFormat:2,storeId:body.storeId,sourceBinding:body.binding,source:body.source,root:body.root,revision:Number(before.data.runs_format![0]!.revision)+1,readAt:now,capture:{enabled:false,state:'last-known',loss:true,lossNotice:{sequence:2,lastLossAt:now,dismissedThrough:2,attention:false}},acknowledgedLossSequence:2,coalesced:false});
+    const after=durableSnapshot(f.store.db);for(const [table,rows] of Object.entries(before.data))if(table!=='runs_format')assert.deepEqual(after.data[table],rows,table);
+    const retry=await send({...body,observedLossSequence:2});assert.equal(retry.status,200);assert.equal((await retry.json()).coalesced,true);assert.deepEqual(durableSnapshot(f.store.db),after);
+    const get=await f.get({root:'B'});assert.equal(get.status,200);const read=await get.json();assert.deepEqual(read.capture,reply.capture);assert.equal(read.coverage.complete,false);assert.ok(read.coverage.reasons.includes('capture-loss'));
+    f.store.runCaptureUnavailable();const late=await send({...body,observedLossSequence:2});assert.equal(late.status,200);const current=await late.json();assert.equal(current.coalesced,true);assert.equal(current.capture.lossNotice.attention,true);assert.equal(current.capture.lossNotice.sequence,3);
+    const ro=new Store(f.store.file,{readOnly:true});try{ro.bindReads(f.source.id,true);assert.equal(ro.subagentRuns({...f.body,root:'B'},now).capture.lossNotice!.dismissedThrough,2);}finally{ro.close();}
+  });
+});
+
+test('format-1 service reads and health never migrate; both run mutation routes refuse until activation',async()=>{
+  await serverFixture(async f=>{
+    versionOneFixture(f.store.db,false,1);const before=durableSnapshot(f.store.db);
+    const get=await f.get();assert.equal(get.status,200);const read=await get.json();assert.equal(read.runFormat,1);assert.equal(read.capture.lossNotice,undefined);
+    const headers={authorization:`Bearer ${f.token}`,'content-type':'application/json'};
+    assert.equal((await fetch(`${f.base}/health`,{headers})).status,200);
+    for(const [route,body] of [['reconcile',f.body],['dismiss-loss',{...f.body,observedLossSequence:1}]] as const){const res=await fetch(`${f.base}/v1/subagent-runs/${route}`,{method:'POST',headers,body:JSON.stringify(body)});assert.equal(res.status,503);assert.deepEqual(await res.json(),{error:'schema'});}
+    assert.deepEqual(durableSnapshot(f.store.db),before);f.store.installSubagentRuns();const upgraded=await (await f.get()).json();assert.equal(upgraded.runFormat,2);assert.deepEqual(upgraded.capture.lossNotice,{sequence:0,lastLossAt:null,dismissedThrough:0,attention:false});
+  });
+});
 
 test('authenticated GET and narrow POST → real registered companion → persisted GET',async()=>{
   await serverFixture(async f=>{

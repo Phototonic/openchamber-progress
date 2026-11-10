@@ -648,13 +648,51 @@ The additive run extension preserves schema/protocol 2. A missing extension or
 older service is unavailable, not a certified empty archive. A read-only open
 and authenticated GET never install the extension. Activation validates the
 whole extension and refuses partial/future schemas without destructive repair.
-Downgrade leaves additive tables intact; older writers do not produce run facts.
+Run storage format 2 is upgraded only by matching companion activation. Exact
+epoch-bearing format 1 is read-only-compatible with the new service beforehand,
+without notice metadata; new run mutations refuse until activation. Epochless
+version 1 still needs activation. Both upgrades preserve all evidence and leave
+old loss unknown-date, non-attention. Failed migration rolls back atomically.
+
+Mixed versions have distinct limits:
+
+- New service/guest with format 2 support dated, store-wide dismissed attention.
+- Old guests ignore additive notice metadata and retain their original permanent
+  loss presentation; they cannot dismiss or claim complete coverage.
+- New guests with an old service retain muted unknown-date loss without dismissal
+  or a short recent-loss line. This does not prove the loss predates an update.
+- Pre-run base schema-2 writers can still perform independent progress operations;
+  preserved triggers fence capture toggles and remove deleted plan associations.
+- Older **run-aware** services/companions reject the exact new schema. The older
+  service's health path can return `503 schema`, making guests unavailable, not
+  merely hiding the notice. Reload already-running companions explicitly; do not
+  silently restart them or weaken schema checks.
+
+An already-running older companion that has not been reloaded can still advance
+the observation epoch allocator and run revision when it reconnects or disposes.
+This retires held read cursors, but does not grant continuity evidence across a
+gap or invalidate another active observer's token. It cannot record, clear or
+dismiss recording-gap state, change the format, or perform its other guarded run
+writes. Existing loss, detection sequence and dismissal checkpoint remain intact;
+incomplete coverage cannot become complete from that bookkeeping. Reloading the
+companion with the matching version ends this old-observer behaviour.
+
+Before activation, code rollback needs no store change. After activation, keep
+the upgraded store intact and recover forward with format-2-capable binaries.
+No automatic down-migration, metadata/loss/fence deletion or restoration of a stale
+backup is supported. Choosing an older backup could discard subsequent progress
+and requires separate owner authorization. Service and guest outputs ship together
+after the muted-disclosure prerequisite, with no intervening release.
 
 Portable read-seam tests now exercise an unmodified base schema-2 writer in a
 separate Node process, a read-only reopen, DDL/write rollback, real SQLite/HTTP
 reads and the actual companion registration with controlled native get/list
 metadata. They preserve existing progress snapshots and verify persistent
-capture-generation fencing. This is not a new native-host or Windows claim;
+capture-generation fencing. Additional isolated tests exercise the unmodified
+preceding run-aware binary's v1 reads, migration rollback recovery, upgraded-store
+health/capture refusal and subsequent recovery with the new code. Controlled
+backend time, two connections and authenticated HTTP cover attention and fenced
+dismissal; no live profile or model is used. This is not a new native-host or Windows claim;
 the native observations and screenshot limits above remain historical.
 
 Recorded native execution events distinguish succeeded/failed/interrupted from
