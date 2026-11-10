@@ -11,8 +11,8 @@ checks. A development checkout can share a package version with a release while
 containing additional unreleased changes.
 
 The [repository changelog](https://github.com/Phototonic/openchamber-progress/blob/main/CHANGELOG.md)
-records technical release history; GitHub Releases prepend curated user-facing notes
-to native What's Changed lists and use a version-plus-headline title.
+records technical release history; GitHub Releases contain only curated user-facing
+notes and editorial contributor credits, with a version-plus-headline title.
 This guide is included in both distribution archives. Other repository guides
 are linked online where needed; local evidence references below are not shipped
 files. Historical package labels are corrected to0.2.0/0.2.1; earlier raw local QA
@@ -106,9 +106,11 @@ and validation. Runtime promotion requires complete builds:
    and checksum inventories for the exact tested SHA. Commit matching
    `release-notes/<version>.md` in the version-bump PR: its first-line headline
    becomes `Agent Progress v<version>: <headline>`, and its curated Markdown body
-   precedes GitHub's native What's Changed, applicable New Contributors mentions
-   and Full Changelog. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
-   for the format, validation and no-overwrite retry policy.
+   is the entire release body, with no generated change list. The preparer and
+   reviewer check outside-contributor thanks and a final New contributors section
+   when applicable. CI posts a non-blocking reminder on version bumps; credits
+   remain editorial and never gate publication. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
+   for the format, validation, body comparison and no-overwrite recovery policy.
    Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
    bootstrap an empty release history. Automation never bumps versions or commits
    to main. Portable CI is not native-host certification or a causal performance
