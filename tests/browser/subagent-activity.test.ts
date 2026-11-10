@@ -13,7 +13,7 @@ import { participantIndex, type PlanDetail, type PlanView } from '../../ui/share
 import { refreshLabels } from '../../ui/shared/components.ts';
 import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
 import { EARLIER_STEP, ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
-import { earlierPager } from '../../ui/shared/census-view.ts';
+import { cueTone, earlierPager, routineNote } from '../../ui/shared/census-view.ts';
 import type { RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { at, planPage, plansPage, summary } from './fixtures.ts';
@@ -735,6 +735,28 @@ test('host row limit: a truncated host census is disclosed and host-only counts 
   assert.ok(!at.notes.some((n) => n.kind === 'host-truncated'));
   assert.equal(at.hostTruncated, false);
   assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting on you', '127 running']);
+});
+
+test('coverage cue: routine notes go behind the rail/board "Partial" cue; unavailability, failures, loading and capture off stay visible', () => {
+  const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(routineNote).map((n) => n.kind);
+  const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter((n) => !routineNote(n)).map((n) => n.kind);
+  const kids = [rec('A', null), ...Array.from({ length: 129 }, (_, i) => rec(`H${i}`, 'A', { createdAt: i, activity: 'running' }))];
+  // Storage loss, partly loaded history and a hit host limit: all routine, nothing visible.
+  const routine = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids)), runs: panel(readOf([run('succeeded')], {}, { capture: { enabled: true, state: 'last-known', loss: true }, recovery: { state: 'partial', reason: null, token: 't' } })) }))!;
+  assert.deepEqual(kinds(routine), ['capture-loss', 'history-partial', 'host-truncated']);
+  assert.deepEqual(visible(routine), []);
+  // Capture off and history off: capture off stays a visible line, history off is routine.
+  const off = rosterFor(input({ runs: panel(readOf([run('succeeded')], {}, { capture: { enabled: false, state: 'last-known', loss: false }, recovery: { state: 'not-requested', reason: null, token: null } })) }))!;
+  assert.deepEqual([visible(off), kinds(off)], [['capture-off'], ['history-off']]);
+  // A complete read says nothing: no cue at all.
+  assert.deepEqual(rosterFor(input({ runs: panel(readOf([run('succeeded')])) }))!.notes, []);
+  // The agreed split for every note kind.
+  // Behind the cue nothing is orange: every routine note has the neutral tone.
+  for (const kind of ['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) {
+    assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), true, kind);
+    assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral', kind);
+  }
+  for (const kind of ['runs-unavailable', 'runs-error', 'history-failed', 'history-request-failed', 'host-activity-unavailable', 'capture-off', 'history-loading', 'history-unavailable'] as const) assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), false, kind);
 });
 
 test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {

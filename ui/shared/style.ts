@@ -223,10 +223,12 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-warn>.ap-icon{width:14px;height:14px;margin-top:1px;color:var(--oc-warning-text,var(--oc-warning))}
 .ap-warn[data-tone="error"]>.ap-icon{color:var(--oc-error-text,var(--oc-error))}
 .ap-warn[data-tone="info"]>.ap-icon{color:var(--oc-info-text,var(--oc-info))}
+.ap-warn[data-tone="neutral"]>.ap-icon{color:var(--oc-muted)}
 .ap-warn-text{min-width:0;overflow-wrap:anywhere}
 .ap-warn-badge{display:inline-flex;align-items:center;max-width:100%;padding:0 6px;border-radius:5px;font-size:11px;font-weight:500;line-height:18px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
 .ap-warn-badge[data-tone="error"]{background:color-mix(in srgb,var(--oc-error) 14%,transparent);color:var(--oc-error-text,var(--oc-fg))}
 .ap-warn-badge[data-tone="info"]{background:color-mix(in srgb,var(--oc-info) 14%,transparent);color:var(--oc-info-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="neutral"]{background:var(--oc-muted-surface);color:var(--oc-muted)}
 @media(forced-colors:active){.ap-warn-badge{border:1px solid CanvasText}.ap-warn[data-tone]>.ap-icon{color:CanvasText}}
 
 /* Session chips */
@@ -548,6 +550,18 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-obs-body>.ap-link{align-self:flex-start}
 .ap-warn-list{display:flex;flex-direction:column;gap:3px;padding:0}
 .ap-warn-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+/* Rail and board: the muted "Partial" cue, last in the counts' row; it expands the routine coverage
+   notes inline below the header. Neutral now; a later tone can key off a data attribute. */
+.ap-sub-cue{position:relative;display:inline-flex;align-items:center;gap:2px;flex:none;max-width:100%;min-height:20px;padding:0 3px 0 7px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-muted-surface,transparent);color:var(--oc-muted);font:inherit;font-size:11px;font-weight:500;line-height:18px;cursor:pointer}
+.ap-sub-cue:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-sub-cue[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover));color:var(--oc-selection-fg,var(--oc-fg))}
+.ap-sub-cue>.ap-icon{width:12px;height:12px}
+.ap-sub-cue[aria-expanded="true"]>.ap-icon{transform:rotate(180deg)}
+.ap-census .ap-sub-cue:focus-visible{border-radius:999px}
+.ap-sub-cue-notes{padding-left:8px;border-left:2px solid var(--oc-border)}
+.ap-census-title>.ap-h[tabindex]:focus{outline:none}
+.ap-census-title>.ap-h[tabindex]:focus-visible{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+@media(forced-colors:active){.ap-sub-cue{border-color:ButtonText;color:ButtonText}.ap-sub-cue[aria-expanded="true"]{border-width:2px;padding:0 2px 0 6px}.ap-census .ap-sub-cue:focus-visible,.ap-census-title>.ap-h[tabindex]:focus-visible{outline:2px solid Highlight;outline-offset:1px}.ap-sub-cue-notes{border-left-color:CanvasText}}
 
 /* Status section */
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
