@@ -433,6 +433,51 @@ try {
   await wait('panel', `!d.querySelector('${cue}')&&d.querySelector('[data-testid="subagent-coverage"]')?.dataset.notes==='history-loading'`, 'cue gone while loading');
   await settle(300);
   check('the last routine note loading: focus lands on the Sub-agents heading, not the document', await guest('panel', `return d.activeElement?.dataset.testid==='subagent-heading'`) === true, await guest('panel', `return d.activeElement?.tagName+'.'+(d.activeElement?.dataset.testid??'')`));
+  // Coverage cleared by a background update (history completed elsewhere, storage loss over), not by
+  // this frame: a focused coverage control that disappears hands focus to the surviving cue, else the
+  // heading; focus elsewhere is never moved.
+  const focused = (s: string) => guest<string | null>(s, `return d.activeElement?.dataset.testid??d.activeElement?.parentElement?.dataset.testid??null`);
+  const notesNow = (kinds: string) => wait('panel', `d.querySelector('${cueNotes}')?.dataset.notes===${javascriptLiteral(kinds)}`, `cue notes: ${kinds}`, 20_000);
+  await evaluate(`qa.runs.A.loss=true;qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared by a background update', 20_000);
+  await settle(200);
+  check('external clear with focus on the cue: focus moves to the Sub-agents heading', await focused('panel') === 'subagent-heading', await focused('panel'));
+  await evaluate(`qa.runs.A.loss=true;qa.runs.A.recovery={state:'partial',reason:null,token:'more-4'};qa.bump();true`);
+  await notesNow('capture-loss history-partial');
+  if ((await cueState('panel')).expanded !== 'true') { await guest('panel', `d.querySelector('${cue}').focus();return true`); await key('Enter'); }
+  await guest('panel', `d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await notesNow('capture-loss');
+  await settle(200);
+  cs = await cueState('panel');
+  check('external clear with focus on Load more history, other notes remaining: focus moves to the open cue', cs.focus === 'subagent-coverage-cue' && cs.expanded === 'true', cs);
+  await evaluate(`qa.runs.A.loss=false;qa.runs.A.recovery={state:'partial',reason:null,token:'more-5'};qa.bump();true`);
+  await notesNow('history-partial');
+  await guest('panel', `d.querySelector('${cueNotes} [data-testid="subagent-retry-history"]').focus();return true`);
+  await evaluate(`qa.runs.A.recovery={state:'complete',reason:null,token:null};qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'last routine note cleared by a background update', 20_000);
+  await settle(200);
+  check('external clear with focus on Load more history as the last note: focus moves to the heading', await focused('panel') === 'subagent-heading', await focused('panel'));
+  await evaluate(`qa.runs.A.loss=true;qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `d.querySelector('[data-testid="observed-more"] > summary').focus();return true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared while focus is elsewhere', 20_000);
+  await settle(200);
+  check('external clear with focus elsewhere: focus stays where it was (not moved to the heading)', await guest('panel', `return d.activeElement?.matches('[data-testid="observed-more"] > summary')`) === true, await focused('panel'));
+  // Focus left this frame (here: the host page) after it was on the cue: never pulled back.
+  await evaluate(`qa.runs.A.loss=true;qa.bump();true`);
+  await notesNow('capture-loss');
+  await guest('panel', `w.focus();d.querySelector('${cue}').focus();return true`);
+  await evaluate(`const h=document.querySelector('section[data-surface="panel"] h1');h.tabIndex=-1;h.focus();true`);
+  await evaluate(`qa.runs.A.loss=false;qa.bump();true`);
+  await wait('panel', `!d.querySelector('${cue}')`, 'cue cleared while focus is in another frame', 20_000);
+  await settle(200);
+  const outside = await evaluate<{ top: string; panelHeading: boolean }>(`({top:document.activeElement?.tagName,panelHeading:frame('panel').contentDocument.activeElement?.dataset.testid==='subagent-heading'})`);
+  check('external clear with focus outside the frame: focus is not pulled back into it', outside.top === 'H1' && !outside.panelHeading, outside);
   // Board: the same cue beside the counts, next to a visible line (capture off).
   await evaluate(`qa.runs.A.loss=true;qa.capture=false;qa.runs.A.recovery={state:'partial',reason:null,token:'more-3'};qa.bump();true`);
   await show('page', 1100);
