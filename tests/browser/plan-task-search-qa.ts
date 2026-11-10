@@ -544,6 +544,7 @@ try {
       const mouse = (type: string, x: number, y: number, extra: object = {}) => c.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
       const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
       const settled = (surface: string) => wait(surface, `(()=>{const v=d.querySelector('[data-testid="map-viewport"]'),h=d.querySelector('[data-testid="preview-map-host"]');return v&&h&&Number(h.dataset.canvasWidth)===v.clientWidth})()`, 'measured canvas after resize');
+      const clearTransitions: object[] = []; facts.clearViewport = clearTransitions;
       const realInput = async (surface: 'page' | 'panel', width: number) => {
         const tag = `${surface}-${width}`;
         await show([surface], width); await ready(surface); await said(surface);
@@ -603,6 +604,7 @@ try {
         await frames2(); const beforeClear = (await state(surface)).transform, beforeSpeech = (await said(surface)).length;
         await mouse('mouseMoved', offPoint[0], offPoint[1], { buttons: 0 }); await mouse('mousePressed', offPoint[0], offPoint[1]); await mouse('mouseReleased', offPoint[0], offPoint[1]); await frames2();
         const afterClear = (await state(surface)).transform;
+        clearTransitions.push({ surface, width, before: beforeClear, after: afterClear });
         check(`interaction:${tag}:clear-away-keeps-viewport`, JSON.stringify(afterClear) === JSON.stringify(beforeClear) && (await state(surface)).selected === null && (await active(surface)).inCanvas && (await said(surface)).slice(beforeSpeech).filter(s => s === 'Selection cleared.').length === 1 && await guest(surface, `return !d.querySelector('[data-testid="map-inspector"]').dataset.selected&&!d.querySelector('[data-testid="map-viewport"] [data-related], [data-testid="map-viewport"] [data-path]')`), undefined, { beforeClear, afterClear });
         await focusOn(surface, '[data-testid="map-pan-right"]'); await key('Tab'); await frames2();
         check(`interaction:${tag}:tab-reentry-reveals-after-clear`, (await active(surface)).task === 'D' && await inView(surface, 'D'));
