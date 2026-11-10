@@ -64,8 +64,10 @@ button{font:inherit}
 .ap-fraction{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .ap-fraction strong{font-size:24px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
 .ap-fraction span{color:var(--oc-muted)}
-.ap-seg{display:flex;height:6px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 9%,transparent)}
-.ap-seg>i{display:block;height:100%;min-width:3px}
+/* The kit progress look (SDK mountProgress): a 6px pill groove 6% of the text colour, pill fills.
+   Ours keeps three static segments with 2px gaps; done is the kit's finished green. */
+.ap-seg{display:flex;height:6px;border-radius:9999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 6%,transparent)}
+.ap-seg>i{display:block;height:100%;min-width:3px;border-radius:9999px}
 .ap-seg>i+i{margin-left:2px}
 .ap-seg [data-k="done"]{background:var(--oc-success)}
 .ap-seg [data-k="working"]{background:var(--oc-info)}
@@ -430,7 +432,11 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-progress-line .ap-fraction{flex:none;align-items:baseline;gap:0}
 .ap-progress-line .ap-fraction strong{font-size:20px}
 .ap-fraction-total{color:var(--oc-muted);font-size:13px;font-variant-numeric:tabular-nums}
-.ap-progress-line .ap-seg{flex:1 1 48px;height:8px;min-width:0}
+.ap-progress-line .ap-seg{flex:1 1 48px;min-width:0}
+/* Every task done (skipped tasks are not done): the kit's finished caption, a done mark and the
+   count in the readable success colour. Decorative; the count's words already say it. */
+.ap-done-mark{width:14px;height:14px;align-self:center;margin-right:5px}
+[data-all-done] :is(strong,.ap-fraction-total,.ap-muted){color:var(--oc-success-text,var(--oc-fg))}
 .ap-chip-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
 .ap-quals{display:flex;flex-direction:column;gap:4px;min-width:0}
 .ap-quals:empty{display:none}
@@ -562,10 +568,10 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-status-pick .oc-sdk-popup{top:8px!important;max-height:calc(100vh - 16px)}
 .ap-status-head>span:not(.ap-status-title){align-self:start}
 .ap-status-progress{gap:6px}
-.ap-status-progress .ap-seg{height:5px}
 .ap-status-counts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;font-size:12px}
 .ap-status-fraction{font-variant-numeric:tabular-nums}
 .ap-status-fraction strong{font-size:13px;font-weight:600}
+.ap-status-fraction .ap-done-mark{width:12px;height:12px;margin-right:4px;vertical-align:-2px}
 /* Informational chips here: mark, count and word inline, no pill (nothing to press) */
 .ap-status-counts .ap-state-chip{min-height:0;padding:0;border:0;gap:4px;font-size:12px}
 .ap-status-counts .ap-state-chip .ap-mark{width:12px;height:12px}
