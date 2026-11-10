@@ -447,6 +447,63 @@ generated local secrets and was later cleared by the restart; never copy such
 profiles into repository evidence. Do not automatically
 clean real directories or reuse real profiles; no server restart is authorized.
 
+### Isolated desktop upgrade rehearsal
+
+On 2026-11-10, the released **1.0.0** extension and built companion from
+`v1.0.0` were installed on a real isolated Linux **OpenChamber 2.7.0** desktop
+host using independent **OpenCode 2.2.6**. Settings → Extensions → Add extension
+accepted a clean tracked-file folder projection; sessions/service permissions
+were approved, and the extension's own setup/review/confirmation flow installed
+the companion. The real plugin loader activated it and created format 1. The
+current tracked build was installed through the same folder UI's **Reinstall**
+flow, which requested permissions again. Both package versions were 1.0.0:
+this was folder replacement, not the version-based extension update offer.
+
+Content was explicitly synthetic: the release's Store APIs seeded one working
+plan, one succeeded dispatch and a recorded gap, using real, unprompted host
+parent/child sessions. Passive metadata recovery also retained an unknown
+historical child, giving two rows (one dispatch, one historical session). No
+agent/model execution is claimed; provider credentials were empty at the initial
+and final checks, and no model prompt was sent.
+
+Before companion update, the current rail showed **Different companion build
+available** and **Review update**. Review displayed installed/bundled version
+1.0.0 and **Same version number, different files: updating selects the bundled
+files.** Confirming Update left format 1 and the retained rows unchanged. The
+rail then said **OpenCode has not loaded the current companion files yet. Restart
+OpenCode when convenient so agents use them** (followed by its running-session
+caveat). Settings → General → **Restart OpenCode** restarted only this isolated
+host's managed runtime. Activation migrated to format 2 and preserved the plan,
+both rows and their counts. The rail's neutral **Partial** cue expanded to
+**Some run information wasn’t recorded. This happened before the update; the
+date is unknown.** Work Status showed Sub-agents counts but no gap-attention line;
+the stored notice had null date, sequence 0 and `attention: false`.
+
+Rollback through the real folder Reinstall/grant flow made the released extension
+show **Progress service is not responding**, **It may still be starting. Try again
+in a moment.**, and **Try again** in both observed surfaces. The host service proxy
+returned HTTP 502, `SERVICE_FAILED`, **The extension's service failed to start.**
+Retry and an isolated OpenCode restart did not recover it. No companion rollback
+control was available in this failure state, so the current companion remained
+installed; a desktop companion downgrade was not forced or tested. Schema, plan,
+run rows and loss metadata stayed intact. The operational store was not
+byte-identical: the still-current companion's recovery job/lease housekeeping
+also changed, alongside epoch/revision bookkeeping. Restoring the current folder,
+approving its grants and restarting the isolated runtime recovered the rail and
+Work Status; service health returned HTTP 200 with `ready: true`.
+
+The released UI's suggestion that this persistent incompatibility may merely be
+startup delay is a rollback UX limitation, not evidence that retry can repair it.
+No product code was changed. The launch used a fresh private HOME/XDG/profile,
+the extracted AppImage, an empty inherited environment, private loopback ports,
+and the existing Wayland socket. Owned-process checks found no real-home
+environment/FD/cwd/writable-map references or inherited sensitive configuration;
+the stable live desktop PIDs/start times/listeners were unchanged before and after
+cleanup. All owned desktop/runtime/service processes were stopped. This does not
+certify the standalone board-page entry (only the rail and Work Status were
+observed), ZIP/Git installation, version-driven update discovery, model-driven
+runs, desktop companion downgrade, Windows or macOS.
+
 ## Sub-agent activity — tested native and workspace signals
 
 The initial credential-free feasibility probe targets OpenCode **2.1.4**,
@@ -696,11 +753,57 @@ create and populate format-1 stores, with and without recorded loss; current
 activation preserves their run evidence and counts and migrates old loss as
 undated, non-attention evidence. The frozen format-1 fixture is checked against
 the release-created schema. These history-based tests require the `v1.0.0` tag
-and fail with fetch instructions if it is missing. These checks use controlled
+and fail with fetch instructions if it is missing. These portable checks use controlled
 host seams, not a real host or the release's built service/companion entries. Controlled
 backend time, two connections and authenticated HTTP cover attention and fenced
 dismissal; no live profile or model is used. This is not a new native-host or Windows claim;
 the native observations and screenshot limits above remain historical.
+
+### Isolated built-release upgrade rehearsal
+
+On 2026-11-10, `tests/backend/subagent-upgrade-runtime.test.ts` rehearsed the
+released **1.0.0 built companion** from `v1.0.0` on an independent Linux
+**OpenCode 2.2.6** runtime. Both the released and current tracked companion entries
+were installed verbatim through the lifecycle installer; neither was wrapped or
+patched. The real plugin loader created format 1, then migrated to format 2 only
+after lifecycle update and an explicit `POST /api/location/reload`. This also
+exercises a same-package-version update with different payload fingerprints.
+Before reload, setup returned `activation: "reload-required"`; health, setup and
+run GETs through the current **built service** left the format-1 store unchanged.
+
+Two fresh isolated stores cover no loss and recorded loss. Host sessions and
+parent/child lineage are real. Recording inputs are **synthetic**: a separate
+diagnostic plugin delivers before/after and execution-event inputs to the
+release's source capture implementation using real host identity lookups. It
+does not prompt or execute a native subagent/model loop. The loss variant calls
+that release capture's unavailable path. Migration itself is performed by the
+unchanged current built companion inside the real loader, not by the diagnostic
+plugin or a test call to the migration method. Run rows/counts survive, revisions
+advance, and old loss remains undated with `attention: false`. Authenticated run
+GETs exercise the current packaged service entry, not just a Store seam.
+
+After putting the released companion back and reloading, plugin inventory reports
+`status: "failed"`, with error first line `Error: schema`; its status RPC returns
+`RPC is unavailable: agent-progress-status`. Setup still reports `installed: true`, `captureEnabled: true`,
+`activation: "reload-required"` and `diagnostics: ["rollback-payloads-retained"]`:
+installed/enabled is not proof of active capture. The **current** built service
+continues to return HTTP 200 and format 2 for run reads. Schema, run evidence,
+loss metadata and other durable facts remain intact; disposing the outgoing
+matching observer can advance the epoch allocator and revision. Live companions
+also renew recovery leases and maintain job/traversal bookkeeping, so preservation
+of these facts is not whole-store byte equality. Restoring the
+current companion and reloading restores active capture registration and
+`activation: "control-applies-to-loaded-instances"`, without a down-migration or
+backup restoration.
+
+The repeatable test uses a fresh HOME/XDG/cache/state/runtime/temp tree, rejects
+ancestor/system configuration, uses OS-assigned loopback ports and synthetic local
+passwords, checks empty credentials, rejects/counts model/transport attempts, and
+stops its owned runtime/service processes and removes its fixture. It needs the
+independent runtime and release tag and is excluded from portable CI. This is not
+a real OpenChamber desktop host, extension update-UI, native model-driven dispatch,
+Windows or macOS certification, nor a rerun of all native regression families on
+2.2.6.
 
 Recorded native execution events distinguish succeeded/failed/interrupted from
 SDK idle/completed. Historical native `outcome` with `time.idle` is labelled a

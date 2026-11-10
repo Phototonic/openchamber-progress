@@ -72,6 +72,7 @@ It runs root/UI typechecks, portable backend tests, browser-model and automation
 - `plugin-failure-runtime.test.ts`
 - `progress-activation-runtime.test.ts`
 - `subagent-activity-runtime.test.ts`
+- `subagent-upgrade-runtime.test.ts` — isolated built-release upgrade/reload/rollback rehearsal; independent OpenCode binary required, no model or GUI
 
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
