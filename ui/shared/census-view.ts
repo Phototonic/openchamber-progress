@@ -5,7 +5,7 @@
 // reinforces it. No label here expires: the frame ticker only moves time text.
 import { age, el, info, testid, type Env } from './components.ts';
 import { icon, warningLine, type WarningTone } from './primitives.ts';
-import { elapsedText, plural } from './format.ts';
+import { absoluteTime, elapsedText, plural } from './format.ts';
 import { STATUS_LABEL } from './model.ts';
 import { EARLIER_STEP, rosterFor, type Ran, type Roster, type RosterInput, type RosterNote, type SubagentEntry } from './subagents.ts';
 import type { RunsPanel } from './runs.ts';
@@ -139,7 +139,7 @@ const NOTE: Record<RosterNote['kind'], string> = {
   'runs-unavailable': 'Run records aren’t available from this progress service, so only sub-agents OpenChamber lists now are shown.',
   'runs-error': 'Run records couldn’t be read just now; they’ll be read again on the next refresh.',
   'capture-off': 'Capture is off: new runs aren’t recorded. Earlier records stay readable.',
-  'capture-loss': 'Some runs weren’t recorded because storage was full or unavailable.',
+  'capture-loss': 'Some run information wasn’t recorded.',
   'history-loading': 'Loading older sub-agent history…',
   'history-partial': 'Older history was only partly loaded; counts may be low.',
   'history-failed': 'Older history couldn’t be loaded.',
@@ -178,11 +178,15 @@ function summaryNode(r: Roster, compact: boolean) {
   return p;
 }
 
-/** Work Status: one short line for genuine unavailability only; detail lives in the rail. */
+/**
+ * Work Status: one short line for genuine unavailability only; detail lives in the rail. A recording
+ * gap counts only while it needs attention (recent and not dismissed); its order among the others
+ * is unchanged.
+ */
 function notesNode(r: Roster) {
-  const n = r.notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
+  const n = r.notes.find((x) => x.kind === 'runs-unavailable' || x.kind === 'runs-error' || x.kind === 'capture-loss' && x.attention || x.kind === 'host-activity-unavailable' || x.kind === 'host-truncated');
   if (!n) return null;
-  const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? 'Some runs weren’t recorded.' : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : n.kind === 'host-truncated' ? 'Not every sub-agent is checked.' : 'Run records unavailable.'), 'subagent-coverage');
+  const p = testid(el('p', 'ap-note', n.kind === 'capture-loss' ? NOTE['capture-loss'] : n.kind === 'host-activity-unavailable' ? 'Current activity unavailable.' : n.kind === 'host-truncated' ? 'Not every sub-agent is checked.' : 'Run records unavailable.'), 'subagent-coverage');
   p.dataset.notes = n.kind;
   return p;
 }
@@ -260,10 +264,88 @@ function coverageNode(notes: RosterNote[], runs: RunsPanel | null) {
 /** Visible lines keep their tones: information for loading and capture off, a warning otherwise. */
 const visibleTone = (n: RosterNote): WarningTone => n.kind === 'history-loading' || n.kind === 'capture-off' ? 'info' : 'warning';
 /**
- * Notes behind the cue are routine, so they carry a muted mark, never orange. One place decides,
- * so a single note (such as a recent storage loss) can later take the warning tone.
+ * Notes behind the cue are routine, so they carry a muted mark. Orange is kept for one case: a
+ * recording gap that needs attention (recent and not dismissed, as the service says).
  */
-export const cueTone = (_n: RosterNote): WarningTone => 'neutral';
+export const cueTone = (n: RosterNote): WarningTone => n.kind === 'capture-loss' && n.attention ? 'warning' : 'neutral';
+type LossNote = Extract<RosterNote, { kind: 'capture-loss' }>;
+const lossOf = (notes: RosterNote[]) => notes.find((n): n is LossNote => n.kind === 'capture-loss') ?? null;
+
+/** Approved recording-gap wording (date text, dismissal and its outcomes). */
+const LOSS = {
+  migrated: 'This happened before the update; the date is unknown.',
+  legacy: 'Date unknown.',
+  dismiss: 'Dismiss warning',
+  explain: 'Quiets this warning for this store. New recording gaps will warn again.',
+  success: 'Warning dismissed.',
+  error: 'Couldn’t dismiss the warning. Try again.',
+  conflict: 'A newer recording gap was detected. Review it before dismissing.',
+  recent: 'Recent recording gap.',
+} as const;
+
+/**
+ * The recording-gap note inside the disclosure: the approved sentence with the stored detection
+ * date (never a migration, dismissal or read time), and, while the gap needs attention and the
+ * service supports it, Dismiss warning with its explanation and any failure or conflict message.
+ * The note stays listed after dismissal or ageing; only its tone and the control change.
+ */
+function lossItem(n: LossNote, runs: RunsPanel | null, env: Env) {
+  const li = testid(noteItem(n, cueTone(n), null), 'subagent-loss-note');
+  li.dataset.attention = String(n.attention);
+  li.dataset.date = n.dateKind;
+  const text = li.querySelector('.ap-warn-text')!;
+  if (n.dateKind === 'known' && n.lastLossAt !== null) {
+    const iso = new Date(n.lastLossAt).toISOString();
+    const t = testid(el('time', '', absoluteTime(iso, env.locale)), 'subagent-loss-date');
+    t.dateTime = iso;
+    text.append(' Last detected: ', t, '.');
+  } else text.append(' ', n.dateKind === 'migrated-unknown' ? LOSS.migrated : LOSS.legacy);
+  if (!runs || !n.canDismiss) return li;
+  const box = el('div', 'ap-sub-dismiss');
+  const help = el('span', 'ap-sub-dismiss-help', LOSS.explain);
+  help.id = `ap-sub-dismiss-${cueCount}`;
+  const b = testid(el('button', 'ap-link', LOSS.dismiss), 'subagent-dismiss-loss');
+  b.type = 'button';
+  b.setAttribute('aria-describedby', help.id);
+  // Not `disabled`: a disabled button drops keyboard focus. The controller ignores repeats.
+  const pending = runs.lossDismissal === 'pending';
+  if (pending) b.setAttribute('aria-disabled', 'true');
+  b.addEventListener('click', () => { if (!pending) runs.dismissLoss(); });
+  box.append(b, help);
+  // Visible next to the control; spoken once through the frame's announcer (announceLoss).
+  if (runs.lossDismissal === 'error' || runs.lossDismissal === 'conflict') {
+    const status = testid(warningLine(LOSS[runs.lossDismissal], runs.lossDismissal === 'error' ? 'error' : 'warning', 'p'), 'subagent-dismiss-status');
+    status.dataset.state = runs.lossDismissal;
+    box.append(status);
+  }
+  li.append(box);
+  return li;
+}
+
+let lossAnnouncer: HTMLElement | null = null;
+let lossOutcome: unknown = 'idle';
+/**
+ * Dismissal outcomes, spoken once each through one persistent polite live region outside the
+ * repainted root (as the digest and search announcers do). Each failure has its own token, so a
+ * repeated failure is spoken again; success is never spoken while the gap still needs attention.
+ */
+function announceLoss(runs: RunsPanel, attention: boolean) {
+  const s = runs.lossDismissal;
+  const token = s === 'error' || s === 'conflict' ? runs.lossDismissalFailure ?? s : s;
+  if (token === lossOutcome) return;
+  lossOutcome = token;
+  const text = s === 'success' ? attention ? '' : LOSS.success : s === 'error' || s === 'conflict' ? LOSS[s] : '';
+  if (!text) return;
+  if (!lossAnnouncer?.isConnected) {
+    lossAnnouncer = testid(el('p', 'ap-sr'), 'subagent-announcer');
+    lossAnnouncer.setAttribute('role', 'status'); lossAnnouncer.setAttribute('aria-live', 'polite'); lossAnnouncer.setAttribute('aria-atomic', 'true');
+    document.body.append(lossAnnouncer);
+  }
+  const node = lossAnnouncer;
+  node.textContent = '';
+  // Next frame, so an identical repeated outcome is still a change for assistive technology.
+  requestAnimationFrame(() => { if (lossOutcome === token) node.textContent = text; });
+}
 
 const CUE = 'subagent-coverage-cue';
 let cueCount = 0;
@@ -275,7 +357,7 @@ let cueCount = 0;
  * so they cannot share one `details`. Like a `details[data-testid]` across a repaint (app.ts), the open
  * state carries over from the painted cue of the same scope; focus returns through its test ID.
  */
-function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string) {
+function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string, env: Env) {
   const id = `ap-sub-cue-${cueCount += 1}`;
   const button = testid(el('button', 'ap-sub-cue'), CUE);
   button.type = 'button';
@@ -283,19 +365,31 @@ function coverageCue(notes: RosterNote[], runs: RunsPanel | null, scope: string)
   // Not the counts' tooltip: the cue's words and its notes say what it means.
   button.title = '';
   button.setAttribute('aria-controls', id);
+  // Warning tone only while a recording gap needs attention: a triangle (shape, not just colour)
+  // and the description "Recent recording gap."; otherwise muted. The name stays the same.
+  const attention = !!lossOf(notes)?.attention;
+  button.dataset.tone = attention ? 'warning' : 'neutral';
+  // The description is a hidden sibling: it is spoken as the button's description, not its name.
+  const recent = attention ? testid(el('span', '', LOSS.recent), 'subagent-coverage-cue-recent') : null;
+  if (recent) {
+    recent.id = `${id}-recent`;
+    recent.hidden = true;
+    button.setAttribute('aria-describedby', recent.id);
+    button.append(icon('warning'));
+  }
   // Named "Partial sub-agent coverage"; its expanded state says whether the notes are shown.
   button.append(el('span', '', 'Partial'), el('span', 'ap-sr', ' sub-agent coverage'), icon('chevron-down'));
   const region = testid(el('div', 'ap-sub-cue-notes'), 'subagent-coverage-notes');
   region.id = id;
   region.dataset.notes = notes.map((n) => n.kind).join(' ');
   const list = el('ul', 'ap-sub-notes ap-warn-list');
-  for (const n of notes) list.append(noteItem(n, cueTone(n), runs));
+  for (const n of notes) list.append(n.kind === 'capture-loss' ? lossItem(n, runs, env) : noteItem(n, cueTone(n), runs));
   region.append(list);
   const set = (open: boolean) => { button.setAttribute('aria-expanded', String(open)); region.hidden = !open; };
   const painted = document.querySelector<HTMLElement>(`[data-testid="${CUE}"]`);
   set(painted?.dataset.scope === scope && painted.getAttribute('aria-expanded') === 'true');
   button.addEventListener('click', () => set(button.getAttribute('aria-expanded') !== 'true'));
-  return { button, region };
+  return { button, recent, region };
 }
 
 const ABOUT = [
@@ -334,11 +428,13 @@ export function subagentsBlock(v: SubagentsView): HTMLElement | null {
   section.append(head);
   const routine = compact ? [] : r.notes.filter(routineNote);
   if (routine.length) {
-    const cue = coverageCue(routine, v.runs, scope);
+    const cue = coverageCue(routine, v.runs, scope, v.env);
     // The last item of the counts' wrapping row, so it stays beside them at any width.
     (counts ?? head).append(cue.button);
+    if (cue.recent) (counts ?? head).append(cue.recent);
     section.append(cue.region);
   }
+  if (!compact && v.runs) announceLoss(v.runs, !!lossOf(r.notes)?.attention);
   const now = r.featured.filter(running);
   if (now.length) {
     const list = el('ul', 'ap-obs-list');

@@ -981,6 +981,32 @@ test('coverage cue: routine notes go behind the rail/board "Partial" cue; unavai
   for (const kind of ['runs-unavailable', 'runs-error', 'history-failed', 'history-request-failed', 'host-activity-unavailable', 'capture-off', 'history-loading', 'history-unavailable'] as const) assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), false, kind);
 });
 
+test('recording gap: attention and dismissal come from the service; the gap stays listed, routine and incomplete', () => {
+  const at = T0 + 200_000; // readOf's service read time
+  const notice = (n: { sequence: number; lastLossAt: number | null; dismissedThrough: number }) => ({ ...n, attention: n.lastLossAt !== null && Math.max(0, at - n.lastLossAt) < 86_400_000 && n.sequence > n.dismissedThrough });
+  const read = (format: 1 | 2, n?: Parameters<typeof notice>[0]) => readOf([run('succeeded')], {}, {
+    runFormat: format, capture: { enabled: true, state: 'last-known', loss: true, ...(n ? { lossNotice: notice(n) } : {}) },
+    coverage: { scope: 'retained', complete: false, reasons: ['capture-loss'] },
+  } as Partial<RunRead>);
+  const loss = (r: RunRead) => {
+    const roster = rosterFor(input({ runs: panel(r) }))!;
+    const n = roster.notes.find((x) => x.kind === 'capture-loss');
+    assert.ok(n && n.kind === 'capture-loss', 'the gap is always listed while loss is recorded');
+    assert.ok(routineNote(n), 'behind the Partial cue, never a visible line');
+    return { lastLossAt: n.lastLossAt, dateKind: n.dateKind, attention: n.attention, canDismiss: n.canDismiss, tone: cueTone(n) };
+  };
+  // Recent and undismissed: warning tone, its stored date, dismissable.
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 2 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: true, canDismiss: true, tone: 'warning' });
+  // Exactly 24 hours old, or dismissed: muted, the same date kept, no control.
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 86_400_000, dismissedThrough: 2 })), { lastLossAt: at - 86_400_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 3 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
+  // Migrated before dates were kept, and an older service without the metadata: unknown, muted.
+  assert.deepEqual(loss(read(2, { sequence: 0, lastLossAt: null, dismissedThrough: 0 })), { lastLossAt: null, dateKind: 'migrated-unknown', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(1)), { lastLossAt: null, dateKind: 'legacy-unknown', attention: false, canDismiss: false, tone: 'neutral' });
+  // The seam: only an attended gap is orange; every other routine note stays neutral.
+  for (const kind of ['history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral');
+});
+
 test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {
   const kids = Array.from({ length: 51 }, (_, i) => `K${i}`);
   const rows = markLatest(kids.map((k) => run('running', { childSessionId: k })));

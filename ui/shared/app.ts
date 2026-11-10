@@ -228,13 +228,14 @@ const focusKey = (root: HTMLElement) => {
 };
 
 /**
- * Sub-agents coverage controls (census-view.ts): the Partial cue and Load more / Retry history.
- * Any update (this frame's history request, history completed elsewhere, a host census back under
- * its limit) can remove one from the next paint. Focus that was on it goes to the surviving cue
- * (from Load more inside its notes), else to the section heading, only in a section of the same
- * scope (plan and selected session); otherwise nothing is moved. Nothing else falls back here.
+ * Sub-agents coverage controls (census-view.ts): the Partial cue, Load more / Retry history and
+ * Dismiss warning. Any update (this frame's history request or dismissal, history completed or a
+ * gap dismissed elsewhere, a host census back under its limit) can remove one from the next paint.
+ * Focus that was on it goes to the surviving cue (from a control inside its notes), else to the
+ * section heading, only in a section of the same scope (plan and selected session); otherwise
+ * nothing is moved. Nothing else falls back here.
  */
-const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"]';
+const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"],[data-testid="subagent-dismiss-loss"]';
 const coverageFocus = (root: HTMLElement) => {
   const active = document.activeElement as HTMLElement | null;
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
