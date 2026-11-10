@@ -27,6 +27,8 @@ run('node',['--experimental-strip-types','--test',...tests('tests/browser'),...t
 run('bun',['run','build:backend']);
 for (const surface of ['panel','status','page']) run('bun',['run','bundle:guest',`ui/${surface}/main.ts`,`ui/${surface}/main.js`]);
 if (entries.some((file,i)=>hash(file)!==before[i])) throw new Error('Generated entry parity failed; do not regenerate accepted entries silently');
+// The SDK's own readiness check: manifest schema, page scripts and service entry.
+run('bun',['node_modules/@openchamber/sdk/scripts/check-guest.ts','.']);
 run('bun',['run','package']);
 run('bun',['run','verify:package']);
 console.log('Native GUI/runtime certification NOT RUN; actualHostInstaller: not-run (no external host module supplied).');
