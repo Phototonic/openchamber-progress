@@ -48,7 +48,8 @@ export async function designRefactorQa(q: {
       await wait(surface, `d.querySelector('[role="option"][id$="source-design/P-calm"]')`);
       await click(surface, '[role="option"][id$="source-design/P-calm"]');
     }
-    if ((q.label === 'after' && q.slice === 'rail') || q.slice === 'board') {
+    if (q.slice === 'rail' && q.label === 'before') await wait(surface, `d.querySelector('[data-testid="map-region"],.ap-tasks[data-complete]')`, 'initial rail or board view');
+    if (q.slice === 'board' || (q.slice === 'rail' && (q.label === 'after' || await guest(surface, `return !!d.querySelector('[data-testid="map-region"]')`)))) {
       await wait(surface, `d.querySelector('[data-testid="map-region"]')?.dataset.current==='true'`, 'automatic edge-bearing Map');
       check(`d8:${surface}:initial-map`, await guest(surface, `return Number(d.querySelector('[data-testid="map-region"]').dataset.edges)>0`));
       await shot(`F8-${surface}-${width}-initial-map`, '[data-testid="progress-root"]', 0, 2500, surface);
@@ -57,6 +58,16 @@ export async function designRefactorQa(q: {
     await wait(surface, `d.querySelector('[data-testid="plan-P-calm"][data-source="source-design"]') && d.querySelector('.ap-tasks[data-complete]')`, 'complete F8 progress');
     await wait(surface, `d.querySelector('[data-testid="subagent-activity"]')&&!/Loading older history/.test(d.querySelector('[data-testid="subagent-activity"]').textContent)`, 'settled F8 roster history');
     check(`design:${surface}:eight-canonical-tasks`, await guest(surface, `return d.querySelectorAll('[data-testid="plan-P-calm"] li[data-testid^="item-"]').length===8`));
+    if (surface === 'panel' && q.slice === 'rail') {
+      // Exercise the real rail header with a synthetic long title; the wrapping flex lead must
+      // offer the title its available width before putting the picker on the following line.
+      for (const railWidth of [280, 360, 480]) {
+        await show(['panel'], railWidth);
+        const geometry = await guest('panel', `const h=d.querySelector('[data-testid="plan-title"]'),p=d.querySelector('[data-testid="plan-selector"]'),lead=h.parentElement,original=h.textContent;h.textContent='A deliberately long synthetic plan title that should use the available rail width before the picker wraps onto another line';const a=h.getBoundingClientRect(),b=p.getBoundingClientRect(),c=lead.getBoundingClientRect(),result={title:a.width,lead:c.width,titleBottom:a.bottom,pickerTop:b.top,clipped:h.scrollHeight>h.clientHeight,overflow:d.documentElement.scrollWidth>w.innerWidth};h.textContent=original;return result`);
+        check(`rail:${railWidth}:long-title-uses-lead-width`, geometry.title >= geometry.lead - 1 && geometry.pickerTop >= geometry.titleBottom - 1 && !geometry.clipped && !geometry.overflow);
+      }
+      await show(['panel'], 360);
+    }
     for (const mode of ['light', 'dark'] as const) {
       await theme(mode);
       for (const view of ['list', 'map']) {
