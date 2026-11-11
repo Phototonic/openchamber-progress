@@ -292,6 +292,17 @@ export function lifecycleBadge(plan: PlanView, locale: InterfaceLanguage = 'en')
 const barLabel = (s: PlanSummary, locale: InterfaceLanguage) => `${summaryText(s, locale)}${s.working ? `, ${say('{n} in progress', locale, { n: s.working })}` : ''}${s.blocked ? `, ${say('{n} blocked', locale, { n: s.blocked })}` : ''}`;
 
 /**
+ * Every task done (a nonzero total, nothing remaining, none skipped: skipped is never done): the
+ * count gets `data-all-done`, the success colour and a decorative done mark, like the kit's finished
+ * progress caption. The count's own words and the bar's name already say it, so nothing new is spoken.
+ */
+export function allDone(counts: HTMLElement, s: Pick<PlanSummary, 'total' | 'remaining' | 'skipped'>) {
+  if (!(s.total > 0 && s.remaining === 0 && s.skipped === 0)) return;
+  counts.dataset.allDone = 'true';
+  counts.prepend(statusMark('done', { decorative: true, className: 'ap-done-mark' }));
+}
+
+/**
  * The at-a-glance progress line: done/total and the segmented bar. The state chips (stateChipRow)
  * are its legend. `compact` keeps Work Status's one-line counts.
  */
@@ -311,6 +322,7 @@ export function progressBlock(s: PlanSummary, compact = false, locale: Interface
   else {
     const n = el('strong', '', displayCount(s.done, locale));
     counts.append(n, el('span', 'ap-fraction-total', `/${displayCount(s.total, locale)}`), el('span', 'ap-sr', say(' done, {n} remaining', locale, { n: s.remaining })));
+    allDone(counts, s);
   }
   wrap.append(counts);
   const bar = segmentedBar(s, barLabel(s, locale));

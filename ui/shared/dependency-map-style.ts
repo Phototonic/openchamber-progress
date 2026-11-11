@@ -1,9 +1,11 @@
 // Map-only guest CSS, injected by dependency-map-view.ts once per document. Kept out of the shared
 // stylesheet so Work Status, which never mounts the map, ships no map code.
-// Colours come only from host tokens; the shared stylesheet's reduced-motion rule still applies.
+// Colours come only from host tokens; the shared stylesheet's reduced-motion and hidden-frame rules
+// (!important, style.ts) still stop the one map animation, so it never sets !important itself.
 export const MAP_CSS = `
-/* Dependency map (one renderer for board and rail). Static: no transitions or animation, so
-   reduced motion has nothing to remove; viewport changes and anchoring apply instantly.
+/* Dependency map (one renderer for board and rail). No transitions: viewport changes and anchoring
+   apply instantly. The only motion is working-arrow beads, under the map region's own reported-work
+   gate (see Arrow state below); cards, marks, layout and the selection panel never animate.
    Status is always words + a distinct mark shape; colour only reinforces it. Card slots come inline
    from the full-plan layout, so filters hide cards in place and status never changes card size. */
 .ap-map{container:ap-map/inline-size;display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -50,8 +52,17 @@ export const MAP_CSS = `
 .ap-map-switch-label{color:var(--oc-muted)}
 .ap-map-switch .oc-sdk-btn:focus-visible,.ap-map-pair .oc-sdk-btn:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-body{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;min-width:0}
-@container ap-map (min-width:760px){.ap-map[data-frame="board"] .ap-map-body{grid-template-columns:minmax(0,1fr) minmax(250px,300px)}}
 .ap-map-stage{display:flex;flex-direction:column;min-width:0}
+/* Wide board: the selection panel sits over the canvas's right edge while a task is selected. The
+   frame decides when (MAP_PANEL in dependency-map-interaction.ts) and sets its width inline, so the
+   canvas never resizes for it. No transition or animation, so reduced motion has nothing to remove. */
+.ap-map-canvas{position:relative;min-width:0}
+.ap-map-inspector[hidden]{display:none}
+.ap-map-inspector[data-placement="over"]{position:absolute;z-index:2;top:8px;right:8px;bottom:8px;max-width:calc(100% - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--oc-border);box-shadow:0 8px 24px color-mix(in srgb,var(--oc-fg) 16%,transparent)}
+.ap-map-inspector[data-placement="over"]:focus{outline:none}
+.ap-map-inspector[data-placement="over"]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-2px}
+.ap-map-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ap-map-inspector-head .ap-h{margin:0}
 .ap-map-viewport{position:relative;min-width:0;min-height:180px;max-height:clamp(300px,64vh,600px);overflow:auto;border:1px solid var(--oc-border);border-radius:var(--oc-radius,10px);background-color:color-mix(in srgb,var(--oc-fg) 2.5%,var(--oc-bg));background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--oc-fg) 14%,transparent) 1px,transparent 1.5px);background-size:20px 20px;background-attachment:local}
 .ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
 .ap-map-world{position:relative}
@@ -72,7 +83,10 @@ export const MAP_CSS = `
 .ap-map-tool:focus-visible{outline:2px solid var(--oc-focus);outline-offset:1px}
 .ap-map-icon{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .ap-map-zoom{min-width:3.6em;text-align:center;font-size:11.5px;color:var(--oc-muted);font-variant-numeric:tabular-nums}
-.ap-map-help{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
+.ap-map-help{min-width:0;font-size:12px;color:var(--oc-muted);max-width:86ch}
+.ap-map-help-trigger{cursor:pointer;width:fit-content;color:var(--oc-fg);font-weight:600}
+.ap-map-help-trigger:focus-visible{outline:2px solid var(--oc-focus);outline-offset:2px}
+.ap-map-help-body{display:flex;flex-direction:column;gap:4px;padding:8px 0}
 .ap-map-help strong{color:var(--oc-fg);font-weight:600}
 .ap-map-keys{line-height:1.9}
 .ap-map-keys .ap-map-nowrap{white-space:nowrap}
@@ -115,6 +129,26 @@ export const MAP_CSS = `
 .ap-map-edge[data-path]{stroke:var(--oc-primary);stroke-width:2.25;opacity:1}
 .ap-map-marker-path .ap-map-arrowhead{fill:var(--oc-primary)}
 .ap-map-chain{font-size:11.5px}
+/* Arrow state (eligible pictures only: active, unarchived, current; dependency-map-view.ts arrowCue).
+   Working: round blue beads over a faint blue line with a blue head. Blocked: static warning line with
+   a stop bar just before the head, never animated. Selection keeps chain colour and width; beads and
+   the bar keep the state's shape (the bar keeps its warning colour). Off-chain beads recede, still. */
+.ap-map-edge[data-arrow="working"]{stroke:color-mix(in srgb,var(--oc-info) 34%,var(--oc-bg));stroke-width:1.5}
+.ap-map-edge[data-arrow="blocked"]{stroke:var(--oc-warning);stroke-width:2}
+.ap-map-edge[data-arrow="working"][data-path]{stroke:color-mix(in srgb,var(--oc-primary) 40%,var(--oc-bg));stroke-width:2.25}
+.ap-map-edge[data-arrow="blocked"][data-path]{stroke:var(--oc-primary);stroke-width:2.5}
+.ap-map-bead{fill:none;stroke:var(--oc-info);stroke-width:3.4;stroke-linecap:round;stroke-dasharray:0 10;pointer-events:none}
+.ap-map-bead[data-chain]{stroke:var(--oc-primary);stroke-width:4}
+.ap-map[data-highlight] .ap-map-bead:not([data-chain]){opacity:.3}
+.ap-map-marker-working .ap-map-arrowhead{fill:var(--oc-info)}
+.ap-map-marker-blocked .ap-map-arrowhead{fill:var(--oc-warning)}
+.ap-map-marker-blocked-path .ap-map-arrowhead{fill:var(--oc-primary)}
+.ap-map-stopbar{fill:var(--oc-warning)}
+/* Motion: only the separate bead layer, only under the region's [data-motion="on"] (permission +
+   cost bounds, dependency-map-view.ts applyMotion), on the shared 2.4 s reported-work phase (app.ts).
+   A steady linear loop of 40 px = four bead spacings per cycle: seamless, never a fill or a percentage. */
+[data-motion="on"] .ap-map-flows .ap-map-bead{animation:ap-map-flow 2.4s linear infinite}
+@keyframes ap-map-flow{from{stroke-dashoffset:0}to{stroke-dashoffset:-40}}
 .ap-map-card-status{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;font-weight:600;line-height:16px}
 .ap-map-card-word{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--oc-muted)}
 :is(.ap-map-card,.ap-map-card-status)[data-mark="working"] .ap-map-card-word{color:var(--oc-info-text,var(--oc-info))}
@@ -161,7 +195,7 @@ export const MAP_CSS = `
 .ap-map-mark[data-mark="skipped"]{border:1.5px dashed var(--oc-muted)}
 .ap-map-mark[data-mark="skipped"]::after{width:6px;height:1.5px;background:var(--oc-muted)}
 .ap-map-mark[data-mark="pending"]{border:1.5px solid color-mix(in srgb,var(--oc-muted) 75%,transparent)}
-/* Inspector: literal text; stacked in the rail, beside the canvas on a wide board */
+/* Inspector: literal text; stacked in the rail and a narrow board, over the canvas on a wide board */
 .ap-map-inspector{display:flex;flex-direction:column;gap:10px;min-width:0;padding:12px 14px;border-radius:var(--oc-radius,10px);background:var(--oc-muted-surface)}
 .ap-map-inspector .ap-map-card-status{font-size:12px;flex-wrap:wrap}
 .ap-map-inspector-title{font-size:14px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
@@ -201,10 +235,22 @@ export const MAP_CSS = `
 .ap-map-card[data-related]{border-color:CanvasText}
 .ap-map-card-rel{color:CanvasText;border-color:CanvasText}
 .ap-map-toolbar{border-color:CanvasText}
+.ap-map-inspector[data-placement="over"]{border:2px solid CanvasText;background:Canvas;box-shadow:none}
+.ap-map-close{border:1px solid ButtonText;background:ButtonFace;color:ButtonText}
 .ap-map .ap-map-edge[data-path]{stroke:Highlight;stroke-width:3}
 .ap-map .ap-map-marker-path .ap-map-arrowhead{fill:Highlight}
 .ap-map-edge,.ap-map-edge[data-tone="quiet"]{stroke:CanvasText}
 .ap-map-arrowhead,.ap-map-marker-open .ap-map-arrowhead,.ap-map-marker-quiet .ap-map-arrowhead{fill:CanvasText}
+/* Arrow state without colour: round beads, a thicker blocked line with its bar, dashes for skipped;
+   chain lines, beads and heads in Highlight. */
+.ap-map .ap-map-edge[data-arrow="working"]:not([data-path]){stroke:CanvasText;stroke-width:1}
+.ap-map .ap-map-edge[data-arrow="working"][data-path]{stroke:Highlight;stroke-width:1.5}
+.ap-map .ap-map-edge[data-arrow="blocked"]:not([data-path]){stroke:CanvasText;stroke-width:2.5}
+.ap-map .ap-map-bead{stroke:CanvasText}
+.ap-map .ap-map-bead[data-chain]{stroke:Highlight}
+.ap-map :is(.ap-map-marker-working,.ap-map-marker-blocked) .ap-map-arrowhead{fill:CanvasText}
+.ap-map .ap-map-marker-blocked-path .ap-map-arrowhead{fill:Highlight}
+.ap-map .ap-map-stopbar{fill:CanvasText}
 .ap-map-stat,.ap-map-tag,.ap-map-card-unlocks{border:1px solid CanvasText}
 .ap-map-notice:is([data-tone="quiet"],[data-tone="warning"]){border-left-color:CanvasText}
 .ap-map-mark[data-mark]{border-color:CanvasText;background:Canvas}

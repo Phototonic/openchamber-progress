@@ -7,14 +7,16 @@ import { EMPTY_LIVE, LiveWorkspace, type LiveSession, type LiveSnapshot } from '
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { stripTypeScriptTypes } from 'node:module';
 import { censusFor, CENSUS_LIMITS, currentFor, isComplete, observe, planFacts, type Census } from '../../ui/shared/census.ts';
-import { parsePlanPage, parsePlansPage, parseRunRead } from '../../ui/shared/adapter.ts';
+import { parsePlanPage, parsePlansPage, parseRunRead, parseDismissLossReply } from '../../ui/shared/adapter.ts';
 import { participantIndex, type PlanDetail, type PlanView } from '../../ui/shared/model.ts';
 import { refreshLabels } from '../../ui/shared/components.ts';
 import { RunsController, type RunsPanel } from '../../ui/shared/runs.ts';
 import { EARLIER_STEP, ExecutionBaselines, rosterFor, ranOf, type RosterInput } from '../../ui/shared/subagents.ts';
-import { earlierPager } from '../../ui/shared/census-view.ts';
-import type { RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
+import { cueTone, earlierPager, routineNote } from '../../ui/shared/census-view.ts';
+import type { DismissLossReply, DismissLossRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { seedRunReadFixture } from '../fixtures/subagent-activity-runs.ts';
 import { at, planPage, plansPage, summary } from './fixtures.ts';
 
@@ -278,7 +280,7 @@ function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: 
     capture: { enabled: true, state: 'last-known', loss: false }, recovery: { state: 'complete', reason: null, token: null }, counts: { ...c, ...counts },
     coverage: { scope: 'retained', complete: true, reasons: [] }, data: rows, nextCursor: null, ...extra };
 }
-const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, continuation: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, ...extra });
+const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, continuation: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, dismissLoss() {}, lossDismissal: 'idle', lossDismissalFailure: null, ...extra });
 const input = (extra: Partial<RosterInput> = {}): RosterInput => ({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, snap()), runs: null, verified: true, currentSession: 'A', ...extra });
 
 test('defect A: no plan in scope means no roster at all, even with running children and run rows', () => {
@@ -698,6 +700,226 @@ function historyHarness(posts: { status: number; error?: string }[]) {
 }
 const notesOf = (p: RunsPanel) => rosterFor(input({ runs: p }))!.notes.map((n) => n.kind);
 
+// Recording-gap protocol and visit races: all service replies are explicitly released, never timed.
+function lossRead(sequence = 1, dismissedThrough = 0, age = 0): RunRead {
+  return readOf([run('running')], {}, { runFormat: 2, revision: 7 + sequence + dismissedThrough, readAt: T0 + age,
+    capture: { enabled: true, state: 'last-known', loss: true, lossNotice: { sequence, dismissedThrough, lastLossAt: sequence ? T0 : null, attention: sequence > dismissedThrough && sequence > 0 && Math.max(0, age) < 86_400_000 } },
+    coverage: { scope: 'retained', complete: false, reasons: ['capture-loss'] } });
+}
+const lossRequest = (r: RunRead): RunRequest => ({ storeId: r.storeId, binding: r.sourceBinding, source: r.source, root: r.root, plan: r.plan!, cleanupRev: r.cleanupRev!, view: 'useful' });
+const dismissalRequest = (r: RunRead): DismissLossRequest => { const { storeId, binding, source, root } = lossRequest(r); return { storeId, binding, source, root, observedLossSequence: r.capture.lossNotice!.sequence }; };
+function lossAck(r: RunRead, sequence = r.capture.lossNotice!.sequence, coalesced = false): DismissLossReply {
+  return { protocolVersion: 2, schemaVersion: 2, runFormat: 2, storeId: r.storeId, sourceBinding: r.sourceBinding, source: r.source, root: r.root, revision: r.revision, readAt: r.readAt, capture: r.capture, acknowledgedLossSequence: sequence, coalesced };
+}
+const settleLoss = async () => { for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+function lossHarness(base = lossRead()) {
+  const requests: { q: any; resolve: (r: { status: number; body: string }) => void }[] = [];
+  let visible = true, paints = 0;
+  const ctl = new RunsController({ visible: () => visible, changed: () => { paints++; }, service: () => ({ serviceRequest: (q) => new Promise((resolve) => { requests.push({ q, resolve }); }) }) });
+  const claim = { owner: 'account-a', request: lossRequest(base), capable: true, captureEnabled: true };
+  const paint = () => { ctl.beginPaint(); const p = ctl.claim(claim); ctl.endPaint(); return p; };
+  const take = (method = 'GET') => { const i = requests.findIndex((x) => x.q.method === method); assert.notEqual(i, -1, `expected ${method}`); return requests.splice(i, 1)[0]; };
+  const reply = async (held: ReturnType<typeof take>, value: unknown, status = 200) => { held.resolve({ status, body: JSON.stringify(value) }); await settleLoss(); };
+  return { ctl, claim, paint, take, reply, requests, paints: () => paints, hide: () => { visible = false; ctl.hidden(); }, show: () => { visible = true; } };
+}
+
+test('recording gaps: format-2 metadata is mandatory and internally consistent; legacy absence is not a migrated date', () => {
+  const recent = lossRead(), q = lossRequest(recent);
+  const parse = (r: RunRead) => parseRunRead(JSON.stringify(r), q);
+  assert.deepEqual(parse(recent).capture.lossNotice, recent.capture.lossNotice);
+  const badNotices = [undefined, null, { sequence: -1 }, { sequence: 1.5 }, { sequence: Number.MAX_SAFE_INTEGER + 1 },
+    { dismissedThrough: 2 }, { dismissedThrough: -1 }, { lastLossAt: -1 }, { lastLossAt: 8_640_000_000_000_001 },
+    { lastLossAt: 1.5 }, { lastLossAt: null }, { attention: false }, { attention: 'true' },
+    { sequence: 0, lastLossAt: null, dismissedThrough: 1, attention: false }, { sequence: 0, attention: false }];
+  for (const bad of badNotices) {
+    const r = structuredClone(recent);
+    r.capture.lossNotice = bad && typeof bad === 'object' ? { ...r.capture.lossNotice!, ...bad } as any : bad as any;
+    assert.throws(() => parse(r), JSON.stringify(bad));
+  }
+  assert.throws(() => parse({ ...recent, capture: { ...recent.capture, lossNotice: {} as any } }));
+  for (const change of [ { runFormat: 1 }, { runFormat: null }, { runFormat: 3 }, { availability: 'unavailable', subagentRuns: null },
+    { capture: { ...recent.capture, loss: false } }, { coverage: { scope: 'retained', complete: true, reasons: [] } } ]) {
+    assert.throws(() => parse({ ...recent, ...change } as RunRead));
+  }
+  const none = readOf([]); none.runFormat = 2;
+  none.capture.lossNotice = { sequence: 0, lastLossAt: null, dismissedThrough: 0, attention: false };
+  assert.equal(parse(none).capture.lossNotice!.sequence, 0);
+  const migrated = parse(lossRead(0));
+  const legacy = { ...recent, runFormat: 1 as const, capture: { enabled: true, state: 'last-known' as const, loss: true } };
+  assert.equal(parse(legacy).capture.lossNotice, undefined);
+  for (const [r, dateKind] of [[migrated, 'migrated-unknown'], [parse(legacy), 'legacy-unknown']] as const) {
+    const note = rosterFor(input({ runs: panel(r) }))!.notes.find((n) => n.kind === 'capture-loss')!;
+    assert.deepEqual(note, { kind: 'capture-loss', lastLossAt: null, dateKind, attention: false, canDismiss: false });
+  }
+  const unavailable = { ...none, runFormat: null, subagentRuns: null, availability: 'unavailable', capture: { enabled: true, state: 'unavailable', loss: false } } as RunRead;
+  assert.equal(parse(unavailable).availability, 'unavailable');
+  assert.throws(() => parse({ ...unavailable, runFormat: 2 }));
+});
+
+test('the unmodified preceding guest adapter accepts new-service format-2 replies and retains permanent loss', async () => {
+  // The released adapter is byte-identical to the pre-format-2 adapter, unlike the unavailable feature commit.
+  const source = execFileSync('git', ['show', 'refs/tags/v1.0.0:ui/shared/adapter.ts'], { encoding: 'utf8' });
+  const js = stripTypeScriptTypes(source).replace(/from '(\.[^']+)'/g, (_match, specifier) => `from '${new URL(specifier, new URL('../../ui/shared/adapter.ts', import.meta.url)).href}'`);
+  const oldGuest = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+  for (const r of [lossRead(), lossRead(1, 1), lossRead(0)]) {
+    const read = oldGuest.parseRunRead(JSON.stringify(r), lossRequest(r));
+    assert.equal(read.capture.loss, true); assert.equal(read.coverage.complete, false);
+    assert.ok(read.coverage.reasons.includes('capture-loss'));
+  }
+});
+
+test('recording gaps: attention follows server readAt across the 24-hour boundary and reversed time, not browser Date.now', () => {
+  const original = Date.now; Date.now = () => T0 + 999 * 86_400_000;
+  try {
+    for (const [age, attention] of [[-1, true], [86_399_999, true], [86_400_000, false]] as const) {
+      const r = lossRead(1, 0, age), parsed = parseRunRead(JSON.stringify(r), lossRequest(r));
+      const note = rosterFor(input({ runs: panel(parsed) }))!.notes.find((n) => n.kind === 'capture-loss')!;
+      assert.equal(note.attention, attention); assert.equal(note.canDismiss, attention);
+      assert.equal(note.lastLossAt, T0); assert.equal(note.dateKind, 'known');
+      assert.equal(parsed.coverage.complete, false);
+    }
+    const dismissed = lossRead(1, 1, -1);
+    assert.equal(parseRunRead(JSON.stringify(dismissed), lossRequest(dismissed)).capture.lossNotice!.attention, false);
+  } finally { Date.now = original; }
+});
+
+test('recording-gap acknowledgements: validate identity, fence, state, attention and envelope instead of trusting HTTP success', () => {
+  const r = lossRead(1, 1), q = dismissalRequest(r), ack = lossAck(r);
+  const parse = (v: unknown) => parseDismissLossReply(JSON.stringify(v), q);
+  assert.deepEqual(parse(ack), ack);
+  for (const change of [{ protocolVersion: 1 }, { schemaVersion: 1 }, { runFormat: 1 }, { storeId: 'other-store' }, { source: 'other-source' },
+    { root: 'other-root' }, { sourceBinding: { ...r.sourceBinding, verified: false } }, { acknowledgedLossSequence: 2 },
+    { revision: -1 }, { readAt: 1.5 }, { coalesced: null }, { capture: { ...r.capture, lossNotice: undefined } },
+    { capture: { ...r.capture, lossNotice: { ...r.capture.lossNotice!, dismissedThrough: 0, attention: true } } },
+    { capture: { ...r.capture, lossNotice: { ...r.capture.lossNotice!, attention: true } } }]) assert.throws(() => parse({ ...ack, ...change }));
+  const newer = lossRead(2, 1);
+  assert.equal(parse(lossAck(newer, 1, true)).capture.lossNotice!.attention, true, 'a successful duplicate can still warn');
+  assert.throws(() => parse(lossAck(newer, 1, false)), 'a non-coalesced acknowledgement cannot claim a newer sequence');
+});
+
+test('dismissal immediately applies acknowledged metadata, preserves counts and loss, blocks duplicates and refreshes normally', async () => {
+  const base = lossRead(); base.capture.enabled = false;
+  const h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+  const before = h.paint(), paints = h.paints();
+  before.dismissLoss(); before.dismissLoss();
+  assert.equal(h.paint().lossDismissal, 'pending'); assert.ok(h.paints() > paints);
+  assert.equal(h.requests.length, 1);
+  const post = h.take('POST'); assert.equal(post.q.path, '/v1/subagent-runs/dismiss-loss');
+  assert.deepEqual(JSON.parse(post.q.body), dismissalRequest(base)); assert.equal(post.q.query, undefined);
+  const dismissed = { ...base, revision: base.revision + 1, capture: { ...base.capture, lossNotice: { ...base.capture.lossNotice!, dismissedThrough: 1, attention: false } } };
+  await h.reply(post, lossAck(dismissed));
+  const immediate = h.paint();
+  assert.equal(immediate.lossDismissal, 'success'); assert.equal(immediate.read!.capture.lossNotice!.attention, false);
+  assert.deepEqual(immediate.read!.counts, before.read!.counts); assert.deepEqual(immediate.featured, before.featured);
+  assert.equal(immediate.read!.capture.loss, true); assert.equal(immediate.read!.coverage.complete, false);
+  assert.ok(notesOf(immediate).includes('capture-loss'));
+  assert.equal(h.take().q.method, 'GET', 'ack starts the existing first-page refresh');
+  before.dismissLoss(); assert.equal(h.requests.length, 0, 'detached control cannot resubmit');
+});
+
+test('dismissal retires held pre-write reads, pages and cursors; a stale read cannot restore attention', async () => {
+  const base = lossRead(); base.nextCursor = 'old-cursor';
+  const h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+  h.ctl.poll(); const oldRead = h.take();
+  h.paint().showMore(0, 0, 10); const oldPage = h.take();
+  h.paint().dismissLoss(); const post = h.take('POST');
+  assert.equal(h.paint().continuation, false); assert.equal(h.paint().paging, false);
+  const dismissed = lossRead(1, 1);
+  await h.reply(post, lossAck(dismissed)); const refresh = h.take();
+  await h.reply(oldRead, base); await h.reply(oldPage, { ...base, data: [run('succeeded')] });
+  assert.equal(h.paint().read!.capture.lossNotice!.attention, false); assert.deepEqual(h.paint().more, []);
+  assert.equal(h.paint().continuation, false);
+  await h.reply(refresh, base); // even a fresh request answered by an older snapshot cannot roll back revision
+  assert.equal(h.paint().read!.revision, dismissed.revision);
+});
+
+test('a delayed acknowledgement never suppresses a newer loss already read, including a successful duplicate with attention', async () => {
+  for (const duplicate of [false, true]) {
+    const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+    h.paint().dismissLoss(); const post = h.take('POST');
+    h.ctl.poll(); const newer = lossRead(3, 1); await h.reply(h.take(), newer);
+    const ack = duplicate ? lossAck(lossRead(2, 1), 1, true) : lossAck(lossRead(1, 1));
+    await h.reply(post, ack);
+    assert.equal(h.paint().read!.capture.lossNotice!.sequence, 3);
+    assert.equal(h.paint().read!.capture.lossNotice!.attention, true);
+    assert.equal(h.paint().lossDismissal, 'idle');
+  }
+  const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+  h.paint().dismissLoss(); await h.reply(h.take('POST'), lossAck(lossRead(2, 1), 1, true));
+  assert.equal(h.paint().read!.capture.lossNotice!.sequence, 2, 'apply a newer successful duplicate without quieting it');
+  assert.equal(h.paint().lossDismissal, 'idle');
+});
+
+test('at equal revision, a delayed acknowledgement cannot replace a later service observation of attention', async () => {
+  const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+  h.paint().dismissLoss(); const post = h.take('POST');
+  const newer = lossRead(2, 1, 86_400_000); h.ctl.poll(); await h.reply(h.take(), newer);
+  const earlier = { ...newer, readAt: T0, capture: { ...newer.capture, lossNotice: { ...newer.capture.lossNotice!, attention: true } } };
+  await h.reply(post, lossAck(earlier, 1, true));
+  assert.equal(h.paint().read!.capture.lossNotice!.attention, false);
+  assert.equal(h.paint().read!.readAt, newer.readAt);
+});
+
+test('dismissal distinguishes stale-sequence conflict, retryable failure and malformed success without hiding loss', async () => {
+  for (const [status, value, state] of [[409, { error: 'conflict' }, 'conflict'], [503, { error: 'busy' }, 'error'], [200, {}, 'error']] as const) {
+    const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+    h.paint().dismissLoss(); await h.reply(h.take('POST'), value, status);
+    assert.equal(h.paint().lossDismissal, state); assert.ok(h.paint().lossDismissalFailure);
+    assert.equal(h.paint().read!.capture.lossNotice!.attention, true);
+    await h.reply(h.take(), base);
+    h.paint().dismissLoss(); assert.equal(h.take('POST').q.method, 'POST', 'explicit retry remains possible');
+  }
+});
+
+test('store, binding, account, root, absent-section and hidden visits retire dismissal results and detached controls', async () => {
+  for (const change of ['store', 'binding', 'account', 'root', 'absent', 'hidden', 'disposed']) {
+    const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+    const detached = h.paint(); detached.dismissLoss(); const post = h.take('POST');
+    if (change === 'store') h.claim.request = { ...h.claim.request, storeId: 'store-2' };
+    if (change === 'binding') h.claim.request = { ...h.claim.request, binding: { sourceId: 'source-2', verified: true } };
+    if (change === 'account') h.claim.owner = 'account-b';
+    if (change === 'root') h.claim.request = { ...h.claim.request, root: 'B' };
+    if (change === 'absent') { h.ctl.beginPaint(); h.ctl.endPaint(); }
+    else if (change === 'disposed') h.ctl.retire();
+    else if (change === 'hidden') h.hide();
+    else h.paint();
+    const paints = h.paints();
+    await h.reply(post, lossAck(lossRead(1, 1)));
+    assert.equal(h.paints(), paints, change);
+    if (change === 'hidden') h.show();
+    const n = h.requests.length; detached.dismissLoss();
+    assert.equal(h.requests.length, n, `${change}: detached action sends nothing`);
+    assert.equal(JSON.parse(post.q.body).storeId, base.storeId, 'sent write keeps captured identity');
+  }
+});
+
+test('legacy and migrated unknown gaps offer no dismissal request; ordinary refresh repaints age-out without revision changes', async () => {
+  for (const r of [lossRead(0), { ...lossRead(), runFormat: 1 as const, capture: { enabled: true, state: 'last-known' as const, loss: true } }]) {
+    const h = lossHarness(r); h.paint(); await h.reply(h.take(), r);
+    h.paint().dismissLoss(); assert.equal(h.requests.length, 0);
+  }
+  const recent = lossRead(1, 0, 86_399_999), h = lossHarness(recent); h.paint(); await h.reply(h.take(), recent);
+  const paints = h.paints(); h.ctl.poll(); const old = { ...recent, readAt: T0 + 86_400_000, capture: { ...recent.capture, lossNotice: { ...recent.capture.lossNotice!, attention: false } } };
+  await h.reply(h.take(), old);
+  assert.ok(h.paints() > paints); assert.equal(h.paint().read!.revision, recent.revision);
+  assert.equal(h.paint().read!.capture.lossNotice!.attention, false);
+});
+
+test('an unchanged poll keeps the painted dismissal usable, but a newer detection or a replacement paint retires that control', async () => {
+  for (const change of ['identical-poll', 'new-loss', 'replacement-paint']) {
+    const base = lossRead(), h = lossHarness(base); h.paint(); await h.reply(h.take(), base);
+    const control = h.paint();
+    if (change === 'replacement-paint') h.paint();
+    else {
+      const paints = h.paints(); h.ctl.poll();
+      await h.reply(h.take(), change === 'new-loss' ? lossRead(2) : { ...base, readAt: base.readAt + 1 });
+      if (change === 'identical-poll') assert.equal(h.paints(), paints, 'no repaint for server read time alone');
+    }
+    control.dismissLoss();
+    assert.equal(h.requests.length, change === 'identical-poll' ? 1 : 0, change);
+  }
+});
+
 test('history request: a transient failure of the automatic request is retried on later polls (backed off), then never repeated', async () => {
   const h = historyHarness([{ status: 503, error: 'busy' }, { status: 200 }]);
   h.paint(); await h.flush();
@@ -771,6 +993,54 @@ test('host row limit: a truncated host census is disclosed and host-only counts 
   assert.ok(!at.notes.some((n) => n.kind === 'host-truncated'));
   assert.equal(at.hostTruncated, false);
   assert.deepEqual(at.summary.map((s) => s.text), ['1 waiting on you', '127 running']);
+});
+
+test('coverage cue: routine notes go behind the rail/board "Partial" cue; unavailability, failures, loading and capture off stay visible', () => {
+  const kinds = (r: ReturnType<typeof rosterFor>) => r!.notes.filter(routineNote).map((n) => n.kind);
+  const visible = (r: ReturnType<typeof rosterFor>) => r!.notes.filter((n) => !routineNote(n)).map((n) => n.kind);
+  const kids = [rec('A', null), ...Array.from({ length: 129 }, (_, i) => rec(`H${i}`, 'A', { createdAt: i, activity: 'running' }))];
+  // Storage loss, partly loaded history and a hit host limit: all routine, nothing visible.
+  const routine = rosterFor(input({ census: censusFor('A', alpha.directory, snap(kids)), runs: panel(readOf([run('succeeded')], {}, { capture: { enabled: true, state: 'last-known', loss: true }, recovery: { state: 'partial', reason: null, token: 't' } })) }))!;
+  assert.deepEqual(kinds(routine), ['capture-loss', 'history-partial', 'host-truncated']);
+  assert.deepEqual(visible(routine), []);
+  // Capture off and history off: capture off stays a visible line, history off is routine.
+  const off = rosterFor(input({ runs: panel(readOf([run('succeeded')], {}, { capture: { enabled: false, state: 'last-known', loss: false }, recovery: { state: 'not-requested', reason: null, token: null } })) }))!;
+  assert.deepEqual([visible(off), kinds(off)], [['capture-off'], ['history-off']]);
+  // A complete read says nothing: no cue at all.
+  assert.deepEqual(rosterFor(input({ runs: panel(readOf([run('succeeded')])) }))!.notes, []);
+  // The agreed split for every note kind.
+  // Behind the cue nothing is orange: every routine note has the neutral tone.
+  for (const kind of ['capture-loss', 'history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) {
+    assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), true, kind);
+    assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral', kind);
+  }
+  for (const kind of ['runs-unavailable', 'runs-error', 'history-failed', 'history-request-failed', 'host-activity-unavailable', 'capture-off', 'history-loading', 'history-unavailable'] as const) assert.equal(routineNote({ kind } as Parameters<typeof routineNote>[0]), false, kind);
+});
+
+test('recording gap: attention and dismissal come from the service; the gap stays listed, routine and incomplete', () => {
+  const at = T0 + 200_000; // readOf's service read time
+  const notice = (n: { sequence: number; lastLossAt: number | null; dismissedThrough: number }) => ({ ...n, attention: n.lastLossAt !== null && Math.max(0, at - n.lastLossAt) < 86_400_000 && n.sequence > n.dismissedThrough });
+  const read = (format: 1 | 2, n?: Parameters<typeof notice>[0]) => readOf([run('succeeded')], {}, {
+    runFormat: format, capture: { enabled: true, state: 'last-known', loss: true, ...(n ? { lossNotice: notice(n) } : {}) },
+    coverage: { scope: 'retained', complete: false, reasons: ['capture-loss'] },
+  } as Partial<RunRead>);
+  const loss = (r: RunRead) => {
+    const roster = rosterFor(input({ runs: panel(r) }))!;
+    const n = roster.notes.find((x) => x.kind === 'capture-loss');
+    assert.ok(n && n.kind === 'capture-loss', 'the gap is always listed while loss is recorded');
+    assert.ok(routineNote(n), 'behind the Partial cue, never a visible line');
+    return { lastLossAt: n.lastLossAt, dateKind: n.dateKind, attention: n.attention, canDismiss: n.canDismiss, tone: cueTone(n) };
+  };
+  // Recent and undismissed: warning tone, its stored date, dismissable.
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 2 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: true, canDismiss: true, tone: 'warning' });
+  // Exactly 24 hours old, or dismissed: muted, the same date kept, no control.
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 86_400_000, dismissedThrough: 2 })), { lastLossAt: at - 86_400_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(2, { sequence: 3, lastLossAt: at - 60_000, dismissedThrough: 3 })), { lastLossAt: at - 60_000, dateKind: 'known', attention: false, canDismiss: false, tone: 'neutral' });
+  // Migrated before dates were kept, and an older service without the metadata: unknown, muted.
+  assert.deepEqual(loss(read(2, { sequence: 0, lastLossAt: null, dismissedThrough: 0 })), { lastLossAt: null, dateKind: 'migrated-unknown', attention: false, canDismiss: false, tone: 'neutral' });
+  assert.deepEqual(loss(read(1)), { lastLossAt: null, dateKind: 'legacy-unknown', attention: false, canDismiss: false, tone: 'neutral' });
+  // The seam: only an attended gap is orange; every other routine note stays neutral.
+  for (const kind of ['history-partial', 'host-truncated', 'traversal-limit', 'host-gaps', 'history-off'] as const) assert.equal(cueTone({ kind } as Parameters<typeof cueTone>[0]), 'neutral');
 });
 
 test('pager: stays while a continuation cursor exists, even when the estimate says nothing is left (all surfaces)', () => {

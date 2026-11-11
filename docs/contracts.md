@@ -657,6 +657,10 @@ Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET
   configured stores that cannot open (unavailable, corrupt, busy or unknown-schema)
   also stay200/ok:true,ready:false,sqlite:false with their fixed diagnostics — the
   host marks readiness on /health 200 — while store routes keep503 fixed codes.
+  This includes unsupported run storage formats as well as newer base schema
+  versions: admission validates run storage without migration, health reports
+  `schema`, setup status stays reachable, and all store-backed routes refuse
+  with503/`{"error":"schema"}` without changing the store.
 - `/v1/plans?cursor=0&limit=20&source=ID&session=ID&directory=TEXT`: filters optional;
   `{...Envelope,...Page<PlanSummary>}`. Cursor is an offset; continuation reads
   may see newer revisions, not a falsely frozen cross-request snapshot.
@@ -1250,7 +1254,25 @@ only when stable state is absent; stable state always wins. See docs/setup.md.
 Configured store availability is independent of descriptor ownership. A valid
 descriptor with an unreadable store remains configured=true with retained targets,
 captureEnabled=null and the existing fixed store diagnostic (for example storage,
-corrupt or schema). Health/reads return503 instead of an unconfigured success.
+corrupt or schema). Health returns200/ready=false with fixed diagnostics;
+store-backed reads return503 instead of an unconfigured success.
+Install/update preflight an existing target store's run compatibility read-only
+before selecting payloads or changing the binding. Exact supported activation
+inputs are accepted too, including epochless format 1; preflight never migrates.
+Unsupported (future, foreign or partial) run storage found by preflight
+returns503/`{"error":"schema"}` with installation, activation and store unchanged.
+Preflight does not cover another process upgrading the store during the action:
+store or installation changes may occur before admission subsequently refuses
+the unsupported store with `schema`. No automatic rollback restores those changes.
+The capture-disabling fallback for binding persistence/validation failures checks
+run compatibility and disables capture in one immediate transaction. It never
+disables an unsupported store; readable stores and exact supported activation
+inputs retain the existing fallback behavior.
+An exact epochless format-1 store is admitted for setup and progress reads:
+health is200/ready=true without `subagentRuns:1`, not a store-wide `schema`
+failure. Direct run reads still return503/`{"error":"schema"}` until explicit
+companion activation migrates it. The missing capability means run reads are
+unavailable, not that run storage is absent or safe to initialize from a guest.
 Health/setup/read requests each make one bounded open/validation attempt so a
 restored store recovers without restarting; no automatic mutation or retry loop.
 Pending reload survives a service restart. After successful tool/skill/RPC setup,
@@ -1399,14 +1421,15 @@ apply; list/history routes gain no discovery or authorization semantics.
 
 ## Sub-agent runs revision 1 — read seam
 
-The optional additive run-format 1 extension leaves base schema/protocol 2 and
+The optional additive run-format 2 extension leaves base schema/protocol 2 and
 all progress snapshots unchanged. Only companion activation initializes it, in
 one validated transaction. Missing extension means **unavailable**, not zero
 certified runs. Partial, foreign or future definitions fail closed without repair.
 `/health` advertises `subagentRuns:1` only for a valid supported extension.
 
 The authoritative TypeScript read contract is `shared/subagent-runs.ts`:
-`RunRequest`, `ReconcileRequest`, `RunRow`, `RunRead`, and `RUN_LIMITS`.
+`RunRequest`, `ReconcileRequest`, `DismissLossRequest`, `DismissLossReply`,
+`LossNotice`, `RunRow`, `RunRead`, and `RUN_LIMITS`.
 `tests/fixtures/subagent-activity-runs.ts` builds a deterministic representative
 read using real Store operations (mixed runs and a separate historical session).
 
@@ -1423,7 +1446,7 @@ read using real Store operations (mixed runs and a separate historical session).
   generation and view. It supplies capability/format, availability, server
   `readAt`, monotonic run-data `revision`, capture/recovery state, retained scope
   counts, coverage reasons, at most 50 `data` rows and `nextCursor`.
-  Millisecond timestamps refer to their stated native/dispatch provenance;
+  Millisecond run timestamps refer to their stated native/dispatch provenance;
   `readAt` never refreshes activity or execution time. Cursor identity and
   revision must still agree; consumers restart a window on conflict.
 - Counts distinguish distinct child sessions, dispatch runs and historical
@@ -1465,7 +1488,7 @@ read using real Store operations (mixed runs and a separate historical session).
 
 Bounds are 1,024 retained rows per immediate parent, 16,384 per store, 256
 constant-size unmatched child intervals, 64 pending/running recovery jobs,
-50 rows/page, 4 KiB/row and cursor, 16 KiB/query or reconciliation request and
+50 rows/page, 4 KiB/row and cursor, 16 KiB/query or run POST request and
 256 KiB/response. Recovery traverses at most 2,000 discovered records, depth 32,
 64 native calls and 10 seconds cooperative elapsed per attempt; native list
 pages are at most 50. Metadata descriptions/titles are flattened and capped at
@@ -1473,6 +1496,74 @@ pages are at most 50. Metadata descriptions/titles are flattened and capped at
 80-character tokens or `unknown`. No prompts, transcripts, outputs, raw events,
 error messages/bodies or non-allowlisted metadata are serialized by capture.
 These are field allowlists, not secret redaction of deliberately supplied prose.
+
+### Recording-gap attention and acknowledgement
+
+`subagentRuns:1` and base schema/protocol 2 remain unchanged. `runFormat` is 2
+after explicit activation. Format-2 `capture` always includes
+`lossNotice:{sequence,lastLossAt,dismissedThrough,attention}` alongside unchanged
+`enabled`, `state` and permanent `loss`. Sequences are nonnegative safe integers;
+`dismissedThrough <= sequence`. Sequence zero requires null time and checkpoint
+zero; positive sequence requires loss and nonnegative integer milliseconds within
+the JavaScript Date range. Fresh/no-loss state is zero/null/zero/false. Migrated
+version-1 loss retains loss with zero/null/zero/false: no date is invented.
+
+Detection time is backend wall-clock `Date.now()`, not native event, dispatch or
+browser time. Every persisted detection advances the sequence, including equal or
+backwards timestamps. `attention = loss && lastLossAt !== null &&
+max(0, readAt - lastLossAt) < 86_400_000 && sequence > dismissedThrough`.
+Exactly 24 hours is old; future-relative times have age zero. Clock corrections
+can extend/restore undismissed attention or age it out. Dismissal is sequence-based,
+not elapsed-time-based. Time passage changes no stored state/revision. Loss always
+retains `capture-loss` and incomplete coverage, irrespective of attention.
+
+Query-free authenticated `POST /v1/subagent-runs/dismiss-loss` accepts exactly:
+
+```ts
+{ storeId, binding: { sourceId, verified }, source, root, observedLossSequence }
+```
+
+The observed sequence is a positive safe integer. The existing 16 KiB run-body
+bound, strict UTF-8/JSON, duplicate-key rejection (including escaped spellings)
+and unknown-key refusal apply. Store ID/current binding must agree, source must
+be verified, and root already known. Root is authorization context, not dismissal
+scope. Capture disabled does not block this preference. No new credentials,
+grants, filesystem input, task changes or native facts are accepted.
+
+Inside `BEGIN IMMEDIATE`, format 2 is required. A fence equal to the current
+positive sequence advances the checkpoint, bumping revision only on change.
+A fence at/below the persisted checkpoint returns a successful no-op even if
+a newer gap exists. Other stale/future fences return `409 {error:'conflict'}`
+without changes. This serializes both orders against loss writes; a later gap
+always has a greater sequence. Successful replies contain exactly:
+
+```ts
+{
+  protocolVersion: 2, schemaVersion: 2, runFormat: 2,
+  storeId, sourceBinding: { sourceId, verified }, source, root,
+  revision, readAt, capture, acknowledgedLossSequence, coalesced
+}
+```
+
+`capture` includes the current notice, and `acknowledgedLossSequence` echoes the
+requested fence. `coalesced` is true for an already-acknowledged no-op. A 200 may
+still contain newer active attention; consumers validate the envelope rather than
+optimistically hiding it. Reply bounds and fixed error handling match run routes:
+missing bearer 401/unauthorized, malformed input 400/invalid, oversized body
+413/request-too-large, unknown root 404/not-found, identity mismatch 409/conflict,
+wrong method 405/method-not-allowed, queries 404/not-found, and schema/storage/busy
+failures 503 with their fixed code. Failed commits cannot acknowledge a gap.
+
+New reads support exact epoch-bearing format 1 without migrating: `runFormat:1`
+and no `lossNotice`. Absent extension remains unavailable with null format and no
+notice. Epochless version 1 still requires explicit activation. New run mutations
+(including reconciliation and dismissal) reject version 1 with schema until
+activation; independent progress operations are unaffected. Old services/guests
+retain their original reconciliation and loss presentation; an old guest ignores
+the additive notice but cannot dismiss. New guests treat genuine legacy gaps as
+unknown-date/non-attention without a control; malformed format-2 notice metadata
+is invalid, not legacy. Old run-aware binaries reject upgraded storage, including
+potential `503 schema` health. Do not down-migrate to restore them.
 
 ### Optional authored child handoff
 

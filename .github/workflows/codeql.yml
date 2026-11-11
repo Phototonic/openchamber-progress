@@ -9,6 +9,11 @@ on:
 permissions:
   security-events: write
   contents: read
+# A newer push to the same pull request supersedes its earlier run. Pushes to
+# main and dev are grouped by commit, so those runs always complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   analyze:
     name: Analyze JavaScript and TypeScript

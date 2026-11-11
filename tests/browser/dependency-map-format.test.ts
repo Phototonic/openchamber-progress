@@ -12,16 +12,17 @@ function harness() {
   const nodes: any[] = [];
   const el = (tag: string, className = '', text = ''): any => {
     const node = {
-      tag, className, dataset: {}, style: {}, childNodes: [] as any[], textContent: text,
+      tag, className, dataset: {}, style: {}, childNodes: [] as any[], textContent: text, ownerDocument: document,
       append(...children: any[]) { this.childNodes.push(...children); },
       replaceChildren(...children: any[]) { this.childNodes = children; },
+      insertBefore(child: any, before: any) { this.childNodes.splice(this.childNodes.indexOf(before), 0, child); },
       setAttribute() {}, addEventListener() {}, querySelector: () => null,
       isConnected: true,
     };
     nodes.push(node);
     return node;
   };
-  const document = { head: { querySelector: () => ({}) } };
+  const document = { head: { querySelector: () => ({}) }, addEventListener() {}, removeEventListener() {} };
   const exports: any = {};
   const js = ts.transpileModule(readFileSync(new URL('../../ui/shared/dependency-map-view.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },

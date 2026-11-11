@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { versionOneFixture } from './subagent-format-support.ts';
 import { setImmediate } from 'node:timers/promises';
 import { Store } from '../../shared/store.ts';
 import { createRunCapture } from '../../plugin/subagent-runs.ts';
@@ -218,8 +219,7 @@ test('observation tokens isolate simultaneous observers without invalidating an 
 test('observation explicit activation upgrades only the exact previous extension and fences epochless starts',async()=>{
   await fixture(async f=>{
     seed(f);await f.restart();
-    const trigger=String(f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name='runs_capture_epoch'").get()!.sql).replace(' UPDATE runs_observation_epoch SET invalid_through=epoch,epoch=epoch+1 WHERE singleton=1;','');
-    f.store.db.exec('DROP TRIGGER runs_capture_epoch; DROP TABLE runs_observation_epoch');f.store.db.exec(trigger);
+    versionOneFixture(f.store.db,true);
     f.store.db.exec("UPDATE runs_rows SET payload=json_remove(payload,'$._epoch')");
     f.store.installSubagentRuns();f.store.beginRunObservation();f.store.observeExecution(terminal);
     assert.equal(read(f).data[0]!.ran.state,'unknown');assert.equal(read(f).capture.loss,true);

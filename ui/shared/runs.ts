@@ -3,7 +3,7 @@
 // visit (plan → no plan, other root/plan/store, hidden, disposed) can neither repaint, continue
 // paging nor ask for history reconciliation.
 import type { ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
-import { readRuns, requestReconcile, type ReadFailure, type ServiceHost } from './source.ts';
+import { readRuns, requestReconcile, dismissRunLoss, type ReadFailure, type ServiceHost } from './source.ts';
 import { ExecutionBaselines } from './subagents.ts';
 
 export interface RunsClaim {
@@ -17,6 +17,7 @@ export interface RunsClaim {
 }
 export interface RunsHost { service: (current: () => boolean) => ServiceHost; visible: () => boolean; changed: () => void }
 export type RunsState = 'unavailable' | 'loading' | 'ready' | 'not-found' | 'error';
+export type LossDismissalState = 'idle' | 'pending' | 'success' | 'error' | 'conflict';
 export interface RunsPanel {
   state: RunsState;
   /** First useful page (summary counts, coverage, recovery). */
@@ -45,11 +46,16 @@ export interface RunsPanel {
   /** Shows `step` more of the earlier list, reading further pages only when `loaded` runs out. */
   showMore: (visible: number, loaded: number, step: number) => void;
   retryHistory: () => void;
+  /** Explicit, read-bound action. Surfaces decide whether to render a control. */
+  dismissLoss: () => void;
+  lossDismissal: LossDismissalState;
+  lossDismissalFailure: ReadFailure | null;
 }
 interface Visit {
   key: string; claim: RunsClaim; state: RunsState; read: RunRead | null; more: RunRow[];
   cursor: string | null; phase: 'useful' | 'history' | 'done'; paging: boolean; pageError: boolean;
   shown: number; loading: boolean; epoch: number; pageEpoch: number; reconciling: boolean; failure: ReadFailure | null; baselines: ExecutionBaselines;
+  mutationEpoch: number; controlEpoch: number; lossDismissal: LossDismissalState; lossDismissalFailure: ReadFailure | null;
 }
 /** Roots whose automatic history pass this frame already asked for (bounded; the service coalesces too). */
 const ASKED_LIMIT = 64;
@@ -71,7 +77,7 @@ export class RunsController {
   endPaint() { if (!this.claimed) this.retire(); }
   retire() { this.visit = null; }
   /** Hidden frame: in-flight replies are dropped; data stays for the next visible paint. */
-  hidden() { if (this.visit) { this.visit.epoch++; this.visit.pageEpoch++; this.visit.loading = false; this.visit.paging = false; this.visit.reconciling = false; } }
+  hidden() { if (this.visit) { this.visit.epoch++; this.visit.pageEpoch++; this.visit.mutationEpoch++; this.visit.controlEpoch++; this.visit.lossDismissal = 'idle'; this.visit.lossDismissalFailure = null; this.visit.loading = false; this.visit.paging = false; this.visit.reconciling = false; } }
   /** The frame's visible list poll: re-read the first useful page of the current visit. */
   poll() { const v = this.visit; if (v && v.claim.capable && !v.loading && this.host.visible()) void this.load(v); }
 
@@ -79,24 +85,32 @@ export class RunsController {
     this.claimed = true;
     const key = JSON.stringify([c.owner, c.request, c.capable, c.captureEnabled]);
     if (!this.visit || this.visit.key !== key) {
-      this.visit = { key, claim: c, state: c.capable ? 'loading' : 'unavailable', read: null, more: [], cursor: null, phase: 'useful', paging: false, pageError: false, shown: 0, loading: false, epoch: 0, pageEpoch: 0, reconciling: false, failure: null, baselines: new ExecutionBaselines() };
+      this.visit = { key, claim: c, state: c.capable ? 'loading' : 'unavailable', read: null, more: [], cursor: null, phase: 'useful', paging: false, pageError: false, shown: 0, loading: false, epoch: 0, pageEpoch: 0, reconciling: false, failure: null, baselines: new ExecutionBaselines(), mutationEpoch: 0, controlEpoch: 0, lossDismissal: 'idle', lossDismissalFailure: null };
       if (c.capable && this.host.visible()) void this.load(this.visit);
     }
     const v = this.visit;
     const live = () => this.visit === v && this.host.visible();
+    const reading = v.read, controlEpoch = ++v.controlEpoch;
     return {
       state: v.state, read: v.read, featured: v.read?.data ?? [], more: v.more,
       hasMore: v.state === 'ready' && v.phase !== 'done', continuation: v.state === 'ready' && v.phase !== 'done' && v.cursor !== null, paging: v.paging, pageError: v.pageError, shown: v.shown,
       reconciling: v.reconciling, failure: v.failure, baselines: v.baselines,
       historyRequestFailed: this.asked.get(this.rootKey(v) ?? '')?.state === 'failed',
       showMore: (visible, loaded, step) => {
-        if (!live()) return;
+        if (!live() || v.lossDismissal === 'pending') return;
         v.shown = visible + step;
         // Read on demand only when the loaded rows run out.
         if (v.shown > loaded && v.phase !== 'done' && !v.paging) void this.page(v, v.shown - loaded);
         else this.host.changed();
       },
       retryHistory: () => { if (live()) void this.reconcile(v, v.read?.recovery.token ?? undefined, true); },
+      lossDismissal: v.lossDismissal, lossDismissalFailure: v.lossDismissalFailure,
+      dismissLoss: () => {
+        // An identical poll replaces the snapshot without repainting. Bind to the painted fence,
+        // not object identity, while retiring controls from earlier paints and changed detections.
+        if (live() && controlEpoch === v.controlEpoch && reading?.runFormat === v.read?.runFormat
+          && reading?.capture.lossNotice?.sequence === v.read?.capture.lossNotice?.sequence) void this.dismissLoss(v);
+      },
     };
   }
 
@@ -115,6 +129,8 @@ export class RunsController {
       return;
     }
     const read = r.value;
+    // A pre-mutation snapshot must never roll back an acknowledged fence or newer detection.
+    if (v.read && read.revision < v.read.revision) return;
     // The server read time moves on every read; it is not a change worth a repaint.
     const same = (a: RunRead) => JSON.stringify({ ...a, readAt: 0 });
     const changed = !v.read || v.state !== 'ready' || same(v.read) !== same(read);
@@ -122,11 +138,45 @@ export class RunsController {
     if (v.read && v.read.revision !== read.revision) { v.more = []; v.phase = 'useful'; v.pageEpoch++; v.paging = false; v.pageError = false; v.shown = 0; }
     if (v.phase === 'useful' && !v.more.length) v.cursor = read.nextCursor;
     v.read = read; v.state = read.availability === 'ready' ? 'ready' : 'unavailable'; v.failure = null;
+    if (v.lossDismissal === 'success' && read.capture.lossNotice?.attention) v.lossDismissal = 'idle';
     if (changed) this.host.changed();
     this.autoReconcile(v);
   }
 
   private rootKey(v: Visit) { const r = v.read; return r ? JSON.stringify([v.claim.owner, r.storeId, r.source, r.root]) : null; }
+
+  /** Mutation fences both kinds of reads and drops revision-bound continuation cursors. */
+  private invalidateReads(v: Visit) {
+    v.epoch++; v.loading = false; v.pageEpoch++; v.paging = false; v.pageError = false;
+    v.cursor = null; v.more = []; v.phase = 'useful'; v.shown = 0;
+    if (v.read) v.read = { ...v.read, nextCursor: null };
+  }
+
+  private async dismissLoss(v: Visit) {
+    const read = v.read, notice = read?.capture.lossNotice;
+    if (v.state !== 'ready' || read?.runFormat !== 2 || !notice?.attention || v.lossDismissal === 'pending') return;
+    const q = v.claim.request;
+    const request = { storeId: q.storeId, binding: { ...q.binding }, source: q.source, root: q.root, observedLossSequence: notice.sequence };
+    const epoch = ++v.mutationEpoch;
+    const own = () => this.visit === v && v.mutationEpoch === epoch && this.host.visible();
+    this.invalidateReads(v); v.controlEpoch++; v.lossDismissal = 'pending'; v.lossDismissalFailure = null; this.host.changed();
+    const result = await dismissRunLoss(this.host.service(own), request);
+    if (!own()) return;
+    this.invalidateReads(v);
+    if (result.ok) {
+      const ack = result.value, current = v.read!;
+      // At equal revision prefer the later service observation (attention may age out).
+      if (ack.revision > current.revision || ack.revision === current.revision && ack.readAt >= current.readAt) {
+        v.read = { ...current, revision: ack.revision, readAt: ack.readAt, capture: ack.capture };
+      }
+      v.lossDismissal = v.read!.capture.lossNotice?.attention ? 'idle' : 'success';
+    } else {
+      v.lossDismissal = result.conflict ? 'conflict' : 'error'; v.lossDismissalFailure = result.failure;
+    }
+    this.host.changed();
+    // Ordinary owner refresh; no new cadence or cross-frame channel.
+    void this.load(v);
+  }
 
   /**
    * One automatic metadata-only history pass per root and frame, only with capture on. A transient
@@ -177,6 +227,7 @@ export class RunsController {
     v.paging = false;
     // A changed run revision refuses the cursor; the next poll restarts paging from the top.
     if (!r.ok) { v.pageError = true; this.host.changed(); return; }
+    if (v.read && r.value.revision !== v.read.revision) { this.invalidateReads(v); this.host.changed(); void this.load(v); return; }
     const seen = new Set([...(v.read?.data ?? []), ...v.more].map((x) => x.id));
     const fresh = r.value.data.filter((x) => !seen.has(x.id));
     v.more = [...v.more, ...fresh];

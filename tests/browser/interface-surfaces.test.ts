@@ -18,7 +18,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   let spec: any;
   const nodes: any[] = [];
   const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
-  const components = { el, testid: (node: any) => node, emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }), button: (_p: any, _id: string, text: string) => nodes.push({ text }), detailsBlock: () => ({ text: '' }), failureFacts: () => [] };
+  const components = { el, allDone: () => {}, testid: (node: any) => node, emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }), button: (_p: any, _id: string, text: string) => nodes.push({ text }), detailsBlock: () => ({ text: '' }), failureFacts: () => [] };
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};

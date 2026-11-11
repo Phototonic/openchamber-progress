@@ -1,32 +1,18 @@
 schema: spec-driven
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+context: |
+  This repository is public. Exclude secrets, private tracker references,
+  personal or environment identifiers, raw logs and private planning evidence.
+  docs/contracts.md, docs/backend.md, docs/ui.md, docs/setup.md and
+  docs/compatibility.md remain the contract of record. Update the affected
+  guides in the same change as the behaviour.
+  TypeScript is authoritative. Regenerate affected tracked backend and guest
+  outputs with the existing repository scripts; never edit bundles by hand.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+rules:
+  proposal:
+    - State scope and explicit non-goals.
+  design:
+    - Explain migration, mixed-version compatibility and rollback when relevant.
+  tasks:
+    - Include affected documentation, generated outputs and behavioural checks.

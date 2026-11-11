@@ -64,8 +64,10 @@ button{font:inherit}
 .ap-fraction{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .ap-fraction strong{font-size:24px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
 .ap-fraction span{color:var(--oc-muted)}
-.ap-seg{display:flex;height:6px;border-radius:999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 9%,transparent)}
-.ap-seg>i{display:block;height:100%;min-width:3px}
+/* The kit progress look (SDK mountProgress): a 6px pill groove 6% of the text colour, pill fills.
+   Ours keeps three static segments with 2px gaps; done is the kit's finished green. */
+.ap-seg{display:flex;height:6px;border-radius:9999px;overflow:hidden;background:color-mix(in srgb,var(--oc-fg) 6%,transparent)}
+.ap-seg>i{display:block;height:100%;min-width:3px;border-radius:9999px}
 .ap-seg>i+i{margin-left:2px}
 .ap-seg [data-k="done"]{background:var(--oc-success)}
 .ap-seg [data-k="working"]{background:var(--oc-info)}
@@ -221,10 +223,12 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-warn>.ap-icon{width:14px;height:14px;margin-top:1px;color:var(--oc-warning-text,var(--oc-warning))}
 .ap-warn[data-tone="error"]>.ap-icon{color:var(--oc-error-text,var(--oc-error))}
 .ap-warn[data-tone="info"]>.ap-icon{color:var(--oc-info-text,var(--oc-info))}
+.ap-warn[data-tone="neutral"]>.ap-icon{color:var(--oc-muted)}
 .ap-warn-text{min-width:0;overflow-wrap:anywhere}
 .ap-warn-badge{display:inline-flex;align-items:center;max-width:100%;padding:0 6px;border-radius:5px;font-size:11px;font-weight:500;line-height:18px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
 .ap-warn-badge[data-tone="error"]{background:color-mix(in srgb,var(--oc-error) 14%,transparent);color:var(--oc-error-text,var(--oc-fg))}
 .ap-warn-badge[data-tone="info"]{background:color-mix(in srgb,var(--oc-info) 14%,transparent);color:var(--oc-info-text,var(--oc-fg))}
+.ap-warn-badge[data-tone="neutral"]{background:var(--oc-muted-surface);color:var(--oc-muted)}
 @media(forced-colors:active){.ap-warn-badge{border:1px solid CanvasText}.ap-warn[data-tone]>.ap-icon{color:CanvasText}}
 
 /* Session chips */
@@ -431,7 +435,11 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-progress-line .ap-fraction{flex:none;align-items:baseline;gap:0}
 .ap-progress-line .ap-fraction strong{font-size:20px}
 .ap-fraction-total{color:var(--oc-muted);font-size:13px;font-variant-numeric:tabular-nums}
-.ap-progress-line .ap-seg{flex:1 1 48px;height:8px;min-width:0}
+.ap-progress-line .ap-seg{flex:1 1 48px;min-width:0}
+/* Every task done (skipped tasks are not done): the kit's finished caption, a done mark and the
+   count in the readable success colour. Decorative; the count's words already say it. */
+.ap-done-mark{width:14px;height:14px;align-self:center;margin-right:5px}
+[data-all-done] :is(strong,.ap-fraction-total,.ap-muted){color:var(--oc-success-text,var(--oc-fg))}
 .ap-chip-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
 .ap-quals{display:flex;flex-direction:column;gap:4px;min-width:0}
 .ap-quals:empty{display:none}
@@ -543,6 +551,28 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-obs-body>.ap-link{align-self:flex-start}
 .ap-warn-list{display:flex;flex-direction:column;gap:3px;padding:0}
 .ap-warn-list>li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+/* Rail and board: the muted "Partial" cue, last in the counts' row; it expands the routine coverage
+   notes inline below the header. Neutral now; a later tone can key off a data attribute. */
+.ap-sub-cue{position:relative;display:inline-flex;align-items:center;gap:2px;flex:none;max-width:100%;min-height:20px;padding:0 3px 0 7px;border:1px solid var(--oc-border);border-radius:999px;background:var(--oc-muted-surface,transparent);color:var(--oc-muted);font:inherit;font-size:11px;font-weight:500;line-height:18px;cursor:pointer}
+.ap-sub-cue:hover{background:var(--oc-hover);color:var(--oc-fg)}
+.ap-sub-cue[aria-expanded="true"]{background:var(--oc-selection,var(--oc-hover));color:var(--oc-selection-fg,var(--oc-fg))}
+.ap-sub-cue>.ap-icon{width:12px;height:12px}
+.ap-sub-cue[aria-expanded="true"]>.ap-icon[data-icon="chevron-down"]{transform:rotate(180deg)}
+/* A recording gap that needs attention: the warning tone and a triangle; muted otherwise. */
+.ap-sub-cue[data-tone="warning"]{padding-left:5px;border-color:color-mix(in srgb,var(--oc-warning) 55%,var(--oc-border));background:color-mix(in srgb,var(--oc-warning) 14%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-sub-cue[data-tone="warning"]:hover,.ap-sub-cue[data-tone="warning"][aria-expanded="true"]{background:color-mix(in srgb,var(--oc-warning) 24%,transparent);color:var(--oc-warning-text,var(--oc-fg))}
+.ap-census .ap-sub-cue:focus-visible{border-radius:999px}
+.ap-sub-cue-notes{padding-left:8px;border-left:2px solid var(--oc-border)}
+/* Dismiss warning under the recording-gap note, aligned with its text (after the 14 px mark). */
+/* The detection date is part of the sentence: it wraps inside it and keeps its full stop. */
+.ap-census .ap-sub-cue-notes time{display:inline}
+.ap-sub-dismiss{flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;min-width:0;padding-left:20px}
+.ap-sub-dismiss-help{min-width:0;color:var(--oc-muted);overflow-wrap:anywhere}
+.ap-sub-dismiss>.ap-link[aria-disabled="true"]{color:var(--oc-muted);cursor:default;text-decoration:none}
+.ap-sub-dismiss>.ap-warn{flex:1 1 100%;margin:0}
+.ap-census-title>.ap-h[tabindex]:focus{outline:none}
+.ap-census-title>.ap-h[tabindex]:focus-visible{box-shadow:0 0 0 2px var(--oc-focus);border-radius:4px}
+@media(forced-colors:active){.ap-sub-cue{border-color:ButtonText;color:ButtonText}.ap-sub-cue[aria-expanded="true"]{border-width:2px;padding:0 2px 0 6px}.ap-census .ap-sub-cue:focus-visible,.ap-census-title>.ap-h[tabindex]:focus-visible{outline:2px solid Highlight;outline-offset:1px}.ap-sub-cue-notes{border-left-color:CanvasText}}
 
 /* Status section */
 /* Work Status is auto-height inside the sidebar: the host owns gutters and scrolling. */
@@ -552,19 +582,21 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
    with informational chips, at most two focus rows, a compact meta line and "+N more plans".
    Titles wrap instead of truncating; everything fits 190 px without horizontal overflow. */
 .ap-status-plan{display:flex;flex-direction:column;gap:6px;min-width:0}
-/* Title, picker and badge share the first line: a long title wraps in its own column, so the picker
-   (and the popup it opens) stays near the top of the auto-height frame. */
-.ap-status-head{display:grid;grid-template-columns:minmax(0,max-content) auto auto;justify-content:start;align-items:start;gap:2px 6px;min-width:0}
+/* A short title shares its line with the picker and badge; a long title takes the full width,
+   with the remaining controls wrapping below rather than reserving a column. */
+.ap-status-head{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;min-width:0}
 .ap-status-title{font-weight:600;line-height:1.35;min-width:0;overflow-wrap:anywhere}
-/* A 24 x 24 px target (WCAG 2.2 target size), centred on the title's first line; the negative block
-   margins keep that line no taller than the title itself */
-.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px;margin-block:-3px}
+/* A 24 x 24 px target (WCAG 2.2 target size). */
+.ap-status-pick .oc-sdk-trigger{height:24px;min-width:24px;padding:0 4px}
+/* A wrapped title can put the trigger midway down a short auto-height frame. Keep the
+   fixed popup inside that frame even when neither side of the trigger has enough room. */
+.ap-status-pick .oc-sdk-popup{top:8px!important;max-height:calc(100vh - 16px)}
 .ap-status-head>span:not(.ap-status-title){align-self:start}
 .ap-status-progress{gap:6px}
-.ap-status-progress .ap-seg{height:5px}
 .ap-status-counts{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;min-width:0;font-size:12px}
 .ap-status-fraction{font-variant-numeric:tabular-nums}
 .ap-status-fraction strong{font-size:13px;font-weight:600}
+.ap-status-fraction .ap-done-mark{width:12px;height:12px;margin-right:4px;vertical-align:-2px}
 /* Informational chips here: mark, count and word inline, no pill (nothing to press) */
 .ap-status-counts .ap-state-chip{min-height:0;padding:0;border:0;gap:4px;font-size:12px}
 .ap-status-counts .ap-state-chip .ap-mark{width:12px;height:12px}
@@ -583,7 +615,10 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 .ap-status-focus>.ap-status-row>.ap-mark{align-self:flex-start;margin-top:2px}
 
 /* Page */
-.ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:1280px;margin:0 auto}
+/* Wide board on every tab: the plan list and detail tabs keep one position; Progress, Document and
+   History hold their reading width while the Map tab uses the full detail column. */
+.ap[data-surface="page"]{padding:18px 22px 22px;gap:18px;max-width:2400px;margin:0 auto}
+.ap-detail:not([data-tab="map"]){max-width:1120px}
 .ap-filters{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end}
 .ap-filters>div{min-width:150px;flex:1 1 150px;max-width:260px}
 .ap-board{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}

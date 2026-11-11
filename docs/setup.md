@@ -11,7 +11,8 @@ checks. A development checkout can share a package version with a release while
 containing additional unreleased changes.
 
 The [repository changelog](https://github.com/Phototonic/openchamber-progress/blob/main/CHANGELOG.md)
-records release history; GitHub release notes remain native What's Changed lists.
+records technical release history; GitHub Releases contain only curated user-facing
+notes and editorial contributor credits, with a version-plus-headline title.
 This guide is included in both distribution archives. Other repository guides
 are linked online where needed; local evidence references below are not shipped
 files. Historical package labels are corrected to0.2.0/0.2.1; earlier raw local QA
@@ -32,6 +33,23 @@ Keep cleanup guards/tombstones during application rollback; never automatically
 restore that snapshot or reset schema2 to undo cleanup. Older readers may show
 archived records; older writers remain fenced. See the
 [reporting and cleanup contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md).
+
+During service admission and reads, if the current build encounters a newer base
+schema or run storage format, it
+leaves the store untouched, keeps setup status reachable, and shows “Progress
+data needs an update” through fixed `schema` diagnostics rather than a startup
+delay. Update the extension and companion; restarting or retrying does not make
+an unsupported format compatible. This does not alter released 1.0.0 behaviour.
+Install/update against an already unsupported run store is refused with `schema`
+before selecting a companion or changing the binding, capture or store. This
+preflight does not cover a concurrent upgrade during the action: store or
+installation changes may occur before admission refuses the store with `schema`,
+with no automatic rollback. The capture-disabling fallback checks compatibility
+and disables capture atomically, so it never disables an unsupported store.
+The exact older epochless format-1 shape is a supported activation input, not an
+unsupported store: setup and progress remain available, install/update can select
+the companion, and only its explicit activation migrates run storage. Run reads
+remain unavailable until that activation; service startup is not blocked.
 
 ## Proactive guidance after loading
 
@@ -85,8 +103,14 @@ and validation. Runtime promotion requires complete builds:
    exact accepted projection, not a reconstructed build. A higher numeric package
    version reaching main makes the included workflow eligible to run portable checks
    and automatically publish a matching `v<version>` tag, extension/companion ZIPs
-   and checksum inventories for the exact tested SHA. Notes are native GitHub
-   What's Changed, applicable New Contributors mentions and Full Changelog only.
+   and checksum inventories for the exact tested SHA. Commit matching
+   `release-notes/<version>.md` in the version-bump PR: its first-line headline
+   becomes `Agent Progress v<version>: <headline>`, and its curated Markdown body
+   is the entire release body, with no generated change list. The preparer and
+   reviewer check outside-contributor thanks and a final New contributors section
+   when applicable. CI posts a non-blocking reminder on version bumps; credits
+   remain editorial and never gate publication. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
+   for the format, validation, body comparison and no-overwrite recovery policy.
    Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
    bootstrap an empty release history. Automation never bumps versions or commits
    to main. Portable CI is not native-host certification or a causal performance
@@ -295,6 +319,58 @@ source/store IDs for supported SDK clients. Initial backend validation proved it
 runtime, including update/reload, without model calls. A service cannot discover
 real source auth merely to probe activation; credential-transfer helpers are test-only.
 
+The matching companion explicitly upgrades private run storage to format 2 on
+activation; GETs, health checks and ordinary opens never migrate it. Exact current
+format-1 run data remains readable beforehand, but new-service reconciliation and
+dismissal require activation. Ship the matching service/guest outputs together,
+after the muted-disclosure prerequisite with no intervening release. Explicitly
+reload already-running old run-aware companions when convenient; never restart
+them automatically. Installation success alone does not prove that reload.
+
+Until reloaded, an already-running older companion can still advance the
+observation epoch allocator and run revision when it reconnects or disposes,
+retiring held read cursors. This does not grant new continuity evidence or clear
+incomplete coverage. It cannot record, clear or dismiss recording-gap state,
+change the format, or perform its other guarded run writes. Existing loss,
+sequence and dismissal checkpoint stay intact. Reloading with the matching
+companion ends this old-observer behaviour.
+
+Before activation, reverting code needs no store change. After upgrade, older
+run-aware binaries may reject health/capture with a schema error. Keep the store
+intact and recover forward with format-2-capable binaries; there is no automatic
+down-migration, loss reset, fence deletion or restoration of stale backups. An
+older backup may discard later progress and needs separate owner authorization.
+Pre-run base schema-2 writers retain their independent progress compatibility,
+not format-2 run-writing capability. Recording gaps remain permanently disclosed
+as incomplete coverage; ageing or dismissing attention never deletes history.
+
+The isolated Linux OpenCode 2.2.6 built-release rehearsal confirms this boundary:
+updating the released 1.0.0 companion leaves format 1 and `reload-required` until
+the real location reload activates the current companion. Reinstalling 1.0.0
+after migration and reloading makes that companion fail activation with
+`Error: schema`; its status RPC is unavailable. Setup can still show
+`installed: true` and `captureEnabled: true` alongside `reload-required` and
+`rollback-payloads-retained`—those flags do not prove capture is active. The
+matching current service can still read the intact upgraded store. Restore the
+matching companion and explicitly reload to recover; do not downgrade the store.
+This is a real isolated OpenCode loader check, not an OpenChamber desktop update-UI
+or Windows/macOS check; recording inputs were synthetic and no model was used.
+See the [rehearsal scope](compatibility.md#isolated-built-release-upgrade-rehearsal).
+
+The [isolated OpenChamber 2.7.0 desktop rehearsal](compatibility.md#isolated-desktop-upgrade-rehearsal)
+also confirmed the same-version **Review update** → confirmation → **Update**
+flow. Selecting the bundled companion files did not migrate the store until
+Settings → General → **Restart OpenCode** loaded them. Folder **Reinstall**
+requested extension permissions again; it was not the version-based update offer.
+
+Rolling the extension back after migration can prevent its service from starting
+and hide setup controls behind **Progress service is not responding** / **It may
+still be starting. Try again in a moment.** In the desktop rehearsal, retry and
+restart did not repair that incompatible released extension. Restoring the matching
+current extension recovered access without rewriting the stored plan/run facts.
+Keep the upgraded store intact rather than interpreting this startup wording as
+permission to reset it or downgrade its schema.
+
 ## Disable, enable, remove after extension uninstall
 
 Installed package includes a self-contained remove.js utility and descriptor:
@@ -392,7 +468,8 @@ installation separately. No binding descriptor/private store is shipped.
 
 Alternatively, extract the companion ZIP to a dedicated directory, change into
 that directory and run the inspect/dry-run/install commands above (`node
-build/setup/main.js ...`). Use Node24.19.0 or the already-proved supported host
+build/setup/main.js ...`). Use Node 24.x >= 24.19.0 (tested on 24.19.0; later 24.x
+accepted but not separately certified) or the already-proved supported host
 runtime with built-in SQLite. Native Windows has the additional boundary below.
 Do not assume other platforms or custom runtime channels were verified.
 

@@ -9,6 +9,7 @@ import { ProgressStatus } from '../../plugin/status.ts';
 import { Store } from '../../shared/store.ts';
 import { ACTIVATION_GUIDANCE, ACTIVATION_HINT } from '../../plugin/activation.ts';
 import { RELEASE } from '../../shared/release.ts';
+import { requireRuntimeVersion } from './runtime-version.ts';
 
 const root = process.argv[2];
 assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3], 'must run in independent network namespace');
@@ -23,7 +24,7 @@ const env = {
 fs.writeFileSync(`${root}/sdk.mjs`, 'export function createActivationFixture() { return {}; }\n');
 const binary = '/tmp/opencode/agent-progress-probe-cli/opencode';
 const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
-assert.equal(version.status, 0); assert.match(version.stdout, /^opencode v2\.2\.2\s*$/);
+assert.equal(version.status, 0); requireRuntimeVersion('opencode', version.stdout);
 console.log('runtime-version', version.stdout.trim());
 const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '18765', '--print-logs', '--log-level', 'debug'], { cwd: `${root}/project`, env, stdio: ['ignore', 'pipe', 'pipe'] });
 fs.writeFileSync(`${root}/host-pid`, String(child.pid));

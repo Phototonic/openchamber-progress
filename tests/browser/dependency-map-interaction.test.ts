@@ -230,3 +230,29 @@ test('keys navigate from the actually focused card; its removal moves focus once
   assert.equal(r.commands.filter(n => n.type === 'focus' || n.type === 'announce').length, 0, 'never replayed');
   void commands; void cache; void input; void update;
 });
+
+test('background click and Escape clear once; drags and interrupted pointers retain selection', () => {
+  const { c, commands } = setup();
+  const down = (id: number) => c.dispatch({ type: 'pointer-down', pointerId: id, point: { x: 10, y: 10 }, primary: true, background: true });
+  const end = (id: number, x = 10, cancelled = false) => c.dispatch({ type: 'pointer-end', pointerId: id, point: { x, y: 10 }, cancelled });
+  c.dispatch({ type: 'select', id: 'B' }); commands.length = 0;
+  down(1); end(1, 12);
+  assert.equal(c.value.selected, null);
+  assert.deepEqual(commands.filter(x => x.type === 'announce').map(x => x.text), ['Selection cleared.']);
+  assert.ok(commands.some(x => x.type === 'focus' && x.id === 'B' && x.reveal === false));
+  commands.length = 0; down(2); end(2); c.dispatch({ type: 'key', key: 'Escape', canvas: true });
+  assert.equal(commands.filter(x => x.type === 'announce').length, 0);
+  c.dispatch({ type: 'select', id: 'B' }); commands.length = 0;
+  down(3); c.dispatch({ type: 'pointer-move', pointerId: 3, point: { x: 20, y: 10 } }); c.dispatch({ type: 'pointer-move', pointerId: 3, point: { x: 10, y: 10 } }); end(3);
+  assert.equal(c.value.selected, 'B');
+  down(4); end(4, 10, true); end(4); assert.equal(c.value.selected, 'B');
+  down(5); end(5, 20); assert.equal(c.value.selected, 'B');
+  assert.equal(c.dispatch({ type: 'key', key: 'Tab', canvas: true }), false);
+  assert.equal(c.dispatch({ type: 'key', key: 'Escape', canvas: false }), false);
+  commands.length = 0; c.dispatch({ type: 'key', key: 'Escape', canvas: true });
+  assert.equal(c.value.selected, null);
+  assert.deepEqual(commands.filter(x => x.type === 'announce').map(x => x.text), ['Selection cleared.']);
+  assert.equal(commands.some(x => x.type === 'focus'), false);
+  c.dispatch({ type: 'select', id: 'D' }); commands.length = 0; c.leave(true);
+  assert.ok(commands.some(x => x.type === 'list' && x.id === 'D'));
+});

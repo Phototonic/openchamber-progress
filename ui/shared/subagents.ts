@@ -81,7 +81,8 @@ export interface SubagentEntry {
 }
 export interface SummaryPart { kind: 'waiting' | 'running' | 'finished' | 'failed' | 'interrupted' | 'unknown'; count: number; text: string }
 export type RosterNote =
-  | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' } | { kind: 'capture-loss' }
+  | { kind: 'runs-unavailable' } | { kind: 'runs-error' } | { kind: 'capture-off' }
+  | { kind: 'capture-loss'; lastLossAt: number | null; dateKind: 'known' | 'migrated-unknown' | 'legacy-unknown'; attention: boolean; canDismiss: boolean }
   | { kind: 'history-loading' } | { kind: 'history-partial'; token: string | null } | { kind: 'history-failed'; token: string | null }
   | { kind: 'history-off' } | { kind: 'history-unavailable' } | { kind: 'history-request-failed' } | { kind: 'traversal-limit' } | { kind: 'host-gaps' } | { kind: 'host-truncated' } | { kind: 'host-activity-unavailable' };
 export interface Roster {
@@ -333,7 +334,12 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
   else if (runs.state === 'error') notes.push({ kind: 'runs-error' });
   if (read) {
     if (!read.capture.enabled) notes.push({ kind: 'capture-off' });
-    if (read.capture.loss) notes.push({ kind: 'capture-loss' });
+    if (read.capture.loss) {
+      const notice = read.capture.lossNotice;
+      notes.push({ kind: 'capture-loss', lastLossAt: notice?.lastLossAt ?? null,
+        dateKind: notice ? notice.lastLossAt === null ? 'migrated-unknown' : 'known' : 'legacy-unknown',
+        attention: notice?.attention ?? false, canDismiss: read.runFormat === 2 && !!notice?.attention });
+    }
     const rec = read.recovery;
     if (rec.state === 'pending' || rec.state === 'running' || runs?.reconciling) notes.push({ kind: 'history-loading' });
     else if (rec.state === 'partial') notes.push({ kind: 'history-partial', token: rec.token });

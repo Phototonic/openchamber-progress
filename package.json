@@ -1,6 +1,6 @@
 {
   "name": "openchamber-agent-progress-probe",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -29,7 +29,7 @@
     "check": "bun run typecheck && bun run test:backend && bun run build:backend && bun run package && bun run verify:package"
   },
   "dependencies": {
-    "@openchamber/sdk": "2.5.1",
+    "@openchamber/sdk": "2.7.0",
     "@opencode/plugin": "2.1.4"
   },
   "devDependencies": {

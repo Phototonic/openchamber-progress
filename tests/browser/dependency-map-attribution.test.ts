@@ -37,7 +37,7 @@ test('map proof: revision, delegation, latest child, scope and roster independen
     const graph = await readPlanGraph(host, { planGraph: 1 }, { ...request, plan: 'P-map', cleanupRev: 0, revision: detail.plan.revision }); assert.ok(graph.ok);
     const facts = deriveDependencies(graph.graph.items); assert.equal(facts.state, 'valid'); if (facts.state !== 'valid') return;
     const read = f.store.subagentRuns(request);
-    const runs: RunsPanel = { state: 'ready', read, featured: read.data, more: [], hasMore: false, continuation: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {} };
+    const runs: RunsPanel = { state: 'ready', read, featured: read.data, more: [], hasMore: false, continuation: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, dismissLoss() {}, lossDismissal: 'idle', lossDismissalFailure: null };
     const base: MapAttributionInput = { snapshot: { state: 'ready', current: true, picture: { detail, graph: graph.graph, facts } }, request, runs, census: censusFor(request.root, detail.plan.directory, EMPTY_LIVE), liveSeq: 0 };
     const fresh = (): MapAttributionInput => ({ ...base, snapshot: { ...base.snapshot, picture: { ...base.snapshot.picture!, detail: structuredClone(detail) } }, request: structuredClone(request), runs: { ...runs, read: structuredClone(read), featured: structuredClone(read.data), baselines: new ExecutionBaselines() } });
     const b = (v: MapAttributionInput) => mapAttribution(v).get('B')!;

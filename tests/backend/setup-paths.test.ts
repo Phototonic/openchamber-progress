@@ -9,6 +9,7 @@ import { lifecycle,type Targets } from '../../setup/lifecycle.ts';
 import { SetupController } from '../../service/setup-controller.ts';
 import { createProgressServer } from '../../service/server.ts';
 import { readBinding } from '../../shared/binding.ts';
+import { Store } from '../../shared/store.ts';
 
 const payload={plugin:'export default {}',guidance:'Synthetic setup only',removal:'// fixture',version:'0.2.2'};
 
@@ -65,6 +66,11 @@ test('permissive existing stores still refuse and retain modes/bytes; a new chil
       assert.throws(()=>lifecycle('install',input,payload),{message:'store-permissions'});
       assert.equal(statSync(f.targets.storeRoot).mode&0o777,0o775);assert.equal(readFileSync(sentinel,'utf8'),'unchanged');
     }
+    chmodSync(f.targets.storeRoot,0o700);
+    const retained=new Store(`${f.targets.storeRoot}/progress.sqlite`,{create:true});retained.close();
+    chmodSync(f.targets.storeRoot,0o775);
+    const setup=new SetupController(`${f.root}/binding.json`,()=>payload);
+    try{assert.throws(()=>setup.run('install',f.targets),{message:'store-permissions'});}finally{setup.close();}
     const parent=`${f.root}/public-parent`;mkdirSync(parent);chmodSync(parent,0o755);
     const selected={...f.targets,storeRoot:`${parent}/new-private/`};
     assert.equal(lifecycle('dry-run',selected).writes,false);assert.equal(existsSync(`${parent}/new-private`),false);

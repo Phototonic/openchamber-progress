@@ -248,6 +248,28 @@ const focusKey = (root: HTMLElement) => {
   return { id: owner.dataset.testid!, index: owner === active ? -1 : focusables.indexOf(active), plan: picker ? null : planScope(owner), project: owner.closest<HTMLElement>('[data-project]')?.dataset.project ?? null, reading: !picker && !!active.closest(READING), state: owner.dataset.state ?? null, info: owner.closest<HTMLElement>('[data-info]')?.dataset.info ?? null };
 };
 
+/**
+ * Sub-agents coverage controls (census-view.ts): the Partial cue, Load more / Retry history and
+ * Dismiss warning. Any update (this frame's history request or dismissal, history completed or a
+ * gap dismissed elsewhere, a host census back under its limit) can remove one from the next paint.
+ * Focus that was on it goes to the surviving cue (from a control inside its notes), else to the
+ * section heading, only in a section of the same scope (plan and selected session); otherwise
+ * nothing is moved. Nothing else falls back here.
+ */
+const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"],[data-testid="subagent-dismiss-loss"]';
+const coverageFocus = (root: HTMLElement) => {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
+  // Only while this frame holds focus: a fallback never pulls focus back from another frame.
+  if (!document.hasFocus()) return null;
+  const scope = active.closest<HTMLElement>('[data-testid="subagent-activity"]')?.dataset.scope;
+  return scope ? { scope, inNotes: !!active.closest('[data-testid="subagent-coverage-notes"]') } : null;
+};
+function coverageLanding(root: HTMLElement, from: NonNullable<ReturnType<typeof coverageFocus>>) {
+  const section = [...root.querySelectorAll<HTMLElement>('[data-testid="subagent-activity"]')].find((s) => s.dataset.scope === from.scope);
+  return (from.inNotes ? section?.querySelector<HTMLElement>('[data-testid="subagent-coverage-cue"]') : null) ?? section?.querySelector<HTMLElement>('[data-testid="subagent-heading"]') ?? null;
+}
+
 // Task-reading restoration inside a plan article painted with `data-reading` (its canonical task
 // hierarchy `ul.ap-items`). Its Tasks section carries `data-complete` only when painted from
 // complete detail, with or without task rows; a loading or failed paint has no marker. Rows are `li[data-testid]` (item-*/group-*); a branch's summary is
@@ -1127,6 +1149,7 @@ export function startView<U>(spec: ViewSpec<U>) {
 
     const ownsFocus = document.hasFocus?.() ?? true;
     const focus = ownsFocus ? focusKey(mount!) : null;
+    const coverage = ownsFocus ? coverageFocus(mount!) : null;
     const supportText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
     const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
@@ -1241,7 +1264,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
       const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
-      (target ?? backFallback)?.focus({ preventScroll: true });
+      (target ?? backFallback ?? (coverage && back === focus ? coverageLanding(root, coverage) : null))?.focus({ preventScroll: true });
     }
     const revealHeading = handoff ? resolveHandoff(root, focus) : null;
     if (handoffNote) {
