@@ -57,6 +57,8 @@ Choosing a different search session uses that option's own label, including
 sessions discovered only in search results; a retained title belongs only to its
 recorded session ID. Visible map counts use the selected locale, while machine
 attributes such as `data-count` and revision identifiers keep their raw values.
+History and Details also keep revision and structural-revision numbers ungrouped;
+they are identifiers, not localized quantities.
 Language changes neither report progress nor mark History reviewed. Document restoration,
 including a retained read error, does not retry solely for translation; explicit
 opening/Retry and ordinary data refresh keep their own behavior. External changes
@@ -105,6 +107,13 @@ pinned History and capture pairs, historical summary-only exports, support bytes
 and the no-I/O language-change matrix for both ready and failed documents. Inline
 document repaints retain cached errors; only an explicit Retry (or a new data
 reading) starts another read, not the rendering of the error itself.
+The reading fixture waits for the initial detail continuation and its rendered
+result before measuring language-only traffic. It also checks open map help,
+selected-task details, expanded sub-agent coverage notes and retained dismissal
+errors; service reply metadata distinguishes unfinished reads from new actions.
+The recording-gap outcome's persistent accessible announcement follows a language
+change without repeating Dismiss warning. An unchanged outcome and language do not
+announce again; a delayed callback cannot restore the earlier language.
 
 ## Reporting health
 

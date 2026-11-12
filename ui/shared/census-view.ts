@@ -402,6 +402,8 @@ function lossItem(n: LossNote, runs: RunsPanel | null, env: Env) {
 
 let lossAnnouncer: HTMLElement | null = null;
 let lossOutcome: unknown = 'idle';
+let lossText = '';
+let lossGeneration = 0;
 /**
  * Dismissal outcomes, spoken once each through one persistent polite live region outside the
  * repainted root (as the digest and search announcers do). Each failure has its own token, so a
@@ -411,9 +413,11 @@ function announceLoss(runs: RunsPanel, attention: boolean, language: InterfaceLa
   const LOSS = COPY[language].lossText;
   const s = runs.lossDismissal;
   const token = s === 'error' || s === 'conflict' ? runs.lossDismissalFailure ?? s : s;
-  if (token === lossOutcome) return;
-  lossOutcome = token;
   const text = s === 'success' ? attention ? '' : LOSS.success : s === 'error' || s === 'conflict' ? LOSS[s] : '';
+  if (token === lossOutcome && text === lossText) return;
+  lossOutcome = token;
+  lossText = text;
+  const generation = ++lossGeneration;
   if (!text) return;
   if (!lossAnnouncer?.isConnected) {
     lossAnnouncer = testid(el('p', 'ap-sr'), 'subagent-announcer');
@@ -423,7 +427,7 @@ function announceLoss(runs: RunsPanel, attention: boolean, language: InterfaceLa
   const node = lossAnnouncer;
   node.textContent = '';
   // Next frame, so an identical repeated outcome is still a change for assistive technology.
-  requestAnimationFrame(() => { if (lossOutcome === token) node.textContent = text; });
+  requestAnimationFrame(() => { if (lossGeneration === generation) node.textContent = text; });
 }
 
 const CUE = 'subagent-coverage-cue';

@@ -1521,7 +1521,7 @@ export function historyBlock(plan: PlanView, value: Loadable<{ entries: HistoryE
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
     const li = testid(el('li', 'ap-history-row'), `revision-${e.revision}`);
-    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: e.revision })), el('span', 'ap-muted', kind(i)));
+    li.append(el('span', 'ap-history-rev', say('Revision {n}', env.locale, { n: String(e.revision) })), el('span', 'ap-muted', kind(i)));
     if (e.lifecycle !== 'active') li.append(el('span', 'ap-muted', lifecycleLabel(e.lifecycle, env.locale)));
     li.append(age(e.reportedAt, env));
     ul.append(li);
@@ -1546,7 +1546,7 @@ export function detailsBlock(read: StoreRead | null, plan: PlanView | null, extr
   const add = (k: string, v: string, mono = false) => facts.append(el('dt', '', k), el('dd', mono ? 'ap-mono' : '', v));
   if (plan) {
     add(say('Plan', env.locale), plan.id, true);
-    add(say('Revision', env.locale), say('{revision} (structure {structure})', env.locale, { revision: plan.revision, structure: plan.structuralRevision }));
+    add(say('Revision', env.locale), say('{revision} (structure {structure})', env.locale, { revision: String(plan.revision), structure: String(plan.structuralRevision) }));
     add(say('Reported', env.locale), absoluteTime(plan.reportedAt, env.locale));
     if (plan.directory) add(say('Last reported location', env.locale), plan.directory, true);
     add(say('Main session', env.locale), plan.ownerSessionId, true);
