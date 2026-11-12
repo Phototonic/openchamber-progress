@@ -33,7 +33,7 @@ const script = `
 const surfaces=['panel','status','page'];
 window.frame=s=>document.querySelector('iframe[data-surface="'+s+'"]');
 const send=(s,m)=>frame(s).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},location.origin);
-window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],storageLog:[],messages:[],clipboard:[],
+window.qa={mode:'plan',space:'primary',maps:new Map(),instance:new Map(),holds:[],held:[],faults:[],requests:[],responses:[],storageLog:[],messages:[],clipboard:[],
  ctx:{locale:'en',features:{deviceStorage:true},directory:'/fixture/Alpha',session:null,connection:{connected:true,account:'fixture'}},
  ready(s,patch={}){Object.assign(this.ctx,patch);for(const n of s?[s]:surfaces)send(n,{type:'ready',payload:{theme:${JSON.stringify(theme)},...this.ctx,surface:n,settings:{},item:null}})},
  context(id){this.ctx.session=id?{id,title:'Example session',busy:false}:null;for(const s of surfaces)send(s,{type:'session',payload:{session:this.ctx.session}})},
@@ -71,10 +71,11 @@ addEventListener('message',async e=>{
   const hold=qa.holds.find(h=>matches(h,'storage',s,q));if(hold)qa.held.push({tag:hold.tag,surface:s,op:q.op,go});else go();return
  }
  if(m.type==='service-request'){
-  qa.requests.push({surface:s,...structuredClone(q)});
+  const request=qa.requests.length;qa.requests.push({surface:s,...structuredClone(q)});
+  const reply=payload=>{let body,parseError=false;try{body=JSON.parse(payload.body)}catch{parseError=true}qa.responses.push({request,surface:s,path:q.path,query:q.query,status:payload.status,parseError,nextCursor:body?.items?.nextCursor??body?.nextCursor??null,ids:body?.data?.map(x=>x.id??x.plan?.id),counts:body?.counts,hits:body?.hits?.map(x=>({plan:x.plan?.id,source:x.plan?.sourceId,owner:x.plan?.sessionId,task:x.task?.id??null}))});result(payload)};
   const go=async()=>{const fault=qa.faults.find(h=>matches(h,'service',s,q));
-   if(fault){result({status:fault.status||503,body:JSON.stringify({error:'busy'})});return}
-   const r=await fetch('/service',{method:'POST',body:JSON.stringify({...q,mode:qa.mode})});result(await r.json())};
+   if(fault){reply({status:fault.status||503,body:JSON.stringify({error:'busy'})});return}
+   const r=await fetch('/service',{method:'POST',body:JSON.stringify({...q,mode:qa.mode})});reply(await r.json())};
   const hold=qa.holds.find(h=>matches(h,'service',s,q));if(hold)qa.held.push({tag:hold.tag,surface:s,path:q.path,go});else await go();return
  }
  if(m.type==='resize'&&s==='status'&&q.height>0)f.style.height=q.height+'px';

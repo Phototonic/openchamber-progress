@@ -52,7 +52,7 @@ try {
   };
   const evaluate = async <T = any>(expression: string): Promise<T> => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw Error('QA expression failed: ' + (r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)); return r.result.value; };
   const guest = <T = any>(code: string) => evaluate<T>(`(()=>{const w=frame('page').contentWindow,d=w.document;${code}})()`);
-  diagnose = () => evaluate(`({guest:(()=>{const d=frame('page').contentDocument;return {buttons:[...d.querySelectorAll('button')].map(n=>({id:n.closest('[data-testid]')?.dataset.testid,text:n.textContent.slice(0,80)})),documents:[...d.querySelectorAll('[data-testid^="document-"]')].map(n=>({id:n.dataset.testid,text:n.textContent.slice(0,250)}))}})(),requests:qa.requests.map(q=>({surface:q.surface,path:q.path})),faults:qa.faults})`);
+  diagnose = () => evaluate(`({guest:(()=>{const d=frame('page').contentDocument;return {buttons:[...d.querySelectorAll('button')].slice(0,100).map(n=>({id:n.closest('[data-testid]')?.dataset.testid,text:n.textContent.slice(0,80)})),search:d.querySelector('[data-testid="search-results"]')?.textContent.slice(0,500),documents:[...d.querySelectorAll('[data-testid^="document-"]')].map(n=>({id:n.dataset.testid,text:n.textContent.slice(0,250)}))}})(),requests:qa.requests.slice(-100).map(q=>({surface:q.surface,path:q.path,query:q.query})),responses:qa.responses.slice(-100),faults:qa.faults})`);
   const condition = (code: string) => `(()=>{const w=frame('page').contentWindow,d=w.document;return ${code}})()`;
   const wait = async (code: string, name: string) => { if (!await evaluate(`(async()=>{const end=Date.now()+8000;while(Date.now()<end){try{if(${code})return true}catch{}await new Promise(r=>setTimeout(r,25))}return false})()`)) throw Error('Timed out: ' + name); };
   const frames = () => evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(r,0))))');
@@ -94,6 +94,8 @@ try {
   await send('Page.navigate', { url: origin + '/' });
   await wait(`window.qa&&${condition(`!!d.querySelector('[data-testid="plan-row-P-reading"]')`)}`, 'reading board');
   await evaluate(`qa.show('page',1100)`); await frames();
+  // The board row arrives before the automatically selected detail's continuation.
+  await wait(`qa.responses.some(q=>q.surface==='page'&&q.path==='/v1/plan'&&q.query?.plan==='P-history'&&q.query.cursor&&q.status===503)&&${condition(`!!d.querySelector('[data-testid="detail-loading"] button')`)}`, 'initial historical continuation completed');
   await change('initial-explicit-English', 'en', 'en');
 
   const verifyResultOnlySession = () => scenario('result-only-session', async () => {
@@ -118,16 +120,19 @@ try {
       const options = await guest<string[]>(`return [...d.querySelectorAll(${literal(popup + ' [role="option"]')})].map(n=>n.textContent)`);
       const resultIndex = options.findIndex(text => text.includes('Session …result'));
       check('result-only-session:generated-option-offered', resultIndex >= 0);
+      const ownerRequestStart = await evaluate<number>('qa.requests.length');
       await key('Home'); for (let i = 0; i < resultIndex; i++) await key('ArrowDown'); await key('Enter');
       // Changing the session also reloads its board scope; finish that read before measuring language I/O.
-      await wait(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/plans').at(-1)?.query.session==='session-result'`, 'result owner board read');
-      await frames();
-      await wait(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/search').at(-1)?.query.session==='session-result'&&${condition(`!!d.querySelector('[data-testid="search-results"]')&&!d.querySelector('[data-testid="search-loading"]')`)}`, 'result owner search');
+      const ownerReply = (path: string) => `qa.responses.findLast(q=>q.request>=${ownerRequestStart}&&q.surface==='page'&&q.path===${literal(path)}&&q.query?.session==='session-result')`;
+      await wait(`(()=>{const r=${ownerReply('/v1/plans')};return r?.status===200&&!r.parseError&&r.ids?.includes('P-result')&&r.nextCursor===null})()`, 'result owner board completed successfully');
+      const resultRendered = `!!d.querySelector('[data-testid="search-plan-${fixture!.source}/P-result"]')&&!d.querySelector('[data-testid="search-loading"],[data-testid="search-failed"]')`;
+      await wait(`(()=>{const r=${ownerReply('/v1/search')};return r?.status===200&&!r.parseError&&r.hits?.some(h=>h.plan==='P-result'&&h.owner==='session-result')})()&&${condition(resultRendered)}`, 'result owner search completed with rendered B hit');
       check('result-only-session:submitted-owner-B', await evaluate(`qa.requests.filter(q=>q.surface==='page'&&q.path==='/v1/search').at(-1)?.query.session==='session-result'`));
       const englishChip = await guest(`return d.querySelector('[data-testid="search-chip-session"]')?.textContent`);
       await change('result-only-session-language', 'ru', 'ru');
       check('result-only-session:chip-never-reuses-owner-A', englishChip?.includes('Session …result') && !englishChip.includes('Owner A'));
       check('result-only-session:Russian-generated-chip', await guest(`const t=d.querySelector('[data-testid="search-chip-session"]')?.textContent;return t?.includes('Сессия …result')&&!t.includes('Owner A')`));
+      check('result-only-session:Russian-result-B-retained', await evaluate(condition(resultRendered)));
     } finally {
       await key('Escape');
       await guest(`d.querySelector('[data-testid="search-clear"] button')?.click();return true`);
@@ -214,8 +219,13 @@ try {
   const map = await mapState(); check('map:nontrivial-transform-and-selection', !!map.transform && map.selected === 'true');
   check('map:pan-control-changes-transform', map.transform !== zoomedMap.transform);
   await click('[data-testid="map-group-context"] summary');
-  await change('map-language', 'ru', 'ru'); check('map:selection-pan-zoom-preserved', JSON.stringify(map) === JSON.stringify(await mapState()));
+  await focus('[data-testid="map-help-trigger"]'); await key('Enter');
+  // An external preference change does not intentionally activate the help's outside-click dismissal.
+  await unchanged('map-language', async () => { await evaluate(`qa.seed({v:1,preference:'ru'});qa.focus('page')`); await settled('ru'); }); check('map:selection-pan-zoom-preserved', JSON.stringify(map) === JSON.stringify(await mapState()));
   check('map:disclosure-preserved', await guest(`return d.querySelector('[data-testid="map-group-context"]').open`));
+  check('map:help-open-and-translated', await guest(`return d.querySelector('[data-testid="map-help"]').open&&d.querySelector('[data-testid="map-help-trigger"]').textContent==='Справка и определения карты'&&d.querySelector('[data-testid="map-arrow-key"]').textContent.length>0`));
+  check('map:selected-details-accessible-and-translated', await guest(`const n=d.querySelector('[data-testid="map-inspector"]');return !n.hidden&&n.dataset.selected==='A'&&d.getElementById(n.getAttribute('aria-labelledby')).textContent.includes('Выбран')&&n.textContent.includes('Export example')`));
+  await focus('[data-testid="map-help-trigger"]'); await key('Enter');
 
   // Separate SDK picker remains in its painted language through external preference + label tick.
   const verifyIndependentPicker = async () => {
@@ -296,7 +306,31 @@ try {
     check('large-map:Russian-grouped-stat-raw-count-preserved', JSON.stringify(russianCount) === JSON.stringify({ raw: '1000', text: '1\u00a0000' }));
     check('large-map:Russian-heading-and-filter-counts', russianSummaries.hidden === 'Показаны все: 1\u00a0000 задач' && russianSummaries.counts === 'Выполнено: 0 из 1\u00a0000 · Осталось: 1\u00a0000');
     check('large-map:Russian-fit-announcement-grouped', russianAnnouncement);
-  });
+   });
+   await scenario('subagent-loss-language', async () => {
+     fixture!.seedSubagents();
+     await choose('en'); await settled('en');
+     const hellos = await evaluate<number>(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length`);
+     await evaluate(`qa.faults=[];qa.workspace=q=>q.kind==='projects'?{kind:'projects',state:'ready',projects:[{id:'alpha',name:'Alpha',directory:'/fixture/Alpha'}]}:{kind:q.kind,state:'ready',projectId:q.projectId,worktrees:[],coverage:[{directory:'/fixture/Alpha',state:'ready'}],sessions:q.kind==='sessions'?[${JSON.stringify([S.M, S.C1].map((id, i) => ({ id, title: i ? 'Reading helper' : 'Reading owner', projectId: 'alpha', directory: '/fixture/Alpha', parentId: i ? S.M : null, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }))).slice(1, -1)}]:[]};qa.reload('page')`);
+     await wait(`qa.messages.filter(q=>q.surface==='page'&&q.type==='hello').length>${hellos}&&${condition(`!!d.querySelector('[data-testid="plan-row-P-reading"]')`)}`, 'subagent workspace board');
+     await openPlan('P-reading'); await click(tab('progress'));
+     await wait(condition(`!!d.querySelector('[data-testid="subagent-coverage-cue"]')&&!!d.querySelector('[data-testid="subagent-dismiss-loss"]')`), 'real service recording gap');
+     await click('[data-testid="subagent-coverage-cue"]');
+     const lossDate = await guest(`return d.querySelector('[data-testid="subagent-loss-date"]').dateTime`);
+     await change('subagent-open-notes-language', 'ru', 'ru');
+     check('subagent:open-notes-translated-and-date-preserved', await guest(`const b=d.querySelector('[data-testid="subagent-coverage-cue"]'),n=d.getElementById(b.getAttribute('aria-controls'));return b.getAttribute('aria-expanded')==='true'&&!n.hidden&&b.textContent==='Неполный охват субагентов'&&n.textContent.includes('Некоторые сведения о запусках не записаны.')&&d.querySelector('[data-testid="subagent-loss-date"]').dateTime===${literal(lossDate)}`));
+     check('subagent:dismiss-accessible-explanation-translated', await guest(`const b=d.querySelector('[data-testid="subagent-dismiss-loss"]');return b.textContent==='Скрыть предупреждение'&&d.getElementById(b.getAttribute('aria-describedby')).textContent.includes('Новые пробелы')`));
+     await change('subagent-before-dismiss-English', 'en', 'en');
+     await evaluate(`qa.faults.push({kind:'service',surface:'page',path:'/v1/subagent-runs/dismiss-loss',status:503})`);
+     const beforeDismiss = await io();
+     await click('[data-testid="subagent-dismiss-loss"]');
+     await wait(condition(`d.querySelector('[data-testid="subagent-dismiss-status"]')?.dataset.state==='error'&&d.querySelector('[data-testid="subagent-announcer"]')?.textContent==='Couldn’t dismiss the warning. Try again.'`), 'explicit dismissal error');
+     const afterDismiss = await io();
+     check('subagent:explicit-dismiss-once', (afterDismiss.services['/v1/subagent-runs/dismiss-loss'] ?? 0) === (beforeDismiss.services['/v1/subagent-runs/dismiss-loss'] ?? 0) + 1);
+     await change('subagent-retained-dismiss-error-language', 'ru', 'ru');
+     check('subagent:retained-visible-dismiss-error-translated', await guest(`return d.querySelector('[data-testid="subagent-dismiss-status"]').textContent==='Не удалось скрыть предупреждение. Попробуйте снова.'&&d.querySelector('[data-testid="subagent-coverage-cue"]').getAttribute('aria-expanded')==='true'`));
+     check('subagent:retained-accessible-dismiss-error-translated', await guest(`const n=d.querySelector('[data-testid="subagent-announcer"]');return n.textContent==='Не удалось скрыть предупреждение. Попробуйте снова.'&&n.getAttribute('role')==='status'&&n.getAttribute('aria-live')==='polite'`));
+   });
   check('no-runtime-errors-or-external-network', errors.length === 0);
   if (scenarioFailures.length) throw Error(scenarioFailures.join('; '));
 } catch (error) {

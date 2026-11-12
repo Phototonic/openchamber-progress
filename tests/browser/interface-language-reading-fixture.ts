@@ -23,6 +23,13 @@ export async function startReadingFixture() {
     apply('P-reading', { op: 'bind', source: '/fixture/plan.md', confirm: false }, '# Reading example\nNew line\n');
     apply('P-reading', { op: 'change', changes: [{ id: 'B', status: 'blocked' }] }, '# Reading example\nNew line\n');
     apply('P-history', { op: 'start', title: 'Historical example', items: Array.from({ length: 21 }, (_, i) => ({ id: `H${i}`, title: `Historical task ${i}`, kind: 'task', status: 'pending' })) });
+    const seedSubagents = () => {
+      backend.store.installSubagentRuns();
+      const runKey = { source, parent: S.M, message: 'reading-message', call: 'reading-call' };
+      backend.store.beforeRun(runKey, actor, 'subagent', { description: 'Reading helper' }, Date.now() - 60000);
+      backend.store.afterRun(runKey, backend.store.runControl().generation, { ...actor, sessionId: S.C1, parentId: S.M, ancestry: [S.M] }, 'returned');
+      backend.store.runCaptureUnavailable();
+    };
     const service: NonNullable<Parameters<typeof startLanguageFixture>[0]>['service'] = async (q) => {
       if (q.path === '/v1/extension-update' || q.path === '/v1/setup') return { status: 404, body: '{"error":"not-found"}' };
       // A valid first page retains its authoritative summary; the continuation really fails.
@@ -41,6 +48,6 @@ export async function startReadingFixture() {
     if (historical.ok || !historical.snapshot) throw Error('Historical fixture must retain a valid summary after its continuation fails.');
     const historicalExpected = { en: formatSummaryOnly(historical.snapshot, historical.cause, 'en'), ru: formatSummaryOnly(historical.snapshot, historical.cause, 'ru') };
     const host = await startLanguageFixture({ service });
-    return { ...host, source, historicalExpected, async stop() { await host.stop(); await backend.stop(); } };
+    return { ...host, source, historicalExpected, seedSubagents, async stop() { await host.stop(); await backend.stop(); } };
   } catch (error) { await backend.stop(); throw error; }
 }
