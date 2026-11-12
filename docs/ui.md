@@ -57,6 +57,8 @@ Choosing a different search session uses that option's own label, including
 sessions discovered only in search results; a retained title belongs only to its
 recorded session ID. Visible map counts use the selected locale, while machine
 attributes such as `data-count` and revision identifiers keep their raw values.
+Work Status fractions and search totals use the same language-aware quantity
+formatting; English keeps its existing ungrouped output.
 History and Details also keep revision and structural-revision numbers ungrouped;
 they are identifiers, not localized quantities.
 Language changes neither report progress nor mark History reviewed. Document restoration,

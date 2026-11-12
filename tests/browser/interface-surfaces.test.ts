@@ -7,7 +7,7 @@ import { resolveLanguage } from '../../ui/shared/i18n.ts';
 import * as model from '../../ui/shared/model.ts';
 import * as scope from '../../ui/shared/scope.ts';
 import * as live from '../../ui/shared/live.ts';
-import { plural } from '../../ui/shared/format.ts';
+import { formatCount, plural } from '../../ui/shared/format.ts';
 import { queryProblem } from '../../ui/shared/search.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import { chipLabel } from '../../ui/shared/search-view.ts';
@@ -22,7 +22,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
-  const exposed = surface === 'status' ? 'statusProgress, qualifiers' : surface === 'page' ? 'planList, labelsFor, boardTop' : 'picker';
+  const exposed = surface === 'status' ? 'statusProgress, qualifiers, messages' : surface === 'page' ? 'planList, labelsFor, boardTop' : 'picker';
   runInNewContext(`${js}\nObject.assign(exports, { ${exposed} });`, { exports, document: { addEventListener() {}, getElementById: () => null }, window: { addEventListener() {} }, require: (path: string) => {
     if (overrides[path]) return overrides[path];
     if (path.endsWith('/app.ts')) return { startView: (value: any) => { spec = value; } };
@@ -30,7 +30,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/model.ts')) return model;
     if (path.endsWith('/scope.ts')) return scope;
     if (path.endsWith('/live.ts')) return live;
-    if (path.endsWith('/format.ts')) return { plural };
+    if (path.endsWith('/format.ts')) return { formatCount, plural };
     if (path.endsWith('/primitives.ts')) return { segmentedBar: (_s: any, label: string) => ({ text: label }), stateChip: ({ count, label }: any) => count ? { text: `${count} ${label}` } : null, warningLine: (text: string) => ({ text }), icon: () => ({ text: '' }) };
     if (path === '@openchamber/sdk/ui') return { mountList(_holder: any, options: any) { nodes.push(...options.items.map((item: any) => ({ text: item.title }))); } };
     if (path.endsWith('/components.ts')) return components;
@@ -78,6 +78,25 @@ test('status counts, readiness chips and qualifiers rerender in Russian and Engl
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'en');
   assert.match(h.rendered(), /done, 4 remaining, 1 skipped/);
   assert.match(h.rendered(), /needs you/);
+});
+
+test('status quantities group Russian thousands but keep English and machine counts raw', () => {
+  const h = surfaceHarness('status');
+  const projection = { summary: { total: 3030, done: 1000, remaining: 1030, skipped: 1000, working: 1000, blocked: 1000 }, reported: null, ready: null, waiting: null };
+  for (const [locale, done, total, remaining] of [['ru', '1\u00a0000', '3\u00a0030', '1\u00a0030'], ['en', '1000', '3030', '1030']]) {
+    h.nodes.length = 0;
+    h.exports.statusProgress(projection, { lifecycle: 'completed' }, locale);
+    assert.ok(h.nodes.some(n => n.text === done));
+    assert.ok(h.nodes.some(n => n.text === `/${total}`));
+    assert.ok(h.rendered().includes(locale === 'ru' ? `осталось: ${remaining}, пропущено: ${done}` : `${remaining} remaining, ${done} skipped`));
+    assert.ok(h.rendered().includes(`${done} ${locale === 'ru' ? 'в работе' : 'in progress'}`));
+    const counts = h.nodes.find(n => n.dataset?.total === '3030');
+    assert.equal(counts.dataset.done, '1000');
+    assert.equal(counts.dataset.remaining, '1030');
+    const copy = h.exports.messages[locale];
+    for (const text of [copy.working(1000), copy.picker('Title1000', false, 1000), copy.more(1000), copy.moreAria(1000)]) assert.ok(text.includes(done));
+    assert.ok(copy.picker('Title1000', false, 1000).includes('Title1000'));
+  }
 });
 
 test('board finished folds translate without changing source-qualified grouping and fold state', () => {

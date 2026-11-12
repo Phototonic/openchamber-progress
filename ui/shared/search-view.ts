@@ -5,7 +5,7 @@ import { mountLiveSelect } from './live-select.ts';
 import { button, el, emptyBlock, failureCopy, glyph, planLocation, testid, type Env } from './components.ts';
 import { EMPTY_LIVE, sessionLabel } from './live.ts';
 import { icon } from './primitives.ts';
-import { plural } from './format.ts';
+import { formatCount, plural } from './format.ts';
 import { lifecycleLabel, statusLabel, type ItemStatus, type Lifecycle, type SearchHitView, type SearchPlanView, type SourceView } from './model.ts';
 import { ALL } from './scope.ts';
 import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type LocationPart, type SearchCriteria, type SearchGroup, type SearchViewState } from './search.ts';
@@ -118,8 +118,8 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
   trigger.setAttribute('aria-expanded', String(h.open));
   trigger.setAttribute('aria-controls', 'ap-board-filters');
    trigger.append(icon('filter'), el('span', '', copy.filters));
-  if (h.active) { const n = el('span', 'ap-filters-count', String(h.active)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
-   trigger.setAttribute('aria-label', h.active ? (language === 'ru' ? `Фильтры, активно: ${h.active}` : `Filters, ${h.active} active`) : copy.filters);
+  if (h.active) { const n = el('span', 'ap-filters-count', language === 'ru' ? formatCount(h.active, language) : String(h.active)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
+   trigger.setAttribute('aria-label', h.active ? (language === 'ru' ? `Фильтры, активно: ${formatCount(h.active, language)}` : `Filters, ${h.active} active`) : copy.filters);
   trigger.addEventListener('click', () => {
     // Outside pointer dismissal can hide this owner without rebuilding it, so
     // the live expanded state, not this paint's captured `h.open`, is current.
@@ -284,11 +284,11 @@ export function countsBlock(v: SearchViewState, language: InterfaceLanguage = 'e
   const box = testid(el('div', 'ap-search-counts'), 'search-counts');
   const final = v.exhausted && v.countsCurrent && !v.coverage.gapped && !v.stop;
   Object.assign(box.dataset, { matchedPlans: String(v.counts.matchedPlans), matchingTasks: String(v.counts.matchingTasks), shown: String(v.page.hits.length), context: String(v.page.contextRows), final: String(final), current: String(v.countsCurrent) });
-  const found = language === 'ru' ? `Планов: ${v.counts.matchedPlans} · подходящих задач: ${v.counts.matchingTasks}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
+  const found = language === 'ru' ? `Планов: ${formatCount(v.counts.matchedPlans, language)} · подходящих задач: ${formatCount(v.counts.matchingTasks, language)}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
   const lead = language === 'ru' ? `${!v.countsCurrent ? 'Подсчитано до изменения результатов' : final ? 'Найдено' : v.exhausted ? 'Найдено в проверенных планах' : 'Пока найдено'}: ${found}` : !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
   box.append(el('p', 'ap-search-found', lead));
   const shown = v.page.hits.length;
-  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${shown}, страница ${v.page.number}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${v.page.contextRows}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
+  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${formatCount(shown, language)}, страница ${formatCount(v.page.number, language)}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${formatCount(v.page.contextRows, language)}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
   return box;
 }
 
@@ -300,14 +300,14 @@ export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 
   if (v.coverage.gapped) box.dataset.gapped = 'true';
   const lines: string[] = [];
   lines.push(v.exhausted ? copy.exhausted : copy.partial);
-  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${v.coverage.skippedRecords})` : ''}, поэтому поиск неполон.` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
+  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${formatCount(v.coverage.skippedRecords, language)})` : ''}, поэтому поиск неполон.` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
   if (narrowed(v.criteria)) {
     // "Searched all" only once the scan is exhausted; a partial scan qualifies locations alone.
     const lead = v.exhausted ? 'Searched all recorded plans; project' : 'Project';
     lines.push(ru ? `${v.exhausted ? 'Проверены все записанные планы; принадлежность' : 'Принадлежность'} к проекту определяется только известными этому окну расположениями${v.discoveryIncomplete ? ', а некоторые здесь ещё неизвестны' : ''}.` : `${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
   }
-  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${v.removed}.` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
-  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${v.changedKeys}.` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
+  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(v.removed, language)}.` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
+  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${formatCount(v.changedKeys, language)}.` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
   if (!v.page.checked) lines.push(copy.checking);
   for (const line of lines) box.append(el('p', '', line));
   return box;
@@ -325,7 +325,7 @@ const hitMeta = (plan: SearchPlanView, env: Env) => {
   if (plan.lifecycle !== 'active') parts.push(lifecycleLabel(plan.lifecycle, language));
   if (env.boundSource === null || plan.sourceId !== env.boundSource) parts.push(`${ru ? 'источник' : 'source'} ${plan.sourceId}`);
   if (!plan.sourceVerified) parts.push(copy.setup);
-  parts.push(plan.counts.total ? `${plan.counts.done}/${plan.counts.total} ${ru ? 'выполнено (весь план)' : 'done (whole plan)'}` : copy.noTasks);
+  parts.push(plan.counts.total ? `${ru ? formatCount(plan.counts.done, language) : plan.counts.done}/${ru ? formatCount(plan.counts.total, language) : plan.counts.total} ${ru ? 'выполнено (весь план)' : 'done (whole plan)'}` : copy.noTasks);
   return parts.join(' · ');
 };
 
@@ -367,7 +367,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
       if (crumb.head.length) {
         const c = testid(el('span', 'ap-hit-context'), 'search-context');
         c.dataset.omitted = String(crumb.omitted);
-        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [ru ? `… ещё: ${crumb.omitted}` : `… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
+        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [ru ? `… ещё: ${formatCount(crumb.omitted, language)}` : `… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
         c.textContent = `${copy.inside}: ${parts.join(' › ')}`;
         body.append(c);
       }

@@ -6,7 +6,7 @@ import ts from 'typescript';
 import { failureCopy, FAILURE_COPY } from '../../ui/shared/components.ts';
 import { resolveLanguage } from '../../ui/shared/i18n.ts';
 import { narrowed } from '../../ui/shared/search.ts';
-import { plural } from '../../ui/shared/format.ts';
+import { formatCount, plural } from '../../ui/shared/format.ts';
 import { readChangeDigest, readSearchWindow } from '../../ui/shared/source.ts';
 
 function harness(file: string) {
@@ -16,7 +16,7 @@ function harness(file: string) {
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/shared/${file}.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   runInNewContext(`${js}\n${file === 'change-digest-view' ? 'exports.unavailableText = unavailableText;' : ''}`, {
     exports, document: { body: { append: (node: any) => nodes.push(node) } }, requestAnimationFrame: (fn: () => void) => frames.push(fn),
-    require: (path: string) => path === './components.ts' ? { el, testid: (node: any) => node, failureCopy, FAILURE_COPY, button() {} } : path === './i18n.ts' ? { resolveLanguage } : path === './search.ts' ? { narrowed } : path === './format.ts' ? { plural } : {},
+    require: (path: string) => path === './components.ts' ? { el, testid: (node: any) => node, failureCopy, FAILURE_COPY, button() {} } : path === './i18n.ts' ? { resolveLanguage } : path === './search.ts' ? { narrowed } : path === './format.ts' ? { formatCount, plural } : {},
   });
   return { exports, frames, nodes };
 }

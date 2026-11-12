@@ -18,6 +18,7 @@ import { ALL, placeOf, trustedPlan } from './scope.ts';
 import { RefreshGate } from './refresh.ts';
 import { readSearchState, readSearchWindow, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+import { formatCount } from './format.ts';
 
 export type SearchStatus = { kind: 'identity' | 'retired' | 'membership' | 'changed' | 'conflict' | 'failed' }
   | { kind: 'blocked'; reason: Exclude<ScopeState, 'ok'> }
@@ -41,8 +42,8 @@ const MESSAGES_EN = {
   words: (limit: number) => `Use at most ${limit} words.`,
 };
 const MESSAGES = { en: MESSAGES_EN, ru: {
-  removed: (count: number) => `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${count}. Обновите поиск для актуальных результатов.`,
-  found: (plans: number, tasks: number) => `планов: ${plans}, подходящих задач: ${tasks}`,
+  removed: (count: number) => `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(count, 'ru')}. Обновите поиск для актуальных результатов.`,
+  found: (plans: number, tasks: number) => `планов: ${formatCount(plans, 'ru')}, подходящих задач: ${formatCount(tasks, 'ru')}`,
   finished: (found: string) => `Поиск завершён: найдено ${found} на момент поиска.`,
   empty: 'Поиск завершён: совпадений на момент поиска нет.',
   noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.',
