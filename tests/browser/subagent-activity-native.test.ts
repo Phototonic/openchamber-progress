@@ -12,7 +12,7 @@ function guest() {
   const document = { documentElement: { scrollWidth: 300 }, querySelector: (s: string) => s.includes('subagent-activity') ? section : s.includes('plan-plan-alpha') ? detail : s.includes('detail-loading') ? loading : null };
   const row = (session: string, ran: string, facts: string[], featured = true, extra: object = {}) => ({ dataset: { testid: `subagent-row-run-${session}`, session, run: 'r', ran, depth: '1', ...extra }, closest: () => featured ? null : {}, querySelectorAll: () => facts.map((fact) => ({ dataset: { fact } })) });
   const populate = () => { summary = ['finished']; rows = [row('C1', 'finished', ['ran']), row('C2', 'finished', ['ran'], false)]; };
-  const ready = () => { detail = true; loading = false; state = 'ready'; summary = ['finished', 'failed', 'interrupted']; rows = [row('C1', 'finished', ['ran', 'accepted']), row('C2', 'finished', ['ran'], false), row('R', 'finished', ['ran', 'claimed'], false)]; };
+  const ready = () => { detail = true; loading = false; state = 'ready'; summary = ['finished', 'failed', 'interrupted']; rows = [row('C1', 'finished', ['ran', 'accepted'], false), row('C2', 'finished', ['ran'], false), row('R', 'finished', ['ran', 'claimed'], false)]; };
   return { evaluate: async (expression: string) => runInNewContext(expression, { document, innerWidth: 360 }), populate, ready, detail: () => { detail = true; },
     invalidate: () => { loading = true; state = 'host-only'; }, noPlan: () => { detail = false; }, say: (t: string) => { text = t; }, wrong: () => { rows[0] = row('C1', 'finished', ['ran', 'accepted'], true, { now: 'active' }); } };
 }
@@ -33,6 +33,7 @@ for (const order of ['rows-first', 'detail-first']) test(`roster ready snapshot:
   const result = await readyRosterSnapshot({ evaluate: g.evaluate, send: noSend, wait: bounded([() => {}, g.ready]) }, 'panel', ids);
   assert.equal(result.ready, true);
   assert.equal(JSON.stringify(result.rows.find((r: any) => r.session === 'C1')?.facts), '["ran","accepted"]');
+  assert.equal(result.rows.find((r: any) => r.session === 'C1')?.featured, false);
   assert.equal(result.rows.find((r: any) => r.session === 'C2')?.featured, false);
   assert.ok(result.rows.some((r: any) => r.facts.includes('claimed')));
   assert.equal(JSON.stringify(result.summary), '["finished","failed","interrupted"]');
