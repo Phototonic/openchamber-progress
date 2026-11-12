@@ -33,12 +33,12 @@
 
 ### Modified Capabilities
 
-Нет. Основные спецификации [dependency-map-arrow-state](../../specs/dependency-map-arrow-state/spec.md) и [subagent-loss-notices](../../specs/subagent-loss-notices/spec.md) уже существуют и определяют поведение своих возможностей. Здесь уточняется только язык их отображения, без изменения этих контрактов. Основная спецификация `interface-localization` ещё не создана через sync/archive, поэтому delta сохраняет `ADDED Requirements`.
+Нет. Основные спецификации [dependency-map-arrow-state](../../../specs/dependency-map-arrow-state/spec.md) и [subagent-loss-notices](../../../specs/subagent-loss-notices/spec.md) уже существуют и определяют поведение своих возможностей. Здесь уточняется только язык их отображения, без изменения этих контрактов. Основная спецификация `interface-localization` ещё не создана через sync/archive, поэтому delta сохраняет `ADDED Requirements`.
 
 ## Impact
 
 - Проверяемая база актуализации — `develop`, `b0f3805`, package 1.1.1, `@openchamber/sdk` 2.7.0. Это не прежняя база до реализации: последующие upstream-изменения затронули карту, субагентов, обработку состояния хранилища и проверки совместимости.
-- Общий lifecycle в `ui/shared/app.ts`, три entrypoints, распределённые текстовые каталоги shared UI, `format.ts` и `summary.ts` остаются точками интеграции. Подробности и актуальные границы — в [design.md](design.md) и [docs/ui.md](../../../docs/ui.md).
+- Общий lifecycle в `ui/shared/app.ts`, три entrypoints, распределённые текстовые каталоги shared UI, `format.ts` и `summary.ts` остаются точками интеграции. Подробности и актуальные границы — в [design.md](design.md) и [docs/ui.md](../../../../docs/ui.md).
 - Существуют unit/controller-тесты и две отдельные language QA: `interface-language-qa.ts` для настройки и трёх frames, `interface-language-reading-qa.ts` для сохранения чтения и отсутствия лишних операций. Исторические отметки выполнения и свежие результаты проверки различаются в [tasks.md](tasks.md). Планирование не требует пересборки; при разрешённой реализации исправления в `census-view.ts` и `components.ts` должны сопровождаться регрессиями и обновлением затронутых guest bundles.
 - Локализация использует существующий SDK; она не добавляет backend endpoint, не меняет progress wire-контракт и не вводит runtime-зависимость. Более поздние изменения run storage и API принадлежат своим возможностям, не этой настройке языка. Экспорт учитывает выбранный язык, сохраняя прежний английский формат при тех же входных данных.
 - Автоматический режим без device storage, английский fallback, согласование на существующем цикле и перевод preview из удержанного снимка сохраняются. Актуальные документы и старые 19 выполненных пунктов сами по себе не доказывают новую runtime/native-host приёмку.

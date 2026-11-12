@@ -20,6 +20,7 @@ const cache = join(homedir(), '.cache/ms-playwright');
 const candidates = [...(existsSync(cache) ? readdirSync(cache).filter(n => /^chromium-\d+$/.test(n)).sort().reverse().map(n => join(cache, n, 'chrome-linux64/chrome')) : []), '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
 const executable = explicit ?? candidates.find(existsSync);
 if (!executable || !isAbsolute(executable) || !existsSync(executable)) throw Error('No installed Chromium; no downloads attempted.');
+mkdirSync('/tmp/opencode', { recursive: true });
 const profile = mkdtempSync('/tmp/opencode/interface-language-reading-');
 const results: { id: string; pass: boolean }[] = [], operations: unknown[] = [];
 const check = (id: string, pass: boolean) => { results.push({ id, pass }); if (!pass) throw Error(id); };
