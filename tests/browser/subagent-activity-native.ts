@@ -37,7 +37,7 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     assert.ok(featured.length <= cap, `${surface}: featured rows bounded to ${cap}`);
     const bound = r.rows.filter(x => x.session === ids.bound);
     assert.equal(bound.filter(x => x.facts.includes('accepted')).length, 1, `${surface}: the linked child's task facts appear once, on its latest run`);
-    assert.ok(bound.some(x => x.featured && x.recorded && x.ran === 'finished'), `${surface}: linked child featured with its recorded native run (finished, not done)`);
+    assert.ok(bound.some(x => !x.featured && x.recorded && x.ran === 'finished'), `${surface}: linked child's recorded finished run is folded, not running or done`);
     assert.ok(!featured.some(x => x.session === ids.c2), `${surface}: unassigned finished child is folded, not featured`);
     for (const kind of ['finished', 'failed', 'interrupted']) assert.ok(r.summary.includes(kind), `${surface}: summary counts ${kind} native runs`);
     assert.ok(!r.summary.includes('running') && !r.summary.includes('waiting'), `${surface}: nothing is running before the renewal turn`);
@@ -149,7 +149,9 @@ export async function nativeProductionViews(root: string, env: Record<string, st
     panel = await guestFrame('panel');
     assertRoster(await readyRosterSnapshot(host.controls, panel, ids), 'rail after A→B→draft→A', 6);
     evidence.stage = 'page-screenshot';
-    await actions.click(`[...document.querySelectorAll('button[aria-label="Activity probe"]')].filter(b=>!b.hasAttribute('data-context-surface'))`, 'native page open');
+    // OpenChamber 2.7 places extension pages in the sidebar's More menu.
+    await actions.click(`[...document.querySelectorAll('button[aria-label="More"]')]`, 'native page open');
+    await actions.click(`[...document.querySelectorAll('[role="menuitem"]')].filter(n=>n.textContent.trim()==='Activity probe')`, 'native page open');
     const page = await guestFrame('page');
     assert.ok(await wait(() => evaluate(`Boolean(document.querySelector('[data-testid="plan-row-plan-alpha"]'))`, page)), 'native page plan');
     await evaluate(`document.querySelector('[data-testid="plan-row-plan-alpha"]').click()`, page);

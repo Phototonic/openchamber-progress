@@ -62,7 +62,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
-**Works with:** OpenChamber 2.5.1 or later · OpenCode 2.1.4 (tested capture version) · Linux and native Windows.
+**Works with:** OpenChamber 2.5.1 or later · OpenCode 2.2.7 (Linux native checks) and 2.1.4 (historical Linux/native Windows checks) · Linux and native Windows. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
 

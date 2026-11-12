@@ -3,8 +3,10 @@
 ## Current use and development
 
 Agent Progress is an installable early-access extension with Linux and native
-Windows capture. OpenCode 2.1.4 is the tested capture version; broader
-compatibility is not established. Use the [setup guide](setup.md) for installation,
+Windows capture. Linux native capture was also verified on OpenCode 2.2.7 in the
+[post-release checks](#post-release-111-checks--2026-11-12); the historical Linux
+and Windows 2.1.4 results below retain their original scope. Broader compatibility
+is not established. Use the [setup guide](setup.md) for installation,
 updates and lifecycle, including the [native Windows boundary](setup.md#native-windows).
 The selected tree's [package.json](../package.json) identifies its package version;
 [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
@@ -20,6 +22,120 @@ historical runs and are not the current installation procedure.
 The evidence sections retain the environments, artifacts and limitations of
 those runs; they do not certify every later checkout. References under `evidence/`
 name local-only records, not files shipped in the repository or release archives.
+
+## Post-release 1.1.1 checks — 2026-11-12
+
+These checks close the three deferred Linux checks for published **1.1.1**.
+`git ls-remote --tags origin` confirmed `v1.0.0` and `v1.1.1`; the latter resolves
+to `9cb5c422dadb550883925731c632bfc89dcf41d4`, also the checked `main`/`dev` tree.
+Test-only adjustments described below do not change release runtime bytes.
+
+Environment: **OpenChamber 2.7.0**, **OpenCode 2.2.7**, build SDK
+**@openchamber/sdk 2.7.0**, plugin/client **2.1.4**, standalone **Node 24.22.2**,
+and **Bun 1.3.14**. The extracted desktop executable reports **Electron 45.2.1 /
+Node 24.22.1 / Chromium 156.0.8078.75**. Node 24.22.2 ran the tests and imported
+host-installer module; its result is not a host-Node installer run.
+
+Only an executable copy of the installed AppImage was extracted, to
+`/tmp/opencode/agent-progress-t4-appimage/squashfs-root`. No installed profile,
+configuration, authentication or data was copied. AppImage SHA-256:
+`11a52bccbfbd00aa7b5a66ef48119df76b8cff259faee47499647a02c19bb401`;
+`resources/app.asar` SHA-256:
+`ac67c833657f0185c02486d7be03fbad0ec524174bdf21c38ac12f309801837b`.
+The managed PATH wrapper and bundled CLI were not invoked. The official CLI archive
+URL in [Historical CLI isolation](#historical-cli-isolation) now supplies **2.2.7**,
+not the historical 2.2.2 pin or the desktop manifest's bundled 2.2.6. This run
+explicitly selected and verified the new independent executable; it does **not**
+certify 2.2.6 or replace the historical 2.2.2 artifact pin. Archive SHA-256:
+`89a6cee227b54bc011179c528a5e63176032462b1a5e21723b616801cddc2ca7`;
+executable SHA-256:
+`589253d36810f21217edd51545cd435b328cdc3cf4f451fbe0cce6f88afcf5e1`.
+
+### Native sub-agent activity — passed after test maintenance
+
+```sh
+OPENCODE_BINARY=/tmp/opencode/agent-progress-probe-cli/opencode \
+  EVIDENCE=/tmp/opencode/post-release-evidence/activity-current-host \
+  timeout 680 node --experimental-strip-types --test tests/backend/subagent-activity-runtime.test.ts
+```
+
+The default regression phase finished with **exit 0; 1 test passed, no skips**.
+Both built-in and slim **2.2.25 V2** profiles report `pass: true`, driver exit 0,
+stopped hosts, removed process groups and removed private fixture roots. This is
+the source-built companion regression, not a verbatim-built companion rerun.
+The built-in profile mounted the real rail, Work Status and board, exercised
+session switching and a native activity change, and reached UI stage `complete`.
+Both profiles passed the production report/binding, restricted-child, run outcome,
+handoff, recovery, authenticated API and durable-restart assertions. Scripted local
+providers ran in loopback-only network namespaces with zero provider credentials.
+
+The first attempt exited 1 at `current-plan-roster-readiness-timeout`: the harness
+required a finished linked run outside the records disclosure, but the shipped UI
+intentionally folds every non-running record. Readiness now requires the retained
+Accepted fact regardless of folding; the semantic check requires that finished
+run to be folded. A second attempt exited 1 at `native page open:
+non-actionable-target`: OpenChamber 2.7.0 moved extension pages into the sidebar's
+**More → Extension pages** menu. The driver now uses that real menu. Neither was
+a demonstrated product defect; no product code or safety assertion was relaxed.
+The focused harness tests pass **34/34**, including folded-record readiness and
+rejection of missing Accepted facts; root and UI typechecks also exit 0.
+
+### Versioned desktop offers and companion upgrade — observed
+
+A fresh private HOME/XDG/profile under `/tmp/opencode/post-release-upgrade` used
+the extracted AppRun and existing Wayland transport, with an empty inherited
+environment and the independent CLI override. Clean tracked-file projections of
+`v1.0.0` and `v1.1.1` supplied the extension and unchanged built companion bytes.
+The real Settings → Extensions folder installer, permission approval and extension
+setup/review/confirmation installed 1.0.0; an explicit isolated **Restart OpenCode**
+loaded it and created run storage format 1.
+
+The 1.0.0 board visibly offered **Official main version 1.1.1 available · This
+extension 1.0.0**. Extension replacement used the real folder **Reinstall** and
+permission approval, not Git update discovery or a host Git-update button. The
+1.1.1 board then offered **Companion update available**, **Installed 1.0.0 → bundled
+1.1.1. Nothing changes until you review and confirm.**, and **Review update**.
+Review displayed installed 1.0.0 and bundled 1.1.1; checking confirmation and
+selecting **Update** succeeded. The board requested an OpenCode restart; a
+read-only SQLite query still found format 1 and the retained loss flag.
+
+Settings → General → **Restart OpenCode** restarted only the disposable managed
+runtime. A read-only verification command exited 0 with `format: 2`,
+`planPreserved: true`, `seededRunPreserved: true`, and `totalRuns: 1`. The released
+Store APIs had seeded one working plan, one succeeded dispatch and a gap, using
+real unprompted parent/child sessions. These are synthetic recording inputs, not
+a model-driven subagent execution. The plan snapshot and seeded run payload were
+preserved. Migration retained `loss: 1`, `last_loss_at: null`, `loss_sequence: 0`
+and `dismissed_loss_sequence: 0`. The board still showed the plan and **1 finished**;
+its expanded **Partial** cue said **Some run information wasn’t recorded. This
+happened before the update; the date is unknown.** The reload-pending copy cleared.
+
+Provider credential inventories were zero before and after; no prompt or paid
+model was called. Owned-process HOME/XDG checks found no unexpected scopes. All
+owned desktop/runtime/service processes were stopped; the owned process group and
+CDP listener were absent afterwards. This is versioned notice/companion-update
+evidence, **not** certification of host Git auto-update, rollback, model-driven
+runs, Windows or macOS. Local-only screenshots and native JSON are under
+`/tmp/opencode/post-release-evidence/`; they are not shipped artifacts.
+
+### Extracted-host folder/ZIP installer gate — passed
+
+After extracting the copied ASAR with its unpacked dependencies:
+
+```sh
+bun run package
+AGENT_PROGRESS_HOST_MODULE=/tmp/opencode/agent-progress-t4-appimage/squashfs-root/resources/app-extracted/node_modules/@openchamber/web/server/lib/guests/install.js \
+  timeout 180 bun run verify:package
+```
+
+Both commands exited **0**. The actual **2.7.0** host module reported
+`actualHostInstaller: "folder"` and `"zip"`, each with `accepted: true`, version
+`1.1.1`, and all three guest entries plus the service entry present. The existing
+gate passes the declared minimum host compatibility value `2.5.1` to that module;
+it does not spoof the module's implementation version. Package lifecycle and
+content checks passed too. Installation used disposable registries only; this
+gate launches no guest or desktop and installs nothing into the real host. No
+new product defect was identified by these three checks.
 
 ## Native structured task capture limitation
 

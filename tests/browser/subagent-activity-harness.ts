@@ -78,7 +78,7 @@ export function rosterSnapshot(ids: RosterIds) {
   const ready = !!document.querySelector('[data-testid="plan-plan-alpha"]') &&
     !document.querySelector('[data-testid="detail-loading"], [data-testid="failure-state"], [data-testid="setup-needed"]') &&
     section?.dataset.state === 'ready' && summary.length > 0 &&
-    rows.some(r => r.session === ids.bound && r.featured && r.facts.includes('accepted'));
+    rows.some(r => r.session === ids.bound && r.facts.includes('accepted'));
   return {
     ready, rows, summary,
     // The owner's removed clutter, and prompt/output/raw-error canaries of the native fixture.

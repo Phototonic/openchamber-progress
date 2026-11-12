@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- Refresh the native activity regression for folded finished records and OpenChamber 2.7's extension-page menu. Record the post-release 1.1.1 native, versioned desktop companion-upgrade and extracted-host folder/ZIP installer checks on OpenCode 2.2.7.
+
 ## [1.1.1] - 2026-11-10
 
 A roomier dependency map and quieter sub-agent warnings. Run storage moves to format 2; see Changed for the one-way upgrade.
