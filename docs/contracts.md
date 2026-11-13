@@ -1256,6 +1256,7 @@ retained descriptors keep their known targets while Store availability is lost.
 
 Authenticated POST `/v1/setup/managed-inspect` accepts only `{storeRoot?:string}`.
 It resolves and validates the managed source roots and the explicit store (default
+the selected/pending store, a fully validated canonical legacy candidate, or
 `<dataRoot>/openchamber-progress`), without writes, and returns a review. `expected`
 is an opaque 64-hex consent identity, not an authentication token. It binds this
 service generation, canonical targets, current descriptor/object identity,
@@ -1284,11 +1285,36 @@ Migration states are frozen for the lifecycle/UI consumers: `none` means no
 validated legacy candidate; `available` means a validated candidate requiring the
 explicit switch; `conflict` means unsafe ownership/identity; `pending` means a
 durable same-target interrupted switch with capture off; `complete` means removal
-and private selection persisted, **not** matching managed-load evidence. The
-`managed-migrate` action is reserved for the lifecycle implementation; until that
-owner implements the sequence it refuses `managed-migration-required`. Pending
-recovery must revalidate the same reviewed target, never auto-enable or restore a
-global loader. New setup must not claim managed activation while legacy remains.
+and private selection persisted, **not** matching managed-load evidence.
+`managed-migrate` fully prevalidates legacy ownership, removable selectors and
+the actual Store/source before capture is disabled. One confirmed same-target
+sequence disables capture, persists a private `migration.json` selection beside
+the managed descriptor, invokes legacy `remove-capture`, persists removal and
+the expected fingerprint, publishes the managed descriptor, records completion,
+then enables capture. Store/source identity and history are retained; the managed
+install identity is distinct from the legacy identity. Filesystem/SQLite changes
+are not one transaction. A completed same-target retry does not remove again or
+re-enable capture that was deliberately disabled later.
+
+Pending recovery requires a fresh review of that same private selection and
+actual Store. A still-present legacy package undergoes full ownership validation
+again; an already-removed package requires the recorded removal phase or the
+existing durable same-install removal receipt. Unknown disappearance, modified
+remaining files, or conflicting state is not permission to finish deletion or
+restore a loader. No retry or re-enable occurs automatically. A crash-retained
+configuration lock retains its busy refusal, including during migration; the
+normal retry does not take it over. New setup must not claim managed activation
+while legacy remains.
+
+The managed companion ignores environment binding overrides and package siblings.
+Before configuration it keeps only dormant boundary-driven registration, with no
+Store, capture, delegation observation or verified guidance. Concurrent eligible
+context/report boundaries coalesce initialization. A runtime pins its verified
+selection; changed/disappeared identity retires it rather than selecting another
+Store. Disposal retires authority synchronously before awaiting hook teardown;
+held initialization and reports recheck authority before publishing a load or
+appending report/capture data. This preserves fixed report failures, not graceful
+session cancellation. Restricted effective tools remain restricted.
 
 Setup errors are fixed `{error:code}`: malformed/unknown fields and missing
 confirmation 400 (`invalid` / `confirmation-required`); stale/duplicate consent

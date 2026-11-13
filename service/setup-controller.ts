@@ -2,11 +2,12 @@ import { existsSync, readFileSync, realpathSync, lstatSync, writeFileSync, renam
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
-import { Store, storageError, digest } from '../shared/store.ts';
+import { Store, storageError, digest, canonical } from '../shared/store.ts';
 import { ProgressError, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState } from '../shared/progress.ts';
 import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation } from '../shared/managed-binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
+import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
 import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
 
@@ -157,8 +158,18 @@ export class SetupController {
     if(prior?.version===payload.version&&prior.fingerprint===fingerprint)return;
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
-  private managedMigration(targets:Targets):ManagedMigrationState {
-    try{return lifecycle('inspect',targets).installed?'available':'none';}
+  private managedMigration(_targets?:Targets):ManagedMigrationState {
+    try{
+      const record=readMigration(this.managedEnv!),legacy=legacyMigration(this.managedEnv!);
+      if(record){
+        if(record.phase==='complete'&&(!this.binding||legacy))return 'conflict';
+        if(this.binding&&canonical(this.binding)!==canonical(record.binding))return 'conflict';
+        if(legacy&&!sameMigrationTarget(legacy.binding,record.binding))return 'conflict';
+        return record.phase==='complete'&&!legacy?'complete':'pending';
+      }
+      if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return 'conflict';
+      return legacy?'available':'none';
+    }
     catch{return 'conflict';}
   }
   private managedStatus():SetupRead {
@@ -167,7 +178,7 @@ export class SetupController {
     const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
-      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:targets?this.managedMigration(targets):'none',mode:'unknown',observation:'unknown',expectedVersion:null}};
+      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:this.managedMigration(targets),mode:'unknown',observation:'unknown',expectedVersion:null}};
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
       try {
@@ -182,19 +193,22 @@ export class SetupController {
   /** Read-only candidate validation. The token binds consent to current selection, source and store identity. */
   private managedCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
     const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env),b=readManagedBinding(env);
+    const record=readMigration(env),legacy=legacyMigration(env);
+    if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
     if(this.expectedDescriptor!==null&&(!b||digest(readFileSync(file))!==this.expectedDescriptor))throw new ManagedBindingError('managed-binding-modified');
-    const selected=managedPath(storeRoot??(b?path.dirname(b.database):path.join(roots.dataRoot,'openchamber-progress')),true);
+    const retained=b??record?.binding??legacy?.binding;
+    const selected=managedPath(storeRoot??(retained?path.dirname(retained.database):path.join(roots.dataRoot,'openchamber-progress')),true);
     if([roots.configRoot,roots.dataRoot,path.dirname(file)].includes(selected))throw new SetupError('managed-selection-conflict');
     const targets={...roots,storeRoot:selected,confirmed:true};
-    const legacy=lifecycle('inspect',targets); // canonical owned roots, private store, complete legacy ownership if present
+    lifecycle('inspect',targets); // canonical owned roots, private store, complete legacy ownership if present
     if(lstatSync(selected,{throwIfNoEntry:false})&&!isOwned(selected))throw new SetupError('store-permissions');
-    if(b&&path.dirname(b.database)!==selected)throw new SetupError('managed-selection-conflict');
+    if(retained&&path.dirname(retained.database)!==selected)throw new SetupError(legacy||record?'managed-migration-conflict':'managed-selection-conflict');
     let storeId:string|null=null,sourceId:string|null=null,sources:unknown=[],enabled:unknown=null;
     const database=path.join(selected,'progress.sqlite');
     if(lstatSync(database,{throwIfNoEntry:false})) {
       const store=new Store(database,{readOnly:true});
       try {
-        store.subagentRunStorage();if(b)verifyStore(store,b);
+        store.subagentRunStorage();if(retained)verifyStore(store,retained);
         const e=store.list({limit:1});storeId=e.storeId;sources=e.sources;enabled=e.captureEnabled;
         const matches=e.sources.filter(s=>s.configRoot===roots.configRoot&&s.dataRoot===roots.dataRoot);
         if(matches.length>1||matches.some(s=>!s.verified))throw new SetupError('managed-source-conflict');
@@ -204,7 +218,7 @@ export class SetupController {
     const identity=(p:string)=>{const s=lstatSync(p,{throwIfNoEntry:false});return s?[s.dev,s.ino,s.mode,s.uid]:null;};
     const expected=digest(JSON.stringify({nonce:this.reviewNonce,targets,descriptor:b?digest(readFileSync(file)):null,
       descriptorObject:identity(file),storeObject:identity(database),rootObject:identity(selected),storeId,sourceId,sources,enabled,
-      legacy:legacy.installed?{fingerprint:legacy.fingerprint,ownership:digest(readFileSync(path.join(roots.configRoot,'plugins/agent-progress/.ownership.json')))}:null}));
+      migration:record??null,legacy:legacy?{fingerprint:lifecycle('inspect',targets).fingerprint,ownership:digest(readFileSync(path.join(roots.configRoot,'plugins/agent-progress/.ownership.json')))}:null}));
     return {review:{expected,targets:{...roots,storeRoot:selected},storeId,sourceId},binding:b,targets};
   }
   private runManaged(action:ManagedSetupAction,body:unknown):SetupRead {
@@ -221,9 +235,9 @@ export class SetupController {
     }
     if(r.confirmed!==true)throw new SetupError('confirmation-required');
     if(r.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
-    if(action==='managed-migrate')throw new SetupError('managed-migration-required'); // M owns execution/recovery
+    if(action==='managed-migrate')return this.migrate(candidate);
     if(!['managed-configure','managed-enable','managed-disable'].includes(action))throw new ProgressError('invalid');
-    if(action!=='managed-disable'&&this.managedMigration(candidate.targets)!=='none')throw new SetupError('managed-migration-required');
+    if(action!=='managed-disable'&&!['none','complete'].includes(this.managedMigration(candidate.targets)))throw new SetupError('managed-migration-required');
     if(action==='managed-enable'||action==='managed-disable') {
       this.refresh();if(!this.store||!this.binding)throw new ProgressError(this.error);
       this.store.setEnabled(action==='managed-enable');return {...this.managedStatus(),action};
@@ -254,6 +268,37 @@ export class SetupController {
         publishPrivateJson(file,b);
       }finally{store.close();}
       this.refresh();return {...this.managedStatus(),action};
+    }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
+  }
+  private migrate(candidate:ReturnType<SetupController['managedCandidate']>):SetupRead {
+    const env=this.managedEnv!,prior=readMigration(env),legacy=legacyMigration(env);
+    if(prior?.phase==='complete'&&legacy)throw new SetupError('managed-migration-conflict');
+    if(prior?.phase==='complete'&&!legacy)return {...this.managedStatus(),action:'managed-migrate'};
+    if(!prior&&!legacy)throw new SetupError('managed-migration-required');
+    const retained=prior?.binding??legacy!.binding;
+    if(legacy&&candidate.binding?.installId===legacy.binding.installId)throw new SetupError('managed-migration-conflict');
+    if(candidate.binding&&!sameMigrationTarget(candidate.binding,retained)||path.dirname(retained.database)!==candidate.targets.storeRoot)throw new SetupError('managed-migration-conflict');
+    if(legacy&&(!sameMigrationTarget(legacy.binding,retained)||prior&&legacy.binding.installId!==prior.legacyInstallId))throw new SetupError('managed-migration-conflict');
+    if(!legacy&&(!prior||prior.phase==='pending'&&!removalRecorded(prior)))throw new SetupError('managed-migration-pending');
+    const file=createManagedBindingDirectory(env),lock=path.join(path.dirname(file),'.configuration-lock');let locked=false;
+    try{
+      try{closeSync(openSync(lock,'wx',0o600));locked=true;}catch(e){if((e as NodeJS.ErrnoException).code==='EEXIST')throw new SetupError('managed-configuration-busy');throw e;}
+      if(this.managedCandidate(candidate.targets.storeRoot).review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
+      const store=new Store(retained.database);
+      try{
+        verifyStore(store,retained);store.subagentRunStorage();
+        const binding=prior?.binding??candidate.binding??{...retained,installId:`managed-${digest(JSON.stringify([retained.storeId,retained.source]))}`,version:this.readonlyPayload().version};
+        const record:MigrationRecord=prior??{binding,phase:'pending',legacyInstallId:legacy!.binding.installId};
+        // Full owned()+selector+actual Store/source validation above precedes even disable.
+        store.setEnabled(false);writeMigration(env,record);
+        if(legacy)lifecycle('remove-capture',candidate.targets);
+        record.phase='removed';writeMigration(env,record);
+        this.establishExpectation(binding);
+        if(!candidate.binding)publishPrivateJson(file,binding);
+        record.phase='complete';writeMigration(env,record);
+        store.setEnabled(true);
+      }finally{store.close();}
+      this.refresh();return {...this.managedStatus(),action:'managed-migrate'};
     }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
   }
   private validateDescriptor() {

@@ -14,7 +14,7 @@ var __export = (target, all) => {
 };
 
 // service/main.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 
 // service/server.ts
 import http from "node:http";
@@ -4852,6 +4852,21 @@ function removableSelectors(o) {
     return file;
   });
 }
+function migrationBinding(targets) {
+  return platformSecurityScope(() => {
+    const o = owned(targets);
+    removableSelectors(o);
+    need(o.binding.source.verified && privatePaths([o.root, path5.join(o.root, ".ownership.json")]), "ownership-invalid");
+    const store = new Store(o.binding.database, { readOnly: true });
+    try {
+      verifyStore(store, o.binding);
+      store.subagentRunStorage();
+    } finally {
+      store.close();
+    }
+    return o.binding;
+  });
+}
 function history(targets, event) {
   const file = path5.join(targets.storeRoot, "installation-history.jsonl");
   safe2(file, true);
@@ -4976,7 +4991,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   if (old) {
     manifest = { ...old.manifest, active: release, releases: { ...old.manifest.releases, [release]: { version: payload.version, files: releaseHash } } };
   } else {
-    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}const plugin=await import(pathToFileURL(path.join(dir,'index.js')).href);return plugin.setupLegacy?plugin.setupLegacy(ctx,path.join(dir,'progress-binding.json')):plugin.default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);
@@ -27327,13 +27342,81 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
 }
 
 // service/setup-controller.ts
-import { existsSync as existsSync5, readFileSync as readFileSync4, realpathSync as realpathSync8, lstatSync as lstatSync8, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync3, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
-import path8 from "node:path";
+import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync9, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync3, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
+import path9 from "node:path";
 import { randomUUID as randomUUID6 } from "node:crypto";
 
-// service/suggestions.ts
-import { lstatSync as lstatSync7, realpathSync as realpathSync7 } from "node:fs";
+// setup/managed-migration.ts
+import { lstatSync as lstatSync7, readFileSync as readFileSync4 } from "node:fs";
 import path7 from "node:path";
+function migrationFile(env) {
+  return path7.join(path7.dirname(managedBindingFile(env)), "migration.json");
+}
+function readMigration(env) {
+  return platformSecurityScope(() => {
+    const file2 = migrationFile(env);
+    if (!lstatSync7(file2, { throwIfNoEntry: false }))
+      return;
+    managedPath(file2);
+    if (!privatePaths([path7.dirname(file2), file2]))
+      throw new SetupError("managed-migration-conflict");
+    const raw = readBinding(file2);
+    const m = raw.migration, roots = managedSourceRoots(env);
+    if (!m || m.format !== 1 || m.product !== "openchamber-agent-progress-managed" || !["pending", "removed", "complete"].includes(m.phase) || typeof m.legacyInstallId !== "string" || !m.legacyInstallId || m.legacyInstallId === raw.installId || raw.source.configRoot !== roots.configRoot || raw.source.dataRoot !== roots.dataRoot || !raw.source.verified || [roots.configRoot, roots.dataRoot, path7.dirname(file2)].includes(path7.dirname(raw.database)) || ![roots.configRoot, roots.dataRoot].every((root) => lstatSync7(root).isDirectory() && isOwned(root)))
+      throw new SetupError("managed-migration-conflict");
+    const { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source } = raw;
+    const binding = { protocolVersion, schemaVersion, installId, version: version2, database, storeId, source };
+    const store = new Store(database, { readOnly: true });
+    try {
+      verifyStore(store, binding);
+      store.subagentRunStorage();
+    } finally {
+      store.close();
+    }
+    return { binding, phase: m.phase, legacyInstallId: m.legacyInstallId };
+  });
+}
+function writeMigration(env, record2) {
+  const prior = readMigration(env);
+  if (prior && (canonical(prior.binding) !== canonical(record2.binding) || prior.legacyInstallId !== record2.legacyInstallId))
+    throw new SetupError("managed-migration-conflict");
+  publishPrivateJson(migrationFile(env), { ...record2.binding, migration: { format: 1, product: "openchamber-agent-progress-managed", phase: record2.phase, legacyInstallId: record2.legacyInstallId } }, !!prior);
+}
+function sameMigrationTarget(a, b) {
+  return a.database === b.database && a.storeId === b.storeId && canonical(a.source) === canonical(b.source);
+}
+function legacyMigration(env) {
+  const roots = managedSourceRoots(env), root = path7.join(roots.configRoot, "plugins/agent-progress");
+  if (!lstatSync7(root, { throwIfNoEntry: false }))
+    return;
+  try {
+    const b = readBinding(path7.join(root, "progress-binding.json"));
+    const targets = { ...roots, storeRoot: path7.dirname(b.database), confirmed: true };
+    return { binding: migrationBinding(targets), targets };
+  } catch {
+    throw new SetupError("managed-migration-conflict");
+  }
+}
+function removalRecorded(record2) {
+  const file2 = path7.join(path7.dirname(record2.binding.database), "installation-history.jsonl");
+  managedPath(file2);
+  const s = lstatSync7(file2);
+  if (!s.isFile() || s.isSymbolicLink() || !privatePaths([path7.dirname(file2), file2]))
+    throw new SetupError("managed-migration-conflict");
+  return readFileSync4(file2, "utf8").trim().split(`
+`).some((line) => {
+    try {
+      const e = JSON.parse(line);
+      return e.action === "remove-capture" && e.installId === record2.legacyInstallId;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// service/suggestions.ts
+import { lstatSync as lstatSync8, realpathSync as realpathSync7 } from "node:fs";
+import path8 from "node:path";
 import { homedir as homedir2 } from "node:os";
 function setupSuggestions(context2) {
   return platformSecurityScope(() => suggestions(context2));
@@ -27356,19 +27439,19 @@ function suggestions(context2) {
       }
     }
     const trimmed = value.replace(/\/+$/, "") || "/";
-    return path7.isAbsolute(trimmed) && path7.resolve(trimmed) === trimmed ? trimmed : null;
+    return path8.isAbsolute(trimmed) && path8.resolve(trimmed) === trimmed ? trimmed : null;
   }
   function root(override, fallback) {
     const home = base(host.env.HOME ?? (nativeWindows ? homedir2() : undefined));
-    const parent = override ? base(override) : home ? path7.join(home, fallback) : null;
+    const parent = override ? base(override) : home ? path8.join(home, fallback) : null;
     if (!parent)
       return null;
-    const value = path7.join(parent, "opencode");
+    const value = path8.join(parent, "opencode");
     if (value.length > 4096)
       return null;
     let state2 = "candidate";
     try {
-      const stat = lstatSync7(value);
+      const stat = lstatSync8(value);
       if (stat.isDirectory() && !stat.isSymbolicLink() && (nativeWindows ? sameWindowsDirectory(windowsPath(value), value) && isOwned(value) : host.uid !== undefined && stat.uid === host.uid && realpathSync7(value) === value))
         state2 = "resolved";
     } catch {}
@@ -27376,7 +27459,7 @@ function suggestions(context2) {
   }
   const configRoot = root(host.env.XDG_CONFIG_HOME, ".config");
   const dataRoot = root(host.env.XDG_DATA_HOME, ".local/share");
-  const storeValue = dataRoot ? path7.join(dataRoot.value, "openchamber-progress") : null;
+  const storeValue = dataRoot ? path8.join(dataRoot.value, "openchamber-progress") : null;
   return { configRoot, dataRoot, storeRoot: dataRoot && storeValue && storeValue.length <= 4096 ? { value: storeValue, state: dataRoot.state } : null };
 }
 
@@ -27408,10 +27491,10 @@ class SetupController {
       return;
     }
     this.bindingFile = privateFile;
-    if (lstatSync8(privateFile, { throwIfNoEntry: false })) {
+    if (lstatSync9(privateFile, { throwIfNoEntry: false })) {
       try {
         this.binding = readBinding(privateFile);
-        this.expectedDescriptor = digest(readFileSync4(privateFile));
+        this.expectedDescriptor = digest(readFileSync5(privateFile));
       } catch (e) {
         this.recordError(e);
         this.canPersist = false;
@@ -27468,7 +27551,7 @@ class SetupController {
           this.error = "binding";
           return;
         }
-        const descriptor = digest(readFileSync4(managedBindingFile(this.managedEnv)));
+        const descriptor = digest(readFileSync5(managedBindingFile(this.managedEnv)));
         if (this.expectedDescriptor !== null && descriptor !== this.expectedDescriptor)
           throw new ManagedBindingError("managed-binding-modified");
         this.binding = b;
@@ -27494,7 +27577,7 @@ class SetupController {
   }
   targets() {
     const b = this.binding;
-    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path8.dirname(b.database), confirmed: true } : undefined;
+    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path9.dirname(b.database), confirmed: true } : undefined;
   }
   status(includeSuggestions = false) {
     if (this.managedEnv)
@@ -27562,7 +27645,7 @@ class SetupController {
     if (action === "install" || action === "update") {
       this.validateDescriptor();
       lifecycle("inspect", targets);
-      const database = path8.join(targets.storeRoot, "progress.sqlite");
+      const database = path9.join(targets.storeRoot, "progress.sqlite");
       if (existsSync5(database)) {
         const probe = new Store(database, { readOnly: true });
         try {
@@ -27574,7 +27657,7 @@ class SetupController {
     }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
-      const b = readBinding(path8.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
+      const b = readBinding(path9.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
@@ -27630,9 +27713,21 @@ class SetupController {
       return;
     writeManagedExpectation(b, { format: 1, storeId: b.storeId, sourceId: b.source.id, installId: b.installId, version: payload.version, fingerprint });
   }
-  managedMigration(targets) {
+  managedMigration(_targets) {
     try {
-      return lifecycle("inspect", targets).installed ? "available" : "none";
+      const record2 = readMigration(this.managedEnv), legacy = legacyMigration(this.managedEnv);
+      if (record2) {
+        if (record2.phase === "complete" && (!this.binding || legacy))
+          return "conflict";
+        if (this.binding && canonical(this.binding) !== canonical(record2.binding))
+          return "conflict";
+        if (legacy && !sameMigrationTarget(legacy.binding, record2.binding))
+          return "conflict";
+        return record2.phase === "complete" && !legacy ? "complete" : "pending";
+      }
+      if (legacy && this.binding && !sameMigrationTarget(legacy.binding, this.binding))
+        return "conflict";
+      return legacy ? "available" : "none";
     } catch {
       return "conflict";
     }
@@ -27651,7 +27746,7 @@ class SetupController {
       separateLifecycle: false,
       historyRetained: true,
       diagnostics: this.managedDiagnostic ? [this.managedDiagnostic] : [],
-      delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: targets ? this.managedMigration(targets) : "none", mode: "unknown", observation: "unknown", expectedVersion: null }
+      delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: this.managedMigration(targets), mode: "unknown", observation: "unknown", expectedVersion: null }
     };
     if (this.store && b) {
       base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
@@ -27671,25 +27766,29 @@ class SetupController {
   }
   managedCandidate(storeRoot) {
     const env = this.managedEnv, roots = managedSourceRoots(env), file2 = managedBindingFile(env), b = readManagedBinding(env);
-    if (this.expectedDescriptor !== null && (!b || digest(readFileSync4(file2)) !== this.expectedDescriptor))
+    const record2 = readMigration(env), legacy = legacyMigration(env);
+    if (record2 && (b ? canonical(record2.binding) !== canonical(b) : record2.phase === "complete") || legacy && b && !sameMigrationTarget(legacy.binding, b) || legacy && record2 && !sameMigrationTarget(legacy.binding, record2.binding))
+      throw new SetupError("managed-migration-conflict");
+    if (this.expectedDescriptor !== null && (!b || digest(readFileSync5(file2)) !== this.expectedDescriptor))
       throw new ManagedBindingError("managed-binding-modified");
-    const selected = managedPath(storeRoot ?? (b ? path8.dirname(b.database) : path8.join(roots.dataRoot, "openchamber-progress")), true);
-    if ([roots.configRoot, roots.dataRoot, path8.dirname(file2)].includes(selected))
+    const retained = b ?? record2?.binding ?? legacy?.binding;
+    const selected = managedPath(storeRoot ?? (retained ? path9.dirname(retained.database) : path9.join(roots.dataRoot, "openchamber-progress")), true);
+    if ([roots.configRoot, roots.dataRoot, path9.dirname(file2)].includes(selected))
       throw new SetupError("managed-selection-conflict");
     const targets = { ...roots, storeRoot: selected, confirmed: true };
-    const legacy = lifecycle("inspect", targets);
-    if (lstatSync8(selected, { throwIfNoEntry: false }) && !isOwned(selected))
+    lifecycle("inspect", targets);
+    if (lstatSync9(selected, { throwIfNoEntry: false }) && !isOwned(selected))
       throw new SetupError("store-permissions");
-    if (b && path8.dirname(b.database) !== selected)
-      throw new SetupError("managed-selection-conflict");
+    if (retained && path9.dirname(retained.database) !== selected)
+      throw new SetupError(legacy || record2 ? "managed-migration-conflict" : "managed-selection-conflict");
     let storeId = null, sourceId = null, sources = [], enabled = null;
-    const database = path8.join(selected, "progress.sqlite");
-    if (lstatSync8(database, { throwIfNoEntry: false })) {
+    const database = path9.join(selected, "progress.sqlite");
+    if (lstatSync9(database, { throwIfNoEntry: false })) {
       const store = new Store(database, { readOnly: true });
       try {
         store.subagentRunStorage();
-        if (b)
-          verifyStore(store, b);
+        if (retained)
+          verifyStore(store, retained);
         const e = store.list({ limit: 1 });
         storeId = e.storeId;
         sources = e.sources;
@@ -27704,13 +27803,13 @@ class SetupController {
     } else if (b)
       throw new ProgressError("storage");
     const identity3 = (p) => {
-      const s = lstatSync8(p, { throwIfNoEntry: false });
+      const s = lstatSync9(p, { throwIfNoEntry: false });
       return s ? [s.dev, s.ino, s.mode, s.uid] : null;
     };
     const expected = digest(JSON.stringify({
       nonce: this.reviewNonce,
       targets,
-      descriptor: b ? digest(readFileSync4(file2)) : null,
+      descriptor: b ? digest(readFileSync5(file2)) : null,
       descriptorObject: identity3(file2),
       storeObject: identity3(database),
       rootObject: identity3(selected),
@@ -27718,7 +27817,8 @@ class SetupController {
       sourceId,
       sources,
       enabled,
-      legacy: legacy.installed ? { fingerprint: legacy.fingerprint, ownership: digest(readFileSync4(path8.join(roots.configRoot, "plugins/agent-progress/.ownership.json"))) } : null
+      migration: record2 ?? null,
+      legacy: legacy ? { fingerprint: lifecycle("inspect", targets).fingerprint, ownership: digest(readFileSync5(path9.join(roots.configRoot, "plugins/agent-progress/.ownership.json"))) } : null
     }));
     return { review: { expected, targets: { ...roots, storeRoot: selected }, storeId, sourceId }, binding: b, targets };
   }
@@ -27742,10 +27842,10 @@ class SetupController {
     if (r.expected !== candidate2.review.expected)
       throw new SetupError("managed-review-stale");
     if (action === "managed-migrate")
-      throw new SetupError("managed-migration-required");
+      return this.migrate(candidate2);
     if (!["managed-configure", "managed-enable", "managed-disable"].includes(action))
       throw new ProgressError("invalid");
-    if (action !== "managed-disable" && this.managedMigration(candidate2.targets) !== "none")
+    if (action !== "managed-disable" && !["none", "complete"].includes(this.managedMigration(candidate2.targets)))
       throw new SetupError("managed-migration-required");
     if (action === "managed-enable" || action === "managed-disable") {
       this.refresh();
@@ -27757,7 +27857,7 @@ class SetupController {
     if (candidate2.binding)
       return { ...this.managedStatus(), action };
     const file2 = createManagedBindingDirectory(this.managedEnv);
-    const lock = path8.join(path8.dirname(file2), ".configuration-lock");
+    const lock = path9.join(path9.dirname(file2), ".configuration-lock");
     let locked = false;
     try {
       try {
@@ -27774,11 +27874,11 @@ class SetupController {
       if (latest.review.expected !== candidate2.review.expected)
         throw new SetupError("managed-review-stale");
       const { targets } = candidate2;
-      if (!lstatSync8(targets.storeRoot, { throwIfNoEntry: false }))
+      if (!lstatSync9(targets.storeRoot, { throwIfNoEntry: false }))
         privateDirectory(targets.storeRoot, true);
       if (!isOwned(targets.storeRoot) || !privatePaths([targets.storeRoot]))
         throw new SetupError("store-permissions");
-      const store = new Store(path8.join(targets.storeRoot, "progress.sqlite"), { create: true });
+      const store = new Store(path9.join(targets.storeRoot, "progress.sqlite"), { create: true });
       let b;
       try {
         store.subagentRunStorage();
@@ -27797,7 +27897,67 @@ class SetupController {
     } finally {
       if (locked) {
         unlinkSync3(lock);
-        syncDirectory(path8.dirname(file2));
+        syncDirectory(path9.dirname(file2));
+      }
+    }
+  }
+  migrate(candidate2) {
+    const env = this.managedEnv, prior = readMigration(env), legacy = legacyMigration(env);
+    if (prior?.phase === "complete" && legacy)
+      throw new SetupError("managed-migration-conflict");
+    if (prior?.phase === "complete" && !legacy)
+      return { ...this.managedStatus(), action: "managed-migrate" };
+    if (!prior && !legacy)
+      throw new SetupError("managed-migration-required");
+    const retained = prior?.binding ?? legacy.binding;
+    if (legacy && candidate2.binding?.installId === legacy.binding.installId)
+      throw new SetupError("managed-migration-conflict");
+    if (candidate2.binding && !sameMigrationTarget(candidate2.binding, retained) || path9.dirname(retained.database) !== candidate2.targets.storeRoot)
+      throw new SetupError("managed-migration-conflict");
+    if (legacy && (!sameMigrationTarget(legacy.binding, retained) || prior && legacy.binding.installId !== prior.legacyInstallId))
+      throw new SetupError("managed-migration-conflict");
+    if (!legacy && (!prior || prior.phase === "pending" && !removalRecorded(prior)))
+      throw new SetupError("managed-migration-pending");
+    const file2 = createManagedBindingDirectory(env), lock = path9.join(path9.dirname(file2), ".configuration-lock");
+    let locked = false;
+    try {
+      try {
+        closeSync4(openSync4(lock, "wx", 384));
+        locked = true;
+      } catch (e) {
+        if (e.code === "EEXIST")
+          throw new SetupError("managed-configuration-busy");
+        throw e;
+      }
+      if (this.managedCandidate(candidate2.targets.storeRoot).review.expected !== candidate2.review.expected)
+        throw new SetupError("managed-review-stale");
+      const store = new Store(retained.database);
+      try {
+        verifyStore(store, retained);
+        store.subagentRunStorage();
+        const binding = prior?.binding ?? candidate2.binding ?? { ...retained, installId: `managed-${digest(JSON.stringify([retained.storeId, retained.source]))}`, version: this.readonlyPayload().version };
+        const record2 = prior ?? { binding, phase: "pending", legacyInstallId: legacy.binding.installId };
+        store.setEnabled(false);
+        writeMigration(env, record2);
+        if (legacy)
+          lifecycle("remove-capture", candidate2.targets);
+        record2.phase = "removed";
+        writeMigration(env, record2);
+        this.establishExpectation(binding);
+        if (!candidate2.binding)
+          publishPrivateJson(file2, binding);
+        record2.phase = "complete";
+        writeMigration(env, record2);
+        store.setEnabled(true);
+      } finally {
+        store.close();
+      }
+      this.refresh();
+      return { ...this.managedStatus(), action: "managed-migrate" };
+    } finally {
+      if (locked) {
+        unlinkSync3(lock);
+        syncDirectory(path9.dirname(file2));
       }
     }
   }
@@ -27811,16 +27971,16 @@ class SetupController {
   validateDescriptorInner() {
     if (!this.canPersist)
       throw new SetupError("service-binding-collision");
-    const parent = path8.dirname(this.bindingFile);
-    if (!lstatSync8(parent).isDirectory() || !windows && realpathSync8(parent) !== parent)
+    const parent = path9.dirname(this.bindingFile);
+    if (!lstatSync9(parent).isDirectory() || !windows && realpathSync8(parent) !== parent)
       throw new SetupError("service-binding-collision");
     if (windows && (!sameWindowsDirectory(windowsPath(parent), parent) || !privatePaths([parent])))
       throw new SetupError("service-binding-collision");
-    const stat = lstatSync8(this.bindingFile, { throwIfNoEntry: false });
+    const stat = lstatSync9(this.bindingFile, { throwIfNoEntry: false });
     if (stat) {
       if (windows && (!sameWindowsObject(windowsPath(this.bindingFile), this.bindingFile) || !privatePaths([this.bindingFile])))
         throw new SetupError("service-binding-modified");
-      if (stat.isSymbolicLink() || this.expectedDescriptor === null || digest(readFileSync4(this.bindingFile)) !== this.expectedDescriptor)
+      if (stat.isSymbolicLink() || this.expectedDescriptor === null || digest(readFileSync5(this.bindingFile)) !== this.expectedDescriptor)
         throw new SetupError("service-binding-modified");
     } else if (this.expectedDescriptor !== null)
       throw new SetupError("service-binding-modified");
@@ -27832,7 +27992,7 @@ class SetupController {
     writeFileSync3(file2, text2, { mode: 384, flag: "wx" });
     syncFile(file2);
     renameSync3(file2, this.bindingFile);
-    syncDirectory(path8.dirname(file2));
+    syncDirectory(path9.dirname(file2));
     this.expectedDescriptor = digest(text2);
   }
 }
@@ -27844,7 +28004,7 @@ try {
   const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
   if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
     throw new Error;
-  setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync5(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync5(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync5(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
+  setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync6(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync6(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync6(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
   const server = createProgressServer(undefined, token, undefined, setup);
   server.on("error", () => {
     setup?.close();
