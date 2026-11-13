@@ -40,8 +40,8 @@ const base=path.resolve('build/artifacts');
 const extension=path.join(base,`agent-progress-extension-${version}`);
 const companion=path.join(base,`agent-progress-companion-${version}`);
 const root=mkdtempSync('/tmp/opencode/agent-progress-package-');
-const clean={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,TMPDIR:root};
-for(const dir of ['home','config/opencode','data/opencode','cache','state','store'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
+const clean={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:root};
+for(const dir of ['home','config/opencode','data/opencode','cache','state','runtime','store'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
 let service:ReturnType<typeof spawn>|undefined;
 function run(args:string[],options:{env?:NodeJS.ProcessEnv;cwd?:string}={}) {
   const result=spawnSync(process.execPath,args,{encoding:'utf8',env:clean,...options,timeout:15000});

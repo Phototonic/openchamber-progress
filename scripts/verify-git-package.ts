@@ -27,9 +27,9 @@ if(process.argv[2]!=='--worker'){
   assert.equal(existsSync(`${candidate}/.git`),false,'supply a projection, never a working repository');
   const root=mkdtempSync('/tmp/opencode/agent-progress-git-gate-');
   try{
-    for(const dir of ['home','config','data','cache','state','tmp'])mkdirSync(`${root}/${dir}`,{mode:0o700});
+    for(const dir of ['home','config','data','cache','state','runtime','tmp'])mkdirSync(`${root}/${dir}`,{mode:0o700});
     const result=spawnSync(process.execPath,['--experimental-strip-types',fileURLToPath(import.meta.url),'--worker',candidate,root],{
-      env:{PATH:process.env.PATH??'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,TMPDIR:`${root}/tmp`,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ASKPASS:'/bin/false',AGENT_PROGRESS_HOST_MODULE:hostModule},
+      env:{PATH:process.env.PATH??'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ASKPASS:'/bin/false',AGENT_PROGRESS_HOST_MODULE:hostModule},
       encoding:'utf8',timeout:120_000,maxBuffer:4_000_000,
     });
     process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');assert.equal(result.status,0,'isolated Git gate failed');
