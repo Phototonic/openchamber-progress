@@ -220,6 +220,14 @@ export interface OfficialMainView {
 
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
+  delivery?: {
+    kind: 'managed'; revision: 1;
+    configuration: 'unconfigured' | 'configured' | 'invalid';
+    migration: 'none' | 'available' | 'conflict' | 'pending' | 'complete';
+    observation: 'unknown' | 'not-observed' | 'matching' | 'different';
+    mode: 'unknown'; expectedVersion: string | null;
+    review?: { expected: string; targets: SetupTargets; storeId: string | null; sourceId: string | null };
+  };
   reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
   configured: boolean;
   verified: boolean;

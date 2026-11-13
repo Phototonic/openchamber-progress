@@ -112,7 +112,7 @@ export interface ViewContext<U> {
   requestHistory: (plan: PlanView) => void;
   setup: Loadable<SetupView> | null;
   requestSetup: () => void;
-  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean) => Promise<SetupResult>;
+  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
   cleanup: CleanupState;
@@ -947,10 +947,19 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   const docKey = (p: PlanView) => `${p.key}@${p.document.captureId ?? 'none'}:${p.document.state}:${p.revision}`;
 
+  let setupSerial = 0;
+  let setupNeedsRefresh = false;
   function loadSetup() {
+    if (disposed) return;
+    if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
+    setupNeedsRefresh=false;
+    const serial = ++setupSerial;
+    const current = cleanupContext();
+    const generation = contextGeneration;
     setup = setup && setup.state === 'ready' ? setup : { state: 'loading' };
     void setupCall(host, null).then((r) => {
-      if (disposed) return;
+      if (disposed || serial !== setupSerial || current !== cleanupContext() || generation !== contextGeneration) return;
+      if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
       const next: Loadable<SetupView> = r.ok ? { state: 'ready', value: r.setup } : { state: 'error', failure: r.failure ?? { kind: 'unavailable', code: r.code, message: r.code } };
       const changed = JSON.stringify(next) !== JSON.stringify(setup);
       setup = next;
@@ -1077,12 +1086,19 @@ export function startView<U>(spec: ViewSpec<U>) {
         bump();
       },
       setup, requestSetup: loadSetup,
-      runSetup: async (action, targets, confirmed) => {
-        const r = await setupCall(host, action, targets, confirmed);
-        if (r.ok && action !== 'inspect') { setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
+      runSetup: async (action, targets, confirmed, expected) => {
+        ++setupSerial;
+        const current = cleanupContext();
+        const generation = contextGeneration;
+        const r = await setupCall(host, action, targets, confirmed, expected);
+        if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
+          if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
+          return {ok:false,code:'context-changed'};
+        }
+        if (r.ok && action !== 'inspect' && action !== 'managed-inspect') { ++setupSerial; setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
         // A refused action may mean the installation changed: re-read setup once, so the update
         // notice reflects the service again rather than the read the action started from.
-        if (!r.ok && setup?.state === 'ready' && setup.value.configured) loadSetup();
+        if (!r.ok) loadSetup();
         bump();
         return r;
       },
@@ -1400,7 +1416,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     reconcilePreview();
     // While not set up, the read-only setup reply (folder hints) is refreshed on navigation; the
     // form keeps every field the user touched.
-    if (setup?.state === 'ready' && !setup.value.configured) loadSetup();
+    if (!setup || setup.state !== 'ready' || !setup.value.configured) loadSetup();
     schedule();
     if (ctx) { spec.onContext?.(context()); if (moved || failure) retry(); }
   };
@@ -1468,6 +1484,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       planLabels();
       if (ctx) planMain();
       digests?.visible();
+      if (ctx && setupNeedsRefresh) loadSetup();
       retry();
       if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {

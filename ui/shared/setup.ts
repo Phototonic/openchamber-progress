@@ -1,12 +1,13 @@
-// Setup UI (plan T4). Every change shows the resolved folders, the service privilege and the
-// separate capture lifecycle first, then needs an explicit confirmation. Controls act on the
-// configured folders only; a different folder set goes through inspect + install/update.
+// Managed Setup requires a supported delivery revision, inspected source/store and explicit consent.
+// Legacy projection helpers below remain compatibility-only; the normal surface never installs,
+// updates or removes a permanent global plugin.
 import { mountBanner, mountCheckbox, mountTextField } from '@openchamber/sdk/ui';
 import type { SetupAction } from './adapter.ts';
 import type { ViewContext } from './app.ts';
 import { button, el, partState, testid } from './components.ts';
 import type { CompanionUpdateView, SetupSuggestions, SetupTargets, SetupView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
+import { managedCopy, managedErrorText } from './managed-copy.ts';
 
 export type SetupPhase = 'unconfigured' | 'recovery' | 'reload-required' | 'removed' | 'disabled' | 'installed';
 
@@ -85,6 +86,8 @@ const ERROR_RU: typeof ERROR_TEXT = {
 /** Plain-language text for a fixed SetupError code; unknown codes stay honest. */
 const diagnosticCode = (code:string) => /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(code) ? code : 'unknown';
 export const setupErrorText = (code: string, locale = 'en') => {
+  const managed = managedErrorText(code,locale);
+  if (managed) return managed;
   const errors: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?ERROR_RU:ERROR_TEXT;
   return Object.hasOwn(errors,code) ? errors[code] : textFor(locale).unknownError(diagnosticCode(code));
 };
@@ -251,6 +254,8 @@ export interface BundledComparison { update: CompanionUpdateView; version: strin
 export const bundledComparison = (s: SetupView | null | undefined): BundledComparison | null => (s?.update && s.version ? { update: s.update, version: s.version } : null);
 
 export interface SetupUi {
+  managedReview?: { action: Extract<SetupAction, `managed-${string}`>; result: SetupView; opener: string } | null;
+  managedRequest?: number;
   form: SetupTargets;
   /** Fields the user has typed in (a cleared field counts); prefill never touches these. */
   edited: Record<keyof SetupTargets, boolean>;
@@ -282,6 +287,7 @@ export interface UpdateNotice { kind: UpdateKind; tone: 'info' | 'warning'; titl
  * called newer, and a newer installed companion is a warning, never an upgrade prompt.
  */
 export function updateNotice(s: SetupView | null | undefined, locale = 'en'): UpdateNotice | null {
+  if (s?.delivery) return null;
   const text = textFor(locale);
   const u = s?.update;
   if (!s?.version || !u || u.state === 'current') return null;
@@ -413,6 +419,11 @@ function disclosure(parent: Element, locale:string) {
 
 /** The setup surface. `compact` is used inside the rail. */
 export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) {
+  return managedSetupBlock(vc, options);
+}
+
+/** Retained legacy rendering helpers are not a normal installation path. */
+function legacySetupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) {
   const locale = vc.env.locale;
   const text = textFor(locale);
   const wrap = testid(el('section', 'ap-setup'), 'setup-panel');
@@ -577,6 +588,7 @@ export function setupBlock<U>(vc: Host<U>, options: { compact?: boolean } = {}) 
 export function captureOffNote(setup: ViewContext<unknown>['setup'], locale='en'): { reason: 'removed' | 'disabled' | 'unknown'; text: string } {
   const text = textFor(locale);
   const phase = setup?.state === 'ready' ? setupPhase(setup.value) : null;
+  if (setup?.state === 'ready' && setup.value.delivery) return { reason: 'disabled', text: managedCopy(locale).off };
   if (phase === 'removed') return { reason: 'removed', text: text.removedNote };
   if (phase === 'disabled') return { reason: 'disabled', text: text.disabledNote };
   return { reason: 'unknown', text: text.unknownNote };
@@ -605,6 +617,19 @@ function versionRows(info: SetupView, locale:string): [string, string][] {
  */
 export function reloadNote<U>(vc: Host<U>) {
   const locale = vc.env.locale;
+  const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
+  if (!info?.delivery) return null;
+  if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict') return managedSetupBlock(vc,{compact:true});
+  if (info.delivery.observation === 'different') {
+    const warning = testid(el('div'), 'managed-integrity-warning');
+    mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning});
+    return warning;
+  }
+  return null;
+}
+
+function legacyReloadNote<U>(vc: Host<U>) {
+  const locale = vc.env.locale;
   const out = document.createDocumentFragment();
   const s = vc.ui.setup;
   const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
@@ -621,4 +646,125 @@ export function reloadNote<U>(vc: Host<U>) {
   }
   if (info?.activation === 'reload-required') out.append(testid(el('p', 'ap-doc-warn', textFor(locale).reload), 'setup-reload'));
   return out.childNodes.length ? out : null;
+}
+
+let managedRequestSerial = 0;
+/** One inspect, then one explicit consent. No managed action is inferred from legacy booleans. */
+function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
+  const text = managedCopy(vc.env.locale);
+  const s = vc.ui.setup;
+  const wrap = testid(el('section','ap-setup'),'setup-panel');
+  wrap.setAttribute('aria-busy',String(s.busy));
+  const heading = testid(el('h3','ap-setup-title',text.title),'setup-status-heading');
+  heading.tabIndex = -1;
+  wrap.append(heading);
+  const state = vc.setup;
+  if (!state) vc.requestSetup();
+  if (!state || state.state !== 'ready') {
+    wrap.append(partState('setup-loading',text.title,state,vc.requestSetup,vc.env.locale));
+    return wrap;
+  }
+  const info = state.value;
+  const d = info.delivery;
+  if (!d) { wrap.dataset.phase='unsupported'; wrap.append(el('p','ap-note',text.unsupported)); return wrap; }
+  wrap.dataset.phase = d.configuration;
+  wrap.dataset.migration = d.migration;
+  const set = (patch: Partial<SetupUi>) => vc.updateUi(u => ({setup:{...u.setup,...patch}}) as Partial<U & {setup:SetupUi}>);
+  const back = (opener:string) => vc.handoff({to:opener,heading:root=>root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]')});
+  const ownsFocus = (id:string) => document.hasFocus() && !!document.activeElement?.closest(`[data-testid="${id}"]`);
+  const run = async (action: Extract<SetupAction, `managed-${string}`>, opener:string, review?: SetupView) => {
+    const request = ++managedRequestSerial;
+    const reviewed = review?.delivery?.review;
+    // Inspection follows the user's current input; mutations use only the inspected canonical store.
+    const store = reviewed?.targets.storeRoot ?? (d.configuration === 'configured' ? info.targets?.storeRoot : s.form.storeRoot.trim());
+    if (store && !absoluteSetupPath(store)) { set({error:'managed-path-input'}); return; }
+    const targets = store ? {configRoot:'',dataRoot:'',storeRoot:store} : null;
+    let admitted=false;
+    vc.updateUi(u=>{
+      if (u.setup.busy || (review && (!u.setup.ack || !reviewed || u.setup.managedReview?.result.delivery?.review?.expected !== reviewed.expected))) return {};
+      admitted=true;
+      return {setup:{...u.setup,busy:true,error:null,notice:null,managedRequest:request}} as Partial<U & {setup:SetupUi}>;
+    });
+    if (!admitted) return;
+    const result = await vc.runSetup(review ? action : 'managed-inspect',targets,!!review,reviewed?.expected);
+    if (!result.ok && result.code === 'context-changed') {
+      vc.updateUi(u => u.setup.managedRequest === request ? {setup:{...u.setup,busy:false,managedReview:null,ack:false}} as Partial<U & {setup:SetupUi}> : {});
+      return;
+    }
+    vc.updateUi(u => {
+      if (u.setup.managedRequest !== request) return {};
+      const patch: Partial<SetupUi> = {busy:false};
+      if (result.ok && !review) {
+        const inspected = result.setup.delivery;
+        if (inspected?.review && inspected.configuration !== 'invalid' && inspected.migration !== 'conflict') {
+          const next = inspected.migration === 'available' || inspected.migration === 'pending' ? 'managed-migrate' : action;
+          patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
+          if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+        } else patch.error=inspected?.migration === 'conflict' ? 'managed-migration-conflict' : 'managed-review-stale';
+      } else {
+        patch.managedReview=null; patch.ack=false;
+        if (result.ok) patch.notice='done'; else patch.error=result.code;
+        if (ownsFocus(review ? 'setup-confirm' : opener)) back(opener);
+        // An uncertain response is never an automatic retry. Re-read actual partial/control state.
+        if (!result.ok) vc.requestSetup();
+      }
+      return {setup:{...u.setup,...patch}} as Partial<U & {setup:SetupUi}>;
+    });
+  };
+  if (s.error) {
+    const message = managedErrorText(s.error,vc.env.locale) ?? `${text.failed} ${setupErrorText(s.error,vc.env.locale)}`;
+    const alert = testid(el('p','ap-doc-warn',message),'setup-error'); alert.setAttribute('role','alert'); alert.dataset.code=diagnosticCode(s.error); wrap.append(alert);
+  }
+  if (s.notice) { const notice=testid(el('p','ap-note',text.done),'setup-notice'); notice.setAttribute('role','status'); wrap.append(notice); }
+  const r = s.managedReview;
+  if (r?.result.delivery?.review) {
+    const reviewed = r.result.delivery.review;
+    const card = testid(el('div','ap-setup-card'),'setup-review'); card.dataset.action=r.action;
+    const migration = r.action === 'managed-migrate';
+    card.append(el('h3','ap-setup-title', migration ? text.migrate : r.action === 'managed-enable' ? text.enable : r.action === 'managed-disable' ? text.disable : text.configure));
+    card.append(facts([[text.configRoot,reviewed.targets.configRoot],[text.dataRoot,reviewed.targets.dataRoot],[text.store,reviewed.targets.storeRoot]]));
+    for (const body of [text.privilege,text.lifecycle,text.reach,migration ? text.switchEffect : r.action === 'managed-configure' ? text.choose : text.controlEffect]) card.append(el('p','ap-note',body));
+    if (r.result.delivery.migration === 'pending') card.append(el('p','ap-doc-warn',text.pending));
+    const ack=testid(el('div'),'setup-ack');
+    mountCheckbox(ack,{label:text.ack,checked:s.ack,onChange:checked=>{if(!s.busy)set({ack:checked});}}); card.append(ack);
+    const row=el('div','ap-row');
+    button(row,'setup-confirm',text.confirm,()=>{if(!vc.ui.setup.busy&&vc.ui.setup.ack)void run(r.action,r.opener,r.result);},'default',!s.ack);
+    row.querySelector('button')?.setAttribute('aria-disabled',String(s.busy||!s.ack));
+    const cancel=()=>{if(s.busy)return;back(r.opener);set({managedReview:null,ack:false,error:null});};
+    button(row,'setup-cancel',text.cancel,cancel,'ghost',s.busy);card.append(row);
+    card.addEventListener('keydown',event=>{if(event.key==='Escape'&&!s.busy){event.preventDefault();cancel();}});
+    wrap.append(card);return wrap;
+  }
+  wrap.append(el('p','ap-note',d.configuration === 'invalid' ? text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
+  if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
+  if (d.migration === 'pending') wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
+  if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',text.conflict));
+  if (d.migration === 'complete') wrap.append(el('p','ap-note',text.complete));
+  const unresolved = d.migration === 'available' || d.migration === 'pending' || d.migration === 'conflict';
+  const observation = {unknown:text.unknown,'not-observed':text.missing,matching:text.matching,different:text.different}[unresolved ? 'unknown' : d.observation];
+  wrap.append(testid(el('p','ap-note',observation),'managed-load-observation'),el('p','ap-note',text.observation));
+  if (!unresolved && d.observation === 'different') {
+    const warning=testid(el('div'),'managed-integrity-warning'); mountBanner(warning,{tone:'warning',title:text.different,body:text.warning});wrap.append(warning);
+  }
+  wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
+  for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale)));
+  if (d.configuration === 'unconfigured') {
+    wrap.append(el('p','ap-note',text.choose));
+    if (!s.edited.storeRoot && info.suggestions?.storeRoot) s.form.storeRoot=info.suggestions.storeRoot.value;
+    const holder=testid(el('div'),'setup-storeRoot');
+    mountTextField(holder,{label:text.store,value:s.form.storeRoot,helper:text.helper,mono:true,onChange:value=>{s.form.storeRoot=value;s.edited.storeRoot=true;}});
+    const input=holder.querySelector('input');input?.setAttribute('data-keep','setup-storeRoot');input?.setAttribute('data-fixed','form');input?.setAttribute('spellcheck','false');wrap.append(holder);
+  }
+  const row=el('div','ap-row');
+  const action=(id:string,label:string,kind:Extract<SetupAction, `managed-${string}`>)=>{button(row,id,label,()=>{if(!vc.ui.setup.busy)void run(kind,id);},'outline');row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy));};
+  if (d.configuration !== 'invalid' && d.migration !== 'conflict') {
+    if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
+    else if (d.configuration === 'unconfigured') action('setup-inspect',text.review,'managed-configure');
+    else if (info.captureEnabled === false) action('setup-enable',text.enable,'managed-enable');
+    else if (info.captureEnabled === true) action('setup-disable',text.disable,'managed-disable');
+  }
+  wrap.append(row);
+  const disclosure=testid(el('div','ap-setup-disclose'),'setup-disclosure');
+  for (const body of [text.privilege,text.lifecycle,text.reach]) disclosure.append(el('p','ap-note',body));
+  wrap.append(disclosure);return wrap;
 }

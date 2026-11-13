@@ -312,10 +312,11 @@ export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sour
 
 export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure };
 
-/** GET /v1/setup (action null) or POST /v1/setup/<action> with only roots/confirmed. */
-export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false): Promise<SetupResult> {
+/** Managed requests send only storeRoot and reviewed consent; legacy roots remain compatibility-only. */
+export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string): Promise<SetupResult> {
   try {
-    const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', setupBody(targets, confirmed)) : await call(host, ROUTES.setup);
+    const request = action?.startsWith('managed-') ? JSON.stringify({ ...(targets?.storeRoot ? {storeRoot:targets.storeRoot} : {}), ...(action !== 'managed-inspect' ? {confirmed,expected} : {}) }) : setupBody(targets, confirmed);
+    const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', request) : await call(host, ROUTES.setup);
     return { ok: true, setup: parseSetup(body) };
   } catch (error) {
     if (error instanceof HttpError) return { ok: false, code: error.code };

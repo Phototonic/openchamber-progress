@@ -35,6 +35,17 @@ test('no selection is unknown rather than no reports; stale and newer revisions 
 test('summary rejects attacker-controlled values and version metadata',()=>{
  const setup=parseSetup(JSON.stringify({configured:true,installed:true,separateLifecycle:true,activation:'private',version:'1.2.3-private',diagnostics:['secret']}));const facts=setupFacts(setup);assert.equal(facts.version,'unknown');assert.equal(facts.loaded,'unknown');for(const key of Object.keys(facts))assert(!supportSummary({...facts,[key]:'private-sentinel'}).includes('private-sentinel'));
 });
+
+test('managed load, capture and delivery stay independent and support output excludes review authority',()=>{
+ const base={configured:true,installed:false,separateLifecycle:false,captureEnabled:true,delivery:{kind:'managed',revision:1,configuration:'configured',migration:'none',mode:'unknown',observation:'different',expectedVersion:'1.2.3',review:{expected:'a'.repeat(64),targets:{configRoot:'/private/config',dataRoot:'/private/data',storeRoot:'/private/store'},storeId:'private-store',sourceId:'private-source'}}};
+ const facts=(patch:object={})=>setupFacts(parseSetup(JSON.stringify({...base,delivery:{...base.delivery,...patch}})));
+ assert.equal(facts().installation,'managed-configured'); assert.equal(facts().loaded,'different-bytes');assert.equal(facts().capture,'on');assert.equal(facts().report,'not-checked');
+ assert.equal(facts({observation:'matching'}).loaded,'matching-observation');
+ assert.equal(facts({observation:'matching',migration:'available'}).loaded,'legacy-unresolved');
+ assert.equal(facts({observation:'not-observed'}).loaded,'not-observed');
+ assert.equal(facts({revision:2}).installation,'legacy-unsupported');assert.equal(facts({revision:2}).loaded,'unknown');
+ assert.doesNotMatch(supportSummary(facts()),/private|aaaa|\//);
+});
 test('copy state translates at presentation time without another check or changing support bytes', async()=>{
   const x=await fixture();try{
     x.panel().toggle();await x.until(()=>!!x.panel().facts);
