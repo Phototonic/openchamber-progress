@@ -1,5 +1,7 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import type { DetailSnapshot as SharedDetailSnapshot, DetailFailureCause } from '../../shared/summary-types.ts';
+export type { DetailFailureCause } from '../../shared/summary-types.ts';
 import { planGraphQuery, parsePlanGraph } from './adapter.ts';
 import type { PlanGraphRequest, PlanGraphRead } from './model.ts';
 import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
@@ -122,15 +124,7 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
 }
 
 /** First-page facts only. No partial item, report or link arrays are retained here. */
-export interface DetailSnapshot {
-  readonly plan: PlanView & { counts: NonNullable<PlanView['counts']> };
-  readonly identity: { readonly storeId: string; readonly binding: { readonly sourceId: string | null; readonly verified: boolean }; readonly sourceId: string; readonly planId: string };
-  readonly captureEnabled: boolean;
-  readonly diagnostics: readonly string[];
-}
-export type DetailFailureCause =
-  | { kind: 'revision-restarts' | 'page-cap' | 'identity-contract' | 'unreachable-auth' | 'not-found' }
-  | { kind: 'store'; code: 'unavailable' | 'storage' | 'binding' | 'corrupt' | 'schema' | 'busy' | 'unknown' };
+export type DetailSnapshot = SharedDetailSnapshot<PlanView>;
 export type CompleteDetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number; snapshot: DetailSnapshot | null };
 export type DetailResult = CompleteDetailResult | { ok: false; failure: ReadFailure; cause: DetailFailureCause; snapshot: DetailSnapshot | null };
 
