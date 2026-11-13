@@ -2,217 +2,217 @@
 
 ## Purpose
 
-Дать пользователю единый выбор языка интерфейса Agent Progress и формируемых им сводок в пределах профиля и установки расширения, сохраняя исходный пользовательский текст, машинные контракты и состояние чтения прогресса.
+Give users one language choice for the Agent Progress interface and its generated summaries within a profile and extension installation, while preserving original user text, machine contracts and progress reading state.
 
 ## ADDED Requirements
 
-### Requirement: Выбор языка и следование языку OpenChamber
+### Requirement: Language choice and following the OpenChamber language
 
-Расширение SHALL предлагать три режима: следовать языку OpenChamber, English и Русский. Без сохранённого выбора SHALL использоваться автоматический режим. Для русского языка OpenChamber и его региональных вариантов SHALL выбираться русский перевод, для английского и остальных неподдерживаемых либо некорректных языковых тегов — английский. Явный выбор SHALL иметь приоритет над языком OpenChamber.
+The extension SHALL offer three modes: follow the OpenChamber language, English and Russian. Without a saved choice, automatic mode SHALL be used. The Russian translation SHALL be selected for Russian and its regional variants in OpenChamber, and English for English and all other unsupported or invalid language tags. An explicit choice SHALL take precedence over the OpenChamber language.
 
-#### Scenario: Автоматический режим для регионального варианта
-- **WHEN** сохранённый выбор отсутствует или является автоматическим, а OpenChamber сообщает язык `ru-RU`
-- **THEN** интерфейс и формируемые сводки используют русский язык
+#### Scenario: Automatic mode for a regional variant
+- **WHEN** the saved choice is absent or automatic and OpenChamber reports the language `ru-RU`
+- **THEN** the interface and generated summaries use Russian
 
-#### Scenario: Неподдерживаемый язык OpenChamber
-- **WHEN** выбран автоматический режим, а OpenChamber сообщает `de-DE` или некорректный языковой тег
-- **THEN** расширение использует английский язык без ошибки отрисовки
+#### Scenario: Unsupported OpenChamber language
+- **WHEN** automatic mode is selected and OpenChamber reports `de-DE` or an invalid language tag
+- **THEN** the extension uses English without a rendering error
 
-#### Scenario: Изменение языка OpenChamber
-- **WHEN** язык OpenChamber изменяется с английского на русский во время открытого представления
-- **THEN** автоматический режим переключает язык расширения на русский, а явно выбранный English остаётся английским
-- **AND** сохранённый автоматический режим не заменяется вычисленным явным выбором
+#### Scenario: OpenChamber language change
+- **WHEN** the OpenChamber language changes from English to Russian while a view is open
+- **THEN** automatic mode switches the extension language to Russian, while explicitly selected English remains English
+- **AND** the saved automatic mode is not replaced with a computed explicit choice
 
-### Requirement: Доступный переключатель вне содержимого плана
+### Requirement: Accessible switch outside plan content
 
-Боковая панель и полноэкранная страница SHALL показывать компактный элемент Language / Язык в нижней служебной области рядом с Setup и Details, когда эти разделы присутствуют. Элемент SHALL оставаться доступным без плана, до завершения настройки и при ошибках загрузки. Work Status SHALL применять общий выбор без собственного переключателя. Названия English и Русский SHALL отображаться на самих языках, без флагов.
+The side panel and full-screen page SHALL show a compact Language / "Язык" control in the lower utility area next to Setup and Details when those sections are present. The control SHALL remain available without a plan, before setup is complete and during loading errors. Work Status SHALL apply the shared choice without its own switch. The names English and "Русский" SHALL be displayed in their own languages, without flags.
 
-#### Scenario: Расширение ещё не настроено
-- **WHEN** пользователь открывает боковую панель или страницу до завершения настройки
-- **THEN** элемент выбора языка присутствует вне формы настройки и не требует успешного чтения прогресса
+#### Scenario: Extension not yet set up
+- **WHEN** the user opens the side panel or page before setup is complete
+- **THEN** the language control is present outside the setup form and does not require a successful progress read
 
-#### Scenario: Пустое или недоступное содержимое
-- **WHEN** сессия не выбрана, планов нет или чтение прогресса завершилось ошибкой
-- **THEN** элемент выбора языка остаётся в служебной области панели и страницы
+#### Scenario: Empty or unavailable content
+- **WHEN** no session is selected, no plans exist or reading progress has failed
+- **THEN** the language control remains in the panel and page utility area
 
-#### Scenario: Компактное представление
-- **WHEN** отображается Work Status
-- **THEN** его интерфейс использует общий выбранный язык, но не содержит отдельного переключателя языка
+#### Scenario: Compact view
+- **WHEN** Work Status is displayed
+- **THEN** its interface uses the shared selected language but contains no separate language switch
 
-### Requirement: Сохранение выбора в профиле устройства
+### Requirement: Save the choice in the device profile
 
-Расширение SHALL сохранять один общий выбор языка в device-scoped хранилище профиля, runtime и установки расширения. Выбор SHALL переживать закрытие представления и перезагрузку. Он SHALL быть независим от плана, сессии, проекта, источника прогресса и integration account. Расширение MUST NOT сохранять язык в общем серверном хранилище или обещать изоляцию между людьми, использующими один профиль.
+The extension SHALL save one shared language choice in device-scoped storage for the profile, runtime and extension installation. The choice SHALL survive closing a view and reloading. It SHALL be independent of the plan, session, project, progress source and integration account. The extension MUST NOT save the language in shared server storage or promise isolation between people using the same profile.
 
-#### Scenario: Повторное открытие и переключение контекста
-- **WHEN** пользователь успешно сохранил Русский, перезагрузил интерфейс и выбрал другую сессию или проект
-- **THEN** панель, страница и Work Status в той же области device storage используют Русский после успешного чтения настройки
+#### Scenario: Reopening and switching context
+- **WHEN** the user successfully saves Russian, reloads the interface and selects another session or project
+- **THEN** the panel, page and Work Status in the same device storage scope use Russian after successfully reading the setting
 
-#### Scenario: Независимые профили
-- **WHEN** пользователь сохраняет Русский в одном профиле, а другой профиль не имеет сохранённого выбора
-- **THEN** настройка первого профиля не меняет выбор второго, который следует языку своего OpenChamber
+#### Scenario: Independent profiles
+- **WHEN** the user saves Russian in one profile and another profile has no saved choice
+- **THEN** the first profile's setting does not change the second profile's choice, which follows its own OpenChamber language
 
-### Requirement: Поведение без поддержки device storage
+### Requirement: Behavior without device storage support
 
-Если хост не поддерживает device storage, расширение SHALL следовать языку OpenChamber и объяснять недоступность сохранения и ручного выбора. Элемент языка SHALL оставаться видимым с доступным объяснением. Расширение MUST NOT создавать временный ручной выбор отдельного представления, отправлять неподдерживаемые запросы device storage или переходить к общему серверному хранилищу.
+If the host does not support device storage, the extension SHALL follow the OpenChamber language and explain that saving and manual selection are unavailable. The language control SHALL remain visible with an accessible explanation. The extension MUST NOT create a temporary manual choice for an individual view, send unsupported device storage requests or fall back to shared server storage.
 
-#### Scenario: Хост не объявляет поддержку
-- **WHEN** хост не сообщает поддержку device storage
-- **THEN** все три представления используют автоматический режим
-- **AND** панель и страница объясняют, почему ручной выбор недоступен, не выполняя запросов device storage и не записывая серверную настройку
+#### Scenario: Host does not advertise support
+- **WHEN** the host does not report device storage support
+- **THEN** all three views use automatic mode
+- **AND** the panel and page explain why manual selection is unavailable without making device storage requests or writing a server setting
 
-### Requirement: Ошибки сохранения не выглядят успешным выбором
+### Requirement: Save failures do not look like a successful choice
 
-Расширение SHALL отличать отсутствующую настройку от ошибки чтения или некорректного значения. При ошибке SHALL сохраняться последний подтверждённый выбор, а при его отсутствии SHALL применяться автоматический режим. Неудачная запись MUST NOT подтверждаться как сохранённая; предыдущий подтверждённый выбор SHALL оставаться действующим. Сообщение SHALL объяснять сбой без вывода произвольного текста ошибки хранилища.
+The extension SHALL distinguish an absent setting from a read failure or invalid value. On failure, the last confirmed choice SHALL be retained; if none exists, automatic mode SHALL apply. A failed write MUST NOT be confirmed as saved; the previous confirmed choice SHALL remain effective. The message SHALL explain the failure without displaying arbitrary storage error text.
 
-#### Scenario: Неудачная запись
-- **WHEN** пользователь выбирает Русский при подтверждённом English, а сохранение завершается ошибкой
-- **THEN** действующим остаётся English, интерфейс сообщает о неудаче и позволяет повторить действие
-- **AND** сообщение об успешном сохранении не появляется
+#### Scenario: Failed write
+- **WHEN** the user selects Russian while English is confirmed and saving fails
+- **THEN** English remains effective, the interface reports the failure and allows a retry
+- **AND** no successful-save message appears
 
-#### Scenario: Первое чтение невозможно
-- **WHEN** подтверждённой настройки ещё нет, а чтение завершается ошибкой или возвращает неподдерживаемое значение
-- **THEN** расширение использует автоматический режим и сообщает, что сохранённую настройку не удалось прочитать
-- **AND** ошибочное значение не исполняется, не показывается как язык и не перезаписывается автоматически
+#### Scenario: First read unavailable
+- **WHEN** no setting has yet been confirmed and reading fails or returns an unsupported value
+- **THEN** the extension uses automatic mode and reports that the saved setting could not be read
+- **AND** the invalid value is not executed, displayed as a language or overwritten automatically
 
-#### Scenario: Сбой после успешного чтения
-- **WHEN** очередная проверка настройки завершается ошибкой после подтверждённого ручного выбора
-- **THEN** представление сохраняет последний подтверждённый язык, не выдавая ошибку чтения за отсутствие настройки
+#### Scenario: Failure after a successful read
+- **WHEN** a subsequent setting check fails after a confirmed manual choice
+- **THEN** the view retains the last confirmed language without treating the read failure as an absent setting
 
-#### Scenario: Возврат представления во время сохранения
-- **WHEN** представление скрыто после отправки записи языка, возвращено до её завершения, а ответ принадлежит прежнему скрытому состоянию
-- **THEN** завершение записи снимает блокировку переключателя, но не выдаётся за подтверждение выбора в новом состоянии представления
-- **AND** последующее успешное чтение применяет фактически сохранённый режим; уже отправленная запись не считается отменённой скрытием
+#### Scenario: View returns during a save
+- **WHEN** a view is hidden after sending a language write, returns before it completes and the response belongs to the previous hidden state
+- **THEN** write completion unlocks the switch but is not treated as confirmation of the choice in the view's new state
+- **AND** a subsequent successful read applies the mode actually saved; an already sent write is not considered cancelled by hiding the view
 
-### Requirement: Согласование языка между открытыми представлениями
+### Requirement: Language reconciliation across open views
 
-Открытые представления SHALL согласовывать язык с общей сохранённой настройкой без обязательного закрытия или перезагрузки. Изменение SHALL применяться при следующей успешной проверке настройки на существующем цикле обновления; возвращённое в видимость или фокус представление SHALL перечитывать настройку. Согласование MUST NOT зависеть от успешности чтения прогресса. Мгновенное обновление всех представлений не гарантируется.
+Open views SHALL reconcile their language with the shared saved setting without requiring closing or reloading. The change SHALL apply on the next successful setting check in the existing refresh cycle; a view that becomes visible or focused again SHALL reread the setting. Reconciliation MUST NOT depend on a successful progress read. Immediate updates to all views are not guaranteed.
 
-#### Scenario: Изменение из другого представления
-- **WHEN** страница успешно сохраняет Русский, а боковая панель и Work Status открыты в той же области device storage
-- **THEN** они переходят на Русский после следующего успешного перечитывания настройки без сброса выбранных планов
+#### Scenario: Change from another view
+- **WHEN** the page successfully saves Russian while the side panel and Work Status are open in the same device storage scope
+- **THEN** they switch to Russian after the next successful setting reread without resetting selected plans
 
-#### Scenario: Сервис прогресса недоступен
-- **WHEN** сервис прогресса недоступен, но хранилище настройки работает
-- **THEN** пользователь может сохранить язык в панели или странице, а другие представления могут прочитать и применить этот выбор
+#### Scenario: Progress service unavailable
+- **WHEN** the progress service is unavailable but setting storage works
+- **THEN** the user can save a language in the panel or page and other views can read and apply that choice
 
-#### Scenario: Запоздавшее чтение и конкурирующие изменения
-- **WHEN** ответ на чтение, начатое до локального выбора, приходит после успешного сохранения нового языка
-- **THEN** этот ответ не отменяет новый локальный выбор
-- **AND** при изменениях из нескольких представлений они согласуются с итоговым сохранённым значением после успешного перечитывания, без обещания порядка по времени кликов
+#### Scenario: Late read and concurrent changes
+- **WHEN** a response to a read started before a local choice arrives after the new language is successfully saved
+- **THEN** that response does not undo the new local choice
+- **AND** when multiple views make changes, they reconcile to the final saved value after a successful reread, without a promise of ordering by click time
 
-### Requirement: Полный перевод принадлежащего расширению интерфейса
+### Requirement: Complete translation of extension-owned interface text
 
-Для English и Русского расширение SHALL переводить собственные видимые подписи, состояния, предупреждения, подтверждения, подсказки, сообщения об ошибках и результатах действий, а также доступные имена и объявления для вспомогательных технологий. Значение терминов о записанном прогрессе SHALL сохраняться: готовность задачи не является разрешением начать, а наблюдаемая работа сессии не доказывает выполнение задачи.
+For English and Russian, the extension SHALL translate its own visible labels, states, warnings, confirmations, hints, errors and action-result messages, as well as accessible names and announcements for assistive technology. The meaning of recorded-progress terminology SHALL be preserved: task readiness is not permission to start, and observed session work does not prove task completion.
 
-#### Scenario: Русский интерфейс во всех представлениях
-- **WHEN** действует Русский и пользователь просматривает задачи, карту, поиск, историю, документ, настройку или диагностику
-- **THEN** принадлежащие расширению подписи, объяснения и сообщения отображаются на русском, включая доступные имена и объявления
-- **AND** постоянные имена продукта, машинные обозначения и пользовательский текст не считаются непереведёнными интерфейсными сообщениями
+#### Scenario: Russian interface in all views
+- **WHEN** Russian is effective and the user views tasks, the map, search, history, a document, setup or diagnostics
+- **THEN** extension-owned labels, explanations and messages are displayed in Russian, including accessible names and announcements
+- **AND** fixed product names, machine notation and user text are not considered untranslated interface messages
 
-#### Scenario: Справка и новые состояния карты
-- **WHEN** при действующем Русском пользователь читает справку карты, сведения о выбранной задаче и пояснения рабочих или заблокированных зависимостей
-- **THEN** собственные подписи, пояснения, управление закрытием сведений и объявление снятия выбора отображаются на русском
-- **AND** перевод сохраняет различие между сообщённой работой, готовностью и наблюдаемой активностью и не меняет правила движения или статического отображения стрелок
+#### Scenario: Help and new map states
+- **WHEN** Russian is effective and the user reads map help, selected-task details and explanations of working or blocked dependencies
+- **THEN** owned labels, explanations, the detail-close control and the deselection announcement are displayed in Russian
+- **AND** translation preserves the distinction between reported work, readiness and observed activity and does not change arrow motion or static-display rules
 
-#### Scenario: Неполный охват субагентов и пробелы записи
-- **WHEN** при действующем Русском показаны неполный охват субагентов, дата или неизвестная дата пробела записи, либо результат явного скрытия предупреждения
-- **THEN** индикатор, пояснение, доступное имя действия и безопасные сообщения успеха, ошибки или конфликта используют русский язык
-- **AND** перевод не делает охват полным, не меняет сервисную оценку актуальности предупреждения и не добавляет Work Status действие скрытия
+#### Scenario: Incomplete sub-agent coverage and recording gaps
+- **WHEN** Russian is effective and incomplete sub-agent coverage, a recording gap's date or unknown date, or the result of an explicit warning dismissal is shown
+- **THEN** the indicator, explanation, accessible action name and safe success, error or conflict messages use Russian
+- **AND** translation does not make coverage complete, change the service's assessment of whether the warning needs attention or add a dismissal action to Work Status
 
-#### Scenario: Смена языка сохранённого результата скрытия предупреждения
-- **WHEN** доступное объявление уже показывает результат скрытия предупреждения на английском, а язык меняется на русский без нового действия
-- **THEN** сохранённый текст объявления соответствует русскому языку и не подменяется запоздалым английским обновлением
-- **AND** смена языка не повторяет скрытие предупреждения; обычная перерисовка того же результата на том же языке не создаёт повторного объявления
+#### Scenario: Language change for a retained warning dismissal result
+- **WHEN** an accessible announcement already shows a warning dismissal result in English and the language changes to Russian without a new action
+- **THEN** the retained announcement text matches Russian and is not replaced by a late English update
+- **AND** the language change does not repeat warning dismissal; an ordinary repaint of the same result in the same language does not create a repeated announcement
 
-### Requirement: Локализованное форматирование отображаемых значений
+### Requirement: Localized formatting of displayed values
 
-Отображаемые в интерфейсе даты, относительное время, длительности, числа и множественные формы SHALL соответствовать действующему языку расширения. Ручной выбор SHALL влиять на них независимо от языка OpenChamber. Форматирование MUST NOT менять исходные значения, расчёт количества задач или смысл неизвестного времени. Абсолютные UTC-отметки в экспортируемых сводках SHALL сохранять существующий формат.
+Dates, relative times, durations, numbers and plural forms displayed in the interface SHALL match the extension's effective language. A manual choice SHALL affect them independently of the OpenChamber language. Formatting MUST NOT change source values, task-count calculations or the meaning of unknown time. Absolute UTC timestamps in exported summaries SHALL retain the existing format.
 
-#### Scenario: Русские длительности и множественные формы
-- **WHEN** действует Русский, а интерфейс показывает длительности и количества 1, 2, 5, 11 и 21
-- **THEN** единицы и формы слов соответствуют русскому языку, включая короткие состояния «только что» и неизвестного времени
-- **AND** сами количества и исходные временные отметки не изменяются
+#### Scenario: Russian durations and plural forms
+- **WHEN** Russian is effective and the interface shows durations and quantities 1, 2, 5, 11 and 21
+- **THEN** units and word forms match Russian, including the short "только что" and unknown-time states
+- **AND** the quantities themselves and source timestamps do not change
 
-#### Scenario: Большие количества на карте
-- **WHEN** одна и та же карта показывает 1000 задач при English и Русском
-- **THEN** английские количества сохраняют прежнее `1000`, а русские статистика, подписи фильтров и объявления используют `1 000` с неразрывным пробелом
-- **AND** числовые факты, машинные атрибуты количества, идентификаторы и номера редакций остаются исходными, без локализованной группировки
+#### Scenario: Large quantities on the map
+- **WHEN** the same map shows 1000 tasks in English and Russian
+- **THEN** English quantities retain the previous `1000`, while Russian statistics, filter labels and announcements use `1 000` with a non-breaking space
+- **AND** numeric facts, machine count attributes, identifiers and revision numbers remain unchanged, without localized grouping
 
-#### Scenario: Номера ревизий в History и Details
-- **WHEN** при Русском открыты History или Details плана с номером ревизии `1000` и структурной ревизией `11000`
-- **THEN** соответствующие номера отображаются как `1000` и `11000`, без разделителей групп разрядов
-- **AND** это исключение для номеров не отключает локализованное форматирование количеств задач и других настоящих количеств
+#### Scenario: Revision numbers in History and Details
+- **WHEN** History or Details is open in Russian for a plan with revision number `1000` and structural revision `11000`
+- **THEN** the corresponding numbers are displayed as `1000` and `11000`, without digit-group separators
+- **AND** this exception for numbers does not disable localized formatting of task counts and other actual quantities
 
-### Requirement: Исходный текст и машинные контракты остаются неизменными
+### Requirement: Original text and machine contracts remain unchanged
 
-Переключение языка MUST NOT переводить, исправлять или записывать обратно названия и содержимое планов, задач и документов, причины блокировки, следующие действия, имена сессий и другие пользовательские значения. Машинные ключи, коды, идентификаторы, маршруты и диагностический support payload SHALL сохраняться. Отображение и экспорт SHALL сохранять существующее безопасное текстовое представление и экранирование данных.
+Switching language MUST NOT translate, correct or write back the titles and contents of plans, tasks and documents, blocker reasons, next actions, session names or other user values. Machine keys, codes, identifiers, routes and the diagnostic support payload SHALL be preserved. Display and export SHALL preserve the existing safe text representation and data escaping.
 
-#### Scenario: Смешанные языки и текст с разметкой
-- **WHEN** при смене языка отображаются английское название задачи, русская причина блокировки и документ с HTML-подобным текстом
-- **THEN** их содержимое сохраняется без автоматического перевода или исполнения разметки
-- **AND** переводятся только принадлежащие расширению подписи вокруг этих значений
+#### Scenario: Mixed languages and text containing markup
+- **WHEN** an English task title, a Russian blocker reason and a document with HTML-like text are displayed during a language change
+- **THEN** their contents are preserved without automatic translation or markup execution
+- **AND** only the extension-owned labels around those values are translated
 
-#### Scenario: Сессия обнаружена только в результатах поиска
-- **WHEN** поиск с выбранной сессией A предлагает сессию B, найденную только в результатах, и пользователь выбирает B
-- **THEN** подпись выбранной сессии принадлежит B и не наследует сохранённое имя A
-- **AND** записанное имя B остаётся буквальным, а сгенерированная подпись B следует языку интерфейса; сохранённое имя может переиспользоваться только для того же идентификатора сессии
+#### Scenario: Session found only in search results
+- **WHEN** search with session A selected offers session B found only in results and the user selects B
+- **THEN** the selected-session label belongs to B and does not inherit A's retained name
+- **AND** B's recorded name remains literal while B's generated label follows the interface language; a retained name may be reused only for the same session identifier
 
-#### Scenario: Сгенерированные и записанные имена
-- **WHEN** язык меняется во время обновления workspace или после исчезновения ранее выбранного варианта
-- **THEN** сгенерированные названия сессий и основной рабочей копии следуют выбранному языку
-- **AND** известные записанные названия сессий и рабочих копий остаются буквальными и не заменяются сгенерированным текстом только из-за временной недоступности
+#### Scenario: Generated and recorded names
+- **WHEN** the language changes during a workspace refresh or after a previously selected option disappears
+- **THEN** generated session and main checkout names follow the selected language
+- **AND** known recorded session and checkout names remain literal and are not replaced by generated text solely because they are temporarily unavailable
 
-#### Scenario: Копирование диагностического payload
-- **WHEN** пользователь копирует support payload при English и Русском для одних и тех же наблюдений
-- **THEN** машинные поля, допустимые значения и состав данных payload совпадают независимо от языка элементов управления
+#### Scenario: Copying the diagnostic payload
+- **WHEN** the user copies the support payload in English and Russian for the same observations
+- **THEN** the payload's machine fields, allowed values and data composition match regardless of the controls' language
 
-### Requirement: Сводки формируются на выбранном языке
+### Requirement: Summaries are generated in the selected language
 
-Progress update, handoff и исторический summary-only экспорт SHALL использовать действующий язык для заголовков, названий состояний, предупреждений и пояснений. Экспорт SHALL сохранять структуру Markdown, порядок разделов и записанных элементов, правила полноты, ограничения раскрытия данных и исходные пользовательские значения. Английский вариант SHALL сохранять существующий формат при одинаковых входных данных.
+Progress update, handoff and historical summary-only export SHALL use the effective language for headings, state names, warnings and explanations. Export SHALL preserve Markdown structure, the order of sections and recorded items, completeness rules, disclosure limits and original user values. The English variant SHALL preserve the existing format for identical inputs.
 
-#### Scenario: Русская сводка
-- **WHEN** пользователь открывает progress update или handoff при действующем Русском
-- **THEN** служебный текст сводки русскоязычный, а названия задач, идентификаторы, количества и UTC-отметка соответствуют тому же проверенному снимку
-- **AND** сведения, исключённые из английской сводки по правилам приватности и полноты, не появляются в русской
+#### Scenario: Russian summary
+- **WHEN** the user opens a progress update or handoff while Russian is effective
+- **THEN** the summary's utility text is in Russian, while task titles, identifiers, quantities and the UTC timestamp match the same verified snapshot
+- **AND** information excluded from the English summary by privacy and completeness rules does not appear in the Russian one
 
-#### Scenario: Историческая сводка
-- **WHEN** пользователь явно выбирает summary-only вариант после ошибки полного чтения при действующем Русском
-- **THEN** сводка на русском сохраняет маркировку историчности, ограниченную полноту и безопасное описание категории ошибки
-- **AND** она не представляет частично прочитанные задачи как полный список
+#### Scenario: Historical summary
+- **WHEN** the user explicitly selects the summary-only variant after a full-read failure while Russian is effective
+- **THEN** the Russian summary preserves its historical marking, limited completeness and safe failure-category description
+- **AND** it does not present partially read tasks as a complete list
 
-### Requirement: Смена языка открытого preview сохраняет точность копирования
+### Requirement: Changing the language of an open preview preserves copy accuracy
 
-При смене действующего языка открытый preview SHALL заново формировать служебный текст из того же допустимого снимка без дополнительного чтения прогресса только ради перевода. Copy SHALL копировать ровно показанный текст. Изменение текста SHALL сбрасывать прежнее выделение и подтверждение копирования; запоздавшее завершение старого копирования MUST NOT подтверждать новый preview. Язык сам по себе MUST NOT менять полноту снимка.
+When the effective language changes, an open preview SHALL regenerate utility text from the same permitted snapshot without an additional progress read solely for translation. Copy SHALL copy exactly the displayed text. A text change SHALL reset the previous selection and copy confirmation; late completion of an old copy MUST NOT confirm the new preview. Language alone MUST NOT change snapshot completeness.
 
-#### Scenario: Перевод уже открытой сводки
-- **WHEN** открыта английская сводка и действующий язык меняется на Русский без изменения снимка данных
-- **THEN** preview показывает русскую версию того же снимка, не создавая дополнительного чтения прогресса
-- **AND** последующий Copy копирует показанную русскую версию, а прежнее выделение и подтверждение копирования не переносятся
+#### Scenario: Translating an already open summary
+- **WHEN** an English summary is open and the effective language changes to Russian without a data snapshot change
+- **THEN** the preview shows the Russian version of the same snapshot without creating an additional progress read
+- **AND** a subsequent Copy copies the displayed Russian version, while the previous selection and copy confirmation are not carried over
 
-#### Scenario: Копирование началось до смены языка
-- **WHEN** копирование английского preview уже начато, а до его завершения preview сменился на русский
-- **THEN** операция сохраняет ранее разрешённый английский текст и не подменяет его русским
-- **AND** её позднее завершение не показывает подтверждение копирования для русского preview и не запускает новое копирование
+#### Scenario: Copy started before the language change
+- **WHEN** copying an English preview has already started and the preview changes to Russian before it completes
+- **THEN** the operation preserves the previously authorized English text and does not replace it with Russian
+- **AND** its late completion does not show copy confirmation for the Russian preview or start a new copy
 
-### Requirement: Смена языка сохраняет чтение и доступность
+### Requirement: Language changes preserve reading state and accessibility
 
-Смена языка SHALL сохранять выбранный план, вкладку, фильтры, поисковый текст, раскрытия задач и положение карты. Она MUST NOT изменять прогресс, подтверждать просмотр истории или перечитывать документ только ради перевода. Переключатель SHALL работать с клавиатуры с видимым фокусом; внешний выбор MUST NOT перехватывать фокус. Язык документа представления SHALL соответствовать действующему языку интерфейса.
+A language change SHALL preserve the selected plan, tab, filters, search text, task disclosures and map position. It MUST NOT change progress, acknowledge history as reviewed or reread a document solely for translation. The switch SHALL work with the keyboard with visible focus; an external choice MUST NOT steal focus. The view document's language SHALL match the effective interface language.
 
-#### Scenario: Переключение во время чтения
-- **WHEN** пользователь меняет язык при выбранном плане, активных фильтрах, введённом поиске и раскрытых задачах
-- **THEN** контекст чтения сохраняется, а действие не сообщает прогресс, не отмечает историю просмотренной и не начинает чтение документа
+#### Scenario: Switching while reading
+- **WHEN** the user changes language with a selected plan, active filters, entered search text and expanded tasks
+- **THEN** the reading context is preserved and the action does not report progress, mark history as reviewed or start a document read
 
-#### Scenario: Перевод раскрытых дополнительных сведений
-- **WHEN** язык меняется при открытой справке карты, выбранной задаче или раскрытых сведениях о неполном охвате субагентов
-- **THEN** сохраняются раскрытия и контекст чтения, а язык сам по себе не запускает новые чтения прогресса, графа или записей запусков, восстановление истории либо скрытие предупреждения
-- **AND** явное действие пользователя и обычное обновление данных продолжают выполнять свои операции; перевод не подменяет их
+#### Scenario: Translating expanded additional details
+- **WHEN** the language changes with map help open, a task selected or incomplete sub-agent coverage details expanded
+- **THEN** disclosures and reading context are preserved, and language alone does not start new progress, graph or run-record reads, history recovery or warning dismissal
+- **AND** explicit user actions and ordinary data refreshes continue to perform their operations; translation does not replace them
 
-#### Scenario: Внешнее обновление при фокусе в другом представлении
-- **WHEN** сохранённый язык меняется извне, а фокус находится в другом представлении
-- **THEN** раскрытия текущего чтения сохраняются без перехвата фокуса
-- **AND** восстановление открытого документа с сохранённой ошибкой не становится повторной попыткой его чтения
+#### Scenario: External update while another view has focus
+- **WHEN** the saved language changes externally while focus is in another view
+- **THEN** current reading disclosures are preserved without stealing focus
+- **AND** restoring an open document with a retained error does not become a retry of its read
 
-#### Scenario: Клавиатура и внешнее обновление
-- **WHEN** пользователь выбирает язык клавиатурой или язык меняется из другого представления
-- **THEN** локальный выбор сохраняет фокус на переключателе, а внешнее обновление не перемещает фокус с текущего элемента
-- **AND** доступные имена и язык документа соответствуют показанному переводу, без горизонтального переполнения узкой панели из-за переведённых элементов
+#### Scenario: Keyboard and external update
+- **WHEN** the user selects a language with the keyboard or the language changes from another view
+- **THEN** a local choice keeps focus on the switch and an external update does not move focus from the current element
+- **AND** accessible names and the document language match the displayed translation, without translated controls causing horizontal overflow in a narrow panel

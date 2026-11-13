@@ -1,10 +1,10 @@
 schema: spec-driven
 created: 2026-11-07
-goal: "Дать пользователю возможность выбрать язык интерфейса Agent Progress:
-  следовать языку OpenChamber по умолчанию либо явно выбрать English или
-  Русский. Разместить компактный элемент Language в нижней служебной области
-  боковой панели и полноэкранной страницы рядом с Setup и Details, независимо от
-  наличия плана и завершения настройки. Сохранять единый выбор для всех трёх
-  представлений расширения, включая Work Status, без отдельного переключателя в
-  компактном блоке. Переводить интерфейсные подписи и сообщения расширения, не
-  изменяя названия и содержимое планов, задач и документов."
+goal: "Let users choose the Agent Progress interface language:
+  follow the OpenChamber language by default or explicitly choose English or
+  Russian. Place a compact Language control in the lower utility area
+  of the side panel and full-screen page next to Setup and Details, regardless of
+  whether a plan exists or setup is complete. Save one choice for all three
+  extension views, including Work Status, without a separate switch in
+  the compact block. Translate the extension's interface labels and messages without
+  changing the titles and contents of plans, tasks and documents."
