@@ -19,6 +19,7 @@ import path from 'node:path';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { createProgressServer } from '../../service/server.ts';
 import { RELEASE } from '../../shared/release.ts';
+import { createManagedBindingDirectory, publishPrivateJson } from '../../shared/managed-binding.ts';
 import type { ItemInput } from '../../shared/progress.ts';
 import { searchFixture, seedSearchLibrary } from '../fixtures/plan-task-search.ts';
 import { mapItems, seedMapFixture } from '../fixtures/dependency-map.ts';
@@ -47,7 +48,7 @@ window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null
 // from the existing synthetic setup fixture and never forwarded to a service or installation code;
 // "unconfigured" makes /health report not ready. Metadata (method/path/status) is recorded.
 if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='disable')qa.capture=false;if(action==='enable')qa.capture=true;const v=qa.unconfigured?{...${JSON.stringify(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${JSON.stringify(setupRead())},captureEnabled:qa.capture};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
-const ready=f=>send(f,{type:'ready',payload:{theme,locale:'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
+const ready=f=>send(f,{type:'ready',payload:{theme,locale:qa.locale??'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.loads={};qa.loaded={};
 qa.reload=f=>{const n=frame(f),seq=qa.loads[f]=(qa.loads[f]??0)+1;n.addEventListener('load',()=>qa.loaded[f]=seq,{once:true});n.src=n.src;return seq};
@@ -92,7 +93,7 @@ addEventListener('message',async e=>{
    const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
   if(failing)failing.skip--;
   if(window.__keyboardFocus&&q.path.startsWith('/v1/setup')){const r=qa.setupReply(q);qa.intercepted.push({frame:f,method:q.method,path:q.path,status:r.status,at:t0});result(r);return}
-  const forward=async()=>{const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
+  const forward=async()=>{if(qa.managedSetupReply&&q.path.startsWith('/v1/setup'))return qa.managedSetupReply(q);const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
    // Labelled legacy-detail seam: optional aggregate metadata is absent, so readDetail cannot
    // construct its authoritative snapshot/identity. Other wire identity validation stays intact.
     if(q.path==='/v1/plan'&&reply.status===200&&qa.stripDetailSnapshot===f){const b=JSON.parse(reply.body);delete b.plan.counts;reply.body=JSON.stringify(b)}
@@ -102,6 +103,7 @@ addEventListener('message',async e=>{
     // QT fault injection only: older/missing/unloaded/mismatched child evidence, not Store writes.
     if(q.path==='/v1/subagent-runs'&&reply.status===200&&qa.mapRunFault?.[f]){const b=JSON.parse(reply.body),fault=qa.mapRunFault[f];for(const row of b.data){if(fault==='missing')delete row.latestForChild;if(fault==='unloaded')row.latestForChild=false;if(fault==='childless'){row.childSessionId=null;row.latestForChild=false}if(fault==='other')row.childSessionId='other-child'}reply.body=JSON.stringify(b)}
    if(q.path==='/health'&&window.__keyboardFocus&&qa.unconfigured){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
+   if(q.path==='/health'&&qa.managedNotReady){const b=JSON.parse(reply.body);b.ready=false;reply.body=JSON.stringify(b)}
     if(q.path==='/health'&&(qa.stripSearch||qa.stripComparison||qa.stripGraph)){const b=JSON.parse(reply.body);if(qa.stripSearch)delete b.planTaskSearch;if(qa.stripComparison)delete b.documentCaptureComparison;if(qa.stripGraph)delete b.planGraph;reply.body=JSON.stringify(b)}record(f,q,reply,performance.now()-t0);return reply};
   const deliver=p=>p.then(result,()=>{qa.errors.push('fixture proxy failed');fail('HOST_UNAVAILABLE','Fixture proxy unavailable')});
   const hold=qa.holds.find(h=>h.path===q.path&&(!h.frame||h.frame===f)&&(h.plan===undefined||q.query?.plan===h.plan)&&(h.cursor===undefined||!!q.query?.cursor===h.cursor));
@@ -149,15 +151,16 @@ async function serve(f: Fixture, built: boolean) {
     // Labelled setup seam (test-only SQL): the generated service binds only to a source whose
     // config/data roots really exist and match the store, so the fixture's synthetic roots are
     // re-pointed to disposable directories before serving. Plans, IDs and search data are unchanged.
-    const roots = { configRoot: `${f.root}/alpha-config`, dataRoot: `${f.root}/alpha-data` };
-    for (const dir of Object.values(roots)) mkdirSync(dir, { mode: 0o700 });
+    const env = { PATH: process.env.PATH, HOME: `${f.root}/home`, XDG_CONFIG_HOME: `${f.root}/config`, XDG_DATA_HOME: `${f.root}/data`, XDG_STATE_HOME: `${f.root}/state`, OPENCHAMBER_SERVICE_PORT: '', OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' };
+    const roots = { configRoot: `${env.XDG_CONFIG_HOME}/opencode`, dataRoot: `${env.XDG_DATA_HOME}/opencode` };
+    for (const dir of Object.values(roots)) mkdirSync(dir, { mode: 0o700, recursive:true });
     f.store.db.prepare('UPDATE sources SET config_root=?, data_root=? WHERE id=?').run(roots.configRoot, roots.dataRoot, f.alpha.id);
-    const binding = `${f.root}/binding.json`;
-    writeFileSync(binding, JSON.stringify({ protocolVersion: 2, schemaVersion: 2, installId: 'search-fixture', version: RELEASE, database: f.store.file, storeId: f.storeId, source: { ...f.alpha, ...roots } }), { mode: 0o600 });
+    const binding = createManagedBindingDirectory(env);
+    publishPrivateJson(binding, { protocolVersion: 2, schemaVersion: 2, installId: 'search-fixture', version: RELEASE, database: f.store.file, storeId: f.storeId, source: { ...f.alpha, ...roots } });
     mkdirSync(`${f.root}/home`, { mode: 0o700 });
     const reservation = netServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
     port = (reservation.address() as { port: number }).port; await new Promise<void>((r) => reservation.close(() => r()));
-    child = spawn(process.execPath, [path.resolve('build/service/main.js')], { env: { PATH: process.env.PATH, HOME: `${f.root}/home`, XDG_CONFIG_HOME: `${f.root}/config`, XDG_DATA_HOME: `${f.root}/data`, XDG_STATE_HOME: `${f.root}/state`, ...(process.env.ORCA_PRIVATE_ROOT ? { ORCA_PRIVATE_ROOT: process.env.ORCA_PRIVATE_ROOT } : {}), AGENT_PROGRESS_BINDING: binding, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' }, stdio: 'ignore' });
+    child = spawn(process.execPath, [path.resolve('build/service/main.js')], { env: { ...env, ...(process.env.ORCA_PRIVATE_ROOT ? {ORCA_PRIVATE_ROOT:process.env.ORCA_PRIVATE_ROOT} : {}), OPENCHAMBER_SERVICE_PORT: String(port) }, stdio: 'ignore' });
   } else {
     service = createProgressServer(f.store, 'fixture-only'); service.listen(0, '127.0.0.1'); await once(service, 'listening');
     port = (service.address() as { port: number }).port;

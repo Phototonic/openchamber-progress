@@ -1,12 +1,13 @@
 import { button, el, testid } from './components.ts';
 import { reportingCopyText, supportSummary, type ReportingHealth } from './reporting-health.ts';
 import { resolveLanguage } from './i18n.ts';
+import { managedCopy } from './managed-copy.ts';
 const en = {
   close:'Close reporting health', title:'Reporting health', checked:'Last explicit check · recorded observations only', checking:'Checking reporting observations…',
   meanings:'What these checks mean', limits:'Service platform and session tool availability are unknown. These checks do not prove recent reporting or task completion.',
   serviceUnavailable:'The reporting service could not be checked. Review the host connection and Setup diagnostics, then retry.',
   support:'Support summary', preview:'Support summary preview', copy:'Copy support summary', refresh:'Refresh observations',
-  labels:{service:'Service',installation:'Companion',loaded:'Loaded version',capture:'Capture',report:'Selected report',scope:'Source',viewer:'Viewer'},
+  labels:{service:'Service',installation:'Delivery setup',loaded:'Load observation',capture:'Stored capture control',report:'Selected report',scope:'Source',viewer:'Viewer'},
   short:{observed:'Responding',installed:'Installed','not-configured':'Not configured','not-observed':'Not confirmed','matching-observation':'Match observed','reload-required':'Reload needed',on:'On',off:'Off','recorded-revision':'Recorded','not-checked':'Not checked','selected-source':'Matches selection','source-mismatch':'Different source','association-unknown':'Not verified','selected-report':'Revision matches','revision-changed':'Refresh needed',stale:'Stale',unknown:'Unknown',unavailable:'Unavailable','context-changed':'Recheck needed',busy:'Busy',damaged:'Unreadable',incompatible:'Incompatible','store-unavailable':'Unavailable','not-approved':'Access needed',paused:'Paused'},
   explain:{
   observed:'The service answered this explicit setup check. This does not prove recent reporting.',busy:'The progress store is busy. Try again shortly.',damaged:'The store could not be read because damage was reported. Preserve its files and review Setup diagnostics.',incompatible:'The store format is incompatible. Review the installed extension version.',
@@ -33,7 +34,7 @@ const ru: typeof en = {
   meanings:'Что означают эти проверки', limits:'Платформа сервиса и доступность инструментов сессии неизвестны. Проверки не доказывают недавнюю отчётность или выполнение задач.',
   serviceUnavailable:'Не удалось проверить сервис отчётности. Проверьте соединение с хостом и диагностику настройки, затем повторите попытку.',
   support:'Сводка для поддержки', preview:'Предпросмотр сводки для поддержки', copy:'Копировать сводку для поддержки', refresh:'Обновить наблюдения',
-  labels:{service:'Сервис',installation:'Компаньон',loaded:'Загруженная версия',capture:'Запись',report:'Выбранный отчёт',scope:'Источник',viewer:'Просмотр'},
+  labels:{service:'Сервис',installation:'Настройка доставки',loaded:'Наблюдение загрузки',capture:'Управление записью',report:'Выбранный отчёт',scope:'Источник',viewer:'Просмотр'},
   short:{observed:'Отвечает',installed:'Установлен','not-configured':'Не настроен','not-observed':'Не подтверждён','matching-observation':'Совпадение записано','reload-required':'Нужен перезапуск',on:'Включена',off:'Выключена','recorded-revision':'Записан','not-checked':'Не проверен','selected-source':'Соответствует выбору','source-mismatch':'Другой источник','association-unknown':'Не подтверждён','selected-report':'Ревизия совпадает','revision-changed':'Нужно обновить',stale:'Устаревшие данные',unknown:'Неизвестно',unavailable:'Недоступен','context-changed':'Нужна повторная проверка',busy:'Занят',damaged:'Не читается',incompatible:'Несовместим','store-unavailable':'Недоступен','not-approved':'Нужен доступ',paused:'Приостановлен'},
   explain:{
     observed:'Сервис ответил на эту явную проверку настройки. Это не доказывает недавнюю отчётность.',
@@ -74,9 +75,10 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
   if(p.busy)box.append(el('p','ap-note',text.checking));
   if(p.facts){
     const labels=Object.entries(text.labels) as [keyof typeof text.labels,string][];
-    const short:Readonly<Record<string,string>>=text.short;
-    const explain:Readonly<Record<string,string>>=text.explain;
-    const positive=new Set(['observed','installed','matching-observation','on','recorded-revision','selected-source','selected-report']);
+    const managed=managedCopy(locale);
+    const short:Readonly<Record<string,string>>={...text.short,'managed-configured':managed.configured,'invalid-binding':text.short.unavailable,'different-bytes':managed.different,'legacy-unresolved':managed.resume,'legacy-unsupported':text.short.unavailable};
+    const explain:Readonly<Record<string,string>>={...text.explain,'managed-configured':managed.reach,'invalid-binding':managed.invalid,'different-bytes':managed.warning,'legacy-unresolved':managed.pending,'legacy-unsupported':managed.unsupported,'matching-observation':managed.observation,'not-observed':managed.missing+' · '+managed.observation,on:managed.on+' · '+managed.observation,off:managed.off};
+    const positive=new Set(['observed','installed','managed-configured','matching-observation','on','recorded-revision','selected-source','selected-report']);
     const neutral=new Set(['unknown','not-checked','not-observed','association-unknown']);
     const list=el('dl','ap-health-grid');
     for(const [key,label] of labels){const value=p.facts[key];const row=el('div','ap-health-row');const status=el('dd','ap-health-status');status.dataset.tone=positive.has(value)?'good':neutral.has(value)?'neutral':'attention';const mark=el('span','ap-health-mark',positive.has(value)?'✓':neutral.has(value)?'—':'!');mark.setAttribute('aria-hidden','true');status.append(mark,el('span','',short[value]??text.short.unknown));row.append(el('dt','',label),status);list.append(row);}
@@ -84,7 +86,7 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
     const details=testid(el('details','ap-health-details'),'reporting-explanations');details.append(el('summary','',text.meanings));
     const explanations=el('dl','ap-health-explanations');
     for(const [key,label] of labels)explanations.append(el('dt','',label),el('dd','',key==='service'&&p.facts[key]==='unavailable'?text.serviceUnavailable:explain[p.facts[key]]??explain.unknown));
-    details.append(explanations,el('p','ap-note',text.limits));box.append(details);
+    details.append(explanations,el('p','ap-note',text.limits),el('p','ap-note',managed.lifecycle),el('p','ap-note',managed.reach));box.append(details);
     const support=testid(el('details','ap-health-details'),'reporting-support');support.append(el('summary','',text.support));
     const preview=testid(el('textarea'),'reporting-support-preview');preview.dataset.observation=p.observation;preview.readOnly=true;preview.value=supportSummary(p.facts);preview.rows=8;preview.className='ap-summary-text';preview.setAttribute('aria-label',text.preview);support.append(preview);
     button(support,'reporting-support-copy',text.copy,p.copySummary);
