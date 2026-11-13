@@ -109,6 +109,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       const page=await wait(()=>reading('page'),matches,'board revision counts');await shot(`board-r${revision}`);return {panel,status,page};
     };
     const failure=async()=>{await shot('failure').catch(()=>{});writeFileSync(`${artifacts}/failure-dom.json`,JSON.stringify(await evaluate('({text:document.body.innerText,buttons:[...document.querySelectorAll("button")].map(e=>({text:e.innerText,label:e.getAttribute("aria-label"),title:e.title})),inputs:[...document.querySelectorAll("input")].map(e=>({placeholder:e.placeholder,type:e.type}))})').catch(()=>null),null,2));};
-    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length})};
+    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,events}};
   }catch(e){await stop();throw e;}
 }
