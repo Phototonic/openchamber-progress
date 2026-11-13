@@ -19,9 +19,9 @@
 
 ## 4. Distribution and guides
 
-- [ ] 4.1 Add mentions, background and the two session actions to the manifest without raising the host floor or adding content permissions. Include background TypeScript in UI checks and its classic bundle/HTML in package, Git-entry verification and parity inventories.
-- [ ] 4.2 Update affected contract/backend/UI/compatibility and contributor build guidance, including bounded coverage, composer-only identifier disclosure, active-chat destination, language exception and relationship to the automatic resume capsule.
-- [ ] 4.3 Regenerate affected service/guest outputs with repository scripts. Verify the candidate manifest against pinned current and older parsers/isolated installers and run package/entry parity with stable inputs.
+- [ ] 4.1 Add mentions, background and the two session actions to the manifest without adding content permissions. Set `engines.openchamber` to `>=2.7.1` for release 1.2.0 while retaining the SDK pin at 2.7.0. Include background TypeScript in UI checks and its classic bundle/HTML in package, Git-entry verification and parity inventories.
+- [ ] 4.2 Update affected contract/backend/UI/compatibility and contributor build guidance, including the 2.7.1 host floor, bounded coverage, composer-only identifier disclosure, active-chat destination, language exception and relationship to the automatic resume capsule.
+- [ ] 4.3 Regenerate affected service/guest outputs with repository scripts. Validate with the pinned SDK, verify installation on an isolated 2.7.1 host and normal version-message refusal below 2.7.1 using the actual older installer where available, and run package/entry parity with stable inputs. Record missing installer coverage without claiming a pass.
 
 ## 5. Behavioral acceptance
 

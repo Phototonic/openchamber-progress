@@ -15,9 +15,9 @@ Users should be able to carry reported plan progress into a new or compacted con
 
 ## Scope
 
-**IN:** manual read-only summaries; service mention routes; one on-demand background entry; manifest contributions; focused tests, generated outputs and affected contract/build guides.
+**IN:** manual read-only summaries; service mention routes; one on-demand background entry; manifest contributions and host-floor declaration; focused tests, generated outputs and affected contract/build guides.
 
-**OUT / Must NOT have:** reporting/status mutations, approval, assignment, workflow control, automatic sending, notifications, per-task review, polling, persistent summary/search caches, transcript/message permissions, document-body reads, file actions, navigation features, source-discovery/setup changes, companion changes, CI workflow cleanup, dependency upgrades, version bumps or release publication.
+**OUT / Must NOT have:** reporting/status mutations, approval, assignment, workflow control, automatic sending, notifications, per-task review, polling, persistent summary/search caches, transcript/message permissions, document-body reads, file actions, navigation features, source-discovery/setup changes, companion changes, CI workflow cleanup, dependency upgrades, package-version bumps or release publication.
 
 ## Capabilities
 
@@ -33,4 +33,4 @@ Users should be able to carry reported plan progress into a new or compacted con
 
 Existing owners are `service/server.ts`, `shared/store.ts`, the bounded search machinery, `ui/shared/summary.ts`, the shared dependency/readiness projection, session-scoped reads, rail preference storage and Work Status automatic selection. Build/package scripts must include the new background HTML/script; no consumer compilation is introduced. Update `docs/contracts.md`, `docs/backend.md`, `docs/ui.md`, `docs/compatibility.md` and contributor build instructions with implementation. The guides remain the contract of record.
 
-The build SDK remains 2.7.0. This change retains the existing minimum host 2.5.1: its parser already supports background session actions and drops unknown top-level contributions, including mentions. Mention functionality requires a supporting host, first advertised in 2.7.0. Old-host installation and existing views require explicit regression evidence, not inference from the current SDK alone.
+Release 1.2.0 sets `engines.openchamber` to `>=2.7.1`; the build SDK remains pinned at 2.7.0. This replaces the earlier feature-minimum/unknown-key fallback policy. OpenChamber 2.7.1 adds mobile extension support, and available host evidence is limited to 2.7.1. Verify installation on 2.7.1 and normal version-message refusal below that floor using an actual older installer where available, not inference from SDK parsing alone.

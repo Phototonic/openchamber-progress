@@ -124,14 +124,17 @@ The background guest SHALL load on demand, await its action work and finish with
 
 ### Requirement: Additive compatibility and installable output
 
-The service SHALL advertise `planComposerHandoff:1` without changing protocol/schema 2. Unsupported services SHALL not be treated as empty progress. Installation and existing functionality SHALL remain available on the declared older host floor; hosts without mentions may omit that entry point. Distribution SHALL include the built background entry and affected regenerated outputs in parity/package checks, without migrations or new runtime dependencies.
+The service SHALL retain protocol/schema 2 and advertise `planComposerHandoff:1`. Consumers SHALL not treat missing capability as empty progress. Release 1.2.0 SHALL declare `engines.openchamber: ">=2.7.1"` and retain SDK pin 2.7.0. Installation SHALL succeed on 2.7.1 and fail below it with the host's normal version message. Distribution SHALL include built background and affected regenerated outputs in parity/package checks, without migrations or new runtime dependencies.
 
-#### Scenario: Older host or service
-- **WHEN** the candidate is inspected by the supported older host parser/installer without mentions support
-- **THEN** installation and existing views remain available without a mention section
-- **AND** a background action encountering a service without the capability gives a plain unavailable result rather than calling unsupported summary behavior
+#### Scenario: Host below the release floor
+- **WHEN** installation of the candidate is attempted on a host below 2.7.1
+- **THEN** the host refuses installation with its normal version message rather than installing with omitted contributions
+
+#### Scenario: Unsupported service on a supported host
+- **WHEN** a background action on a supported host encounters a service without the capability
+- **THEN** it gives a plain unavailable result rather than calling unsupported summary behavior
 
 #### Scenario: Packaged background action
-- **WHEN** a clean folder or ZIP distribution is installed in an isolated supporting host
-- **THEN** both session actions load the shipped classic background script without a build or dependency download
+- **WHEN** a clean folder or ZIP distribution is installed in an isolated 2.7.1 host
+- **THEN** installation succeeds and both session actions load the shipped classic background script without a build or dependency download
 - **AND** the action frame ends after execution while the user's draft remains editable and unsent
