@@ -25,6 +25,17 @@ function storedPreference(value: LanguageStorageValue | undefined): LanguagePref
   throw Error('readFailed');
 }
 
+/** One-shot background read. Failed/malformed preferences use the same unconfirmed
+ * automatic fallback as a new UI frame; never writes or starts a refresh loop. */
+export async function readEffectiveLanguage(storage: Pick<LanguageStorage, 'get'>, hostLocale: string, supported: boolean): Promise<InterfaceLanguage> {
+  let preference: LanguagePreference = 'auto';
+  if (supported) {
+    try { preference = storedPreference(await storage.get(key, { scope: 'device' })) ?? 'auto'; }
+    catch { /* No confirmed preference: retain automatic mode. */ }
+  }
+  return resolveLanguage(preference, hostLocale);
+}
+
 export class LanguageController {
   private readonly options: { storage: LanguageStorage; changed: () => void };
   private hostLocale = 'en';

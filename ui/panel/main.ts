@@ -13,6 +13,7 @@ import { planProject } from '../shared/live.ts';
 import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { warningLine } from '../shared/primitives.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { railPlanKey as storeKey } from '../shared/plan-selection.ts';
 
 const messages = {
   en: { heading: 'Agent progress', noSession: 'No session selected', openProgress: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', connect: 'Connect it to your OpenCode setup to start showing plans.', capture: 'Capture is off, so no new progress is being recorded.', openPlan: 'Open a session to see the plan its agent reported.', noPlan: 'No plan reported for this session', appears: 'When an agent in this session reports a plan, its progress appears here.', about: 'About this plan', contribution: (name: string) => `This session contributes to a plan from ${name}.`, details: 'Details', truncated: 'Some older plans were not loaded.', watched: 'Live sessions watched', helping: 'helping · ' },
@@ -21,7 +22,6 @@ const messages = {
 
 /** `presentation`: Plan view List (default) or Map, in this frame only; never stored. */
 type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
-const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
 // Recent sessions' chosen plan, so a remembered session repaints with its own selection at once
 // (host storage stays the durable copy and is still read on every switch).
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);

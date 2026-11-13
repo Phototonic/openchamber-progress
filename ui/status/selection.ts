@@ -1,13 +1,8 @@
 // Work Status only: explicit reported work, never live agent activity or inferred completion.
-import { orderPlans, type PlanView } from '../shared/model.ts';
+import { automaticPlan } from '../shared/plan-selection.ts';
+export { automaticPlan } from '../shared/plan-selection.ts';
 import { RecentMemory } from '../shared/refresh.ts';
 import type { Scope } from '../shared/scope.ts';
-
-export function automaticPlan(scope: Scope): PlanView | null {
-  if (scope.kind === 'none') return null;
-  const working = scope.plans.filter((p) => p.lifecycle === 'active' && p.working.length > 0);
-  return orderPlans(working)[0] ?? scope.plans[0] ?? null;
-}
 
 /** Frame-local choices, bounded like the read cache. No async storage restoration to race clicks. */
 export class StatusSelection {
