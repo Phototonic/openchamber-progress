@@ -18,7 +18,7 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 
 ### Change proposals
 
-Larger changes to behaviour, storage or compatibility are proposed under `openspec/changes/<name>/` (proposal, design, requirement scenarios and tasks) and validated with `openspec validate <name> --strict`. A proposal describes one change and how it will be delivered; the guides in `docs/` remain the contract of record and are updated in the same change as the behaviour. Small fixes and routine changes need no proposal.
+Larger changes to behaviour, storage or compatibility are proposed under `openspec/changes/<name>/` (proposal, design, requirement scenarios and tasks) and validated with `openspec validate <name> --strict`. OpenSpec artifacts are written in English. A proposal describes one change and how it will be delivered; the guides in `docs/` remain the contract of record and are updated in the same change as the behaviour. Small fixes and routine changes need no proposal.
 
 ## Local development
 
