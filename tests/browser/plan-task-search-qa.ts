@@ -141,10 +141,10 @@ try {
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result.value as T;
   };
-  const guest = <T = any>(f: string, code: string) => evaluate<T>(`(()=>{const w=frame('${f}').contentWindow,d=w.document;${code}})()`);
+  const guest = <T = any>(f: string, code: string) => evaluate<T>(`(()=>{const w=frame(${javascriptLiteral(f)}).contentWindow,d=w.document;${code}})()`);
   /** Polls in the page on animation frames; resolves with the page time when `cond` held. */
   const wait = async (f: string, cond: string, what = cond, ms = 20_000) => {
-    const at = await evaluate<number | null>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame('${f}').contentWindow,d=w.document;if(${cond})return performance.now()}catch{}await new Promise(r=>requestAnimationFrame(r));}return null})()`);
+    const at = await evaluate<number | null>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame(${javascriptLiteral(f)}).contentWindow,d=w.document;if(${cond})return performance.now()}catch{}await new Promise(r=>requestAnimationFrame(r));}return null})()`);
     if (at === null) throw new Error(`timed out waiting (${f}): ${what}`);
     return at;
   };
@@ -1697,7 +1697,7 @@ try {
         await focusShot('page-focus-light-listbox-arrow', 'page', 40, 200);
         const chosen = await guest<string>('page', `return d.getElementById(d.querySelector('${listSel}').getAttribute('aria-activedescendant'))?.dataset.testid??''`);
         await key('Enter');
-        await wait('page', `d.querySelector('[data-testid="${chosen}"]')?.getAttribute('aria-selected')==='true'&&d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${chosen.replace('plan-row-', '')}"]')`, 'selected plan rendered');
+        await wait('page', `d.querySelector(${javascriptLiteral(`[data-testid="${chosen}"]`)})?.getAttribute('aria-selected')==='true'&&d.querySelector(${javascriptLiteral(`[data-testid="plan-detail"] article[data-testid="plan-${chosen.replace('plan-row-', '')}"]`)})`, 'selected plan rendered');
         kcheck('K2', 'page', 'plan-list:enter-selects-and-renders', await focusedOn('page', listSel), [`selected ${chosen}; listbox keeps focus`], await focusState());
         // Tabs: arrows switch Progress → Document → History and keep focus on the tab.
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]');
