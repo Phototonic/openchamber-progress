@@ -1,5 +1,129 @@
 # Progress views
 
+## Interface language
+
+The rail and fullscreen page have a **Language / Язык** selector in their lower
+service area, alongside Setup and Details when those sections are present. It
+remains available without a selected session or plan, during loading, before
+setup, and after a failed progress read. Work Status uses the same preference
+without a separate selector or host-header control. The options are OpenChamber
+language, **English**, and **Русский**; there are no flags.
+
+The default is automatic: a valid Russian host locale, including `ru-RU`, uses
+Russian; English, unsupported and malformed host tags use English. An explicit
+choice overrides the host locale. All three guests use that effective language
+for extension-owned text, accessible names, announcements, dates, relative time,
+durations, counts and plural forms. The guest document's `lang` follows the shown
+interface. Product names, host-owned chrome and host clipboard/toast buttons keep
+their own language. User-authored titles, session names, blocker details, search
+queries, paths and document contents are not translated or written back.
+
+One SDK **device** preference, `interface-language.v1`, stores only
+`{v: 1, preference: 'auto' | 'en' | 'ru'}`. The host partitions it by browser
+profile, runtime, extension and installation, not by plan, project, session,
+source, progress store or integration account. It is not authenticated-user
+isolation or cross-device sync. People sharing a profile/namespace share the
+choice; URL aliases need not share it. Uninstall/reinstallation follows the host's
+installation-identity rules. No instance/server storage or browser-storage
+fallback is used. Missing means `undefined`; `null`, unknown versions and malformed
+records are read failures, never an absent preference or an automatic repair.
+
+Device requests require `features.deviceStorage === true`. An older host uses
+automatic mode with a visible, accessible explanation and disabled manual
+selection. Read errors keep the last confirmed choice, or automatic mode if none
+is known. A write applies the selected mode only after success; pending disables
+repeat selection, and failure keeps the previous mode with an explicit retryable
+explanation. Arbitrary storage errors are not shown.
+If a frame returns while a write is still pending, completion enables its selector
+without waiting for the follow-up read; the retired write result is not accepted
+as a confirmed preference.
+
+Visible frames check the preference at readiness, at the start of the existing
+3-second/8-second progress-refresh cadence, and on focus/visibility return. The
+check is independent of whether progress/search succeeds and does not delay its
+read. Focus alone does not retry progress. Requests coalesce; there is no new
+language timer, broadcast channel or device subscription. A read started before a
+local choice cannot undo its confirmed save. Concurrent frames eventually read
+the final stored value; neither instantaneous propagation nor click-time ordering
+is promised. Hidden/disposed callbacks cannot repaint. An already-dispatched
+write can finish in storage after hiding, and returning rereads it.
+
+Language changes are presentation-only: selected plans, tabs, task and board
+filters, typed/submitted search, disclosures and map selection/pan/zoom survive.
+Disclosures are retained even when another frame owns focus. Generated session
+and main-checkout names follow the language; recorded session/worktree names stay
+literal during workspace reloads and after their choices become unavailable.
+Choosing a different search session uses that option's own label, including
+sessions discovered only in search results; a retained title belongs only to its
+recorded session ID. Visible map counts use the selected locale, while machine
+attributes such as `data-count` and revision identifiers keep their raw values.
+Work Status fractions and search totals use the same language-aware quantity
+formatting; English keeps its existing ungrouped output.
+History and Details also keep revision and structural-revision numbers ungrouped;
+they are identifiers, not localized quantities.
+Language changes neither report progress nor mark History reviewed. Document restoration,
+including a retained read error, does not retry solely for translation; explicit
+opening/Retry and ordinary data refresh keep their own behavior. External changes
+do not steal focus and respect an independent open SDK popup's repaint boundary.
+Background repaints retain this frame's logical focused control even while its
+document is unfocused, but never call `focus()` to restore it then. Restoration
+waits until this frame genuinely regains focus, only while its active element is
+body, absent or detached; choosing another control cancels it. Repeated paints
+retarget the current rebuilt control, and context/identity changes or disposal
+retire the pending return. A repaint starting without an in-frame focused control
+does not create a focus target.
+Work Status continues its existing content-height synchronization after reflow.
+
+The localization inventory is owned by the existing UI layers:
+
+| Surface | Text owners and boundaries |
+| --- | --- |
+| Basic views and task reading | `app.ts`, the three `main.ts` entries, `components.ts`, `primitives.ts`, `model.ts`, `live.ts`, `scope.ts`, `format.ts`: loading/failure/empty states, labels, pickers, tooltips, accessibility and time ticker |
+| Setup and service controls | `setup.ts`, `official.ts`, `cleanup*.ts`, `reporting-health*.ts`: consent/access warnings, confirmations, safe errors and feedback; `supportSummary()` remains language-independent machine text |
+| Search, History and documents | `search*.ts`, `change-digest*.ts`, `capture-comparison*.ts`: semantic saved messages and bounded-read qualifications, never query text, captured bytes or review state |
+| Map and sub-agents | `dependency-map-view.ts`, `dependency-map-interaction.ts`, `census-view.ts`, `subagents.ts`: labels and structured announcements, not graph facts or activity evidence |
+| Copy and exports | `summary.ts`, preview lifecycle in `app.ts`, task-copy controls in `components.ts`: extension-owned words only, with the same disclosure limits and literal escaping |
+
+The glossary keeps **reported working** separate from observed **Running**;
+**Ready** is not permission to start; a run, a child claim and accepted task
+progress are three different facts. Translation must not turn unknown coverage
+into an empty result, a skipped prerequisite into Done, or a retained capture into
+the current file. Machine keys, IDs, error codes, routes and support-payload bytes
+are unchanged for the same facts.
+
+Progress-update, handoff and explicitly historical summary-only Markdown use the
+effective language. English remains byte-compatible for the same input; section
+order, task order, privacy omissions, Markdown escaping, LF and absolute UTC ISO
+timestamps are unchanged in both languages. An open preview is reformatted from
+the same validated held snapshot, without a new progress read. Changed text
+starts a new generation, clears selection/copy feedback, and cannot be confirmed
+by a late clipboard operation on older text. **Copy** copies exactly the shown
+string, never automatically. Task **Copy details…** follows the same rule for its
+existing displayed facts. Support-payload formatting is not a localized export.
+
+Focused checks use `tests/browser/interface-language.test.ts`,
+`interface-format.test.ts`, the existing summary/controller suites, and
+`node --experimental-strip-types tests/browser/interface-language-qa.ts --artifacts <external-directory>`.
+The latter launches a fresh disposable Chromium and a synthetic SDK shell over
+the current three guest bundles, with controlled storage and refreshes. It never
+uses a live host/profile or paid model. Its screenshots and keyboard/layout
+assertions are rendered-browser evidence, not native-host or screen-reader
+certification. Rebuild all three guest bundles after source changes.
+
+`interface-language-reading-qa.ts` uses the same CLI with a disposable built
+service to check retained search drafts/results, filters, map selection/pan/zoom,
+pinned History and capture pairs, historical summary-only exports, support bytes,
+and the no-I/O language-change matrix for both ready and failed documents. Inline
+document repaints retain cached errors; only an explicit Retry (or a new data
+reading) starts another read, not the rendering of the error itself.
+The reading fixture waits for the initial detail continuation and its rendered
+result before measuring language-only traffic. It also checks open map help,
+selected-task details, expanded sub-agent coverage notes and retained dismissal
+errors; service reply metadata distinguishes unfinished reads from new actions.
+The recording-gap outcome's persistent accessible announcement follows a language
+change without repeating Dismiss warning. An unchanged outcome and language do not
+announce again; a delayed callback cannot restore the earlier language.
+
 ## Reporting health
 
 Reporting health is a secondary footer control beside Setup and Details, including when the normal read fails. Opening it shows seven compact labelled status rows with visual indicators; meaning never relies on color alone. Explanations and the support summary are collapsed disclosures, so routine progress reading is not interrupted by diagnostic prose. Opening it or selecting Refresh observations performs a bounded read-only check. Installation, matching loaded-companion observation, capture, selected recorded revision and viewer freshness are explained separately. A matching load does not establish every running instance or restricted child session has the tool. Select a plan to check its recorded revision; unknown states remain explicit.
@@ -99,6 +223,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 | Module | Role |
 | --- | --- |
+| `i18n.ts` / `language.ts` | Effective en/ru resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/change-digest`, `/v1/search`, `/v1/search-state`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy, and the task-view projection (row membership, branch aggregates, jump order; see Task view). |
 | `dependency-derivation.ts` / `readiness.ts` | Pure shared dependency derivation and enriched readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
@@ -245,7 +370,7 @@ One calm progress story per plan, built from the shared canonical projection (`p
 
 A concise account of completed tasks, reported blockers and scope changes between the revision a person last **marked reviewed** and a pinned target, from the frozen `/v1/change-digest` read (`docs/contracts.md`). Only the board's History tab shows it, above Revisions; the rail and Work Status stay unchanged and never read a digest or review point (a confirmed delete there only removes that plan's markers). Nothing here changes tasks, revisions, documents or service rows.
 - **Explicit review (owner decision).** Only a real keyboard/pointer activation (trusted click/Enter/Space) of **Mark reviewed** on a loaded, visible digest acknowledges, and only its **displayed** target. Mounting, polls, repaints, hidden frames, focus return, dwell, list/detail/history reads and script clicks never do. Before writing, one bounded live read (the first `/v1/plan` page only, no cursors) rechecks store/binding/plan, cleanup state/generation and lifecycle; a moved plan asks for Refresh, a deleted one (404) retires the digest. A newer progress revision does not move the target: the older displayed revision is saved and the rest stays for the next digest. A higher acknowledgement from another window is never rewound ("Already reviewed through revision N"). Pending disables repeats; no automatic retry; repeating the same acknowledgement is safe. Initial and partial digests can be marked; partial ones say that earlier uncompared changes won't be recovered.
-- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. This is the one exception to frame-local reading state: task filters, focus and disclosures remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
+- **Shared review point (device-storage exception).** The checkpoint is a preference in SDK **device** storage (`{scope:'device'}`), used only after the host advertises `features.deviceStorage`; never instance storage or any fallback. The host partitions device storage by browser profile, runtime, extension and installation. It provides no authenticated-user isolation: people sharing that namespace and integration account value share review points across sessions, board filters, frames and windows. Review points and the independent interface-language preference are persisted exceptions; task filters, focus and disclosures remain unstored. Review points are not synchronized across devices; URL aliases are not guaranteed to share them.
 - **Integration account and existing points.** SDK `connection.account` describes integration-link state, not a signed-in host user. Its value is retained in the review-point identity as a preference partition, not a security boundary. A changed value selects a different set of markers; an empty or missing value uses the same explicit `null` sentinel. Returning to a previous value makes its saved points available again. The version-1 format is unchanged, so existing points remain readable without migration. Keys are `rv1.<sha256 of the versioned tuple (integration account or absent sentinel, store, binding source + verified, source, plan)>.<revision>` (≤ 86 characters); values are `{v, id, revision}` only, never titles or digest text. Readers enumerate keys once (bounded by the SDK's 2,000) and validate only the highest of their context; an older writer's key cannot overwrite a newer one; after a successful write only lower revisions of the same context are compacted.
 - **Storage failures.** Unsupported feature, denied access, quota, unreadable/malformed highest record or persistent disagreement (one bounded reread) is **checkpoint unavailable**, never an initial view, and disables Mark reviewed; a failed write keeps the previous point and stays retryable.
 - **Pinned visit.** Entering History reads the checkpoint, then one digest for the listed revision (a checkpoint ahead of a lagging list gets one live read first; still ahead is unavailable, never a reversed interval). Unchanged polls and repaints do no digest work; a newer revision shows "Newer changes are available" and **Refresh digest**, never replacing text under the reader. Refresh is one coalesced checkpoint + digest sequence. Visible/focus return rereads only the checkpoint and marks a newer acknowledgement ("Reviewed through revision N in another window or tab") with Refresh. At most the active visit is cached.

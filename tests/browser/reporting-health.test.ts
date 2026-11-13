@@ -35,6 +35,23 @@ test('no selection is unknown rather than no reports; stale and newer revisions 
 test('summary rejects attacker-controlled values and version metadata',()=>{
  const setup=parseSetup(JSON.stringify({configured:true,installed:true,separateLifecycle:true,activation:'private',version:'1.2.3-private',diagnostics:['secret']}));const facts=setupFacts(setup);assert.equal(facts.version,'unknown');assert.equal(facts.loaded,'unknown');for(const key of Object.keys(facts))assert(!supportSummary({...facts,[key]:'private-sentinel'}).includes('private-sentinel'));
 });
+test('copy state translates at presentation time without another check or changing support bytes', async()=>{
+  const x=await fixture();try{
+    x.panel().toggle();await x.until(()=>!!x.panel().facts);
+    const payload=supportSummary(x.panel().facts!);const calls=x.calls.length;
+    x.panel().copySummary();
+    assert.equal(x.controller.claim(x.claim,'ru').copy,'Копирование…');
+    await x.until(()=>x.panel().copy==='Copied.');
+    assert.equal(x.controller.claim(x.claim,'ru').copy,'Скопировано.');
+    assert.equal(x.calls.length,calls);assert.equal(x.copied[0],payload);
+    assert.equal(supportSummary(x.controller.claim(x.claim,'ru').facts!),payload);
+    x.controller.claim(x.claim,'ru').copySummary();await x.until(()=>x.copied.length===2);
+    assert.equal(x.copied[1],payload);assert.equal(x.calls.length,calls);
+    x.copyFail();x.panel().copySummary();await x.until(()=>x.panel().copy.includes('manually'));
+    assert.match(x.controller.claim(x.claim,'ru').copy,/вручную/);
+    assert.doesNotMatch(x.controller.claim(x.claim,'ru').copy,/private-error/);
+  }finally{await x.stop();}
+});
 
 test('service failures, stale viewer and source mismatch are independent observations',async()=>{
  const x=await fixture();try{

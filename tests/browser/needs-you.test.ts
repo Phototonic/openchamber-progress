@@ -14,6 +14,7 @@ import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as source from '../../ui/shared/source.ts';
+import * as language from '../../ui/shared/language.ts';
 import { launchNeedsYouService } from '../fixtures/needs-you.ts';
 
 type Fixture = Awaited<ReturnType<typeof launchNeedsYouService>>;
@@ -362,6 +363,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
       if (name === '@openchamber/sdk') return { connectHost: () => h };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './source.ts') return source;
+      if (name === './language.ts') return language;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;

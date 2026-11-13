@@ -8,6 +8,36 @@
 import { canonicalIdentity, CheckpointStore, type CheckpointFailure, type CheckpointIdentity, type DeviceStorage } from './change-digest-checkpoint.ts';
 import type { DigestView, Lifecycle, PlanView } from './model.ts';
 import { readChangeDigest, readPlanHead, type ReadFailure, type ServiceHost } from './source.ts';
+import type { InterfaceLanguage } from './i18n.ts';
+
+export type DigestStatus = { kind: 'none' | 'refreshing' | 'refreshed' | 'outcome' | 'hidden' | 'saving' | 'abandoned' | 'missing' | 'check-failed' | 'stale' }
+  | { kind: 'checkpoint'; reason: CheckpointFailure }
+  | { kind: 'already' | 'saved'; revision: number }
+  | { kind: 'message'; en: string; ru: string };
+const STATUS_EN = { none: '', refreshing: 'Refreshing changes since your last review…', refreshed: 'Digest refreshed.', outcome: 'This plan’s outcome changed. Refresh the digest before marking it reviewed.', hidden: 'Review not saved because this view was hidden. Mark reviewed again when you are ready.', saving: 'Saving your review…', abandoned: 'Review not saved. Mark reviewed again when you are ready.', missing: 'This plan is no longer available, so it was not marked reviewed.', 'check-failed': 'The plan couldn’t be checked, so nothing was saved. Try again.', stale: 'This plan changed since the digest loaded. Refresh the digest before marking it reviewed.' };
+const STATUS_COPY = {
+  en: STATUS_EN,
+  ru: { none: '', refreshing: 'Обновление изменений с последнего просмотра…', refreshed: 'Изменения обновлены.', outcome: 'Итог плана изменился. Обновите изменения перед отметкой о просмотре.', hidden: 'Просмотр не сохранён, поскольку представление было скрыто. Отметьте просмотренным ещё раз, когда будете готовы.', saving: 'Сохранение просмотра…', abandoned: 'Просмотр не сохранён. Отметьте просмотренным ещё раз, когда будете готовы.', missing: 'План больше недоступен, поэтому он не отмечен просмотренным.', 'check-failed': 'План не удалось проверить, поэтому ничего не сохранено. Повторите попытку.', stale: 'План изменился после загрузки изменений. Обновите их перед отметкой о просмотре.' },
+} satisfies Record<InterfaceLanguage, typeof STATUS_EN>;
+const OUTCOME_EN = {
+  unchanged: 'Your previous review point is unchanged.',
+  already: (revision: number) => `Already reviewed through revision ${revision}. Refresh the digest to compare from there.`,
+  saved: (revision: number) => `Marked reviewed through revision ${revision}. Later changes will appear in the next digest.`,
+};
+const OUTCOME = { en: OUTCOME_EN, ru: {
+  unchanged: 'Предыдущая точка просмотра не изменена.',
+  already: (revision: number) => `Уже просмотрено до ревизии ${revision}. Обновите изменения для сравнения от этой точки.`,
+  saved: (revision: number) => `Отмечено просмотренным до ревизии ${revision}. Последующие изменения появятся в следующей сводке.`,
+} } satisfies Record<InterfaceLanguage, typeof OUTCOME_EN>;
+export function digestStatusText(status: DigestStatus, language: InterfaceLanguage = 'en'): string {
+  switch (status.kind) {
+    case 'message': return status[language];
+    case 'checkpoint': return `${reviewCopy(status.reason, language)} ${OUTCOME[language].unchanged}`;
+    case 'already': return OUTCOME[language].already(status.revision);
+    case 'saved': return OUTCOME[language].saved(status.revision);
+    default: return STATUS_COPY[language][status.kind];
+  }
+}
 
 export type DigestUnavailable =
   | { reason: 'service' }
@@ -35,12 +65,13 @@ export interface DigestPanel {
   canRefresh: boolean;
   /** Last explicit outcome (loading, review, navigation); never poll chatter. */
   status: string;
+  statusMessage?: DigestStatus;
   /** Identity of that outcome: announce once per id, not once per repaint. */
   statusId: number;
   /** Mark reviewed: acts only on a trusted (real keyboard/pointer) activation. */
   markReviewed: (activation: { isTrusted: boolean }) => void;
   refresh: () => void;
-  announce: (text: string) => void;
+  announce: (text: string | DigestStatus) => void;
 }
 
 export interface DigestClaim {
@@ -77,7 +108,7 @@ interface Visit {
   elsewhere: number | null;
   needsRefresh: boolean;
   checkpointFailed: boolean;
-  status: string;
+  status: DigestStatus;
   /** Changes with every explicit outcome, so the page announces each one exactly once. */
   statusId: number;
   /** Hidden while loading: the sequence was retired and restarts when visible. */
@@ -98,6 +129,15 @@ export const REVIEW_COPY: Record<CheckpointFailure, string> = {
   failed: 'The review point in this profile couldn’t be read or saved.',
   disagreement: 'The review point in this profile kept changing while it was read.',
 };
+const RU_REVIEW_COPY: typeof REVIEW_COPY = {
+  unsupported: 'Эта версия OpenChamber не поддерживает сохранение точки просмотра на устройстве.',
+  denied: 'Сохранение точки просмотра отклонено в этом профиле.',
+  quota: 'Хранилище расширения в этом профиле заполнено, поэтому точка просмотра не сохранена.',
+  malformed: 'Сохранённая точка просмотра в этом профиле нечитаема.',
+  failed: 'Точку просмотра в этом профиле не удалось прочитать или сохранить.',
+  disagreement: 'Точка просмотра в этом профиле менялась во время чтения.',
+};
+export const reviewCopy = (reason: CheckpointFailure, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_REVIEW_COPY : REVIEW_COPY)[reason];
 
 export class DigestController {
   private visit: Visit | null = null;
@@ -120,7 +160,7 @@ export class DigestController {
   endPaint() { if (!this.claimed && this.visit) this.retire(); }
 
   private retire() { this.visit = null; this.generation++; }
-  private say(v: Visit, text: string) { v.status = text; v.statusId = text ? ++this.statusSeq : 0; }
+  private say(v: Visit, status: DigestStatus) { v.status = status; v.statusId = status.kind === 'none' ? 0 : ++this.statusSeq; }
 
   /**
    * The page paints History of `claim.plan`. Same context: the pinned digest stays; a different
@@ -135,7 +175,7 @@ export class DigestController {
       this.generation++;
       v = this.visit = {
         key, identity: claim.identity, plan: p, capable: claim.capable, fresh: claim.fresh, lifecycle: p.lifecycle, generation: this.generation,
-        phase: { kind: 'loading' }, review: 'idle', reviewedThrough: null, elsewhere: null, needsRefresh: false, checkpointFailed: false, status: '', statusId: 0, resume: false, writing: false, reloading: false,
+        phase: { kind: 'loading' }, review: 'idle', reviewedThrough: null, elsewhere: null, needsRefresh: false, checkpointFailed: false, status: { kind: 'none' }, statusId: 0, resume: false, writing: false, reloading: false,
       };
       if (this.host.visible() && !this.disposed) void this.start(v, false); else v.resume = true;
     } else {
@@ -146,7 +186,7 @@ export class DigestController {
         else if (!v.needsRefresh) {
           v.needsRefresh = true; v.generation = ++this.generation; v.reloading = false;
           if (v.review === 'pending') v.review = 'idle';
-          this.say(v, 'This plan’s outcome changed. Refresh the digest before marking it reviewed.');
+          this.say(v, { kind: 'outcome' });
         }
       }
     }
@@ -166,7 +206,7 @@ export class DigestController {
     v.phase = { kind: 'loading' }; v.resume = false; v.reloading = false; v.needsRefresh = false; v.elsewhere = null; v.checkpointFailed = false;
     v.lifecycle = v.plan.lifecycle;
     if (v.review !== 'saved' || explicit) v.review = 'idle';
-    this.say(v, explicit ? 'Refreshing changes since your last review…' : '');
+    this.say(v, { kind: explicit ? 'refreshing' : 'none' });
     this.counts.sequences++;
     if (!v.capable) { v.phase = { kind: 'unavailable', why: { reason: 'service' } }; return; }
     this.counts.checkpointReads++;
@@ -191,13 +231,13 @@ export class DigestController {
     if (!r.ok) return this.failed(v, r.status, r.failure);
     if (!sameBinding(v.identity.binding, r.digest.sourceBinding) || r.digest.cleanup.state !== (v.plan.cleanup?.state ?? 'visible')) return this.settle(v, { kind: 'unavailable', why: { reason: 'conflict' } });
     v.reviewedThrough = after;
-    if (explicit) this.say(v, 'Digest refreshed.');
+    if (explicit) this.say(v, { kind: 'refreshed' });
     this.settle(v, { kind: 'ready', digest: r.digest });
   }
 
   private settle(v: Visit, phase: Phase) {
     v.phase = phase;
-    if (phase.kind !== 'ready' && v.status.startsWith('Refreshing')) this.say(v, '');
+    if (phase.kind !== 'ready' && v.status.kind === 'refreshing') this.say(v, { kind: 'none' });
     this.host.changed();
   }
 
@@ -248,7 +288,7 @@ export class DigestController {
     // only a fresh trusted activation can. A dispatched write may finish (captured identity only).
     if (v.review === 'pending' && !v.writing) {
       v.generation = ++this.generation; v.reloading = false; v.review = 'idle';
-      this.say(v, 'Review not saved because this view was hidden. Mark reviewed again when you are ready.');
+      this.say(v, { kind: 'hidden' });
       this.host.changed();
     }
   }
@@ -276,10 +316,10 @@ export class DigestController {
       elsewhere: v.elsewhere, needsRefresh: v.needsRefresh, review: v.review, reviewedThrough: v.reviewedThrough,
       canReview: this.canReview(v) && this.host.visible(),
       canRefresh: v.phase.kind !== 'loading' && v.review !== 'pending',
-      status: v.status, statusId: v.statusId,
+      status: digestStatusText(v.status), statusMessage: v.status, statusId: v.statusId,
       markReviewed: (activation) => { if (activation.isTrusted && live()) void this.markReviewed(v, generation); },
       refresh: () => { if (live() && v.phase.kind !== 'loading' && v.review !== 'pending' && this.host.visible()) { void this.start(v, true); this.host.changed(); } },
-      announce: (text) => { if (live()) { this.say(v, text); this.host.changed(); } },
+      announce: (text) => { if (live()) { this.say(v, typeof text === 'string' ? { kind: 'message', en: text, ru: text } : text); this.host.changed(); } },
     };
   }
 
@@ -293,39 +333,39 @@ export class DigestController {
     if (!this.canReview(v) || !this.host.visible() || v.phase.kind !== 'ready') return;
     const digest = v.phase.digest, to = digest.interval.to, identity = v.identity;
     const current = this.current(v, generation);
-    v.review = 'pending'; this.say(v, 'Saving your review…'); this.host.changed();
-    const abandon = () => { if (this.visit === v && v.generation === generation && v.review === 'pending') { v.review = 'idle'; this.say(v, 'Review not saved. Mark reviewed again when you are ready.'); this.host.changed(); } };
-    const stop = (review: ReviewState, status: string) => { v.review = review; this.say(v, status); this.host.changed(); };
+    v.review = 'pending'; this.say(v, { kind: 'saving' }); this.host.changed();
+    const abandon = () => { if (this.visit === v && v.generation === generation && v.review === 'pending') { v.review = 'idle'; this.say(v, { kind: 'abandoned' }); this.host.changed(); } };
+    const stop = (review: ReviewState, status: DigestStatus) => { v.review = review; this.say(v, status); this.host.changed(); };
     this.counts.preflights++;
     const head = await readPlanHead(this.host.service(current), { sourceId: identity.source, id: identity.plan });
     if (!current()) return abandon();
     if (!head.ok) {
       if (head.status === 404 && head.failure.code === 'not-found') {
         void this.checkpoints.forget(identity);
-        v.review = 'idle'; this.say(v, 'This plan is no longer available, so it was not marked reviewed.');
+        v.review = 'idle'; this.say(v, { kind: 'missing' });
         return this.settle(v, { kind: 'unavailable', why: { reason: 'missing' } });
       }
-      return stop('failed', 'The plan couldn’t be checked, so nothing was saved. Try again.');
+      return stop('failed', { kind: 'check-failed' });
     }
     if (!this.sameLive(v, head.envelope, head.plan) || head.plan.lifecycle !== digest.interval.currentLifecycle || head.plan.revision < to) {
       v.needsRefresh = true;
-      return stop('stale', 'This plan changed since the digest loaded. Refresh the digest before marking it reviewed.');
+      return stop('stale', { kind: 'stale' });
     }
     this.counts.checkpointReads++;
     const saved = await this.checkpoints.read(identity);
     if (!current()) return abandon();
-    if (saved.state === 'unavailable') { v.checkpointFailed = true; return stop('failed', `${REVIEW_COPY[saved.reason]} Your previous review point is unchanged.`); }
+    if (saved.state === 'unavailable') { v.checkpointFailed = true; return stop('failed', { kind: 'checkpoint', reason: saved.reason }); }
     if (saved.state === 'saved' && saved.revision >= to) {
       v.reviewedThrough = saved.revision;
       if (saved.revision > to) v.elsewhere = saved.revision;
-      return stop('already', `Already reviewed through revision ${saved.revision}. Refresh the digest to compare from there.`);
+      return stop('already', { kind: 'already', revision: saved.revision });
     }
     this.counts.writes++;
     v.writing = true;
     const written = await this.checkpoints.write(identity, to);
     v.writing = false;
     if (this.disposed || this.visit !== v || v.generation !== generation) return;
-    if (written.ok) { v.reviewedThrough = to; return stop('saved', `Marked reviewed through revision ${to}. Later changes will appear in the next digest.`); }
-    stop('failed', `${REVIEW_COPY[written.reason]} Your previous review point is unchanged.`);
+    if (written.ok) { v.reviewedThrough = to; return stop('saved', { kind: 'saved', revision: to }); }
+    stop('failed', { kind: 'checkpoint', reason: written.reason });
   }
 }

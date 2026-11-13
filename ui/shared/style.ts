@@ -384,6 +384,7 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-setup-facts{margin-top:0}
 .ap-setup-disclose{display:flex;flex-direction:column;gap:6px;font-size:11.5px;color:var(--oc-muted);border-left:2px solid var(--oc-border);padding-left:10px}
 .ap-footer{display:flex;flex-direction:column;gap:8px}
+.ap-language{display:flex;flex-direction:column;gap:6px;min-width:0;max-width:100%}
 .ap-footer>.ap-details+.ap-details{border-top:0;padding-top:0}
 
 /* Quiet diagnostics */

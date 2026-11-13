@@ -14,6 +14,7 @@ import * as summaries from '../../ui/shared/summary.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import * as digestModule from '../../ui/shared/change-digest.ts';
 import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
@@ -65,6 +66,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };

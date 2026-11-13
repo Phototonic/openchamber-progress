@@ -2,6 +2,7 @@
 import { countItems } from '../../shared/progress.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
+import type { InterfaceLanguage } from './i18n.ts';
 
 export type ItemStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'completed' | 'cancelled' | 'failed';
@@ -265,10 +266,17 @@ export const subtreeCounts = (items: ItemView[]) => countItems(items);
 export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'working'>, view: { fresh: boolean; captureEnabled: boolean }) =>
   lifecycle === 'active' && s.working > 0 && view.fresh && view.captureEnabled;
 
-export function summaryText(s: Counts) {
-  if (s.total === 0) return s.skipped ? `No tasks left to count · ${s.skipped} skipped` : 'No tasks reported';
-  const parts = [`${s.done} of ${s.total} done`, `${s.remaining} remaining`];
-  if (s.skipped) parts.push(`${s.skipped} skipped`);
+const SUMMARY_TEXT = {
+  en: { empty: 'No tasks reported', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
+  ru: { empty: 'Нет зарегистрированных задач', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
+} satisfies Record<InterfaceLanguage, { empty: string; uncounted: string; done: (done: string, total: string) => string; remaining: (n: string) => string; skipped: (n: string) => string }>;
+
+export function summaryText(s: Counts, locale: InterfaceLanguage = 'en') {
+  const text = SUMMARY_TEXT[locale];
+  const number = (n: number) => locale === 'en' ? String(n) : new Intl.NumberFormat(locale).format(n);
+  if (s.total === 0) return s.skipped ? `${text.uncounted} · ${text.skipped(number(s.skipped))}` : text.empty;
+  const parts = [text.done(number(s.done), number(s.total)), text.remaining(number(s.remaining))];
+  if (s.skipped) parts.push(text.skipped(number(s.skipped)));
   return parts.join(' · ');
 }
 
@@ -522,3 +530,25 @@ export const DOCUMENT_STATE_TEXT: Record<DocumentState, string> = {
   unavailable: 'The plan document could not be read on this system.',
   'changed-during-read': 'The plan document changed while it was being read; it will be captured at a later report.',
 };
+
+const MODEL_LABELS = {
+  en: { status: STATUS_LABEL, lifecycle: LIFECYCLE_LABEL, document: DOCUMENT_STATE_TEXT },
+  ru: {
+    status: { pending: 'Ожидает', working: 'В работе', blocked: 'Заблокировано', done: 'Выполнено', skipped: 'Пропущено' },
+    lifecycle: { active: 'В работе', completed: 'Завершён', cancelled: 'Отменён', failed: 'Ошибка' },
+    document: {
+      unbound: 'К этому плану не привязан документ.', captured: '',
+      denied: 'При последнем отчёте агенту не было разрешено читать документ плана.',
+      missing: 'При последнем отчёте документ плана отсутствовал.',
+      moved: 'Документ плана перемещён после привязки; агенту нужно привязать его снова.',
+      oversized: 'Документ плана превышает ограничение размера и не был сохранён.',
+      'non-text': 'Документ плана не является обычным текстом и не был сохранён.',
+      unavailable: 'Не удалось прочитать документ плана в этой системе.',
+      'changed-during-read': 'Документ плана изменился во время чтения; он будет сохранён при одном из следующих отчётов.',
+    },
+  },
+} satisfies Record<InterfaceLanguage, { status: Record<ItemStatus, string>; lifecycle: Record<Lifecycle, string>; document: Record<DocumentState, string> }>;
+
+export const statusLabel = (status: ItemStatus, locale: InterfaceLanguage = 'en') => MODEL_LABELS[locale].status[status];
+export const lifecycleLabel = (lifecycle: Lifecycle, locale: InterfaceLanguage = 'en') => MODEL_LABELS[locale].lifecycle[lifecycle];
+export const documentStateText = (state: DocumentState, locale: InterfaceLanguage = 'en') => MODEL_LABELS[locale].document[state];

@@ -13,6 +13,8 @@ import { seedMapFixture, MAP_FIXTURE_VERSION } from '../fixtures/dependency-map.
 import * as scope from '../../ui/shared/scope.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as defaultView from '../../ui/shared/default-view.ts';
+import * as i18n from '../../ui/shared/i18n.ts';
+import * as model from '../../ui/shared/model.ts';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 async function until(predicate: () => boolean) {
@@ -160,6 +162,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/scope.ts')) return scope;
       if (name.endsWith('/refresh.ts')) return refresh;
       if (name.endsWith('/default-view.ts')) return defaultView;
+      if (name.endsWith('/i18n.ts')) return i18n;
       if (name.endsWith('/components.ts')) return components;
       // S5 wires the shared map into the production rail. This preference-owner test stubs only
       // that presentation boundary; complete map pairing/retirement is exercised above.
@@ -170,7 +173,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/setup.ts')) return { initialSetupUi: () => ({}), reloadNote: () => null };
       if (name.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null, cleanupBlock: () => null };
       if (name.endsWith('/official.ts')) return { officialMainBlock: () => null };
-      if (name.endsWith('/model.ts')) return { summarize: () => ({ total: 1, done: 0 }) };
+      if (name.endsWith('/model.ts')) return model;
       return {};
     } });
     const otherPlan = { ...c.plan, id: 'P-map-none', key: `${f.alpha.id}/P-map-none` };

@@ -3,6 +3,8 @@ schema: spec-driven
 context: |
   This repository is public. Exclude secrets, private tracker references,
   personal or environment identifiers, raw logs and private planning evidence.
+  Write every OpenSpec artifact (proposal, design, specs, tasks and change
+  metadata) in English, whatever language the product interface supports.
   docs/contracts.md, docs/backend.md, docs/ui.md, docs/setup.md and
   docs/compatibility.md remain the contract of record. Update the affected
   guides in the same change as the behaviour.

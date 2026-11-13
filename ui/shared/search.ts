@@ -17,6 +17,56 @@ import { directoryWithin } from './model.ts';
 import { ALL, placeOf, trustedPlan } from './scope.ts';
 import { RefreshGate } from './refresh.ts';
 import { readSearchState, readSearchWindow, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
+import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
+import { formatCount } from './format.ts';
+
+export type SearchStatus = { kind: 'identity' | 'retired' | 'membership' | 'changed' | 'conflict' | 'failed' }
+  | { kind: 'blocked'; reason: Exclude<ScopeState, 'ok'> }
+  | { kind: 'removed'; count: number }
+  | { kind: 'outcome'; matchedPlans: number; matchingTasks: number; exhausted: boolean; shown: number }
+  | { kind: 'message'; en: string; ru: string };
+const STATUS_EN = { identity: 'The progress store changed, so these results were retired. Search again.', retired: 'Plans changed here, so these results were retired. Refresh search to search again.', membership: 'Project or worktree locations changed in this window. Refresh search to use them.', changed: 'Some results changed since they were found. Refresh search for current results.', conflict: 'Reports changed while searching, so this search can’t continue. Refresh search to start again.', failed: 'Searching stopped because the progress service didn’t answer. Results found so far are shown; Retry continues.' };
+const STATUS_COPY = {
+  en: STATUS_EN,
+  ru: { identity: 'Хранилище прогресса изменилось, поэтому результаты устарели. Выполните поиск заново.', retired: 'Планы изменились, поэтому результаты устарели. Обновите поиск.', membership: 'Расположения проектов или рабочих деревьев в этом окне изменились. Обновите поиск.', changed: 'Некоторые результаты изменились после поиска. Обновите поиск для актуальных результатов.', conflict: 'Отчёты изменились во время поиска, поэтому продолжить его нельзя. Обновите поиск.', failed: 'Поиск остановлен: сервис прогресса не ответил. Найденные результаты показаны; повторная попытка продолжит поиск.' },
+} satisfies Record<InterfaceLanguage, typeof STATUS_EN>;
+const MESSAGES_EN = {
+  removed: (count: number) => `${count === 1 ? 'A result was' : `${count} results were`} archived, restored or deleted, so ${count === 1 ? 'it was' : 'they were'} removed. Refresh search for current results.`,
+  found: (plans: number, tasks: number) => `${plans === 1 ? '1 plan' : `${plans} plans`} and ${tasks === 1 ? '1 matching task' : `${tasks} matching tasks`}`,
+  finished: (found: string) => `Search finished: ${found} found, as searched.`,
+  empty: 'Search finished: nothing matched, as searched.',
+  noneYet: 'No matches found yet; more recorded plans remain unchecked.',
+  partial: (found: string) => `${found} found so far; more recorded plans may match.`,
+  character: 'Remove the unsupported character from the search text.',
+  characters: (limit: number) => `Use at most ${limit} characters.`,
+  words: (limit: number) => `Use at most ${limit} words.`,
+};
+const MESSAGES = { en: MESSAGES_EN, ru: {
+  removed: (count: number) => `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(count, 'ru')}. Обновите поиск для актуальных результатов.`,
+  found: (plans: number, tasks: number) => `планов: ${formatCount(plans, 'ru')}, подходящих задач: ${formatCount(tasks, 'ru')}`,
+  finished: (found: string) => `Поиск завершён: найдено ${found} на момент поиска.`,
+  empty: 'Поиск завершён: совпадений на момент поиска нет.',
+  noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.',
+  partial: (found: string) => `Пока найдено ${found}; другие записанные планы тоже могут подойти.`,
+  character: 'Удалите неподдерживаемый символ из поискового текста.',
+  characters: (limit: number) => `Используйте не более ${limit} символов.`,
+  words: (limit: number) => `Используйте не более ${limit} слов.`,
+} } satisfies Record<InterfaceLanguage, typeof MESSAGES_EN>;
+export function searchStatusText(message: SearchStatus, language: InterfaceLanguage = 'en'): string {
+  const copy = MESSAGES[language];
+  switch (message.kind) {
+    case 'message': return message[language];
+    case 'blocked': return blockedText(message.reason, language);
+    case 'removed': return copy.removed(message.count);
+    case 'outcome': {
+      const found = copy.found(message.matchedPlans, message.matchingTasks);
+      if (message.exhausted) return message.matchedPlans ? copy.finished(found) : copy.empty;
+      if (!message.shown) return copy.noneYet;
+      return copy.partial(found);
+    }
+    default: return STATUS_COPY[language][message.kind];
+  }
+}
 
 /** Hits per presentation page and per backend window. */
 export const SEARCH_PAGE = 50;
@@ -39,15 +89,17 @@ export interface SearchCriteria {
   session: string;
   archived: boolean;
   /** Names of the chosen project/worktree/session when chosen, so an unavailable choice keeps its name. */
-  labels: { project?: string; worktree?: string; session?: string };
+  /** Local presentation only: retain user names and identify generated session labels without text matching. */
+  labels: { project?: string; worktree?: string; session?: string; sessionId?: string; sessionGenerated?: boolean };
 }
 
 export const tokens = (q: string) => q.trim().split(/\s+/u).filter(Boolean);
 /** Refused rather than truncated (frozen bounds); null when the text can be searched. */
-export function queryProblem(q: string): string | null {
-  if (q.includes('\0')) return 'Remove the unsupported character from the search text.';
-  if ([...q.trim()].length > SEARCH_POINTS) return `Use at most ${SEARCH_POINTS} characters.`;
-  if (tokens(q).length > SEARCH_TOKENS) return `Use at most ${SEARCH_TOKENS} words.`;
+export function queryProblem(q: string, locale = 'en'): string | null {
+  const copy = MESSAGES[resolveLanguage('auto', locale)];
+  if (q.includes('\0')) return copy.character;
+  if ([...q.trim()].length > SEARCH_POINTS) return copy.characters(SEARCH_POINTS);
+  if (tokens(q).length > SEARCH_TOKENS) return copy.words(SEARCH_TOKENS);
   return null;
 }
 /** A search needs words or a narrowing constraint; board filters alone are ordinary browsing. */
@@ -169,7 +221,7 @@ export interface SearchViewState {
   removed: number;
   changedKeys: number;
   discoveryIncomplete: boolean;
-  status: { id: number; text: string };
+  status: { id: number; text: string; message?: SearchStatus };
 }
 
 interface Run {
@@ -205,7 +257,7 @@ interface Run {
   changed: Set<string>;
   removed: number;
   selected: { key: string; plan: SearchPlanView } | null;
-  status: { id: number; text: string };
+  status: { id: number; message: SearchStatus | null };
 }
 
 export interface SearchHost {
@@ -222,6 +274,12 @@ export const BLOCKED_TEXT: Record<Exclude<ScopeState, 'ok'>, string> = {
   unknown: 'This window couldn’t discover the chosen project’s or worktree’s locations, so this narrowed search can’t run. It was not widened.',
   missing: 'The chosen project or worktree isn’t available in this window, so this narrowed search can’t run. It was not widened.',
 };
+const RU_BLOCKED_TEXT: typeof BLOCKED_TEXT = {
+  loading: 'Расположения проектов или рабочих деревьев ещё загружаются, поэтому суженный поиск пока не выполнен.',
+  unknown: 'Это окно не смогло найти расположения выбранного проекта или рабочего дерева, поэтому суженный поиск невозможен. Область поиска не расширена.',
+  missing: 'Выбранный проект или рабочее дерево недоступны в этом окне, поэтому суженный поиск невозможен. Область поиска не расширена.',
+};
+export const blockedText = (reason: Exclude<ScopeState, 'ok'>, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_BLOCKED_TEXT : BLOCKED_TEXT)[reason];
 
 const placeholderDocument: PlanView['document'] = { state: 'unavailable', checklistSynchronized: false, currentFile: 'not-rechecked' };
 
@@ -263,9 +321,9 @@ export class SearchController {
       fingerprint: null, cursor: null, exhausted: false, matchedPlans: 0, matchingTasks: 0, countsCurrent: true,
       gapped: false, skippedRecords: 0, reasons: new Set(), buffer: [], pages: [[]], firstPage: 1, view: 0, checked: true,
       busy: false, pending: false, stop: null, failure: null, windows: 0, changed: new Set(), removed: 0, selected: null,
-      status: { id: 0, text: '' },
+      status: { id: 0, message: null },
     };
-    if (blocked) { this.say(this.run, BLOCKED_TEXT[blocked]); this.host.changed(); return; }
+    if (blocked) { this.say(this.run, { kind: 'blocked', reason: blocked }); this.host.changed(); return; }
     this.start(this.run);
   }
 
@@ -282,7 +340,7 @@ export class SearchController {
     this.gate.retire();
     if (r.stop === reason) return;
     r.busy = false; r.pending = false; r.stop = reason; r.countsCurrent = false;
-    this.say(r, reason === 'identity' ? 'The progress store changed, so these results were retired. Search again.' : 'Plans changed here, so these results were retired. Refresh search to search again.');
+    this.say(r, { kind: reason });
     this.host.changed();
   }
 
@@ -331,15 +389,15 @@ export class SearchController {
     if (sig === null || r.stop === 'membership' || sig === membershipSig(r.frozen, r.owners)) return;
     this.gate.retire();
     r.busy = false; r.pending = false; r.stop = 'membership'; r.countsCurrent = false;
-    this.say(r, 'Project or worktree locations changed in this window. Refresh search to use them.');
+    this.say(r, { kind: 'membership' });
     this.host.changed();
   }
 
   /** An explicit outcome of this run (e.g. opening a task that is gone), spoken once. */
-  note(run: number, text: string) {
+  note(run: number, text: string | SearchStatus) {
     const r = this.run;
     if (!r || r.id !== run) return;
-    this.say(r, text);
+    this.say(r, typeof text === 'string' ? { kind: 'message', en: text, ru: text } : text);
     this.host.changed();
   }
 
@@ -413,13 +471,13 @@ export class SearchController {
     this.gate.retire();
     r.busy = false; r.pending = false; r.countsCurrent = false;
     if (r.stop !== 'retired' && r.stop !== 'identity' && r.stop !== 'membership') r.stop = 'changed';
-    this.say(r, gone ? `${gone === 1 ? 'A result was' : `${gone} results were`} archived, restored or deleted, so ${gone === 1 ? 'it was' : 'they were'} removed. Refresh search for current results.` : 'Some results changed since they were found. Refresh search for current results.');
+    this.say(r, gone ? { kind: 'removed', count: gone } : { kind: 'changed' });
     this.host.changed();
     return { state: 'fresh', captureEnabled };
   }
 
   /** The current state for painting, or null when not searching. */
-  view(): SearchViewState | null {
+  view(language: InterfaceLanguage = 'en'): SearchViewState | null {
     const r = this.run;
     if (!r) return null;
     const hits = r.pages[r.view];
@@ -437,7 +495,7 @@ export class SearchController {
       more: r.buffer.length > 0 || !r.exhausted,
       removed: r.removed, changedKeys: r.changed.size,
       discoveryIncomplete: narrowed(r.criteria) && discoveryIncomplete(r.frozen),
-      status: r.status,
+      status: { id: r.status.id, text: r.status.message ? searchStatusText(r.status.message, language) : '', ...(r.status.message ? { message: r.status.message } : {}) },
     };
   }
 
@@ -453,7 +511,7 @@ export class SearchController {
     this.gate.request();
   }
 
-  private say(r: Run, text: string) { r.status = { id: ++this.statuses, text }; }
+  private say(r: Run, message: SearchStatus) { r.status = { id: ++this.statuses, message }; }
 
   private planOf(r: Run, key: string): SearchPlanView | null {
     if (r.selected?.key === key) return r.selected.plan;
@@ -498,8 +556,8 @@ export class SearchController {
       windows++; r.windows++;
       if (!result.ok) {
         failed = true;
-        if (result.status === 409) { r.stop = 'conflict'; r.countsCurrent = false; this.say(r, 'Reports changed while searching, so this search can’t continue. Refresh search to start again.'); }
-        else { r.stop = 'failed'; r.failure = result.failure; this.say(r, 'Searching stopped because the progress service didn’t answer. Results found so far are shown; Retry continues.'); }
+        if (result.status === 409) { r.stop = 'conflict'; r.countsCurrent = false; this.say(r, { kind: 'conflict' }); }
+        else { r.stop = 'failed'; r.failure = result.failure; this.say(r, { kind: 'failed' }); }
         break;
       }
       const w = result.window;
@@ -521,17 +579,10 @@ export class SearchController {
     r.busy = false;
     if (!failed && r.stop !== 'hidden') {
       r.stop = page.length < SEARCH_PAGE && !r.exhausted ? 'paused' : null;
-      this.say(r, outcomeText(r, page.length));
+      this.say(r, { kind: 'outcome', matchedPlans: r.matchedPlans, matchingTasks: r.matchingTasks, exhausted: r.exhausted && !r.buffer.length, shown: page.length });
     }
     this.host.changed();
   }
-}
-
-function outcomeText(r: Run, shown: number) {
-  const found = `${r.matchedPlans === 1 ? '1 plan' : `${r.matchedPlans} plans`} and ${r.matchingTasks === 1 ? '1 matching task' : `${r.matchingTasks} matching tasks`}`;
-  if (r.exhausted && !r.buffer.length) return r.matchedPlans ? `Search finished: ${found} found, as searched.` : 'Search finished: nothing matched, as searched.';
-  if (!shown) return 'No matches found yet; more recorded plans remain unchecked.';
-  return `${found} found so far; more recorded plans may match.`;
 }
 
 /**

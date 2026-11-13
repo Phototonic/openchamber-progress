@@ -10,8 +10,9 @@ import * as summaries from '../../ui/shared/summary.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
-import { EXPECTED_HANDOFF, EXPECTED_PROGRESS, SUMMARY_ITEMS, pagedSummaryItems, summaryEnvelope, summaryPage, summaryPlan, summaryReports } from '../fixtures/preview-summaries.ts';
+import { EXPECTED_HANDOFF, EXPECTED_PROGRESS, EXPECTED_HANDOFF_RU, EXPECTED_PROGRESS_RU, SUMMARY_ITEMS, pagedSummaryItems, summaryEnvelope, summaryPage, summaryPlan, summaryReports } from '../fixtures/preview-summaries.ts';
 import { HEALTH, setupRead } from './fixtures.ts';
 
 const reply = (body: unknown, status = 200): GuestRequestResult => ({ status, body: JSON.stringify(body) });
@@ -90,6 +91,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
@@ -123,12 +125,57 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
     state, requests, writes, listeners, get vc() { return vc; }, get view() { return view; }, get readStarts() { return readStarts; },
     control: (id: string) => mount.querySelector(`[data-testid="${id}"]`)!,
     get focused() { return document.activeElement?.dataset.testid ?? 'body'; },
-    ready: (session: string | null = 'A', account = 'example') => listeners.ready({ session: session ? { id: session } : null, directory: null, connection: { account }, locale: 'en', surface }),
+    ready: (session: string | null = 'A', account = 'example', locale = 'en') => listeners.ready({ session: session ? { id: session } : null, directory: null, connection: { account }, locale, surface }),
     route: (r: Route) => { detail = r; }, get normal() { return detail; },
     clipboard: (fn: ((text: string) => Promise<void>) | null) => { write = fn; if (!fn) navigator.clipboard = undefined; },
     stop: () => listeners.pagehide(),
   };
 }
+
+test('language-only preview translation keeps its snapshot and retires stale clipboard feedback', async () => {
+  for (const [mode, english, russian] of [['progress', EXPECTED_PROGRESS, EXPECTED_PROGRESS_RU], ['handoff', EXPECTED_HANDOFF, EXPECTED_HANDOFF_RU]] as const) {
+    const c = controller();
+    try {
+      c.ready(); await settle(); c.view!.open(mode); await settle();
+      assert.equal(c.view!.preview!.text, english);
+      const generation = c.view!.preview!.generation;
+      const held = deferred<void>(); c.clipboard(() => held.promise); c.view!.copy(); await settle();
+      const reads = c.requests.length;
+      c.ready('A', 'example', 'ru-RU'); await settle();
+      assert.equal(c.view!.preview!.text, russian);
+      assert.ok(c.view!.preview!.generation > generation);
+      assert.equal(c.view!.preview!.copying, false);
+      assert.equal(c.view!.preview!.status, '');
+      assert.equal(c.requests.length, reads, 'translation does not reread progress');
+      held.resolve(); await settle();
+      assert.equal(c.writes.at(-1), english);
+      assert.equal(c.view!.preview!.status, '', 'old write cannot confirm new displayed text');
+      c.clipboard(async () => {}); c.view!.copy(); await settle();
+      assert.equal(c.writes.at(-1), russian);
+      assert.equal(c.view!.preview!.status, 'Markdown скопирован.');
+      const sameGeneration = c.view!.preview!.generation;
+      c.ready('A', 'example', 'ru'); await settle();
+      assert.equal(c.view!.preview!.generation, sameGeneration, 'same effective language keeps text generation');
+    } finally { c.stop(); }
+  }
+});
+
+test('historical summary-only translation stays historical with no additional read', async () => {
+  const c = controller();
+  try {
+    c.state.items = pagedSummaryItems(); c.state.rows = [summaryPlan(c.state.items)];
+    const normal = c.normal;
+    c.route(q => q.query?.cursor ? reply({ error: 'busy' }, 503) : normal(q));
+    c.ready(); await settle(); c.view!.open('handoff'); await settle();
+    c.view!.summaryOnly(); await settle();
+    const reads = c.requests.length;
+    assert.match(c.view!.preview!.text!, /summary-only historical snapshot/);
+    c.ready('A', 'example', 'ru'); await settle();
+    assert.match(c.view!.preview!.text!, /исторический снимок/);
+    assert.doesNotMatch(c.view!.preview!.text!, /Origin session|Текущая работа|## Not started/);
+    assert.equal(c.requests.length, reads);
+  } finally { c.stop(); }
+});
 
 test('opening is preview-only; each format copies exactly the displayed complete text after resolution', async () => {
   const c = controller(); c.ready(); await settle();
