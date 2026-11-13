@@ -289,7 +289,9 @@ V2.1.2 permission.assert docs (Context7), plus file/permission regression tests.
 The SDK supplies authorization, not an atomic file reader; the opened-target
 checks are our enforcement boundary. Strict capture supports Linux and native Windows; other
 platforms return unavailable before reading. No cross-host/container/NFS support
-is claimed. Actual plugin/runtime tests use independent OpenCode2.1.4, no models.
+is claimed. Historical plugin/runtime tests used independent OpenCode2.1.4, no
+models. Current managed web/native-backend evidence uses independent 2.2.7; see
+the [compatibility scopes](compatibility.md#managed-companion-acceptance).
 
 ## Identity, attribution and finish
 

@@ -41,6 +41,56 @@ The evidence sections retain the environments, artifacts and limitations of
 those runs; they do not certify every later checkout. References under `evidence/`
 name local-only records, not files shipped in the repository or release archives.
 
+## Managed companion acceptance
+
+The managed candidate was exercised on isolated **Linux OpenChamber web 2.7.1**,
+independent **OpenCode 2.2.7**, **Node 24.22.2** and **Bun 1.3.14**, retaining SDK
+2.7.0 and plugin SDK 2.1.4. This is not Electron, native Windows, relay, remote-host
+or every-cancellation-interleaving certification. The package version is unchanged;
+an accepted development candidate is not a new published release.
+
+`tests/fixtures/managed-companion-host.ts` owns a fresh HOME/all XDG roots,
+rootless loopback-only namespace and Chromium profile. It starts the real web UI,
+not an API-only host or synthetic SDK shell. Its local scripted provider removes
+remote providers and refuses HTTP provider transport; credentials remain absent.
+No live profile, authentication copy, paid model or real-instance restart is used.
+
+```sh
+timeout -k 10 900 node --experimental-strip-types tests/fixtures/managed-companion-host.ts \
+  --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+The 35 behavioral assertions cover visible **Add a plugin to OpenCode** / **Allow
+and enable** approval, explicit UI configuration with no pre-seeded descriptor or
+binding override, and start/change reports with matching revision/counts in rail,
+Work Status and board. Watched-file disable retires tools/guidance, re-enable
+reports a later revision, and removal retains read-only-accessible history.
+An actual legacy loader produces one capture; modified ownership and a different
+store refuse without selecting/removing their data. Same-store migration retains
+Store/source identity and history. A real expectation-publication failure after
+verified removal leaves capture off/pending; restoring the exact known synthetic
+metadata and explicitly reviewing/retrying completes that same target. Mid-unlink
+conflict is covered by the portable lifecycle regression, not host fault injection.
+
+Same-version changed native bytes warn while reporting succeeds; the service's
+expected baseline stays running during that test. A plain terminal runtime with
+the same synthetic directories lacks the managed plugin, and a restricted child
+gets no report authority/guidance. Caller-owned-config delivery is tested using
+fresh owned host processes: install requires restart, disable alone can leave the
+old runtime reporting, and an explicit restart retires it without editing the
+caller file. These are mode-specific observations, not a universal toggle deadline.
+
+The held-permission case commits neither a late report nor a capture after
+disposal. Its session required explicit interruption in this run; graceful
+cancellation remains unpromised. Fixture cleanup verified zero remaining owned
+processes/listeners. Actual unmodified 2.7.1 folder/ZIP/Git installers accept the
+declared plugin directory without a consumer build; an actual 2.7.0 installer
+refuses folder/ZIP with `host-too-old`, requiring 2.7.1, without registration.
+Portable CI, native backend-only checks and real-web acceptance have separate
+evidence scopes; no desktop-host or native Windows rerun is implied.
+
 ## Plan composer fixture coverage
 
 The candidate requires **OpenChamber >=2.7.1**, retains build SDK **2.7.0**, and was exercised on isolated
