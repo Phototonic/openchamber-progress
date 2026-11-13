@@ -15,6 +15,7 @@ import * as refresh from '../../ui/shared/refresh.ts';
 import * as defaultView from '../../ui/shared/default-view.ts';
 import * as i18n from '../../ui/shared/i18n.ts';
 import * as model from '../../ui/shared/model.ts';
+import * as planSelection from '../../ui/shared/plan-selection.ts';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 async function until(predicate: () => boolean) {
@@ -160,6 +161,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name === '@openchamber/sdk/ui') return { mountSelect: (_n: unknown, options: { onChange: typeof choosePlan }) => { choosePlan = options.onChange; } };
       if (name.endsWith('/app.ts')) return { startView: (spec: unknown) => { railSpec = spec; } };
       if (name.endsWith('/scope.ts')) return scope;
+      if (name.endsWith('/plan-selection.ts')) return planSelection;
       if (name.endsWith('/refresh.ts')) return refresh;
       if (name.endsWith('/default-view.ts')) return defaultView;
       if (name.endsWith('/i18n.ts')) return i18n;
