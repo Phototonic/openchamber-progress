@@ -42,6 +42,7 @@ test('managed load, capture and delivery stay independent and support output exc
  assert.equal(facts().installation,'managed-configured'); assert.equal(facts().loaded,'different-bytes');assert.equal(facts().capture,'on');assert.equal(facts().report,'not-checked');
  assert.equal(facts({observation:'matching'}).loaded,'matching-observation');
  assert.equal(facts({observation:'matching',migration:'available'}).loaded,'legacy-unresolved');
+ assert.equal(facts({observation:'matching',migration:'unavailable'}).loaded,'unknown');
  assert.equal(facts({observation:'not-observed'}).loaded,'not-observed');
  assert.equal(facts({revision:2}).installation,'legacy-unsupported');assert.equal(facts({revision:2}).loaded,'unknown');
  assert.doesNotMatch(supportSummary(facts()),/private|aaaa|\//);

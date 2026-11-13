@@ -79,9 +79,9 @@ try{
   await evaluate(`qa.managedNotReady=true;qa.managedRequests=[];qa.managed={configured:false,verified:false,installed:false,separateLifecycle:false,historyRetained:true,captureEnabled:null,targets:null,diagnostics:[],activation:'unknown',version:null,delivery:{kind:'managed',revision:1,configuration:'unconfigured',migration:'none',observation:'unknown',mode:'unknown',expectedVersion:'1.2.3'}};
     qa.managedSetupReply=q=>{const action=q.path.split('/').pop(),v=structuredClone(qa.managed),body=JSON.parse(q.body||'{}');qa.managedRequests.push({action,body});
       if(q.method==='POST'&&action==='managed-inspect'){v.delivery.review={expected:'a'.repeat(64),targets:{configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:body.storeRoot||'/fixture/private-store'},storeId:null,sourceId:null};return {status:200,body:JSON.stringify(v)}}
-      if(q.method==='POST'){if(body.confirmed!==true||body.expected!=='a'.repeat(64))return {status:400,body:JSON.stringify({error:'confirmation-required'})};if(qa.partial){qa.partial=false;qa.managed.delivery.migration='pending';qa.managed.captureEnabled=false;return {status:409,body:JSON.stringify({error:'managed-migration-pending'})}}qa.managed.configured=true;qa.managed.verified=true;qa.managed.delivery.configuration='configured';qa.managed.delivery.migration=action==='managed-migrate'?'complete':'none';qa.managed.captureEnabled=action!=='managed-disable';qa.managed.targets={configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:body.storeRoot||'/fixture/private-store'};qa.managed.delivery.observation='not-observed'}
+      if(q.method==='POST'){if(body.confirmed!==true||body.expected!=='a'.repeat(64))return {status:400,body:JSON.stringify({error:'confirmation-required'})};if(qa.partial){qa.partial=false;qa.managed.delivery.migration='pending';qa.managed.captureEnabled=false;return {status:409,body:JSON.stringify({error:'managed-migration-pending'})}}qa.managed.configured=true;qa.managed.verified=true;qa.managed.delivery.configuration='configured';if(action!=='managed-disable')qa.managed.delivery.migration=action==='managed-migrate'?'complete':'none';qa.managed.captureEnabled=action!=='managed-disable';qa.managed.targets={configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:body.storeRoot||'/fixture/private-store'};qa.managed.delivery.observation='not-observed'}
       return {status:200,body:JSON.stringify(qa.managed)}};true`);
-  const reload=async()=>{const seq=await evaluate(`qa.reload('page')`);await wait(`qa.loaded.page===${seq}&&!!d.querySelector('[data-testid="setup-panel"],[data-testid="setup-section"] summary')`,'fresh page');if(!await guest(`return !!d.querySelector('[data-testid="setup-panel"]')`))await click('[data-testid="setup-section"] summary');await wait(`!!d.querySelector('[data-testid="setup-panel"]')`,'setup visible');};
+  const reload=async()=>{const seq=await evaluate(`qa.reload('page')`);await wait(`qa.loaded.page===${seq}&&!!d.querySelector('[data-testid="setup-panel"],[data-testid="setup-section"] summary')`,'fresh page');if(!await guest(`return !!d.querySelector('[data-testid="setup-panel"]')`))await click('[data-testid="setup-section"] summary');await wait(`!!d.querySelector('[data-testid="setup-panel"]')?.dataset.phase`,'setup response visible');};
   const shotSetup=async(name:string,surface='page')=>{
     // A fixture-only trailing spacer permits a short bottom-of-page panel to align at the top of
     // its iframe. Capture within the visible frame, rather than asking CDP to raster off-frame UI.
@@ -119,6 +119,24 @@ try{
   check('confirmed-switch-request',await evaluate(`qa.managedRequests.filter(q=>q.action==='managed-migrate').every(q=>q.body.confirmed===true&&q.body.expected==='a'.repeat(64)&&!('configRoot' in q.body))`));
   await evaluate(`qa.managed.delivery.observation='different';qa.locale='en';qa.show(['page'],360);true`);await reload();
   check('warning-does-not-disable-capture-control',await guest(`return !!d.querySelector('[data-testid="managed-integrity-warning"]')&&!d.querySelector('[data-testid="setup-disable"] button').disabled`));await shotSetup('managed-warning-phone-en');
+  for(const [locale,width]of [['en',1100],['ru',360]]as const){
+    await evaluate(`qa.locale=${javascriptLiteral(locale)};qa.show(['page'],${width});qa.managed.delivery.migration='conflict';qa.managed.captureEnabled=true;true`);await reload();
+    check(`conflict-keeps-only-disable-${locale}`,await guest(`return !!d.querySelector('[data-testid="setup-disable"] button')&&!d.querySelector('[data-testid="setup-enable"]')&&!d.querySelector('[data-testid="setup-migrate"]')`));
+    await focus('[data-testid="setup-disable"] button');await key('Enter');await wait(`d.querySelector('[data-testid="setup-review"]')?.dataset.action==='managed-disable'`,'conflict capture-off review');
+    await focus('[data-testid="setup-cancel"] button');await key('Escape');await wait(`!d.querySelector('[data-testid="setup-review"]')`,'conflict cancel');
+    check(`conflict-cancel-focus-${locale}`,await guest(`return !!d.activeElement?.closest('[data-testid="setup-disable"]')`));
+    await key('Enter');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'conflict reviewed again');
+    await shotSetup(`managed-conflict-disable-${locale}`);
+    await click('[data-testid="setup-ack"] [role="checkbox"]');await focus('[data-testid="setup-confirm"] button');await key('Enter');
+    await wait(`!d.querySelector('[data-testid="setup-review"]')&&!!d.querySelector('[data-testid="setup-notice"]')`,'confirmed capture-off');
+    check(`conflict-confirmed-disable-${locale}`,await evaluate(`qa.managedRequests.filter(q=>q.action==='managed-disable').at(-1).body.confirmed===true&&qa.managed.captureEnabled===false`));
+    for(const code of ['busy','corrupt','schema','storage','windows-security-unavailable']){
+      await evaluate(`qa.managed.delivery.migration='unavailable';qa.managed.diagnostics=[${javascriptLiteral(code)}];true`);await reload();
+      check(`unavailable-not-conflict-${locale}-${code}`,await guest(`return !!d.querySelector('[data-testid="setup-migration-unavailable"]')&&!!d.querySelector('[data-testid="setup-retry"]')&&!d.querySelector('[data-testid="setup-enable"]')&&!d.querySelector('[data-testid="setup-migrate"]')`));
+    }
+    await shotSetup(`managed-inspection-unavailable-${locale}`);
+  }
+  await evaluate(`qa.managed.diagnostics=[];qa.managed.delivery.migration='none';true`);
   await evaluate(`qa.managed.delivery.revision=99;true`);await reload();check('future-delivery-unsupported',await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='unsupported'&&!d.querySelector('[data-testid="setup-migrate"]')&&!d.querySelector('[data-testid="setup-inspect"]')`));
   await evaluate(`qa.savedDelivery=qa.managed.delivery;delete qa.managed.delivery;true`);await reload();check('legacy-service-has-no-managed-or-global-actions',await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='unsupported'&&!d.querySelector('[data-testid="setup-panel"] button')`));await evaluate(`qa.managed.delivery=qa.savedDelivery;true`);
   await evaluate(`qa.managed.delivery.revision=1;qa.managed.delivery.migration='available';qa.locale='ru';qa.context('M');qa.show(['panel'],360);qa.reload('panel');true`);

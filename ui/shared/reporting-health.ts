@@ -14,7 +14,7 @@ export function setupFacts(s: SetupView): HealthFacts {
   const d = s.delivery;
   if (d) return {...unknownFacts(),service:s.diagnostics.some(x=>['storage','busy','corrupt','schema'].includes(x))?serviceState(s.diagnostics.find(x=>['storage','busy','corrupt','schema'].includes(x))!):'observed',
     installation:d.configuration === 'invalid' ? 'invalid-binding' : d.configuration === 'unconfigured' ? 'not-configured' : 'managed-configured',
-    loaded:d.migration === 'available' || d.migration === 'conflict' || d.migration === 'pending' ? 'legacy-unresolved' : ({unknown:'unknown','not-observed':'not-observed',matching:'matching-observation',different:'different-bytes'} as const)[d.observation],
+    loaded:d.migration === 'unavailable' ? 'unknown' : d.migration === 'available' || d.migration === 'conflict' || d.migration === 'pending' ? 'legacy-unresolved' : ({unknown:'unknown','not-observed':'not-observed',matching:'matching-observation',different:'different-bytes'} as const)[d.observation],
     capture:s.captureEnabled === true ? 'on' : s.captureEnabled === false ? 'off' : 'unknown',
     version:d.expectedVersion && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(d.expectedVersion)?d.expectedVersion:'unknown'};
   return {...unknownFacts(),service:s.diagnostics.some(d=>['storage','busy','corrupt','schema'].includes(d))?serviceState(s.diagnostics.find(d=>['storage','busy','corrupt','schema'].includes(d))!):'observed',installation:'legacy-unsupported',

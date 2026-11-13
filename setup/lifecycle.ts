@@ -180,6 +180,10 @@ function lifecycleInner(action:Action,targets:Targets,payload?:Payload, testBoun
   need(payload && typeof payload.plugin==='string'&&payload.plugin.length>0&&payload.guidance.length>0&&payload.removal.length>0&&/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version),'payload-invalid');
   need(action==='update'?info.installed:!info.installed,action==='update'?'not-installed':'collision');
   const old=info.installed?owned(targets):undefined;
+  // Pre-managed loaders call default.setup, which is now managed-only. Never
+  // switch their selector to new bytes and silently strand a working install.
+  if(old&&!readFileSync(path.join(old.root,'index.js'),'utf8').includes('plugin.setupLegacy?'))
+    throw new SetupError('legacy-update-requires-managed-migration');
   if(!existsSync(targets.storeRoot))privateDirectory(targets.storeRoot,true);
   const store=new Store(path.join(targets.storeRoot,'progress.sqlite'),{create:true});
   let binding:Binding;

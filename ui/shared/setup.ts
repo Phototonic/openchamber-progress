@@ -619,7 +619,7 @@ export function reloadNote<U>(vc: Host<U>) {
   const locale = vc.env.locale;
   const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
   if (!info?.delivery) return null;
-  if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict') return managedSetupBlock(vc,{compact:true});
+  if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
   if (info.delivery.observation === 'different') {
     const warning = testid(el('div'), 'managed-integrity-warning');
     mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning});
@@ -696,11 +696,11 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
       const patch: Partial<SetupUi> = {busy:false};
       if (result.ok && !review) {
         const inspected = result.setup.delivery;
-        if (inspected?.review && inspected.configuration !== 'invalid' && inspected.migration !== 'conflict') {
-          const next = inspected.migration === 'available' || inspected.migration === 'pending' ? 'managed-migrate' : action;
+        if (inspected?.review && inspected.configuration !== 'invalid' && (action === 'managed-disable' || inspected.migration !== 'conflict' && inspected.migration !== 'unavailable')) {
+          const next = action !== 'managed-disable' && (inspected.migration === 'available' || inspected.migration === 'pending') ? 'managed-migrate' : action;
           patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
           if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
-        } else patch.error=inspected?.migration === 'conflict' ? 'managed-migration-conflict' : 'managed-review-stale';
+        } else patch.error=inspected?.migration === 'conflict' ? 'managed-migration-conflict' : inspected?.migration === 'unavailable' ? 'managed-migration-unavailable' : 'managed-review-stale';
       } else {
         patch.managedReview=null; patch.ack=false;
         if (result.ok) patch.notice='done'; else patch.error=result.code;
@@ -739,8 +739,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
   if (d.migration === 'pending') wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
   if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',text.conflict));
+  if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',text.unavailable),'setup-migration-unavailable'));
   if (d.migration === 'complete') wrap.append(el('p','ap-note',text.complete));
-  const unresolved = d.migration === 'available' || d.migration === 'pending' || d.migration === 'conflict';
+  const unresolved = d.migration === 'available' || d.migration === 'pending' || d.migration === 'conflict' || d.migration === 'unavailable';
   const observation = {unknown:text.unknown,'not-observed':text.missing,matching:text.matching,different:text.different}[unresolved ? 'unknown' : d.observation];
   wrap.append(testid(el('p','ap-note',observation),'managed-load-observation'),el('p','ap-note',text.observation));
   if (!unresolved && d.observation === 'different') {
@@ -757,12 +758,13 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   }
   const row=el('div','ap-row');
   const action=(id:string,label:string,kind:Extract<SetupAction, `managed-${string}`>)=>{button(row,id,label,()=>{if(!vc.ui.setup.busy)void run(kind,id);},'outline');row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy));};
-  if (d.configuration !== 'invalid' && d.migration !== 'conflict') {
+  if (d.configuration === 'configured' && info.verified && info.captureEnabled === true) action('setup-disable',text.disable,'managed-disable');
+  if (d.configuration !== 'invalid' && d.migration !== 'conflict' && d.migration !== 'unavailable') {
     if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
     else if (d.configuration === 'unconfigured') action('setup-inspect',text.review,'managed-configure');
     else if (info.captureEnabled === false) action('setup-enable',text.enable,'managed-enable');
-    else if (info.captureEnabled === true) action('setup-disable',text.disable,'managed-disable');
   }
+  if (d.migration === 'unavailable') button(row,'setup-retry',text.retry,vc.requestSetup,'outline',s.busy);
   wrap.append(row);
   const disclosure=testid(el('div','ap-setup-disclose'),'setup-disclosure');
   for (const body of [text.privilege,text.lifecycle,text.reach]) disclosure.append(el('p','ap-note',body));

@@ -154,11 +154,17 @@ if(arg('--server-worker')) {
     await browser.setupShot('legacy-migration','[data-testid="setup-migrate"]');
     const legacyRoot=`${targets.configRoot}/plugins/agent-progress`,ownership=`${legacyRoot}/.ownership.json`,ownedBytes=fs.readFileSync(ownership);
     fs.writeFileSync(ownership,'modified synthetic ownership');
-    try{check('modified-ownership-refused',(await service('/v1/setup/managed-inspect',{})).status===409&&(await service('/v1/setup')).body.delivery.migration==='conflict');check('modified-files-not-repaired',fs.readFileSync(ownership,'utf8')==='modified synthetic ownership');}finally{fs.writeFileSync(ownership,ownedBytes);}
+    try{
+      check('modified-ownership-refused',(await action('managed-migrate')).status===409&&(await service('/v1/setup')).body.delivery.migration==='conflict');
+      check('conflict-enable-refused',(await action('managed-enable')).status===409);
+      await browser.setupShot('conflict-capture-off-review-available','[data-testid="setup-disable"]');
+      check('conflict-confirmed-capture-off',(await action('managed-disable')).status===200&&(await service('/v1/setup')).body.captureEnabled===false);
+      check('modified-files-not-repaired',fs.readFileSync(ownership,'utf8')==='modified synthetic ownership');
+    }finally{fs.writeFileSync(ownership,ownedBytes);}
     lifecycle('remove-capture',targets);
     const otherTargets={...targets,storeRoot:`${root}/other-store`};lifecycle('install',otherTargets,payload);
     const other=new Store(`${root}/other-store/progress.sqlite`,{readOnly:true});const otherBefore=other.list().captureEnabled;other.close();const selectorBefore=fs.readFileSync(managedBindingFile(env)),otherOwned=fs.readFileSync(ownership);
-    check('different-store-refused',(await service('/v1/setup/managed-inspect',{})).status===409);
+    check('different-store-refused',(await action('managed-migrate')).status===409);
     check('different-store-selection-preserved',fs.readFileSync(managedBindingFile(env)).equals(selectorBefore)&&fs.readFileSync(ownership).equals(otherOwned));
     const otherAfter=new Store(`${root}/other-store/progress.sqlite`,{readOnly:true});try{check('different-store-capture-preserved',otherAfter.list().captureEnabled===otherBefore);}finally{otherAfter.close();}
     lifecycle('remove-capture',otherTargets);lifecycle('install',targets,payload);await reload();

@@ -547,7 +547,7 @@ export function parseSetup(body: string): SetupView {
   const d = isRec(v.delivery) ? v.delivery : null;
   const managed = d?.kind === 'managed' && d.revision === 1 && v.separateLifecycle === false
     && ['unconfigured','configured','invalid'].includes(d.configuration as string)
-    && ['none','available','conflict','pending','complete'].includes(d.migration as string)
+    && ['none','available','conflict','unavailable','pending','complete'].includes(d.migration as string)
     && ['unknown','not-observed','matching','different'].includes(d.observation as string)
     && d.mode === 'unknown' && (d.expectedVersion === null || isStr(d.expectedVersion));
   const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)

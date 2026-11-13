@@ -1223,7 +1223,7 @@ and an old `separateLifecycle:true` reply are not managed-delivery evidence.
 interface ManagedDelivery {
   kind: 'managed'; revision: 1;
   configuration: 'unconfigured' | 'configured' | 'invalid';
-  migration: 'none' | 'available' | 'conflict' | 'pending' | 'complete';
+  migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
   mode: 'unknown';
   observation: 'unknown' | 'not-observed' | 'matching' | 'different';
   expectedVersion: string | null;
@@ -1270,6 +1270,11 @@ is an opaque 64-hex consent identity, not an authentication token. It binds this
 service generation, canonical targets, current descriptor/object identity,
 Store/source identity and control state, and validated legacy ownership/bytes.
 It is not a progress revision or a host grant. A service restart invalidates it.
+If legacy inspection fails but a selected managed Store/source still verifies,
+inspection may return a narrower Store-only review for capture-off. Its identity
+binds the managed descriptor/object, Store/source and control state, not legacy
+ownership. Only confirmed `managed-disable` accepts this review; enable,
+configuration and migration repeat full legacy validation and fail closed.
 
 Fixed mutation actions are `managed-configure`, `managed-enable`,
 `managed-disable`, and `managed-migrate`, at the same route prefix. They accept
@@ -1291,7 +1296,9 @@ configuration cannot remove/adopt it or bypass the single confirmed migration.
 
 Migration states are frozen for the lifecycle/UI consumers: `none` means no
 validated legacy candidate; `available` means a validated candidate requiring the
-explicit switch; `conflict` means unsafe ownership/identity; `pending` means a
+explicit switch; `conflict` means unsafe ownership/identity; `unavailable` means
+an operational inspection failure, with its fixed storage/platform diagnostic
+retained separately (not ownership-conflict instructions); `pending` means a
 durable same-target interrupted switch with capture off; `complete` means removal
 and private selection persisted, **not** matching managed-load evidence.
 `managed-migrate` fully prevalidates legacy ownership, removable selectors and
@@ -1343,12 +1350,27 @@ the production controller refuse 409 `managed-action-required`; managed actions
 against an explicitly injected legacy fixture refuse `managed-service-required`.
 Existing schema/binding/busy/corrupt/storage errors retain their 503 semantics;
 existing bounded bodies, auth, method and query checks remain unchanged.
+Migration inspection preserves schema/busy/corrupt/storage failures rather than
+converting them into `managed-migration-conflict`. Platform security query failure
+retains `windows-security-unavailable` in status diagnostics and the existing
+503 `storage` mutation response. Retry requires resolving the underlying failure;
+it does not authorize cleanup or takeover.
 
 Managed capture enable requires the valid verified managed binding and refuses a
 legacy conflict, not executable ownership in a global package. The existing
 no-body capture-disable route keeps its verified-Store safety fallback. Neither
 route edits report/task facts. Managed enable/disable setup actions also require
 the reviewed identity and confirmation above.
+Capture-off for a verified selected managed Store remains available during a
+legacy ownership/identity conflict or operational inspection failure; it neither
+validates nor edits the legacy installation. It cannot disable an unselected
+legacy Store, and does not bypass managed binding/source/Store verification.
+
+Retained pre-managed loaders invoke the selected release's default export and
+cannot use the legacy bridge in the managed-only release. Legacy `update` refuses
+them with fixed 409 `legacy-update-requires-managed-migration` before any Store,
+release, selector or history write. The existing selection remains usable; use
+Setup's explicitly confirmed switch to extension-managed capture instead.
 
 `managed-expectation.json` is a private 0600 sidecar in the verified Store
 directory, with format 1, Store/source/managed-install identity, version and

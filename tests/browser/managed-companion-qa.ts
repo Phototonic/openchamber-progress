@@ -84,7 +84,10 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
     const setupShot=async(name:string,selector:string)=>{
       // Setup observations are deliberately not polled. After test-side external
       // mutations, a user-equivalent page refresh obtains a new real status read.
-      await send('Page.reload');await wait(()=>evaluate('document.readyState'),v=>v==='complete','fresh host page');await openBoard();
+      const navigation=events.length;await send('Page.reload');
+      // readyState can still describe the OLD document immediately after reload.
+      // Wait for this navigation's load event before inspecting the new target.
+      await wait(async()=>events.slice(navigation).some(e=>e.method==='Page.loadEventFired'),Boolean,'fresh host page loaded');await openBoard();
       if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');
       await wait(()=>guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'current Setup state');await shot(name);
     };

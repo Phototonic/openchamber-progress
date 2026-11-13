@@ -223,7 +223,7 @@ export interface SetupView {
   delivery?: {
     kind: 'managed'; revision: 1;
     configuration: 'unconfigured' | 'configured' | 'invalid';
-    migration: 'none' | 'available' | 'conflict' | 'pending' | 'complete';
+    migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
     observation: 'unknown' | 'not-observed' | 'matching' | 'different';
     mode: 'unknown'; expectedVersion: string | null;
     review?: { expected: string; targets: SetupTargets; storeId: string | null; sourceId: string | null };

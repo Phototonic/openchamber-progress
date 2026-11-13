@@ -4957,6 +4957,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   need(payload && typeof payload.plugin === "string" && payload.plugin.length > 0 && payload.guidance.length > 0 && payload.removal.length > 0 && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version), "payload-invalid");
   need(action === "update" ? info.installed : !info.installed, action === "update" ? "not-installed" : "collision");
   const old = info.installed ? owned(targets) : undefined;
+  if (old && !readFileSync2(path5.join(old.root, "index.js"), "utf8").includes("plugin.setupLegacy?"))
+    throw new SetupError("legacy-update-requires-managed-migration");
   if (!existsSync4(targets.storeRoot))
     privateDirectory(targets.storeRoot, true);
   const store = new Store(path5.join(targets.storeRoot, "progress.sqlite"), { create: true });
@@ -27385,6 +27387,17 @@ function writeMigration(env, record2) {
 function sameMigrationTarget(a, b) {
   return a.database === b.database && a.storeId === b.storeId && canonical(a.source) === canonical(b.source);
 }
+function migrationError(e) {
+  if (e instanceof PlatformError && e.code === "windows-security-unavailable")
+    return e;
+  if (e instanceof SetupError && e.code === "windows-security-unavailable")
+    return new PlatformError(e.code);
+  if (e instanceof ProgressError && e.code !== "binding")
+    return e;
+  if (e instanceof SetupError || e instanceof PlatformError || e instanceof ManagedBindingError || e instanceof SyntaxError || e instanceof ProgressError || ["ENOENT", "ENOTDIR", "ELOOP"].includes(e?.code ?? ""))
+    return new SetupError("managed-migration-conflict");
+  return storageError(e);
+}
 function legacyMigration(env) {
   const roots = managedSourceRoots(env), root = path7.join(roots.configRoot, "plugins/agent-progress");
   if (!lstatSync7(root, { throwIfNoEntry: false }))
@@ -27393,8 +27406,8 @@ function legacyMigration(env) {
     const b = readBinding(path7.join(root, "progress-binding.json"));
     const targets = { ...roots, storeRoot: path7.dirname(b.database), confirmed: true };
     return { binding: migrationBinding(targets), targets };
-  } catch {
-    throw new SetupError("managed-migration-conflict");
+  } catch (e) {
+    throw migrationError(e);
   }
 }
 function removalRecorded(record2) {
@@ -27477,6 +27490,7 @@ class SetupController {
   managedEnv;
   reviewNonce = randomUUID6();
   managedDiagnostic;
+  migrationDiagnostic;
   constructor(privateFile, readonlyPayload, _legacyDefault, suggestionContext) {
     this.readonlyPayload = readonlyPayload;
     this.suggestionContext = suggestionContext;
@@ -27714,6 +27728,7 @@ class SetupController {
     writeManagedExpectation(b, { format: 1, storeId: b.storeId, sourceId: b.source.id, installId: b.installId, version: payload.version, fingerprint });
   }
   managedMigration(_targets) {
+    this.migrationDiagnostic = undefined;
     try {
       const record2 = readMigration(this.managedEnv), legacy = legacyMigration(this.managedEnv);
       if (record2) {
@@ -27728,8 +27743,12 @@ class SetupController {
       if (legacy && this.binding && !sameMigrationTarget(legacy.binding, this.binding))
         return "conflict";
       return legacy ? "available" : "none";
-    } catch {
-      return "conflict";
+    } catch (e) {
+      const error62 = migrationError(e);
+      if (error62 instanceof SetupError)
+        return "conflict";
+      this.migrationDiagnostic = error62.code;
+      return "unavailable";
     }
   }
   managedStatus() {
@@ -27748,6 +27767,8 @@ class SetupController {
       diagnostics: this.managedDiagnostic ? [this.managedDiagnostic] : [],
       delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: this.managedMigration(targets), mode: "unknown", observation: "unknown", expectedVersion: null }
     };
+    if (this.migrationDiagnostic && !base.diagnostics.includes(this.migrationDiagnostic))
+      base.diagnostics.push(this.migrationDiagnostic);
     if (this.store && b) {
       base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
       try {
@@ -27765,6 +27786,36 @@ class SetupController {
     return base;
   }
   managedCandidate(storeRoot) {
+    try {
+      return this.managedFullCandidate(storeRoot);
+    } catch (e) {
+      if (!readManagedBinding(this.managedEnv))
+        throw e;
+      return this.managedControlCandidate(storeRoot);
+    }
+  }
+  managedControlCandidate(storeRoot) {
+    this.refresh();
+    if (!this.store || !this.binding)
+      throw new ProgressError(this.error);
+    const b = this.binding, targets = this.targets();
+    if (!b.source.verified)
+      throw new ProgressError("source-unverified");
+    if (storeRoot !== undefined && managedPath(storeRoot) !== targets.storeRoot)
+      throw new SetupError("managed-selection-conflict");
+    const file2 = managedBindingFile(this.managedEnv), stat = lstatSync9(b.database), descriptor = lstatSync9(file2);
+    const expected = digest(JSON.stringify({
+      nonce: this.reviewNonce,
+      controlOnly: true,
+      binding: b,
+      descriptor: digest(readFileSync5(file2)),
+      descriptorObject: [descriptor.dev, descriptor.ino, descriptor.mode, descriptor.uid],
+      storeObject: [stat.dev, stat.ino, stat.mode, stat.uid],
+      enabled: this.store.list({ limit: 1 }).captureEnabled
+    }));
+    return { review: { expected, targets, storeId: b.storeId, sourceId: b.source.id }, binding: b, targets };
+  }
+  managedFullCandidate(storeRoot) {
     const env = this.managedEnv, roots = managedSourceRoots(env), file2 = managedBindingFile(env), b = readManagedBinding(env);
     const record2 = readMigration(env), legacy = legacyMigration(env);
     if (record2 && (b ? canonical(record2.binding) !== canonical(b) : record2.phase === "complete") || legacy && b && !sameMigrationTarget(legacy.binding, b) || legacy && record2 && !sameMigrationTarget(legacy.binding, record2.binding))
@@ -27828,7 +27879,7 @@ class SetupController {
     const r = body;
     if (!Object.keys(r).every((k) => ["storeRoot", "confirmed", "expected"].includes(k)) || r.storeRoot !== undefined && (typeof r.storeRoot !== "string" || !r.storeRoot.length || r.storeRoot.length > 4096) || r.confirmed !== undefined && typeof r.confirmed !== "boolean" || r.expected !== undefined && (typeof r.expected !== "string" || !/^[a-f0-9]{64}$/.test(r.expected)))
       throw new ProgressError("invalid");
-    const candidate2 = this.managedCandidate(r.storeRoot);
+    const candidate2 = action === "managed-inspect" || action === "managed-disable" ? this.managedCandidate(r.storeRoot) : this.managedFullCandidate(r.storeRoot);
     if (action === "managed-inspect") {
       if (r.confirmed !== undefined || r.expected !== undefined)
         throw new ProgressError("invalid");

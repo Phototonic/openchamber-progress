@@ -11,6 +11,40 @@ import {readBinding} from '../../shared/binding.ts';
 import {readManagedBinding,managedBindingFile} from '../../shared/managed-binding.ts';
 import {readMigration,migrationFile} from '../../setup/managed-migration.ts';
 import {Store} from '../../shared/store.ts';
+import {ProgressError} from '../../shared/progress.ts';
+import {PlatformError} from '../../shared/platform.ts';
+import {execFileSync} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
+import {isolatedEnvironment} from '../fixtures/managed.ts';
+
+test('a historical default-only loader refuses update before selection and keeps reporting',async()=>{
+  const root=fs.mkdtempSync('/tmp/opencode/legacy-update-');let dispose:(()=>Promise<void>)|undefined;
+  const saved=new Map<string,string|undefined>();
+  try{
+    for(const [key,value]of Object.entries({...isolatedEnvironment(root),AGENT_PROGRESS_BINDING:undefined,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
+      saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;
+    }
+    // Generate the ACTUAL old loader, including its ownership manifest, from committed code.
+    const names=execFileSync('git',['ls-tree','-r','--name-only','f4d8113','shared','setup'],{encoding:'utf8'}).trim().split('\n').filter(n=>n.endsWith('.ts'));
+    for(const name of names){const file=path.join(root,'baseline',name);fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});fs.writeFileSync(file,execFileSync('git',['show',`f4d8113:${name}`]));}
+    const old=await import(pathToFileURL(path.join(root,'baseline/setup/lifecycle.ts')).href);
+    for(const dir of ['config/opencode','data/opencode','project'])fs.mkdirSync(path.join(root,dir),{recursive:true,mode:0o700});
+    const targets={configRoot:path.join(root,'config/opencode'),dataRoot:path.join(root,'data/opencode'),storeRoot:path.join(root,'store'),confirmed:true};
+    old.lifecycle('install',targets,{plugin:execFileSync('git',['show','f4d8113:build/companion/index.js'],{encoding:'utf8',maxBuffer:16*1024*1024}),guidance:'Synthetic guidance',removal:'// Synthetic removal',version:'1.1.1'});
+    const packageRoot=path.join(targets.configRoot,'plugins/agent-progress'),selector=path.join(packageRoot,'.ownership.json');
+    const before=fs.readFileSync(selector),releases=fs.readdirSync(path.join(targets.storeRoot,'payloads'));
+    assert.doesNotMatch(fs.readFileSync(path.join(packageRoot,'index.js'),'utf8'),/setupLegacy/);
+    const setup=new SetupController(path.join(packageRoot,'progress-binding.json'),()=>({...payload,version:'1.1.2'}));
+    try{assert.throws(()=>setup.run('update',{confirmed:true}),/legacy-update-requires-managed-migration/);}finally{setup.close();}
+    assert.deepEqual(fs.readFileSync(selector),before);assert.deepEqual(fs.readdirSync(path.join(targets.storeRoot,'payloads')),releases);
+    let execute:any;
+    const ctx:any={session:{hook:async()=>({dispose:async()=>{}}),get:async()=>({id:'ses_fixture',location:{directory:path.join(root,'project')},agent:'synthetic',projectID:'project_fixture'})},skill:{transform:async()=>{}},tool:{hook:async()=>({dispose:async()=>{}}),transform:async(cb:any)=>cb({namespace:()=>{},add:(v:any)=>{execute=v.execute;}}),list:async()=>[{id:'agent_progress_report',options:{codemode:false}}]},rpc:{register:async()=>{}}};
+    const loader=await import(pathToFileURL(path.join(packageRoot,'index.js')).href);
+    dispose=await loader.default.setup(ctx);
+    const reply=await execute({op:'start',plan:'legacy-kept',oid:'start',rev:0,title:'Synthetic',items:[{id:'work',title:'Work',kind:'task'}]},{sessionID:'ses_fixture',agent:'synthetic'});
+    assert.equal(JSON.parse(reply.content).rev,1,'the retained historical release still reports');
+  }finally{await dispose?.();for(const[key,value]of saved){if(value===undefined)delete process.env[key];else process.env[key]=value;}fs.rmSync(root,{recursive:true,force:true});}
+});
 
 const payload={plugin:'// Synthetic legacy bytes',guidance:'Synthetic guidance',removal:'// Synthetic removal',version:'1.1.1'};
 function fixture(){
@@ -88,8 +122,56 @@ test('legacy and selected managed stores cannot be switched even with a previous
     const selected=readManagedBinding(f.env)!,bytes=fs.readFileSync(managedBindingFile(f.env));
     assert.notEqual(selected.database,f.legacy.database);
     assert.equal(f.setup.status().delivery!.migration,'conflict');
-    assert.throws(()=>f.review(),/managed-migration-conflict/);
+    const review=f.review();
+    for(const action of ['managed-enable','managed-migrate']as const)assert.throws(()=>f.setup.run(action,{confirmed:true,expected:review.expected}),/managed-migration-conflict/);
     assert.equal(f.store.list().captureEnabled,true);assert.ok(fs.existsSync(f.legacyRoot));assert.deepEqual(fs.readFileSync(managedBindingFile(f.env)),bytes);
+  }finally{f.cleanup();}
+});
+
+test('confirmed managed capture-off survives modified legacy ownership without authorizing enable or migration',async()=>{
+  const f=fixture();try{
+    const retained=f.legacyRoot+'.retained';fs.renameSync(f.legacyRoot,retained);
+    const r=f.review();f.setup.run('managed-configure',{confirmed:true,expected:r.expected});
+    fs.renameSync(retained,f.legacyRoot);fs.appendFileSync(path.join(f.legacyRoot,'index.js'),'// modified');
+    const bytes=fs.readFileSync(path.join(f.legacyRoot,'index.js')),selected=readManagedBinding(f.env)!;
+    const control=new Store(selected.database);try{
+      assert.equal(f.setup.status().delivery!.migration,'conflict');
+      await http(f,async request=>{
+        const response=await request('managed-inspect',{});assert.equal(response.status,200);
+        const review=(await response.json()).delivery.review;
+        assert.equal((await request('managed-disable',{expected:review.expected})).status,400);
+        assert.equal(control.list().captureEnabled,true);
+        for(const action of ['managed-enable','managed-migrate'])assert.equal((await request(action,{confirmed:true,expected:review.expected})).status,409);
+        assert.equal((await request('managed-disable',{confirmed:true,expected:review.expected})).status,200);
+        assert.equal(control.list().captureEnabled,false);
+        assert.equal((await request('managed-disable',{confirmed:true,expected:review.expected})).status,409,'changed control invalidates old consent');
+      });
+      assert.deepEqual(fs.readFileSync(path.join(f.legacyRoot,'index.js')),bytes);assert.equal(f.store.list().captureEnabled,true,'unselected legacy Store is untouched');
+    }finally{control.close();}
+  }finally{f.cleanup();}
+});
+
+test('migration inspection preserves operational diagnostics instead of claiming an ownership conflict',async t=>{
+  for(const phase of ['legacy','record'])for(const code of ['busy','corrupt','schema','storage','windows-security-unavailable']as const)await t.test(`${phase}: ${code}`,async t=>{
+    const f=fixture();try{
+      if(phase==='record')f.migrate();
+      const original=Store.prototype.subagentRunStorage;
+      t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw code==='windows-security-unavailable'?new PlatformError(code):new ProgressError(code);return original.call(this);});
+      const status=f.setup.status();assert.equal(status.delivery!.migration,'unavailable');assert.ok(status.diagnostics.includes(code));
+      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,503);assert.deepEqual(await r.json(),{error:code==='windows-security-unavailable'?'storage':code});});
+      assert.equal(f.store.list().captureEnabled,true);assert.equal(fs.existsSync(f.legacyRoot),phase==='legacy');
+      assert.equal(fs.existsSync(managedBindingFile(f.env)),phase==='record');
+    }finally{t.mock.restoreAll();f.cleanup();}
+  });
+});
+
+test('unsafe private migration records remain ownership conflicts, not operational outages',()=>{
+  const f=fixture();try{
+    f.migrate();const file=migrationFile(f.env),retained=file+'.retained';
+    fs.renameSync(file,retained);fs.symlinkSync(retained,file);
+    assert.equal(f.setup.status().delivery!.migration,'conflict');
+    const review=f.review();assert.throws(()=>f.setup.run('managed-migrate',{confirmed:true,expected:review.expected}));
+    assert.ok(fs.lstatSync(file).isSymbolicLink());assert.equal(f.store.list().captureEnabled,true);
   }finally{f.cleanup();}
 });
 

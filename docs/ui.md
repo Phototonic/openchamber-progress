@@ -674,6 +674,14 @@ there is no automatic retry, enable, global restoration or staging cleanup.
 Partial recovery explains capture off and retained files; interrupted removal can
 be a full-ownership conflict requiring separately authorized manual cleanup.
 Crash-retained configuration locks remain busy, not automatically taken over.
+Ownership/identity conflicts do not remove **Turn off capture** for a verified
+selected managed Store. It uses the same review, acknowledgement, Confirm/Cancel
+and focus-return flow, but never switches to migration consent or edits legacy
+files. Enable and migration remain unavailable. Operational inspection failures
+instead show localized **inspection unavailable** copy, the fixed underlying
+diagnostic and **Retry inspection** (`setup-retry`), not ownership cleanup advice.
+This state uses `setup-migration-unavailable`; it does not claim a matching load.
+Verified capture-off remains available here too; retry only rereads status.
 
 Cancel initially owns confirmation focus if the opener still owns focus. Space
 toggles acknowledgement; Enter confirms; Escape/Cancel returns to the opener.

@@ -7,7 +7,7 @@ import { ProgressError, type Code, type SetupRead, type ManagedSetupAction, type
 import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation } from '../shared/managed-binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
-import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,type MigrationRecord} from '../setup/managed-migration.ts';
+import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
 import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
 
@@ -22,6 +22,7 @@ export class SetupController {
   private readonly managedEnv?: NodeJS.ProcessEnv;
   private readonly reviewNonce = randomUUID();
   private managedDiagnostic: string | undefined;
+  private migrationDiagnostic: string | undefined;
   constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext) {
     this.readonlyPayload=readonlyPayload;this.suggestionContext=suggestionContext;
     if(typeof privateFile !== 'string') {
@@ -159,6 +160,7 @@ export class SetupController {
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
   private managedMigration(_targets?:Targets):ManagedMigrationState {
+    this.migrationDiagnostic=undefined;
     try{
       const record=readMigration(this.managedEnv!),legacy=legacyMigration(this.managedEnv!);
       if(record){
@@ -170,7 +172,7 @@ export class SetupController {
       if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return 'conflict';
       return legacy?'available':'none';
     }
-    catch{return 'conflict';}
+    catch(e){const error=migrationError(e);if(error instanceof SetupError)return 'conflict';this.migrationDiagnostic=error.code;return 'unavailable';}
   }
   private managedStatus():SetupRead {
     this.refresh();
@@ -179,6 +181,7 @@ export class SetupController {
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
       delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:this.managedMigration(targets),mode:'unknown',observation:'unknown',expectedVersion:null}};
+    if(this.migrationDiagnostic&&!base.diagnostics.includes(this.migrationDiagnostic))base.diagnostics.push(this.migrationDiagnostic);
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
       try {
@@ -192,6 +195,26 @@ export class SetupController {
   }
   /** Read-only candidate validation. The token binds consent to current selection, source and store identity. */
   private managedCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
+    try{return this.managedFullCandidate(storeRoot);}
+    catch(e){
+      // A failed legacy preflight cannot revoke the user's capture-off control.
+      // This narrower review authorizes no migration, configuration or enable.
+      if(!readManagedBinding(this.managedEnv!))throw e;
+      return this.managedControlCandidate(storeRoot);
+    }
+  }
+  private managedControlCandidate(storeRoot?:string): {review:ManagedReview;binding:Binding;targets:Targets} {
+    this.refresh();
+    if(!this.store||!this.binding)throw new ProgressError(this.error);
+    const b=this.binding,targets=this.targets()!;
+    if(!b.source.verified)throw new ProgressError('source-unverified');
+    if(storeRoot!==undefined&&managedPath(storeRoot)!==targets.storeRoot)throw new SetupError('managed-selection-conflict');
+    const file=managedBindingFile(this.managedEnv!),stat=lstatSync(b.database),descriptor=lstatSync(file);
+    const expected=digest(JSON.stringify({nonce:this.reviewNonce,controlOnly:true,binding:b,descriptor:digest(readFileSync(file)),
+      descriptorObject:[descriptor.dev,descriptor.ino,descriptor.mode,descriptor.uid],storeObject:[stat.dev,stat.ino,stat.mode,stat.uid],enabled:this.store.list({limit:1}).captureEnabled}));
+    return {review:{expected,targets,storeId:b.storeId,sourceId:b.source.id},binding:b,targets};
+  }
+  private managedFullCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
     const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env),b=readManagedBinding(env);
     const record=readMigration(env),legacy=legacyMigration(env);
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
@@ -227,7 +250,9 @@ export class SetupController {
     if(!Object.keys(r).every(k=>['storeRoot','confirmed','expected'].includes(k))||
       r.storeRoot!==undefined&&(typeof r.storeRoot!=='string'||!r.storeRoot.length||r.storeRoot.length>4096)||
       r.confirmed!==undefined&&typeof r.confirmed!=='boolean'||r.expected!==undefined&&(typeof r.expected!=='string'||!/^[a-f0-9]{64}$/.test(r.expected)))throw new ProgressError('invalid');
-    const candidate=this.managedCandidate(r.storeRoot as string|undefined);
+    // Only inspection and capture-off admit the narrower verified-Store review.
+    const candidate=action==='managed-inspect'||action==='managed-disable'
+      ?this.managedCandidate(r.storeRoot as string|undefined):this.managedFullCandidate(r.storeRoot as string|undefined);
     if(action==='managed-inspect') {
       if(r.confirmed!==undefined||r.expected!==undefined)throw new ProgressError('invalid');
       const status=this.managedStatus();status.delivery!.review=candidate.review;

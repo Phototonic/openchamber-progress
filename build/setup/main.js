@@ -3934,6 +3934,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   need(payload && typeof payload.plugin === "string" && payload.plugin.length > 0 && payload.guidance.length > 0 && payload.removal.length > 0 && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version), "payload-invalid");
   need(action === "update" ? info.installed : !info.installed, action === "update" ? "not-installed" : "collision");
   const old = info.installed ? owned(targets) : undefined;
+  if (old && !readFileSync2(path5.join(old.root, "index.js"), "utf8").includes("plugin.setupLegacy?"))
+    throw new SetupError("legacy-update-requires-managed-migration");
   if (!existsSync4(targets.storeRoot))
     privateDirectory(targets.storeRoot, true);
   const store = new Store(path5.join(targets.storeRoot, "progress.sqlite"), { create: true });

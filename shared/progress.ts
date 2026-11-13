@@ -113,7 +113,7 @@ export type ManagedSetupErrorCode = 'managed-action-required' | 'managed-service
   'managed-binding-invalid' | 'managed-binding-modified' | 'managed-path-unverified' | 'managed-scope-unsupported' |
   'managed-review-stale' | 'managed-selection-conflict' | 'managed-source-conflict' | 'managed-configuration-busy' |
   'managed-migration-required' | 'managed-migration-conflict' | 'managed-migration-pending';
-export type ManagedMigrationState = 'none' | 'available' | 'conflict' | 'pending' | 'complete';
+export type ManagedMigrationState = 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
 export interface ManagedReview {
   expected: string;
   targets: { configRoot: string; dataRoot: string; storeRoot: string };

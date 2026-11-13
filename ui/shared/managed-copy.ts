@@ -12,6 +12,8 @@ const en = {
   switchEffect: 'This switch disables capture, removes only validated legacy global discovery files, and selects the same store and source before re-enabling. History and retained recovery files stay. Cached legacy copies may need an explicit reload; independent legacy processes must be stopped or reloaded if you need their execution ended. No runtime is restarted here.',
   pending: 'The switch is pending or partly finished. Capture may remain off and recovery files are retained. Inspect the same target before explicitly retrying; do not assume a failed response undid changes. Nothing is automatically enabled or restored.',
   conflict: 'Legacy ownership or store/source identity conflicts. Nothing can be switched here until the conflict is resolved; no takeover or deletion is authorized.',
+  unavailable: 'Legacy inspection is unavailable. Review the storage or platform diagnostic, resolve the failure and retry. This is not evidence of an ownership conflict. A verified managed store can still be turned off.',
+  retry: 'Retry inspection',
   invalid: 'The managed binding is invalid. Existing files are left untouched. Review the diagnostics; no alternate store is selected.',
   configured: 'Private store configured', unconfigured: 'Private store not configured', complete: 'Legacy switch recorded; matching managed load is still a separate observation.',
   unknown: 'Loaded companion observation unknown', missing: 'No managed companion load observed', matching: 'Matching managed companion load observed',
@@ -38,6 +40,8 @@ const ru: typeof en = {
   switchEffect: 'Переход выключает запись, удаляет только проверенные файлы глобального обнаружения старой установки и выбирает то же хранилище и источник перед включением. История и файлы восстановления сохраняются. Загруженным старым копиям может требоваться явная перезагрузка; независимые старые процессы нужно остановить или перезагрузить, если требуется завершить их работу. Здесь ничего не перезапускается.',
   pending: 'Переход ожидает завершения или выполнен частично. Запись может оставаться выключенной; файлы восстановления сохранены. Проверьте ту же цель перед явным повтором: ошибка ответа не означает отмену изменений. Автоматического включения или восстановления нет.',
   conflict: 'Конфликт владельца старой установки или хранилища/источника. Переход недоступен до разрешения конфликта; захват и удаление не разрешены.',
+  unavailable: 'Проверка старой установки недоступна. Проверьте диагностику хранилища или платформы, устраните сбой и повторите проверку. Это не доказательство конфликта владельца. Запись в проверенное управляемое хранилище всё ещё можно выключить.',
+  retry: 'Повторить проверку',
   invalid: 'Управляемая привязка недействительна. Файлы оставлены нетронутыми. Проверьте диагностику; другое хранилище не выбирается.',
   configured: 'Приватное хранилище настроено', unconfigured: 'Приватное хранилище не настроено', complete: 'Переход со старой установки записан; соответствующая управляемая загрузка проверяется отдельно.',
   unknown: 'Наблюдение загрузки компаньона неизвестно', missing: 'Управляемая загрузка компаньона не наблюдалась', matching: 'Записана соответствующая управляемая загрузка компаньона',
@@ -63,6 +67,8 @@ export function managedErrorText(code:string, locale='en'): string | null {
     'managed-review-stale':text.stale,'managed-selection-conflict':text.selection,'managed-source-conflict':text.selection,
     'managed-configuration-busy':text.busy,'managed-migration-required':text.switchEffect,
     'managed-migration-conflict':text.conflict,'managed-migration-pending':text.pending,
+    'managed-migration-unavailable':text.unavailable,
+    'legacy-update-requires-managed-migration':text.switchEffect,
   };
   return Object.hasOwn(errors,code)?errors[code]:null;
 }

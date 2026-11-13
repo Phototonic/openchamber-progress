@@ -1,9 +1,10 @@
 import {lstatSync,readFileSync} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
-import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson} from '../shared/managed-binding.ts';
-import {privatePaths,platformSecurityScope,isOwned} from '../shared/platform.ts';
-import {Store,canonical} from '../shared/store.ts';
+import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError} from '../shared/managed-binding.ts';
+import {privatePaths,platformSecurityScope,isOwned,PlatformError} from '../shared/platform.ts';
+import {Store,canonical,storageError} from '../shared/store.ts';
+import {ProgressError} from '../shared/progress.ts';
 import {SetupError,migrationBinding,type Targets} from './lifecycle.ts';
 
 export interface MigrationRecord {
@@ -38,6 +39,15 @@ export function writeMigration(env:NodeJS.ProcessEnv,record:MigrationRecord) {
 export function sameMigrationTarget(a:Binding,b:Binding) {
   return a.database===b.database&&a.storeId===b.storeId&&canonical(a.source)===canonical(b.source);
 }
+/** Ownership/identity evidence is distinct from inability to inspect it. */
+export function migrationError(e:unknown):SetupError|ProgressError|PlatformError {
+  if(e instanceof PlatformError&&e.code==='windows-security-unavailable')return e;
+  if(e instanceof SetupError&&e.code==='windows-security-unavailable')return new PlatformError(e.code);
+  if(e instanceof ProgressError&&e.code!=='binding')return e;
+  if(e instanceof SetupError||e instanceof PlatformError||e instanceof ManagedBindingError||e instanceof SyntaxError||e instanceof ProgressError||
+    ['ENOENT','ENOTDIR','ELOOP'].includes((e as NodeJS.ErrnoException)?.code??''))return new SetupError('managed-migration-conflict');
+  return storageError(e);
+}
 /** Canonical legacy location only; the full removal preflight validates it and the actual Store. */
 export function legacyMigration(env:NodeJS.ProcessEnv):{binding:Binding;targets:Targets}|undefined {
   const roots=managedSourceRoots(env),root=path.join(roots.configRoot,'plugins/agent-progress');
@@ -46,7 +56,7 @@ export function legacyMigration(env:NodeJS.ProcessEnv):{binding:Binding;targets:
     const b=readBinding(path.join(root,'progress-binding.json'));
     const targets={...roots,storeRoot:path.dirname(b.database),confirmed:true};
     return {binding:migrationBinding(targets),targets};
-  }catch{throw new SetupError('managed-migration-conflict');}
+  }catch(e){throw migrationError(e);}
 }
 /** Removal can finish before the wrapper writes its next phase. Require its durable same-install receipt. */
 export function removalRecorded(record:MigrationRecord) {

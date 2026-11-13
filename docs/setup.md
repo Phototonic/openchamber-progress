@@ -71,6 +71,15 @@ manifest, releases, descriptor and actual Store/source identity. Modified or
 foreign files are a conflict, not permission to delete them. A different selected
 store/source refuses before disabling or changing either selection.
 
+Busy, corrupt, unsupported-schema or platform inspection failures instead show
+**inspection unavailable**, with the fixed underlying diagnostic. Resolve that
+failure and retry inspection; unavailable does not mean ownership conflicts or
+authorize manual deletion. During either conflict or unavailability, **Turn off
+capture** remains available if the selected managed Store/source verifies. Its
+review and explicit confirmation change only that Store's capture flag; no
+legacy ownership/removal check is needed, no legacy files change, and an
+unselected legacy Store is not controlled. Enable and migration stay fail-closed.
+
 The reviewed confirmation explains the narrower managed reach, retained history,
 global discovery removal and possible reload. Immediately before mutation,
 ownership and identity are checked again. Migration disables capture, uses the
@@ -108,6 +117,10 @@ support**, not a new global-install journey. An existing owned install's
 discovery files even after extension absence; history and payloads are retained.
 These utilities preserve their original ownership checks. They do not remove a
 manually added host global-config entry or grant authority over modified files.
+Updating a pre-managed default-only loader refuses with
+`legacy-update-requires-managed-migration` before selecting or staging a release.
+The previous selected release keeps working. Use Setup's **Switch to
+extension-managed capture** rather than updating that loader to managed-only code.
 
 ## Updates, observations and integrity
 
