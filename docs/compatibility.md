@@ -170,6 +170,47 @@ zero remaining owned processes/listeners after cleanup. GitHub's controlled GFM
 render strips custom-scheme Markdown links, so README offers a copyable Git URL,
 not an unverified install button.
 
+## Report tool presentation
+
+The neutral manifest contribution was exercised on isolated **Linux OpenChamber
+web 2.7.1**, independent **OpenCode 2.2.7**, **Node 24.22.2**, **Bun 1.3.14** and
+disposable Chromium. The native transcript name was confirmed as
+`agent_progress_report` before adding the rule. SDK **2.7.0**, plugin SDK **2.1.4**,
+the **>=2.7.1** host floor, grants and shipped runtime entries remain unchanged.
+
+```sh
+timeout -k 10 600 node --experimental-strip-types tests/fixtures/managed-companion-host.ts \
+  --report-tool-presentation --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+The fixture reuses managed installation/approval and explicit configuration with
+fresh HOME/XDG roots, a rootless loopback-only namespace and a credential-free
+scripted provider. It checks real start/change/revise/finish calls, identical
+replay, same-status change, conflict, unfinished refusal, schema rejection and
+accepted reporting with denied capture. Native message identities correlate each
+row with its actual transcript; pointer/Enter/Space disclosure, checklist glyph,
+literal receipts/JSON errors, native red errors and a 390 px chat are inspected.
+The native error UI flattens whitespace but retains the error message. An unrelated
+file-read row stays generic. Disabling the extension restores the generic tools
+glyph on retained messages without changing reports; the host's generic humanized
+name coincides with the neutral manifest label. Cleanup verifies no owned processes
+or listeners, zero credentials and no remote provider transport.
+
+The richer subtitle is deliberately **no-go**: effective and same-status calls are
+not distinguishable from receipt alone, and denied capture is established by a
+subsequent read, not by the accepted receipt. This is not a reproduction or diagnosis
+of a previously reported accepted-but-ineffective defect, nor proof of model
+compliance, Electron, Windows, relay or screen-reader behavior. See
+[the presentation contract](ui.md#report-calls-in-chat).
+
+Folder/ZIP SDK parsing preserves the contribution. Older-parser tolerance is not
+older-host installation support: inspected SDK 2.5.1 already recognizes `tools`.
+The existing version gate remains authoritative; the isolated 2.7.0 installer
+refuses the candidate folder and ZIP with `host-too-old`, requiring 2.7.1. No floor
+reduction or universal claim that old hosts ignore the field is made.
+
 ## Plan composer fixture coverage
 
 The candidate requires **OpenChamber >=2.7.1**, retains build SDK **2.7.0**, and was exercised on isolated

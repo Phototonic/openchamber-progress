@@ -109,7 +109,69 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       const page=await wait(()=>reading('page'),matches,'board revision counts');await shot(`board-r${revision}`);return {panel,status,page};
     };
     const failure=async()=>{await shot('failure').catch(()=>{});writeFileSync(`${artifacts}/failure-dom.json`,JSON.stringify(await evaluate('({text:document.body.innerText,buttons:[...document.querySelectorAll("button")].map(e=>({text:e.innerText,label:e.getAttribute("aria-label"),title:e.title})),inputs:[...document.querySelectorAll("input")].map(e=>({placeholder:e.placeholder,type:e.type}))})').catch(()=>null),null,2));};
-    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+    // One scripted tool part per native assistant message. Resolve by that actual
+    // transcript message identity, then its accessible header, not a CSS class.
+    const toolHeader=(message:string)=>`[...document.querySelectorAll('[data-chat-column="main"] [data-message-id='+CSS.escape(${literal(message)})+'] [role="button"]')].find(e=>e.querySelector('[title]'))`;
+    const rowState=(message:string):Promise<any>=>evaluate(`(()=>{const e=${toolHeader(message)};if(!e)return null;const body=e.nextElementSibling,icon=e.querySelector('use'),glyph=icon&&document.querySelector(icon.getAttribute('href'));return {message:e.closest('[data-message-id]')?.getAttribute('data-message-id'),title:e.querySelector('[title]')?.getAttribute('title'),header:e.innerText,expanded:body?.getAttribute('aria-hidden')==='false',body:body?.innerText??'',icon:icon?.getAttribute('href'),glyph:!!glyph?.querySelector('path'),error:!!e.querySelector('[style*="--status-error"]'),tabIndex:e.tabIndex,width:e.getBoundingClientRect().width}})()`);
+    const revealRow=async(message:string)=>{
+      await wait(async()=>{
+        const found=await evaluate(`(()=>{const e=${toolHeader(message)};if(e){e.scrollIntoView({block:'center'});return true;}let node=document.querySelector('[data-chat-column="main"] [data-message-id]');while(node){if(node.scrollHeight>node.clientHeight&&/auto|scroll/.test(getComputedStyle(node).overflowY)){const first=node.querySelector('[data-message-id]')?.getAttribute('data-message-id');node.scrollTop+=first&&first>${literal(message)}?-node.clientHeight/2:node.clientHeight/2;break;}node=node.parentElement;}return false;})()`);
+        await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');return found&&!!await rowState(message);
+      },Boolean,'native transcript message revealed');
+    };
+    const rowToggle=async(message:string,expanded:boolean,method:'pointer'|'Enter'|'Space'='pointer')=>{
+      await revealRow(message);
+      if((await rowState(message)).expanded===expanded)return;
+      if(method==='pointer'){
+        let prior='';
+        const point=await wait<any>(async()=>{
+          await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+          const p=await evaluate(`(()=>{const e=${toolHeader(message)};if(!e)return null;const r=e.getBoundingClientRect(),x=r.x+8,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);if(hit&&e.contains(hit))return {x,y};e.scrollIntoView({block:'center',behavior:'instant'});return null;})()`);
+          const current=JSON.stringify(p),stable=p&&current===prior;prior=current;return stable?p:null;
+        },Boolean,'settled actionable native tool header');
+        await pointer(point.x,point.y);
+      }
+      else {await evaluate(`(${toolHeader(message)}).focus()`);await key(method==='Space'?' ':method,method);}
+      await wait(()=>rowState(message),v=>v?.expanded===expanded,`native body disclosure ${method} ${expanded}`);
+    };
+    const reportRow=async(message:string,output:string,nativeError=false)=>{
+      await wait(()=>rowState(message),v=>v?.title==='Agent progress report','neutral report title');
+      await rowToggle(message,false);await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});
+      const collapsed=await rowState(message);assert.equal(collapsed.message,message);assert.equal(collapsed.icon,'#oc-list-check-2');assert.ok(collapsed.glyph);assert.equal(collapsed.tabIndex,0);
+      assert.equal(collapsed.header.trim(),'Agent progress report','no outcome subtitle');
+      await rowToggle(message,true,'pointer');
+      // Native error UI flattens whitespace; receipt bodies must retain their
+      // actual serialized text. Do not force the error through our text layout.
+      const expanded=await wait(()=>rowState(message),v=>nativeError?v?.body.replace(/\s+/g,' ').includes(output.replace(/\s+/g,' ')):v?.body.includes(output),'literal native output');
+      if(nativeError)assert.equal(expanded.error,true,'native error styling retained');
+      await rowToggle(message,false,'Enter');await rowToggle(message,true,'Space');
+      return {message,title:collapsed.title,icon:collapsed.icon,glyph:collapsed.glyph,collapsed:true,literalOutput:true,pointer:true,enter:true,space:true,nativeError:expanded.error};
+    };
+    const rowShot=async(name:string,messages:string[])=>{
+      await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1900,deviceScaleFactor:1,mobile:false});
+      for(const message of messages)await rowToggle(message,true);
+      await revealRow(messages[0]);await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});
+      await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await shot(name);
+      await send('Emulation.clearDeviceMetricsOverride');
+    };
+    const genericRow=async(message:string)=>{
+      const row=await wait<any>(()=>evaluate(`(()=>{const e=document.querySelector('[data-chat-column="main"] [data-message-id='+CSS.escape(${literal(message)})+']');if(!e)return null;e.scrollIntoView({block:'center'});return {text:e.innerText,icons:[...e.querySelectorAll('use')].map(n=>n.getAttribute('href'))};})()`),Boolean,'generic native message');
+      // The host's humanized generic name happens to equal our neutral label;
+      // the actual generic glyph, not different wording, proves rule retirement.
+      assert.ok(!row.icons.includes('#oc-list-check-2'));assert.ok(row.icons.includes('#oc-tools')||row.text.includes('Read File'));return row;
+    };
+    const reloadChat=async()=>{const at=events.length;await send('Page.reload');await wait(async()=>events.slice(at).some(e=>e.method==='Page.loadEventFired'),Boolean,'reloaded chat');};
+    const narrow=async(message:string,output:string)=>{
+      await send('Emulation.setDeviceMetricsOverride',{width:390,height:1000,deviceScaleFactor:1,mobile:false});
+      await rowToggle(message,false);await rowToggle(message,true,'Space');
+      const row=await wait(()=>rowState(message),v=>v?.body.replace(/\s+/g,' ').includes(output.replace(/\s+/g,' ')),'narrow native error output');
+      assert.ok(row.width<=390);
+      await evaluate(`(${toolHeader(message)}).parentElement.scrollIntoView({block:'center',behavior:'instant'})`);
+      await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+      await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});await shot('narrow');
+      await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
+    };
+    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
       nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,events}};
   }catch(e){await stop();throw e;}
 }
