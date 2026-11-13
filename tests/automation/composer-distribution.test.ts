@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {parseManifestJson,requestedGuestCapabilities} from '@openchamber/sdk';
+import {requestedGuestCapabilities} from '@openchamber/sdk';
+import {parseManifestJson} from '@openchamber/sdk/schemas';
 
 test('composer contributions use one built background entry without content permissions',()=>{
   const parsed=parseManifestJson(readFileSync(new URL('../../package.json',import.meta.url),'utf8'));
