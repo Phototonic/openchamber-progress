@@ -1,9 +1,11 @@
 /** Production plugin through installed2.1.4 adapter; fake host, real SQLite. */
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { Effect, DateTime, Stream } from 'effect';
 import { fromPromise } from '@opencode/plugin/promise/adapter';
 import plugin from '../../plugin/index.ts';
-import { lifecycle } from '../../setup/lifecycle.ts';
+import { createManagedBindingDirectory, managedSourceRoots, publishPrivateJson } from '../../shared/managed-binding.ts';
+import type { Binding } from '../../shared/binding.ts';
 import { Store } from '../../shared/store.ts';
 import { RELEASE } from '../../shared/release.ts';
 
@@ -13,13 +15,14 @@ export async function activationFixture(run: (fixture: any) => Promise<void>, ve
   const saved = new Map<string, string | undefined>();
   let store: Store | undefined;
   try {
-    for (const dir of ['config/opencode', 'data/opencode', 'project']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
-    lifecycle('install', { configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, storeRoot: `${root}/store`, confirmed: true }, { plugin: '// fixture payload', guidance: 'fixture', removal: '// fixture', version: RELEASE });
-    const bindingPath = `${root}/config/opencode/plugins/agent-progress/progress-binding.json`;
-    const binding = JSON.parse(fs.readFileSync(bindingPath, 'utf8'));
-    store = new Store(binding.database);
-    if (!verified) { binding.source.verified = false; store.db.prepare('UPDATE sources SET verified=0').run(); fs.writeFileSync(bindingPath, JSON.stringify(binding)); }
-    for (const [name, value] of Object.entries({ AGENT_PROGRESS_BINDING: bindingPath, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, OPENCODE_CONFIG_DIR: undefined, OPENCODE_DB: undefined })) {
+    const env = { HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_STATE_HOME: `${root}/state`, XDG_CACHE_HOME: `${root}/cache`, XDG_RUNTIME_DIR: `${root}/runtime` };
+    for (const dir of ['home', 'config/opencode', 'data/opencode', 'state', 'cache', 'runtime', 'project', 'store']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
+    const source = { id: randomUUID(), ...managedSourceRoots(env), verified };
+    store = new Store(`${root}/store/progress.sqlite`, { create: true });
+    store.registerSource(source);
+    const binding: Binding = { protocolVersion: 2, schemaVersion: 2, installId: randomUUID(), version: RELEASE, database: store.file, storeId: store.list().storeId, source };
+    publishPrivateJson(createManagedBindingDirectory(env), binding);
+    for (const [name, value] of Object.entries({ ...env, AGENT_PROGRESS_BINDING: undefined, OPENCODE_CONFIG_DIR: undefined, OPENCODE_DB: undefined })) {
       saved.set(name, process.env[name]); if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     const hooks = new Map<string, Callback>();

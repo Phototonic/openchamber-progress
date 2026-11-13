@@ -294,6 +294,20 @@ test('setup: body carries only roots/confirmed; phases; plain-language SetupErro
   assert.match(setupErrorText('brand-new-code'), /brand-new-code/);
 });
 
+test('managed setup accepts only the supported discriminator and a complete reviewed identity', async () => {
+  const delivery = {kind:'managed',revision:1,configuration:'configured',migration:'none',mode:'unknown',observation:'different',expectedVersion:'1.2.3',review:{expected:'a'.repeat(64),targets:{configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:'/fixture/custom-store'},storeId:null,sourceId:null}};
+  const read=(d:unknown)=>parseSetup(JSON.stringify(setupRead({separateLifecycle:false,delivery:d})));
+  assert.equal(read(delivery).delivery?.observation,'different');
+  for(const patch of [{revision:2},{kind:'other'},{observation:'live'},{mode:'watched'},{configuration:['configured']},{migration:['none']},{observation:['matching']}]) assert.equal(read({...delivery,...patch}).delivery,undefined);
+  assert.equal(read({...delivery,review:{...delivery.review,expected:'not-reviewed'}}).delivery?.review,undefined);
+  assert.equal(parseSetup(JSON.stringify(setupRead())).delivery,undefined);
+  const host=fakeHost(()=>({status:200,body:setupRead({separateLifecycle:false,delivery})}));
+  const targets={configRoot:'/ignored',dataRoot:'/ignored',storeRoot:'/fixture/custom-store'};
+  await setupCall(host,'managed-inspect',targets);
+  await setupCall(host,'managed-migrate',targets,true,delivery.review.expected);
+  assert.deepEqual(host.calls.map(q=>JSON.parse(String(q.body))),[{storeRoot:targets.storeRoot},{storeRoot:targets.storeRoot,confirmed:true,expected:delivery.review.expected}]);
+});
+
 test('setup suggestions: parsed per field, malformed reads as unknown, configured replies ignore hints', () => {
   const base = { configured: false, verified: false, installed: false, captureEnabled: null, targets: null, version: null, activation: 'unknown', separateLifecycle: true, historyRetained: true, diagnostics: ['targets-unverified'] };
   const hinted = parseSetup(JSON.stringify({ ...base, suggestions: { configRoot: { value: '/h/.config/opencode', state: 'resolved' }, dataRoot: { value: '/h/.local/share/opencode', state: 'candidate' }, storeRoot: null } }));

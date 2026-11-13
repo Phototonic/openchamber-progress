@@ -10,6 +10,9 @@ import { createServer as createHttpServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { RELEASE } from '../shared/release.ts';
 import {hostPackageVersion} from './host-package-version.ts';
+import { verifyCompanionEntry } from './companion-entry.ts';
+import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
+import { javascriptLiteral } from '../shared/javascript-literal.ts';
 
 const [major,minor,patch]=RELEASE.split('.').map(Number);
 const futureVersion=`${major}.${minor}.${patch!+1}`,brokenVersion=`${major}.${minor}.${patch!+2}`,baselineTag=`v${RELEASE}`;
@@ -54,6 +57,7 @@ if(process.argv[2]!=='--worker'){
   cpSync(candidate,work,{recursive:true});files(work);
   const originalManifest=readFileSync(`${work}/package.json`),manifest=JSON.parse(originalManifest.toString());
   assert.equal(manifest.version,RELEASE,'fixture baseline is the current private candidate');
+  verifyCompanionEntry(work);
   for(const entry of [...runtimeEntries,...guestEntries])assert.equal(lstatSync(`${work}/${entry}`).isFile(),true,entry);
   assert.equal(JSON.parse(readFileSync(`${work}/build/companion/package.json`,'utf8')).version,manifest.version);
   const originalGuests=Object.fromEntries(['panel','status','page'].map(s=>[s,hash(`${work}/ui/${s}/main.js`)]));
@@ -63,7 +67,8 @@ if(process.argv[2]!=='--worker'){
   for(const entry of ['build/artifacts/future.zip','build/service/progress-binding.json','build/service/scratch.js','build/service/.env.example','build/companion/runtime.sqlite','build/setup/scratch.js','node_modules/private','evidence/private','.slim/plan','.env.local']){
     const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,0,`local data trackable: ${entry}`);
   }
-  const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
+  // Synthetic identity belongs only to commits in this disposable fixture.
+  const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Package Fixture','-c','user.email=package-fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
   const initial=commit(`Built fixture main ${RELEASE}`);
   assert.deepEqual(git(['ls-files','build']).split('\n').sort(),[...runtimeEntries].sort());
   const inventory=files(work).map(file=>({path:path.relative(work,file),sha256:hash(file)}));
@@ -91,12 +96,12 @@ if(process.argv[2]!=='--worker'){
   const wrapper=`${root}/fixture-git.cjs`,commands=`${root}/git-commands.jsonl`;
   writeFileSync(wrapper,`#!${process.execPath}\n`+`
 const fs=require('node:fs'),{spawnSync}=require('node:child_process'),assert=require('node:assert/strict');
-const root=${JSON.stringify(root)},source=${JSON.stringify(source)},bare=${JSON.stringify(`file://${bare}`)};
+const root=${javascriptLiteral(root)},source=${javascriptLiteral(source)},bare=${javascriptLiteral(`file://${bare}`)};
 const args=process.argv.slice(2);let i=0;while(args[i]==='-c')i+=2;const op=args[i];assert.ok(['clone','fetch','show'].includes(op));
 if(op!=='show'){assert.ok(args.includes('http.followRedirects=false'));assert.ok(args.some(a=>a.startsWith('http.curloptResolve=progress-fixture.example:443:')));}
 if(op==='clone'){const pos=args.indexOf('--');assert.equal(args[pos+1],source);assert.ok(args[pos+2].startsWith(root+'/'));args[pos+1]=bare;}
 else {assert.ok(process.cwd().startsWith(root+'/'));if(op==='fetch'){const remote=spawnSync('/usr/bin/git',['config','--get','remote.origin.url'],{encoding:'utf8'});assert.equal(remote.stdout.trim(),bare);assert.equal(args[args.indexOf('--')+1],'origin');}else assert.deepEqual(args,['show','FETCH_HEAD:package.json']);}
-fs.appendFileSync(${JSON.stringify(commands)},JSON.stringify({op,ref:op==='fetch'?args.at(-1):op==='clone'&&args.includes('--branch')?args[args.indexOf('--branch')+1]:null})+'\\n');
+fs.appendFileSync(${javascriptLiteral(commands)},JSON.stringify({op,ref:op==='fetch'?args.at(-1):op==='clone'&&args.includes('--branch')?args[args.indexOf('--branch')+1]:null})+'\\n');
 const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath=/dev/null',...args],{env:process.env,stdio:'inherit'});process.exit(r.status??1);
 `);chmodSync(wrapper,0o700);
   const parsed=parseGitInstallUrl(source);assert.deepEqual(parsed,{url:source});
@@ -107,6 +112,7 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
     const store=await readExtensionStore(persist),copy=store.paths[0];assert.deepEqual(store.gitOrigins[copy],ref?{url:source,ref}:{url:source});
     assert.equal(readFileSync(`${copy}/package.json`,'utf8'),originalManifest.toString(),'host consumes actual root package.json without repair');
     assert.equal(existsSync(`${copy}/node_modules`),false,'consumer has no dependencies');
+    verifyCompanionEntry(copy);
     for(const entry of [...runtimeEntries,...guestEntries])assert.equal(hash(`${copy}/${entry}`),hash(`${candidate}/${entry}`));
     return{persist,copy,origin:store.gitOrigins[copy]};
   };
@@ -114,9 +120,9 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
   const guest=async(installation:typeof normal)=>{invalidateGuestCatalog(installation.persist);const rows=await listInstalledGuests({persistPath:installation.persist});assert.equal(rows.length,1);return rows[0];};
   const check=async(installation:typeof normal)=>checkGuestUpdate({guest:await guest(installation),origin:installation.origin,gitBinary:wrapper,lookup});
   const serviceSmoke=async(copy:string,version:string)=>{
-    const state=mkdtempSync(`${root}/service-`);for(const dir of ['home','state','selector'])mkdirSync(`${state}/${dir}`,{mode:0o700});
+    const state=mkdtempSync(`${root}/service-`);const env=isolatedEnvironment(state);
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
-    const child=spawn(process.execPath,[`${copy}/build/service/main.js`],{cwd:state,env:{...process.env,HOME:`${state}/home`,XDG_STATE_HOME:`${state}/state`,AGENT_PROGRESS_BINDING:`${state}/selector/binding.json`,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'git-fixture-only'},stdio:['ignore','pipe','pipe']});
+    const child=spawn(process.execPath,[`${copy}/build/service/main.js`],{cwd:state,env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'git-fixture-only'},stdio:['ignore','pipe','pipe']});
     const exit=once(child,'exit');let stderr='';child.stderr.on('data',b=>stderr+=b);
     try{
       let ready=false;const deadline=Date.now()+5000;

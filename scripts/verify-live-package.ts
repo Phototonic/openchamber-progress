@@ -12,6 +12,8 @@ import {mock} from 'node:test';
 import {Store} from '../shared/store.ts';
 import {readBinding} from '../shared/binding.ts';
 import {RELEASE} from '../shared/release.ts';
+import { managedBindingFile } from '../shared/managed-binding.ts';
+import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
 
 const extension=path.resolve(process.argv[2]!);assert.ok(process.argv[2]);
 const manifest=JSON.parse(readFileSync(`${extension}/package.json`,'utf8'));
@@ -35,8 +37,8 @@ try{
   writeFileSync(preload,`// TEST ONLY: native entry unchanged; fixed official URL redirected to loopback.\nimport fs from 'node:fs';\nconst native=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;if(url!=='https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main')throw new Error('fixture rejects nonallowlisted URL');return native(${javascriptLiteral(origin+'/manifest')},init);};Date.now=()=>JSON.parse(fs.readFileSync(${javascriptLiteral(clock)},'utf8')).now;\n`);
   const advance=(ms:number)=>{now+=ms;writeFileSync(clock,JSON.stringify({now}));};
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
-  const selector=`${root}/selector/binding.json`;
-  child=spawn(process.execPath,['--import',preload,entry],{cwd:root,env:{PATH:process.env.PATH??'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_STATE_HOME:`${root}/state`,AGENT_PROGRESS_BINDING:selector,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'native-package-fixture-only'},stdio:['ignore','pipe','pipe']});
+  const env=isolatedEnvironment(root),selector=managedBindingFile(env);
+  child=spawn(process.execPath,['--import',preload,entry],{cwd:root,env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'native-package-fixture-only'},stdio:['ignore','pipe','pipe']});
   let stderr='';child.stderr!.on('data',b=>stderr+=b);
   const base=`http://127.0.0.1:${port}`,headers={authorization:'Bearer native-package-fixture-only','content-type':'application/json'};
   const request=(route:string,body?:unknown)=>fetch(base+route,{method:body===undefined?'GET':'POST',headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(5000)});
@@ -54,7 +56,9 @@ try{
   assert.equal(available.installedVersion,RELEASE);assert.equal(available.repository,'Phototonic/openchamber-progress');assert.equal(available.ref,'main');assert.equal(available.state,'available');assert.equal(available.candidateVersion,futureVersion);assert.equal(available.stale,false);assert.equal(outbound,2,'one retry shared across concurrent frames');
   await json('/v1/extension-update');assert.equal(outbound,2,'packaged cache prevents progress-cadence outbound work');
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
-  phase='fixture companion install';const installed=await request('/v1/setup/install',targets);assert.equal(installed.status,200);assert.equal((await installed.json()).version,RELEASE);
+  phase='fixture managed configuration';
+  const review=await(await request('/v1/setup/managed-inspect',{storeRoot:targets.storeRoot})).json();
+  const installed=await request('/v1/setup/managed-configure',{storeRoot:targets.storeRoot,confirmed:true,expected:review.delivery.review.expected});assert.equal(installed.status,200);assert.equal((await installed.json()).version,RELEASE);
   const b=readBinding(selector),store=new Store(b.database),actor={sourceId:b.source.id,sessionId:'packaged-timing',agent:'build',directory:'/fixture/native-package',parentId:null,ancestry:[],verifiedSource:true};
   const past=Date.now()-4*3600000;let exact:string;
   mock.timers.enable({apis:['Date'],now:past});

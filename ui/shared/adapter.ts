@@ -33,7 +33,7 @@ const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', '
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
 export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
 export const CAPTURE_ROUTES = { index: '/v1/document-captures', comparison: '/v1/document-comparison' } as const;
-export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture'] as const;
+export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture', 'managed-inspect', 'managed-configure', 'managed-migrate', 'managed-enable', 'managed-disable'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 
 export function query(params: Record<string, string | number | null | undefined>) {
@@ -543,7 +543,16 @@ export function parseSearchState(body: string, storeId: string, keys: SearchKeyV
 /** GET /v1/setup and POST /v1/setup/<action> replies. */
 export function parseSetup(body: string): SetupView {
   const v: unknown = JSON.parse(body);
-  check(isRec(v) && typeof v.configured === 'boolean' && typeof v.installed === 'boolean' && v.separateLifecycle === true, 'Setup reply is unreadable.');
+  check(isRec(v) && typeof v.configured === 'boolean' && typeof v.installed === 'boolean' && typeof v.separateLifecycle === 'boolean', 'Setup reply is unreadable.');
+  const d = isRec(v.delivery) ? v.delivery : null;
+  const managed = d?.kind === 'managed' && d.revision === 1 && v.separateLifecycle === false
+    && ['unconfigured','configured','invalid'].includes(d.configuration as string)
+    && ['none','available','conflict','unavailable','pending','complete'].includes(d.migration as string)
+    && ['unknown','not-observed','matching','different'].includes(d.observation as string)
+    && d.mode === 'unknown' && (d.expectedVersion === null || isStr(d.expectedVersion));
+  const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)
+    && isRec(d.review.targets) && isStr(d.review.targets.configRoot) && isStr(d.review.targets.dataRoot) && isStr(d.review.targets.storeRoot)
+    && (d.review.storeId === null || isStr(d.review.storeId)) && (d.review.sourceId === null || isStr(d.review.sourceId)) ? d.review : null;
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -559,6 +568,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}) } as SetupView['delivery'] } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,

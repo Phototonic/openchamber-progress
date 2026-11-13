@@ -9,6 +9,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { Store } from '../../shared/store.ts';
 import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
+import { publishFixtureBinding } from '../fixtures/managed.ts';
 
 test('C native proxy metadata delivers actor-only hints without implicit reports, including Code Mode', { timeout: 240000 }, async () => {
   for (const codemode of ['0', '1']) {
@@ -53,6 +54,7 @@ test('progress resume successful host compaction reaches the next primary only',
     try {
       store.registerSource(source);
       fs.writeFileSync(`${root}/binding.json`, JSON.stringify({ protocolVersion: 2, schemaVersion: 2, installId: 'synthetic-resume', version: RELEASE, database: store.file, storeId: store.list({ limit: 1 }).storeId, source }), { mode: 0o600 });
+      publishFixtureBinding(env,JSON.parse(fs.readFileSync(`${root}/binding.json`,'utf8')));
     } finally { store.close(); }
     const original = path.resolve(process.env.ACTIVATION_COMPANION_ENTRY || 'plugin/index.ts');
     if (process.env.ACTIVATION_COMPANION_ENTRY) fs.copyFileSync(original, `${root}/config/opencode/plugins/companion/index.js`);

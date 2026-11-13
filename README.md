@@ -57,19 +57,19 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
    https://github.com/Phototonic/openchamber-progress.git
    ```
 
-2. Open **Agent progress → Setup**, review the suggested folders, then confirm installing the OpenCode companion.
-3. Restart OpenCode when it's safe, and start working. The companion guides agents that can use `agent_progress_report` to report their plans, with no special prompts or agent names. Reporting is best-effort; it depends on the model taking part.
+2. Review the **Add a plugin to OpenCode** disclosure and choose **Allow and enable**. The plugin runs with your account's full access inside OpenCode.
+3. Open **Agent progress → Setup**, review the resolved source and private store, then explicitly confirm configuration. No global plugin installation is needed. The next eligible managed session/context can activate reporting; agents with `agent_progress_report` receive guidance without special prompts or agent names. Reporting is best-effort model participation.
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
-**Works with:** OpenChamber 2.5.1 or later · OpenCode 2.2.7 (Linux native checks) and 2.1.4 (historical Linux/native Windows checks) · Linux and native Windows. See [tested configurations](docs/compatibility.md).
+**Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
 
-- **Removing it takes two steps.** Disable or remove the companion *before* uninstalling the extension; uninstalling the extension alone doesn't stop capture.
+- **Capture follows managed delivery.** Watched-file delivery retires capture after extension disable/removal; caller-owned configuration requires an explicit OpenCode restart. Mode may be unknown. Terminal, external/remote, isolated-space and VS Code runtimes are outside this managed path. A legacy plugin or explicit **Add to global config** entry can outlive the extension and needs deliberate separate removal. History is retained; a held-permission session may need interruption.
 - **Your data stays local.** Plans live in a private SQLite store on your machine. It can contain plan text and project paths, so treat it, and any screenshots, as private.
 - **One small network check.** The views check GitHub's public metadata for the latest official version. This is informational only; nothing installs itself.
-- **Updates are always your call.** Extension and companion updates are offered in Settings and applied only when you confirm.
+- **Updates follow the host.** Companion bytes ship with the extension under host approval/update rules. Loaded-byte differences warn, not block reporting: this is explicitly weaker than the old private hash-attested payloads, not publisher authentication. See Setup for migration, interrupted-removal/manual recovery and configuration-lock caveats.
 
 The [setup guide](docs/setup.md) covers each of these in full.
 

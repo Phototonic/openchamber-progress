@@ -2,17 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import plugin from '../../plugin/index.ts';
-import { lifecycle } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { parseRequest, REPORT_SCHEMA } from '../../shared/progress.ts';
+import { createFixtureBinding } from '../fixtures/managed.ts';
 
 test('registered report provides safe recovery hints and executable start help without weakening mutations', async () => {
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-invocation-');
   const saved=new Map<string,string|undefined>();let dispose:(()=>Promise<void>)|undefined;
   try {
     for(const dir of ['config/opencode','data/opencode','project'])fs.mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
-    lifecycle('install',{configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true},{plugin:'// fixture',guidance:'fixture',removal:'// fixture',version:'0.2.7'});
-    for(const [key,value] of Object.entries({AGENT_PROGRESS_BINDING:`${root}/config/opencode/plugins/agent-progress/progress-binding.json`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
+    const {env}=createFixtureBinding(root);
+    for(const [key,value] of Object.entries({...env,AGENT_PROGRESS_BINDING:undefined,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
       saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;
     }
     let tool:any;let skill:any;let identities=0;

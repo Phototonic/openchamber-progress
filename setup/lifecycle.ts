@@ -114,6 +114,16 @@ function removableSelectors(o:ReturnType<typeof owned>) {
     return file;
   });
 }
+/** Migration preflight repeats every removal check BEFORE its disable-first path. */
+export function migrationBinding(targets:Targets):Binding {
+  return platformSecurityScope(()=>{
+    const o=owned(targets);removableSelectors(o);
+    need(o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
+    const store=new Store(o.binding.database,{readOnly:true});
+    try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
+    return o.binding;
+  });
+}
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}
 /** Retained sources are candidates, not currently selected target assertions. */
 function matchesRetainedSource(source:Binding['source'],targets:Targets) {
@@ -170,6 +180,10 @@ function lifecycleInner(action:Action,targets:Targets,payload?:Payload, testBoun
   need(payload && typeof payload.plugin==='string'&&payload.plugin.length>0&&payload.guidance.length>0&&payload.removal.length>0&&/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version),'payload-invalid');
   need(action==='update'?info.installed:!info.installed,action==='update'?'not-installed':'collision');
   const old=info.installed?owned(targets):undefined;
+  // Pre-managed loaders call default.setup, which is now managed-only. Never
+  // switch their selector to new bytes and silently strand a working install.
+  if(old&&!readFileSync(path.join(old.root,'index.js'),'utf8').includes('plugin.setupLegacy?'))
+    throw new SetupError('legacy-update-requires-managed-migration');
   if(!existsSync(targets.storeRoot))privateDirectory(targets.storeRoot,true);
   const store=new Store(path.join(targets.storeRoot,'progress.sqlite'),{create:true});
   let binding:Binding;
@@ -190,7 +204,7 @@ function lifecycleInner(action:Action,targets:Targets,payload?:Payload, testBoun
   let manifest:Manifest;
   if(old){manifest={...old.manifest,active:release,releases:{...old.manifest.releases,[release]:{version:payload.version,files:releaseHash}}};}
   else{
-    const loader=`import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader=`import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}const plugin=await import(pathToFileURL(path.join(dir,'index.js')).href);return plugin.setupLegacy?plugin.setupLegacy(ctx,path.join(dir,'progress-binding.json')):plugin.default.setup(ctx);}};`;
     const rootFiles={'index.js':loader,'package.json':JSON.stringify({name:'openchamber-agent-progress',version:payload.version,type:'module',exports:{'.':'./index.js'}}),'progress-binding.json':JSON.stringify(binding),'remove.js':payload.removal,'SKILL.md':payload.guidance};
     manifest={product:'openchamber-agent-progress',installId:binding.installId,active:release,files:hashes(rootFiles),releases:{[release]:{version:payload.version,files:releaseHash}}};
     const plugins=path.dirname(info.packageRoot);safe(plugins,true);

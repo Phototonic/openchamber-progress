@@ -1,10 +1,12 @@
 import { Plugin, Skill } from '@opencode/plugin';
+import type { SessionHooks } from '@opencode/plugin/effect/session';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { readFileSync, lstatSync } from 'node:fs';
 import path from 'node:path';
-import { realpathSync, readFileSync } from 'node:fs';
-import { readBinding, verifyStore } from '../shared/binding.ts';
-import { Store, storageError } from '../shared/store.ts';
+import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
+import { readManagedBinding, managedSourceRoots } from '../shared/managed-binding.ts';
+import { RELEASE } from '../shared/release.ts';
+import { Store, storageError, canonical } from '../shared/store.ts';
 import { parseReportRequest, REPORT_SCHEMA, ProgressError, requireProgress as need, type Actor } from '../shared/progress.ts';
 import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
@@ -12,47 +14,109 @@ import { activationFingerprint } from '../shared/activation.ts';
 import { registerActivation } from './activation.ts';
 import { registerDelegation } from './delegation.ts';
 import { sessionIdentity } from './identity.ts';
-import { windows, windowsPaths, sameWindowsDirectory, platformSecurityScope } from '../shared/platform.ts';
 
-export default Plugin.define({ id:'agent-progress', async setup(ctx) {
-  const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL('./progress-binding.json',import.meta.url));
-  const configRoot = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(),'.config'),'opencode');
-  const dataRoot = path.join(process.env.XDG_DATA_HOME || path.join(homedir(),'.local/share'),'opencode');
-  need(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows?platformSecurityScope(()=>{windowsPaths([configRoot,dataRoot,b.source.configRoot,b.source.dataRoot]);return sameWindowsDirectory(configRoot,b.source.configRoot)&&sameWindowsDirectory(dataRoot,b.source.dataRoot);}):realpathSync(configRoot) === b.source.configRoot && realpathSync(dataRoot) === b.source.dataRoot),'binding');
-  const store = new Store(b.database);
+export default Plugin.define({ id:'agent-progress', setup: ctx => setupCompanion(ctx, () => {
+  const b=readManagedBinding();
+  // Presence is grounds to refuse competing authority, never permission to remove.
+  if(b)need(!lstatSync(path.join(b.source.configRoot,'plugins/agent-progress'),{throwIfNoEntry:false}),'binding');
+  return b;
+}, true) });
+
+/** Explicit legacy loader dependency, never a managed discovery fallback. */
+export function setupLegacy(ctx: Plugin.Context, file: string) {
+  return setupCompanion(ctx, () => {
+    const b=readBinding(file), roots=managedSourceRoots();
+    need(roots.configRoot===b.source.configRoot&&roots.dataRoot===b.source.dataRoot,'binding');return b;
+  }, false);
+}
+
+async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefined, managed: boolean) {
+  let b: Binding, store: Store | undefined, active=false, retired=false;
+  const abort=new AbortController();
+  let starting: Promise<boolean> | undefined;
   let deactivate: (() => Promise<void>) | undefined;
   let delegation: Awaited<ReturnType<typeof registerDelegation>> | undefined;
-  try {
-  verifyStore(store,b);store.bindReads(b.source.id,b.source.verified);
-  async function identity(sessionID: Parameters<typeof ctx.session.get>[0]['sessionID'], agent: string, guard?: { alive(): boolean; signal: AbortSignal }): Promise<Actor> {
-    return sessionIdentity(ctx,b.source,sessionID,agent,guard);
+  let firstContext: ((event:SessionHooks['context'])=>Promise<void>) | undefined;
+  let dormant: {dispose():Promise<void>} | undefined;
+  function alive() { return !retired&&!abort.signal.aborted; }
+  function guard() {
+    need(alive()&&active&&store,'storage');
+    try { need(canonical(read())===canonical(b),'binding'); }
+    catch(e) { retired=true;abort.abort();void cleanup();throw e; }
   }
-  await ctx.skill.transform(editor => editor.add({ id:Skill.ID.make('agent-progress'),name:Skill.Name.make('Agent progress'),description:'Mirror canonical plans and deliberate progress without replacing your planner.',path:Skill.Info.fields.path.make(fileURLToPath(new URL('./SKILL.md',import.meta.url))),content:GUIDANCE }));
+  function authorized() { try{guard();return true;}catch{return false;} }
+  async function cleanup() {
+    const pending=[delegation?.dispose(),deactivate?.(),dormant?.dispose()];
+    delegation=undefined;deactivate=undefined;dormant=undefined;
+    try { await Promise.allSettled(pending); } finally { const opened=store;store=undefined;try{opened?.close();}catch{/* preserve primary diagnostic */} }
+  }
+  async function initialize() {
+    need(alive(),'storage');
+    if(active){guard();return true;}
+    if(starting)return starting;
+    starting=(async()=>{
+      const selected=read();if(!selected)return false;
+      b=selected;store=new Store(b.database);
+      try {
+        verifyStore(store,b);store.bindReads(b.source.id,b.source.verified);
+        const check=()=>{need(alive(),'storage');need(canonical(read())===canonical(b),'binding');};
+        await ctx.skill.transform(editor => editor.add({ id:Skill.ID.make('agent-progress'),name:Skill.Name.make('Agent progress'),description:'Mirror canonical plans and deliberate progress without replacing your planner.',path:Skill.Info.fields.path.make(fileURLToPath(new URL('./SKILL.md',import.meta.url))),content:GUIDANCE }));check();
+        // Reuse the activation owner. Deliver its initial context even when the host
+        // snapshots callbacks before this deferred registration was admitted.
+        // Recurring guidance checks read only the capture control row, never plan snapshots.
+        const control=store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
+        deactivate=await registerActivation(ctx,b.source,()=>{try{guard();return control.get()?.enabled===1;}catch{return false;}},{
+          storeId:b.storeId,read:request=>store!.resumePlans(request),
+          identity:(sessionID,alive,signal)=>identity(sessionID,'unknown',{alive,signal}),
+        },callback=>{firstContext=callback;});check();
+        delegation=await registerDelegation(ctx,{store,sourceId:b.source.id,
+          alive:authorized,
+          identity:(sessionID,observing,signal)=>sessionIdentity(ctx,b.source,sessionID,'unknown',{alive:()=>authorized()&&observing(),signal,sameScope:true}),
+        });check();
+        store.observeLoaded(b.source.id,b.installId,activationFingerprint({...b,version:managed?RELEASE:b.version},readFileSync(fileURLToPath(import.meta.url)),readFileSync(new URL('./SKILL.md',import.meta.url))));
+        active=true;return true;
+      } catch(e) { retired=true;abort.abort();await cleanup();throw e; }
+    })();
+    try{return await starting;}finally{starting=undefined;}
+  }
+  async function identity(sessionID: Parameters<typeof ctx.session.get>[0]['sessionID'], agent: string, guard?: { alive(): boolean; signal: AbortSignal }): Promise<Actor> {
+    return sessionIdentity(ctx,b.source,sessionID,agent,guard??{alive,signal:abort.signal});
+  }
+  try {
+  // The only dormant hook is boundary-driven; it creates no state and polls nothing.
+  dormant=await ctx.session.hook('context',async event=>{
+    if(active||!alive())return;
+    try{if(await initialize())await firstContext?.(event);}catch{/* fixed report failures; no verified guidance */}
+  });
   await ctx.tool.transform(editor => {
     editor.namespace({name:'agent_progress',description:'Deliberate plan progress; never inferred from activity.'});
     editor.add({ name:'report',description:`Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. Start/read plans, batch status changes, revise structure, link children, bind source documents or explicitly finish. ${START_HELP} Read agent-progress guidance for chunked commits and delegation.`,input:REPORT_SCHEMA,options:{namespace:'agent_progress',codemode:false},
       execute: async (value,caller) => {
         try {
-           const r = parseReportRequest(value); const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);
+            const r = parseReportRequest(value);need(await initialize(),'binding');guard();
+            const current=store!;
+            const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);guard();
            if(r.op==='handoff') {
-             const child=await sessionIdentity(ctx,b.source,caller.sessionID,caller.agent,{alive:()=>true,signal:new AbortController().signal,sameScope:true});
-             return {content:JSON.stringify(store.handoff(r,child,observedAt,observedEpoch))};
+              const child=await sessionIdentity(ctx,b.source,caller.sessionID,caller.agent,{alive,signal:abort.signal,sameScope:true});guard();
+              return {content:JSON.stringify(current.handoff(r,child,observedAt,observedEpoch))};
            }
           if (r.op === 'read') {
-            const view=store.detail(actor.sourceId,r.plan,r.page??0);
+             const view=current.detail(actor.sourceId,r.plan,r.page??0);
             return {content:JSON.stringify(r.page===undefined?{plan:r.plan,rev:view.plan.revision,structuralRev:view.plan.structuralRevision,lifecycle:view.plan.lifecycle,counts:view.plan.counts,documentState:view.plan.document.state,detailPageSize:20}:view)};
           }
           if (r.op === 'delegate') {
             need(delegation,'binding');
             return {content:JSON.stringify(delegation.declare(r,actor))};
           }
-          const previous = store.get(actor.sourceId,r.plan);
+           const previous = current.get(actor.sourceId,r.plan);
           let child: Actor | undefined;
           const childID = r.child ?? r.attributed;
           if (childID) { try { child = await identity(childID as typeof caller.sessionID,'unknown'); } catch { throw new ProgressError('assignment'); } }
           const reference = r.source ?? previous?.document.path;
           const capture = reference && r.op !== 'stage' ? await captureDocument(reference,actor.directory,resource => ctx.permission.assert({sessionID:caller.sessionID,agent:caller.agent,source:{type:'tool',messageID:caller.messageID,id:caller.id},action:'read',resources:[resource]}),r.op === 'bind' || r.op === 'start' ? undefined : previous ? {...previous.document,canonicalPath:previous.boundCanonicalPath} : undefined) : undefined;
-          const receipt = store.apply(r,actor,capture,child);
+           guard();
+           need(current.list({limit:1}).captureEnabled,'disabled');
+           const receipt = current.apply(r,actor,capture,child);
           return {content:JSON.stringify(receipt)};
         } catch (e) {
           const error = e instanceof ProgressError ? e : storageError(e);
@@ -61,28 +125,16 @@ export default Plugin.define({ id:'agent-progress', async setup(ctx) {
       },
     });
   });
-  const control = store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
-  deactivate = await registerActivation(ctx,b.source,()=>control.get()?.enabled===1,{
-    storeId:b.storeId,
-    read:request=>store.resumePlans(request),
-    identity:(sessionID,alive,signal)=>identity(sessionID,'unknown',{alive,signal}),
-  });
-  delegation = await registerDelegation(ctx,{
-    store,sourceId:b.source.id,
-    identity:(sessionID,alive,signal)=>sessionIdentity(ctx,b.source,sessionID,'unknown',{alive,signal,sameScope:true}),
-  });
-  await ctx.rpc.register(ProgressStatus,{inspect:async()=>{const tool=(await ctx.tool.list()).find(t=>t.id==='agent_progress_report');return{protocolVersion:2,version:b.version,storeId:b.storeId,sourceId:b.source.id,captureEnabled:store.list({limit:1}).captureEnabled,toolAvailable:!!tool,codemodeDisabled:tool?.options?.codemode===false};}});
-  store.observeLoaded(b.source.id,b.installId,activationFingerprint(b,readFileSync(fileURLToPath(import.meta.url)),readFileSync(new URL('./SKILL.md',import.meta.url))));
-  return async () => { try { await delegation?.dispose(); await deactivate?.(); } finally { store.close(); } };
+   await ctx.rpc.register(ProgressStatus,{inspect:async()=>{guard();const tool=(await ctx.tool.list()).find(t=>t.id==='agent_progress_report');guard();return{protocolVersion:2,version:managed?RELEASE:b.version,storeId:b.storeId,sourceId:b.source.id,captureEnabled:store!.list({limit:1}).captureEnabled,toolAvailable:!!tool,codemodeDisabled:tool?.options?.codemode===false};}});
+   await initialize();
+   return async () => { retired=true;abort.abort();const cleaning=cleanup();await starting?.catch(()=>{});await cleaning;await cleanup(); };
   } catch(error) {
     // No disposer is returned when setup rejects. Never strand the opened store,
     // and do not let a secondary close failure replace the setup diagnostic.
-    try { await delegation?.dispose(); } catch { /* preserve setup diagnostic */ }
-    try { await deactivate?.(); } catch { /* preserve setup diagnostic */ }
-    try { store.close(); } catch { /* preserve the original setup failure */ }
+     retired=true;abort.abort();await cleanup();
     throw error;
   }
-} });
+}
 
 const START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0.
 When starting or revising a plan, put real prerequisites in each task's optional dependencies array: IDs of tasks in the same plan that must finish first (max 16). Omit it when none are known; never add links just for list order or infer them from titles, sessions or activity. When replacing items in revise or stage/commit, include all still-needed links; omitted dependencies are not retained. Do not ask the user to fill them in. Links neither set blocked nor enforce execution.

@@ -11,14 +11,19 @@ export interface HealthFacts { service: string; scope: string; installation: str
 export const unknownFacts = (): HealthFacts => ({service:'unknown',scope:'unknown',installation:'unknown',loaded:'unknown',capture:'unknown',report:'not-checked',viewer:'unknown',version:'unknown',platform:'unknown',tools:'unknown'});
 function serviceState(code:string){return ({busy:'busy',corrupt:'damaged',schema:'incompatible',storage:'store-unavailable',NOT_GRANTED:'not-approved',DISABLED:'paused'} as Record<string,string>)[code]??'unavailable';}
 export function setupFacts(s: SetupView): HealthFacts {
-  return {...unknownFacts(),service:s.diagnostics.some(d=>['storage','busy','corrupt','schema'].includes(d))?serviceState(s.diagnostics.find(d=>['storage','busy','corrupt','schema'].includes(d))!):'observed',installation: !s.configured ? 'not-configured' : s.installed ? 'installed' : 'not-observed',
-    loaded:s.activation === 'reload-required' ? 'reload-required' : s.activation === 'control-applies-to-loaded-instances' ? 'matching-observation' : 'unknown',
+  const d = s.delivery;
+  if (d) return {...unknownFacts(),service:s.diagnostics.some(x=>['storage','busy','corrupt','schema'].includes(x))?serviceState(s.diagnostics.find(x=>['storage','busy','corrupt','schema'].includes(x))!):'observed',
+    installation:d.configuration === 'invalid' ? 'invalid-binding' : d.configuration === 'unconfigured' ? 'not-configured' : 'managed-configured',
+    loaded:d.migration === 'unavailable' ? 'unknown' : d.migration === 'available' || d.migration === 'conflict' || d.migration === 'pending' ? 'legacy-unresolved' : ({unknown:'unknown','not-observed':'not-observed',matching:'matching-observation',different:'different-bytes'} as const)[d.observation],
+    capture:s.captureEnabled === true ? 'on' : s.captureEnabled === false ? 'off' : 'unknown',
+    version:d.expectedVersion && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(d.expectedVersion)?d.expectedVersion:'unknown'};
+  return {...unknownFacts(),service:s.diagnostics.some(d=>['storage','busy','corrupt','schema'].includes(d))?serviceState(s.diagnostics.find(d=>['storage','busy','corrupt','schema'].includes(d))!):'observed',installation:'legacy-unsupported',
     capture:s.captureEnabled === true ? 'on' : s.captureEnabled === false ? 'off' : 'unknown',
     version:s.version && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(s.version) ? s.version : 'unknown'};
 }
 const allowed: Record<keyof HealthFacts, readonly string[]> = {
   service:['unknown','observed','busy','damaged','incompatible','store-unavailable','not-approved','paused','unavailable'],scope:['unknown','association-unknown','source-mismatch','selected-source'],
-  installation:['unknown','not-configured','installed','not-observed'],loaded:['unknown','reload-required','matching-observation'],capture:['unknown','on','off'],
+  installation:['unknown','not-configured','installed','not-observed','managed-configured','invalid-binding','legacy-unsupported'],loaded:['unknown','reload-required','matching-observation','different-bytes','not-observed','legacy-unresolved'],capture:['unknown','on','off'],
   report:['not-checked','recorded-revision','unavailable','context-changed'],viewer:['unknown','stale','selected-report','revision-changed'],version:[],platform:['unknown'],tools:['unknown'],
 };
 /** Serialization starts from a fixed schema, never from setup, diagnostics or a plan object. */

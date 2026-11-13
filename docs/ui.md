@@ -126,7 +126,7 @@ announce again; a delayed callback cannot restore the earlier language.
 
 ## Reporting health
 
-Reporting health is a secondary footer control beside Setup and Details, including when the normal read fails. Opening it shows seven compact labelled status rows with visual indicators; meaning never relies on color alone. Explanations and the support summary are collapsed disclosures, so routine progress reading is not interrupted by diagnostic prose. Opening it or selecting Refresh observations performs a bounded read-only check. Installation, matching loaded-companion observation, capture, selected recorded revision and viewer freshness are explained separately. A matching load does not establish every running instance or restricted child session has the tool. Select a plan to check its recorded revision; unknown states remain explicit.
+Reporting health is a secondary footer control beside Setup and Details, including when the normal read fails. Opening it shows seven compact labelled status rows with visual indicators; meaning never relies on color alone. Explanations and the support summary are collapsed disclosures, so routine progress reading is not interrupted by diagnostic prose. Opening it or selecting Refresh observations performs a bounded read-only check. Configured delivery, matching loaded-companion observation, capture, selected recorded revision and viewer freshness are explained separately. Unknown/not observed and differing loaded bytes are distinct; differences warn, not block otherwise authorized reporting. A matching load is not a heartbeat or proof that every running instance or restricted child session has the tool. Select a plan to check its recorded revision; unknown states remain explicit.
 
 The support summary is previewed in a labelled selectable text area. Copy is explicit, reports success only after clipboard acceptance, and offers manual copying on failure. It contains fixed observation enums and a numeric version, with private context excluded. No upload, persistent cache, synthetic plan, repair or automatic restart occurs. Account/store/source, selection/filter/archive/search, capture and failed-viewer changes retire the observation; otherwise it remains labelled as the last explicit check.
 
@@ -651,7 +651,66 @@ Only the progress story is in the normal reading order. These live in one collap
 
 ## Setup UI (`ui/shared/setup.ts`)
 
-Phases come from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `reload-required` (selected files without a matching observed load), `removed`, `recovery` (staged files present). Rules:
+### Managed configuration and migration
+
+Only `delivery.kind:managed`, revision 1 enables managed controls. Old, missing or
+unknown delivery metadata is unsupported, with neither managed mutations nor a
+global-install fallback. The normal form accepts only an optional private store;
+the service resolves source roots and returns the exact reviewed targets. Typed
+and deliberately cleared store input survives hints, cancellation, failed/late
+inspection and refresh. Account changes retire reviews.
+
+Configured managed status is reread on the existing successful visible list or
+search-freshness refresh cadence, without another polling loop. A deferred native
+load can therefore replace the initial not-observed state in the same frame even
+though managed activation remains unknown. Store/binding adoption retires old
+setup replies and requests replacement status for the adopted context.
+
+Review explains full-user plugin/service privileges and conditional lifecycle.
+After acknowledgement, mutations echo only the reviewed store, opaque expected
+identity and `confirmed:true`. No executable bytes, arbitrary roots or global
+configuration edit is supplied. Pending controls retain native/logical focus with
+`aria-disabled`/busy semantics and guarded activation, not duplicate submissions.
+
+Available/pending legacy migration appears in the shared reading order, including
+the rail, as **Switch to extension-managed capture**. Invalid/conflicting state
+offers no switch. Completion is not loaded-companion proof. An uncertain failure
+drops consent and rereads status before a new explicit inspection/confirmation;
+there is no automatic retry, enable, global restoration or staging cleanup.
+Partial recovery explains capture off and retained files; interrupted removal can
+be a full-ownership conflict requiring separately authorized manual cleanup.
+Crash-retained configuration locks remain busy, not automatically taken over.
+Ownership/identity conflicts do not remove **Turn off capture** for a verified
+selected managed Store. It uses the same review, acknowledgement, Confirm/Cancel
+and focus-return flow, but never switches to migration consent or edits legacy
+files. Enable and migration remain unavailable. Operational inspection failures
+instead show localized **inspection unavailable** copy, the fixed underlying
+diagnostic and **Retry inspection** (`setup-retry`), not ownership cleanup advice.
+This state uses `setup-migration-unavailable`; it does not claim a matching load.
+Verified capture-off remains available here too; retry only rereads status.
+
+Cancel initially owns confirmation focus if the opener still owns focus. Space
+toggles acknowledgement; Enter confirms; Escape/Cancel returns to the opener.
+After a confirmed result, return to that opener or Setup heading if it disappeared;
+never reclaim focus the user moved. English/Russian labels, errors, disclosures
+and accessible names share the existing localization owners and narrow layouts.
+
+Unknown mode copy distinguishes watched-file disposal from caller-owned
+`OPENCODE_CONFIG` fallback requiring explicit restart. Binding/history survive
+disable/removal. Terminal, external/remote, isolated-space and VS Code runtimes
+are outside managed reach; legacy and explicit **Add to global config** copies
+can outlive the extension. Closing a view is not disable. A held-permission report
+cannot append after retirement, but its session may require interruption: no
+graceful cancellation guarantee. Host updates choose companion bytes. Differing
+loaded bytes warn only, explicitly weaker than private hash-attested legacy
+payloads; matching is not heartbeat, inventory or progress proof.
+
+### Historical legacy UI reference (not the managed path)
+
+The following describes retained compatibility helpers and historical UI evidence,
+not controls offered by the current managed Setup. Its three-root global install,
+separate companion update and removal instructions do not apply to normal setup.
+Legacy phases came from `GET /v1/setup`: `unconfigured`, `installed`, `disabled`, `reload-required` (selected files without a matching observed load), `removed`, `recovery` (staged files present). Legacy rules:
 - **Prefill.** An unconfigured service may add `suggestions` (`configRoot`, `dataRoot`, `storeRoot`, each `{ value, state: 'resolved' | 'candidate' }` or `null`) to `GET /v1/setup`.
   - The form appears as soon as health says the service is not set up, with "Looking for your OpenCode folders on this computer…" while the reply is pending. Hints fill only fields the user has not typed in; a deliberately cleared field counts as typed.
   - Precedence: configured targets (no form) > the user's edits > suggestions. Late replies, the setup refresh an unconfigured frame does on navigation, and inspect errors never overwrite an edited field. A later unknown (`null`) hint never wipes an earlier prefill.
@@ -759,7 +818,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - Rail and page: after the companion update notice and the reload note, and also in the not-set-up state, since the check doesn't depend on companion setup or the store.
   - Work Status: a compact "Official main 0.2.5 available" line that opens the rail; retained stale knowledge adds "check out of date" visibly and qualifies the tooltip.
   - Work Status uses the host sidebar's horizontal gutters and scrolling, without an extra guest inset or reserved scrollbar gutter; its vertical padding and the full rail/page spacing are unchanged.
-  - The companion notice, its review and the reload note are unchanged and independent.
+  - The official-main notice remains independent of managed delivery/load observations; the separate companion notice above is historical legacy UI, not the managed update path.
 - **When it checks.**
   - Each visible frame asks once at host readiness, then when due: the reply's `nextCheckAt`, bounded to 5–60 min, so a skewed browser clock stays within the bounds.
   - One request per frame at a time. A hidden or disposed frame starts none and drops a retired reply.

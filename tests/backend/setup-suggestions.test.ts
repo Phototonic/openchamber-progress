@@ -10,6 +10,7 @@ import { createServer as createNetServer } from 'node:net';
 import { SetupController } from '../../service/setup-controller.ts';
 import { createProgressServer } from '../../service/server.ts';
 import type { HostPathContext } from '../../service/suggestions.ts';
+import { isolatedEnvironment } from '../fixtures/managed.ts';
 
 const payload={plugin:'export default {id:"fixture",setup(){}}',guidance:'Synthetic fixture',removal:'// unused fixture',version:'0.2.2'};
 function fixture(){
@@ -127,12 +128,15 @@ test('QA8 compiled service main uses only the fresh host HOME hints, not project
     if(builtFixture)fs.copyFileSync(builtFixture,`${f.root}/main.js`);
     else assert.equal(spawnSync('bun',['build','service/main.ts','--target=node','--format=esm',`--outfile=${f.root}/main.js`],{stdio:'ignore'}).status,0);
     const reservation=createNetServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as any).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
+    const env=isolatedEnvironment(`${f.root}/isolated`);env.HOME=`${f.root}/home`;env.XDG_CONFIG_HOME=`${f.root}/home/.config`;env.XDG_DATA_HOME=`${f.root}/home/.local/share`;
     const before=snapshot(f.root);let failed=false;
-    child=spawn(process.execPath,[`${f.root}/main.js`],{cwd:`${f.root}/custom-config`,env:{PATH:'/usr/bin:/bin',HOME:`${f.root}/home`,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'synthetic-compiled-service-only',AGENT_PROGRESS_BINDING:`${f.root}/selector/binding.json`},stdio:'ignore'});child.once('error',()=>{failed=true;});
+    child=spawn(process.execPath,[`${f.root}/main.js`],{cwd:`${f.root}/custom-config`,env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'synthetic-compiled-service-only'},stdio:'ignore'});child.once('error',()=>{failed=true;});
     let reply:any;const end=Date.now()+5000;
     while(Date.now()<end){assert.equal(failed,false);assert.equal(child.exitCode,null);try{const r=await fetch(`http://127.0.0.1:${port}/v1/setup`,{headers:{authorization:'Bearer synthetic-compiled-service-only'},signal:AbortSignal.timeout(500)});if(r.ok){reply=await r.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
     assert.ok(reply,'compiled service readiness');unverified(reply);
-    assert.deepEqual(reply.suggestions,{configRoot:{value:f.config,state:'resolved'},dataRoot:{value:f.data,state:'resolved'},storeRoot:{value:`${f.data}/openchamber-progress`,state:'resolved'}});
+    assert.equal(reply.delivery.kind,'managed');assert.equal(reply.delivery.configuration,'unconfigured');
+    const review=await fetch(`http://127.0.0.1:${port}/v1/setup/managed-inspect`,{method:'POST',headers:{authorization:'Bearer synthetic-compiled-service-only','content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(3000)});
+    assert.equal(review.status,200);assert.deepEqual((await review.json()).delivery.review.targets,{configRoot:f.config,dataRoot:f.data,storeRoot:`${f.data}/openchamber-progress`});
     assert.deepEqual(snapshot(f.root),before);
   }finally{
     if(child&&child.exitCode===null&&!child.signalCode){const exit=once(child,'exit');child.kill('SIGTERM');const timer=setTimeout(()=>child?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}

@@ -28,7 +28,7 @@ const env = {
   PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`,
   XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`,
   OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:',
-  AGENT_PROGRESS_BINDING: `${root}/binding.json`, RESUME_EVENTS: `${root}/events.jsonl`, RESUME_SDK: `file://${root}/sdk.mjs`, RESUME_FAIL: `${root}/fail`,
+  RESUME_EVENTS: `${root}/events.jsonl`, RESUME_SDK: `file://${root}/sdk.mjs`, RESUME_FAIL: `${root}/fail`,
   RESUME_PHASE: process.argv[4],
 };
 fs.writeFileSync(`${root}/sdk.mjs`, 'export function createResumeFixture() { return {}; }\n');

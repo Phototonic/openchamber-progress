@@ -1,620 +1,257 @@
-# Safe global companion setup (production v2)
+# Extension-managed capture setup
 
-The board's **Reporting health** action explains observed installation, loaded companion and capture state alongside a selected stored report. It does not restart OpenCode, test a model, create reports or inspect conversations. When a reload is required, restart OpenCode yourself when convenient; other already-running instances may retain earlier files. A previewable support summary excludes folders, identifiers and user content. See [reporting observations](contracts.md#reporting-health-observations) for the evidence and privacy limits.
+## Install, review, confirm
 
-Package versions follow semantic versioning from 1.0.0; protocol/schema remain 2,
-independent of the package version. Read this checkout or
-distribution's version from its included [package.json](../package.json).
-[GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
-identifies published tags and assets after main promotion and successful workflow
-checks. A development checkout can share a package version with a release while
-containing additional unreleased changes.
+Use **OpenChamber 2.7.1 or later**. Install Agent Progress through **Settings →
+Extensions**, using the repository Git URL or a release ZIP. No consumer build,
+dependency installation or permanent global plugin is needed. Git installs execute
+the committed JavaScript. The extension contributes `build/companion`, including
+the existing report tool, inline skill and native guidance.
 
-The [repository changelog](https://github.com/Phototonic/openchamber-progress/blob/main/CHANGELOG.md)
-records technical release history; GitHub Releases contain only curated user-facing
-notes and editorial contributor credits, with a version-plus-headline title.
-This guide is included in both distribution archives. Other repository guides
-are linked online where needed; local evidence references below are not shipped
-files. Historical package labels are corrected to0.2.0/0.2.1; earlier raw local QA
-records keep their original labels.
+Approval includes **Add a plugin to OpenCode** and **Allow and enable**. Plugin
+code runs inside OpenCode with the account's full access, like the extension's
+service. Declining approval or a host policy refusal is not bypassed. Installation
+approval alone does not authorize selecting existing progress data.
 
-Initial lifecycle validation used disposable roots, with no real-user installation
-in that validation boundary. Fixture validation proves isolated lifecycle behavior,
-not activation or compatibility in every existing installation.
-OpenChamber service permission runs code with full user privileges; the UI must
-show that disclosure plus target paths/version and the separate lifecycle BEFORE
-installing. Uninstalling/closing the extension does NOT disable global capture.
-Disable/remove capture explicitly. Setup/removal retain history; there is no
-automatic purge. Separately, the progress views can explicitly archive/restore a
-finished plan or confirm permanent deletion of its stored progress. Original plan
-files remain untouched. First cleanup creates a private recovery snapshot in the
-store folder; deletion does not securely erase backups, journals or free pages.
-Keep cleanup guards/tombstones during application rollback; never automatically
-restore that snapshot or reset schema2 to undo cleanup. Older readers may show
-archived records; older writers remain fenced. See the
-[reporting and cleanup contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md).
+Open **Agent progress → Setup**. Optionally choose a dedicated private progress
+store, inspect it, and review the resolved config/data scope and exact store.
+Explicit acknowledgement and confirmation are required. Config/data roots must
+already exist, be canonical, belong to the current account and pass platform
+checks. They are not inferred from a project, PID, browser or account label.
+Unsupported `OPENCODE_DB` or `OPENCODE_CONFIG_DIR` scope overrides are refused.
+The service's scope observation is not proof of the runtime's effective scope;
+the companion independently validates it.
 
-During service admission and reads, if the current build encounters a newer base
-schema or run storage format, it
-leaves the store untouched, keeps setup status reachable, and shows “Progress
-data needs an update” through fixed `schema` diagnostics rather than a startup
-delay. Update the extension and companion; restarting or retrying does not make
-an unsupported format compatible. This does not alter released 1.0.0 behaviour.
-Install/update against an already unsupported run store is refused with `schema`
-before selecting a companion or changing the binding, capture or store. This
-preflight does not cover a concurrent upgrade during the action: store or
-installation changes may occur before admission refuses the store with `schema`,
-with no automatic rollback. The capture-disabling fallback checks compatibility
-and disables capture atomically, so it never disables an unsupported store.
-The exact older epochless format-1 shape is a supported activation input, not an
-unsupported store: setup and progress remain available, install/update can select
-the companion, and only its explicit activation migrates run storage. Run reads
-remain unavailable until that activation; service startup is not blocked.
+The private store is a directory, not a SQLite filename or the OpenCode data
+directory itself. A custom store remains an explicit choice; existing unrelated
+sources remain readable but do not grant reporting authority. A matching retained
+source is reused only when unambiguous. Corrupt, future-schema, foreign or unsafe
+state is refused without reset, permission repair, takeover or deletion.
+
+The sole managed descriptor is
+`<OpenCode data root>/agent-progress-managed/progress-binding.json`, beside a fixed
+product ownership marker. Both processes derive the data root from absolute,
+canonical `XDG_DATA_HOME` plus `opencode`, or HOME/homedir plus
+`.local/share/opencode` **only when XDG data is absent**. An invalid explicit XDG
+value is an error, not permission to fall back. `XDG_STATE_HOME`,
+`AGENT_PROGRESS_BINDING`, package siblings and project folders are not production
+managed discovery selectors. No root scanning or automatic legacy adoption occurs.
+
+Opening Setup, inspecting status or loading an unconfigured companion creates no
+binding directory, marker, descriptor or store. Confirmed configuration creates
+private product state (0700 directories and 0600 files on Linux, equivalent ACLs
+on supported Windows). Mutable state never lives in the extension code folder.
+After configuration, the next eligible native context/report boundary can activate
+a previously dormant companion; no global install or automatic restart is needed.
+
+## Reach and disable/removal
+
+| Delivery | Effect and limits |
+| --- | --- |
+| OpenChamber-owned watched managed config file | After the host removes the contribution and disposes it, later reporting stops. Re-enable can resume using validated retained state; normally no restart is needed. This is not an instantaneous UI-click deadline. |
+| Caller-owned `OPENCODE_CONFIG` / content fallback | Changing the extension toggle requires an **explicit OpenCode restart** to change the runtime contribution. The toggle alone is not a live-stop guarantee. |
+| External local/remote server, terminal OpenCode, isolated spaces, VS Code | Not delivered or captured by this extension-managed path. Shared directories do not extend its reach. |
+| Legacy plugin or explicit host **Add to global config** entry | Independent of the extension and can outlive its disable/removal. Deliberately remove that separate entry; the extension never silently edits user configuration. Do not add one for normal setup. |
+
+The service currently reports delivery mode as unknown, so Setup and reporting
+health explain these alternatives rather than claiming to know the live mode.
+Closing a progress view does not disable capture. Disable/removal retains the
+store, binding, expected metadata and history. Reinstallation validates retained
+state; it does not reset it. An in-flight report held at read permission cannot
+append a late report/capture after retirement, but its session may still need
+explicit interruption. **Graceful session cancellation or bounded session
+completion is not guaranteed.** Never automatically restart a real instance.
+
+## Legacy migration and recovery
+
+For at least one release, Setup supports a single confirmed **Switch to
+extension-managed capture** for a fully validated canonical legacy installation.
+A folder name alone is not ownership. Inspection validates its complete ownership
+manifest, releases, descriptor and actual Store/source identity. Modified or
+foreign files are a conflict, not permission to delete them. A different selected
+store/source refuses before disabling or changing either selection.
+
+Busy, corrupt, unsupported-schema or platform inspection failures instead show
+**inspection unavailable**, with the fixed underlying diagnostic. Resolve that
+failure and retry inspection; unavailable does not mean ownership conflicts or
+authorize manual deletion. During either conflict or unavailability, **Turn off
+capture** remains available if the selected managed Store/source verifies. Its
+review and explicit confirmation change only that Store's capture flag; no
+legacy ownership/removal check is needed, no legacy files change, and an
+unselected legacy Store is not controlled. Enable and migration stay fail-closed.
+
+The reviewed confirmation explains the narrower managed reach, retained history,
+global discovery removal and possible reload. Immediately before mutation,
+ownership and identity are checked again. Migration disables capture, uses the
+existing verified `remove-capture` operation, durably writes the same-target
+managed selection and expected metadata, then enables only after those steps
+succeed. Store/source IDs, reports, receipts, captures, cleanup fences, run
+records, installation history and retained legacy payloads survive. Successful
+filesystem removal is not proof of managed activation.
+
+An uncertain/failed reply must be inspected before retry. Setup can show a pending,
+capture-off state and offer a fresh explicit same-target review/confirmation.
+Failures before removal or after recorded complete removal can be recovered by
+that bounded retry. **An interruption midway through sequential discovery-file
+removal can leave an incomplete package that fails full ownership validation.**
+That is a conflict: do not automatically repair/delete remaining files, restore a
+global loader or enable capture. Preserve the pending selection and retained
+files. Manual cleanup requires a separately authorized review of the retained
+ownership/removal receipt and the exact remaining product files; never recursively
+delete a config/store directory or remove unrelated files to clear the conflict.
+
+A crash while holding the private configuration lock leaves **busy** state. There
+is no time-based stale-lock takeover or automatic lock deletion. Stop only the
+known configuration operation, establish that no owner is active, and arrange
+separately authorized manual recovery of the exact lock after verifying the
+private selection. Do not treat busy as absent configuration or select a new store.
+
+Already-running legacy processes may retain code after discovery removal. Stop or
+reload those processes explicitly if global execution must end before capture
+resumes. The host may also need an explicit affected-location reload to retire a
+cached legacy duplicate-ID winner. No runtime is restarted automatically.
+
+The standalone companion archive and `build/setup/main.js` are **legacy/recovery
+support**, not a new global-install journey. An existing owned install's
+`remove.js disable` / `remove.js remove-capture` can disable/remove its verified
+discovery files even after extension absence; history and payloads are retained.
+These utilities preserve their original ownership checks. They do not remove a
+manually added host global-config entry or grant authority over modified files.
+Updating a pre-managed default-only loader refuses with
+`legacy-update-requires-managed-migration` before selecting or staging a release.
+The previous selected release keeps working. Use Setup's **Switch to
+extension-managed capture** rather than updating that loader to managed-only code.
+
+## Updates, observations and integrity
+
+Host extension updates now choose companion bytes under the host's approval/update
+rules. There is no independently selected normal-path companion version or
+per-companion-update confirmation. The separate official-main GitHub metadata
+notice remains informational and unchanged; it neither installs nor audits code.
+Package versions are independent of protocol/schema 2. A development checkout can
+share a version label with a release; labels alone do not prove identical bytes.
+
+Reporting health separates configured delivery, last loaded-companion observation,
+capture control, selected recorded revision and viewer freshness. Load is not a
+heartbeat, effective tool inventory, a report receipt or completion. Restricted
+sessions can lack the report tool despite an earlier matching load. Its bounded
+explicit check does not probe conversations, restart OpenCode or call a model.
+Previewable support text excludes paths, IDs, fingerprints, timestamps and content.
+
+The service records expected package/version/binding fingerprints in owned private
+store metadata; the companion records its successful activation observation.
+Unknown/not observed, matching, and differing loaded bytes are distinct. A
+same-version difference **warns only** and does not stop otherwise authorized
+reporting/guidance. Binding, ownership, schema, control and permissions still fail
+closed. An unavailable expected observation is unknown, never matching or authority
+to recreate a missing store.
+
+**This is explicitly weaker than the former private hash-attested immutable
+payloads.** These observations measure bytes read around activation, not publisher
+authenticity or proof of exactly what a cached importer executed. A restart/update
+may establish a new baseline. Coordinated same-account changes can agree. Folder
+installs reference host-controlled source; ZIP permissions follow the host/umask,
+and shared writable groups can permit cross-user modification. The extension does
+not chmod host-installed code or promise private payload permissions. Inspected
+Git updates use two renames, and ZIP replacement also has an absent-path interval:
+neither is a gap-free atomic exchange. Ownership-manifest release selection and
+hash-attested payload descriptions apply only to retained legacy installations.
+
+## Data, failure and rollback
+
+Plans and captured documents live in the dedicated private SQLite store and can
+contain sensitive text and paths. Treat stores, backups and screenshots as private.
+Disable/removal does not purge or securely erase anything. Explicit archive/restore
+and confirmed permanent plan deletion are separate progress-view actions; original
+plan files remain untouched. First cleanup creates a private recovery snapshot.
+Deletion does not erase backups, journals or free pages. Preserve cleanup guards,
+tombstones and run records through rollback; never reset schema or automatically
+restore a snapshot to undo cleanup.
+
+Unsupported base schema/run storage stays untouched; health/setup remain reachable
+with fixed diagnostics. Restore valid ownership/access or use a compatible build;
+restarting cannot make a future format compatible. Reads revalidate and can recover
+when access is restored, without automatic reset or permission repair.
+
+Code rollback retains private selection/history but older services may not discover
+the new descriptor. Migration does not reinstall global capture on rollback.
+Prefer forward recovery with a compatible managed build. Deliberate legacy recovery
+requires separately authorized verified retained targets, not store downgrade or
+automatic global restoration.
 
 ## Proactive guidance after loading
 
-With verified companion/source identity, capture enabled and `agent_progress_report`
-available in the agent's effective tools, the loaded companion supplies recurring
-primary-context guidance without a manual skill load or prompt/config change.
-No Slim integration or particular agent name is required. Explicit reports remain
-authoritative; structured/conversation-only/non-Markdown plans need no source file.
-
-Successful native2.1.4 `write` (create/replacement) or `edit` on `.md`/`.markdown`
-under `plans`/`.plans`, or a `plan.md`/`plan.markdown` basename, may add one conditional
-hint at the next eligible context. README/TODO, arbitrary filenames, shell writes,
-opaque patches and unknown tools/shapes are not detected. Detection reads no file
-contents and does not capture, bind or infer readiness/completion. Generic guidance
-still offers an opportunity for uncovered/non-MD planning; compliance is not assured.
-Hints are bounded process-local state, coalesced and forgotten on delivery or
-disable/restart; recorded progress is retained. Neither guidance nor a hint is a
-report receipt. Hidden/restricted tools are never enabled or bypassed.
+Verified binding/source, enabled capture and effective `agent_progress_report`
+availability gate recurring native guidance. No named agent, planner, manual skill
+load or global prompt edit is required. Reporting remains best-effort model
+participation; guidance never infers progress or completion. Structured/non-Markdown
+plans require no source file. Conditional plan-file and dispatch/tracker hints read
+no document bodies and do not themselves report, capture or grant restricted tools.
 
 ## Git distribution validation and main promotion
 
-The public Git source is `https://github.com/Phototonic/openchamber-progress.git`,
-with default branch `main`. Its manifest is publicly readable; the selected ref
-determines the installed files and package version. The root `private: true` is
-an npm publishing guard, not a statement about GitHub visibility.
-OpenChamber clones the selected/default ref and inspects its existing runtime
-entries; it does not install dependencies or compile TypeScript. The root manifest
-is used as committed, not repaired into a ZIP manifest. Required generated backend
-files are `build/service/main.js`, `build/companion/{index.js,package.json,SKILL.md}`
-and `build/setup/main.js`, alongside the three existing guest HTML/JS entries.
-Other generated output, bindings, DBs, dependencies and local QA records are excluded.
+The Git URL is `https://github.com/Phototonic/openchamber-progress.git`; selected refs
+determine committed bytes. `private:true` prevents npm publication, not Git access.
+Git, folder and ZIP packages carry the declared companion folder plus service,
+setup, background and all three guests. No consumer compilation/dependency fetch.
+Standalone release assets remain compatible legacy/recovery transports.
 
-Develop runtime changes on `dev`; promote ready versions to `main` after review
-and validation. Runtime promotion requires complete builds:
-
-1. Accept final guest and backend inputs, with no overlapping writers during the
-   artifact join. Maintainers stage the exact required outputs; allowlisting a file
-   is not proof it has been committed. No partial runtime build on main.
-2. Select a higher semver for the future promotion, with root manifest, RELEASE,
-   compiled service/companion and companion metadata agreeing. The completed
-   baseline promotion selected 0.2.5; version 0.2.6 starts the automated-release
-   sequence. Archived 0.2.4 artifacts stay unchanged.
-   Git validation derives disposable higher versions from the candidate.
-3. Inspect the candidate Git tree's ordinary runtime files and match their hashes
-   to the accepted artifact projection. No consumer prepare/build/dependency fetch.
-4. Pass actual supported host Git default-main install/check/explicit-update and
-   pinned tag/custom-branch tests, plus folder/ZIP and companion lifecycle gates.
-   A higher manifest without its service must fail inspection and preserve the old
-   installation. Metadata awareness is not a remote runtime-file audit.
-5. With maintainer approval and the native-host gates above complete, promote the
-   exact accepted projection, not a reconstructed build. A higher numeric package
-   version reaching main makes the included workflow eligible to run portable checks
-   and automatically publish a matching `v<version>` tag, extension/companion ZIPs
-   and checksum inventories for the exact tested SHA. Commit matching
-   `release-notes/<version>.md` in the version-bump PR: its first-line headline
-   becomes `Agent Progress v<version>: <headline>`, and its curated Markdown body
-   is the entire release body, with no generated change list. The preparer and
-   reviewer check outside-contributor thanks and a final New contributors section
-   when applicable. CI posts a non-blocking reminder on version bumps; credits
-   remain editorial and never gate publication. See [release preparation](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#prepare-curated-release-notes)
-   for the format, validation, body comparison and no-overwrite recovery policy.
-   Same-version pushes, including 0.2.5 launch setup, create no tag/release and do not
-   bootstrap an empty release history. Automation never bumps versions or commits
-   to main. Portable CI is not native-host certification or a causal performance
-   diagnosis. Fixture success does not establish activation in an existing installation.
-
-Portable CI requires a fresh disposable checkout and refuses nonempty artifact
-directories without deleting archives. Its external-runtime exclusions and current
-main/dev push and PR-target coverage are documented in
-[CONTRIBUTING.md](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#portable-ci--fresh-disposable-checkout-only).
-OpenChamber update awareness remains based on the main manifest, not GitHub Releases;
-companion updates and activation still require explicit review/confirmation/reload.
-
-Focused Git gate (requires an isolated supported host installer module):
+Develop on `dev`, target `dev`, and promote accepted matching built entries only
+with maintainer approval. No routine version bump or automatic release is implied.
+Follow [CONTRIBUTING](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md)
+for full-history disposable CI, nine-entry parity, SDK validation and release policy.
+Never clear existing archives to make CI run. Actual host folder/ZIP/Git and native
+runtime gates remain separate from portable checks.
 
 ```sh
 AGENT_PROGRESS_HOST_MODULE=<isolated-host-install.js> \
   node --experimental-strip-types scripts/verify-git-package.ts <candidate-Git-tree-projection>
 ```
 
-Supply a source-tree projection without `.git`/dependencies/local data, retaining
-the actual root manifest and all intended tracked sources/runtime files. The driver
-creates and removes its own real Git main/dev/bare/ref repositories and isolated
-host registries. It maps only one synthetic HTTPS fixture URL to local real Git
-clone/fetch/show, while exercising host public-address/no-redirect policy. No real
-Git configuration or credentials are used. Its synthetic higher version is built
-only in that disposable tree using already-installed dependencies, never the
-production source version. A loopback official-main metadata fixture serves the
-same real Git main manifest. Service startup uses the installed clone without a
-consumer build. This proves installer/ref mechanics, not live GitHub reachability.
-
-The initial Git mechanics check uses validated baseline guest runtime bytes; final
-validation repeats against stable current guest/backend bytes and real browser
-checks of all three frames. Fixture results do not establish real-install activation.
-
-## Resolve, inspect, confirm
-
-### Historical0.2.2 input workaround / fix included in0.2.5
-
-The archived local0.2.2 utility rejected trailing directory separators in
-disposable reproductions, even on otherwise valid absolute owned folders. The
-reported installed invocation was not traced, so this is not a proven cause
-of the UI symptom. For that archived utility, the workaround was to enter all
-three folder paths **without a trailing slash**. Removing
-slashes does not waive any other check: an existing progress-store folder must
-still be private0700. A775/755 store remains intentionally refused; setup never
-silently chmods it. Prefer a new, not-yet-existing dedicated child folder under
-an owned canonical parent, or an already-owned0700 directory. Inspect/dry-run do
-not create it; confirmed install creates the missing private store directory.
-Do not point storeRoot at a SQLite filename or a shared/general Documents folder.
-No real folder permissions are changed by this source fix or its workaround.
-
-The fix included in0.2.5 strips only terminal directory separators, then applies
-the existing canonical-path, symlink, ownership, collision and privacy checks.
-Relative paths, dot/traversal spellings and symlink aliases remain rejected.
-Resolved targets in replies/descriptors use canonical spellings without redundant
-terminal separators.
-This is not in the archived0.2.2 artifacts; the0.2.5 main distribution below
-includes it. The existing0775-store refusal remains intentional.
-
-Supply and explicitly review canonical **effective** global config/data roots;
-the optional suggestions below do not establish those roots. Do not infer verified
-identity from project paths, the service environment, PID or account label. Global
-config and OpenCode data directories must already exist, belong to this account,
-and not contain symlink aliases. Progress store is its own explicit private local
-directory outside repositories (0700 on Linux; private account ACLs on Windows);
-it is not OpenCode's auth DB. No config JSON,
-agent instructions or project files are edited by setup.
-
-The stable runtime tested here resolves XDG config/data plus opencode; the
-producer refuses unsupported OPENCODE_DB/OPENCODE_CONFIG_DIR scope overrides.
-Custom XDG roots are tested; arbitrary channels/platform path conventions are
-not silently advertised. Same-host/account/local-filesystem only. Store/schema
-or source mismatch fails closed and preserves bytes. Corrupt/future stores need
-deliberate recovery outside this V1 tool, not an automatic reset/downgrade.
-
-### Best-effort setup suggestions
-
-On an unconfigured Linux or supported Windows service, `GET /v1/setup` adds optional `suggestions` for
-configRoot/dataRoot/storeRoot. Unsupported hosts omit it; configured targets always win.
-Each field is `{value,state:'resolved'|'candidate'}` or null (unknown).
-
-- `resolved`: an owned candidate directory was observed without a symlink alias,
-  not authoritative effective OpenCode scope or verified source identity.
-- `candidate`: an honest default based on this **service host's** HOME/XDG hints,
-  not the browser/relay viewer's OS, project, cwd or bundled executable.
-- Unknown inputs remain null; no arbitrary path is invented. Absolute XDG bases
-  override HOME/.config and HOME/.local/share; both append opencode. Relative or
-  traversing overrides are unknown, not resolved against the extension directory.
-- The store suggestion is `<suggested dataRoot>/openchamber-progress`, inheriting
-  dataRoot's state as provenance only. It is a dedicated directory, not a DB file
-  or the whole OpenCode data directory; it need not exist yet or already have0700.
-
-All fields remain editable. Configured targets outrank user edits, and user edits
-(including deliberate clearing) outrank hints. The UI must preserve them across late
-hints, refreshes and failed inspections, never rederive over a manual store choice.
-The mandatory inspect -> resolved-target review -> acknowledge/confirm sequence
-is unchanged. Hints do not set targets, verified state or any binding. Installed
-OpenCode overrides may be filtered out of the service environment; a successful
-stat cannot rule them out or prove the active scope. Custom explicit roots remain
-supported through the existing validation path.
-
-Discovery only stats/realpaths the two candidate roots. It never reads config/auth
-contents, searches recursively or spawns a CLI: even `opencode debug paths` can
-mkdir during initialization and is not automatically safe read-only discovery.
-Opening or inspecting writes nothing to setup targets. The service's existing
-private selector-state bootstrap is a separate product write outside that promise.
-The 0.2.5 distribution joins this service with the accepted upgrade UX;
-source-level observation still does not establish effective OpenCode scope.
-
-### What storeRoot contains
-
-storeRoot is a **directory**, separate from OpenCode's own config/data roots:
-
-- `progress.sqlite`: the product's SQLite store. It holds store/source IDs,
-  capture-enabled control, plans/items, revisions, receipts, attribution and
-  captured document bytes/hashes. Latest-loaded activation metadata also lives
-  here. It is not OpenCode's credential/session database.
-- SQLite transaction journal/side files when needed (default rollback journal),
-  in that same private directory; do not relocate or delete them independently.
-- `payloads/<content hash>/`: immutable companion release `index.js`, `SKILL.md`
-  and `progress-binding.json`; old/unreferenced releases are retained for recovery.
-  Interrupted release staging may leave `payloads/.staged-*` folders.
-- `installation-history.jsonl`: append-only install/update/control/removal events,
-  not a substitute for plan revision history (which stays in SQLite).
-
-The discovery loader, ownership manifest and standalone `remove.js` live under
-configRoot/plugins/agent-progress, not at storeRoot. The service's stable selector
-is separate product state described below. No OpenCode auth DB is copied here.
-Store contents can include private plan text and absolute source/project paths,
-which is why a dedicated0700 folder/0600 database is required. Removal retains
-this store/history/payloads; there is no automatic purge or secure-erasure claim.
-
-After building backend output with the existing pinned tooling, example commands
-(replace EVERY /resolved path with the inspected canonical targets):
-
-```sh
-node build/setup/main.js inspect --config-root=/resolved/config/opencode --data-root=/resolved/data/opencode --store-root=/resolved/state/agent-progress
-node build/setup/main.js dry-run --config-root=/resolved/config/opencode --data-root=/resolved/data/opencode --store-root=/resolved/state/agent-progress
-# Explicit approval only after inspecting targets/privilege/lifecycle:
-node build/setup/main.js install --config-root=/resolved/config/opencode --data-root=/resolved/data/opencode --store-root=/resolved/state/agent-progress --confirm=true
-```
-
-Update is the same command with action update. Inspect/dry-run never create dirs,
-DBs or descriptors. Mutations require confirmation. Known resolved targets can
-also be managed through the fixed setup HTTP routes in docs/contracts.md. No
-request may supply executable payloads, URLs, commands, SQL or binding-file paths.
-
-## Ownership, activation and interruption
-
-### Bundled companion detection
-
-Existing setup status reads automatically compare a verified selected immutable
-release against the bundled update candidate. `update.state` is `current` only
-when the binding-derived release identity and plugin/guidance bytes match, not
-merely when version labels match. Different bytes are `available` for an equal or
-higher bundled version, or `newer-installed` when the installed version is higher.
-The latter is a possible downgrade warning, not an upgrade recommendation.
-Unconfigured/removed/unverified/modified/unavailable states omit comparison rather
-than claiming success. No automatic update, new route or polling loop is added.
-Updates still require inspection/review and explicit confirmation on existing roots.
-
-Status `version` comes from the selected immutable release. `update.rootVersion`
-is diagnostic metadata from the verified initial root package, whose loader,
-guidance and removal utility intentionally remain unchanged across updates. A
-0.2.2 root with a selected 0.2.3 release is valid; it does not mean the selected
-payload is still 0.2.2 or that the removal utility was upgraded. This preserves
-the existing root layout and standalone utility policy.
-
-Being current on disk does not establish activation: a separate reload-required
-note can remain until a matching loaded observation. No loaded version is invented
-and last-observed availability is not a live census. Progress refreshes do not
-audit payloads; comparison runs only on existing setup reads.
-
-Owned package is configRoot/plugins/agent-progress. An ownership manifest pins
-install identity, root-file hashes and immutable release hashes. Foreign folders,
-extra/modified files, symlink escapes and descriptor changes refuse takeover.
-Unrelated shared config is byte-preserved. Source namespace/store UUID survive
-updates and removal/reinstall. DB/history is never recursively deleted.
-
-Payloads stage OUTSIDE discovery. Initial activation renames a complete package
-into place. Update stages a self-contained SDK-bundled immutable release under
-storeRoot/payloads, then atomically switches ONE ownership manifest. Stable loader
-reads the selection at setup time (not module-import cache time), validates
-hashes and delegates setup. The previous runnable release stays intact until the
-switch and is retained for recovery. File/parent sync precedes acknowledgement.
-No runtime npm/Bun dependency fetch or consumer TypeScript compilation.
-Values embedded in the discovery loader are serialized as JavaScript literals
-with HTML delimiters and Unicode line separators escaped; filesystem paths
-retain their original values when the loader runs.
-
-Interrupted staging/activation is not silently cleaned or relabeled success.
-Inspect distinguishes staged files/releases, unreferenced finalized releases and
-retained rollback payloads; current version comes from the verified selection.
-Rerunning the same explicit update can finish activation, while ownership checks
-still apply. Never delete/overwrite an unknown staged or modified file to force a
-pass. An interrupted operation after activation-before-reply may already have
-selected the new version; inspect it rather than assuming rollback or retrying
-destructively. This is not a history manager or an automatic schema rollback.
-
-Install/update replies mean FILE installation; activation=reload-required remains
-until the selected payload matches the most recently observed successful
-tool/skill/RPC setup. An unchanged already-observed payload needs no new reload.
-No automatic global service restart. Production read-only RPC
-agent-progress-status.inspect reports protocol/version/toolAvailable and stable
-source/store IDs for supported SDK clients. Initial backend validation proved it in an owned EMPTY2.1.4
-runtime, including update/reload, without model calls. A service cannot discover
-real source auth merely to probe activation; credential-transfer helpers are test-only.
-
-The matching companion explicitly upgrades private run storage to format 2 on
-activation; GETs, health checks and ordinary opens never migrate it. Exact current
-format-1 run data remains readable beforehand, but new-service reconciliation and
-dismissal require activation. Ship the matching service/guest outputs together,
-after the muted-disclosure prerequisite with no intervening release. Explicitly
-reload already-running old run-aware companions when convenient; never restart
-them automatically. Installation success alone does not prove that reload.
-
-Until reloaded, an already-running older companion can still advance the
-observation epoch allocator and run revision when it reconnects or disposes,
-retiring held read cursors. This does not grant new continuity evidence or clear
-incomplete coverage. It cannot record, clear or dismiss recording-gap state,
-change the format, or perform its other guarded run writes. Existing loss,
-sequence and dismissal checkpoint stay intact. Reloading with the matching
-companion ends this old-observer behaviour.
-
-Before activation, reverting code needs no store change. After upgrade, older
-run-aware binaries may reject health/capture with a schema error. Keep the store
-intact and recover forward with format-2-capable binaries; there is no automatic
-down-migration, loss reset, fence deletion or restoration of stale backups. An
-older backup may discard later progress and needs separate owner authorization.
-Pre-run base schema-2 writers retain their independent progress compatibility,
-not format-2 run-writing capability. Recording gaps remain permanently disclosed
-as incomplete coverage; ageing or dismissing attention never deletes history.
-
-The isolated Linux OpenCode 2.2.6 built-release rehearsal confirms this boundary:
-updating the released 1.0.0 companion leaves format 1 and `reload-required` until
-the real location reload activates the current companion. Reinstalling 1.0.0
-after migration and reloading makes that companion fail activation with
-`Error: schema`; its status RPC is unavailable. Setup can still show
-`installed: true` and `captureEnabled: true` alongside `reload-required` and
-`rollback-payloads-retained`—those flags do not prove capture is active. The
-matching current service can still read the intact upgraded store. Restore the
-matching companion and explicitly reload to recover; do not downgrade the store.
-This is a real isolated OpenCode loader check, not an OpenChamber desktop update-UI
-or Windows/macOS check; recording inputs were synthetic and no model was used.
-See the [rehearsal scope](compatibility.md#isolated-built-release-upgrade-rehearsal).
-
-The [isolated OpenChamber 2.7.0 desktop rehearsal](compatibility.md#isolated-desktop-upgrade-rehearsal)
-also confirmed the same-version **Review update** → confirmation → **Update**
-flow. Selecting the bundled companion files did not migrate the store until
-Settings → General → **Restart OpenCode** loaded them. Folder **Reinstall**
-requested extension permissions again; it was not the version-based update offer.
-
-Rolling the extension back after migration can prevent its service from starting
-and hide setup controls behind **Progress service is not responding** / **It may
-still be starting. Try again in a moment.** In the desktop rehearsal, retry and
-restart did not repair that incompatible released extension. Restoring the matching
-current extension recovered access without rewriting the stored plan/run facts.
-Keep the upgraded store intact rather than interpreting this startup wording as
-permission to reset it or downgrade its schema.
-
-## Disable, enable, remove after extension uninstall
-
-Installed package includes a self-contained remove.js utility and descriptor:
-
-```sh
-node /resolved/config/opencode/plugins/agent-progress/remove.js disable
-node /resolved/config/opencode/plugins/agent-progress/remove.js enable
-node /resolved/config/opencode/plugins/agent-progress/remove.js remove-capture
-```
-
-Disable is a transaction checked by every loaded reporter, not just a skill flag.
-Enable is explicit. Remove first disables, then removes only verified root package
-files. Modified/foreign files stay intact with a fixed diagnostic; it does not
-restart or kill real OpenCode. Existing loaded code cannot keep writing after
-disable. Immutable acknowledged payloads, installation history, plans, revisions,
-receipts and captures remain. There is no secure-erasure claim or data purge.
-The utility remains usable after the OpenChamber extension is uninstalled because
-it lives with the separate global companion, not guest preference storage.
-
-## Host service binding and setup UI
-
-Host supplies allocated loopback port/bearer; guest uses serviceRequest only.
-The authoritative service descriptor lives outside the extension package at
-`$XDG_STATE_HOME/agent-progress-service/progress-binding.json`, falling back to
-`$HOME/.local/state/agent-progress-service/progress-binding.json`. This is the
-service's own private product state, NOT a guess at OpenChamber/OpenCode paths or
-an automatic choice of source roots. It is one selected binding per account/XDG
-state scope. Explicit absolute AGENT_PROGRESS_BINDING overrides remain available
-to directly launched services; use an external owned path, not a package path.
-Normal host isolation inherits its own HOME/XDG state scope. Separate concurrent
-host bindings need separate state scopes; conflicting descriptor changes refuse
-rather than silently overwriting another service's selection.
-
-The dedicated service-state directory and ownership marker are private (0700/0600
-on Linux, account ACLs on Windows); the descriptor is atomically replaced after
-flushing its file contents. Foreign/modified state,
-descriptor collisions and symlink aliases fail closed. A missing descriptor is
-an explicit unconfigured state; it never authorizes source-root guessing.
-Service GET /v1/setup and POST inspect
-show targets without writes. Install/update uses only the packaged companion and
-removal payload, persists its own descriptor atomically, and refuses a foreign or
-modified descriptor. Reads pin that store/source identity after explicit setup.
-The service never reads arbitrary canonical files; it returns captured DB text.
-Extension folder/ZIP replacement does not remove its authoritative descriptor.
-A valid legacy package-local descriptor is adopted only if stable state is
-absent; a later package default cannot override stable state. Adoption never edits
-the legacy file. If an old0.2.0 updater already deleted that only legacy copy
-before0.2.1 ever ran, its roots cannot be safely rediscovered: use the
-explicit update-with-the-same-roots recovery once. Future replacement preserves
-the new stable selection. An already deleted descriptor is not magically restored.
-
-Details of routes, confirmation bodies, version/activation/error fields and
-read-only paging are frozen in the
-[reporting contracts](https://github.com/Phototonic/openchamber-progress/blob/main/docs/contracts.md). Production panel ID remains
-agent-progress-probe to preserve Work Status openSurface; labels are Agent progress.
-Package assembly joins built backend entries with the three guest frames. The
-initial backend-only validation did not produce an installable extension ZIP;
-the shipped artifacts are described below.
+Use only disposable source projections, unmodified isolated installers and synthetic
+profiles. No live profile/auth, real-instance restart or paid model is a test input.
 
 ## V1 installable artifacts
 
-V1 describes the product scope. In the filenames below, `<version>` is the package
-version from the selected distribution's root `package.json`; extension and
-companion payload versions must agree. The panel ID and Agent progress manifest
-labels are unchanged. These artifacts are unsigned; checksum inventories verify
-content integrity, not publisher signatures.
-
-For maintainers assembling from source, use a fresh disposable checkout and
-accepted backend and guest entries. `bun run build:backend` rebuilds only the
-backend; rebuild affected guests separately before assembly. `bun run package`
-copies guest bytes unchanged. See the
-[build and packaging instructions](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#built-files-are-intentional).
-After assembly, `build/artifacts/` contains:
-
-- `agent-progress-extension-<version>/` and `.zip`: host manifest, the three guest
-  HTML/main.js frames copied unchanged, self-contained service, companion and
-  setup utility. No consumer compilation, dependency installation or network
-  dependency fetch is needed. The service runs in the host's Node runtime, not Bun.
-- `agent-progress-companion-<version>/` and `.zip`: standalone companion installer,
-  using the same build/companion and build/setup layout. **Do not** put this ZIP
-  directly into OpenCode's plugins folder; invoke its setup utility instead.
-- `sha256.txt`: per-file and ZIP SHA-256 inventory. Compare it before installation.
-- `entries-<version>.sha256`: canonical sorted filename/content-hash inventory for
-  these two folders. Reassembly must reproduce these entries, not ZIP container
-  bytes: ZIP timestamps/headers can change without changing any payload entry.
-
-Select the extension and companion pair from the same release. Superseded,
-incorrectly labelled unreleased builds remain local QA history only.
-
-With explicit approval, use OpenChamber's extension installer on the extension
-folder or ZIP. Review sessions and host-service privileges before granting them.
-The host installer accepting a package does not grant permissions or activate the
-global companion. In the extension setup view, inspect resolved roots and confirm
-installation separately. No binding descriptor/private store is shipped.
-
-Alternatively, extract the companion ZIP to a dedicated directory, change into
-that directory and run the inspect/dry-run/install commands above (`node
-build/setup/main.js ...`). Use Node 24.x >= 24.19.0 (tested on 24.19.0; later 24.x
-accepted but not separately certified) or the already-proved supported host
-runtime with built-in SQLite. Native Windows has the additional boundary below.
-Do not assume other platforms or custom runtime channels were verified.
-
-For update, keep the newly extracted packaged build/companion and build/setup
-siblings together and invoke its `update` with the same explicit targets. Inspect
-the selected version and reload the intended OpenCode session/location explicitly.
-Never restart a real instance automatically. Pending reload persists across
-service restarts but clears when a successfully loaded producer records the
-matching selected binding/version/plugin/guidance fingerprint. Changed bytes at
-the same version still need reload. Observations are optional additive SQLite
-metadata and do not change protocol/schema2 or progress history;0.2.0 readers
-remain compatible but old producers do not emit acknowledgements. No model call,
-source-auth discovery, heartbeat or new HTTP acknowledgement route is involved.
-This is last-observed availability, not proof that every concurrent old process
-has stopped. The existing activation/control values and diagnostic codes remain.
-Shared-store inspect ignores other-source payloads when diagnosing unused
-versions; truly unreferenced same-source payloads retain the existing code.
-
-Disable capture through setup controls or the installed standalone `remove.js
-disable`; enable is equally explicit. To remove the extension, **disable/remove
-capture separately first** if it should stop. `remove.js remove-capture` removes
-only verified owned discovery files after disabling, retaining database/history
-and immutable payloads. Removal works after extension absence; deleting the
-extension alone does not stop an already loaded global companion.
-
-If a configured store becomes unreadable, setup retains the configured roots and
-reports its fixed store diagnostic rather than offering an unconfigured success.
-Restore its correct ownership/access or resolve the reported corruption/schema
-problem without deleting history. Health/setup/read requests each revalidate once;
-recovery is automatic once access is restored. Reinstall/update still requires
-explicit confirmation and valid owned files; there is no automatic reset or
-repair of corrupt/future stores.
-
-### Maintainer verification
-
-With the [native test prerequisites](https://github.com/Phototonic/openchamber-progress/blob/main/CONTRIBUTING.md#local-development)
-and accepted guest bundles, `bun run check` runs the root typecheck, backend tests,
-backend build, package assembly and package verification. Verification includes
-parser, entry, version, packaged-service, lifecycle and synthetic packaged-tool
-guidance checks. UI typechecking and browser tests are separate; the portable CI
-instructions linked above cover them and generated-entry parity.
-For the actual host installer gate, set AGENT_PROGRESS_HOST_MODULE to the existing
-isolated host's extracted `server/lib/guests/install.js` module before that command.
-It installs the folder and ZIP into disposable extension registries only; no app
-or guest is launched. System `zip`/`unzip` are build/QA tools, not consumer runtime
-dependencies.
-
-### Historical release and validation notes
-
-Version 0.3.0 packaged the readiness view, focus controls and session-chip readability changes. Version 0.2.9 packaged
-the accepted cleanup and session-scoping changes. Version 0.2.8 added native
-Windows setup, storage and document capture, preserved retained-source
-reinstallation, and included clearer progress invocation and working-plan selection.
-See the [native Windows boundary](#native-windows). Version 0.2.7 corrected external
-worktree project grouping, filtering and session discovery using bounded workspace
-membership; unknown ownership retains a directory fallback. That release's backend
-behavior was unchanged from 0.2.6. The 0.2.6 version-only release added no runtime behavior to
-0.2.5. The 0.2.5 promotion-metadata patch
-added no feature behavior to0.2.4. It retained accepted cached-revisit/
-spinner and bounded latest-switch refresh fixes, editable setup prefill, host-side
-suggestions, preserved separator normalization and failed-setup Store cleanup.
-The smaller-import experiment was not promoted; no persistent-service Store reuse
-or payload-audit cache was added. That patch distinguished the distribution from
-installed/archived0.2.2; it is not a complete performance cure.
-It also joined automatic advisory companion comparison and explicit review/update
-UX; updates remain user-confirmed and activation remains separate. Publication of
-0.3.0 does not activate an installed companion; historical real0.2.3 update
-observations and their pending-load status are unchanged. Protocol/schema remain2.
-
-The original V1 packaging validation recorded final runtime/relay checks on its
-labelled test ZIP with byte-identical guest bundles. Reassembly added artifact
-gates; it did not repeat that full runtime/relay run or change a retained fixture.
-This is historical evidence for those tested bytes, not certification of a later
-checkout or newly assembled archive. Local-only QA evidence (not shipped):
-`evidence/package/m2-checks.txt`, canonical entry/hash inventories, and the packaging
-addendum in `evidence/backend/qa.md`.
-
-The cached-revisit/spinner and bounded refresh issues, and failed-setup connection
-cleanup, have focused regression evidence. The reported hours-long real-host
-sluggishness was **not established** by isolated diagnostics. Real use of0.2.4
-was reported issue-free. The short low-load soak is not proof of an
-hours-long leak's absence, and no new agent-run long soak or causal fix is claimed.
-Public source checks remain separate. No real installation,
-auth transfer, model call or automatic
-restart is part of packaging validation.
+Historical V1 standalone/global installation evidence describes its tested bytes,
+not managed-delivery certification. Current package versions come from included
+`package.json`; published tags/assets are on GitHub Releases. Native platform and
+host evidence, including unavailable checks, is recorded in the compatibility
+guide. Historical companion-update confirmations are not the managed update path.
 
 ## Native Windows
 
-The native path uses the existing TypeScript/JavaScript payloads and built-in
-Windows PowerShell 5.1/.NET APIs. There is no additional executable, native addon,
-compiler, PowerShell module or consumer dependency install. The service and
-companion invoke a fixed noninteractive, profile-free script with UTF-8 JSON
-through stdin; folder text is never executable command text. Missing or blocked
-PowerShell produces an explicit setup/privacy error.
+Native filesystem protection uses existing JavaScript and built-in Windows
+PowerShell 5.1/.NET, not a new executable/compiler/module. Fixed profile-free,
+noninteractive scripts receive UTF-8 JSON through stdin; paths are not executable
+command text. Missing/blocked PowerShell is a fixed privacy/setup failure.
 
-The first security query in each loaded runtime (the service and the companion
-each have their own) has a 30-second timeout per attempt, allowing headroom for a
-slow cold PowerShell launch. Only its first timed-out attempt is retried, exactly
-once with identical inputs: at most 60 seconds of configured wait, once per loaded
-runtime. This first-query budget is consumed
-even on failure. Every later query uses a single 10-second attempt with no retry.
-These bounds exclude process termination/OS overhead and are not deadlines for
-an entire setup operation. Non-zero exits, other spawn errors and malformed
-results are never retried. Both first-query attempts timing out still reports
-`windows-security-unavailable` with reason `timeout`; no path is accepted without
-a completed, successfully parsed security result.
+The first security query per loaded service/companion has a 30-second attempt and
+one identical retry only on timeout (up to 60 seconds configured wait). Later
+queries have one 10-second attempt. Termination/OS overhead is additional; these
+are not setup-operation deadlines. Non-zero exits, spawn errors and malformed
+results are not retried. No path is admitted without parsed security evidence.
 
-Use one account and local NTFS storage. Config/data roots must be owned by that
-account. The dedicated store, payload and service-state roots must have private
-ACLs allowing only that account, SYSTEM and Administrators. New owned roots get
-their ACL at creation and children inherit it; permissive/foreign existing roots
-and parents that unrelated accounts can replace are refused. Setup does not take
-ownership, elevate, repair unrelated ACLs or change existing parent permissions.
-Choose a dedicated private local folder rather than a shared/public temporary
-location. Database journals and side files stay under the secured store root.
-Hard-linked owned state files are refused. Ancestors must also have a trusted
-owner (current user, SYSTEM, Administrators or Windows TrustedInstaller), since
-owners can change permissions even without an explicit write rule; product state
-itself still requires the current user as owner.
+Use one account and local NTFS storage. Config/data roots require current-account
+ownership; dedicated store and managed state require private ACLs permitting only
+that account, SYSTEM and Administrators. New roots get ACLs at creation; existing
+foreign/permissive roots or replaceable ancestors are refused, not repaired or
+taken over. Ancestor ownership must be current user, SYSTEM, Administrators or
+TrustedInstaller. Owned hard-linked state files are refused. Journals/side files
+remain under the secured store. No elevation is attempted.
 
-Ordinary drive-qualified paths accept either separator and trailing directory
-separators, including spaces and Unicode. Actual file/directory identities handle
-Node/Bun spelling differences; directory names are not blindly lowercased.
+Drive-qualified paths support either separator, spaces, Unicode and trailing
+directory separators through actual identity checks, not blind lowercasing.
 Traversal, junction/reparse escapes, UNC/network roots, device namespaces,
-alternate data streams and reserved-name aliases are refused. Long-path and
-other-filesystem compatibility is not established. Suggestions follow the tested
-OpenCode home/XDG formulas; APPDATA is not assumed to be OpenCode's configuration.
+alternate data streams and reserved aliases are refused. Long paths and other
+filesystems are not certified; APPDATA is not assumed to be OpenCode config.
 
-Fresh document capture checks requested and canonical read permissions before
-bytes, compares the opened file to its pre-open identity, reads the same bounded
-descriptor, then checks file/ancestor identity and mutation metadata again.
-Ordinary source documents do not need the private-store ACL policy. Capture
-failure retains prior text and does not discard valid structured progress.
-This Windows implementation assumes trusted same-account processes; it does not
-claim Linux's final-opened-path proof against a coordinated hostile filesystem race.
-
-Windows flushes written files using writable descriptors, stages on the destination
-volume and atomically selects owned payloads. Previous releases and committed
-history remain available after process interruption; incomplete activation staging
-refuses unsafe removal before the runnable selection is deleted. Windows does not
-use POSIX directory fsync and does not claim identical namespace persistence through
-sudden power loss. Linux's file ownership, modes, safe reader and directory syncing
-remain unchanged. Installed, selected and loaded code remain distinct states;
-reload/update and companion disable/removal still require explicit actions.
-
-The measured native configuration is Windows 11 Pro x64/NTFS, OpenCode 2.1.4 and
-OpenChamber 2.5.2. This is not an all-Windows/all-architecture certification. See
-the compatibility guide for the observed runtimes and bounded verification.
+Capture checks requested/canonical permissions, opened-file identity and bounded
+bytes, then file/ancestor identity and mutation metadata. Source documents do not
+need private-store ACLs. Failure retains prior text and valid structured reports.
+Trusted same-account processes are assumed; this is not Linux final-opened-path
+proof against coordinated hostile filesystem races. Windows flushes writable file
+descriptors but lacks POSIX directory fsync/power-loss namespace guarantees.
+Historical private payload selection remains legacy-specific, not a claim about
+host-managed executable folders. Historical Windows 11 x64/NTFS, OpenCode 2.1.4 /
+OpenChamber 2.5.2 evidence does **not** certify Windows managed-host delivery.

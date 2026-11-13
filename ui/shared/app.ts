@@ -112,7 +112,7 @@ export interface ViewContext<U> {
   requestHistory: (plan: PlanView) => void;
   setup: Loadable<SetupView> | null;
   requestSetup: () => void;
-  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean) => Promise<SetupResult>;
+  runSetup: (action: SetupAction, targets: SetupTargets | null, confirmed: boolean, expected?: string) => Promise<SetupResult>;
   storage: HostClient['storage'];
   identity: string;
   cleanup: CleanupState;
@@ -791,7 +791,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         listReads++;
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
-        if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
+        if (setupRefreshDue()) loadSetup();
         failure = null; lastGoodAt = Date.now();
         if (ctx) spec.refreshed?.(context());
         runs?.poll();
@@ -822,13 +822,14 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (result.ok) {
       const nextHealth = result.health;
       let authorityChanged = false;
-      if (health && health.ready !== nextHealth.ready) { setup = null; loadSetup(); }
+      if (health && health.ready !== nextHealth.ready) { setup = null; setupSerial++; }
       const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
         // Initial adoption is a context transition too: consumers must learn the identity
         // before a user choice, not discover it on the next host-session switch.
         authorityChanged = nextIdentity !== identity;
+        if (authorityChanged) { setup = null; setupSerial++; }
         // A hand-off belongs to the old store/binding: it never focuses or announces in the new one.
         if (identity && authorityChanged) { ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
@@ -852,7 +853,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
       // Setup status (reload-required, capture off) is shown on every surface. A pending reload is
       // re-read each refresh so the notice clears once the service observes the loaded companion.
-      if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
+      if (setupRefreshDue()) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
       if (ctx) spec.refreshed?.(context());
@@ -947,10 +948,25 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   const docKey = (p: PlanView) => `${p.key}@${p.document.captureId ?? 'none'}:${p.document.state}:${p.revision}`;
 
+  let setupSerial = 0;
+  let setupNeedsRefresh = false;
+  // Reuse the visible list/freshness cadence. Managed activation is observational
+  // (activation remains unknown), so legacy reload-required alone is insufficient.
+  function setupRefreshDue() {
+    return !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
+      setup.value.delivery?.kind === 'managed' && setup.value.delivery.configuration === 'configured');
+  }
   function loadSetup() {
+    if (disposed) return;
+    if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
+    setupNeedsRefresh=false;
+    const serial = ++setupSerial;
+    const current = cleanupContext();
+    const generation = contextGeneration;
     setup = setup && setup.state === 'ready' ? setup : { state: 'loading' };
     void setupCall(host, null).then((r) => {
-      if (disposed) return;
+      if (disposed || serial !== setupSerial || current !== cleanupContext() || generation !== contextGeneration) return;
+      if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }
       const next: Loadable<SetupView> = r.ok ? { state: 'ready', value: r.setup } : { state: 'error', failure: r.failure ?? { kind: 'unavailable', code: r.code, message: r.code } };
       const changed = JSON.stringify(next) !== JSON.stringify(setup);
       setup = next;
@@ -1077,12 +1093,19 @@ export function startView<U>(spec: ViewSpec<U>) {
         bump();
       },
       setup, requestSetup: loadSetup,
-      runSetup: async (action, targets, confirmed) => {
-        const r = await setupCall(host, action, targets, confirmed);
-        if (r.ok && action !== 'inspect') { setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
+      runSetup: async (action, targets, confirmed, expected) => {
+        ++setupSerial;
+        const current = cleanupContext();
+        const generation = contextGeneration;
+        const r = await setupCall(host, action, targets, confirmed, expected);
+        if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
+          if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
+          return {ok:false,code:'context-changed'};
+        }
+        if (r.ok && action !== 'inspect' && action !== 'managed-inspect') { ++setupSerial; setup = { state: 'ready', value: r.setup }; resetCaches(); clearReading(); retry(); }
         // A refused action may mean the installation changed: re-read setup once, so the update
         // notice reflects the service again rather than the read the action started from.
-        if (!r.ok && setup?.state === 'ready' && setup.value.configured) loadSetup();
+        if (!r.ok) loadSetup();
         bump();
         return r;
       },
@@ -1400,7 +1423,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     reconcilePreview();
     // While not set up, the read-only setup reply (folder hints) is refreshed on navigation; the
     // form keeps every field the user touched.
-    if (setup?.state === 'ready' && !setup.value.configured) loadSetup();
+    if (!setup || setup.state !== 'ready' || !setup.value.configured) loadSetup();
     schedule();
     if (ctx) { spec.onContext?.(context()); if (moved || failure) retry(); }
   };
@@ -1468,6 +1491,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       planLabels();
       if (ctx) planMain();
       digests?.visible();
+      if (ctx && setupNeedsRefresh) loadSetup();
       retry();
       if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {

@@ -7,8 +7,10 @@ import { parseManifestJson } from '@openchamber/sdk/schemas';
 import { digest } from '../shared/store.ts';
 import { VERSION } from '../shared/progress.ts';
 import { RELEASE } from '../shared/release.ts';
+import { verifyCompanionEntry } from './companion-entry.ts';
 
 const source=JSON.parse(readFileSync('package.json','utf8'));
+verifyCompanionEntry(process.cwd());
 assert.equal(source.version,RELEASE);
 assert.equal(source.license,'MIT');
 assert.match(source.version,/^\d+\.\d+\.\d+$/);

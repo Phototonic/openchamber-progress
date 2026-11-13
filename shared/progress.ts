@@ -95,16 +95,42 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  /** Missing/unknown revision means legacy/unsupported, never managed success. */
+  delivery?: ManagedDelivery;
   reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
   configured: boolean; verified: boolean; installed: boolean; captureEnabled: boolean | null;
   targets: { configRoot: string; dataRoot: string; storeRoot: string } | null;
-  activation: string; separateLifecycle: true; historyRetained: true; diagnostics: string[];
+  activation: string; separateLifecycle: boolean; historyRetained: true; diagnostics: string[];
   version: string | null;
   recovery?: { stagedPackages: number; stagedActivations: number; stagedReleases: number };
   action?: string;
   suggestions?: SetupSuggestions;
   update?: CompanionUpdateRead;
 }
+export type ManagedSetupAction = 'managed-inspect' | 'managed-configure' | 'managed-migrate' | 'managed-enable' | 'managed-disable';
+/** Fixed setup errors, independent of report-tool Code. Pending/conflict are reserved for migration. */
+export type ManagedSetupErrorCode = 'managed-action-required' | 'managed-service-required' |
+  'managed-binding-invalid' | 'managed-binding-modified' | 'managed-path-unverified' | 'managed-scope-unsupported' |
+  'managed-review-stale' | 'managed-selection-conflict' | 'managed-source-conflict' | 'managed-configuration-busy' |
+  'managed-migration-required' | 'managed-migration-conflict' | 'managed-migration-pending';
+export type ManagedMigrationState = 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
+export interface ManagedReview {
+  expected: string;
+  targets: { configRoot: string; dataRoot: string; storeRoot: string };
+  storeId: string | null; sourceId: string | null;
+}
+export interface ManagedDelivery {
+  kind: 'managed'; revision: 1;
+  configuration: 'unconfigured' | 'configured' | 'invalid';
+  migration: ManagedMigrationState;
+  /** Local service cannot establish host grant, inventory or watched-file mode. */
+  mode: 'unknown';
+  observation: 'unknown' | 'not-observed' | 'matching' | 'different';
+  expectedVersion: string | null;
+  review?: ManagedReview;
+}
+/** Inspect takes only optional storeRoot; mutations echo its reviewed expected token and confirm. */
+export interface ManagedSetupRequest { storeRoot?: string; confirmed?: boolean; expected?: string }
 export interface Receipt { plan: string; rev: number; structuralRev: number; changed?: string[]; staged?: number }
 export type Reply = Receipt | { error: Code; rev?: number; hint?: ValidationHint };
 export interface Request {

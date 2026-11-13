@@ -6,6 +6,8 @@ import plugin from '../../plugin/index.ts';
 import { Store } from '../../shared/store.ts';
 import { registerDelegation } from '../../plugin/delegation.ts';
 import fs from 'node:fs';
+import { readBinding } from '../../shared/binding.ts';
+import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
 
 test('built-in-shaped and slim-wrapped-shaped evidence use the same fixed binding path',async()=>{
   // Synthetic replays of the shared structured shape, not separate runtime certification.
@@ -26,7 +28,8 @@ test('registered production entry declares without document permission, routes c
   const store=new Store(`${root}/store/progress.sqlite`,{create:true});store.registerSource(source);store.bindReads(source.id,true);
   const binding=`${root}/binding.json`;fs.writeFileSync(binding,JSON.stringify({protocolVersion:2,schemaVersion:2,installId:'fixture',version:'0.0.0',database:store.file,storeId:store.list().storeId,source}),{mode:0o600});
   const saved=new Map<string,string|undefined>();
-  for(const [key,value] of Object.entries({AGENT_PROGRESS_BINDING:binding,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})) {saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  const env=isolatedEnvironment(root);publishFixtureBinding(env,readBinding(binding));
+  for(const [key,value] of Object.entries({...env,AGENT_PROGRESS_BINDING:undefined,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})) {saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;}
   const streams=new Set<Events>(),hooks=new Map<string,Set<any>>();let tool:any,dispose:(()=>Promise<void>)|undefined;
   const ctx:any={
     location:{directory:`${root}/project`},
