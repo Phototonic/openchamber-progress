@@ -7,7 +7,7 @@ import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
-  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
 
@@ -31,7 +31,7 @@ const LIFECYCLES: Record<string, Lifecycle> = { active: 'active', finished: 'com
 const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', 'missing', 'moved', 'oversized', 'non-text', 'unavailable', 'changed-during-read'];
 
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
-export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
+export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup' } as const;
 export const CAPTURE_ROUTES = { index: '/v1/document-captures', comparison: '/v1/document-comparison' } as const;
 export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture', 'managed-inspect', 'managed-configure', 'managed-migrate', 'managed-enable', 'managed-disable'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
@@ -578,35 +578,6 @@ export function parseSetup(body: string): SetupView {
     action: optStr(v.action),
     ...(s ? { suggestions: { configRoot: hint(s.configRoot), dataRoot: hint(s.dataRoot), storeRoot: hint(s.storeRoot) } } : {}),
     ...(update ? { update } : {}),
-  };
-}
-
-const STRICT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const DIAGNOSTICS: readonly OfficialMainView['diagnostic'][] = ['ok', 'unavailable', 'rate-limited', 'invalid-manifest', 'invalid-response', 'redirect', 'too-large', 'timeout', 'shutdown'];
-const isTime = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v));
-
-/**
- * GET /v1/extension-update. Every field must match the frozen meaning, including the fixed
- * official repository and branch, and the states must agree with each other (an availability
- * names a candidate; unknown has neither candidate nor last success). Anything else throws; the
- * caller treats that as unknown, never as "up to date".
- */
-export function parseExtensionUpdate(body: string): OfficialMainView {
-  const v: unknown = JSON.parse(body);
-  check(isRec(v), 'Update reply is not an object.');
-  const semver = (x: unknown): x is string => isStr(x) && x.length <= 64 && STRICT_SEMVER.test(x);
-  check(semver(v.installedVersion) && v.repository === 'Phototonic/openchamber-progress' && v.ref === 'main', 'Update reply names another extension or source.');
-  check(v.state === 'available' || v.state === 'not-newer' || v.state === 'unknown', 'Update reply has an unknown state.');
-  check((v.checkedAt === null || isTime(v.checkedAt)) && typeof v.stale === 'boolean' && isTime(v.nextCheckAt), 'Update reply has unreadable times.');
-  check(v.candidateVersion === undefined || semver(v.candidateVersion), 'Update reply has an unreadable version.');
-  check(DIAGNOSTICS.includes(v.diagnostic as OfficialMainView['diagnostic']), 'Update reply has an unknown diagnostic.');
-  if (v.state === 'available') check(v.candidateVersion !== undefined && v.checkedAt !== null, 'Update reply announces no version.');
-  if (v.state === 'not-newer') check(v.checkedAt !== null, 'Update reply has no successful check.');
-  if (v.state === 'unknown') check(v.candidateVersion === undefined && v.checkedAt === null && v.stale === false, 'Update reply contradicts itself.');
-  return {
-    installedVersion: v.installedVersion, state: v.state, checkedAt: v.checkedAt as string | null, stale: v.stale,
-    ...(v.candidateVersion !== undefined ? { candidateVersion: v.candidateVersion as string } : {}),
-    diagnostic: v.diagnostic as OfficialMainView['diagnostic'], nextCheckAt: v.nextCheckAt as string,
   };
 }
 

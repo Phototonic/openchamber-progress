@@ -77,7 +77,7 @@ export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, loc
     const labels=Object.entries(text.labels) as [keyof typeof text.labels,string][];
     const managed=managedCopy(locale);
     const short:Readonly<Record<string,string>>={...text.short,'managed-configured':managed.configured,'invalid-binding':text.short.unavailable,'different-bytes':managed.different,'legacy-unresolved':managed.resume,'legacy-unsupported':text.short.unavailable};
-    const explain:Readonly<Record<string,string>>={...text.explain,'managed-configured':managed.reach,'invalid-binding':managed.invalid,'different-bytes':managed.warning,'legacy-unresolved':managed.pending,'legacy-unsupported':managed.unsupported,'matching-observation':managed.observation,'not-observed':managed.missing+' · '+managed.observation,on:managed.on+' · '+managed.observation,off:managed.off};
+    const explain:Readonly<Record<string,string>>={...text.explain,'managed-configured':managed.reach,'invalid-binding':managed.invalid,'different-bytes':managed.warning+' '+managed.observation,'legacy-unresolved':managed.pending,'legacy-unsupported':managed.unsupported,'matching-observation':managed.observation,'not-observed':managed.missing+' · '+managed.observation,on:managed.on+' · '+managed.observation,off:managed.off};
     const positive=new Set(['observed','installed','managed-configured','matching-observation','on','recorded-revision','selected-source','selected-report']);
     const neutral=new Set(['unknown','not-checked','not-observed','association-unknown']);
     const list=el('dl','ap-health-grid');

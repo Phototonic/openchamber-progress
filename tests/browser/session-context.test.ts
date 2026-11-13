@@ -30,6 +30,9 @@ type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void, paintHook?: (vc: ViewContext<Ui>) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
+  const storageCalls: string[] = [];
+  const timers = new Map<number, { fn: () => void; ms: number }>();
+  let timerId = 0;
   const languageStorage: Array<{ op: string; key: string; scope?: string }> = [];
   let languageValue: unknown;
   let languageWrite: Promise<void> | null = null;
@@ -61,8 +64,8 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     return response({ error: 'not-found' }, 404);
   };
   const host = { serviceRequest: (q: GuestRequest) => { requests.push(q); return handler(q); }, storage: {
-    get: async (key: string, options?: { scope: string }) => { if (key !== 'interface-language.v1') return undefined; languageStorage.push({ op: 'get', key, scope: options?.scope }); return languageValue; },
-    set: async (key: string, value: unknown, options?: { scope: string }) => { if (key === 'interface-language.v1') { languageStorage.push({ op: 'set', key, scope: options?.scope }); await languageWrite; languageValue = value; } },
+    get: async (key: string, options?: { scope: string }) => { storageCalls.push(key); if (key !== 'interface-language.v1') return undefined; languageStorage.push({ op: 'get', key, scope: options?.scope }); return languageValue; },
+    set: async (key: string, value: unknown, options?: { scope: string }) => { storageCalls.push(key); if (key === 'interface-language.v1') { languageStorage.push({ op: 'set', key, scope: options?.scope }); await languageWrite; languageValue = value; } },
     delete: async () => {},
   },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
@@ -70,7 +73,9 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
-    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
+    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console,
+    setTimeout: (fn: () => void, ms: number) => { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
+    clearTimeout: (id: number) => { timers.delete(id); },
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
@@ -87,7 +92,6 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
         commitInfoPaint(root: object) { assert.equal(mount.firstElementChild, root, 'dispose previous handles after root replacement'); infoPaints.push({ kind: 'commit', root }); },
       };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
-      if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
     },
   });
@@ -111,7 +115,10 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
   };
   exports.startView(spec);
-  return { requests, paints, contexts, listeners, infoPaints, languageStorage, holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, infoPaints, languageStorage, storageCalls,
+    tick: (ms: number) => { const entry = [...timers].find(([, timer]) => timer.ms === ms); assert.ok(entry, `expected scheduled ${ms} ms refresh`); timers.delete(entry[0]); entry[1].fn(); },
+    visibility: (state: string) => { document.visibilityState = state; listeners['document:visibilitychange'](); },
+    holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
     get focusCalls() { return focusCalls; }, get focusedControl() { return document.activeElement === thisControl(); },
     setFocus: (owns: boolean, active: 'control' | 'body' | 'outside') => { ownsFocus = owns; document.activeElement = active === 'control' ? thisControl() : active === 'body' ? body : { isConnected: true }; },
     focusReturn: (event = 'focus') => { ownsFocus = true; listeners[event === 'focus' ? 'focus' : 'document:focusin']?.(); },
@@ -121,6 +128,52 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     stop: () => listeners.pagehide(),
   };
 }
+
+test('QA-R current controller never asks old services for update metadata or dismissal across its lifecycle', async () => {
+  const cases: Array<{ status: number; body: unknown }> = [
+    { status: 200, body: { state: 'available', candidateVersion: '9.0.0' } },
+    { status: 404, body: { error: 'not-found' } }, { status: 200, body: 'malformed' },
+  ];
+  const results: object[] = [];
+  for (const board of [false, true]) for (const old of cases) {
+    const c = controller(board);
+    let failure: 'none' | 'unconfigured' | 'unavailable' = 'none';
+    let updateCalls = 0;
+    c.intercept(async (q, next) => {
+      if (q.path === '/v1/extension-update') { updateCalls++; return response(old.body, old.status); }
+      if (failure === 'unconfigured' && q.path === '/health') return response({ ...HEALTH, ready: false });
+      if (failure === 'unavailable' && q.path === '/health') return response({ error: 'storage' }, 503);
+      return next();
+    });
+    try {
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true }); await settle();
+      assert.ok(c.vc.read);
+      c.tick(3000); await settle();
+      c.listeners.session({ id: 'B' }); await settle();
+      c.listeners.session(null); await settle();
+      c.visibility('hidden'); await settle();
+      const hiddenRequests = c.requests.length;
+      c.focusReturn(); await settle(); assert.equal(c.requests.length, hiddenRequests);
+      c.visibility('visible'); await settle();
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: true }); await settle();
+      failure = 'unconfigured'; c.vc.retry(); await settle(); assert.equal(c.vc.health?.ready, false);
+      failure = 'unavailable'; c.vc.retry(); await settle(); assert.ok(c.vc.failure);
+      c.tick(8000); await settle();
+      failure = 'none'; c.vc.retry(); await settle(); assert.ok(c.vc.read);
+      assert.equal(updateCalls, 0);
+      assert.ok(c.languageStorage.length > 0, 'language preference remains independent');
+      assert.ok(!c.storageCalls.includes('official-main-dismissed'));
+      assert.ok(!('officialMain' in c.vc));
+      results.push({ surface: board ? 'board' : 'session', oldReply: old.status === 404 ? 'missing' : typeof old.body === 'string' ? 'malformed' : 'available', updateCalls, dismissalCalls: 0 });
+    } finally { c.stop(); }
+  }
+  if (process.env.EVIDENCE) {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    mkdirSync(process.env.EVIDENCE, { recursive: true });
+    writeFileSync(resolve(process.env.EVIDENCE, 'mixed-versions.json'), JSON.stringify({ currentController: results, oldConsumerBase: '676eea9', oldConsumerProof: 'backend/extension-updates.test.ts' }, null, 2));
+  }
+});
 
 test('unfocused background paints defer focus until this frame returns, across repeated replacements', async () => {
   for (const event of ['focus', 'focusin']) {
