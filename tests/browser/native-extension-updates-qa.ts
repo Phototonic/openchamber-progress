@@ -98,6 +98,18 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     await wait(()=>browser.guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'visible requested failure state');await browser.shot(name);
   };
   return {...browser,settings,close,check,available,update,defer,approve,language,russianViews,contexts,routeRequests,openRail,openBoard,stateShot,languageMenuReopens:()=>languageMenuReopens,
-    noNotices:async()=>{for(const s of ['panel','status','page'])assert.ok(!await browser.guest(s,'!!document.querySelector("[data-testid=extension-update-notice],[data-testid=extension-update-line]")'),'no old notice');},
+    noNotices:async()=>{
+      const inspect=async(surface:string)=>{
+        await wait(()=>browser.guest(surface,'!!document.querySelector("[data-testid=plan-title],[data-testid=status-plan-title],[data-testid=plan-list-heading]")&&!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")'),Boolean,`${surface} loaded before notice inspection`);
+        assert.equal(await browser.guest(surface,'!!document.querySelector("[data-testid=extension-update-notice],[data-testid=extension-update-line]")'),false,`${surface} has no old notice`);
+      };
+      await browser.selectSession('Managed acceptance');
+      await openRail();await inspect('panel');
+      await click(`[...document.querySelectorAll('button[aria-label="Close panel"]')].findLast(e=>e.checkVisibility())`);
+      const statusToggle=`document.querySelector('button[aria-label="Toggle work-status panel"]')`;
+      if(!await evaluate(`${statusToggle}?.getAttribute('aria-pressed')==='true'`))await click(statusToggle);
+      await inspect('status');
+      await openBoard();await inspect('page');
+    },
     hostText:()=>evaluate<string>('document.body.innerText')};
 }
