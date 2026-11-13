@@ -2,7 +2,7 @@ import { setImmediate } from 'node:timers/promises';
 import { MENTIONS_ITEMS_MAX, MENTION_TITLE_MAX, MENTION_TEXT_MAX, MENTIONS_RESOLVE_TIMEOUT_MS } from '@openchamber/sdk';
 import { identifier, countItems, ProgressError, requireProgress as need, type Item, type Contribution } from '../shared/progress.ts';
 import { validateDigestSnapshot } from '../shared/change-digest.ts';
-import { searchTokens, searchMatches } from '../shared/plan-task-search.ts';
+import { queryTokens, searchMatches } from '../shared/plan-task-search.ts';
 import { formatComposerSummary } from '../shared/summary.ts';
 import type { SummaryInput } from '../shared/summary-types.ts';
 import type { Store } from '../shared/store.ts';
@@ -27,7 +27,8 @@ export function menuText(text:string):string {
   return flat.slice(0,end)+'…';
 }
 export function searchMentions(store:Store,query:string,directory:string|null,alive:()=>boolean) {
-  const tokens=searchTokens(query),read=store.mentionCandidates(directory,alive);
+  // The 200-code-unit body limit bounds mention queries; /v1/search's 16-token admission limit does not apply here.
+  const tokens=queryTokens(query),read=store.mentionCandidates(directory,alive);
   const candidates=read.candidates.filter(c=>searchMatches(tokens,c.plan.title,c.plan.id));
   candidates.sort((a,b)=>a.locality-b.locality||Number(a.plan.lifecycle!=='active')-Number(b.plan.lifecycle!=='active')||Date.parse(b.plan.reportedAt)-Date.parse(a.plan.reportedAt)||Buffer.compare(Buffer.from(`${a.plan.sourceId}/${a.plan.id}`),Buffer.from(`${b.plan.sourceId}/${b.plan.id}`)));
   return {items:candidates.slice(0,MENTIONS_ITEMS_MAX).map(({plan:p,verified})=>{

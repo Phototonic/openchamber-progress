@@ -7,8 +7,10 @@ import { SEARCH_LIMITS as L, identifier, requireProgress as need, countItems, ty
 const normalize = (s: string) => s.normalize('NFC').toLowerCase().normalize('NFC');
 export function searchTokens(q: string): string[] {
   need(typeof q === 'string' && Array.from(q).length <= L.queryPoints && !q.includes('\0'));
-  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean); need(tokens.length <= L.tokens); return tokens;
+  const tokens = queryTokens(q); need(tokens.length <= L.tokens); return tokens;
 }
+/** Shared normalization without `/v1/search`'s token admission limit; callers bound the query length themselves. */
+export const queryTokens = (q: string): string[] => normalize(q).trim().split(/\s+/u).filter(Boolean);
 export function searchMatches(tokens: string[], title: string, id: string): boolean {
   const t = normalize(title), key = normalize(id); return tokens.every(word => t.includes(word) || key.includes(word));
 }

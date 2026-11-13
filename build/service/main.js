@@ -1206,10 +1206,11 @@ function mutateCleanup(db, file, action, value, transaction) {
 var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
-  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean);
+  const tokens = queryTokens(q);
   requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
   return tokens;
 }
+var queryTokens = (q) => normalize(q).trim().split(/\s+/u).filter(Boolean);
 function searchMatches(tokens, title, id) {
   const t = normalize(title), key = normalize(id);
   return tokens.every((word) => t.includes(word) || key.includes(word));
@@ -1853,7 +1854,7 @@ function menuText(text) {
   return flat.slice(0, end) + "…";
 }
 function searchMentions(store, query, directory, alive) {
-  const tokens = searchTokens(query), read = store.mentionCandidates(directory, alive);
+  const tokens = queryTokens(query), read = store.mentionCandidates(directory, alive);
   const candidates = read.candidates.filter((c) => searchMatches(tokens, c.plan.title, c.plan.id));
   candidates.sort((a, b) => a.locality - b.locality || Number(a.plan.lifecycle !== "active") - Number(b.plan.lifecycle !== "active") || Date.parse(b.plan.reportedAt) - Date.parse(a.plan.reportedAt) || Buffer.compare(Buffer.from(`${a.plan.sourceId}/${a.plan.id}`), Buffer.from(`${b.plan.sourceId}/${b.plan.id}`)));
   return { items: candidates.slice(0, MENTIONS_ITEMS_MAX).map(({ plan: p, verified }) => {

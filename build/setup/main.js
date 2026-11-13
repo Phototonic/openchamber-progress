@@ -2362,10 +2362,11 @@ function capDigest(result) {
 var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
-  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean);
+  const tokens = queryTokens(q);
   requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
   return tokens;
 }
+var queryTokens = (q) => normalize(q).trim().split(/\s+/u).filter(Boolean);
 function searchMatches(tokens, title, id) {
   const t = normalize(title), key = normalize(id);
   return tokens.every((word) => t.includes(word) || key.includes(word));

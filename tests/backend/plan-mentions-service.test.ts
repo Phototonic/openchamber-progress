@@ -28,6 +28,8 @@ test('authenticated POST reads: strict requests, fixed errors, source-qualified 
     assert(rows.find((r:any)=>r.id==='source-beta/P').subtitle.includes('Unverified OpenCode setup'));
     assert(rows.find((r:any)=>r.id==='source-other/P').subtitle.includes('From another OpenCode setup'));
     assert.equal((await(await search(s,'Task-only needle')).json()).items.length,0);
+    // Mention queries are bounded by length only, not by /v1/search's token count.
+    const many=await search(s,'compose '+'fixture '.repeat(16));assert.equal(many.status,200);assert.equal((await many.json()).items.length,3);
     const good=await resolve(s);assert.equal(good.status,200);const {text}=await good.json();assert(text.includes('Review before sending'));assert(text.includes('Reported as of'));assert(text.includes('source\\-alpha/P'));assert(text.length<=16000);
     assert.equal((await(await resolve(s)).json()).text,text);
     assert((await(await resolve(s,'source-beta/P')).json()).text.includes('Unverified OpenCode setup'));

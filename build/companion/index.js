@@ -26563,10 +26563,11 @@ function capDigest(result3) {
 var normalize3 = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
-  const tokens = normalize3(q).trim().split(/\s+/u).filter(Boolean);
+  const tokens = queryTokens(q);
   requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
   return tokens;
 }
+var queryTokens = (q) => normalize3(q).trim().split(/\s+/u).filter(Boolean);
 function searchMatches(tokens, title, id2) {
   const t = normalize3(title), key = normalize3(id2);
   return tokens.every((word) => t.includes(word) || key.includes(word));
