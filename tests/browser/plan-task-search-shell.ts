@@ -31,6 +31,7 @@ import { setupRead } from './fixtures.ts';
 import { CORE_ITEMS, FINISHED_ITEMS, MANY_ITEMS } from './focus-controls-fixtures.ts';
 import { seedMapAttribution } from '../fixtures/dependency-map-attribution.ts';
 import { seedDesignFixture } from '../fixtures/design-refactor.ts';
+import { isolatedEnvironment } from '../fixtures/managed.ts';
 
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };
 const DARK = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
@@ -47,7 +48,7 @@ window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null
 // Keyboard-focus modes only (labelled seams): every /v1/setup read and setup action is answered here
 // from the existing synthetic setup fixture and never forwarded to a service or installation code;
 // "unconfigured" makes /health report not ready. Metadata (method/path/status) is recorded.
-if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='disable')qa.capture=false;if(action==='enable')qa.capture=true;const v=qa.unconfigured?{...${JSON.stringify(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${JSON.stringify(setupRead())},captureEnabled:qa.capture};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
+if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='managed-disable')qa.capture=false;if(action==='managed-enable')qa.capture=true;const v=qa.unconfigured?{...${JSON.stringify(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${JSON.stringify(setupRead())},captureEnabled:qa.capture};v.installed=false;v.separateLifecycle=false;v.delivery={kind:'managed',revision:1,configuration:qa.unconfigured?'unconfigured':'configured',migration:'none',mode:'unknown',observation:'unknown',expectedVersion:'2.0.0'};if(action==='managed-inspect')v.delivery.review={expected:'a'.repeat(64),targets:{configRoot:'/fixture/config/opencode',dataRoot:'/fixture/data/opencode',storeRoot:'/fixture/store'},storeId:null,sourceId:null};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
 const ready=f=>send(f,{type:'ready',payload:{theme,locale:qa.locale??'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.loads={};qa.loaded={};
@@ -151,13 +152,12 @@ async function serve(f: Fixture, built: boolean) {
     // Labelled setup seam (test-only SQL): the generated service binds only to a source whose
     // config/data roots really exist and match the store, so the fixture's synthetic roots are
     // re-pointed to disposable directories before serving. Plans, IDs and search data are unchanged.
-    const env = { PATH: process.env.PATH, HOME: `${f.root}/home`, XDG_CONFIG_HOME: `${f.root}/config`, XDG_DATA_HOME: `${f.root}/data`, XDG_STATE_HOME: `${f.root}/state`, OPENCHAMBER_SERVICE_PORT: '', OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' };
+    const env:NodeJS.ProcessEnv = { ...isolatedEnvironment(f.root), OPENCHAMBER_SERVICE_TOKEN: 'fixture-only' };
     const roots = { configRoot: `${env.XDG_CONFIG_HOME}/opencode`, dataRoot: `${env.XDG_DATA_HOME}/opencode` };
     for (const dir of Object.values(roots)) mkdirSync(dir, { mode: 0o700, recursive:true });
     f.store.db.prepare('UPDATE sources SET config_root=?, data_root=? WHERE id=?').run(roots.configRoot, roots.dataRoot, f.alpha.id);
     const binding = createManagedBindingDirectory(env);
     publishPrivateJson(binding, { protocolVersion: 2, schemaVersion: 2, installId: 'search-fixture', version: RELEASE, database: f.store.file, storeId: f.storeId, source: { ...f.alpha, ...roots } });
-    mkdirSync(`${f.root}/home`, { mode: 0o700 });
     const reservation = netServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
     port = (reservation.address() as { port: number }).port; await new Promise<void>((r) => reservation.close(() => r()));
     child = spawn(process.execPath, [path.resolve('build/service/main.js')], { env: { ...env, ...(process.env.ORCA_PRIVATE_ROOT ? {ORCA_PRIVATE_ROOT:process.env.ORCA_PRIVATE_ROOT} : {}), OPENCHAMBER_SERVICE_PORT: String(port) }, stdio: 'ignore' });

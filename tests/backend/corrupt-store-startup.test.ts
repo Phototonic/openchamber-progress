@@ -15,6 +15,8 @@ import { readBinding } from '../../shared/binding.ts';
 import type { Actor } from '../../shared/progress.ts';
 import { releasedRuntime } from './subagent-release-support.ts';
 import { versionOneFixture } from './subagent-format-support.ts';
+import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
+import { isolatedEnvironment } from '../fixtures/managed.ts';
 
 /** Fixed diagnostics only: no paths, exceptions or rejected values in health or error bodies. */
 const fixedCodes=(values:string[])=>values.every(v=>/^[a-z0-9-]+$/.test(v));
@@ -49,11 +51,15 @@ function fixture() {
   for(const [entry,output]of [['plugin/index.ts','companion/index.js'],['setup/cli.ts','setup/main.js'],['service/main.ts','service/main.js']])assert.equal(spawnSync('bun',['build',entry,'--target=node','--format=esm',`--outfile=${root}/compiled/${output}`],{stdio:'ignore'}).status,0);
   cpSync('plugin/SKILL.md',`${root}/compiled/companion/SKILL.md`);
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
-  const env={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_STATE_HOME:`${root}/state`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`};
+  const env=isolatedEnvironment(root);
   const payload={plugin:readFileSync(`${root}/compiled/companion/index.js`,'utf8'),guidance:readFileSync('plugin/SKILL.md','utf8'),removal:readFileSync(`${root}/compiled/setup/main.js`,'utf8'),version:JSON.parse(readFileSync('package.json','utf8')).version};
   lifecycle('install',targets,payload);
   const installed=readBinding(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'));
-  cpSync(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'),serviceBindingFile(env));
+  cpSync(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'),createManagedBindingDirectory(env));
+  // Explicit legacy utility regressions keep their injected controller; production main is managed.
+  const legacyEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${JSON.stringify(path.resolve('service/server.ts'))};import {SetupController} from ${JSON.stringify(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${JSON.stringify(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${JSON.stringify(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
+  writeFileSync(`${root}/legacy-service.ts`,legacyEntry);writeFileSync(`${root}/payload.json`,JSON.stringify(payload));
+  assert.equal(spawnSync('bun',['build',`${root}/legacy-service.ts`,'--target=node','--format=esm',`--outfile=${root}/compiled/service/legacy-fixture.js`],{stdio:'ignore'}).status,0);
   const database=path.join(targets.storeRoot,'progress.sqlite');
   const actor:Actor={sourceId:installed.source.id,sessionId:'M',agent:'build',directory:'/fixture/Alpha',projectId:'Alpha',parentId:null,ancestry:[],verifiedSource:true};
   const seed=()=>{const store=new Store(database);try{store.apply({op:'start',plan:'P1',oid:'seed-start',rev:0,title:'Last good report',items:[{id:'t1',title:'Only task',kind:'task',status:'working'}]},actor);}finally{store.close();}};
@@ -61,10 +67,10 @@ function fixture() {
 }
 
 /** Mirrors the host rule: the service counts as started once /health answers HTTP 200. */
-async function serve(f:ReturnType<typeof fixture>) {
+async function serve(f:ReturnType<typeof fixture>,legacyFixture=false) {
   const extension=`${f.root}/extension`;mkdirSync(extension,{recursive:true});cpSync(`${f.root}/compiled`,`${extension}/build`,{recursive:true});writeFileSync(`${extension}/package.json`,'{"type":"module"}');
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
-  const child=spawn(process.execPath,[`${extension}/build/service/main.js`],{env:{...f.env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
+  const child=spawn(process.execPath,[`${extension}/build/service/${legacyFixture?'legacy-fixture':'main'}.js`],{env:{...f.env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
   let spawnError=false;child.once('error',()=>{spawnError=true;});
   const request=(route:string,body?:unknown)=>fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
   async function start(){const deadline=Date.now()+8000;let last:unknown;while(Date.now()<deadline){assert.equal(spawnError,false);assert.equal(child.exitCode,null);try{const response=await request('/health');if(response.ok)return (await response.json()) as Record<string,unknown>;}catch(e){last=e;}await new Promise(resolve=>setTimeout(resolve,25));}throw new Error(`service-start ${String(last)}`);}
@@ -121,7 +127,7 @@ test('packaged service admits recorded epoch-bearing format 1 without migrating 
     assert.ok(!(health.diagnostics??[]).includes('schema'));
     const setup=await running.request('/v1/setup');const state=await setup.json();
     t.diagnostic(`format-1 setup ${setup.status} ${JSON.stringify({...state,targets:'fixture targets',reportingIdentity:'fixture identity'})}`);
-    assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.verified,true);assert.equal(state.installed,true);assert.equal(state.captureEnabled,true);
+    assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.verified,true);assert.equal(state.installed,false);assert.equal(state.delivery.kind,'managed');assert.equal(state.captureEnabled,true);
     assert.deepEqual(state.diagnostics,[]);
     assert.deepEqual(state.reportingIdentity,{storeId:binding.storeId,sourceId:f.actor.sourceId,verified:true});
     const plan=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`);const detail=await plan.json();
@@ -191,7 +197,7 @@ for(const action of ['update','install'] as const)test(`packaged ${action} refus
   if(action==='install')rmSync(path.join(f.targets.configRoot,'plugins/agent-progress'),{recursive:true,force:true});
   writeFileSync(`${f.root}/compiled/companion/index.js`,`${f.payload.plugin}\n// Synthetic replacement payload\n`);
   futureRunFormat(f.database);
-  const before=installationBytes(f),running=await serve(f);
+  const before=installationBytes(f),running=await serve(f,true);
   try{
     await running.start();
     const initial=await(await running.request('/v1/setup')).json();
@@ -237,7 +243,7 @@ for(const action of ['update','install'] as const)test(`packaged ${action} accep
   if(action==='install')rmSync(path.join(f.targets.configRoot,'plugins/agent-progress'),{recursive:true,force:true});
   writeFileSync(`${f.root}/compiled/companion/index.js`,`${f.payload.plugin}\n// Synthetic replacement payload\n`);
   const writer=new Store(f.database);writer.installSubagentRuns();versionOneFixture(writer.db,true);writer.close();
-  const before=readFileSync(f.database),files=installationBytes(f),running=await serve(f);
+  const before=readFileSync(f.database),files=installationBytes(f),running=await serve(f,true);
   try{
     await running.start();
     const reply=await running.request(`/v1/setup/${action}`,f.targets),state=await reply.json();
@@ -332,6 +338,7 @@ test('released v1.0.0 on format 2 remains alive but fails host health readiness 
   assert.equal(spawnSync('bun',['build',`${legacy}/service/main.ts`,'--target=node','--format=esm',`--outfile=${f.root}/compiled/service/main.js`],{stdio:'ignore'}).status,0);
   assert.equal(spawnSync('bun',['build',`${legacy}/plugin/index.ts`,'--target=node','--format=esm',`--outfile=${f.root}/legacy-plugin/index.js`],{stdio:'ignore'}).status,0);
   cpSync(path.join(f.targets.configRoot,'plugins/agent-progress/progress-binding.json'),`${f.root}/legacy-plugin/progress-binding.json`);
+  f.env.AGENT_PROGRESS_BINDING=`${f.root}/legacy-plugin/progress-binding.json`; // Released code's explicit legacy selector, never managed fallback.
   writeFileSync(`${f.root}/legacy-plugin/package.json`,'{"type":"module"}');
   const running=await serve(f);
   try{

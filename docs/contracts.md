@@ -2,6 +2,14 @@
 
 ## Reporting health observations
 
+Managed delivery, last loaded-byte observation, stored capture control, selected
+recorded revision and viewer freshness are independent. A configured binding is
+not host approval or current tool inventory; matching load is not a heartbeat,
+report receipt or completion. Different loaded bytes warn only while binding,
+schema, control and host permission gates remain enforced. Mode is currently
+unknown: watched-file disposal and restart-dependent caller-owned config must be
+explained conditionally. Legacy/global entries can outlive extension disable.
+
 Setup replies optionally include `reportingIdentity: {storeId, sourceId, verified}` only after the configured store opens and its binding is verified. Unconfigured, unavailable-store and target-inspection replies omit it. This additive metadata does not change protocol/schema versions or grant authority to mutate. Guests must match it to the viewer store and source binding before joining installation/activation observations with a selected report; absent or mismatched identity means the association is unknown.
 
 The board's explicit reporting check performs one setup GET and at most one first-page selected-plan GET, without following cursors. A stored revision is evidence of recorded progress, not independent receipt verification, recent agent activity, tool availability or completion. No selection means no selected report checked; filtered or incomplete history never proves no reports exist. No new polling, endpoint, report write or model call is involved.
@@ -1366,7 +1374,12 @@ configured, verified, installed, captureEnabled(boolean|null), targets({configRo
 dataRoot,storeRoot}|null), version(string|null), activation, separateLifecycle=true,
 historyRetained=true, diagnostics[], optional recovery counts. No tokens.
 
-### Frozen additive companion comparison (consumed by the setup UI)
+### Frozen additive companion comparison (legacy compatibility only)
+
+This subsection and the following setup-suggestions contract describe retained
+standalone/test-injected legacy consumers, not managed configuration, approval,
+host update selection or executable-integrity guarantees. Managed consumers use
+delivery revision 1 above and never fall back to these global-install actions.
 
 Existing setup reads and action replies produced by `status()` may add:
 
@@ -1409,7 +1422,7 @@ not candidate detection. Last observed does not mean every running session is
 current. Detection uses existing setup-read occasions, never progress polling;
 the full mutation ownership/store/descriptor checks are still performed afresh.
 
-### Frozen additive setup suggestions (consumed by the setup UI)
+### Frozen additive setup suggestions (legacy compatibility only)
 
 Only the existing `GET /v1/setup` may additionally return:
 

@@ -2,6 +2,24 @@
 
 ## Current use and development
 
+The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
+**2.7.0** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
+historical and do not certify managed delivery. Research observed Linux web 2.7.1 /
+independent OpenCode 2.2.7; API-only research is not rendered approval proof or
+acceptance of the current candidate. Managed-host acceptance and installer/native
+results must be recorded separately; no Windows/Electron certification is implied.
+
+Normal setup approves **Add a plugin to OpenCode**, then explicitly selects a
+private Store. Watched-file delivery can retire after disable/removal without a
+restart; caller-owned `OPENCODE_CONFIG` fallback requires an explicit restart.
+When mode is unknown these are conditional, not a live-stop promise. External,
+remote, terminal, isolated-space and VS Code runtimes are outside managed reach.
+Legacy and explicit **Add to global config** entries can outlive the extension.
+History remains. Held-permission work cannot append after retirement but a session
+may need interruption; graceful cancellation is not guaranteed. Integrity is a
+warn-only loaded-byte comparison, explicitly weaker than former private attested
+payloads. Migration interruption/lock recovery limits are in [Setup](setup.md).
+
 Agent Progress is an installable early-access extension with Linux and native
 Windows capture. Linux native capture was also verified on OpenCode 2.2.7 in the
 [post-release checks](#post-release-111-checks--2026-11-12); the historical Linux

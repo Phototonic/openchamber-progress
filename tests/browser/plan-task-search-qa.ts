@@ -1897,15 +1897,16 @@ try {
         const sw = await walk('board-1100-light-setup');
         const sids = [...new Set(sw.list.map((x: any) => x.testid))];
         inventory['setup-hooks'] = sids;
-        const nonGet = async () => (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET').length;
+        const nonGet = async () => (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET' && !r.path.endsWith('/managed-inspect')).length;
         const before = await nonGet();
         const action = ['setup-disable', 'setup-enable', 'setup-remove'].find((h) => sids.includes(h));
         if (action) {
           await tabTo('page', `[data-testid="${action}"] button, button[data-testid="${action}"]`);
           kcheck('K6', 'page', `${action}:reach-sends-nothing`, await nonGet() === before);
           await key('Enter');
+          await wait('page', `!!d.querySelector('[data-testid="setup-review"]')`, 'managed control review');
           await frames2();
-          const confirm = await guest<string | null>('page', `return d.querySelector('[data-testid^="setup-confirm-"]')?.dataset.testid??null`);
+          const confirm = await guest<string | null>('page', `return d.querySelector('[data-testid="setup-confirm"]')?.dataset.testid??null`);
           const cancel = await guest<boolean>('page', `return !!d.querySelector('[data-testid="setup-cancel"]')`);
           inventory['setup-confirm'] = { confirm, cancel, focus: await focusState() };
           await kexpect('K6', 'page', `${action}:open-focuses-cancel`, await focusedOn('page', '[data-testid="setup-cancel"]'), ['Cancel receives focus when the confirmation opens'], await focusState());
@@ -1927,9 +1928,10 @@ try {
           } else skip('K6', 'page', `${action}: no cancel control appeared (${confirm})`);
           if (confirm) {
             if (!(await guest<boolean>('page', `return !!d.querySelector('[data-testid="${confirm}"]')`))) { await tabTo('page', `[data-testid="${action}"] button, button[data-testid="${action}"]`); await key('Enter'); await frames2(); }
+            await tabTo('page','[data-testid="setup-ack"] [role="checkbox"]');await key('Space');
             await tabTo('page', `[data-testid="${confirm}"] button, button[data-testid="${confirm}"]`); await key('Enter');
-            await wait('page', `qa.intercepted.filter(r=>r.method!=='GET').length===${before + 1}`, 'one intercepted setup action');
-            const sent = (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET').slice(before);
+            await wait('page', `qa.intercepted.filter(r=>r.method!=='GET'&&!r.path.endsWith('/managed-inspect')).length===${before + 1}`, 'one intercepted setup mutation');
+            const sent = (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET' && !r.path.endsWith('/managed-inspect')).slice(before);
             kcheck('K6', 'page', `${action}:deliberate-confirm-one-intercepted`, sent.length === 1, ['Setup action answered by the shell from the synthetic setup fixture; never forwarded'], sent.map((r) => `${r.method} ${r.path}`));
             await frames2();
             const sd = await focusState();

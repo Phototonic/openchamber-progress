@@ -1,6 +1,6 @@
-/** Artifact-level QA: parser, entries, version agreement, executable lifecycle. */
+/** Artifact QA: committed entries, managed configuration/migration and retained legacy recovery. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, chmodSync, readdirSync,lstatSync,readlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, cpSync, chmodSync, readdirSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -9,201 +9,110 @@ import { createServer } from 'node:net';
 import { parseManifestJson } from '@openchamber/sdk/schemas';
 import { VERSION } from '../shared/progress.ts';
 import { Store, digest } from '../shared/store.ts';
+import { readBinding } from '../shared/binding.ts';
+import { managedBindingFile } from '../shared/managed-binding.ts';
 import { RELEASE } from '../shared/release.ts';
-import { lifecycle } from '../setup/lifecycle.ts';
+import { verifyCompanionEntry } from './companion-entry.ts';
+import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
 
-/** Also run before reassembly: rebuilding must not hide a damaged input package. */
-export function verifyPackageContents(artifact:string, kind:'extension'|'companion', sourceRoot=process.cwd()):string[] {
+function files(root:string):string[]{return readdirSync(root).sort().flatMap(name=>{const file=path.join(root,name),stat=lstatSync(file);assert.equal(stat.isSymbolicLink(),false,'no packaged symlinks');return stat.isDirectory()?files(file):[file];});}
+/** Run before reassembly too: rebuilding must not hide a damaged input package. */
+export function verifyPackageContents(artifact:string,kind:'extension'|'companion',sourceRoot=process.cwd()):string[] {
   const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
   const notices=['LICENSE','THIRD_PARTY_NOTICES.md','licenses/Apache-2.0.txt'];
   const expected=['package.json','docs/setup.md',...notices,...builds,...(kind==='extension'?['build/service/main.js','background/index.html','background/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])]:[])].sort();
-  assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'package contains only declared payload; no evidence/instructions/auth/runtime DB');
+  assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'only declared payload; no auth, evidence or runtime state');
   assert.equal(JSON.parse(readFileSync(path.join(sourceRoot,'package.json'),'utf8')).license,'MIT','project license metadata');
   assert.equal(JSON.parse(readFileSync(path.join(artifact,'package.json'),'utf8')).license,'MIT','packaged project license metadata');
-  for(const entry of expected.filter(entry=>entry!=='package.json')) {
-    assert.equal(digest(readFileSync(path.join(artifact,entry))),digest(readFileSync(path.join(sourceRoot,entry))),`package/source bytes: ${entry}`);
-  }
-  const archive=spawnSync('unzip',['-Z','-1',`${artifact}.zip`],{encoding:'utf8'});assert.equal(archive.status,0,'ZIP inventory failed');
+  for(const entry of expected.filter(entry=>entry!=='package.json'))assert.equal(digest(readFileSync(path.join(artifact,entry))),digest(readFileSync(path.join(sourceRoot,entry))),`package/source bytes: ${entry}`);
+  const archive=spawnSync('unzip',['-Z','-1',`${artifact}.zip`],{encoding:'utf8'});assert.equal(archive.status,0);
   assert.deepEqual(archive.stdout.trim().split('\n').filter(name=>!name.endsWith('/')).sort(),expected,'ZIP entry allowlist matches folder');
-  for(const notice of notices) {
-    const zipped=spawnSync('unzip',['-p',`${artifact}.zip`,notice],{maxBuffer:1024*1024});
-    assert.equal(zipped.status,0,`ZIP notice missing: ${notice}`);
-    assert.equal(digest(zipped.stdout),digest(readFileSync(path.join(sourceRoot,notice))),`ZIP/source notice bytes: ${notice}`);
-  }
+  for(const notice of notices){const zipped=spawnSync('unzip',['-p',`${artifact}.zip`,notice],{maxBuffer:1024*1024});assert.equal(zipped.status,0);assert.equal(digest(zipped.stdout),digest(readFileSync(path.join(sourceRoot,notice))),`ZIP/source notice bytes: ${notice}`);}
   return expected;
 }
-function files(root:string):string[]{return readdirSync(root).sort().flatMap(name=>{const file=path.join(root,name);const stat=lstatSync(file);assert.equal(stat.isSymbolicLink(),false,'no packaged symlinks');return stat.isDirectory()?files(file):[file];});}
 
 async function verifyPackage() {
-const version=JSON.parse(readFileSync('package.json','utf8')).version;
-const base=path.resolve('build/artifacts');
-const extension=path.join(base,`agent-progress-extension-${version}`);
-const companion=path.join(base,`agent-progress-companion-${version}`);
-const root=mkdtempSync('/tmp/opencode/agent-progress-package-');
-const clean={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:root};
-for(const dir of ['home','config/opencode','data/opencode','cache','state','runtime','store'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
-let service:ReturnType<typeof spawn>|undefined;
-function run(args:string[],options:{env?:NodeJS.ProcessEnv;cwd?:string}={}) {
-  const result=spawnSync(process.execPath,args,{encoding:'utf8',env:clean,...options,timeout:15000});
-  assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout.trim();
+  const root=mkdtempSync('/tmp/opencode/agent-progress-package-'),env=isolatedEnvironment(root);
+  const extension=path.resolve(`build/artifacts/agent-progress-extension-${RELEASE}`),companion=path.resolve(`build/artifacts/agent-progress-companion-${RELEASE}`);
+  let service:ReturnType<typeof spawn>|undefined;
+  const run=(args:string[],extra:NodeJS.ProcessEnv={})=>{const r=spawnSync(process.execPath,args,{env:{...env,...extra},encoding:'utf8',timeout:30000});assert.equal(r.status,0,r.stdout+r.stderr);return r.stdout.trim();};
+  const stop=async()=>{if(service&&service.exitCode===null&&!service.signalCode){const exit=once(service,'exit');service.kill('SIGTERM');const timer=setTimeout(()=>service?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}service=undefined;};
+  const launch=async(folder:string,fixtureEnv:NodeJS.ProcessEnv)=>{
+    const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
+    service=spawn(process.execPath,[path.join(folder,'build/service/main.js')],{env:{...fixtureEnv,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'package-fixture-only'},cwd:root,stdio:'ignore'});
+    const request=(route:string,body?:unknown)=>fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(3000)});
+    for(const deadline=Date.now()+7000;;){assert.equal(service.exitCode,null,'owned service exited');try{if((await request('/health')).ok)break;}catch{}assert.ok(Date.now()<deadline,'service readiness');await new Promise(r=>setTimeout(r,25));}
+    const json=async(route:string)=>{const r=await request(route);assert.equal(r.status,200);return r.json();};
+    const action=async(name:string,storeRoot?:string)=>{const r=await request('/v1/setup/managed-inspect',storeRoot?{storeRoot}:{});assert.equal(r.status,200);const reviewed=await r.json();return request(`/v1/setup/${name}`,{...(storeRoot?{storeRoot}:{}),confirmed:true,expected:reviewed.delivery.review.expected});};
+    return {request,json,action};
+  };
+  try {
+    for(const [artifact,kind] of [[extension,'extension'],[companion,'companion']] as const){
+      const expected=verifyPackageContents(artifact,kind),unpacked=`${root}/${kind}`;mkdirSync(unpacked);
+      assert.equal(spawnSync('unzip',['-q',`${artifact}.zip`,'-d',unpacked]).status,0);
+      for(const entry of expected)assert.equal(digest(readFileSync(path.join(unpacked,entry))),digest(readFileSync(path.join(artifact,entry))),`ZIP/folder bytes: ${entry}`);
+      assert.equal(JSON.parse(readFileSync(`${artifact}/package.json`,'utf8')).version,RELEASE);
+      assert.equal(JSON.parse(readFileSync(`${artifact}/build/companion/package.json`,'utf8')).version,RELEASE);
+      for(const entry of ['build/companion/index.js','build/setup/main.js'])run(['--check',path.join(unpacked,entry)]);
+    }
+    verifyCompanionEntry(extension);verifyCompanionEntry(`${root}/extension`);
+    const manifest=JSON.parse(readFileSync(`${extension}/package.json`,'utf8'));assert.equal(parseManifestJson(JSON.stringify(manifest)).ok,true);assert.equal(VERSION,2);
+    assert.equal(manifest.openchamber.contributes.panel.id,'agent-progress-probe');
+    for(const surface of ['ui/panel','ui/status','ui/page','background']){assert.match(readFileSync(`${extension}/${surface}/index.html`,'utf8'),/src=["'](?:\.\/)?main\.js["']/);assert.doesNotMatch(readFileSync(`${extension}/${surface}/main.js`,'utf8'),/^\s*(?:import\s|export\s)/m);}
+    const inventory=path.resolve(`build/artifacts/entries-${RELEASE}.sha256`),before=readFileSync(inventory,'utf8');run(['--experimental-strip-types',path.resolve('scripts/package.ts')]);assert.equal(readFileSync(inventory,'utf8'),before);
+    console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
+
+    for(const dir of ['config/opencode','data/opencode'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
+    const unrelated=`${root}/config/opencode/opencode.json`;writeFileSync(unrelated,'{"fixture":"unrelated configuration"}\n',{mode:0o600});const original=readFileSync(unrelated);
+    let api=await launch(extension,env);
+    assert.equal((await api.json('/v1/setup')).delivery.configuration,'unconfigured');
+    const tree=files(`${root}/config`).map(f=>[f,digest(readFileSync(f))]);
+    const inspected=await api.request('/v1/setup/managed-inspect',{});assert.equal(inspected.status,200);
+    assert.equal(existsSync(path.dirname(managedBindingFile(env))),false);assert.equal(existsSync(`${root}/data/opencode/openchamber-progress`),false);
+    assert.deepEqual(files(`${root}/config`).map(f=>[f,digest(readFileSync(f))]),tree);
+    assert.equal((await api.request('/v1/setup/managed-configure',{confirmed:false})).status,400);
+    assert.equal((await api.request('/v1/setup/install',{confirmed:true})).status,409,'no production global-install route');
+    assert.equal((await api.action('managed-configure')).status,200);
+    const b=readBinding(managedBindingFile(env));
+    assert.equal(existsSync(`${root}/config/opencode/plugins/agent-progress`),false);
+    console.log(run(['--experimental-strip-types',path.resolve('tests/fixtures/managed-report.ts'),extension,root]));
+    const reports=await api.json('/v1/plans');assert.equal(reports.storeId,b.storeId);assert.equal(reports.data[0].id,'managed-packaged');
+    assert.equal((await api.json('/v1/setup')).delivery.observation,'matching');
+    assert.equal((await api.action('managed-disable')).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,false);
+    assert.equal((await api.action('managed-enable')).status,200);
+    await stop();const replacement=`${root}/replacement`;cpSync(extension,replacement,{recursive:true});api=await launch(replacement,env);
+    assert.equal((await api.json('/v1/plans')).storeId,b.storeId);assert.equal((await api.json('/v1/setup')).configured,true);
+    for(const kind of ['permissions','corrupt'] as const){
+      const good=readFileSync(b.database);
+      if(kind==='permissions')chmodSync(b.database,0o000);else{const bad=Buffer.from(good);bad.write('not-a-sqlite-file',0);writeFileSync(b.database,bad);}
+      try{const health=await api.json('/health');assert.equal(health.ready,false);assert.ok(health.diagnostics.includes(kind==='permissions'?'storage':'corrupt'));const unavailable=await api.request('/v1/plans');assert.equal(unavailable.status,503);assert.equal((await unavailable.json()).error,kind==='permissions'?'storage':'corrupt');assert.equal((await api.json('/v1/setup')).configured,true);}
+      finally{if(kind==='permissions')chmodSync(b.database,0o600);else writeFileSync(b.database,good);}
+      assert.equal((await api.json('/health')).ready,true);
+    }
+    await stop();rmSync(replacement,{recursive:true});const retained=new Store(b.database,{readOnly:true});try{assert.equal(retained.get(b.source.id,'managed-packaged')!.revision,2);}finally{retained.close();}
+
+    // The standalone archive is retained legacy/recovery support, not the normal install path.
+    const legacyRoot=`${root}/legacy`,legacyEnv=isolatedEnvironment(legacyRoot);for(const dir of ['config/opencode','data/opencode'])mkdirSync(`${legacyRoot}/${dir}`,{recursive:true,mode:0o700});
+    const flags=[`--config-root=${legacyRoot}/config/opencode`,`--data-root=${legacyRoot}/data/opencode`,`--store-root=${legacyRoot}/store`,'--confirm=true'];
+    const cli=`${root}/companion/build/setup/main.js`,legacyRun=(args:string[])=>run(args,legacyEnv);
+    assert.equal(JSON.parse(legacyRun([cli,'dry-run',...flags])).writes,false);assert.equal(existsSync(`${legacyRoot}/store/progress.sqlite`),false);
+    assert.equal(JSON.parse(legacyRun([cli,'install',...flags])).version,RELEASE);
+    console.log(legacyRun(['--experimental-strip-types',path.resolve('scripts/package-guidance.ts'),legacyRoot,RELEASE]));
+    const legacyPackage=`${legacyRoot}/config/opencode/plugins/agent-progress`,old=readBinding(`${legacyPackage}/progress-binding.json`),history=new Store(old.database,{readOnly:true});let revisions:number;
+    try{revisions=history.history(old.source.id,'packaged').data.length;}finally{history.close();}
+    assert.equal(JSON.parse(legacyRun([cli,'update',...flags])).version,RELEASE);
+    assert.equal(JSON.parse(legacyRun([cli,'disable',...flags])).captureEnabled,false);assert.equal(JSON.parse(legacyRun([cli,'enable',...flags])).captureEnabled,true);
+    api=await launch(extension,legacyEnv);assert.equal((await api.json('/v1/setup')).delivery.migration,'available');
+    const ownership=`${legacyPackage}/.ownership.json`,owned=readFileSync(ownership);writeFileSync(ownership,'modified fixture');
+    try{assert.equal((await api.request('/v1/setup/managed-inspect',{})).status,409);assert.equal((await api.json('/v1/setup')).delivery.migration,'conflict');}finally{writeFileSync(ownership,owned);}
+    assert.equal((await api.request('/v1/setup/managed-migrate',{confirmed:false})).status,400);
+    assert.equal((await api.action('managed-migrate')).status,200);
+    const migrated=readBinding(managedBindingFile(legacyEnv));assert.equal(migrated.storeId,old.storeId);assert.equal(migrated.source.id,old.source.id);assert.equal(existsSync(legacyPackage),false);
+    const kept=new Store(migrated.database,{readOnly:true});try{assert.equal(kept.history(old.source.id,'packaged').data.length,revisions);}finally{kept.close();}
+    await stop();assert.deepEqual(readFileSync(unrelated),original);
+    console.log(JSON.stringify({managedPluginFolder:true,folderZipParity:true,consumerBuild:false,entryInventoryDeterministic:true,packagedReadOnlyInspection:true,explicitConfiguration:true,globalInstallRefused:true,managedReport:true,extensionReplacementRetainsIdentity:true,storeRecovery:true,legacyRecoveryArchive:true,fullOwnershipMigration:true,historyRetained:true,version:RELEASE}));
+    if(process.env.AGENT_PROGRESS_HOST_MODULE)console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-host-package.ts'),extension],{AGENT_PROGRESS_HOST_MODULE:process.env.AGENT_PROGRESS_HOST_MODULE}));
+    else console.log(JSON.stringify({actualHostInstaller:'not-run; explicit isolated host module required'}));
+  }finally{await stop();rmSync(root,{recursive:true,force:true});}
 }
-function snapshot(root:string):unknown {
-  const result:Record<string,unknown>={};
-  function visit(file:string){const st=lstatSync(file,{bigint:true});result[path.relative(root,file)]={mode:String(st.mode),uid:String(st.uid),size:String(st.size),mtimeNs:String(st.mtimeNs),...(st.isFile()?{hash:digest(readFileSync(file))}:{}),...(st.isSymbolicLink()?{link:readlinkSync(file)}:{})};if(st.isDirectory())for(const name of readdirSync(file).sort())visit(path.join(file,name));}
-  visit(root);return result;
-}
-try {
-  assert.equal(version,RELEASE);
-  verifyPackageContents(extension,'extension');
-  verifyPackageContents(companion,'companion');
-  const entriesFile=path.join(base,`entries-${version}.sha256`);const entries=readFileSync(entriesFile,'utf8');
-  run(['--experimental-strip-types',path.resolve('scripts/package.ts')]);
-  assert.equal(readFileSync(entriesFile,'utf8'),entries,'entry inventories must match across assembly; ZIP timestamps are not canonical');
-  console.log(JSON.stringify({entryInventoryDeterministic:true,zipContainerBytesCanonical:false}));
-  const manifest=JSON.parse(readFileSync(path.join(extension,'package.json'),'utf8'));
-  const parsed=parseManifestJson(JSON.stringify(manifest));assert.equal(parsed.ok,true);
-  assert.equal(manifest.version,version);assert.equal(VERSION,2); // Not the release major.
-  assert.equal(manifest.openchamber.contributes.panel.id,'agent-progress-probe');
-  for(const surface of ['ui/panel','ui/status','ui/page','background']) {
-    for(const name of ['index.html','main.js'])assert.equal(digest(readFileSync(path.join(extension,`${surface}/${name}`))),digest(readFileSync(`${surface}/${name}`)),`${surface}/${name}`);
-    const html=readFileSync(path.join(extension,`${surface}/index.html`),'utf8');assert.match(html,/src=["'](?:\.\/)?main\.js["']/);
-    const js=readFileSync(path.join(extension,`${surface}/main.js`),'utf8');assert.doesNotMatch(js,/^\s*(?:import\s|export\s)/m);
-  }
-  for(const artifact of [extension,companion]) {
-    const expected=verifyPackageContents(artifact,artifact===extension?'extension':'companion');
-    const extracted=path.join(root,path.basename(artifact));mkdirSync(extracted);
-    assert.equal(spawnSync('unzip',['-q',`${artifact}.zip`,'-d',extracted],{stdio:'pipe'}).status,0);
-    for(const entry of expected)assert.equal(digest(readFileSync(path.join(extracted,entry))),digest(readFileSync(path.join(artifact,entry))),`ZIP/folder bytes: ${entry}`);
-    assert.equal(JSON.parse(readFileSync(path.join(artifact,'package.json'),'utf8')).version,version);
-    assert.equal(JSON.parse(readFileSync(path.join(artifact,'build/companion/package.json'),'utf8')).version,version);
-    for(const entry of ['build/companion/index.js','build/setup/main.js'])run(['--check',path.join(artifact,entry)]);
-  }
-  run(['--check',path.join(extension,'build/service/main.js')]);
-  console.log(JSON.stringify({manifestParser:true,guestEntries:4,guestBytesUnchanged:true,version,protocolVersion:VERSION,schemaVersion:VERSION,selfContainedSyntax:true}));
-  console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
-
-  // Exact packaged service, before any companion install. No source controller or DTO mocks.
-  const fresh=`${root}/fresh-setup`;for(const dir of ['home/.config/opencode','home/.local/share/opencode','selector'])mkdirSync(`${fresh}/${dir}`,{recursive:true,mode:0o700});
-  writeFileSync(`${fresh}/home/.config/opencode/foreign.txt`,'synthetic owner file; preserve bytes\n',{mode:0o600});
-  const freshBefore=snapshot(`${fresh}/home`);
-  const freshReservation=createServer();freshReservation.listen(0,'127.0.0.1');await once(freshReservation,'listening');const freshPort=(freshReservation.address() as {port:number}).port;await new Promise<void>(resolve=>freshReservation.close(()=>resolve()));
-  service=spawn(process.execPath,[path.join(extension,'build/service/main.js')],{env:{PATH:clean.PATH,HOME:`${fresh}/home`,XDG_STATE_HOME:`${fresh}/state`,TMPDIR:root,AGENT_PROGRESS_BINDING:`${fresh}/selector/binding.json`,OPENCHAMBER_SERVICE_PORT:String(freshPort),OPENCHAMBER_SERVICE_TOKEN:'fresh-fixture-only'},cwd:fresh,stdio:'ignore'});
-  let freshSpawnError=false;service.once('error',()=>{freshSpawnError=true;});const freshUrl=`http://127.0.0.1:${freshPort}`;const freshHeaders={authorization:'Bearer fresh-fixture-only'};
-  const freshDeadline=Date.now()+5000;let suggestions:any;
-  while(Date.now()<freshDeadline){assert.equal(freshSpawnError,false);assert.equal(service.exitCode,null);try{const response=await fetch(`${freshUrl}/v1/setup`,{headers:freshHeaders,signal:AbortSignal.timeout(500)});if(response.ok){suggestions=await response.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
-  assert.equal(suggestions?.configured,false);assert.equal(suggestions.verified,false);assert.equal(suggestions.targets,null);assert.equal(Object.hasOwn(suggestions,'sourceBinding'),false);assert.equal(Object.hasOwn(suggestions,'update'),false);
-  const suggestedConfig=`${fresh}/home/.config/opencode`,suggestedData=`${fresh}/home/.local/share/opencode`,suggestedStore=`${suggestedData}/openchamber-progress`;
-  assert.deepEqual(suggestions.suggestions,{configRoot:{value:suggestedConfig,state:'resolved'},dataRoot:{value:suggestedData,state:'resolved'},storeRoot:{value:suggestedStore,state:'resolved'}});
-  const inspected=await fetch(`${freshUrl}/v1/setup/inspect`,{method:'POST',headers:{...freshHeaders,'content-type':'application/json'},body:JSON.stringify({configRoot:suggestedConfig+'//',dataRoot:suggestedData+'/',storeRoot:suggestedStore+'/',confirmed:false})});assert.equal(inspected.status,200);
-  const review=await inspected.json();assert.equal(review.verified,false);assert.equal(Object.hasOwn(review,'suggestions'),false);assert.deepEqual(review.targets,{configRoot:suggestedConfig,dataRoot:suggestedData,storeRoot:suggestedStore});
-  assert.deepEqual(snapshot(`${fresh}/home`),freshBefore,'packaged GET/inspect must preserve setup targets byte/mtime');assert.equal(existsSync(suggestedStore),false);assert.equal(existsSync(`${fresh}/selector/binding.json`),false);
-  const freshExit=once(service,'exit');service.kill('SIGTERM');await freshExit;service=undefined;
-  console.log(JSON.stringify({packagedSetupSuggestions:true,packagedInspectReadOnly:true,targetBytesAndMtimesPreserved:true,foreignFilesPreserved:true,suggestionsAreNotIdentity:true}));
-
-  // Production lifecycle installs an older fixture; only the exact packaged HTTP
-  // service performs the candidate update. No synthetic Store/activation writes.
-  const older=`${root}/older`;for(const dir of ['config/opencode','data/opencode','selector'])mkdirSync(`${older}/${dir}`,{recursive:true,mode:0o700});
-  const targets={configRoot:`${older}/config/opencode`,dataRoot:`${older}/data/opencode`,storeRoot:`${older}/store`,confirmed:true};
-  const oldVersion='0.2.2';
-  lifecycle('install',targets,{plugin:readFileSync(`${companion}/build/companion/index.js`,'utf8'),guidance:readFileSync(`${companion}/build/companion/SKILL.md`,'utf8'),removal:readFileSync(`${companion}/build/setup/main.js`,'utf8'),version:oldVersion});
-  const oldPackage=`${targets.configRoot}/plugins/agent-progress`,oldRootBytes=readFileSync(`${oldPackage}/package.json`);
-  const selector=`${older}/selector/binding.json`;cpSync(`${oldPackage}/progress-binding.json`,selector);
-  service=spawn(process.execPath,[path.join(extension,'build/service/main.js')],{env:{...clean,AGENT_PROGRESS_BINDING:selector,OPENCHAMBER_SERVICE_PORT:String(freshPort),OPENCHAMBER_SERVICE_TOKEN:'fresh-fixture-only'},stdio:'ignore'});
-  const request=(route:string,body?:unknown)=>fetch(`${freshUrl}${route}`,{method:body===undefined?'GET':'POST',headers:{...freshHeaders,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(2000)});
-  const olderDeadline=Date.now()+5000;let olderState:any;
-  while(Date.now()<olderDeadline){assert.equal(service.exitCode,null);try{const response=await request('/v1/setup');if(response.ok){olderState=await response.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
-  assert.equal(olderState?.version,oldVersion);assert.deepEqual(olderState.update,{state:'available',candidateVersion:version,rootVersion:oldVersion});
-  const refusedUnconfirmed=await request('/v1/setup/update',{confirmed:false});assert.equal(refusedUnconfirmed.status,400);
-  const confirmed=await request('/v1/setup/update',{confirmed:true});assert.equal(confirmed.status,200);
-  const selected=await confirmed.json();assert.equal(selected.version,version);assert.equal(selected.activation,'reload-required');assert.deepEqual(selected.update,{state:'current',candidateVersion:version,rootVersion:oldVersion});
-  assert.deepEqual(readFileSync(`${oldPackage}/package.json`),oldRootBytes);
-  run(['--experimental-strip-types',path.resolve('tests/fixtures/activation.ts'),`${oldPackage}/index.js`],{env:{...clean,XDG_CONFIG_HOME:`${older}/config`,XDG_DATA_HOME:`${older}/data`}});
-  const observed=await(await request('/v1/setup')).json();assert.equal(observed.activation,'control-applies-to-loaded-instances');assert.deepEqual(observed.update,selected.update);
-  const ownershipFile=`${oldPackage}/.ownership.json`,ownershipBytes=readFileSync(ownershipFile),owned=JSON.parse(ownershipBytes.toString());
-  const selectedPlugin=`${targets.storeRoot}/payloads/${owned.active}/index.js`,selectedBytes=readFileSync(selectedPlugin);
-  const historyFile=`${targets.storeRoot}/installation-history.jsonl`,historyBytes=readFileSync(historyFile);
-  for(const [file,bad]of [[selectedPlugin,'modified owned payload'],[ownershipFile,'corrupt ownership']] as const){
-    writeFileSync(file,bad);const uncertain=await(await request('/v1/setup')).json();assert.equal(Object.hasOwn(uncertain,'update'),false);
-    assert.equal((await request('/v1/setup/update',{confirmed:true})).status,409);assert.deepEqual(readFileSync(historyFile),historyBytes);
-    writeFileSync(file,file===selectedPlugin?selectedBytes:ownershipBytes);
-  }
-  assert.equal((await(await request('/v1/setup')).json()).update.state,'current');
-  const olderExit=once(service,'exit');service.kill('SIGTERM');await olderExit;service=undefined;
-  console.log(JSON.stringify({packagedUpgradeHTTP:['older-available','confirmation-required','confirmed-current-reload-pending','loaded-observation-clears'],rootMetadataRetained:true,modifiedAndCorruptRefused:true,historyPreserved:true,activationFixture:true}));
-
-  // Execute the companion extracted from its transport, not a source-tree import.
-  const unpacked=`${root}/unpacked`;mkdirSync(unpacked);
-  assert.equal(spawnSync('unzip',['-q',`${companion}.zip`,'-d',unpacked],{stdio:'pipe'}).status,0);
-  const cli=path.join(unpacked,'build/setup/main.js');
-  const flags=[`--config-root=${root}/config/opencode`,`--data-root=${root}/data/opencode`,`--store-root=${root}/store`,'--confirm=true'];
-  const userConfig=`${root}/config/opencode/opencode.json`;writeFileSync(userConfig,'{"fixture":"unrelated user file"}\n');const original=readFileSync(userConfig);
-  const dry=JSON.parse(run([cli,'dry-run',...flags]));assert.equal(dry.writes,false);assert.equal(existsSync(`${root}/store/progress.sqlite`),false);
-  const install=JSON.parse(run([cli,'install',...flags]));assert.equal(install.version,version);assert.equal(install.activation,'reload-required');
-  const packageRoot=`${root}/config/opencode/plugins/agent-progress`;
-  const binding=JSON.parse(readFileSync(`${packageRoot}/progress-binding.json`,'utf8'));
-  assert.equal(binding.version,version);assert.equal(binding.protocolVersion,VERSION);assert.equal(binding.schemaVersion,VERSION);
-  assert.equal(JSON.parse(readFileSync(`${packageRoot}/package.json`,'utf8')).version,version);
-  console.log(run(['--experimental-strip-types',path.resolve('scripts/package-guidance.ts'),root,version]));
-  const db=`${root}/store/progress.sqlite`;
-  const store=new Store(db);let history:number;
-  try {history=store.history(binding.source.id,'packaged').data.length;assert.ok(history>0);}finally{store.close();}
-  const update=JSON.parse(run([cli,'update',...flags]));assert.equal(update.version,version);
-  const ownership=JSON.parse(readFileSync(`${packageRoot}/.ownership.json`,'utf8'));
-  for(const release of Object.values(ownership.releases) as {version:string}[])assert.equal(release.version,version);
-  assert.equal(JSON.parse(run([cli,'disable',...flags])).captureEnabled,false);
-  const disabled=new Store(db);try {assert.equal(disabled.list().captureEnabled,false);assert.equal(disabled.history(binding.source.id,'packaged').data.length,history);}finally{disabled.close();}
-  assert.equal(JSON.parse(run([cli,'enable',...flags])).captureEnabled,true);
-  // Launch the packaged extension service with its own descriptor and empty env.
-  const localExtension=`${root}/extension`;cpSync(extension,localExtension,{recursive:true});
-  cpSync(`${packageRoot}/progress-binding.json`,`${localExtension}/build/service/progress-binding.json`);
-  const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address()as {port:number}).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
-  service=spawn(process.execPath,[`${localExtension}/build/service/main.js`],{env:{...clean,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
-  let spawnError=false;service.once('error',()=>{spawnError=true;});
-  const headers={authorization:'Bearer fixture-only'};const url=`http://127.0.0.1:${port}`;
-  const deadline=Date.now()+5000;let health:any;
-  while(Date.now()<deadline) {assert.equal(spawnError,false);assert.equal(service.exitCode,null);try {const response=await fetch(`${url}/health`,{headers,signal:AbortSignal.timeout(500)});if(response.ok){health=await response.json();break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}
-  assert.equal(health?.ready,true);assert.equal(health.protocolVersion,VERSION);
-  assert.equal((await fetch(`${url}/health`)).status,401);
-  const setup=await(await fetch(`${url}/v1/setup`,{headers})).json();assert.equal(setup.version,version);assert.notEqual(setup.activation,'reload-required');
-  const serviceUpdate=await fetch(`${url}/v1/setup/update`,{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({confirmed:true})});
-  assert.equal(serviceUpdate.status,200);assert.equal((await serviceUpdate.json()).version,version);
-  // Replace the entire extension folder/ZIP content; stable state must survive.
-  let previousExit=once(service,'exit');service.kill('SIGTERM');await previousExit;service=undefined;
-  rmSync(localExtension,{recursive:true});cpSync(extension,localExtension,{recursive:true});
-  assert.equal(existsSync(`${localExtension}/build/service/progress-binding.json`),false);
-  service=spawn(process.execPath,[`${localExtension}/build/service/main.js`],{env:{...clean,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
-  const restartDeadline=Date.now()+5000;let restarted=false;
-  while(Date.now()<restartDeadline){assert.equal(service.exitCode,null);try{const response=await fetch(`${url}/v1/setup`,{headers,signal:AbortSignal.timeout(500)});if(response.ok){const state=await response.json();assert.equal(state.configured,true);assert.notEqual(state.activation,'reload-required');restarted=true;break;}}catch(e){if((e as Error).name==='AssertionError')throw e;}await new Promise(resolve=>setTimeout(resolve,25));}
-  assert.equal(restarted,true,'packaged service did not preserve setup after replacement');
-  const plans=await(await fetch(`${url}/v1/plans`,{headers})).json();assert.equal(plans.data[0].id,'packaged');assert.equal(plans.schemaVersion,VERSION);assert.equal(plans.storeId,binding.storeId);
-  chmodSync(db,0o000);
-  const unavailable=await fetch(`${url}/health`,{headers});assert.equal(unavailable.status,200);const unavailableHealth=await unavailable.json() as {ok:boolean;ready:boolean;sqlite:boolean;diagnostics:string[]};
-  assert.equal(unavailableHealth.ok,true);assert.equal(unavailableHealth.ready,false);assert.equal(unavailableHealth.sqlite,false);assert.ok(unavailableHealth.diagnostics.includes('storage'));
-  assert.equal((await fetch(`${url}/v1/plans`,{headers})).status,503);assert.deepEqual(await(await fetch(`${url}/v1/plans`,{headers})).json(),{error:'storage'});
-   const configuredFailure=await(await fetch(`${url}/v1/setup`,{headers})).json();assert.equal(configuredFailure.configured,true);assert.ok(configuredFailure.diagnostics.includes('storage'));assert.equal(Object.hasOwn(configuredFailure,'update'),false);
-  chmodSync(db,0o600);assert.equal((await(await fetch(`${url}/health`,{headers})).json()).ready,true);
-  // A corrupt store keeps the packaged service host-ready (health 200/ready=false)
-  // while store routes answer the fixed corrupt 503; bytes stay untouched.
-  const goodStore=readFileSync(db);const brokenStore=Buffer.from(goodStore);brokenStore.write('not-a-sqlite-file',0);writeFileSync(db,brokenStore);
-  const corruptHealth=await(await fetch(`${url}/health`,{headers})).json() as {ok:boolean;ready:boolean;sqlite:boolean;diagnostics:string[]};
-  assert.equal(corruptHealth.ok,true);assert.equal(corruptHealth.ready,false);assert.equal(corruptHealth.sqlite,false);assert.ok(corruptHealth.diagnostics.includes('corrupt'));
-  const corruptPlans=await fetch(`${url}/v1/plans`,{headers});assert.equal(corruptPlans.status,503);assert.deepEqual(await corruptPlans.json(),{error:'corrupt'});
-  assert.deepEqual(readFileSync(db),brokenStore);
-  writeFileSync(db,goodStore);assert.equal((await(await fetch(`${url}/health`,{headers})).json()).ready,true);
-  // The installed standalone removal entry must work after extension absence.
-  const exit=once(service,'exit');service.kill('SIGTERM');await exit;service=undefined;rmSync(localExtension,{recursive:true});
-  assert.equal(JSON.parse(run([`${packageRoot}/remove.js`,'remove-capture'])).historyRetained,true);
-  const retained=new Store(db);try{assert.equal(retained.list().captureEnabled,false);assert.equal(retained.history(binding.source.id,'packaged').data.length,history);}finally{retained.close();}
-  assert.equal(existsSync(packageRoot),false);assert.deepEqual(readFileSync(userConfig),original);
-  console.log(JSON.stringify({packagedLifecycle:['dry-run','install','update','disable','enable','remove-capture'],historyRetained:true,userFilesUnchanged:true,packagedService:true,packagedServiceRecovery:true,packagedCorruptStoreServiceStates:true,extensionReplacementPreservesSetup:true,reloadSatisfied:true,versionAgreement:true}));
-
-  if(process.env.AGENT_PROGRESS_HOST_MODULE) {
-    console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-host-package.ts'),extension],{env:{...clean,AGENT_PROGRESS_HOST_MODULE:process.env.AGENT_PROGRESS_HOST_MODULE}}));
-  }else console.log(JSON.stringify({actualHostInstaller:'not-run; set AGENT_PROGRESS_HOST_MODULE for host gate'}));
-}finally {
-  if(service&&service.exitCode===null&&!service.signalCode){const exit=once(service,'exit');service.kill('SIGTERM');const timer=setTimeout(()=>service?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}
-  rmSync(root,{recursive:true,force:true});
-}
-}
-
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href) await verifyPackage();
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await verifyPackage();

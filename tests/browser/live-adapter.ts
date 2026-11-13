@@ -11,6 +11,8 @@ import { createServer } from 'node:net';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { readDetail, readDocument, type ServiceHost } from '../../ui/shared/source.ts';
 import { loadReportTool, type SessionRecord } from './real-tool.ts';
+import { readBinding } from '../../shared/binding.ts';
+import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
 
 const [root, sessionsFile, serviceMain, bindingFile, planId, owner, docFile, outFile] = process.argv.slice(2);
 if (!docFile) throw new Error('usage: live-adapter.ts <isolatedRoot> <sessions.json> <service main.js> <binding.json> <plan> <owner> <document file> [out.json]');
@@ -18,8 +20,10 @@ if (!docFile) throw new Error('usage: live-adapter.ts <isolatedRoot> <sessions.j
 const freePort = () => new Promise<number>((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address() as { port: number }; s.close(() => resolve(port)); }); });
 const port = await freePort();
 const token = randomBytes(24).toString('hex');
+const env = isolatedEnvironment(root);
+publishFixtureBinding(env, readBinding(bindingFile));
 const service = spawn(process.execPath, [serviceMain], {
-  env: { PATH: process.env.PATH, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: token, AGENT_PROGRESS_BINDING: bindingFile },
+  env: { ...env, OPENCHAMBER_SERVICE_PORT: String(port), OPENCHAMBER_SERVICE_TOKEN: token },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 

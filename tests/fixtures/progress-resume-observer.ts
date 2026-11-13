@@ -1,6 +1,7 @@
 /** Gate-only provider. Retains metadata/counts, never conversation, summary or error text. */
 import { Model, Provider, Plugin } from '@opencode/plugin';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { readManagedBinding } from '../../shared/managed-binding.ts';
 
 export const RESUME_SENTINEL = 'SYNTHETIC_PROGRESS_RESUME_SENTINEL';
 // Fixed synthetic reply in the pinned host's Markdown checkpoint format. No conversation-derived content.
@@ -29,7 +30,7 @@ export default Plugin.define({ id: 'progress-resume-observer', async setup(ctx) 
   const regression = process.env.RESUME_PHASE === 'regression';
   const start = performance.now();
   const record = (value: object) => appendFileSync(process.env.RESUME_EVENTS!, JSON.stringify({ ms: Math.round(performance.now() - start), ...value }) + '\n');
-  const binding = JSON.parse(readFileSync(process.env.AGENT_PROGRESS_BINDING!, 'utf8'));
+  const binding = readManagedBinding();if(!binding)throw new Error('managed fixture binding required');
   const providerID = Provider.ID.make('resume-fixture');
   const modelID = Model.ID.make('script');
   await ctx.provider.transform(editor => {

@@ -216,6 +216,43 @@ Host/distribution coverage is separate in [compatibility](compatibility.md).
 
 ## Components and trust boundaries
 
+### Managed delivery authority
+
+The host delivers `build/companion` after plugin approval; it does not authorize
+data selection. Service and companion share `shared/managed-binding.ts` discovery
+under the canonical XDG data/HOME OpenCode root, in the private marked
+`agent-progress-managed` directory. Invalid explicit config/data XDG or private binding state fails closed;
+state-root/env binding overrides, package siblings and legacy selectors are not
+fallbacks. Reads/dormant load create no binding, marker or store. Confirmed
+configuration alone persists a verified private Store/source selection. Existing
+ownership, canonical-path, marker, mode/ACL and schema boundaries remain enforced.
+
+Dormant/coalesced activation retries only at eligible native context/report
+boundaries, not a timer/watcher/probe. An active generation pins verified identity;
+changed binding retires it, not a silent store switch. Disposal retires authority
+synchronously before awaited teardown and rechecks held initialization/report work
+after awaits, before mutation. Held permission work cannot append late reports or
+captures; this does not guarantee graceful session completion.
+
+The service writes expected shipped bytes/version/binding fingerprints to owned
+private Store-directory metadata once per admitted package generation, not on each
+GET and not in a new SQLite schema. The companion's successful loaded observation
+uses actual runtime release identity. Unknown, not observed, matching and different
+are separate; mismatch warns only. Fingerprints are observational, explicitly
+weaker than legacy private hash-attested payloads, not publisher signatures or
+proof of cached execution. Host folders/ZIP umask and update gaps remain host trust
+boundaries. The service has no plugin inventory/RPC authority from its read-only
+OpenCode provider permission.
+
+Legacy migration reuses complete ownership/Store validation and `remove-capture`:
+disable, verified removal, durable same-target binding/expectation, then enable.
+Retained history/IDs and cleanup fences are not reset. Interrupted removal may
+leave incomplete ownership and a conflict needing separately authorized manual
+cleanup; crash-retained configuration locks stay busy until manual recovery.
+See [Setup](setup.md) for mode-qualified lifecycle/reach, migration and rollback.
+
+### Existing reporting and storage owners
+
 - plugin/index.ts registers one namespaced codemode:false report tool and inline
   skill. It gets actual caller IDs/agent from invocation context and refreshes
   authoritative session/location/project/parent metadata on each call. Ancestry
@@ -758,7 +795,10 @@ The ignored isolated service fixture includes copied companion/setup siblings.
 This is not final package/distribution or browser validation; those require a
 stable-input build and companion byte-identity check.
 
-### Companion comparison / frozen setup UI seam
+### Legacy companion comparison / historical setup UI seam
+
+This subsection and the next describe retained legacy/test-injected controllers,
+not production managed selection, per-companion updates or immutable managed code.
 
 `SetupRead.update?: CompanionUpdateRead` is additive on existing setup status
 reads and mutating action replies (see docs/contracts.md). SetupController uses
@@ -785,7 +825,7 @@ read-only service. These checks are not package/release validation. Reported rea
 use of0.2.4 had no issues, without establishing the earlier slowdown's cause.
 No real-user operation is part of these fixture checks.
 
-### Host-side setup suggestions / frozen setup UI seam
+### Legacy host-side setup suggestions / historical setup UI seam
 
 `shared/progress.ts` adds Suggestion/SetupSuggestions and optional
 SetupRead.suggestions, populated only by existing GET /v1/setup while unconfigured

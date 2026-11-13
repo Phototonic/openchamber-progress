@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, mkdirSync, existsSync, copyFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { eligibility, assetNames, validateReleaseNotes } from './release.ts';
+import { verifyCompanionEntry } from './companion-entry.ts';
 
 // Refuse before reading entries or starting checks: local archives are never disposable.
 if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) {
@@ -25,6 +26,7 @@ try {
   candidate=event?eligibility(event,process.env.GITHUB_EVENT_NAME!,process.env.GITHUB_SHA!,process.env.GITHUB_REPOSITORY!):null;
 } catch { throw new Error('Release notes validation failed; check committed version notes and event history.'); }
 const before = entries.map(hash);
+verifyCompanionEntry(process.cwd());
 mkdirSync('/tmp/opencode',{recursive:true});
 console.log(`Native-only tests NOT RUN: ${excluded.join(', ')}`);
 run('bun',['run','typecheck']);

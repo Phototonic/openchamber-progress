@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { Store } from '../../shared/store.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
+import { publishFixtureBinding } from './managed.ts';
 
 export async function runNativeRegression() {
   const backendOnly=process.env.SUBAGENT_ACTIVITY_BACKEND_ONLY==='1';
@@ -46,6 +47,7 @@ export async function runNativeRegression() {
         const source = { id: 'source-alpha', configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, verified: true };
         const store = new Store(`${root}/store/progress.sqlite`, { create: true });
         try { store.registerSource(source); fs.writeFileSync(`${root}/binding.json`, JSON.stringify({ protocolVersion: 2, schemaVersion: 2, installId: 'synthetic-activity', version: RELEASE, database: store.file, storeId: store.list({ limit: 1 }).storeId, source }), { mode: 0o600 }); } finally { store.close(); }
+        publishFixtureBinding(env,JSON.parse(fs.readFileSync(`${root}/binding.json`,'utf8')));
         const build = (entry: string, output: string) => { const r = spawnSync('bun', ['build', entry, '--target=node', '--format=esm', `--outfile=${output}`], { encoding: 'utf8' }); assert.equal(r.status, 0, `temporary build: ${entry}`); return hash(output); };
         const original = path.resolve(process.env.ACTIVATION_COMPANION_ENTRY || 'plugin/index.ts');
         const target = `${root}/config/opencode/plugins/companion/index.js`;

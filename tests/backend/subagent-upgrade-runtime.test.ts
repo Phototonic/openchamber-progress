@@ -14,6 +14,8 @@ import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
 import { UpgradeProbe } from '../fixtures/subagent-upgrade-probe.ts';
 import { releasedRuntime } from './subagent-release-support.ts';
 import { durableSnapshot } from './subagent-format-support.ts';
+import { readBinding } from '../../shared/binding.ts';
+import { publishFixtureBinding } from '../fixtures/managed.ts';
 
 async function freePort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=(server.address() as {port:number}).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}
 async function stop(child:ReturnType<typeof spawn>|undefined){
@@ -76,7 +78,7 @@ test('released built companion upgrades only on real isolated loader reload and 
       lifecycle('install',targets,released);
       const installedBytes=(payload:typeof current)=>{const ownership=JSON.parse(fs.readFileSync(`${targets.configRoot}/plugins/agent-progress/.ownership.json`,'utf8'));assert.equal(fs.readFileSync(`${targets.storeRoot}/payloads/${ownership.active}/index.js`,'utf8'),payload.plugin);assert.equal(fs.readFileSync(`${targets.storeRoot}/payloads/${ownership.active}/SKILL.md`,'utf8'),payload.guidance);};
       installedBytes(released);
-      fs.copyFileSync(`${targets.configRoot}/plugins/agent-progress/progress-binding.json`,`${dir}/service-binding.json`);
+      publishFixtureBinding(env,readBinding(`${targets.configRoot}/plugins/agent-progress/progress-binding.json`));
       fs.copyFileSync(`${root}/probe.js`,`${targets.configRoot}/plugins/upgrade-probe/index.js`);
       fs.writeFileSync(`${targets.configRoot}/plugins/upgrade-probe/package.json`,JSON.stringify({name:'synthetic-upgrade-probe',type:'module',exports:{'.':'./index.js'}}));
       let native:ReturnType<typeof spawn>|undefined,service:ReturnType<typeof spawn>|undefined;
@@ -103,7 +105,7 @@ test('released built companion upgrades only on real isolated loader reload and 
         const original=store.subagentRuns(r,5000);assert.equal(original.counts.runs,1);assert.equal(original.counts.succeeded,1);assert.equal(original.capture.loss,loss);
         const rows=durableSnapshot(store.db).data.runs_rows;
         // Run the tracked packaged service, pointed only at this disposable binding.
-        service=spawn(process.execPath,[path.resolve('build/service/main.js')],{cwd:`${dir}/project`,env:{...env,AGENT_PROGRESS_BINDING:`${dir}/service-binding.json`,OPENCHAMBER_SERVICE_PORT:String(servicePort),OPENCHAMBER_SERVICE_TOKEN:'synthetic-service-only'},stdio:'ignore'});
+        service=spawn(process.execPath,[path.resolve('build/service/main.js')],{cwd:`${dir}/project`,env:{...env,OPENCHAMBER_SERVICE_PORT:String(servicePort),OPENCHAMBER_SERVICE_TOKEN:'synthetic-service-only'},stdio:'ignore'});
         const serviceRead=async(route:string)=>{const response=await fetch(`http://127.0.0.1:${servicePort}${route}`,{headers:{authorization:'Bearer synthetic-service-only'},signal:AbortSignal.timeout(2000)});assert.equal(response.status,200);return response.json() as Promise<any>;};
         await wait(()=>serviceRead('/health'),v=>v.ready===true,'packaged service not ready');
         const query=new URLSearchParams({storeId:r.storeId,binding:JSON.stringify(r.binding),source:r.source,root:r.root});
@@ -112,23 +114,23 @@ test('released built companion upgrades only on real isolated loader reload and 
         const beforeUpdate=durableSnapshot(store.db);
         assert.equal(beforeUpdate.data.plans!.length,1,'the rehearsal preserves a populated plan, not just empty storage');
         lifecycle('update',targets,current);installedBytes(current);
-        const beforeReload=await serviceRead('/v1/setup');assert.equal(beforeReload.activation,'reload-required');
+        const beforeReload=await serviceRead('/v1/setup');assert.equal(beforeReload.delivery.observation,'different');
         assert.equal(format().version,1);const readBeforeReload=await read();assert.equal(readBeforeReload.runFormat,1);
         assert.deepEqual(readBeforeReload.data,original.data);assert.deepEqual(readBeforeReload.counts,original.counts);assert.deepEqual(readBeforeReload.capture,original.capture);
         const preReload=durableSnapshot(store.db);
         assertPreservedRunFacts(beforeUpdate,preReload,'before-reload');
         const reload=async()=>{const res=await fetch(`${baseUrl}/api/location/reload?${new URLSearchParams({'location[directory]':location.directory})}`,{method:'POST',headers:{...headers,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(10000)});assert.equal(res.ok,true);await res.arrayBuffer();};
         await reload();await plugin('active');
-        await wait(()=>serviceRead('/v1/setup'),v=>v.activation==='control-applies-to-loaded-instances','current companion not acknowledged');
+        await wait(()=>serviceRead('/v1/setup'),v=>v.delivery.observation==='matching','current companion not acknowledged');
         const upgraded=await read();assert.equal(format().version,2);assert.deepEqual(upgraded.data,original.data);assert.deepEqual(upgraded.counts,original.counts);assert.equal(upgraded.capture.loss,loss);
         assert.deepEqual(upgraded.capture.lossNotice,{sequence:0,lastLossAt:null,dismissedThrough:0,attention:false});
         const afterUpgrade=durableSnapshot(store.db);assert.deepEqual(afterUpgrade.data.runs_rows,rows);assert.deepEqual(afterUpgrade.data.plans,beforeUpdate.data.plans);
         assert.ok(upgraded.revision>original.revision,'migration and real observer disposal/start retire old revisions');
-        lifecycle('update',targets,released);installedBytes(released);assert.equal((await serviceRead('/v1/setup')).activation,'reload-required');
+        lifecycle('update',targets,released);installedBytes(released);assert.equal((await serviceRead('/v1/setup')).delivery.observation,'matching','last load is not current inventory');
         const beforeRollback=durableSnapshot(store.db);
         await reload();const rejected=await plugin('failed');
         assert.equal(String((rejected.state as any).error).split('\n')[0],'Error: schema');
-        const rollbackSetup=await serviceRead('/v1/setup');assert.equal(rollbackSetup.activation,'reload-required');
+        const rollbackSetup=await serviceRead('/v1/setup');assert.equal(rollbackSetup.delivery.observation,'matching','failed load does not fabricate a new observation');
         const afterRollback=durableSnapshot(store.db);
         assertPreservedRunFacts(beforeRollback,afterRollback,'rollback');
         assert.equal(format().version,2);assert.deepEqual(durableSnapshot(store.db).data.runs_rows,rows);
