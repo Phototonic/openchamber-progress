@@ -7,8 +7,33 @@ on:
 permissions:
   contents: read
 jobs:
+  gate:
+    name: Select check execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        # Actions string comparisons ignore case; Bash matches literal branch names.
+        run: |
+          run=true
+          if [[ "$EVENT_NAME" == pull_request && "$HEAD_REPOSITORY" == "$REPOSITORY" && ( "$HEAD_REF" == main || "$HEAD_REF" == dev ) ]]; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
   portable:
     name: Linux tests and packages
+    # Same-repository main/dev heads already receive every check on push.
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -60,6 +85,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   node-latest:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     # The exact pin above is the release gate. This job runs the same checks on
     # the newest Node 24 release, which the documented range also accepts.
     name: Linux tests on latest Node 24
@@ -92,6 +119,8 @@ jobs:
   windows-native:
     name: Windows setup, storage and capture
     runs-on: windows-2025
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     timeout-minutes: 15
     concurrency:
       group: ${{ github.workflow }}-windows-native-${{ github.event.pull_request.number || github.sha }}
