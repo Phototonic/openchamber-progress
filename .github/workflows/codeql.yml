@@ -15,10 +15,33 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  gate:
+    name: Select check execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        # Actions string comparisons ignore case; Bash matches literal branch names.
+        run: |
+          run=true
+          if [[ "$EVENT_NAME" == pull_request && "$HEAD_REPOSITORY" == "$REPOSITORY" && ( "$HEAD_REF" == main || "$HEAD_REF" == dev ) ]]; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
   analyze:
     name: Analyze JavaScript and TypeScript
     # Keep push/default-branch coverage; only skip duplicate same-repository PRs.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && github.head_ref != 'dev') }}
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
