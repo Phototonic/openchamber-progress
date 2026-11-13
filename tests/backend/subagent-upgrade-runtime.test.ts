@@ -139,7 +139,7 @@ test('released built companion upgrades only on real isolated loader reload and 
         await assert.rejects(()=>status.inspect({},{location,signal:AbortSignal.timeout(2000)}),(error:any)=>{statusRpcError=error.message;assert.match(error.message,/RPC is unavailable.*agent-progress-status/);return true;},'failed old companion must not expose its status RPC');
         console.log(JSON.stringify({runtime,loss,beforeReload:{activation:beforeReload.activation,runFormat:preReload.data.runs_format![0]!.version},rollback:{status:rejected.state.status,error:String((rejected.state as any).error).split('\n')[0],activation:rollbackSetup.activation,diagnostics:rollbackSetup.diagnostics,statusRpcError,runReadStatus:200,runFormat:format().version}}));
         lifecycle('update',targets,current);await reload();await plugin('active');
-        await wait(()=>serviceRead('/v1/setup'),v=>v.activation==='control-applies-to-loaded-instances','forward recovery not acknowledged');
+        await wait(()=>serviceRead('/v1/setup'),v=>v.delivery.observation==='matching','forward recovery not acknowledged');
         assert.equal((await status.inspect({},{location,signal:AbortSignal.timeout(2000)}) as any).toolAvailable,true);assert.deepEqual((await read()).data,original.data);
         assert.equal((await client.credential.list()).length,0);assert.equal(fs.existsSync(`${dir}/model-attempts`),false,'no model or transport requests');
         assert.equal(store.db.prepare('PRAGMA integrity_check').get()!.integrity_check,'ok');assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(),[]);

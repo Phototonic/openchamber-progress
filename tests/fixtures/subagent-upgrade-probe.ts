@@ -3,6 +3,7 @@
 import { Plugin } from '@opencode/plugin';
 import { Rpc } from '@opencode/plugin/rpc';
 import fs from 'node:fs';
+import { readManagedBinding } from '../../shared/managed-binding.ts';
 
 export const UpgradeProbe=Rpc.define({id:'subagent-upgrade-probe',methods:{seed:{input:{type:'object',additionalProperties:true},output:{type:'object',additionalProperties:true}}},events:{}});
 
@@ -12,7 +13,7 @@ export function upgradeProbe(ReleasedStore:any,createRunCapture:any,sessionIdent
     const forbidden=()=>{fs.appendFileSync(`${root}/model-attempts`,'attempt\n');throw Error('Model requests forbidden in upgrade rehearsal');};
     const guards=[await ctx.session.hook('model.request',forbidden),await ctx.session.hook('http.request',forbidden),await ctx.aisdk.hook('sdk',forbidden),await ctx.aisdk.hook('language',forbidden)];
     await ctx.rpc.register(UpgradeProbe,{seed:async(input:any)=>{
-      const b=JSON.parse(fs.readFileSync(`${root}/service-binding.json`,'utf8'));
+      const b=readManagedBinding();if(!b)throw new Error('managed fixture binding required');
       const store=new ReleasedStore(b.database);let capture:any;
       try{
         store.bindReads(b.source.id,true);

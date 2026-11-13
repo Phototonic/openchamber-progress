@@ -10,7 +10,7 @@ import { startSearchShell } from './plan-task-search-shell.ts';
 
 const output=process.argv[2];if(!output)throw Error('Pass an artifact directory.');mkdirSync(output,{recursive:true});
 const cache=join(homedir(),'.cache/ms-playwright');
-const candidates=[...(existsSync(cache)?readdirSync(cache).filter(n=>/^chromium-\d+$/.test(n)).sort().reverse().map(n=>join(cache,n,'chrome-linux64/chrome')):[]),'/usr/bin/chromium','/usr/bin/google-chrome'];
+const candidates=[...(process.env.CHROMIUM_PATH?[process.env.CHROMIUM_PATH]:[]),...(existsSync(cache)?readdirSync(cache).filter(n=>/^chromium-\d+$/.test(n)).sort().reverse().map(n=>join(cache,n,'chrome-linux64/chrome')):[]),'/usr/bin/chromium','/usr/bin/google-chrome'];
 const executable=candidates.find(existsSync);if(!executable)throw Error('No installed Chromium; this test never downloads a browser.');
 const profile=mkdtempSync('/tmp/opencode/reporting-health-qa-');
 const fx=await startSearchShell(true, true);

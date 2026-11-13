@@ -39,8 +39,8 @@ export async function runNativeRegression() {
         for (const dir of ['config/opencode/plugins/observer', 'config/opencode/plugins/companion', 'config/openchamber', 'data/opencode', 'openchamber', 'guest', 'home', 'cache', 'state', 'runtime', 'tmp', 'Alpha', 'Beta', 'store', 'screenshots']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
         const display = process.env.WAYLAND_DISPLAY;
         const socket = display && (path.isAbsolute(display) ? display : process.env.XDG_RUNTIME_DIR && path.join(process.env.XDG_RUNTIME_DIR, display));
-        assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
-        const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ACTIVITY_WAYLAND_SOCKET: socket, AGENT_PROGRESS_BINDING: `${root}/binding.json` };
+        if(!backendOnly)assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
+        const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ...(!backendOnly&&socket?{ACTIVITY_WAYLAND_SOCKET:socket}:{}) };
         const version: ReturnType<typeof spawnSync> = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
         assert.equal(version.status, 0); result.runtime = requireRuntimeVersion('opencode', version.stdout.toString());
         if(backendOnly)env.SUBAGENT_ACTIVITY_BACKEND_ONLY='1';

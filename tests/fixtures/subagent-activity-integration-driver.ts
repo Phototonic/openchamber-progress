@@ -15,7 +15,7 @@ assert.match(root, /^\/tmp\/opencode\/subagent-activity-[A-Za-z0-9]+$/);
 assert.notEqual(fs.readlinkSync('/proc/self/ns/net'), process.argv[3]);
 assert.deepEqual(Object.keys(networkInterfaces()), ['lo']);
 assert.equal(spawnSync('/usr/sbin/ip', ['route', 'show', 'default'], { encoding: 'utf8' }).stdout.trim(), '');
-const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', ACTIVITY_ROOT: root, AGENT_PROGRESS_BINDING: `${root}/binding.json`, ACTIVITY_WAYLAND_SOCKET: process.env.ACTIVITY_WAYLAND_SOCKET! };
+const env = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_PASSWORD: 'synthetic-local-only', DBUS_SESSION_BUS_ADDRESS: 'disabled:', ACTIVITY_ROOT: root, ...(process.env.ACTIVITY_WAYLAND_SOCKET?{ACTIVITY_WAYLAND_SOCKET:process.env.ACTIVITY_WAYLAND_SOCKET}:{}) };
 const launch=()=>spawn(process.env.OPENCODE_BINARY!, ['serve', '--hostname', '127.0.0.1', '--port', '18767'], { cwd: `${root}/Alpha`, env, stdio: 'ignore' });
 let native = launch();
 fs.writeFileSync(`${root}/host-pid`, String(native.pid));

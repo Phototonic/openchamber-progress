@@ -16,7 +16,7 @@ import { createManagedBindingDirectory, readManagedBinding } from '../../shared/
 import { SetupController } from '../../service/setup-controller.ts';
 import { setupSuggestions } from '../../service/suggestions.ts';
 import type { Actor } from '../../shared/progress.ts';
-import plugin from '../../plugin/index.ts';
+import { setupLegacy } from '../../plugin/index.ts';
 
 const native = { skip: process.platform !== 'win32', timeout:120000 };
 // OS/profile temp ancestors may permit unrelated accounts to replace children.
@@ -314,22 +314,23 @@ test('Windows managed discovery is read-only and state-independent; confirmed se
   }finally{controller?.close();f.clean();}
 });
 
-test('Windows plugin binds case aliases by directory identity and rejects a different actual source',native,async()=>{
+test('Windows retained legacy plugin binds case aliases by directory identity and rejects a different actual source',native,async()=>{
   const f=fixture();let dispose:(()=>Promise<void>)|undefined;
   const saved=new Map<string,string|undefined>();
   try{
     const configRoot=path.join(f.root,'xdg-config','opencode'),dataRoot=path.join(f.root,'xdg-data','opencode');privateDirectory(configRoot,true);privateDirectory(dataRoot,true);
     lifecycle('install',{...f.targets,configRoot,dataRoot},payload);
-    for(const[key,value]of Object.entries({AGENT_PROGRESS_BINDING:path.join(configRoot,'plugins','agent-progress','progress-binding.json').toUpperCase(),XDG_CONFIG_HOME:path.dirname(configRoot).toUpperCase(),XDG_DATA_HOME:path.dirname(dataRoot).toUpperCase(),OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
+    for(const[key,value]of Object.entries({HOME:f.root,AGENT_PROGRESS_BINDING:undefined,XDG_CONFIG_HOME:path.dirname(configRoot).toUpperCase(),XDG_DATA_HOME:path.dirname(dataRoot).toUpperCase(),XDG_STATE_HOME:path.join(f.root,'state'),XDG_CACHE_HOME:path.join(f.root,'cache'),XDG_RUNTIME_DIR:path.join(f.root,'runtime'),OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
       saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;
     }
     let execute:any,status:any;
     const ctx:any={session:{hook:async()=>({dispose:async()=>{}}),get:async({sessionID}:{sessionID:string})=>({id:sessionID,location:{directory:f.root},agent:'synthetic'})},skill:{transform:async(callback:any)=>callback({add:()=>{}})},tool:{hook:async()=>({dispose:async()=>{}}),transform:async(callback:any)=>callback({namespace:()=>{},add:(tool:any)=>{execute=tool.execute;}}),list:async()=>[{id:'agent_progress_report',options:{codemode:false}}]},rpc:{register:async(_contract:any,handlers:any)=>{status=handlers.inspect;}}};
-    dispose=await plugin.setup(ctx) as()=>Promise<void>;assert.equal((await status()).toolAvailable,true);
+    const selector=path.join(configRoot,'plugins','agent-progress','progress-binding.json').toUpperCase();
+    dispose=await setupLegacy(ctx,selector) as()=>Promise<void>;assert.equal((await status()).toolAvailable,true);
     const reply=await execute({op:'start',plan:'case-alias',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Task',kind:'task'}]},{sessionID:'synthetic',agent:'synthetic'});assert.equal(JSON.parse(reply.content).rev,1);
     await dispose();dispose=undefined;
     privateDirectory(path.join(f.root,'different-data','opencode'),true);process.env.XDG_DATA_HOME=path.join(f.root,'different-data');
-    await assert.rejects(()=>plugin.setup(ctx) as Promise<unknown>,e=>(e as {code?:string}).code==='binding');
+    await assert.rejects(()=>setupLegacy(ctx,selector) as Promise<unknown>,e=>(e as {code?:string}).code==='binding');
   }finally{await dispose?.();for(const[key,value]of saved){if(value===undefined)delete process.env[key];else process.env[key]=value;}f.clean();}
 });
 

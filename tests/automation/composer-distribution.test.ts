@@ -14,6 +14,7 @@ test('composer contributions use one built background entry without content perm
     {id:'insert-handoff',label:'Insert handoff',where:'session',mode:'background'},
     {id:'insert-progress-update',label:'Insert progress update',where:'session',mode:'background'},
   ]);
-  assert.deepEqual(requestedGuestCapabilities(c).sort(),['service','sessions']);
+  assert.deepEqual(requestedGuestCapabilities(c).sort(),['opencodePlugin','service','sessions']);
+  assert.equal(c.opencodePlugin,'build/companion');
   assert.equal(parsed.manifest.engines?.openchamber,'>=2.7.1');
 });
