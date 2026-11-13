@@ -19,7 +19,7 @@ mkdirSync(output,{recursive:true});
 const extension=`agent-progress-extension-${version}`;
 const companion=`agent-progress-companion-${version}`;
 const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
-const guests=['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`]);
+const guests=['background/index.html','background/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])];
 const manifest={name:source.name,version,license:source.license,type:'module',openchamber:source.openchamber};
 assert.equal(parseManifestJson(JSON.stringify(manifest)).ok,true);
 assert.equal(source.openchamber.contributes.panel.id,'agent-progress-probe');

@@ -11,7 +11,7 @@ if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) 
 }
 
 const excluded = ['production-runtime.test.ts', 'plugin-failure-runtime.test.ts', 'progress-activation-runtime.test.ts', 'subagent-activity-runtime.test.ts', 'subagent-upgrade-runtime.test.ts'];
-const entries = ['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md', ...['panel','status','page'].map(s=>`ui/${s}/main.js`)];
+const entries = ['build/service/main.js','build/setup/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','background/main.js', ...['panel','status','page'].map(s=>`ui/${s}/main.js`)];
 function run(command:string, args:string[]) {
   if (spawnSync(command,args,{stdio:'inherit'}).status !== 0) throw new Error('Portable check failed');
 }
@@ -33,6 +33,7 @@ const tests = (dir:string) => readdirSync(dir).filter(f=>f.endsWith('.test.ts'))
 run('node',['--experimental-strip-types','--test',...tests('tests/backend').filter(f=>!excluded.includes(f.split('/').at(-1)!))]);
 run('node',['--experimental-strip-types','--test',...tests('tests/browser'),...tests('tests/automation')]);
 run('bun',['run','build:backend']);
+run('bun',['run','bundle:guest','background/main.ts','background/main.js']);
 for (const surface of ['panel','status','page']) run('bun',['run','bundle:guest',`ui/${surface}/main.ts`,`ui/${surface}/main.js`]);
 if (entries.some((file,i)=>hash(file)!==before[i])) throw new Error('Generated entry parity failed; do not regenerate accepted entries silently');
 // The SDK's own readiness check: manifest schema, page scripts and service entry.

@@ -14,6 +14,7 @@ const [major,minor,patch]=RELEASE.split('.').map(Number);
 const futureVersion=`${major}.${minor}.${patch!+1}`,brokenVersion=`${major}.${minor}.${patch!+2}`,baselineTag=`v${RELEASE}`;
 
 const runtimeEntries=['build/service/main.js','build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js'];
+const guestEntries=['background',...['panel','status','page'].map(s=>`ui/${s}`)].flatMap(s=>[`${s}/index.html`,`${s}/main.js`]);
 const source='https://progress-fixture.example/Phototonic/openchamber-progress.git';
 const hostModule=process.env.AGENT_PROGRESS_HOST_MODULE;
 assert.ok(hostModule&&path.isAbsolute(hostModule),'explicit isolated host install.js required');
@@ -51,12 +52,12 @@ if(process.argv[2]!=='--worker'){
   cpSync(candidate,work,{recursive:true});files(work);
   const originalManifest=readFileSync(`${work}/package.json`),manifest=JSON.parse(originalManifest.toString());
   assert.equal(manifest.version,RELEASE,'fixture baseline is the current private candidate');
-  for(const entry of runtimeEntries)assert.equal(lstatSync(`${work}/${entry}`).isFile(),true,entry);
+  for(const entry of [...runtimeEntries,...guestEntries])assert.equal(lstatSync(`${work}/${entry}`).isFile(),true,entry);
   assert.equal(JSON.parse(readFileSync(`${work}/build/companion/package.json`,'utf8')).version,manifest.version);
   const originalGuests=Object.fromEntries(['panel','status','page'].map(s=>[s,hash(`${work}/ui/${s}/main.js`)]));
   git(['init','--initial-branch=main']);
   // Read-only ignore proof occurs in this disposable repository, never the source repo.
-  for(const entry of runtimeEntries){const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,1,`runtime entry ignored: ${entry}`);}
+  for(const entry of [...runtimeEntries,...guestEntries]){const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,1,`runtime entry ignored: ${entry}`);}
   for(const entry of ['build/artifacts/future.zip','build/service/progress-binding.json','build/service/scratch.js','build/service/.env.example','build/companion/runtime.sqlite','build/setup/scratch.js','node_modules/private','evidence/private','.slim/plan','.env.local']){
     const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,0,`local data trackable: ${entry}`);
   }
@@ -104,7 +105,7 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
     const store=await readExtensionStore(persist),copy=store.paths[0];assert.deepEqual(store.gitOrigins[copy],ref?{url:source,ref}:{url:source});
     assert.equal(readFileSync(`${copy}/package.json`,'utf8'),originalManifest.toString(),'host consumes actual root package.json without repair');
     assert.equal(existsSync(`${copy}/node_modules`),false,'consumer has no dependencies');
-    for(const entry of runtimeEntries)assert.equal(hash(`${copy}/${entry}`),hash(`${candidate}/${entry}`));
+    for(const entry of [...runtimeEntries,...guestEntries])assert.equal(hash(`${copy}/${entry}`),hash(`${candidate}/${entry}`));
     return{persist,copy,origin:store.gitOrigins[copy]};
   };
   const normal=await install('default'),tag=await install('tag',baselineTag),custom=await install('custom','custom');

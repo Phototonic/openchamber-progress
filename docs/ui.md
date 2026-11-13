@@ -215,6 +215,7 @@ releases are accepted but not separately certified. CI's release gate uses exact
 node_modules/.bin/tsc -p ui/tsconfig.json --noEmit
 node --experimental-strip-types --test tests/browser/*.test.ts
 bun run bundle:guest ui/panel/main.ts ui/panel/main.js   # same for status, page
+bun run bundle:guest background/main.ts background/main.js
 ```
 
 Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated installable artifact. There are no runtime dependencies, remote assets or CDN loads. The panel ID stays `agent-progress-probe` (`ui/shared/config.ts`), so Work Status can open the rail with `openSurface('plugin:agent-progress-probe')`.
@@ -402,6 +403,53 @@ Find reported plans and tasks by title or stable ID across the whole recorded st
 - **Retirement.** A run is keyed by integration account, store + binding, criteria and a submit counter. New criteria, Refresh search, Clear all, mode switch, a cache reset (integration account/store/binding change, setup action, local cleanup success or ambiguous failure, list eviction), membership change, hiding and disposal retire its in-flight window: a held reply cannot add results or counts, and no further window is sent. Hiding pauses an action; the user continues it explicitly from the last accepted window. Hiding and disposal also retire an in-flight freshness read whether or not a scan is running: generation and visibility are checked before each freshness batch and before any reply is accepted, so a hidden frame sends no further batch and applies nothing. Retired replies carry no capture metadata and cannot clear failures or advance successful freshness. Transport overlap is one retired plus one current window, with one queued follow-up.
 - **Accessibility.** Native/kit buttons, selects and field with accessible names; one persistent polite region (`search-announcer`, outside the repainted root) speaks each explicit outcome once, never per poll. Focus, typed text and caret in the field survive unrelated repaints. When an action's own control leaves the paint — Continue searching / Load more results (while results load, and for good after the last window), Retry, a removed chip, Clear search and filters — focus moves once to the results region's heading with a short notice (see Task view › Restoration): **Search results** (`search-results-heading`, present in every result state) while searching, **Plans** (`plan-list-heading`) once browsing resumes; no obsolete result is kept for it. At 360 px and 200% reflow everything wraps without horizontal scrolling.
 - **Saved views:** not built. The named-view slice is blocked because host storage has no proven authenticated-user isolation; search reads and writes no preference storage.
+
+## Composer mentions and session actions
+
+Supporting hosts add **Agent progress** to the composer's `@` menu. Type `@` and
+a plan title or ID, then choose a source-qualified row. Results rank current
+directory, unambiguous recorded project, then other locations; active precedes
+closed within each class. Progress/lifecycle, other/unverified setup and **Limited
+search** labels qualify found candidates, not a complete library census. Selecting
+resolves complete matching detail into an as-of context chip, never a live progress
+or sent-message claim. Deleted/archived targets and failed reads refuse resolution.
+
+The session menu offers **Insert handoff** and **Insert progress update**. Each
+loads an on-demand hidden background frame, without opening a panel or navigating.
+The **clicked session supplies the report; the active chat receives the text**,
+even if it is another chat or changes while preparation is pending. Both append
+to the existing draft. Successful acknowledgement toasts **Added to the active
+chat. Review before sending.** It confirms insertion, not sending. No prompt,
+clipboard write or progress mutation occurs. A lost acknowledgement asks you to
+inspect the draft; there is no automatic retry.
+
+A valid saved rail choice (`rail-plan:<sessionId>` in its existing storage scope)
+wins, including a finished plan. Missing/stale choices use Work Status's Automatic
+rule: latest active report with working IDs, otherwise owned-first active/recent
+scoped order with stable key ties. A failed preference read refuses, not absence.
+The complete scoped list must have verified bound-source identity; same-spelled
+session IDs in other setups cannot silently supply the report. Multiple plans add
+**N other plans reported for this session; only this plan is included**, within
+the text budget. Complete empty reads say **No plan reported for this session**;
+setup/service, permission and incomplete-read failures are distinct refusals.
+
+Composer text reuses the pure preview formatter/readiness owner. Composer-only
+metadata adds the source-qualified key, matched revision, absolute UTC **Reported
+as of**, reported-not-verified and review wording. The **16,000 JavaScript code
+unit** ceiling includes whole-task omissions and selection notices; no partial
+task/prerequisite or safety sentence is cut to fit. Document bodies, transcripts,
+blocker details/provenance/waits, tool output, machine paths and hashes stay out.
+Literal escaping is not secret redaction or prompt-injection prevention: review
+recorded titles before sharing. Existing preview disclosure/format stays unchanged.
+
+Session actions read effective device language once, including host-locale fallback,
+without writing preferences or starting a refresh loop. Mention utility text is
+**English-only** because requests contain no device language; there is no server
+last-language cache. Manifest labels belong to the host. Disable, permission
+withdrawal, runtime change and disposal retire pending work; already delivered text
+cannot be recalled. No polling, workspace subscription or persistent summary cache
+exists. These explicit manual summaries complement, not replace, the companion's
+automatic post-compaction **recorded-pointer capsule**, and grant no authority.
 
 ## Previewable summaries
 

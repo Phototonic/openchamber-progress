@@ -16,7 +16,7 @@ import { lifecycle } from '../setup/lifecycle.ts';
 export function verifyPackageContents(artifact:string, kind:'extension'|'companion', sourceRoot=process.cwd()):string[] {
   const builds=['build/companion/index.js','build/companion/SKILL.md','build/companion/package.json','build/setup/main.js'];
   const notices=['LICENSE','THIRD_PARTY_NOTICES.md','licenses/Apache-2.0.txt'];
-  const expected=['package.json','docs/setup.md',...notices,...builds,...(kind==='extension'?['build/service/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])]:[])].sort();
+  const expected=['package.json','docs/setup.md',...notices,...builds,...(kind==='extension'?['build/service/main.js','background/index.html','background/main.js',...['panel','status','page'].flatMap(surface=>[`ui/${surface}/index.html`,`ui/${surface}/main.js`])]:[])].sort();
   assert.deepEqual(files(artifact).map(file=>path.relative(artifact,file)).sort(),expected,'package contains only declared payload; no evidence/instructions/auth/runtime DB');
   assert.equal(JSON.parse(readFileSync(path.join(sourceRoot,'package.json'),'utf8')).license,'MIT','project license metadata');
   assert.equal(JSON.parse(readFileSync(path.join(artifact,'package.json'),'utf8')).license,'MIT','packaged project license metadata');
@@ -64,10 +64,10 @@ try {
   const parsed=parseManifestJson(JSON.stringify(manifest));assert.equal(parsed.ok,true);
   assert.equal(manifest.version,version);assert.equal(VERSION,2); // Not the release major.
   assert.equal(manifest.openchamber.contributes.panel.id,'agent-progress-probe');
-  for(const surface of ['panel','status','page']) {
-    for(const name of ['index.html','main.js'])assert.equal(digest(readFileSync(path.join(extension,`ui/${surface}/${name}`))),digest(readFileSync(`ui/${surface}/${name}`)),`${surface}/${name}`);
-    const html=readFileSync(path.join(extension,`ui/${surface}/index.html`),'utf8');assert.match(html,/src=["'](?:\.\/)?main\.js["']/);
-    const js=readFileSync(path.join(extension,`ui/${surface}/main.js`),'utf8');assert.doesNotMatch(js,/^\s*(?:import\s|export\s)/m);
+  for(const surface of ['ui/panel','ui/status','ui/page','background']) {
+    for(const name of ['index.html','main.js'])assert.equal(digest(readFileSync(path.join(extension,`${surface}/${name}`))),digest(readFileSync(`${surface}/${name}`)),`${surface}/${name}`);
+    const html=readFileSync(path.join(extension,`${surface}/index.html`),'utf8');assert.match(html,/src=["'](?:\.\/)?main\.js["']/);
+    const js=readFileSync(path.join(extension,`${surface}/main.js`),'utf8');assert.doesNotMatch(js,/^\s*(?:import\s|export\s)/m);
   }
   for(const artifact of [extension,companion]) {
     const expected=verifyPackageContents(artifact,artifact===extension?'extension':'companion');
@@ -79,7 +79,7 @@ try {
     for(const entry of ['build/companion/index.js','build/setup/main.js'])run(['--check',path.join(artifact,entry)]);
   }
   run(['--check',path.join(extension,'build/service/main.js')]);
-  console.log(JSON.stringify({manifestParser:true,guestEntries:3,guestBytesUnchanged:true,version,protocolVersion:VERSION,schemaVersion:VERSION,selfContainedSyntax:true}));
+  console.log(JSON.stringify({manifestParser:true,guestEntries:4,guestBytesUnchanged:true,version,protocolVersion:VERSION,schemaVersion:VERSION,selfContainedSyntax:true}));
   console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
 
   // Exact packaged service, before any companion install. No source controller or DTO mocks.
