@@ -71,6 +71,11 @@ never a production fallback.
 
 ## Plan composer handoff revision 1
 
+The candidate requires **OpenChamber >=2.7.1**; the build SDK remains pinned at
+**2.7.0**. Older hosts refuse installation with their normal host-version feedback,
+rather than installing with omitted contributions. This floor does not certify
+every newer host or mobile/Electron configuration.
+
 Ready health advertises `planComposerHandoff:1`; absence means unavailable, not
 no reported plans. Protocol/schema remain **2**. The following authenticated,
 query-free **POST reads** deliberately except the generic GET-read convention:

@@ -414,7 +414,8 @@ search** labels qualify found candidates, not a complete library census. Selecti
 resolves complete matching detail into an as-of context chip, never a live progress
 or sent-message claim. Deleted/archived targets and failed reads refuse resolution.
 
-The session menu offers **Insert handoff** and **Insert progress update**. Each
+On OpenChamber 2.7.1, the session menu's **Export** submenu offers **Insert handoff**
+and **Insert progress update**. Each
 loads an on-demand hidden background frame, without opening a panel or navigating.
 The **clicked session supplies the report; the active chat receives the text**,
 even if it is another chat or changes while preparation is pending. Both append

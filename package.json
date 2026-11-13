@@ -6,7 +6,7 @@
   "type": "module",
   "openchamber": {
     "apiVersion": 1,
-    "engines": { "openchamber": ">=2.5.1" },
+    "engines": { "openchamber": ">=2.7.1" },
     "contributes": {
       "panel": { "id": "agent-progress-probe", "name": "Agent progress", "icon": "checkbox-circle", "entry": "ui/panel/index.html" },
       "statusSection": { "entry": "ui/status/index.html", "title": "Agent progress", "height": 160 },
