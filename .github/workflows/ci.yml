@@ -9,6 +9,8 @@ permissions:
 jobs:
   portable:
     name: Linux tests and packages
+    # Same-repository main/dev heads already receive every check on push.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && github.head_ref != 'dev') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -60,6 +62,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   node-latest:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && github.head_ref != 'dev') }}
     # The exact pin above is the release gate. This job runs the same checks on
     # the newest Node 24 release, which the documented range also accepts.
     name: Linux tests on latest Node 24
@@ -91,6 +94,7 @@ jobs:
         run: node --experimental-strip-types scripts/ci.ts
   windows-native:
     name: Windows setup, storage and capture
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && github.head_ref != 'dev') }}
     runs-on: windows-2025
     timeout-minutes: 15
     concurrency:

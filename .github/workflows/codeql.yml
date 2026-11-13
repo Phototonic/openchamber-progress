@@ -17,6 +17,8 @@ concurrency:
 jobs:
   analyze:
     name: Analyze JavaScript and TypeScript
+    # Keep push/default-branch coverage; only skip duplicate same-repository PRs.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && github.head_ref != 'dev') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
