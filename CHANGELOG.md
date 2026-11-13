@@ -231,7 +231,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.1
 [1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...v0.7.0

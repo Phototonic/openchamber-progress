@@ -130,7 +130,7 @@ Managed setup SHALL have an explicit discriminated contract understood by the ma
 
 ### Requirement: Explicitly weaker integrity and update contract
 
-The guides SHALL state that host-managed executable folders are not the former private hash-attested immutable payloads. They SHALL distinguish publisher authenticity from observational fingerprints and host update selection from former per-companion confirmation. Managed code updates MUST NOT be described as gap-free atomic swaps or universal private-mode installs. The separate official-version notice SHALL remain unchanged by this work.
+The guides SHALL state that host-managed executable folders are not the former private hash-attested immutable payloads. They SHALL distinguish publisher authenticity from observational fingerprints and host update selection from former per-companion confirmation. Managed code updates MUST NOT be described as gap-free atomic swaps or universal private-mode installs.
 
 #### Scenario: Host update or rollback
 - **WHEN** the host replaces the extension or the user restores an earlier build
