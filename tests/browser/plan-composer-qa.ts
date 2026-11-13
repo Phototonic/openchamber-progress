@@ -1,6 +1,7 @@
 // Real supporting-host acceptance. The caller owns a disposable, credential-free,
 // loopback-only host; this driver starts/stops only its own fresh Chromium profile.
-// No synthetic SDK shell, prompt, provider call or attachment to a live browser.
+// No synthetic SDK shell or attachment to a live browser. Only after proving the
+// extension did not send, the harness sends one chip to a local scripted provider.
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
@@ -27,23 +28,48 @@ try {
  await new Promise<void>((r,j)=>{ws!.onopen=()=>r();ws!.onerror=()=>j(Error('browser connection'));});
  let next=0;const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>();
  const events:any[]=[];let onEvent:((m:any)=>void)|undefined;
- ws.onmessage=e=>{const m=JSON.parse(String(e.data));const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(m.error.message)):p.resolve(m.result);}else {events.push(m);onEvent?.(m);}};
- const send=(method:string,params:object={})=>new Promise<any>((r,j)=>{const id=++next;pending.set(id,{resolve:r,reject:j});ws!.send(JSON.stringify({id,method,params}));});
+ ws.onmessage=e=>{const m=JSON.parse(String(e.data));const p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(Error(m.error.message)):p.resolve(m.result);}else {events.push(m);if(m.method==='Target.attachedToTarget')void send('Runtime.enable',{},m.params.sessionId).catch(()=>{});onEvent?.(m);}};
+ const send=(method:string,params:object={},sessionId?:string)=>new Promise<any>((r,j)=>{const id=++next;pending.set(id,{resolve:r,reject:j});ws!.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});
  const evaluate=async<T=any>(expression:string):Promise<T>=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(r.exceptionDetails.exception?.description?.split('\n')[0]??'page evaluation failed');return r.result.value;};
  const shot=async(name:string)=>{const s=await send('Page.captureScreenshot',{format:'png'});writeFileSync(join(artifacts,name),Buffer.from(s.data,'base64'));screenshots.push(name);};
  captureFailure=async()=>{await shot('failed-journey.png');writeFileSync(join(artifacts,'failed-journey.json'),JSON.stringify({text:await evaluate('document.body.innerText'),columns:await evaluate(`[...document.querySelectorAll('[data-chat-session-id]')].map(e=>({id:e.getAttribute('data-chat-session-id'),column:e.hasAttribute('data-chat-column'),editor:!!e.querySelector('[contenteditable="true"]')}))`),mentions:events.filter(m=>m.method==='Network.responseReceived'&&m.params.response.url.includes('/mentions/')).map(m=>({path:new URL(m.params.response.url).pathname,status:m.params.response.status}))},null,2));};
- const click=async(expression:string,button='left')=>{const box=await evaluate(`(()=>{const e=${expression};if(!e) return null;e.scrollIntoView({block:'center'});const b=e.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})()`);assert.ok(box,'click target exists');await send('Input.dispatchMouseEvent',{type:'mouseMoved',...box});await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await send('Input.dispatchMouseEvent',{type:'mousePressed',...box,button,clickCount:1});await send('Input.dispatchMouseEvent',{type:'mouseReleased',...box,button,clickCount:1});};
+ const click=async(expression:string,button='left')=>{
+   await evaluate(`(()=>{const e=${expression};if(e)e.scrollIntoView({block:'nearest'});})()`);
+   await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+   const locate=()=>evaluate<{x:number;y:number}|null>(`(()=>{const e=${expression};if(!e)return null;const b=e.getBoundingClientRect();let left=Math.max(0,b.left),right=Math.min(innerWidth,b.right),top=Math.max(0,b.top),bottom=Math.min(innerHeight,b.bottom);for(let a=e.parentElement;a;a=a.parentElement){const s=getComputedStyle(a),r=a.getBoundingClientRect();if(/auto|scroll|hidden|clip/.test(s.overflowX)){left=Math.max(left,r.left);right=Math.min(right,r.right);}if(/auto|scroll|hidden|clip/.test(s.overflowY)){top=Math.max(top,r.top);bottom=Math.min(bottom,r.bottom);}}if(right<=left||bottom<=top)return null;const p={x:(left+right)/2,y:(top+bottom)/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null;})()`);
+   let box=await wait(locate,value=>value!==null,'actionable click target: '+expression);assert.ok(box);
+   await send('Input.dispatchMouseEvent',{type:'mouseMoved',...box});
+   await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+   box=await wait(locate,value=>value!==null,'settled click target');assert.ok(box);
+   await send('Input.dispatchMouseEvent',{type:'mousePressed',...box,button,clickCount:1});
+   await send('Input.dispatchMouseEvent',{type:'mouseReleased',...box,button,clickCount:1});
+ };
  const textTarget=(text:string)=>`[...document.querySelectorAll('span,div,button')].find(e=>e.textContent===${literal(text)}&&![...e.children].some(c=>c.textContent===${literal(text)}))`;
  const key=async(key:string,code=key,modifiers=0)=>{await send('Input.dispatchKeyEvent',{type:'keyDown',key,code,modifiers});await send('Input.dispatchKeyEvent',{type:'keyUp',key,code,modifiers});};
  const editor=`document.querySelector('[data-chat-column="main"] [data-testid="chat-input"] [contenteditable="true"][role="textbox"]')`;
+ const guest=async(surface:string)=>{
+   for(const event of events.filter(m=>m.method==='Runtime.executionContextCreated'&&m.params.context.auxData?.isDefault).toReversed()){
+     try{
+       const owner=await send('DOM.getFrameOwner',{frameId:event.params.context.auxData.frameId});
+       const node=await send('DOM.resolveNode',{backendNodeId:owner.backendNodeId,objectGroup:'frame-visibility'});
+       const visible=await send('Runtime.callFunctionOn',{objectId:node.object.objectId,functionDeclaration:`function(){const b=this.getBoundingClientRect();return this.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})&&b.width>0&&b.height>0&&document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===this;}`,returnByValue:true});
+       await send('Runtime.releaseObjectGroup',{objectGroup:'frame-visibility'});
+       if(!visible.result?.value)continue;
+       const r=await send('Runtime.evaluate',{contextId:event.params.context.id,returnByValue:true,expression:`(()=>{const root=document.querySelector('[data-surface]');if(root?.getAttribute('data-surface')!==${literal(surface)}||document.documentElement.hasAttribute('data-ap-hidden'))return null;const counts=root.querySelector('[data-testid="counts"]');return {surface:${literal(surface)},title:root.querySelector('[data-testid="plan-title"],[data-testid="status-plan-title"]')?.textContent,done:counts?.getAttribute('data-done'),total:counts?.getAttribute('data-total'),rows:root.querySelectorAll('[data-testid^="plan-row-"]').length,loading:!!root.querySelector('[data-testid="state-loading"],[data-testid="detail-loading"]')};})()`},event.sessionId);
+       if(r.result?.value)return r.result.value;
+     }catch{/* A retired frame/context is not a current observation. */}
+   }
+   return null;
+ };
  const draft=()=>evaluate<string>(`${editor}?.innerText??''`);
+ const showDraftStart=async()=>{await evaluate(`${editor}?.closest('.cm-scroller')?.scrollTo(0,0)`);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');};
  const toast=(text:string)=>wait(()=>evaluate(`[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes(${literal(text)}))`),Boolean,'toast: '+text);
  const check=(id:string,pass:boolean)=>{results.push({id,pass});assert.ok(pass,id);};
  const api=async(path:string,body:unknown,method='POST')=>{const r=await fetch(hostUrl+path,{method,headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});const value=await r.json();assert.ok(r.ok,'host request accepted');return value;};
- const control=async(path:string)=>{assert.ok(arg('--control-url'),'disposable control URL required');const url=new URL(arg('--control-url')!);assert.equal(url.hostname,'127.0.0.1');const r=await fetch(new URL(path,url),{method:'POST',body:'{}',signal:AbortSignal.timeout(5000)});assert.ok(r.ok,'disposable control accepted');};
+ const control=async(path:string)=>{assert.ok(arg('--control-url'),'disposable control URL required');const url=new URL(arg('--control-url')!);assert.equal(url.hostname,'127.0.0.1');const r=await fetch(new URL(path,url),{method:'POST',body:'{}',signal:AbortSignal.timeout(5000)});assert.ok(r.ok,'disposable control accepted');return r.json();};
  const session=async(title:string)=>{assert.ok(Object.values(fixture.sessions).some((s:any)=>s.title===title),'known disposable session');await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText===${literal(title)})`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText??''`),x=>x===title,'active session '+title);await wait(()=>evaluate(`!!(${editor})`),Boolean,'main composer');await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');};
  const openActions=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-box]')].find(e=>e.innerText.includes(${literal(title)}))?.querySelector('button[aria-label="Session menu"]')`);await wait(()=>evaluate(`!!document.querySelector('[role="menu"]')`),Boolean,'session menu');await click(`[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent==='Export')`);await wait(()=>evaluate(`document.body.innerText.includes('Insert handoff')&&document.body.innerText.includes('Insert progress update')`),Boolean,'extension actions');};
- await send('Page.enable');await send('Runtime.enable');await send('Network.enable');
+ await send('Page.enable');await send('Runtime.enable');await send('Network.enable');await send('Target.setAutoAttach',{autoAttach:true,waitForDebuggerOnStart:false,flatten:true});
  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
  await send('Page.navigate',{url:hostUrl});
  await wait(()=>evaluate('document.readyState'),x=>x==='complete','page load');
@@ -69,34 +95,32 @@ try {
  const resolvedText=JSON.parse((await send('Network.getResponseBody',{requestId:resolved.params.requestId})).body).text;
  const direct=await api('/api/guests/agent-progress-probe/service/request',{method:'POST',path:'/mentions/resolve',body:JSON.stringify({id:fixture.source+'/P-compose'})});
  check('host-resolve-matches-shipped-service',resolvedText===JSON.parse(direct.body).text&&resolvedText.length<=16000);
- // Read only the real chip/composer's bounded React state; the host exposes no
- // context-text inspector. This is observation, never SDK/state substitution.
- const attached=await evaluate<string|null>(`(()=>{
-   const button=document.querySelector('button[title="Compose fixture"]');
-   let fiber=button?.[Object.keys(button).find(k=>k.startsWith('__reactFiber'))];
-   const seen=new Set();let budget=20000;
-   function reference(value,depth){
-     if(!value||typeof value!=='object'||depth<0||seen.has(value)||--budget<0)return null;
-     seen.add(value);
-     if(value.kind==='guest'&&value.providerId==='agent-progress-probe'&&value.id==='source-composer/P-compose')return value.contextText??null;
-     const prototype=Object.getPrototypeOf(value);
-     if(value instanceof Map||value instanceof Set){for(const entry of value.values()){const found=reference(entry,depth-1);if(found)return found;}return null;}
-     if(!Array.isArray(value)&&prototype!==Object.prototype&&prototype!==null)return null;
-     for(const [key,entry]of Object.entries(value)){
-       if(key==='next'||key.startsWith('_'))continue;
-       const found=reference(entry,depth-1);if(found)return found;
+ // The host has no context-text inspector. DevTools reads only the real chip's
+ // click-handler closure and its captured guest reference, without invoking it,
+ // changing host state, constructing SDK replies or submitting a prompt.
+ let attached:string|null=null;
+ try {
+   const handler=await send('Runtime.evaluate',{expression:`(()=>{const b=document.querySelector('button[title="Compose fixture"]');return b?.[Object.keys(b).find(k=>k.startsWith('__reactProps'))]?.onClick;})()`,objectGroup:'chip-inspection'});
+   const queue:any[]=[handler.result],seen=new Set<string>();
+   for(let visits=0;queue.length&&visits<128;visits++){
+     const value=queue.shift();if(!value?.objectId||seen.has(value.objectId))continue;seen.add(value.objectId);
+     const properties=await send('Runtime.getProperties',{objectId:value.objectId,ownProperties:true});
+     if(value.type==='function'){
+       const scopes=properties.internalProperties?.find((p:any)=>p.name==='[[Scopes]]')?.value;
+       if(!scopes?.objectId)continue;
+       const list=await send('Runtime.getProperties',{objectId:scopes.objectId,ownProperties:true});
+       for(const scope of list.result){
+         if(!scope.value?.objectId||! /^(Closure|Block|Local)/.test(scope.value.description??''))continue;
+         const captured=await send('Runtime.getProperties',{objectId:scope.value.objectId,ownProperties:true});
+         for(const entry of captured.result)if(entry.value?.objectId&&(entry.value.type==='function'||entry.value.className==='Object'))queue.push(entry.value);
+       }
+     }else if(value.className==='Object'){
+       const reference=await send('Runtime.callFunctionOn',{objectId:value.objectId,functionDeclaration:`function(id){return this.kind==='guest'&&this.providerId==='agent-progress-probe'&&this.id===id?this.contextText:null;}`,arguments:[{value:fixture.source+'/P-compose'}],returnByValue:true,throwOnSideEffect:true});
+       if(typeof reference.result?.value==='string'){attached=reference.result.value;break;}
+       for(const entry of properties.result)if(['onClick','onReopenPicker','onOpen'].includes(entry.name)&&entry.value?.type==='function')queue.push(entry.value);
      }
-     return null;
    }
-   for(let n=0;fiber&&n<30;n++,fiber=fiber.return)for(const current of [fiber,fiber.alternate]){
-     if(!current)continue;
-     let found=reference(current.memoizedProps,6);if(found)return found;
-     for(let hook=current.memoizedState,j=0;hook&&j<200;j++,hook=hook.next){found=reference(hook,6);if(found)return found;}
-     for(let context=current.dependencies?.firstContext,j=0;context&&j<32;j++,context=context.next){found=reference(context.memoizedValue,6);if(found)return found;}
-   }
-   return null;
- })()`);
- if(attached===null)writeFileSync(join(artifacts,'chip-state-shape.json'),JSON.stringify(await evaluate(`(()=>{const b=document.querySelector('button[title="Compose fixture"]');let f=b?.[Object.keys(b).find(k=>k.startsWith('__reactFiber'))];const r=[];for(let n=0;f&&n<30;n++,f=f.return)r.push({name:typeof f.type==='string'?f.type:f.type?.name,props:Object.keys(f.memoizedProps??{}),state:typeof f.memoizedState,alternate:!!f.alternate});return r})()`),null,2));
+ }finally{await send('Runtime.releaseObjectGroup',{objectGroup:'chip-inspection'});}
  results.push({id:'attached-chip-is-resolved-snapshot',pass:attached===resolvedText});
  writeFileSync(join(artifacts,'attached-context.txt'),attached??'Context text unavailable to the inspector.');
  writeFileSync(join(artifacts,'chip-context.json'),JSON.stringify({codeUnits:resolvedText.length,sha256:createHash('sha256').update(resolvedText).digest('hex'),attachedMatches:attached===resolvedText,reportedNotVerified:true},null,2));
@@ -135,14 +159,15 @@ try {
  const handoff=await draft();
  check('saved-finished-choice-and-other-plan-notice',handoff.startsWith('Keep this draft')&&handoff.includes('P\\-compose')&&handoff.includes('1 other plan')&&!handoff.includes('Do not merge this task'));
  await wait(()=>evaluate<number>('document.querySelectorAll("iframe").length'),x=>x===baseline,'background frame disposal');
- await shot('handoff-draft.png');
+ check('background-frame-disposed-after-acknowledgement',true);
+ await showDraftStart();await shot('handoff-draft.png');
  await openActions('Source reports');hold=true;await click(textTarget('Insert progress update'));
  await wait(async()=>held,Boolean,'second clicked source held');
- await session('Switch destination');await wait(()=>draft(),x=>x==='','new active destination before compose');await send('Fetch.continueRequest',{requestId:held.id});held=null;
+ await session('Switch destination');await wait(()=>draft(),x=>x.trim()==='','new active destination before compose');await send('Fetch.continueRequest',{requestId:held.id});held=null;
  await wait(()=>draft(),x=>x.includes('Reported progress, not verified completion'),'progress appended after switch');
- const progress=await draft();check('switch-during-read-keeps-clicked-source-and-new-destination',progress.startsWith('Plan: Compose fixture')&&progress.includes('P\\-compose')&&progress.includes('1 other plan')&&!progress.includes('Origin session:')&&!progress.includes('Keep this draft'));
+ const progress=await draft();check('switch-during-read-keeps-clicked-source-and-new-destination',progress.trimStart().startsWith('Plan: Compose fixture')&&progress.includes('P\\-compose')&&progress.includes('1 other plan')&&!progress.includes('Origin session:')&&!progress.includes('Keep this draft'));
  await toast('Added to the active chat. Review before sending.');
- await shot('progress-draft.png');
+ await showDraftStart();await shot('progress-draft.png');
  const beforeEmpty=await draft();await openActions('No reported plan');await click(textTarget('Insert handoff'));
  await toast('No plan reported for this session');
  check('no-plan-does-not-change-draft',await draft()===beforeEmpty);await shot('no-plan.png');
@@ -159,10 +184,45 @@ try {
  await api('/api/guests/agent-progress-probe/capabilities',{granted:['sessions','service']},'PUT');
  await send('Fetch.disable');
  await session('Source reports');
- await wait(()=>evaluate<number>('document.querySelectorAll("iframe").length'),x=>x>=2,'visible progress frames restored');
+ const rail=await wait(()=>guest('panel'),v=>v?.title==='Automatic active fixture'&&v.total==='1'&&!v.loading,'complete rail restored');
+ check('real-rail-smoke',rail.done==='0');
  await shot('source-views.png');
+ await click(`[...document.querySelectorAll('button[aria-label="Close panel"]')].findLast(e=>e.getBoundingClientRect().width>0)`);
+ if(!await evaluate(`document.querySelector('button[aria-label="Toggle work-status panel"]')?.getAttribute('aria-pressed')==='true'`))await click(`document.querySelector('button[aria-label="Toggle work-status panel"]')`);
+ const status=await wait(()=>guest('status'),v=>v?.title==='Automatic active fixture'&&v.total==='1'&&!v.loading,'complete Work Status restored');
+ check('real-work-status-smoke',status.done==='0');
+ await shot('status.png');
+ const pageStart=events.length;
  await click(textTarget('Agent progress'));
+ await wait(async()=>{const requests=events.slice(pageStart).filter(m=>m.method==='Network.requestWillBeSent').filter(m=>{try{const q=JSON.parse(m.params.request.postData??'{}');return q.path==='/v1/plans'&&!q.query?.session;}catch{return false;}});return requests.some(r=>events.some(m=>m.method==='Network.loadingFinished'&&m.params.requestId===r.params.requestId));},Boolean,'board list read');
+ await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+ const board=await wait(()=>guest('page'),v=>v?.rows>=2&&v.total==='1'&&!v.loading,'complete board');
+ check('real-board-smoke',board.done==='0');
  await shot('board.png');
+ const exceptions=events.filter(m=>m.method==='Runtime.exceptionThrown').length;
+ writeFileSync(join(artifacts,'console.json'),JSON.stringify({uncaughtExceptions:exceptions,consoleErrors:events.filter(m=>m.method==='Runtime.consoleAPICalled'&&m.params.type==='error').length,note:'Loopback-only host metadata failures and the deliberately failed mention/service requests are expected.'},null,2));
+ check('no-uncaught-browser-exceptions',exceptions===0);
+ // Freeze all extension no-send evidence before the sole harness-as-user send.
+ const noSend=await control('/safety');
+ check('extension-journeys-never-send',noSend.providerCalls===0&&noSend.credentials===0);
+ writeFileSync(join(artifacts,'no-send.json'),JSON.stringify({stage:'before harness send',...noSend,assertions:results},null,2));
+ await session('Destination draft');
+ await click(editor);await key('a','KeyA',2);await key('Backspace');
+ await send('Input.insertText',{text:'@Compose'});
+ await wait(()=>evaluate(`!!(${textTarget('Compose fixture')})`),Boolean,'final chip row');
+ await click(textTarget('Compose fixture'));
+ await wait(()=>evaluate(`!!document.querySelector('button[title="Compose fixture"]')`),Boolean,'final chip selected');
+ const finalResolve=events.findLast(m=>m.method==='Network.responseReceived'&&m.params.response.url.endsWith('/mentions/resolve'));
+ const finalText=JSON.parse((await send('Network.getResponseBody',{requestId:finalResolve.params.requestId})).body).text;
+ check('harness-chip-snapshot-unchanged',finalText===resolvedText);
+ await shot('chip-send.png');
+ await click(editor);await key('Enter');
+ const outgoing=await wait(()=>control('/provider-request'),v=>v.providerCalls>0,'scripted provider request');
+ const strings=(value:any):string[]=>typeof value==='string'?[value]:Array.isArray(value)?value.flatMap(strings):value&&typeof value==='object'?Object.values(value).flatMap(strings):[];
+ const content=strings(outgoing.prompt);
+ const delivered=content.find(text=>text.includes(finalText));
+ check('chip-summary-exactly-present-in-provider-request',outgoing.providerCalls===1&&!!delivered);
+ writeFileSync(join(artifacts,'chip-context.json'),JSON.stringify({method:'harness user-equivalent send to local scripted provider',status:'pass',noSendEvidence:'no-send.json',providerCalls:outgoing.providerCalls,codeUnits:finalText.length,sha256:createHash('sha256').update(finalText).digest('hex'),attachedMatches:attached===resolvedText,exactSummaryPresent:!!delivered,observerExcerpt:delivered?.slice(delivered.indexOf(finalText),delivered.indexOf(finalText)+finalText.length)},null,2));
  assert.ok(results.every(r=>r.pass),'all acceptance assertions');
 }catch(e){failure=e instanceof Error?e.message:'acceptance failed';await captureFailure?.().catch(()=>{});}
 finally {
