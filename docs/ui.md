@@ -65,6 +65,13 @@ Language changes neither report progress nor mark History reviewed. Document res
 including a retained read error, does not retry solely for translation; explicit
 opening/Retry and ordinary data refresh keep their own behavior. External changes
 do not steal focus and respect an independent open SDK popup's repaint boundary.
+Background repaints retain this frame's logical focused control even while its
+document is unfocused, but never call `focus()` to restore it then. Restoration
+waits until this frame genuinely regains focus, only while its active element is
+body, absent or detached; choosing another control cancels it. Repeated paints
+retarget the current rebuilt control, and context/identity changes or disposal
+retire the pending return. A repaint starting without an in-frame focused control
+does not create a focus target.
 Work Status continues its existing content-height synchronization after reflow.
 
 The localization inventory is owned by the existing UI layers:

@@ -221,6 +221,12 @@ try {
   await evaluate(`qa.release('stale')`); await frames(); await lang('ru', ['panel']);
   check('late-read:does-not-overwrite-save', (await saved()).preference === 'ru');
 
+  await show('panel');
+  await guest('panel', `d.querySelector(${literal(trigger)}).focus();return true`);
+  await evaluate(`document.querySelector('#outside').focus()`);
+  // preventScroll does not prevent an iframe's focus() from taking host focus.
+  await guest('panel', `d.querySelector(${literal(trigger)}).focus({preventScroll:true});return true`);
+  check('focus-semantics:preventScroll-still-transfers-frame-focus', await guest<boolean>('panel', `return d.hasFocus()`));
   await evaluate(`document.querySelector('#outside').focus();qa.seed({v:1,preference:'en'})`);
   await unchanged('external-repaint', async () => { await focusRead(); await lang('en'); });
   check('external-repaint:outside-frame-focus-not-stolen', await evaluate(`document.activeElement.id==='outside'`));

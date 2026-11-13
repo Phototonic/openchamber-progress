@@ -238,8 +238,7 @@ const planScope = (n: Element | null | undefined) => {
   return article ? `${article.dataset.testid}|${article.dataset.source ?? ''}` : null;
 };
 type FocusKey = NonNullable<ReturnType<typeof focusKey>>;
-const focusKey = (root: HTMLElement) => {
-  const active = document.activeElement as HTMLElement | null;
+const focusKey = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active)) return null;
   const owner = active.closest<HTMLElement>('[data-testid]');
   if (!owner) return null;
@@ -257,11 +256,8 @@ const focusKey = (root: HTMLElement) => {
  * nothing is moved. Nothing else falls back here.
  */
 const COVERAGE_CONTROL = '[data-testid="subagent-coverage-cue"],[data-testid="subagent-retry-history"],[data-testid="subagent-dismiss-loss"]';
-const coverageFocus = (root: HTMLElement) => {
-  const active = document.activeElement as HTMLElement | null;
+const coverageFocus = (root: HTMLElement, active = document.activeElement as HTMLElement | null) => {
   if (!active || !root.contains(active) || !active.matches?.(COVERAGE_CONTROL)) return null;
-  // Only while this frame holds focus: a fallback never pulls focus back from another frame.
-  if (!document.hasFocus()) return null;
   const scope = active.closest<HTMLElement>('[data-testid="subagent-activity"]')?.dataset.scope;
   return scope ? { scope, inNotes: !!active.closest('[data-testid="subagent-coverage-notes"]') } : null;
 };
@@ -338,7 +334,7 @@ function applyAnchor(list: Element, anchor: Anchor) {
  * nearest shown ancestor summary, then the Tasks heading after complete removal. A filtered
  * (still recorded) row may use the next/previous shown task; moved focus gets a local notice.
  */
-function restoreLogical(article: Element, list: Element, want: Logical, language: InterfaceLanguage) {
+function restoreLogical(article: Element, list: Element, want: Logical, language: InterfaceLanguage, focus = (target: HTMLElement) => target.focus({ preventScroll: true })) {
   const rows = new Map(rowsOf(list).map((n) => [n.dataset.testid!, n]));
   const exact = rows.get(want.id);
   let target: HTMLElement | null = exact && shownRow(exact, list) ? (want.summary ? summaryOf(exact) : null) ?? exact : null;
@@ -353,7 +349,7 @@ function restoreLogical(article: Element, list: Element, want: Logical, language
   for (let i = at + 1; exact && !target && i < want.order.length; i++) target = task(want.order[i]);
   for (let i = at - 1; exact && !target && i >= 0; i--) target = task(want.order[i]);
   target ??= article.querySelector<HTMLElement>(TASKS_HEADING);
-  target?.focus({ preventScroll: true });
+  if (target) focus(target);
   const notice = article.querySelector('[data-testid="focus-notice"]');
   if (moved && notice) notice.textContent = exact ? APP_COPY[language].nearbyFocus : APP_COPY[language].removedFocus(!!target?.matches(TASKS_HEADING));
 }
@@ -437,6 +433,22 @@ export function startView<U>(spec: ViewSpec<U>) {
   const host = connectHost();
   const mount = document.getElementById('root');
   if (!mount) throw new Error('Missing #root');
+  // An unfocused document can still remember its former active control. Calling
+  // focus() there would take focus from the host/sibling frame, so retain only a
+  // target in the current paint until this frame genuinely regains focus.
+  let deferredFocus: HTMLElement | null = null;
+  const emptyFocus = (active: Element | null) => !active || active === document.body || !active.isConnected;
+  const returnFocus = () => {
+    if (!emptyFocus(document.activeElement)) { deferredFocus = null; return; }
+    // Window focus can precede focusin on the control the user actually chose.
+    queueMicrotask(() => {
+      if (disposed || !(document.hasFocus?.() ?? true)) return;
+      const target = deferredFocus;
+      deferredFocus = null;
+      if (target?.isConnected && mount.contains(target) && emptyFocus(document.activeElement)) target.focus({ preventScroll: true });
+    });
+  };
+  document.addEventListener('focusin', returnFocus, { signal: popupInput.signal });
 
   let ctx: HostReadyContext | null = null;
   let session: SessionSnapshot | null = null;
@@ -451,6 +463,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let ui = spec.initialUi();
   const versions = { data: 0, live: 0, ui: 0, ctx: 0 };
   let paintedKey = '';
+  let paintedFocusIdentity = '';
   let paintedUi = -1;
   let contextGeneration = 0;
   let paintedContextGeneration = -1;
@@ -640,7 +653,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   let reading: Reading | null = null;
   /** The reading the current DOM was painted under: only its own paint is harvested. */
   let paintedReading: Reading | null = null;
-  const clearReading = () => { retireReadingUi(); reading = null; paintedReading = null; };
+  const clearReading = () => { deferredFocus = null; retireReadingUi(); reading = null; paintedReading = null; };
   function readingView(): ReadingView | null {
     const bound = reading;
     if (!bound) return null;
@@ -1139,6 +1152,8 @@ export function startView<U>(spec: ViewSpec<U>) {
     // activation: honor the existing open-picker boundary before applying it.
     const presentation = spec.prepareUi?.(context());
     if (presentation) { const next = { ...ui, ...presentation }; spec.beforeUiChange?.(ui, next); ui = next; versions.ui++; }
+    const retainDeferredFocus = contextGeneration === paintedContextGeneration && identity === paintedFocusIdentity;
+    paintedFocusIdentity = identity;
     paintedKey = `${versions.data}|${versions.live}|${versions.ui}|${versions.ctx}`;
     paintedUi = versions.ui;
     paintedContextGeneration = contextGeneration;
@@ -1148,8 +1163,14 @@ export function startView<U>(spec: ViewSpec<U>) {
     languagePaint = paintedLanguage !== null && paintedLanguageSignature !== languageSignature;
 
     const ownsFocus = document.hasFocus?.() ?? true;
-    const focus = ownsFocus ? focusKey(mount!) : null;
-    const coverage = ownsFocus ? coverageFocus(mount!) : null;
+    const active = !ownsFocus && !retainDeferredFocus ? null : deferredFocus && emptyFocus(document.activeElement) ? deferredFocus : document.activeElement as HTMLElement | null;
+    const focus = focusKey(mount!, active);
+    const coverage = coverageFocus(mount!, active);
+    deferredFocus = null;
+    const restoreFocus = (target: HTMLElement) => {
+      if (ownsFocus) target.focus({ preventScroll: true });
+      else deferredFocus = target;
+    };
     const supportText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="reporting-support-preview"]');
     const supportSelection = supportText ? {value:supportText.value,observation:supportText.dataset.observation,start:supportText.selectionStart,end:supportText.selectionEnd,direction:supportText.selectionDirection,top:supportText.scrollTop} : null;
     const oldText = mount!.querySelector<HTMLTextAreaElement>('[data-testid="summary-text"]');
@@ -1166,14 +1187,13 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (reading && paintedReading === reading && oldArticle) {
       for (const d of oldArticle.querySelectorAll<HTMLDetailsElement>('details[data-testid]')) reading.open.set(d.dataset.testid!, d.open);
       const list = oldArticle.querySelector('ul.ap-items');
-      const active = ownsFocus ? document.activeElement : null;
       // A painted list is authoritative about what is in view; only a loading paint keeps an earlier
       // anchor. With no task row in view (reading Readiness above them), keep the page offset itself.
       if (list) { const top = document.scrollingElement?.scrollTop ?? 0; reading.anchor = anchorOf(list) ?? (top ? { scroll: top } : null); logical = active ? logicalOf(active, list) : null; }
       onFallback = !!active?.matches(TASKS_HEADING) && oldArticle.contains(active);
       // Readiness (Needs you) controls exist only with complete detail too, so they park the same way.
       taskControl = !logical && !onFallback && !!active?.closest('.ap-tasks,[data-testid="focus-controls"],[data-testid="readiness"]') && oldArticle.contains(active);
-      if (ownsFocus && !onFallback) { reading.parked = null; reading.parkedControl = null; }
+      if (active && !onFallback) { reading.parked = null; reading.parkedControl = null; }
     }
     const open = new Map([...mount!.querySelectorAll<HTMLDetailsElement>('details[data-testid]')].filter((d) => !d.closest(READING)).map((d) => [d.dataset.testid!, d.open]));
     const scrolls = new Map([...mount!.querySelectorAll<HTMLElement>('[data-scroll-key]')].map((n) => [n.dataset.scrollKey!, n.scrollTop]));
@@ -1244,13 +1264,13 @@ export function startView<U>(spec: ViewSpec<U>) {
     let backFallback: HTMLElement | null = null;
     if (sameReading && reading && article) {
       const want = logical ?? (onFallback ? reading.parked : null);
-      const toTasks = () => { restored = true; article.querySelector<HTMLElement>(TASKS_HEADING)?.focus({ preventScroll: true }); };
+      const toTasks = () => { restored = true; const target = article.querySelector<HTMLElement>(TASKS_HEADING); if (target) restoreFocus(target); };
       if (!complete) {
         // Loading or failed: task rows and task-view controls are absent; wait at Tasks.
         if (want) { reading.parked = want; toTasks(); }
         else if (taskControl && focus) { reading.parkedControl = focus; toTasks(); }
         else if (onFallback) toTasks();
-      } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want, language.snapshot().language); }
+      } else if (want && list) { reading.parked = null; restored = true; restoreLogical(article, list, want, language.snapshot().language, restoreFocus); }
       else if (onFallback && reading.parkedControl && list) { back = reading.parkedControl; reading.parkedControl = null; backFallback = article.querySelector<HTMLElement>(TASKS_HEADING); }
       else if (want || onFallback || (taskControl && !list)) {
         // Complete detail without the remembered target (e.g. no task rows): nothing stays parked;
@@ -1264,7 +1284,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       const candidates = [...root.querySelectorAll<HTMLElement>(`[data-testid="${CSS_ESCAPE(f.id)}"]`)];
       const owner = candidates.find((n) => (f.id === 'plan-selector' || planScope(n) === f.plan) && (n.closest<HTMLElement>('[data-project]')?.dataset.project ?? null) === f.project && (n.dataset.state ?? null) === f.state && (n.closest<HTMLElement>('[data-info]')?.dataset.info ?? null) === f.info);
       const target = f.index < 0 ? owner : owner?.querySelectorAll<HTMLElement>(FOCUSABLE)[f.index];
-      (target ?? backFallback ?? (coverage && back === focus ? coverageLanding(root, coverage) : null))?.focus({ preventScroll: true });
+      const landing = target ?? backFallback ?? (coverage && back === focus ? coverageLanding(root, coverage) : null);
+      if (landing) restoreFocus(landing);
     }
     const revealHeading = handoff ? resolveHandoff(root, focus) : null;
     if (handoffNote) {
@@ -1368,6 +1389,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     // Session/directory events can precede ready. Retain their values, but do not
     // start consumers (notably summary reconciliation) without host authority.
     if (!ctx || disposed) return;
+    deferredFocus = null;
     contextGeneration++;
     versions.ctx++;
     cleanup = { ...initialCleanup(), pending: cleanupBusy }; cleanupFocus = null; handoff = null; handoffNote = null;
@@ -1461,7 +1483,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
   });
   // Focus return re-reads only the shared review checkpoint of an open digest (coalesced).
-  window.addEventListener('focus', () => { language.refresh(); digests?.focus(); });
+  window.addEventListener('focus', () => { returnFocus(); language.refresh(); digests?.focus(); });
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;

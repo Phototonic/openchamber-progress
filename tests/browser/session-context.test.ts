@@ -35,15 +35,21 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   let languageWrite: Promise<void> | null = null;
   const infoPaints: { kind: string; root?: object }[] = [];
   let expanded = false, disclosure = false, livePopup = false;
+  let ownsFocus = true, focusCalls = 0;
+  const body = { isConnected: true };
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
+    control: null as any,
+    contains(active: unknown): boolean { return !!active && (active === this.control || this.firstElementChild?.contains(active)); },
     querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
-    querySelectorAll: (s: string) => s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
-      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : [],
+    querySelectorAll(s: string): any[] { return s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
+      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : s === '[data-testid="fixture-control"]' ? [this.control ?? this.firstElementChild?.control].filter(Boolean) : []; },
     getAnimations: () => [], setAttribute() {}, append() {},
-    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = livePopup = false; },
+    replaceChildren(child: any) { if (this.firstElementChild?.control) { this.firstElementChild.control.isConnected = false; if (document.activeElement === this.firstElementChild.control) document.activeElement = body; } this.firstElementChild = child; expanded = disclosure = livePopup = false; },
   });
+  // Only the root owns a control; mount queries delegate to the current painted root.
+  const thisControl = (): any => mount.firstElementChild?.control;
   const mount = node();
-  const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
+  const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null as any, body, hasFocus: () => ownsFocus,
     getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(name: string, fn: any) { listeners[`document:${name}`] = fn; }, scrollingElement: { scrollTop: 0 } };
   let handler = async (q: GuestRequest): Promise<GuestRequestResult> => {
     if (q.path === '/health') return response({ ...HEALTH, planCleanup: 1 });
@@ -96,16 +102,70 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
     onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
-    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
+    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls');
+      (_root as any).control = { dataset: { testid: 'fixture-control' }, isConnected: true,
+        closest: (selector: string) => selector === '[data-testid]' ? (_root as any).control : null,
+        querySelectorAll: () => [], matches: () => false,
+        focus() { focusCalls++; document.activeElement = this; },
+      };
+      vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
   };
   exports.startView(spec);
   return { requests, paints, contexts, listeners, infoPaints, languageStorage, holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+    get focusCalls() { return focusCalls; }, get focusedControl() { return document.activeElement === thisControl(); },
+    setFocus: (owns: boolean, active: 'control' | 'body' | 'outside') => { ownsFocus = owns; document.activeElement = active === 'control' ? thisControl() : active === 'body' ? body : { isConnected: true }; },
+    focusReturn: (event = 'focus') => { ownsFocus = true; listeners[event === 'focus' ? 'focus' : 'document:focusin']?.(); },
     openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
     ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture', language = { locale: 'en', supported: false }) => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: language.locale, features: { deviceStorage: language.supported }, surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
   };
 }
+
+test('unfocused background paints defer focus until this frame returns, across repeated replacements', async () => {
+  for (const event of ['focus', 'focusin']) {
+    const c = controller();
+    try {
+      c.ready('A'); await settle();
+      c.setFocus(false, 'control');
+      c.vc.retry(); await settle();
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }); await settle();
+      assert.equal(c.focusCalls, 0, 'poll and external language paints must not take focus');
+      assert.equal(c.focusedControl, false);
+      c.focusReturn(event);
+      await settle();
+      assert.equal(c.focusedControl, true, 'restore the rebuilt control on genuine frame focus return');
+      assert.equal(c.focusCalls, 1);
+      c.focusReturn(event);
+      await settle();
+      assert.equal(c.focusCalls, 1, 'return is one-shot');
+    } finally { c.stop(); }
+  }
+});
+
+test('deferred repaint focus never overrides a new control, starts from body, or survives retirement', async () => {
+  for (const scenario of ['body', 'outside', 'new-control', 'focusin', 'focus-race', 'context', 'identity', 'store', 'dispose']) {
+    const c = controller();
+    try {
+      c.ready('A'); await settle();
+      c.setFocus(false, scenario === 'body' || scenario === 'outside' ? scenario : 'control');
+      c.vc.retry(); await settle();
+      if (scenario === 'new-control') c.setFocus(true, 'outside');
+      if (scenario === 'focusin') { c.setFocus(true, 'outside'); c.focusReturn('focusin'); c.setFocus(true, 'body'); }
+      if (scenario === 'focus-race') { c.focusReturn(); c.setFocus(true, 'outside'); }
+      if (scenario === 'context') { c.ready('B'); await settle(); }
+      if (scenario === 'identity') { c.ready('A', '/fixture/Alpha', 'another-account'); await settle(); }
+      if (scenario === 'store') {
+        c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ ...plansPage([row]), storeId: 'replacement-store' }) : next());
+        c.vc.retry(); await settle();
+      }
+      if (scenario === 'dispose') c.stop();
+      c.focusReturn();
+      await settle();
+      assert.equal(c.focusCalls, 0, scenario);
+    } finally { c.stop(); }
+  }
+});
 
 test('language reads and focus return are independent of failed progress and use device scope', async () => {
   const c = controller();
