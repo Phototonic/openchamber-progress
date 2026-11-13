@@ -42,11 +42,19 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     await wait(()=>evaluate('document.body.innerText'),v=>!v.includes('Allow and enable'),'approval accepted');
   };
   const language=async(surface:string,value:'en'|'ru')=>{
-    await wait(()=>browser.guest(surface,'!!document.querySelector("[data-testid=interface-language] button")'),Boolean,`${surface} visible language control`);
-    await guestClick(surface,'[data-testid="interface-language"] button');
+    const languageClick=async(selector:string)=>{try{await guestClick(surface,selector);}catch{
+      const diagnostic=await browser.guest(surface,`(()=>{const e=document.querySelector(${literal(selector)}),b=document.querySelector('[data-testid="interface-language"] button'),r=e?.getBoundingClientRect(),hit=r?document.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;return {language:document.documentElement.lang,button:b?.textContent,disabled:b?.disabled,targetPresent:!!e,visible:e?.checkVisibility(),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,hit:hit?{tag:hit.tagName,id:hit.id,text:hit.textContent?.slice(0,80)}:null}})()`);
+      throw new Error(`language actionability ${surface} ${selector}: ${JSON.stringify(diagnostic)}`);
+    }};
+    await wait(()=>browser.guest(surface,`(()=>{const b=document.querySelector('[data-testid="interface-language"] button');return !!b&&!b.disabled&&!document.querySelector('[data-testid="state-loading"],[data-testid="detail-loading"]')})()`),Boolean,`${surface} loaded language control`);
+    await languageClick('[data-testid="interface-language"] button');
     const label=value==='ru'?'Русский':'English';
-    const option=await browser.guest<string>(surface,`(()=>{const e=[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.trim()===${literal(label)});return e?'#'+e.id:null})()`);assert.ok(option,'observed language option');
-    await guestClick(surface,option);
+    // The pinned SDK prefixes option IDs with a new select ID on each repaint.
+    // Keep only the language suffix: guestClick re-queries the current option
+    // on every actionability probe instead of waiting on a detached mount's ID.
+    const option=`[role="option"][id$="-${value}"]`;
+    await wait(()=>browser.guest(surface,`(()=>{const b=document.querySelector('[data-testid="interface-language"] button'),e=document.querySelector(${literal(option)});return b?.getAttribute('aria-expanded')==='true'&&!!e&&!e.disabled&&e.checkVisibility()&&e.textContent.trim()===${literal(label)}})()`),Boolean,`${surface} settled ${label} menu option`);
+    await languageClick(option);
     await wait(()=>browser.guest(surface,`document.querySelector('[data-testid="interface-language"] button')?.textContent.includes(${literal(label)})`),Boolean,'saved device language');
     await wait(()=>browser.guest(surface,'document.documentElement.lang'),v=>v===value,`${surface} rendered language ${value}`);
   };
@@ -59,7 +67,9 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
       await browser.shot(`${name}-ru`);
     };
     await browser.selectSession('Managed acceptance');
-    await openRail();await language('panel','ru');await capture('panel','rail');
+    await openRail();
+    await wait(()=>browser.guest('panel',`!!document.querySelector('[data-testid="plan-title"]')&&!document.querySelector('[data-testid="state-loading"],[data-testid="detail-loading"]')`),Boolean,'post-switch rail plan loaded');
+    await language('panel','ru');await capture('panel','rail');
     await click(`[...document.querySelectorAll('button[aria-label="Close panel"]')].findLast(e=>e.checkVisibility())`);
     // Work Status has no language picker. Reopen it to read the device language
     // saved through the rail's real UI instead of retaining an English frame.
