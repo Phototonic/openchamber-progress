@@ -4,5 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # Every codeql-action step must use the same version, so update them together.
+      codeql-action:
+        patterns:
+          - github/codeql-action*
 # npm/Bun updates are intentionally omitted: Dependabot does not support bun.lock
 # lockfiles. Dependency alerts still use the dependency graph via package.json.
