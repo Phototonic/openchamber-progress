@@ -131,7 +131,7 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
     const prompt=async(input:any)=>{fs.writeFileSync(`${root}/step.json`,JSON.stringify({name:'agent_progress_report',input}));await client.session.prompt({sessionID:main.id,text:'Run the synthetic local fixture.'},{signal:AbortSignal.timeout(15000)});await client.session.wait({sessionID:main.id},{signal:AbortSignal.timeout(20000)});};
     await prompt({op:'start',plan:'P-managed',oid:'start',rev:0,title:'Managed acceptance plan',source:'docs/plans/synthetic.md',items:[{id:'a',title:'First task',kind:'task',status:'done'},{id:'b',title:'Second task',kind:'task',status:'working'}]});results.beforeViews=await browser.views(1,2,1);
     for(const name of ['rail','status','board'])fs.copyFileSync(`${output}/${name}-r1.png`,`${output}/${name}-en.png`);
-    await browser.language('page','ru');await browser.views(1,2,1);for(const name of ['rail','status','board'])fs.copyFileSync(`${output}/${name}-r1.png`,`${output}/${name}-ru.png`);
+    await browser.russianViews();check('three-view-russian-captures',true);
     const {readServicePid}=await import(pathToFileURL(`${hostDir}/service.js`).href);
     const contextsBefore=await browser.contexts(),beforeRow=await row(),serviceBefore=readServicePid(id);assert.ok(serviceBefore);remember(serviceBefore);
     const persist=`${root}/home/.config/openchamber/extensions.json`,auth=`${root}/home/.config/openchamber/guest-auth.json`;

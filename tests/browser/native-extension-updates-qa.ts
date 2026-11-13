@@ -42,13 +42,35 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     await wait(()=>evaluate('document.body.innerText'),v=>!v.includes('Allow and enable'),'approval accepted');
   };
   const language=async(surface:string,value:'en'|'ru')=>{
-    const controls=await browser.guest(surface,'[...document.querySelectorAll("button,select")].map(e=>({tag:e.tagName,label:e.getAttribute("aria-label"),test:e.getAttribute("data-testid"),text:e.textContent}))');
-    assert.ok(controls,'visible language controls');
+    await wait(()=>browser.guest(surface,'!!document.querySelector("[data-testid=interface-language] button")'),Boolean,`${surface} visible language control`);
     await guestClick(surface,'[data-testid="interface-language"] button');
     const label=value==='ru'?'Русский':'English';
     const option=await browser.guest<string>(surface,`(()=>{const e=[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.trim()===${literal(label)});return e?'#'+e.id:null})()`);assert.ok(option,'observed language option');
     await guestClick(surface,option);
     await wait(()=>browser.guest(surface,`document.querySelector('[data-testid="interface-language"] button')?.textContent.includes(${literal(label)})`),Boolean,'saved device language');
+    await wait(()=>browser.guest(surface,'document.documentElement.lang'),v=>v===value,`${surface} rendered language ${value}`);
+  };
+  const russianViews=async()=>{
+    // Device preferences are shared, but already-mounted frames do not repaint
+    // when another frame saves them. Select/reopen and verify each frame.
+    const capture=async(surface:string,name:string)=>{
+      await wait(()=>browser.guest(surface,'document.documentElement.lang'),v=>v==='ru',`${name} rendered Russian before capture`);
+      assert.equal(await browser.guest(surface,'document.documentElement.lang'),'ru',`${name} screenshot must render Russian`);
+      await browser.shot(`${name}-ru`);
+    };
+    await browser.selectSession('Managed acceptance');
+    await openRail();await language('panel','ru');await capture('panel','rail');
+    await click(`[...document.querySelectorAll('button[aria-label="Close panel"]')].findLast(e=>e.checkVisibility())`);
+    // Work Status has no language picker. Reopen it to read the device language
+    // saved through the rail's real UI instead of retaining an English frame.
+    const statusToggle=`document.querySelector('button[aria-label="Toggle work-status panel"]')`;
+    if(await evaluate(`${statusToggle}?.getAttribute('aria-pressed')==='true'`)){
+      await click(statusToggle);await wait(()=>guestContext('status'),v=>v===null,'Work Status closed');
+    }
+    await click(statusToggle);
+    await wait(()=>browser.guest('status','document.body.innerText.includes("Открыть прогресс")'),Boolean,'Work Status Russian action');
+    await capture('status','status');
+    await openBoard();await language('page','ru');await capture('page','board');
   };
   const contexts=async()=>Object.fromEntries(await Promise.all(['panel','status','page'].map(async s=>[s,(await guestContext(s))?.id??null])));
   const routeRequests=()=>events.filter(e=>e.method==='Network.requestWillBeSent'&&(e.params.request.url.includes('/v1/extension-update')||(e.params.request.postData??'').includes('/v1/extension-update'))).length;
@@ -57,7 +79,7 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     if(!await guestContext('page'))await click(`[...document.querySelectorAll('button')].find(e=>e.checkVisibility()&&e.textContent.trim()==='Agent progress')`);
     await wait(()=>browser.guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'visible requested failure state');await browser.shot(name);
   };
-  return {...browser,settings,close,check,available,update,defer,approve,language,contexts,routeRequests,openRail,openBoard,stateShot,
+  return {...browser,settings,close,check,available,update,defer,approve,language,russianViews,contexts,routeRequests,openRail,openBoard,stateShot,
     noNotices:async()=>{for(const s of ['panel','status','page'])assert.ok(!await browser.guest(s,'!!document.querySelector("[data-testid=extension-update-notice],[data-testid=extension-update-line]")'),'no old notice');},
     hostText:()=>evaluate<string>('document.body.innerText')};
 }
