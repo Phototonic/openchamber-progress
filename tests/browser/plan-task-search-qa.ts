@@ -443,11 +443,11 @@ try {
       { id: 'M', title: 'Coordinator', projectId: 'alpha', directory: '/fixture/main', parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] },
       { id: 'map-child', title: 'Map worker', projectId: 'alpha', directory: '/fixture/main', parentId: 'M', archivedAt: null, worktree: null, activity, outcome: null, items: [] },
     ];
-    await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${javascriptLiteral(sessionRecords('running'))});true`);
     await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Map worker'`, 'verified host title');
     check('attribution:render:verified-source-host-title', (await card('page', 'B')).name.includes('Assigned to Map worker'));
     await mapShot('verified-host-title', 'page');
-    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('waiting-question'))});true`);
+    await evaluate(`qa.setSessions('alpha',${javascriptLiteral(sessionRecords('waiting-question'))});true`);
     await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='waiting'`, 'waiting session mark');
     {
       const b = await card('page', 'B'), i = await inspector('page');
@@ -464,7 +464,7 @@ try {
     await wait('page', `parent.qa.held.some(h=>h.tag==='attribution-newer-graph')&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='false'`, 'last reported picture during graph hold');
     {
       const b = await card('page', 'B'), i = await inspector('page');
-      check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${JSON.stringify(lastRevision)}`));
+      check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${javascriptLiteral(lastRevision)}`));
       check('attribution:render:superseded-hides-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith(`Hidden while the map shows revision ${lastRevision} as last reported.`));
       check('attribution:render:superseded-status-last-reported', b.status === 'Reported working' && !(await proof('page')).B.live.proven);
     }
@@ -486,7 +486,7 @@ try {
     }
     await shot('terminal-run', '[data-testid="map-region"]', 12, 1600);
     // Same child ID on a foreign source must keep its recorded label and get no borrowed activity.
-    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await evaluate(`qa.setSessions('alpha',${javascriptLiteral(sessionRecords('running'))});true`);
     await guest('page', `w.mapPreview.source('source-beta');return true`); await ready('page');
     await select('page', 'B');
     {

@@ -118,9 +118,9 @@ jobs:
         run: node --experimental-strip-types scripts/ci.ts
   windows-native:
     name: Windows setup, storage and capture
+    runs-on: windows-2025
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: windows-2025
     timeout-minutes: 15
     concurrency:
       group: ${{ github.workflow }}-windows-native-${{ github.event.pull_request.number || github.sha }}
