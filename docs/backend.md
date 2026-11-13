@@ -709,52 +709,32 @@ Portable CI/package checks are separate from native-host certification. The full
 subagent/desktop family outside this capsule fix. Passing focused and portable
 checks do not waive or certify that family, installation or a release.
 
-### Official-main metadata checker
+### Retired official-main compatibility route
 
-`service/extension-updates.ts` owns one in-memory checker/cache per service
-generation. `GET /v1/extension-update` runs behind existing bearer validation and
-before SetupController/store lookup, so unconfigured/failed capture is independent.
-It requests exactly GitHub Contents
-`https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main`
-with raw-file Accept, fixed User-Agent, omitted credentials and manual redirects.
-No auth/cookie/header forwarding, environment/feed override, guest URL/ref, private
-host API, installer, artifact download or GitHub Release lookup exists.
+`GET /v1/extension-update` remains authenticated, body/query-free and no-store,
+before SetupController/store lookup. For at least the next delivered release it
+returns the existing DTO with service RELEASE, unchanged repository/ref,
+unknown/unavailable, null checkedAt, false stale and no candidate. Its finite ISO
+nextCheckAt is one hour after response construction: compatibility backoff for old
+guests, not a scheduled check. See [the contract](contracts.md#retired-official-main-compatibility-route-revision-1).
 
-The existing SDK parseManifestJson validates the manifest, followed by expected
-panel identity agent-progress-probe, declared panel/page/status/service and strict
-semver validation. SDK shorthand page/status declarations remain valid. Numeric
-components and prerelease identifiers use SemVer ordering; build metadata is
-neutral. Only a higher official-main version is available. This is a metadata
-advertisement, not verification of runtime artifacts or actual install provenance.
-The separate pre-main artifact/host gates must reject a manifest-only release.
-
-One shared in-flight request,5s full header/body deadline,64KiB accepted response,
-1h success TTL,5min failure cooldown with longer valid Retry-After/rate-reset
-deadlines. Conditional ETag requests use only bounded validated header text and
-matching cached manifest knowledge. A304 without that knowledge (or with a
-contradictory ETag) fails unknown/stale, never fabricates success. Failures retain
-validated candidate/state and last success with stale=true. All diagnostics are
-fixed strings; raw upstream bodies/errors are never returned or logged. No disk
-cache. Service close aborts owned outbound HTTP before waiting for request drain;
-timeout and shutdown clear the bounded timer. There is no background daemon or
-check when no frame asks. Internal constructor transport/clock/timeout seams are
-only test construction, not production HTTP/environment configuration.
-
-Frozen DTO/lifecycle meaning: docs/contracts.md. Focused metadata checks:
+The former network checker, transport seams, cache, ETag, timeout and shutdown
+machinery are removed. Startup, reads and shutdown perform no outbound metadata
+work and no persistent write. Current guests never request this route or touch
+its former dismissal preference. The host owns source-aware discovery and explicit
+updates; Setup/Reporting health retain independent local load observations and
+legacy recovery safety boundaries. Focused source checks:
 
 ```sh
 bun run typecheck
 node --experimental-strip-types --test tests/backend/extension-updates.test.ts
 ```
 
-Tests use real authenticated service HTTP plus real loopback metadata HTTP, with
-logical fixed-target assertions and no live GitHub/private authentication. They
-cover coalescing/cache/ETag/provider failure, validation/semver, bounded redirects/
-body/deadline/shutdown, store independence and unchanged fixture selection/config/
-DB bytes. Local evidence: evidence/release-checks-live-status/updates-http.txt.
-An ignored runnable loopback-only fixture includes companion/setup siblings for UI
-integration. No current installed companion or real setup roots are touched.
-Final stable-input package/Git-distribution checks are separate validation.
+Tests use authenticated loopback service HTTP, synthetic stores and blocked
+outbound transports. They cover refusals, concurrent/repeated calls, unavailable
+stores, backoff and unchanged persistent bytes. Mixed-version tests load unchanged
+pre-retirement parser/notice source. These are source-level proofs, not final
+built-package or native-host/browser acceptance; those remain separate gates.
 
 ### Reported-working interval reader
 
