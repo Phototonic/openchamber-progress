@@ -1,5 +1,34 @@
 # Progress views
 
+## Report calls in chat
+
+An enabled, approved extension contributes one declarative rule for the full native
+tool name `agent_progress_report`: **Agent progress report**, the host's
+`list-check-2` checklist glyph, and `text` output. The label identifies the tool;
+the glyph is not a success badge. Opening a row exposes its literal receipt or
+JSON error body. Pointer, Enter and Space keep the host's normal disclosure
+behavior. Native schema failures retain the host's separate red error treatment
+and error text (the host normalizes its whitespace). A completed tool execution
+whose JSON says `error` is not a successful report or necessarily a native red row.
+
+There is no extension-authored subtitle or dynamic title. A richer outcome summary
+is **no-go under the current receipt contract**: `changed` lists submitted IDs,
+not proven status transitions; an identical retry returns its original receipt;
+and an accepted report can coexist with denied document capture. An effective
+change and a same-status report are **not distinguishable from receipt alone**.
+Revision, input intent and a finish request never prove effective work, capture
+success, approval or verified completion. Capture denial is visible in a later
+report read, not added to this row's receipt.
+
+This fixed manifest label is host-rendered, like the existing action labels, not
+part of the guest language preference. No store lookup, cache, renderer, permission
+or report-contract change is introduced. Other tools retain their rendering.
+Without the applied rule, the host keeps generic rows: on the tested host its
+humanized report name happens to be the same, but its generic tools glyph returns.
+Removing this tools entry alone restores generic presentation without changing
+messages, reports, captures or history. The existing host floor is unchanged; see
+[tested scope and limitations](compatibility.md#report-tool-presentation).
+
 ## Interface language
 
 The rail and fullscreen page have a **Language / Язык** selector in their lower

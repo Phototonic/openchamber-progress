@@ -70,7 +70,8 @@ if(arg('--server-worker')) {
       process.kill(pid,'SIGKILL');
     }
     const remaining=owned.filter(pid=>fs.existsSync(`/proc/${pid}`));
-    write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false});
+    const checks=fs.existsSync(`${root}/checks.json`)?JSON.parse(fs.readFileSync(`${root}/checks.json`,'utf8')):[];
+    write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false,zeroCredentials:checks.some((c:any)=>c.id==='no-credentials'&&c.pass),noRemoteProviderTransport:checks.some((c:any)=>c.id==='no-remote-provider-access'&&c.pass)});
     fs.rmSync(root,{recursive:true,force:true});assert.equal(remaining.length,0,'owned process cleanup incomplete');
   }
 }else {
@@ -79,7 +80,7 @@ if(arg('--server-worker')) {
   assert.equal(env.HOME,`${root}/home`);assert.equal(env.AGENT_PROGRESS_BINDING,undefined);assert.equal(env.OPENCODE_CONFIG,undefined);assert.equal(env.OPENCODE_CONFIG_CONTENT,undefined);
   assert.equal(fs.existsSync(managedBindingFile(env)),false,'normal discovery has no pre-seeded descriptor');
   const results:any={host:'2.7.1',opencode:'2.2.7',node:process.version,scope:'Linux web, rootless loopback namespace, credential-free scripted provider',bundles:hashes(),checks:[],pass:false};
-  const check=(id:string,pass:boolean)=>{results.checks.push({id,pass});assert.ok(pass,id);};
+  const check=(id:string,pass:boolean)=>{results.checks.push({id,pass});fs.writeFileSync(`${root}/checks.json`,JSON.stringify(results.checks));assert.ok(pass,id);};
   const wait=async<T>(fn:()=>Promise<T>,ok:(v:T)=>boolean,label:string,ms=20000)=>{for(const end=Date.now()+ms;;){let v:T|undefined;try{v=await fn();}catch{}if(v!==undefined&&ok(v))return v;assert.ok(Date.now()<end,label);await new Promise(r=>setTimeout(r,50));}};
   let server:any,browser:Awaited<ReturnType<typeof managedBrowser>>|undefined,plain:ReturnType<typeof spawn>|undefined,store:Store|undefined,phase='host-start';
   const owned:number[]=[];
@@ -116,6 +117,85 @@ if(arg('--server-worker')) {
     phase='real-ui-install-approval';browser=await managedBrowser({chromium,root,artifacts:output,url});await browser.install(extension);await active();
     check('approval-before-configuration',(await service('/v1/setup')).body.delivery.configuration==='unconfigured'&&!fs.existsSync(managedBindingFile(env)));
     phase='real-ui-configuration';await browser.configure();const b=readManagedBinding(env);assert.ok(b);store=new Store(b.database);
+    if(process.argv.includes('--report-tool-preflight')) {
+      phase='native-name-preflight';
+      assert.equal(JSON.parse(fs.readFileSync(`${extension}/package.json`,'utf8')).openchamber.contributes.tools,undefined,'preflight must precede presentation contribution');
+      const main=await session('Report row fixture');await browser.selectSession('Report row fixture');
+      await prompt(main.id,{name:'agent_progress_report',input:{op:'start',plan:'P-row',oid:'start',rev:0,title:'Synthetic report plan',items:[{id:'a',title:'First task',kind:'task',status:'working'},{id:'b',title:'Second task',kind:'task',status:'pending'}]}});
+      const transcript=await client.message.list({sessionID:main.id});
+      const tools=transcript.data.flatMap((m:any)=>m.type==='assistant'?m.content.filter((p:any)=>p.type==='tool'):[]);
+      assert.equal(tools.length,1);assert.equal(tools[0].name,'agent_progress_report');
+      write('native-name',{name:tools[0].name,status:tools[0].state.status,receipt:tools[0].state.content,manifestPresentationAbsent:true});
+      check('native-report-committed',store.get(b.source.id,'P-row')?.revision===1);
+      check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));
+      results.pass=true;results.phase='native-name-preflight';write('results',results);
+    } else if(process.argv.includes('--report-tool-presentation')) {
+      phase='report-row-operations';
+      store.close();store=new Store(b.database,{readOnly:true});
+      const main=await session('Report row fixture');await browser.selectSession('Report row fixture');
+      const seen=new Set<string>();const calls:any[]=[];
+      const invoke=async(sessionID:string,input:unknown,name='agent_progress_report')=>{
+        await prompt(sessionID,{name,input});
+        const transcript=await client.message.list({sessionID,limit:100});
+        const tools=transcript.data.flatMap((m:any)=>m.type==='assistant'?m.content.filter((p:any)=>p.type==='tool'&&!seen.has(p.id)).map((p:any)=>({message:m.id,part:p})):[]);
+        assert.equal(tools.length,1,'one actual native tool call per fixture turn');
+        const {message,part}=tools[0];seen.add(part.id);assert.equal(part.name,name,'full native transcript tool name');
+        const text=part.state.status==='error'?part.state.error.message:part.state.content?.filter((p:any)=>p.type==='text').map((p:any)=>p.text).join('\n');
+        assert.equal(typeof text,'string');
+        const state=store!.get(b.source.id,'P-row');
+        const fact={message,call:part.id,name:part.name,input,status:part.state.status,output:text.replaceAll(root,'<fixture>'),stored:state?{revision:state.revision,structuralRevision:state.structuralRevision,lifecycle:state.lifecycle,statuses:state.items.map(i=>({id:i.id,status:i.status})),history:store!.history(b.source.id,'P-row').data.length}:null};
+        calls.push(fact);return {message,part,text,fact};
+      };
+      const report=async(input:unknown,expected:unknown,sessionID=main.id)=>{
+        const call=await invoke(sessionID,input);assert.equal(call.part.state.status,'completed');assert.deepEqual(JSON.parse(call.text),expected);
+        results.rows??=[];results.rows.push(await browser!.reportRow(call.message,call.text));return call;
+      };
+      const start=await report({op:'start',plan:'P-row',oid:'start',rev:0,title:'Synthetic report plan',items:[{id:'a',title:'First task',kind:'task',status:'working'},{id:'b',title:'Second task',kind:'task',status:'pending'}]},{plan:'P-row',rev:1,structuralRev:1});
+      await browser.rowToggle(start.message,false);
+      const changeInput={op:'change',plan:'P-row',oid:'effective',rev:1,changes:[{id:'a',status:'done'}]};
+      const effective=await report(changeInput,{plan:'P-row',rev:2,structuralRev:1,changed:['a']});
+      check('effective-status-change',effective.fact.stored?.statuses[0].status==='done');
+      const replay=await report(changeInput,JSON.parse(effective.text));
+      check('replay-preserves-history',replay.fact.stored?.history===2&&replay.fact.stored.revision===2);
+      await browser.rowToggle(replay.message,false);
+      const noEffect=await report({...changeInput,oid:'same-status',rev:2},{plan:'P-row',rev:3,structuralRev:1,changed:['a']});
+      check('same-status-not-an-effect-count',JSON.stringify(noEffect.fact.stored?.statuses)===JSON.stringify(effective.fact.stored?.statuses)&&noEffect.fact.stored?.revision===3);
+      results.effectComparison={effective:effective.fact,sameStatus:noEffect.fact,replay:replay.fact,conclusion:'not distinguishable from receipt alone'};
+      await browser.rowShot('effective-no-effect',[effective.message,noEffect.message]);
+      await browser.rowToggle(effective.message,false);await browser.rowToggle(noEffect.message,false);
+      const revised=await report({op:'revise',plan:'P-row',oid:'title',rev:3,title:'Synthetic revised report plan'},{plan:'P-row',rev:4,structuralRev:2});
+      await browser.rowShot('operations',[revised.message]);await browser.rowToggle(revised.message,false);
+      const conflict=await report({op:'change',plan:'P-row',oid:'stale',rev:3,changes:[{id:'b',status:'done'}]},{error:'conflict',rev:4});
+      check('conflict-preserves-pending',conflict.fact.stored?.revision===4&&conflict.fact.stored.statuses[1].status==='pending');
+      await browser.rowShot('accepted-rejected',[revised.message,conflict.message]);
+      await browser.rowToggle(revised.message,false);await browser.rowToggle(conflict.message,false);
+      const unfinished=await report({op:'finish',plan:'P-row',oid:'unfinished',rev:4,outcome:'finished'},{error:'unfinished'});
+      check('unfinished-does-not-close',unfinished.fact.stored?.revision===4&&unfinished.fact.stored.lifecycle==='active');await browser.rowToggle(unfinished.message,false);
+      const done=await report({op:'change',plan:'P-row',oid:'done',rev:4,changes:[{id:'b',status:'done'}]},{plan:'P-row',rev:5,structuralRev:2,changed:['b']});await browser.rowToggle(done.message,false);
+      const finished=await report({op:'finish',plan:'P-row',oid:'finished',rev:5,outcome:'finished'},{plan:'P-row',rev:6,structuralRev:2});
+      check('finish-is-recorded-not-verified',finished.fact.stored?.revision===6&&finished.fact.stored.lifecycle==='finished');await browser.rowToggle(finished.message,false);
+      phase='native-schema-error';
+      const malformed=await invoke(main.id,{plan:'P-row',oid:'missing-op',rev:6});
+      assert.equal(malformed.part.state.status,'error');check('schema-error-no-mutation',malformed.fact.stored?.revision===6&&malformed.fact.stored.history===6);
+      assert.match(malformed.text,/op: Missing key/);
+      results.rows.push(await browser.reportRow(malformed.message,malformed.text,true));await browser.rowShot('native-error',[malformed.message]);
+      results.narrow=await browser.narrow(malformed.message,malformed.text);
+      phase='capture-denied';const denied=await session('Report row denied',[{action:'*',resource:'*',effect:'allow'},{action:'read',resource:'*',effect:'deny'}]);await browser.selectSession('Report row denied');
+      const captured=await report({op:'start',plan:'P-row-denied',oid:'denied',rev:0,title:'Synthetic denied capture',source:'docs/plans/synthetic.md',items:[{id:'a',title:'Denied capture task',kind:'task',status:'working'}]},{plan:'P-row-denied',rev:1,structuralRev:1},denied.id);
+      await browser.rowShot('capture-denied',[captured.message]);
+      const read=await invoke(denied.id,{op:'read',plan:'P-row-denied'});const deniedRead=JSON.parse(read.text);
+      check('accepted-report-denied-capture',deniedRead.rev===1&&deniedRead.documentState==='denied');
+      results.denied={receipt:JSON.parse(captured.text),read:{rev:deniedRead.rev,documentState:deniedRead.documentState},rowDoesNotAssertCapture:true};
+      phase='generic-and-hidden-presentation';
+      const unrelated=await invoke(denied.id,{path:`${root}/project/docs/plans/synthetic.md`},'read');results.unrelated=await browser.genericRow(unrelated.message);
+      const before=store.get(b.source.id,'P-row');const deniedBefore=store.get(b.source.id,'P-row-denied');
+      await api('PUT',`/api/guests/${id}/enabled`,{enabled:false});await absent();await browser.reloadChat();
+      results.hidden=await browser.genericRow(captured.message);
+      check('presentation-hide-retains-reports',JSON.stringify(store.get(b.source.id,'P-row'))===JSON.stringify(before)&&JSON.stringify(store.get(b.source.id,'P-row-denied'))===JSON.stringify(deniedBefore));
+      check('no-final-credentials',(await client.credential.list()).length===0);check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));check('no-browser-exceptions',browser.console().exceptions===0);
+      results.calls=calls.map(({input,...call})=>({...call,input:JSON.parse(JSON.stringify(input).replaceAll(root,'<fixture>'))}));results.screenshots=browser.screenshots();
+      results.pass=true;results.phase='complete';results.limits=['Linux web only; not Electron, Windows, relay or screen-reader certification','not distinguishable from receipt alone','JSON error data is not native host error state','document capture diagnostic comes from a subsequent read, not the accepted receipt'];write('results',results);
+    } else {
     phase='scripted-report-three-views';const main=await session('Managed acceptance');await browser.selectSession('Managed acceptance');
     await prompt(main.id,{name:'agent_progress_report',input:{op:'start',plan:'P-managed',oid:'start',rev:0,title:'Managed acceptance plan',source:'docs/plans/synthetic.md',items:[{id:'a',title:'First task',kind:'task',status:'done'},{id:'b',title:'Second task',kind:'task',status:'working'}]}});
     check('real-session-report',store.get(b.source.id,'P-managed')?.revision===1);results.views=[await browser.views(1,2,1)];
@@ -225,6 +305,7 @@ if(arg('--server-worker')) {
     check('no-final-credentials',(await fallbackClient.credential.list()).length===0);check('no-final-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));
     write('fallback',{callerOwnedConfig:true,installRequiredExplicitRestart:true,disableAloneRetainedPlugin:true,disabledRuntimeCouldReport:true,explicitRestartRetired:true,callerConfigUnchanged:true,historyRetained:true});
     results.pass=true;results.phase='complete';results.limits=['Linux web only; no Windows/Electron managed-host certification','mid-unlink conflict covered by portable lifecycle regression, not host fault injection','held-permission session may require explicit interruption'];write('results',results);
+    }
   }catch(e){results.pass=false;results.phase=phase;results.failureClass=e instanceof assert.AssertionError?'assertion':'runtime';results.failure=e instanceof Error?e.message.split('\n')[0].replaceAll(root,'<fixture>').slice(0,256):'fixture failure';write('results',results);await browser?.failure();throw e;}
   finally{
     store?.close();await browser?.stop();
