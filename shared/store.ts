@@ -46,6 +46,12 @@ CREATE TABLE captures(id INTEGER PRIMARY KEY, source TEXT NOT NULL, plan TEXT NO
 CREATE TABLE contributions(source TEXT NOT NULL, plan TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)), PRIMARY KEY(source,plan,revision), FOREIGN KEY(source,plan,revision) REFERENCES revisions(source,plan,revision));
 PRAGMA user_version=2;`;
 type StoredPlan = PlanState & { boundCanonicalPath?: string };
+export interface MentionCandidate { plan: PlanSummary; verified: boolean; locality:number }
+export type MentionDetailPage = Envelope & PlanRead & { assembly?: { itemCount:number } };
+export interface MentionSearchRead {
+  binding: {sourceId:string|null;verified:boolean}; candidates: MentionCandidate[]; limited: boolean;
+  work: {planSlots:number;sessionSlots:number;inputBytes:number};
+}
 
 export class Store {
   readonly db!: DatabaseSync;
@@ -139,6 +145,51 @@ export class Store {
   documentComparison(r: CaptureRequest, before: number, after: number) { return this.transaction(false, () => captureComparison(this.db, this.readBinding, r, before, after)); }
   search(options: SearchOptions = {}) { return this.transaction(false, () => searchWindow(this.db, this.readBinding, options)); }
   searchState(storeId: string, keys: SearchKey[]) { return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys)); }
+  /** Bounded plan-only discovery; service owns query matching, ordering and display. */
+  mentionCandidates(directory:string|null,alive:()=>boolean=()=>true):MentionSearchRead {
+    need(directory===null||typeof directory==='string'&&directory.length<=4096&&!directory.includes('\0'));
+    const started=performance.now();
+    return this.transaction(false,()=>{
+      const r:MentionSearchRead={binding:{...this.readBinding},candidates:[],limited:false,work:{planSlots:0,sessionSlots:0,inputBytes:0}};
+      const checkpoint=()=>{need(alive(),'storage');if(performance.now()-started>=500){r.limited=true;return false;}return true;};
+      const normalized=directoryFilter(directory??undefined),projects=new Set<string>();
+      // Project association is trusted only after a complete bounded recorded-session scan.
+      let sessionsComplete=false,projectUnknown=false;
+      if(normalized!==undefined&&this.readBinding.verified&&this.readBinding.sourceId){
+        let after='';
+        const next=this.db.prepare('SELECT id,length(CAST(actor AS BLOB)) AS bytes,CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id>? ORDER BY id LIMIT 1');
+        while(r.work.sessionSlots<512&&checkpoint()){
+          const row=next.get(this.readBinding.sourceId,after);if(!row){sessionsComplete=true;break;}r.work.sessionSlots++;after=String(row.id);
+          if(typeof row.actor!=='string'||r.work.inputBytes+Number(row.bytes)>16*1024*1024){r.limited=true;break;}
+          r.work.inputBytes+=Number(row.bytes);
+          let a:Actor;try{a=JSON.parse(row.actor);}catch{throw new ProgressError('corrupt');}
+          need(a.sourceId===this.readBinding.sourceId&&a.sessionId===row.id&&typeof a.directory==='string','corrupt');
+          if(directoryFilter(a.directory)===normalized){if(typeof a.projectId==='string'&&a.projectId.length>0&&a.projectId.length<=4096)projects.add(a.projectId);else projectUnknown=true;}
+        }
+        if(!sessionsComplete)r.limited=true;
+      }
+      const project=sessionsComplete&&!projectUnknown&&projects.size===1?[...projects][0]:undefined;
+      let source='',id='';const installed=cleanupInstalled(this.db);
+      const next=this.db.prepare('SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1');
+      const snapshot=this.db.prepare('SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?');
+      let exhausted=false;
+      while(r.work.planSlots<512&&checkpoint()){
+        const row=next.get(source,id);if(!row){exhausted=true;break;}r.work.planSlots++;source=String(row.source);id=String(row.id);
+        need(identifier(source)&&identifier(id),'corrupt');
+        const state=installed?cleanupState(this.db,source,id):undefined;if(state&&state.state!=='visible')continue;
+        const bytes=Number(row.bytes);if(bytes>1024*1024){r.limited=true;continue;}if(r.work.inputBytes+bytes>16*1024*1024){r.limited=true;break;}
+        const text=snapshot.get(Math.min(1024*1024,16*1024*1024-r.work.inputBytes),source,id)?.snapshot;
+        need(typeof text==='string','corrupt');r.work.inputBytes+=bytes;
+        let p:PlanState;try{p=JSON.parse(text);}catch{throw new ProgressError('corrupt');}
+        if(!validateDigestSnapshot(p,source,id,Number(row.revision))||typeof p.title!=='string'||!p.title.trim()||p.title.length>256||typeof p.directory!=='string'||p.directory.length>4096||!Array.isArray(p.links)||p.links.length>64){r.limited=true;continue;}
+        const verified=this.db.prepare('SELECT verified FROM sources WHERE id=?').get(source)?.verified===1;
+        const locality=normalized!==undefined&&directoryFilter(p.directory)===normalized?0:project&&verified&&source===this.readBinding.sourceId&&p.projectId===project?1:2;
+        r.candidates.push({plan:this.summary(p),verified,locality});
+      }
+      r.limited ||= !exhausted;
+      return r;
+    });
+  }
   resumePlans(request: ResumeRequest, options: { now?: () => number } = {}) { return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request, options.now)); }
   observeLoaded(source:string,installId:string,fingerprint:string) {
     this.transaction(true,()=>{
@@ -257,11 +308,16 @@ export class Store {
       return { ...this.metadata(), data, nextCursor: rows.length > limit ? String(cursor+limit) : null };
     });
   }
-  detail(source: string, id: string, page = 0): Envelope & PlanRead {
+  detail(source: string, id: string, page = 0): Envelope & PlanRead { return this.detailPage(source,id,page); }
+  /** Service-only bounded admission, sharing the unchanged legacy projection owner. */
+  mentionDetail(source:string,id:string,page=0):MentionDetailPage { return this.detailPage(source,id,page,1024*1024); }
+  private detailPage(source: string, id: string, page: number, snapshotBytes?:number): MentionDetailPage {
     return this.transaction(false, () => {
+      if(snapshotBytes!==undefined){const row=this.db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?').get(source,id);need(row,'not-found');need(Number(row.bytes)<=snapshotBytes,'storage');}
       need(Number.isSafeInteger(page) && page >= 0); const p = this.raw(source,id); need(p, 'not-found');
-      const start = page * LIMITS.pageSize; const rows = this.db.prepare('SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?').all(source,id,LIMITS.pageSize+1,start);
-      return { ...this.metadata(), plan: this.summary(p), links: p.links,
+      const start = page * LIMITS.pageSize; const rows = this.db.prepare(`SELECT ${snapshotBytes===undefined?'payload':'CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload'} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source,id,LIMITS.pageSize+1,start);
+      if(snapshotBytes!==undefined)need(rows.every(r=>typeof r.payload==='string'),'storage');
+      return { ...this.metadata(), ...(snapshotBytes===undefined?{}:{assembly:{itemCount:p.items.length}}), plan: this.summary(p), links: p.links,
         items: { data: p.items.slice(start,start+LIMITS.pageSize).map(i => {
           const { blocker, ...item } = i;
           return p.lifecycle === 'active' && i.kind === 'task' && i.status === 'blocked' && validBlockerAnnotation(blocker,p.revision) ? { ...item,blocker } : item;

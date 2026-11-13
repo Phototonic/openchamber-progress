@@ -69,6 +69,74 @@ an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
 
+## Plan composer handoff revision 1
+
+The candidate requires **OpenChamber >=2.7.1**; the build SDK remains pinned at
+**2.7.0**. Older hosts refuse installation with their normal host-version feedback,
+rather than installing with omitted contributions. This floor does not certify
+every newer host or mobile/Electron configuration.
+
+Ready health advertises `planComposerHandoff:1`; absence means unavailable, not
+no reported plans. Protocol/schema remain **2**. The following authenticated,
+query-free **POST reads** deliberately except the generic GET-read convention:
+
+| Route | Exact JSON request | Success |
+| --- | --- | --- |
+| `/mentions/search` | `{query:string,directory:string|null}` | `{items:[{id,title,subtitle}]}` |
+| `/mentions/resolve` | `{id:string}` | `{text:string}` |
+
+Bodies are at most 16,384 bytes, strict UTF-8/JSON, with unknown keys refused.
+Search query is at most 200 JavaScript code units without NUL; directory is null
+or at most 4096 code units without NUL. Directory is ranking input, not a path to
+open. Resolve IDs contain exactly one `/` between two existing-format identifiers.
+Replies remain no-store, JSON and nosniff. Fixed code-only failures: 400 invalid
+body/query, 401 unauthorized, 404 missing/deleted/archived resolve target, 405 wrong
+method, 413 oversized body, 409 identity/revision conflict, 503 unavailable,
+incomplete or failed storage read. Raw input and exceptions are never echoed.
+
+Search matches every normalized token in the plan's own title or ID, not task
+text, documents or pooled fields. Normalization is the existing NFC/lowercase/NFC
+matcher. Empty query admits candidates. At most 20 distinct source-qualified
+`${sourceId}/${id}` rows are emitted; menu titles/subtitles fit 120 code units,
+with visible, surrogate-safe title ellipses. No URL is supplied. Discovery admits
+at most 512 raw plan and 512 session slots, 1 MiB per snapshot and 16 MiB cumulative
+snapshot/session input, with a cooperative 500 ms scan budget. These bounds precede
+filtering; results are found candidates, not a library census. Bound/gap stops
+preserve **Limited search** in subtitles; no bounded empty result proves no plans.
+SQLite busy waits and an admitted synchronous step are not a hard latency promise.
+
+Rank by normalized current directory, then an unambiguous recorded project
+association from matching directory records in the verified bound source, then
+other locations. Within each class: active before closed, latest report first,
+binary source-qualified key ties. Never infer projects from path prefixes or
+another source's session IDs. Subtitles retain lifecycle, done/total and **From
+another OpenCode setup** / **Unverified OpenCode setup** qualifications.
+
+Resolution accepts only complete current matching items and contributions from
+one store/binding/key/revision/cleanup identity. It checks at most 120 detail pages
+per attempt, three revision restarts and an 8-second cooperative deadline; partial,
+capped or mixed detail refuses rather than substituting a list summary. Archived
+detail remains inspectable in existing views but cannot resolve into a new chip.
+The host resolves at selection: a chip holds an as-of snapshot, not live progress.
+
+Composer output uses the shared pure summary/readiness owner. It includes the
+source-qualified key (a deliberate **composer-only** addition to preview identifier
+disclosure), matched revision, absolute UTC **Reported as of**, **Reported progress,
+not verified completion**, source warnings and **Review before sending**. It is
+trimmed at its outer edges and at most **16,000 JavaScript code units**, including
+selection context and whole-task omission counts. Eligible rows withheld by the
+pending-row or character limit count once; no partial title/prerequisite/safety
+sentence is emitted. Counts remain whole-plan; invalid/closed readiness invents no
+next step or authority. Mention utility text is English only: requests contain no
+device language and there is no server last-language cache. Session actions use
+the effective device language; existing preview formats remain unchanged.
+
+These are read-only operations: no reports, receipts, statuses, assignments,
+capture/control, cleanup, schema or stored documents change. No document body,
+history, timing or transcript is read by mention discovery/resolution. Summaries
+omit blocker prose/provenance/waits, tool output, source roots, paths and hashes.
+Escaped titles remain recorded data, not a redaction or prompt-injection guarantee.
+
 ## Plan/task search revision 1 (frozen additive v2 read contract)
 
 Ready `/health` adds **`planTaskSearch:1`**. Absence means unavailable, never
@@ -428,8 +496,9 @@ exports, search indexes or automatic notifications/actions.
 
 The system has four components: an OpenCode companion plugin that captures explicit
 reports; an independent local SQLite progress store; a host-owned loopback service;
-and three guest frames (the session-scoped rail, compact Work Status, and fullscreen
-cross-project board). Capture writes directly to the store and has an independent
+and three visible guest frames (the session-scoped rail, compact Work Status, and
+fullscreen cross-project board), plus an ephemeral session-action background frame.
+Capture writes directly to the store and has an independent
 lifecycle: it continues while OpenChamber is closed or the extension is uninstalled,
 until explicitly disabled or removed. Stored history is retained on capture removal.
 The board lists recorded plans and enriches them with host workspace snapshots;
@@ -650,7 +719,8 @@ are in [the compatibility guide](compatibility.md#progress-resume-capsule-verifi
 ## Fixed authenticated read API
 
 Every route requires the host bearer, including `/health`; bind127.0.0.1 only.
-Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET:
+Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET,
+except the bounded mention POST reads specified above:
 
 - `/health`: `{ok:true,ready:boolean,sqlite:boolean,protocolVersion:2,schemaVersion:2,runtime:{node,bun},diagnostics?}`.
   Unconfigured service is200/ready=false, never an empty progress success;

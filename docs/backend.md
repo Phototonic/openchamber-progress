@@ -174,6 +174,46 @@ millisecond thresholds. Local evidence: `evidence/plan-task-search/backend.md` a
 `api.json`. This backend proof does not establish native Windows, browser rendering,
 host account isolation, long-session memory behavior or a release/install result.
 
+## Plan mentions and composer summaries
+
+`Store.mentionCandidates` owns bounded discovery in the existing read transaction;
+`Store.mentionDetail` owns snapshot-admitted detail without service timing.
+`service/mentions.ts` owns matching, locality/lifecycle/recency ranking, SDK row
+limits and complete resolution assembly. The pure `shared/summary.ts` and shared
+readiness owner serve previews, mentions and background actions alike; the backend
+imports no UI runtime. See [the composer contract](contracts.md#plan-composer-handoff-revision-1).
+
+Search seeks binary plan/session keys with at most **512 plan slots and 512 session
+slots**, **1 MiB per snapshot / 16 MiB cumulative** admission in SQL before text
+materialization, and validation of at most 1,000 items per snapshot. A **500 ms
+cooperative** monotonic budget and disconnect checkpoints stop further steps;
+SQLite's existing busy ceiling is separate, not a hard latency guarantee. Only
+unambiguous verified bound-source directory records establish project locality.
+
+Resolve permits **120 pages per attempt, three revision restarts, 16 MiB cumulative
+detail and an 8-second cooperative deadline**, checked between awaited pages.
+Store, binding, source/key, revision, cleanup and complete items/contributions
+must agree. Missing/archived/deleted or incomplete targets refuse. No document,
+history or timing reads, schema changes, cache, new Store lifetime or mutation are
+introduced. Background actions reuse existing guest scoped-list/detail readers.
+
+Focused proof (synthetic SQLite and real authenticated HTTP):
+
+```sh
+EVIDENCE=.slim/evidence/plan-mention-handoff/service timeout 240 node --experimental-strip-types --test tests/backend/plan-mentions-service.test.ts tests/backend/production-service.test.ts tests/backend/plan-task-search-service.test.ts
+timeout 180 node --experimental-strip-types --test tests/backend/composer-summary.test.ts tests/browser/session-handoff.test.ts
+```
+
+The fixture measures cold and warmed searches across 450 plans / 1,700 tasks,
+20 sequential representative queries and two bursts of four concurrent queries.
+Its sanitized `performance.json` records measured work and latency. Local acceptance
+requires warm p95 below one second and representative requests below two seconds
+to reserve host/UI headroom, not as a product SLA or certification of every machine.
+On Linux / Node 24.22.2, the integration run measured warm p95 **11.23 ms**, maximum
+**33.03 ms** including concurrent bursts, and cold first request **10.74 ms**;
+450 plan slots, 150 session slots and 347,757 admitted bytes were observed.
+Host/distribution coverage is separate in [compatibility](compatibility.md).
+
 ## Components and trust boundaries
 
 - plugin/index.ts registers one namespaced codemode:false report tool and inline

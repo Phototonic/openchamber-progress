@@ -23,6 +23,61 @@ The evidence sections retain the environments, artifacts and limitations of
 those runs; they do not certify every later checkout. References under `evidence/`
 name local-only records, not files shipped in the repository or release archives.
 
+## Plan composer fixture coverage
+
+The candidate requires **OpenChamber >=2.7.1**, retains build SDK **2.7.0**, and was exercised on isolated
+Linux **OpenChamber web 2.7.1**, with independent **OpenCode 2.2.7**, **Node
+24.22.2** and **Bun 1.3.14**. This is web/Linux evidence, not Electron, native
+Windows, phone or relay certification. The package version remains unchanged;
+a development candidate is not a new published release.
+
+The real-host driver is `tests/browser/plan-composer-qa.ts`. Supply only a fresh
+credential-free host and fixture, never a live profile:
+
+```sh
+timeout 600 node --experimental-strip-types tests/browser/plan-composer-qa.ts --artifacts <local-evidence> --host-url <isolated-loopback-host> --fixture <disposable-fixture.json> --control-url <disposable-loopback-control> --chromium <installed-browser>
+```
+
+The fixture uses synthetic HOME/all XDG roots, a throwaway host/CLI installation,
+a credential-free scripted provider and a rootless loopback-only namespace. It
+loads the current shipped service/background bytes, seeds reports through Store
+operations using real unprompted sessions, and explicitly supplies verified test
+bindings. That binding technique is test setup, not automatic source discovery
+or installation acceptance. The actual web UI is enabled, not API-only. The
+extension never sends. After recording zero provider calls for all extension
+journeys, the harness acts as the user and sends one chip to the local scripted
+provider to verify its outgoing context. No remote or paid model is called.
+Owned processes and temporary profiles are removed.
+
+Coverage includes the real `@` rows and chip, selection-time resolution compared
+with the service, removed-target refusal, the host's session **Export** submenu
+with both action labels, an inactive clicked source, a saved finished choice and
+other-plan notice, append into an existing active draft, an active-chat switch
+while the source read is held, no/one/several plans, service refusal and permission
+withdrawal. Success feedback explicitly names the **active chat** and review before
+sending. The chip gate captures the outgoing scripted-provider request and checks
+that decoded content contains the full resolved summary exactly. Read-only
+DevTools inspection of the chip handler's captured guest-reference `contextText`
+provides additional evidence; this host has no visible context-text inspector.
+Closure inspection is version-qualified test machinery, not a supported host API.
+
+Distribution checks separately cover the current SDK guest validator, background
+HTML/classic-script folder/ZIP allowlists, nine generated-entry parity checks and
+Git entry hashes with no consumer compilation. Unmodified **2.5.1** parser and
+installer checks of the earlier `>=2.5.1` feature-floor candidate accepted its
+background/actions and existing views while dropping unknown `mentions`. That is
+historical parser/installer tolerance, not a full older-host UI journey or a
+promise that a later candidate declaring a higher host floor can install there.
+Current installer gates derive the actual version from the supplied isolated
+`@openchamber/web` package, not a hardcoded minimum. On an older installer, run
+`scripts/verify-host-package.ts <candidate-folder> --expect-refusal` with
+`AGENT_PROGRESS_HOST_MODULE` pointing to that installer's unmodified `install.js`;
+the folder and sibling ZIP must both receive `host-too-old`, required `2.7.1`,
+without registration. Use synthetic HOME/all XDG roots, as for supported installs.
+Use the selected candidate's manifest and explicit host-version gate for support
+and installation claims. Full portable CI is separate from these host checks;
+its five native-runtime exclusions remain unchanged.
+
 ## Post-release 1.1.1 checks — 2026-11-12
 
 These checks close the three deferred Linux checks for published **1.1.1**.
@@ -130,8 +185,8 @@ AGENT_PROGRESS_HOST_MODULE=/tmp/opencode/agent-progress-t4-appimage/squashfs-roo
 
 Both commands exited **0**. The actual **2.7.0** host module reported
 `actualHostInstaller: "folder"` and `"zip"`, each with `accepted: true`, version
-`1.1.1`, and all three guest entries plus the service entry present. The existing
-gate passes the declared minimum host compatibility value `2.5.1` to that module;
+`1.1.1`, and all three guest entries plus the service entry present. At that time the
+gate passed the declared minimum host compatibility value `2.5.1` to that module;
 it does not spoof the module's implementation version. Package lifecycle and
 content checks passed too. Installation used disposable registries only; this
 gate launches no guest or desktop and installs nothing into the real host. No
@@ -345,7 +400,7 @@ wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
 The host range is distinct from `@opencode/plugin`/client **2.1.4** and the current
-build dependency `@openchamber/sdk` **2.7.0** (minimum OpenChamber host **2.5.1**).
+build dependency `@openchamber/sdk` **2.7.0** (current candidate minimum OpenChamber host **2.7.1**).
 Verified independent2.2.2 archive SHA-256:
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
 executable SHA-256:
