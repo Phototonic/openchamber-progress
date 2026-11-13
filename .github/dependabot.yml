@@ -2,9 +2,6 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
-    # Version updates target the development branch; main receives them through releases.
-    # Dependabot security updates always target the default branch and ignore this setting.
-    target-branch: dev
     schedule:
       interval: weekly
     groups:
