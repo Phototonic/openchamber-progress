@@ -41,8 +41,9 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     await wait(()=>evaluate('document.body.innerText'),v=>v.includes('Allow and enable'),'approval review');await browser.shot('permission-approved');await click(text('Allow and enable'));
     await wait(()=>evaluate('document.body.innerText'),v=>!v.includes('Allow and enable'),'approval accepted');
   };
+  let languageMenuReopens=0;
   const language=async(surface:string,value:'en'|'ru')=>{
-    const languageClick=async(selector:string)=>{try{await guestClick(surface,selector);}catch{
+    const languageClick=async(selector:string,beforeProbe?:()=>Promise<void>)=>{try{await guestClick(surface,selector,beforeProbe);}catch{
       const diagnostic=await browser.guest(surface,`(()=>{const e=document.querySelector(${literal(selector)}),b=document.querySelector('[data-testid="interface-language"] button'),r=e?.getBoundingClientRect(),hit=r?document.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;return {language:document.documentElement.lang,button:b?.textContent,disabled:b?.disabled,targetPresent:!!e,visible:e?.checkVisibility(),rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,hit:hit?{tag:hit.tagName,id:hit.id,text:hit.textContent?.slice(0,80)}:null}})()`);
       throw new Error(`language actionability ${surface} ${selector}: ${JSON.stringify(diagnostic)}`);
     }};
@@ -54,7 +55,14 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     // on every actionability probe instead of waiting on a detached mount's ID.
     const option=`[role="option"][id$="-${value}"]`;
     await wait(()=>browser.guest(surface,`(()=>{const b=document.querySelector('[data-testid="interface-language"] button'),e=document.querySelector(${literal(option)});return b?.getAttribute('aria-expanded')==='true'&&!!e&&!e.disabled&&e.checkVisibility()&&e.textContent.trim()===${literal(label)}})()`),Boolean,`${surface} settled ${label} menu option`);
-    await languageClick(option);
+    await languageClick(option,async()=>{
+      // An asynchronous view repaint can dispose the open select after the
+      // settled-menu wait. Recover that specific missing-menu state within the
+      // same bounded actionability wait; never keep an old option/mount ID.
+      if(await browser.guest(surface,`document.querySelector('[data-testid="interface-language"] button')?.getAttribute('aria-expanded')==='false'`)){
+        languageMenuReopens++;await languageClick('[data-testid="interface-language"] button');
+      }
+    });
     await wait(()=>browser.guest(surface,`document.querySelector('[data-testid="interface-language"] button')?.textContent.includes(${literal(label)})`),Boolean,'saved device language');
     await wait(()=>browser.guest(surface,'document.documentElement.lang'),v=>v===value,`${surface} rendered language ${value}`);
   };
@@ -89,7 +97,7 @@ export async function nativeUpdatesBrowser(options:Parameters<typeof managedBrow
     if(!await guestContext('page'))await click(`[...document.querySelectorAll('button')].find(e=>e.checkVisibility()&&e.textContent.trim()==='Agent progress')`);
     await wait(()=>browser.guest('page',`!!document.querySelector(${literal(selector)})`),Boolean,'visible requested failure state');await browser.shot(name);
   };
-  return {...browser,settings,close,check,available,update,defer,approve,language,russianViews,contexts,routeRequests,openRail,openBoard,stateShot,
+  return {...browser,settings,close,check,available,update,defer,approve,language,russianViews,contexts,routeRequests,openRail,openBoard,stateShot,languageMenuReopens:()=>languageMenuReopens,
     noNotices:async()=>{for(const s of ['panel','status','page'])assert.ok(!await browser.guest(s,'!!document.querySelector("[data-testid=extension-update-notice],[data-testid=extension-update-line]")'),'no old notice');},
     hostText:()=>evaluate<string>('document.body.innerText')};
 }
