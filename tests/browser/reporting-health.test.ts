@@ -55,6 +55,16 @@ test('managed update/load explanations retain bilingual observation and conditio
     assert.match(text.observation, /OpenChamber/); assert.match(text.observation, /OPENCODE_CONFIG/);
     assert.match(text.observation, /OpenCode/);
     assert.match(text.observation, locale === 'en' ? /watched managed file can reload/ : /отслеживаемый управляемый файл может перезагрузиться/);
+    assert.match(text.observation, locale === 'en'
+      ? /adding, removing or toggling the extension’s plugin requires an explicit OpenCode restart/
+      : /добавление, удаление, включение или отключение плагина расширения требует явного перезапуска OpenCode/);
+    assert.match(text.observation, locale === 'en'
+      ? /update to an installed extension may be picked up without a restart; check the load observation/
+      : /Обновление уже установленного расширения может подхватиться без перезапуска; проверьте наблюдение загрузки/);
+    assert.doesNotMatch(text.observation, locale === 'en'
+      ? /OPENCODE_CONFIG requires an explicit OpenCode restart/
+      : /OPENCODE_CONFIG требует явного перезапуска OpenCode/);
+    assert.match(text.observation, locale === 'en' ? /not a heartbeat/ : /не сигнал активности/);
     assert.match(text.observation, locale === 'en' ? /does not prove.*every running session/ : /не доказывает.*всеми работающими сессиями/);
     assert.match(text.warning, locale === 'en' ? /does not block reporting/ : /не блокирует отчёты/);
     assert.match(text.observation, locale === 'en' ? /Nothing is restarted here/ : /ничего не перезапускается/);
