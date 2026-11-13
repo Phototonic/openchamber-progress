@@ -16,6 +16,7 @@ import { releasedRuntime } from './subagent-release-support.ts';
 import { durableSnapshot } from './subagent-format-support.ts';
 import { readBinding } from '../../shared/binding.ts';
 import { publishFixtureBinding } from '../fixtures/managed.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
 async function freePort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=(server.address() as {port:number}).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}
 async function stop(child:ReturnType<typeof spawn>|undefined){
@@ -62,10 +63,10 @@ test('released built companion upgrades only on real isolated loader reload and 
     const current={plugin:fs.readFileSync('build/companion/index.js','utf8'),guidance:fs.readFileSync('build/companion/SKILL.md','utf8'),removal:fs.readFileSync('build/setup/main.js','utf8'),version:JSON.parse(fs.readFileSync('build/companion/package.json','utf8')).version};
     assert.notEqual(current.plugin,released.plugin,'upgrade requires distinct companion bytes even when package versions match');
     fs.writeFileSync(`${root}/probe.ts`,[
-      `import {upgradeProbe} from ${JSON.stringify(path.resolve('tests/fixtures/subagent-upgrade-probe.ts'))};`,
-      `import {Store} from ${JSON.stringify(`${legacy}/shared/store.ts`)};`,
-      `import {createRunCapture} from ${JSON.stringify(`${legacy}/plugin/subagent-runs.ts`)};`,
-      `import {sessionIdentity} from ${JSON.stringify(`${legacy}/plugin/identity.ts`)};`,
+      `import {upgradeProbe} from ${javascriptLiteral(path.resolve('tests/fixtures/subagent-upgrade-probe.ts'))};`,
+      `import {Store} from ${javascriptLiteral(`${legacy}/shared/store.ts`)};`,
+      `import {createRunCapture} from ${javascriptLiteral(`${legacy}/plugin/subagent-runs.ts`)};`,
+      `import {sessionIdentity} from ${javascriptLiteral(`${legacy}/plugin/identity.ts`)};`,
       'export default upgradeProbe(Store,createRunCapture,sessionIdentity);',
     ].join('\n'));
     const build=spawnSync('bun',['build',`${root}/probe.ts`,'--target=node','--format=esm',`--outfile=${root}/probe.js`],{encoding:'utf8',timeout:30000});assert.equal(build.status,0,'temporary diagnostic plugin build');

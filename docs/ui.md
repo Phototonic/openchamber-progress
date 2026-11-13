@@ -660,6 +660,12 @@ the service resolves source roots and returns the exact reviewed targets. Typed
 and deliberately cleared store input survives hints, cancellation, failed/late
 inspection and refresh. Account changes retire reviews.
 
+Configured managed status is reread on the existing successful visible list or
+search-freshness refresh cadence, without another polling loop. A deferred native
+load can therefore replace the initial not-observed state in the same frame even
+though managed activation remains unknown. Store/binding adoption retires old
+setup replies and requests replacement status for the adopted context.
+
 Review explains full-user plugin/service privileges and conditional lifecycle.
 After acknowledgement, mutations echo only the reviewed store, opaque expected
 identity and `confirmed:true`. No executable bytes, arbitrary roots or global

@@ -5025,6 +5025,7 @@ import { lstatSync as lstatSync6, realpathSync as realpathSync6, readFileSync as
 import path6 from "node:path";
 import { homedir } from "node:os";
 import { randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 class ManagedBindingError extends Error {
   code;
   constructor(code = "managed-binding-invalid") {
@@ -5131,7 +5132,8 @@ function publishPrivateJson(file, value, replace = false) {
   }
 }
 function managedExpectationFile(binding) {
-  return path6.join(path6.dirname(binding.database), "managed-expectation.json");
+  const identity2 = createHash5("sha256").update(JSON.stringify([binding.source.id, binding.installId])).digest("hex");
+  return path6.join(path6.dirname(binding.database), `managed-expectation-${identity2}.json`);
 }
 function readManagedExpectation(binding) {
   const file = managedExpectationFile(binding);
@@ -27935,10 +27937,10 @@ class SetupController {
         store.subagentRunStorage();
         const e = store.list({ limit: 1 });
         const source = e.sources.find((s) => s.id === candidate2.review.sourceId) ?? { id: randomUUID6(), ...managedSourceRoots(this.managedEnv), verified: true };
-        store.registerSource(source);
         b = { protocolVersion: 2, schemaVersion: 2, installId: `managed-${digest(JSON.stringify([e.storeId, source]))}`, version: this.readonlyPayload().version, database: store.file, storeId: e.storeId, source };
-        verifyStore(store, b);
         this.establishExpectation(b);
+        store.registerSource(source);
+        verifyStore(store, b);
         publishPrivateJson(file2, b);
       } finally {
         store.close();
@@ -27988,13 +27990,13 @@ class SetupController {
         store.subagentRunStorage();
         const binding = prior?.binding ?? candidate2.binding ?? { ...retained, installId: `managed-${digest(JSON.stringify([retained.storeId, retained.source]))}`, version: this.readonlyPayload().version };
         const record2 = prior ?? { binding, phase: "pending", legacyInstallId: legacy.binding.installId };
+        this.establishExpectation(binding);
         store.setEnabled(false);
         writeMigration(env, record2);
         if (legacy)
           lifecycle("remove-capture", candidate2.targets);
         record2.phase = "removed";
         writeMigration(env, record2);
-        this.establishExpectation(binding);
         if (!candidate2.binding)
           publishPrivateJson(file2, binding);
         record2.phase = "complete";

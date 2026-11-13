@@ -7,7 +7,7 @@ import { createRunCapture } from './subagent-runs.ts';
  * Call IDs, not assistant-message census or elapsed time, reserve intent. */
 export async function registerDelegation(ctx:Plugin.Context,options:{store:Store;sourceId:string;identity(id:string,alive:()=>boolean,signal:AbortSignal):Promise<Actor>;now?:()=>number;alive?:()=>boolean}) {
   options.store.installDelegationControl();
-  const capture=createRunCapture(ctx,{store:options.store,sourceId:options.sourceId,identity:options.identity});
+  const capture=createRunCapture(ctx,{store:options.store,sourceId:options.sourceId,identity:options.identity,alive:options.alive});
   const abort=new AbortController(),registrations:Array<{dispose():Promise<void>}>=[];
   let disposed=false,events:Promise<void>|undefined;
   async function dispose(){if(disposed)return;disposed=true;capture.dispose();abort.abort();for(const r of registrations.splice(0))try{await r.dispose();}catch{}await events;}

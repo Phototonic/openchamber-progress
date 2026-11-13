@@ -17,6 +17,7 @@ import { releasedRuntime } from './subagent-release-support.ts';
 import { versionOneFixture } from './subagent-format-support.ts';
 import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
 import { isolatedEnvironment } from '../fixtures/managed.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
 /** Fixed diagnostics only: no paths, exceptions or rejected values in health or error bodies. */
 const fixedCodes=(values:string[])=>values.every(v=>/^[a-z0-9-]+$/.test(v));
@@ -57,7 +58,7 @@ function fixture() {
   const installed=readBinding(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'));
   cpSync(path.join(targets.configRoot,'plugins/agent-progress/progress-binding.json'),createManagedBindingDirectory(env));
   // Explicit legacy utility regressions keep their injected controller; production main is managed.
-  const legacyEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${JSON.stringify(path.resolve('service/server.ts'))};import {SetupController} from ${JSON.stringify(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${JSON.stringify(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${JSON.stringify(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
+  const legacyEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${javascriptLiteral(path.resolve('service/server.ts'))};import {SetupController} from ${javascriptLiteral(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${javascriptLiteral(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${javascriptLiteral(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
   writeFileSync(`${root}/legacy-service.ts`,legacyEntry);writeFileSync(`${root}/payload.json`,JSON.stringify(payload));
   assert.equal(spawnSync('bun',['build',`${root}/legacy-service.ts`,'--target=node','--format=esm',`--outfile=${root}/compiled/service/legacy-fixture.js`],{stdio:'ignore'}).status,0);
   const database=path.join(targets.storeRoot,'progress.sqlite');

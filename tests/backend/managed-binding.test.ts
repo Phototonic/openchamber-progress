@@ -25,6 +25,27 @@ function fixture() {
 function review(f:ReturnType<typeof fixture>,storeRoot?:string) {return f.setup.run('managed-inspect',storeRoot?{storeRoot}:{}).delivery!.review!;}
 function configure(f:ReturnType<typeof fixture>,storeRoot?:string) {const r=review(f,storeRoot);return f.setup.run('managed-configure',{storeRoot:r.targets.storeRoot,confirmed:true,expected:r.expected});}
 function tree(root:string):unknown {return readdirSync(root).sort().map(name=>{const file=path.join(root,name),s=lstatSync(file);return [name,s.mode,s.isDirectory()?tree(file):s.isSymbolicLink()?'link':readFileSync(file).toString('base64')];});}
+test('isolated managed scopes configure one shared custom store without replacing expectations',()=>{
+  const a=fixture(),b=fixture();try{
+    configure(a);const first=readManagedBinding(a.env)!,file=managedExpectationFile(first),bytes=readFileSync(file);
+    configure(b,a.storeRoot);const second=readManagedBinding(b.env)!;
+    assert.equal(second.storeId,first.storeId);assert.notEqual(second.source.id,first.source.id);
+    assert.notEqual(managedExpectationFile(second),file);assert.deepEqual(readFileSync(file),bytes);
+    assert.equal(a.setup.status().delivery!.observation,'not-observed');assert.equal(b.setup.status().delivery!.observation,'not-observed');
+  }finally{b.clean();a.clean();}
+});
+test('expectation publication failure precedes source registration',t=>{
+  const f=fixture(),original=fs.linkSync;let failed=false;
+  const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+    if(path.basename(String(to)).startsWith('managed-expectation-')){failed=true;throw Error('Synthetic expectation failure');}
+    return original(from,to);
+  })as typeof fs.linkSync);syncBuiltinESMExports();
+  try{
+    assert.throws(()=>configure(f),/Synthetic expectation failure/);assert.equal(failed,true);
+    assert.equal(readManagedBinding(f.env),undefined);
+    const store=new Store(path.join(f.storeRoot,'progress.sqlite'));try{assert.equal(store.list().sources.length,0);}finally{store.close();}
+  }finally{mock.mock.restore();syncBuiltinESMExports();f.clean();}
+});
 async function http(f:ReturnType<typeof fixture>,run:(request:(action:string,body?:unknown,authorized?:boolean)=>Promise<Response>)=>Promise<void>) {
   const server=createProgressServer(undefined,'fixture-only',undefined,f.setup);
   try {

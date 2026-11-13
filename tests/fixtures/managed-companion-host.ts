@@ -168,19 +168,19 @@ if(arg('--server-worker')) {
     check('different-store-selection-preserved',fs.readFileSync(managedBindingFile(env)).equals(selectorBefore)&&fs.readFileSync(ownership).equals(otherOwned));
     const otherAfter=new Store(`${root}/other-store/progress.sqlite`,{readOnly:true});try{check('different-store-capture-preserved',otherAfter.list().captureEnabled===otherBefore);}finally{otherAfter.close();}
     lifecycle('remove-capture',otherTargets);lifecycle('install',targets,payload);await reload();
-    // Corrupt only fixture-owned expectation metadata. Its fail-closed replacement
-    // check runs after verified removal, yielding deterministic real partial state.
+    // Corrupt only fixture-owned expectation metadata. Feasibility must now fail
+    // before disabling capture or removing verified legacy discovery.
     // Restore the exact known fixture bytes as explicit test-side operator recovery.
-    const expectationFile=managedExpectationFile(b),expectationBytes=fs.readFileSync(expectationFile);let partial:{status:number;body:any};
+    const expectationFile=managedExpectationFile(b),expectationBytes=fs.readFileSync(expectationFile),captureBefore=(await service('/v1/setup')).body.captureEnabled;let partial:{status:number;body:any};
     fs.writeFileSync(expectationFile,'invalid synthetic expectation');
     try{partial=await action('managed-migrate');}finally{fs.writeFileSync(expectationFile,expectationBytes);}
-    check('partial-migration-is-capture-off',[409,503].includes(partial.status)&&(await service('/v1/setup')).body.delivery.migration==='pending'&&(await service('/v1/setup')).body.captureEnabled===false&&!fs.existsSync(legacyRoot));
-    await browser.setupShot('migration-pending','[data-testid="setup-recovery"]');
+    check('expectation-preflight-preserves-legacy',[409,503].includes(partial.status)&&(await service('/v1/setup')).body.delivery.migration==='available'&&(await service('/v1/setup')).body.captureEnabled===captureBefore&&fs.existsSync(legacyRoot));
+    await browser.setupShot('migration-preflight','[data-testid="setup-migrate"]');
     const switched=await action('managed-migrate');check('same-target-explicit-retry',switched.status===200&&switched.body.delivery.migration==='complete');
     const selected=readManagedBinding(env);assert.ok(selected);check('migration-retains-store-source',selected.storeId===b.storeId&&selected.source.id===b.source.id&&!fs.existsSync(legacyRoot));
     await reload();await active();await prompt(main.id,{name:'agent_progress_report',input:{op:'revise',plan:'P-managed',oid:'migrated',rev:4,title:'Managed acceptance plan'}});
     const migratedRead=new Store(selected.database,{readOnly:true});try{check('migration-retains-history',migratedRead.get(b.source.id,'P-managed')?.revision===5&&migratedRead.get(b.source.id,'P-legacy')?.revision===1);}finally{migratedRead.close();}
-    write('migration',{legacyOneCapture:true,modifiedOwnershipRefused:true,differentStoreRefusedWithoutSelectionChange:true,partialStatus:partial.status,partialFailureBoundary:'after-verified-removal-before-expectation-publication',fixtureOperatorRecovery:'restored exact known expectation bytes',sameTargetExplicitRetry:true,storeSourceRetained:true,historyRetained:true,midUnlinkConflict:'portable lifecycle regression; not injected into host removal'});
+    write('migration',{legacyOneCapture:true,modifiedOwnershipRefused:true,differentStoreRefusedWithoutSelectionChange:true,preflightStatus:partial.status,expectationFailureBoundary:'before-capture-disable-and-legacy-removal',fixtureOperatorRecovery:'restored exact known expectation bytes',sameTargetExplicitRetry:true,storeSourceRetained:true,historyRetained:true,postRemovalPublicationFailure:'portable migration regression; not injected into host',midUnlinkConflict:'portable lifecycle regression; not injected into host removal'});
     await browser.setupShot('migrated','[data-testid="setup-disable"]');
     // Do the held-session race last in this native generation: the documented
     // cancellation caveat can also leave native location reload unavailable.

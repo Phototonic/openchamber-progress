@@ -8,7 +8,7 @@ import {SetupController} from '../../service/setup-controller.ts';
 import {createProgressServer} from '../../service/server.ts';
 import {lifecycle} from '../../setup/lifecycle.ts';
 import {readBinding} from '../../shared/binding.ts';
-import {readManagedBinding,managedBindingFile} from '../../shared/managed-binding.ts';
+import {readManagedBinding,managedBindingFile,managedExpectationFile} from '../../shared/managed-binding.ts';
 import {readMigration,migrationFile} from '../../setup/managed-migration.ts';
 import {Store} from '../../shared/store.ts';
 import {ProgressError} from '../../shared/progress.ts';
@@ -16,6 +16,35 @@ import {PlatformError} from '../../shared/platform.ts';
 import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
+
+test('two isolated legacy scopes migrate to one shared store without replacing expectations',()=>{
+  const a=fixture(),b=fixture();try{
+    // Reinstall only the disposable second legacy scope against the first Store.
+    lifecycle('remove-capture',b.targets);
+    const targets={...b.targets,storeRoot:a.targets.storeRoot};lifecycle('install',targets,payload);
+    a.migrate();const first=readManagedBinding(a.env)!;
+    const before=fs.readFileSync(managedExpectationFile(first));
+    const r=b.setup.run('managed-inspect',{}).delivery!.review!;
+    b.setup.run('managed-migrate',{confirmed:true,expected:r.expected});
+    const second=readManagedBinding(b.env)!;
+    assert.equal(second.storeId,first.storeId);assert.notEqual(second.source.id,first.source.id);
+    assert.deepEqual(fs.readFileSync(managedExpectationFile(first)),before);
+    assert.equal(b.setup.status().delivery!.migration,'complete');assert.equal(a.setup.status().delivery!.migration,'complete');
+  }finally{b.cleanup();a.cleanup();}
+});
+test('expectation publication failure preserves enabled legacy discovery before migration',t=>{
+  const f=fixture(),original=fs.linkSync;let failed=false;
+  const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+    if(path.basename(String(to)).startsWith('managed-expectation-')){failed=true;throw Error('Synthetic expectation failure');}
+    return original(from,to);
+  })as typeof fs.linkSync);syncBuiltinESMExports();
+  try{
+    const selector=fs.readFileSync(path.join(f.legacyRoot,'.ownership.json'));
+    assert.throws(()=>f.migrate(),/Synthetic expectation failure/);assert.equal(failed,true);
+    assert.equal(f.store.list().captureEnabled,true);assert.equal(readMigration(f.env),undefined);
+    assert.deepEqual(fs.readFileSync(path.join(f.legacyRoot,'.ownership.json')),selector);assert.equal(readManagedBinding(f.env),undefined);
+  }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
+});
 
 test('a historical default-only loader refuses update before selection and keeps reporting',async()=>{
   const root=fs.mkdtempSync('/tmp/opencode/legacy-update-');let dispose:(()=>Promise<void>)|undefined;

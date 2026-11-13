@@ -28484,7 +28484,7 @@ function createRunCapture(ctx, options2) {
   const lookups = new Set;
   let producer = randomUUID4();
   let physicalIdentities = 0;
-  const active = () => !disposed && !abort.signal.aborted;
+  const active = () => !disposed && !abort.signal.aborted && options2.alive?.() !== false;
   const key = (e) => ({ source: sourceId, parent: e.sessionID, message: e.messageID, call: e.id });
   const valid = (e) => ["subagent", "task"].includes(e.tool) && [e.sessionID, e.messageID, e.id].every(identifier2);
   const observationStarted = () => {
@@ -28498,6 +28498,8 @@ function createRunCapture(ctx, options2) {
     return epoch;
   };
   const unavailable = () => {
+    if (!active())
+      return;
     try {
       store.runCaptureUnavailable();
       epoch = store.runObservationEpoch();
@@ -28565,6 +28567,8 @@ function createRunCapture(ctx, options2) {
         throw Error("capture-unavailable");
       store.afterRun(key(e), c.generation, child, "returned");
     } catch {
+      if (!active())
+        return;
       try {
         store.afterRun(key(e), store.runControl().generation, undefined, "unconfirmed");
       } catch {}
@@ -28632,9 +28636,13 @@ function createRunCapture(ctx, options2) {
         return;
       physicalIdentities++;
       let nativeRoot;
+      if (!active())
+        return;
       try {
         nativeRoot = await ctx.session.get({ sessionID: root }, { signal: abort.signal });
       } catch {
+        if (!active())
+          return;
         const failed = store.claimRunRecovery(sourceId, root);
         if (failed)
           store.finishRunRecovery(failed, "failed");
@@ -28655,6 +28663,8 @@ function createRunCapture(ctx, options2) {
           const parent = queue[0];
           let cursor = parent.cursor;
           do {
+            if (!alive())
+              return;
             if (calls >= RUN_LIMITS.calls || performance.now() - started >= RUN_LIMITS.elapsedMs) {
               partial = true;
               break;
@@ -28678,6 +28688,8 @@ function createRunCapture(ctx, options2) {
               break;
             }
             for (const s of page.data) {
+              if (!alive())
+                return;
               if (discovered >= RUN_LIMITS.traversal || seen.size >= RUN_LIMITS.total) {
                 partial = true;
                 break;
@@ -28754,7 +28766,7 @@ function createRunCapture(ctx, options2) {
 // plugin/delegation.ts
 async function registerDelegation(ctx, options2) {
   options2.store.installDelegationControl();
-  const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity });
+  const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity, alive: options2.alive });
   const abort = new AbortController, registrations = [];
   let disposed = false, events;
   async function dispose() {

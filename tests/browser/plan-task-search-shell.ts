@@ -18,6 +18,7 @@ import { createServer as netServer } from 'node:net';
 import path from 'node:path';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { createProgressServer } from '../../service/server.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { createManagedBindingDirectory, publishPrivateJson } from '../../shared/managed-binding.ts';
 import type { ItemInput } from '../../shared/progress.ts';
@@ -40,15 +41,15 @@ export const FRAMES = ['page', 'panel', 'status'] as const;
 export const PROJECTS = [{ id: 'alpha', name: 'Alpha', directory: '/fixture/main' }, { id: 'other', name: 'Other', directory: '/fixture/other' }];
 
 const script = `
-const light=${JSON.stringify(LIGHT)},dark=${JSON.stringify(DARK)},theme=JSON.parse(JSON.stringify(light));
-const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
+const light=${javascriptLiteral(LIGHT)},dark=${javascriptLiteral(DARK)},theme=JSON.parse(JSON.stringify(light));
+const frames=${javascriptLiteral(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
 const send=(f,m)=>frame(f).contentWindow.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 window.frame=frame;
-window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${JSON.stringify(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],preferenceReplies:[],messages:[],errors:[]};
+window.qa={account:'account-example',store:0,session:window.__largePlan?'M':null,stripSearch:false,stripComparison:false,projects:${javascriptLiteral(PROJECTS)},sessions:{},worktrees:{},subs:[],holds:[],held:[],fail:[],requests:[],replies:[],storage:[],preferenceReplies:[],messages:[],errors:[]};
 // Keyboard-focus modes only (labelled seams): every /v1/setup read and setup action is answered here
 // from the existing synthetic setup fixture and never forwarded to a service or installation code;
 // "unconfigured" makes /health report not ready. Metadata (method/path/status) is recorded.
-if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='managed-disable')qa.capture=false;if(action==='managed-enable')qa.capture=true;const v=qa.unconfigured?{...${JSON.stringify(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${JSON.stringify(setupRead())},captureEnabled:qa.capture};v.installed=false;v.separateLifecycle=false;v.delivery={kind:'managed',revision:1,configuration:qa.unconfigured?'unconfigured':'configured',migration:'none',mode:'unknown',observation:'unknown',expectedVersion:'2.0.0'};if(action==='managed-inspect')v.delivery.review={expected:'a'.repeat(64),targets:{configRoot:'/fixture/config/opencode',dataRoot:'/fixture/data/opencode',storeRoot:'/fixture/store'},storeId:null,sourceId:null};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
+if(window.__keyboardFocus){qa.intercepted=[];qa.unconfigured=false;qa.capture=true;qa.setupReply=q=>{const action=q.method==='GET'?null:q.path.split('/').pop();if(action==='managed-disable')qa.capture=false;if(action==='managed-enable')qa.capture=true;const v=qa.unconfigured?{...${javascriptLiteral(setupRead({ configured: false, installed: false, verified: false, targets: null, version: null }))}}:{...${javascriptLiteral(setupRead())},captureEnabled:qa.capture};v.installed=false;v.separateLifecycle=false;v.delivery={kind:'managed',revision:1,configuration:qa.unconfigured?'unconfigured':'configured',migration:'none',mode:'unknown',observation:'unknown',expectedVersion:'2.0.0'};if(action==='managed-inspect')v.delivery.review={expected:'a'.repeat(64),targets:{configRoot:'/fixture/config/opencode',dataRoot:'/fixture/data/opencode',storeRoot:'/fixture/store'},storeId:null,sourceId:null};if(action)v.action=action;return{status:200,body:JSON.stringify(v)}}}
 const ready=f=>send(f,{type:'ready',payload:{theme,locale:qa.locale??'en',directory:'/fixture/main',session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:qa.account},settings:{},item:null,features:{deviceStorage:true}}});
 qa.ready=f=>{(f?[f]:frames).forEach(ready)};
 qa.loads={};qa.loaded={};

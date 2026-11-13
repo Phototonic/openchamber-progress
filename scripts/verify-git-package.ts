@@ -12,6 +12,7 @@ import { RELEASE } from '../shared/release.ts';
 import {hostPackageVersion} from './host-package-version.ts';
 import { verifyCompanionEntry } from './companion-entry.ts';
 import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
+import { javascriptLiteral } from '../shared/javascript-literal.ts';
 
 const [major,minor,patch]=RELEASE.split('.').map(Number);
 const futureVersion=`${major}.${minor}.${patch!+1}`,brokenVersion=`${major}.${minor}.${patch!+2}`,baselineTag=`v${RELEASE}`;
@@ -30,16 +31,8 @@ if(process.argv[2]!=='--worker'){
   const root=mkdtempSync('/tmp/opencode/agent-progress-git-gate-');
   try{
     for(const dir of ['home','config','data','cache','state','runtime','tmp'])mkdirSync(`${root}/${dir}`,{mode:0o700});
-    // Preserve the repository's configured identity, without copying credentials,
-    // hooks or other global configuration into the disposable Git environment.
-    const identity=`${root}/identity.gitconfig`;
-    for(const key of ['user.name','user.email']) {
-      const value=spawnSync('/usr/bin/git',['config','--get',key],{encoding:'utf8'});
-      assert.equal(value.status,0,'configured repository Git identity required');
-      assert.equal(spawnSync('/usr/bin/git',['config','--file',identity,key,value.stdout.trim()],{encoding:'utf8'}).status,0);
-    }
     const result=spawnSync(process.execPath,['--experimental-strip-types',fileURLToPath(import.meta.url),'--worker',candidate,root],{
-      env:{PATH:process.env.PATH??'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:identity,GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ASKPASS:'/bin/false',AGENT_PROGRESS_HOST_MODULE:hostModule},
+      env:{PATH:process.env.PATH??'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ASKPASS:'/bin/false',AGENT_PROGRESS_HOST_MODULE:hostModule},
       encoding:'utf8',timeout:120_000,maxBuffer:4_000_000,
     });
     process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');assert.equal(result.status,0,'isolated Git gate failed');
@@ -74,7 +67,8 @@ if(process.argv[2]!=='--worker'){
   for(const entry of ['build/artifacts/future.zip','build/service/progress-binding.json','build/service/scratch.js','build/service/.env.example','build/companion/runtime.sqlite','build/setup/scratch.js','node_modules/private','evidence/private','.slim/plan','.env.local']){
     const r=spawnSync('/usr/bin/git',['check-ignore','--no-index',entry],{cwd:work,encoding:'utf8'});assert.equal(r.status,0,`local data trackable: ${entry}`);
   }
-  const commit=(message:string)=>{git(['add','--all']);git(['commit','-m',message]);return git(['rev-parse','HEAD']);};
+  // Synthetic identity belongs only to commits in this disposable fixture.
+  const commit=(message:string)=>{git(['add','--all']);git(['-c','user.name=Package Fixture','-c','user.email=package-fixture@example.invalid','commit','-m',message]);return git(['rev-parse','HEAD']);};
   const initial=commit(`Built fixture main ${RELEASE}`);
   assert.deepEqual(git(['ls-files','build']).split('\n').sort(),[...runtimeEntries].sort());
   const inventory=files(work).map(file=>({path:path.relative(work,file),sha256:hash(file)}));
@@ -102,12 +96,12 @@ if(process.argv[2]!=='--worker'){
   const wrapper=`${root}/fixture-git.cjs`,commands=`${root}/git-commands.jsonl`;
   writeFileSync(wrapper,`#!${process.execPath}\n`+`
 const fs=require('node:fs'),{spawnSync}=require('node:child_process'),assert=require('node:assert/strict');
-const root=${JSON.stringify(root)},source=${JSON.stringify(source)},bare=${JSON.stringify(`file://${bare}`)};
+const root=${javascriptLiteral(root)},source=${javascriptLiteral(source)},bare=${javascriptLiteral(`file://${bare}`)};
 const args=process.argv.slice(2);let i=0;while(args[i]==='-c')i+=2;const op=args[i];assert.ok(['clone','fetch','show'].includes(op));
 if(op!=='show'){assert.ok(args.includes('http.followRedirects=false'));assert.ok(args.some(a=>a.startsWith('http.curloptResolve=progress-fixture.example:443:')));}
 if(op==='clone'){const pos=args.indexOf('--');assert.equal(args[pos+1],source);assert.ok(args[pos+2].startsWith(root+'/'));args[pos+1]=bare;}
 else {assert.ok(process.cwd().startsWith(root+'/'));if(op==='fetch'){const remote=spawnSync('/usr/bin/git',['config','--get','remote.origin.url'],{encoding:'utf8'});assert.equal(remote.stdout.trim(),bare);assert.equal(args[args.indexOf('--')+1],'origin');}else assert.deepEqual(args,['show','FETCH_HEAD:package.json']);}
-fs.appendFileSync(${JSON.stringify(commands)},JSON.stringify({op,ref:op==='fetch'?args.at(-1):op==='clone'&&args.includes('--branch')?args[args.indexOf('--branch')+1]:null})+'\\n');
+fs.appendFileSync(${javascriptLiteral(commands)},JSON.stringify({op,ref:op==='fetch'?args.at(-1):op==='clone'&&args.includes('--branch')?args[args.indexOf('--branch')+1]:null})+'\\n');
 const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath=/dev/null',...args],{env:process.env,stdio:'inherit'});process.exit(r.status??1);
 `);chmodSync(wrapper,0o700);
   const parsed=parseGitInstallUrl(source);assert.deepEqual(parsed,{url:source});

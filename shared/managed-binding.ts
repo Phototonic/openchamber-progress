@@ -2,6 +2,7 @@ import { lstatSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkS
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readBinding, type Binding } from './binding.ts';
 import type { ManagedSetupErrorCode } from './progress.ts';
 import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory } from './platform.ts';
@@ -93,7 +94,10 @@ export function publishPrivateJson(file: string, value: unknown, replace = false
 export interface ManagedExpectation {
   format: 1; storeId: string; sourceId: string; installId: string; version: string; fingerprint: string;
 }
-export function managedExpectationFile(binding: Binding) { return path.join(path.dirname(binding.database), 'managed-expectation.json'); }
+export function managedExpectationFile(binding: Binding) {
+  const identity = createHash('sha256').update(JSON.stringify([binding.source.id, binding.installId])).digest('hex');
+  return path.join(path.dirname(binding.database), `managed-expectation-${identity}.json`);
+}
 /** Missing/unreadable expectation is an unknown observation, never a matching load. */
 export function readManagedExpectation(binding: Binding): ManagedExpectation | undefined {
   const file = managedExpectationFile(binding);

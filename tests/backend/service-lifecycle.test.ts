@@ -12,6 +12,7 @@ import { serviceBindingFile } from '../../service/state.ts';
 import { Store } from '../../shared/store.ts';
 import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
 import { isolatedEnvironment } from '../fixtures/managed.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
 function fixture() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-backend-reassembly-');
@@ -24,7 +25,7 @@ function fixture() {
   // Legacy utility/controller regressions inject their selector explicitly. Production main
   // no longer accepts this environment or package-adoption authority.
   createManagedBindingDirectory(env);
-  const fixtureEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${JSON.stringify(path.resolve('service/server.ts'))};import {SetupController} from ${JSON.stringify(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${JSON.stringify(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${JSON.stringify(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
+  const fixtureEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${javascriptLiteral(path.resolve('service/server.ts'))};import {SetupController} from ${javascriptLiteral(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${javascriptLiteral(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${javascriptLiteral(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
   writeFileSync(`${root}/legacy-service.ts`,fixtureEntry);writeFileSync(`${root}/payload.json`,JSON.stringify(payload));
   assert.equal(spawnSync('bun',['build',`${root}/legacy-service.ts`,'--target=node','--format=esm',`--outfile=${root}/compiled/service/legacy-fixture.js`],{stdio:'ignore'}).status,0);
   return {root,targets,env,payload,clean(){rmSync(root,{recursive:true,force:true});}};

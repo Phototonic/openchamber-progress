@@ -791,7 +791,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         listReads++;
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
-        if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
+        if (setupRefreshDue()) loadSetup();
         failure = null; lastGoodAt = Date.now();
         if (ctx) spec.refreshed?.(context());
         runs?.poll();
@@ -822,13 +822,14 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (result.ok) {
       const nextHealth = result.health;
       let authorityChanged = false;
-      if (health && health.ready !== nextHealth.ready) { setup = null; loadSetup(); }
+      if (health && health.ready !== nextHealth.ready) { setup = null; setupSerial++; }
       const nextRead = result.read;
       if (nextRead) {
         const nextIdentity = `${nextRead.storeId}|${nextRead.binding.sourceId ?? ''}|${nextRead.binding.verified}`;
         // Initial adoption is a context transition too: consumers must learn the identity
         // before a user choice, not discover it on the next host-session switch.
         authorityChanged = nextIdentity !== identity;
+        if (authorityChanged) { setup = null; setupSerial++; }
         // A hand-off belongs to the old store/binding: it never focuses or announces in the new one.
         if (identity && authorityChanged) { ui = spec.initialUi(); versions.ui++; resetCaches(); clearReading(); cleanup = { ...initialCleanup(), pending: cleanupBusy }; handoff = null; handoffNote = null; live.restart(); }
         // A complete refreshed scope is authoritative about keys formerly in that scope.
@@ -852,7 +853,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
       // Setup status (reload-required, capture off) is shown on every surface. A pending reload is
       // re-read each refresh so the notice clears once the service observes the loaded companion.
-      if (!setup || (setup.state === 'ready' && setup.value.activation === 'reload-required')) loadSetup();
+      if (setupRefreshDue()) loadSetup();
       failure = null;
       lastGoodAt = Date.now();
       if (ctx) spec.refreshed?.(context());
@@ -949,6 +950,12 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   let setupSerial = 0;
   let setupNeedsRefresh = false;
+  // Reuse the visible list/freshness cadence. Managed activation is observational
+  // (activation remains unknown), so legacy reload-required alone is insufficient.
+  function setupRefreshDue() {
+    return !setup || setup.state === 'ready' && (setup.value.activation === 'reload-required' ||
+      setup.value.delivery?.kind === 'managed' && setup.value.delivery.configuration === 'configured');
+  }
   function loadSetup() {
     if (disposed) return;
     if (document.visibilityState === 'hidden') { setupNeedsRefresh=true; return; }

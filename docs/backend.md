@@ -245,7 +245,8 @@ boundaries. The service has no plugin inventory/RPC authority from its read-only
 OpenCode provider permission.
 
 Legacy migration reuses complete ownership/Store validation and `remove-capture`:
-disable, verified removal, durable same-target binding/expectation, then enable.
+expectation feasibility/persistence, disable, verified removal, durable same-target
+binding, then enable.
 Retained history/IDs and cleanup fences are not reset. Interrupted removal may
 leave incomplete ownership and a conflict needing separately authorized manual
 cleanup; crash-retained configuration locks stay busy until manual recovery.

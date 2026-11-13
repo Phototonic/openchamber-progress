@@ -9,6 +9,7 @@ import { OpenCode } from '@opencode/client';
 import { ProgressStatus } from '../../plugin/status.ts';
 import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
 import { createFixtureBinding } from '../fixtures/managed.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
 test('native runtime rolls back partial native hook/RPC registrations; failed setup leaves no SQLite handle and recovers',{timeout:45000},async()=>{
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-plugin-failure-runtime-');let child:ReturnType<typeof spawn>|undefined;
@@ -16,7 +17,7 @@ test('native runtime rolls back partial native hook/RPC registrations; failed se
     for(let dir=path.dirname(root);;dir=path.dirname(dir)){for(const name of ['opencode.json','opencode.jsonc','.opencode/opencode.json','.opencode/opencode.jsonc'])assert.equal(fs.existsSync(path.join(dir,name)),false,'ancestor config not allowed');if(dir===path.dirname(dir))break;}
     assert.equal(fs.existsSync('/etc/opencode'),false,'system config not allowed');
     for(const name of ['config/opencode','data/opencode','home','cache','state','runtime','tmp','project'])fs.mkdirSync(`${root}/${name}`,{recursive:true,mode:0o700});
-    const wrapper=`import original from ${JSON.stringify(path.resolve('plugin/index.ts'))};
+    const wrapper=`import original from ${javascriptLiteral(path.resolve('plugin/index.ts'))};
 import {existsSync,appendFileSync,readFileSync} from 'node:fs';
 export default {...original,async setup(ctx){
  const fails=stage=>existsSync(process.env.PERF_FAILURE_MARKER)&&readFileSync(process.env.PERF_FAILURE_MARKER,'utf8')===stage;

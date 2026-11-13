@@ -285,11 +285,12 @@ export class SetupController {
       try {
         store.subagentRunStorage();const e=store.list({limit:1});
         const source=e.sources.find(s=>s.id===candidate.review.sourceId)??{id:randomUUID(),...managedSourceRoots(this.managedEnv!),verified:true};
-        store.registerSource(source);
         // Stable same-target managed identity permits explicit recovery after publication failure,
         // but can never match a legacy install's random identity.
         b={protocolVersion:2,schemaVersion:2,installId:`managed-${digest(JSON.stringify([e.storeId,source]))}`,version:this.readonlyPayload().version,database:store.file,storeId:e.storeId,source};
-        verifyStore(store,b);this.establishExpectation(b);
+        // Persist the scoped expectation before registering a new source. Invalid
+        // metadata or a publication failure must not strand a newly admitted source.
+        this.establishExpectation(b);store.registerSource(source);verifyStore(store,b);
         publishPrivateJson(file,b);
       }finally{store.close();}
       this.refresh();return {...this.managedStatus(),action};
@@ -314,11 +315,13 @@ export class SetupController {
         verifyStore(store,retained);store.subagentRunStorage();
         const binding=prior?.binding??candidate.binding??{...retained,installId:`managed-${digest(JSON.stringify([retained.storeId,retained.source]))}`,version:this.readonlyPayload().version};
         const record:MigrationRecord=prior??{binding,phase:'pending',legacyInstallId:legacy!.binding.installId};
+        // Validate and persist expectation feasibility before capture control or
+        // irreversible legacy removal, not after removing discovery.
+        this.establishExpectation(binding);
         // Full owned()+selector+actual Store/source validation above precedes even disable.
         store.setEnabled(false);writeMigration(env,record);
         if(legacy)lifecycle('remove-capture',candidate.targets);
         record.phase='removed';writeMigration(env,record);
-        this.establishExpectation(binding);
         if(!candidate.binding)publishPrivateJson(file,binding);
         record.phase='complete';writeMigration(env,record);
         store.setEnabled(true);

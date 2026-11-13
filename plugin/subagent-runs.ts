@@ -6,20 +6,20 @@ import { RUN_LIMITS, safeErrorType, type DispatchKey, type ExecutionObservation,
 
 const object=(v:unknown):v is Record<string,any>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 /** Passive projection on the existing delegation hook/event owner. No result text is parsed. */
-export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceId:string;identity(id:string,alive:()=>boolean,signal:AbortSignal):Promise<Actor>;now?:()=>number}) {
+export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceId:string;identity(id:string,alive:()=>boolean,signal:AbortSignal):Promise<Actor>;now?:()=>number;alive?:()=>boolean}) {
   const {store,sourceId}=options;store.installSubagentRuns();
   const now=options.now??Date.now,abort=new AbortController();let disposed=false,draining=false;
   let epoch=store.beginRunObservation(),generation=store.runControl().generation;
   const lookups=new Set<Promise<void>>();
   let producer=randomUUID();
   let physicalIdentities=0;
-  const active=()=>!disposed&&!abort.signal.aborted;
+  const active=()=>!disposed&&!abort.signal.aborted&&options.alive?.()!==false;
   const key=(e:any):DispatchKey=>({source:sourceId,parent:e.sessionID,message:e.messageID,call:e.id});
   const valid=(e:any)=>['subagent','task'].includes(e.tool)&&[e.sessionID,e.messageID,e.id].every(identifier);
   // Failure is fixed metadata only; observation must never abort a native tool.
   const observationStarted=()=>{epoch=store.beginRunObservation();generation=store.runControl().generation;producer=randomUUID();};
   const currentEpoch=()=>{if(store.runControl().generation!==generation||store.runObservationInterrupted(epoch))observationStarted();return epoch;};
-  const unavailable=()=>{try{store.runCaptureUnavailable();epoch=store.runObservationEpoch();producer=randomUUID();}catch{}};
+  const unavailable=()=>{if(!active())return;try{store.runCaptureUnavailable();epoch=store.runObservationEpoch();producer=randomUUID();}catch{}};
   async function identity(id:string) {
     if(physicalIdentities>=2)throw Error('capture-unavailable');
     const controller=new AbortController(),signal=AbortSignal.any([controller.signal,abort.signal]);
@@ -50,7 +50,7 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
       const child=await identity(output.sessionID);
       if(!active())return;if(child.directory!==ctx.location.directory)throw Error('capture-unavailable');
       store.afterRun(key(e),c.generation,child,'returned');
-    }catch{try{store.afterRun(key(e),store.runControl().generation,undefined,'unconfirmed');}catch{}unavailable();}
+    }catch{if(!active())return;try{store.afterRun(key(e),store.runControl().generation,undefined,'unconfirmed');}catch{}unavailable();}
   }
   function after(e:any) {
     if(!valid(e)||!active())return;
@@ -86,7 +86,8 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
       // A wrong-location companion must leave the request alone.
       if(physicalIdentities>=2)return;physicalIdentities++;
       let nativeRoot:Awaited<ReturnType<typeof ctx.session.get>>;
-      try{nativeRoot=await ctx.session.get({sessionID:root as any},{signal:abort.signal});}catch{const failed=store.claimRunRecovery(sourceId,root);if(failed)store.finishRunRecovery(failed,'failed');return;}finally{physicalIdentities--;}
+      if(!active())return;
+      try{nativeRoot=await ctx.session.get({sessionID:root as any},{signal:abort.signal});}catch{if(!active())return;const failed=store.claimRunRecovery(sourceId,root);if(failed)store.finishRunRecovery(failed,'failed');return;}finally{physicalIdentities--;}
       if(!active()||nativeRoot.id!==root||nativeRoot.location.directory!==ctx.location.directory)return;
       const job=store.claimRunRecovery(sourceId,root);if(!job)return;
       const alive=()=>active()&&store.runRecoveryAlive(job);
@@ -96,6 +97,7 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
         while(queue.length&&alive()){
           const parent=queue[0]!;let cursor=parent.cursor;
           do{
+            if(!alive())return;
             if(calls>=RUN_LIMITS.calls||performance.now()-started>=RUN_LIMITS.elapsedMs){partial=true;break;}
             if(physicalIdentities>=2){partial=true;break;}calls++;physicalIdentities++;
             let page:Awaited<ReturnType<typeof ctx.session.list>>;
@@ -103,6 +105,7 @@ export function createRunCapture(ctx:Plugin.Context,options:{store:Store;sourceI
             if(!alive())return;
             if(!Array.isArray(page.data)||page.data.length>50){partial=true;break;}
             for(const s of page.data){
+              if(!alive())return;
               if(discovered>=RUN_LIMITS.traversal||seen.size>=RUN_LIMITS.total){partial=true;break;}
               if(!identifier(s.id)||s.parentID!==parent.id||s.location.directory!==ctx.location.directory||s.projectID!==nativeRoot.projectID){partial=true;continue;}
               if(seen.has(s.id)){continue;}

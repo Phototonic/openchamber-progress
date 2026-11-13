@@ -1372,10 +1372,13 @@ them with fixed 409 `legacy-update-requires-managed-migration` before any Store,
 release, selector or history write. The existing selection remains usable; use
 Setup's explicitly confirmed switch to extension-managed capture instead.
 
-`managed-expectation.json` is a private 0600 sidecar in the verified Store
+`managed-expectation-<identity-hash>.json` is a private 0600 sidecar in the verified Store
 directory, with format 1, Store/source/managed-install identity, version and
-activation fingerprint. Configuration and one newly admitted service package
-generation may establish it; GET/status never rewrite the baseline. Existing
+activation fingerprint. The filename hashes the source and managed-install IDs;
+independent scopes sharing a Store never replace each other's expectation.
+Configuration persists it before source registration; migration persists it before
+capture disable or legacy discovery removal. Configuration and one newly admitted
+service package generation may establish it; GET/status never rewrite the baseline. Existing
 invalid metadata is not overwritten. Missing/unreadable expectation is `unknown`;
 a valid baseline with no scoped loaded observation is `not-observed`; matching
 latest bytes are `matching`; unequal bytes are `different` (warning only).
