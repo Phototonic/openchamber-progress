@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { MENTIONS_SEARCH_PATH, MENTIONS_RESOLVE_PATH } from '@openchamber/sdk';
+import { mentionBody, searchMentions, resolveMention } from './mentions.ts';
 import { GRAPH_LIMITS } from '../shared/plan-graph.ts';
 import { RUN_LIMITS, parseReconcileBody, parseDismissLossBody, type RunRequest } from '../shared/subagent-runs.ts';
 import { parseCaptureBinding } from '../shared/document-captures.ts';
@@ -26,9 +28,22 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
+      mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
+      if(mentionRoute){
+        if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
+        if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
+        if(url.search)throw new ProgressError('invalid');
+        let size=0;const chunks:Buffer[]=[];
+        for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
+        let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));}catch{throw new ProgressError('invalid');}
+        const search=url.pathname===MENTIONS_SEARCH_PATH,body=mentionBody(text,search?'search':'resolve');
+        const active=setup?setup.current():{store,error:unavailableCode};if(!active.store)return answer(503,{error:active.error??'storage'});
+        const alive=()=>!req.aborted&&!req.socket.destroyed&&!res.destroyed;
+        return answer(200,search?searchMentions(active.store,body.query as string,body.directory as string|null,alive):await resolveMention(active.store,body.id as string,alive));
+      }
       graphRoute=url.pathname==='/v1/plan-graph';
       if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile','/v1/subagent-runs/dismiss-loss'].includes(url.pathname);
@@ -122,7 +137,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         // routes, diagnostics here) instead of a host-level service failure.
         if (currentStore) {
           const runs=currentStore.subagentRunStorage();
-          return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+          return answer(200,{ok:true,ready:true,sqlite:true,planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         }
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
@@ -164,7 +179,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     } catch (e) {
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
