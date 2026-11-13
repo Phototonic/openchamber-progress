@@ -24786,7 +24786,7 @@ function readManagedBindingInner(env) {
 }
 
 // shared/release.ts
-var RELEASE = "1.1.1";
+var RELEASE = "1.2.0";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";

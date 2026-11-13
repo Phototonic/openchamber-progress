@@ -4,9 +4,43 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-14
+
+Capture that comes with the extension, and progress you can hand to the agent. The minimum host is now OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- The companion ships through OpenChamber's `contributes.opencodePlugin` and loads into the OpenCode the host manages (#89).
+  - The service and the companion share one private binding in a dedicated folder under the canonical OpenCode data root derived from `XDG_DATA_HOME`. It is created only through explicit, confirmed `/v1/setup/managed-*` configuration, with no scanning, fallback roots or auto-adoption. `AGENT_PROGRESS_BINDING` no longer selects a production binding.
+  - The companion stays dormant until it is configured, and retires synchronously on disable, removal or a binding change. Background sub-agent recovery is fenced as well.
+  - A one-click, confirmed migration moves a validated legacy Setup install through remove-capture, keeping history. An interrupted removal remains a capture-off conflict, and a crash-retained configuration lock stays busy until it is cleared by hand.
+  - Integrity is a warning only. The service records the expected companion fingerprint for each source in a private sidecar, and status reports `matching`, `different`, `not-observed` or `unknown`.
+- An **Agent progress** `@` mention section, through `contributes.mentions`, `POST /mentions/search` and `POST /mentions/resolve`, plus the ready-health capability `planComposerHandoff:1` (#88).
+  - Search returns at most 20 source-qualified rows, ranked by locality and lifecycle, within bounded work and input budgets.
+  - Resolve returns a deterministic English summary of complete matching detail, capped at 16,000 characters with an explicit omitted-task count. Archived or deleted plans refuse.
+- Background session actions **Insert handoff** and **Insert progress update** (`background.entry`, `mode: "background"`). They append the clicked session's bounded summary to the active chat through `host.compose`. The plan is the saved rail choice, otherwise the automatic featured plan, and other plans are counted. There is no message permission, polling or sending (#88).
+- One shared, bounded summary builder in `shared/summary.ts` for previews, mentions and session actions (#88).
+- English and Russian interface language selection: follow OpenChamber, English or Russian, kept in one shared device preference. The rail and board offer it, and Work Status follows. Recorded user text is never translated (#85).
+- A `contributes.tools` entry for the exact `agent_progress_report` tool, with a neutral name, a checklist icon and `text` output. There is no subtitle, because receipts cannot distinguish effective from no-effect calls (#90).
+
+### Changed
+
+- `engines.openchamber` is now `>=2.7.1`. Older hosts refuse installation with their normal version message (#88).
+- Setup's global install is no longer the normal path. Setup refuses to update a pre-change legacy loader and points to the migration instead (#89).
+- Reporting health separates configuration, capture, loaded-companion observation and report freshness for managed delivery (#89).
+- Updates rely on OpenChamber's native extension updates (#91).
+  - The extension's official-version notice and its GitHub metadata check are removed, along with the extension's only network call.
+  - `/v1/extension-update` remains for at least one release. It returns a fixed, network-free `unknown`/`unavailable` reply in the old shape, so older guests keep working.
+- Restart guidance separates plugin add/remove/toggle under a caller-owned `OPENCODE_CONFIG`, which needs a restart, from updates to an installed extension, which may be picked up without one (#91).
+- CI skips the pull-request run when the head is this repository's own `main` or `dev`, because the push run already checks that commit. Branch names are matched case-sensitively (#87).
+- The 1.2.0 OpenSpec changes are archived into the capability specs: `plan-composer-handoff`, `managed-companion-delivery`, `native-extension-updates` and `report-tool-presentation`.
+
 ### Fixed
 
-- Refresh the native activity regression for folded finished records and OpenChamber 2.7's extension-page menu. Record the post-release 1.1.1 native, versioned desktop companion-upgrade and extracted-host folder/ZIP installer checks on OpenCode 2.2.7.
+- Mention queries are bounded by their length rather than by the search token limit. A mention resolve takes the current store for each page, so a concurrent request reopening the store no longer breaks it (#88).
+- A second managed scope that shares a store can configure and migrate, and capture can be switched off during a legacy conflict. Operational failures stay distinct from ownership conflicts (#89).
+- The last open code-sanitization alert in a browser test driver is fixed at its cause with `javascriptLiteral` (#87).
+- The native activity regression is refreshed for folded finished records and OpenChamber 2.7's extension-page menu. The post-release 1.1.1 native, versioned desktop companion-upgrade and extracted-host folder/ZIP installer checks are recorded on OpenCode 2.2.7 (#83).
 
 ## [1.1.1] - 2026-11-10
 
@@ -197,7 +231,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.1
 [1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0
 [0.7.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.6.1...v0.7.0
