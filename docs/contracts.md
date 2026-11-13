@@ -541,7 +541,9 @@ Tool replies retain `error` and optional conflict `rev`. Only `error: "invalid"`
 may additionally carry optional `hint`, bounded constant recovery text (at most
 256 characters), with no submitted values, unknown field names, paths or exception
 messages echoed. Consumers must continue to branch on `error`, not hint wording;
-older/generic errors may omit it. Service HTTP errors remain code-only. This adds
+older/generic errors may omit it. A `change` naming a group or an unknown item ID
+gets a hint that `change` updates existing tasks only and that group status or
+structure changes use `revise`. Service HTTP errors remain code-only. This adds
 no protocol/schema version, persisted field, read behavior or permission change.
 
 ## Advisory activation does not change the protocol

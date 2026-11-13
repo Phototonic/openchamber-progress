@@ -462,7 +462,8 @@ var VALIDATION_HINTS = {
   title: "Use a nonempty title of at most 256 characters.",
   source: "Optional source must be a nonempty path string of at most 4096 characters without NUL.",
   items: "Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.",
-  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure."
+  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure.",
+  change: "Change updates existing task IDs only. Groups are not work: set a group status or change the item structure with revise."
 };
 function validRequest(value, hint) {
   if (!value)
@@ -3489,7 +3490,7 @@ class Store {
         requireProgress(new Set(r.changes.map((c) => c.id)).size === r.changes.length);
         for (const c of r.changes) {
           const item = p.items.find((i) => i.id === c.id);
-          requireProgress(item?.kind === "task");
+          validRequest(item?.kind === "task", "change");
           item.status = c.status;
           item.reporterSessionId = actor.sessionId;
           annotate(item, c.blocker);

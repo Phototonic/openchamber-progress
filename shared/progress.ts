@@ -243,5 +243,6 @@ const VALIDATION_HINTS = {
   source: 'Optional source must be a nonempty path string of at most 4096 characters without NUL.',
   items: 'Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.',
   start: 'Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure.',
+  change: 'Change updates existing task IDs only. Groups are not work: set a group status or change the item structure with revise.',
 } as const;
-function validRequest(value: unknown, hint: keyof typeof VALIDATION_HINTS): asserts value { if (!value) throw new ProgressError('invalid', undefined, VALIDATION_HINTS[hint]); }
+export function validRequest(value: unknown, hint: keyof typeof VALIDATION_HINTS): asserts value { if (!value) throw new ProgressError('invalid', undefined, VALIDATION_HINTS[hint]); }

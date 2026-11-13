@@ -15,7 +15,7 @@ import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
-import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
+import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 import { canonical } from './canonical.ts';
 export { canonical } from './canonical.ts';
@@ -497,7 +497,7 @@ export class Store {
           else need(actor.ancestry?.includes(p.sessionId),'assignment');
         }
         need(new Set(r.changes!.map(c => c.id)).size === r.changes!.length);
-        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); need(item?.kind === 'task'); item.status = c.status; item.reporterSessionId=actor.sessionId; annotate(item,c.blocker); }
+        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); validRequest(item?.kind === 'task','change'); item.status = c.status; item.reporterSessionId=actor.sessionId; annotate(item,c.blocker); }
         changed = r.changes!.map(c => c.id);
       }
       if (r.op === 'link') {
