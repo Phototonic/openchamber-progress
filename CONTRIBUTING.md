@@ -78,18 +78,7 @@ This is **not native GUI/OpenCode or host-installer certification**. The externa
 
 The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
-To avoid running each check twice, all three workflows skip their check jobs on
-pull requests whose head is this repository's `main` or `dev`: the push checks
-already validate that head commit. Feature branches and forks (even forks named
-`main` or `dev`) still receive PR checks against the proposed merge. Direct pushes
-to both branches retain all checks; `main` push publication is unchanged. For
-same-repository `main`/`dev` PRs this deliberately checks the head, not the PR's
-synthetic merge commit; the resulting merge is checked on its destination push.
-The duplicate PR workflow is still created, but its jobs do no work. GitHub
-reports job-condition skips as success, unlike a cancelled check or a workflow
-omitted by branch/path filters (which can leave required checks pending). Job and
-check names are unchanged. Before adding required checks, account for these
-successful skips: a skipped PR job is not evidence that its head's push passed.
+To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's `main` or `dev`: the push checks already validate that head commit. Feature branches and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. For same-repository `main`/`dev` PRs this deliberately checks the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow is still created, but its jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed.
 
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
 
@@ -97,14 +86,7 @@ Only `main` pushes can publish releases. A `dev` push runs portable checks but i
 
 Gitleaks checks pushes and pull requests to `main` and `dev` for secrets; its weekly scan re-checks the default branch's full history. CodeQL analyzes JavaScript and TypeScript on those same events for security problems without a build step. Dependabot checks GitHub Actions versions weekly and opens update PRs; npm/Bun version updates are not configured.
 
-The same duplicate-PR job conditions above apply to security scans; neither push
-nor weekly coverage is removed. CodeQL includes test drivers as well as shipped
-source, generated bundles and tooling. Data embedded in executable JavaScript
-must be encoded as a complete literal (use `javascriptLiteral` for code that may
-also appear in an HTML script element); do not wrap interpolated data in quotes.
-Deliberate executable test snippets are code, not data to sanitize. Test-only
-findings should be reviewed in that context, not dismissed by excluding shipped
-paths or broadly disabling queries.
+The same duplicate-PR job conditions above apply to security scans; neither push nor weekly coverage is removed. CodeQL includes test drivers as well as shipped source, generated bundles and tooling. Data embedded in executable JavaScript must be encoded as a complete literal (use `javascriptLiteral` for code that may also appear in an HTML script element); do not wrap interpolated data in quotes. Deliberate executable test snippets are code, not data to sanitize. Test-only findings should be reviewed in that context, not dismissed by excluding shipped paths or broadly disabling queries.
 
 If Gitleaks flags a synthetic test fixture, confirm it cannot be a real credential, then add a narrowly scoped allowlist in `.gitleaks.toml` with a comment naming the file and explaining why the value is synthetic. Never disable the scan or broadly exempt tests. Treat a potentially real credential as a security issue: do not publish it, and arrange private reporting and rotation rather than allowlisting it.
 
