@@ -38,7 +38,14 @@ export function searchMentions(store:Store,query:string,directory:string|null,al
 }
 
 /** Bounded complete current detail, without loopback HTTP/document/history/timing work. */
-export async function resolveMention(store:Store,key:string,alive:()=>boolean) {
+// The service reopens its Store per request, which closes the previous handle. Reacquire it for
+// every page instead of holding one across awaits; each page is still checked against the pinned identity.
+export async function resolveMention(source:Store|(()=>Store),key:string,alive:()=>boolean) {
+  const acquire=typeof source==='function'?source:()=>source;
+  const store={mentionDetail:(...args:Parameters<Store['mentionDetail']>)=>acquire().mentionDetail(...args)};
+  return resolveFrom(store,key,alive);
+}
+async function resolveFrom(store:Pick<Store,'mentionDetail'>,key:string,alive:()=>boolean) {
   const [source,id]=key.split('/'),deadline=performance.now()+MENTIONS_RESOLVE_TIMEOUT_MS-2000;
   let bytes=0,pinned:string|undefined;
   const check=()=>need(alive()&&performance.now()<deadline,'storage');

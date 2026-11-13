@@ -42,7 +42,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
         const search=url.pathname===MENTIONS_SEARCH_PATH,body=mentionBody(text,search?'search':'resolve');
         const active=setup?setup.current():{store,error:unavailableCode};if(!active.store)return answer(503,{error:active.error??'storage'});
         const alive=()=>!req.aborted&&!req.socket.destroyed&&!res.destroyed;
-        return answer(200,search?searchMentions(active.store,body.query as string,body.directory as string|null,alive):await resolveMention(active.store,body.id as string,alive));
+        // Resolve pages across awaits; take the current Store per page because a concurrent request may have reopened it.
+        let held:Store|undefined=active.store;
+        const acquire=()=>{const s=held??(setup?setup.current().store:store);held=undefined;if(!s)throw new ProgressError('storage');return s;};
+        return answer(200,search?searchMentions(active.store,body.query as string,body.directory as string|null,alive):await resolveMention(acquire,body.id as string,alive));
       }
       graphRoute=url.pathname==='/v1/plan-graph';
       if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});

@@ -1862,7 +1862,12 @@ function searchMentions(store, query, directory, alive) {
     return { id: `${p.sourceId}/${p.id}`, title: menuText(p.title) || p.id, subtitle: menuText([p.lifecycle, `${p.counts.done}/${p.counts.total} done`, source, read.limited ? "Limited search" : ""].filter(Boolean).join(" · ")) };
   }) };
 }
-async function resolveMention(store, key, alive) {
+async function resolveMention(source, key, alive) {
+  const acquire = typeof source === "function" ? source : () => source;
+  const store = { mentionDetail: (...args) => acquire().mentionDetail(...args) };
+  return resolveFrom(store, key, alive);
+}
+async function resolveFrom(store, key, alive) {
   const [source, id] = key.split("/"), deadline = performance.now() + MENTIONS_RESOLVE_TIMEOUT_MS - 2000;
   let bytes = 0, pinned;
   const check = () => requireProgress(alive() && performance.now() < deadline, "storage");
@@ -26906,7 +26911,15 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         if (!active2.store)
           return answer(503, { error: active2.error ?? "storage" });
         const alive = () => !req.aborted && !req.socket.destroyed && !res.destroyed;
-        return answer(200, search ? searchMentions(active2.store, body.query, body.directory, alive) : await resolveMention(active2.store, body.id, alive));
+        let held = active2.store;
+        const acquire = () => {
+          const s = held ?? (setup ? setup.current().store : store);
+          held = undefined;
+          if (!s)
+            throw new ProgressError("storage");
+          return s;
+        };
+        return answer(200, search ? searchMentions(active2.store, body.query, body.directory, alive) : await resolveMention(acquire, body.id, alive));
       }
       graphRoute = url2.pathname === "/v1/plan-graph";
       if (graphRoute && req.method !== "GET")

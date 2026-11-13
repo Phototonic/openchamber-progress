@@ -115,6 +115,22 @@ test('complete paging, changed identities, revision churn, partial contributions
   }finally{await s.stop();f.cleanup();}
 });
 
+test('resolve survives the service reopening its Store between pages, as concurrent requests do',async()=>{
+  const f=mentionFixture();f.seed('P','Paged',f.actor,Array.from({length:45},(_,n)=>({id:`T${n}`,title:`Task ${n}`,kind:'task',status:'pending'})));
+  for(let n=0;n<24;n++)f.apply('P',{op:'change',changes:[{id:'T0',status:n%2?'working':'pending'}]});
+  const expected=(await resolveMention(f.store,'source-alpha/P',()=>true)).text;
+  // Mirrors SetupController.current(): every request opens a fresh handle and closes the previous one.
+  let current:Store|undefined,opened=0;
+  const reopen=()=>{const next=new Store(f.store.file);next.bindReads(f.alpha.id,true);current?.close();current=next;opened++;return next;};
+  try{
+    const stale=reopen();
+    // Holding one handle across pages fails once another request has reopened the store.
+    const held=resolveMention(stale,'source-alpha/P',()=>true);reopen();await assert.rejects(held);
+    const before=opened,text=(await resolveMention(reopen,'source-alpha/P',()=>true)).text;
+    assert.equal(text,expected);assert(opened-before>1,'the paged read reacquired the store for later pages');
+  }finally{current?.close();f.cleanup();}
+});
+
 test('session lookup: owner, currently linked child, historical contributor, unrelated and source collision',async()=>{
   const f=mentionFixture();f.seed('P','Session fixture');
   f.apply('P',{op:'link',child:f.historical.sessionId,assign:['T']},f.actor,f.historical);
