@@ -63,7 +63,9 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
         await ctx.skill.transform(editor => editor.add({ id:Skill.ID.make('agent-progress'),name:Skill.Name.make('Agent progress'),description:'Mirror canonical plans and deliberate progress without replacing your planner.',path:Skill.Info.fields.path.make(fileURLToPath(new URL('./SKILL.md',import.meta.url))),content:GUIDANCE }));check();
         // Reuse the activation owner. Deliver its initial context even when the host
         // snapshots callbacks before this deferred registration was admitted.
-        deactivate=await registerActivation(ctx,b.source,()=>{try{guard();return store!.list({limit:1}).captureEnabled;}catch{return false;}},{
+        // Recurring guidance checks read only the capture control row, never plan snapshots.
+        const control=store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
+        deactivate=await registerActivation(ctx,b.source,()=>{try{guard();return control.get()?.enabled===1;}catch{return false;}},{
           storeId:b.storeId,read:request=>store!.resumePlans(request),
           identity:(sessionID,alive,signal)=>identity(sessionID,'unknown',{alive,signal}),
         },callback=>{firstContext=callback;});check();

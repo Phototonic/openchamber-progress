@@ -26,7 +26,18 @@ test('production hooks via2.1.4 adapter: agnostic recurring section, idempotence
     const c = context(); const original = { system: c.system[0], messages: c.messages, tools: c.tools, options: c.options };
     const mutation = t.mock.method(Store.prototype, 'apply', () => { throw new Error('hook mutated progress'); });
     const scans = ['list', 'get', 'detail', 'document'].map(name => t.mock.method(Store.prototype as any, name, () => { throw new Error('hook scanned plans'); }));
-    const reads = ['openSync', 'readSync', 'readFileSync', 'statSync', 'lstatSync', 'realpathSync'].map(name => t.mock.method(fs as any, name, () => { throw new Error('hook read document/filesystem'); }));
+    // Managed delivery revalidates its own private binding on every hook; that is allowed.
+    // Anything else, including the project's plan documents, must not be read.
+    const project = `${f.root}/project`, ownFds = new Set<number>(); let refused = 0;
+    const ownPath = (p: unknown) => { const s = p instanceof URL ? p.pathname : typeof p === 'string' ? p : ''; return s !== '' && !s.startsWith(project) && (s.startsWith(f.root) || f.root.startsWith(s + '/') || s === '/'); };
+    const reads = ['openSync', 'readSync', 'readFileSync', 'statSync', 'lstatSync', 'realpathSync'].map(name => {
+      const original = (fs as any)[name];
+      return t.mock.method(fs as any, name, (...args: any[]) => {
+        const allowed = name === 'readSync' ? ownFds.has(args[0]) : ownPath(args[0]);
+        if (!allowed) { refused++; throw new Error('hook read document/filesystem'); }
+        const result = original.apply(fs, args); if (name === 'openSync') ownFds.add(result); return result;
+      });
+    });
     syncBuiltinESMExports();
     try {
       await f.context(c); await f.context(c);
@@ -42,7 +53,7 @@ test('production hooks via2.1.4 adapter: agnostic recurring section, idempotence
       await f.after(edit); assert.equal(hint(await next(f)), true, 'edit uses only path/success metadata');
       await f.after(dispatchEvent()); await f.after(trackerEvent('save_issue')); await f.after(trackerEvent('save_comment'));
       assert.equal(proxyHint(await next(f)), true, 'proxy path runs under the same no-mutation/scan/read guards');
-      assert.equal(mutation.mock.callCount(), 0); for (const scan of scans) assert.equal(scan.mock.callCount(), 0); for (const read of reads) assert.equal(read.mock.callCount(), 0);
+      assert.equal(mutation.mock.callCount(), 0); for (const scan of scans) assert.equal(scan.mock.callCount(), 0); assert.equal(refused, 0, 'hooks read nothing outside their own private binding'); void reads;
       assert.equal(f.permissions.length, 0);
     } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
     assert.deepEqual(f.store.get(f.binding.source.id, 'existing'), before);

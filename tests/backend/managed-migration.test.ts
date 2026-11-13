@@ -152,6 +152,8 @@ test('a half-removed legacy package remains capture-off and cannot turn pending 
     mock.mock.restore();syncBuiltinESMExports();
     assert.equal(f.store.list().captureEnabled,false);assert.equal(readMigration(f.env)!.phase,'pending');assert.equal(readManagedBinding(f.env),undefined);
     const remaining=fs.readdirSync(f.legacyRoot).sort();assert.equal(f.setup.status().delivery!.migration,'conflict');
+    // Removal deletes the loader entry first, so a fresh OpenCode start finds nothing loadable.
+    assert.equal(remaining.includes('index.js'),false,'half-removed legacy package has no loadable entry');
     assert.throws(()=>f.review(),/managed-migration-conflict/);
     assert.deepEqual(fs.readdirSync(f.legacyRoot).sort(),remaining,'no repair, deletion or global-loader restoration');
     assert.equal(f.store.get(f.legacy.source.id,'P-history')!.revision,1);

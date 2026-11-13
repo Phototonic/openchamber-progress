@@ -28928,10 +28928,11 @@ async function setupCompanion(ctx, read, managed) {
         };
         await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
         check2();
+        const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
         deactivate = await registerActivation(ctx, b.source, () => {
           try {
             guard();
-            return store.list({ limit: 1 }).captureEnabled;
+            return control.get()?.enabled === 1;
           } catch {
             return false;
           }
