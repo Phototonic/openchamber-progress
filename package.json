@@ -1,16 +1,26 @@
 {
   "name": "openchamber-agent-progress-probe",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",
   "openchamber": {
     "apiVersion": 1,
-    "engines": { "openchamber": ">=2.5.1" },
+    "engines": { "openchamber": ">=2.7.1" },
     "contributes": {
+      "opencodePlugin": "build/companion",
+      "tools": [
+        { "match": "agent_progress_report", "name": "Agent progress report", "icon": "list-check-2", "output": "text" }
+      ],
       "panel": { "id": "agent-progress-probe", "name": "Agent progress", "icon": "checkbox-circle", "entry": "ui/panel/index.html" },
       "statusSection": { "entry": "ui/status/index.html", "title": "Agent progress", "height": 160 },
       "page": { "entry": "ui/page/index.html", "title": "Agent progress" },
+      "background": { "entry": "background/index.html" },
+      "actions": [
+        { "id": "insert-handoff", "label": "Insert handoff", "where": "session", "mode": "background" },
+        { "id": "insert-progress-update", "label": "Insert progress update", "where": "session", "mode": "background" }
+      ],
+      "mentions": { "label": "Agent progress" },
       "attach": false,
       "capabilities": ["sessions"],
       "service": { "entry": "build/service/main.js", "runtime": "host", "permissions": {} }

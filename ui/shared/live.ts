@@ -3,6 +3,7 @@
 import type { HostClient } from '@openchamber/sdk';
 import { directoryWithin } from './model.ts';
 import { directoryKey } from './path.ts';
+import type { InterfaceLanguage } from './i18n.ts';
 
 // Mirrors of the SDK workspace types (not re-exported from the package entry).
 export type LoadState = 'loading' | 'ready' | 'error';
@@ -116,13 +117,22 @@ export const ACTIVITY_TONE: Record<Activity, 'info' | 'warning' | 'neutral'> = {
   running: 'info', retrying: 'warning', 'waiting-permission': 'warning', 'waiting-question': 'warning', idle: 'neutral', unknown: 'neutral',
 };
 
+const LIVE_TEXT = {
+  en: { activity: ACTIVITY_LABEL, checking: 'Checking…', unavailable: 'Live state unavailable', notOpen: 'Not open in this window', session: (id: string) => `Session ${id}` },
+  ru: {
+    activity: { running: 'Работает', retrying: 'Повторяет попытку', 'waiting-permission': 'Ожидает разрешения', 'waiting-question': 'Ожидает ответа', idle: 'Бездействует', unknown: 'Состояние неизвестно' },
+    checking: 'Проверка…', unavailable: 'Текущее состояние недоступно', notOpen: 'Не открыта в этом окне', session: (id: string) => `Сессия ${id}`,
+  },
+} satisfies Record<InterfaceLanguage, { activity: Record<Activity, string>; checking: string; unavailable: string; notOpen: string; session: (id: string) => string }>;
+
 /** Plain-language live state for a session, distinct from task progress. */
-export function liveLabel(c: Coverage): { label: string; tone: 'info' | 'warning' | 'neutral'; activity?: Activity } {
-  if (c.kind === 'live') return { label: ACTIVITY_LABEL[c.session.activity], tone: ACTIVITY_TONE[c.session.activity], activity: c.session.activity };
-  if (c.kind === 'loading') return { label: 'Checking…', tone: 'neutral' };
-  if (c.kind === 'error') return { label: 'Live state unavailable', tone: 'neutral' };
-  if (c.kind === 'untracked') return { label: 'Live state unavailable', tone: 'neutral' };
-  return { label: 'Not open in this window', tone: 'neutral' };
+export function liveLabel(c: Coverage, locale: InterfaceLanguage = 'en'): { label: string; tone: 'info' | 'warning' | 'neutral'; activity?: Activity } {
+  const text = LIVE_TEXT[locale];
+  if (c.kind === 'live') return { label: text.activity[c.session.activity], tone: ACTIVITY_TONE[c.session.activity], activity: c.session.activity };
+  if (c.kind === 'loading') return { label: text.checking, tone: 'neutral' };
+  if (c.kind === 'error') return { label: text.unavailable, tone: 'neutral' };
+  if (c.kind === 'untracked') return { label: text.unavailable, tone: 'neutral' };
+  return { label: text.notOpen, tone: 'neutral' };
 }
 
 const ACTIVE = new Set<Activity>(['running', 'retrying', 'waiting-permission', 'waiting-question']);
@@ -333,9 +343,9 @@ export class LiveWorkspace {
 }
 
 /** A short, stable label for a session id when the host has no title for it. */
-export function sessionLabel(id: string, snap: LiveSnapshot) {
+export function sessionLabel(id: string, snap: LiveSnapshot, locale: InterfaceLanguage = 'en') {
   const s = findSession(id, snap);
   if (s?.title) return s.title;
   const short = id.length > 10 ? `…${id.slice(-6)}` : id;
-  return `Session ${short}`;
+  return LIVE_TEXT[locale].session(short);
 }

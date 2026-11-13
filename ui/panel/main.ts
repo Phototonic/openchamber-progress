@@ -1,9 +1,9 @@
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, loadingBlock, planDetail, planPicker, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
-import { LIFECYCLE_LABEL, summarize, type PlanView } from '../shared/model.ts';
+import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
+import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
+import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
-import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
@@ -12,10 +12,15 @@ import { planProject } from '../shared/live.ts';
 import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { warningLine } from '../shared/primitives.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
+import { railPlanKey as storeKey } from '../shared/plan-selection.ts';
+
+const messages = {
+  en: { heading: 'Agent progress', noSession: 'No session selected', openProgress: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', connect: 'Connect it to your OpenCode setup to start showing plans.', capture: 'Capture is off, so no new progress is being recorded.', openPlan: 'Open a session to see the plan its agent reported.', noPlan: 'No plan reported for this session', appears: 'When an agent in this session reports a plan, its progress appears here.', about: 'About this plan', contribution: (name: string) => `This session contributes to a plan from ${name}.`, details: 'Details', truncated: 'Some older plans were not loaded.', watched: 'Live sessions watched', helping: 'helping · ' },
+  ru: { heading: 'Прогресс агента', noSession: 'Сессия не выбрана', openProgress: 'Откройте сессию, чтобы увидеть её отчёты о прогрессе.', setup: 'Прогресс агента ещё не настроен', connect: 'Подключите его к вашей установке OpenCode, чтобы видеть планы.', capture: 'Запись отключена: новый прогресс не сохраняется.', openPlan: 'Откройте сессию, чтобы увидеть план из отчёта её агента.', noPlan: 'В этой сессии нет отчёта о плане', appears: 'Когда агент этой сессии сообщит о плане, здесь появится его прогресс.', about: 'Об этом плане', contribution: (name: string) => `Эта сессия участвует в плане сессии ${name}.`, details: 'Подробности', truncated: 'Некоторые старые планы не загружены.', watched: 'Отслеживаемые живые сессии', helping: 'участие · ' },
+} satisfies Record<InterfaceLanguage, Record<string, string | ((name: string) => string)>>;
 
 /** `presentation`: Plan view List (default) or Map, in this frame only; never stored. */
 type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map' };
-const storeKey = (sessionId: string) => `rail-plan:${sessionId}`;
 // Recent sessions' chosen plan, so a remembered session repaints with its own selection at once
 // (host storage stays the durable copy and is still read on every switch).
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
@@ -85,39 +90,36 @@ startView<Ui>({
   },
   paint(root, vc) {
     const { read, failure, env } = vc;
+    const language = resolveLanguage('auto', env.locale), t = messages[language];
     // Map work belongs to the selected session's reading of its plan, and runs only while Map is shown.
     const shown = current(vc), session = vc.session?.id;
     const mapShown = vc.ui.presentation === 'map' && !!shown && !!session;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
-    root.append(el('h1', 'ap-sr', 'Agent progress'));
+    root.append(el('h1', 'ap-sr', t.heading));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
-    // The official-main notice does not depend on companion setup or the store.
-    const official = officialMainBlock(vc);
     if (!read) {
-      if (!vc.session?.id) root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.'));
-      if (failure) root.append(failureBlock(failure, retryRead(vc)));
+      if (!vc.session?.id) root.append(emptyBlock('unscoped-state', t.noSession, t.openProgress));
+      if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
       else if (vc.health && !vc.health.ready) {
-        if (official) root.append(official);
-        root.append(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Connect it to your OpenCode setup to start showing plans.', true));
+        root.append(emptyBlock('setup-needed', t.setup, t.connect, true));
         root.append(setupBlock(vc, { compact: true }));
-      } else if (vc.session?.id) root.append(loadingBlock());
-      else if (official) root.append(official);
+      } else if (vc.session?.id) root.append(loadingBlock(env.locale));
+      root.append(languageBlock(vc.language, env.locale));
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
-    if (official) root.append(official);
-    if (!read.captureEnabled) root.append(testid(warningLine('Capture is off, so no new progress is being recorded.'), 'capture-off'));
+    if (!read.captureEnabled) root.append(testid(warningLine(t.capture), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).
     const verified = !!shown && !!session && read.binding.verified && shown.sourceId === env.boundSource;
     const runRequest = shown && session ? runClaim(read, session, shown) : null;
     const runs = runRequest && verified ? vc.runs(runRequest) : null;
     if (scope.kind === 'none') {
-      root.append(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see the plan its agent reported.'));
+      root.append(emptyBlock('unscoped-state', t.noSession, t.openPlan));
     } else if (!scope.plans.length) {
-      root.append(emptyBlock('empty-state', 'No plan reported for this session', 'When an agent in this session reports a plan, its progress appears here.'));
+      root.append(emptyBlock('empty-state', t.noPlan, t.appears));
     } else {
       const generation = selectionGeneration;
       const plan = pickPlan(scope.plans, vc.ui.selected);
@@ -127,14 +129,14 @@ startView<Ui>({
         selectionGeneration++; // a manual choice also retires a pending preference restore
         vc.setUi({ selected: key });
         if (vc.session) { recentSelection.set(vc.session.id, key); void vc.storage.set(storeKey(vc.session.id), key).catch(() => {}); }
-      }) : null;
+      }, language) : null;
       // Plan view: List / Map, first (also with one plan), like the board's tabs above its detail.
       // D8 wiring (S2-H): the pressed view comes from the frame's default-view decision, and this
       // activation records the explicit choice (including re-pressing the provisional List).
-      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }));
+      if (plan && session) root.append(planViewSwitch(vc.ui.presentation, (mode) => { if (mode === 'map') railMap.enter(); else railMap.leave(); chooseView(vc, mode); }, language));
       // Contribution context, not ownership: behind the header's ⓘ.
       const helping = plan && scope.kind === 'session' && plan.ownerSessionId !== scope.sessionId
-        ? info(`${plan.key}|helping`, 'About this plan', testid(el('p', '', `This session contributes to a plan from ${recordedLabel(plan, env)(plan.ownerSessionId)}.`), 'helping-note')) : null;
+        ? info(`${plan.key}|helping`, t.about, testid(el('p', '', t.contribution(recordedLabel(plan, env)(plan.ownerSessionId))), 'helping-note')) : null;
       if (plan && mapShown && session) {
         // The map keeps its own header and title; the compact picker stays above it.
         const pick = choose?.(true);
@@ -149,14 +151,14 @@ startView<Ui>({
         // only the loading placeholder paints (no complete rows) until List or Map is settled.
         const article = planDetail(plan, env, hooks(vc, plan), {
           document: 'disclosure', compareSession: scope.kind === 'session' ? scope.sessionId : null, reading: vc.reading,
-          picker: choose?.() ?? null, info: helping, actions: [{ id: 'details', label: 'Details', run: openDetails }],
+          picker: choose?.() ?? null, info: helping, actions: [{ id: 'details', label: t.details, run: openDetails }],
           pending: viewChoice.current.pending,
         });
         // An explicit task focus/reveal or pointer selection here is what Map opens on.
         railMap.listTargets(article);
         root.append(article, cleanupBlock(vc, plan));
       }
-      if (read.truncated) root.append(el('p', 'ap-note', 'Some older plans were not loaded.'));
+      if (read.truncated) root.append(el('p', 'ap-note', t.truncated));
     }
     // Sub-agents of the selected session, only with a plan in scope, kept apart from the plan above.
     if (shown && session && verified) {
@@ -166,7 +168,8 @@ startView<Ui>({
       });
       if (census) root.append(census);
     }
-    root.append(detailsBlock(read, current(vc), [['Live sessions watched', String(vc.sessionSubscriptions)], ...failureFacts(failure)], env));
+    root.append(detailsBlock(read, current(vc), [[t.watched, String(vc.sessionSubscriptions)], ...failureFacts(failure, env.locale)], env));
+    root.append(languageBlock(vc.language, env.locale));
   },
 });
 
@@ -196,13 +199,13 @@ function openDetails() {
 }
 
 /** The title-picker: every scoped plan with its done/total or lifecycle, and the helping role. */
-function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void) {
+function picker(plans: PlanView[], current: PlanView, sessionId: string | null, standalone: boolean, onChange: (key: string) => void, language: InterfaceLanguage) {
   return planPicker({
-    title: current.title, index: plans.indexOf(current) + 1, count: plans.length, value: current.key, standalone,
+    title: current.title, index: plans.indexOf(current) + 1, count: plans.length, value: current.key, standalone, locale: language,
     options: plans.map((p) => {
       const s = summarize(p);
-      const role = sessionId && p.ownerSessionId !== sessionId ? 'helping · ' : '';
-      return { id: p.key, label: p.title, hint: `${role}${p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : '—') : LIFECYCLE_LABEL[p.lifecycle]}` };
+      const role = sessionId && p.ownerSessionId !== sessionId ? messages[language].helping : '';
+      return { id: p.key, label: p.title, hint: `${role}${p.lifecycle === 'active' ? (s.total ? `${s.done}/${s.total}` : '—') : lifecycleLabel(p.lifecycle, language)}` };
     }),
     onChange,
   });

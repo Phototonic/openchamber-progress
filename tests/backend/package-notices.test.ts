@@ -16,7 +16,7 @@ function put(root:string,name:string,value:string|Buffer) {
 function fixture(kind:'extension'|'companion') {
   const root=mkdtempSync('/tmp/opencode/package-notices-');
   const source=path.join(root,'source');const artifact=path.join(source,`build/artifacts/agent-progress-${kind}-${RELEASE}`);
-  const entries=['package.json','docs/setup.md',...notices,'build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js',...(kind==='extension'?['build/service/main.js',...['panel','status','page'].flatMap(view=>[`ui/${view}/index.html`,`ui/${view}/main.js`])]:[])];
+  const entries=['package.json','docs/setup.md',...notices,'build/companion/index.js','build/companion/package.json','build/companion/SKILL.md','build/setup/main.js',...(kind==='extension'?['build/service/main.js','background/index.html','background/main.js',...['panel','status','page'].flatMap(view=>[`ui/${view}/index.html`,`ui/${view}/main.js`])]:[])];
   for(const entry of entries) {
     const content=notices.includes(entry)?readFileSync(path.join(repository,entry)):entry==='package.json'?JSON.stringify({version:RELEASE,license:'MIT'}):'synthetic package fixture\n';
     put(source,entry,content);put(artifact,entry,content);
@@ -102,5 +102,20 @@ test('verifier CLI rejects a damaged input before its automatic reassembly can h
     const result=spawnSync(process.execPath,['--experimental-strip-types',path.join(repository,'scripts/verify-package.ts')],{cwd:f.source,encoding:'utf8',timeout:15000});
     assert.notEqual(result.status,0);assert.match(result.stderr,/declared payload/);
     assert.equal(existsSync(path.join(f.source,'reassembled-marker')),false,'reassembly must not run before preflight');
+  }finally{f.cleanup();}
+});
+
+test('background HTML and classic script are required in both folder and ZIP',()=>{
+  const f=fixture('extension');try{
+    for(const entry of ['background/index.html','background/main.js']) {
+      const bytes=readFileSync(path.join(f.artifact,entry));
+      rmSync(path.join(f.artifact,entry));
+      assert.throws(()=>verifyPackageContents(f.artifact,'extension',f.source),/declared payload/);
+      put(f.artifact,entry,bytes);
+      f.zip();
+      assert.equal(spawnSync('zip',['-q','-d',`${f.artifact}.zip`,entry]).status,0);
+      assert.throws(()=>verifyPackageContents(f.artifact,'extension',f.source),/ZIP entry allowlist/);
+      f.zip();
+    }
   }finally{f.cleanup();}
 });

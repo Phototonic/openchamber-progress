@@ -174,7 +174,85 @@ millisecond thresholds. Local evidence: `evidence/plan-task-search/backend.md` a
 `api.json`. This backend proof does not establish native Windows, browser rendering,
 host account isolation, long-session memory behavior or a release/install result.
 
+## Plan mentions and composer summaries
+
+`Store.mentionCandidates` owns bounded discovery in the existing read transaction;
+`Store.mentionDetail` owns snapshot-admitted detail without service timing.
+`service/mentions.ts` owns matching, locality/lifecycle/recency ranking, SDK row
+limits and complete resolution assembly. The pure `shared/summary.ts` and shared
+readiness owner serve previews, mentions and background actions alike; the backend
+imports no UI runtime. See [the composer contract](contracts.md#plan-composer-handoff-revision-1).
+
+Search seeks binary plan/session keys with at most **512 plan slots and 512 session
+slots**, **1 MiB per snapshot / 16 MiB cumulative** admission in SQL before text
+materialization, and validation of at most 1,000 items per snapshot. A **500 ms
+cooperative** monotonic budget and disconnect checkpoints stop further steps;
+SQLite's existing busy ceiling is separate, not a hard latency guarantee. Only
+unambiguous verified bound-source directory records establish project locality.
+
+Resolve permits **120 pages per attempt, three revision restarts, 16 MiB cumulative
+detail and an 8-second cooperative deadline**, checked between awaited pages.
+Store, binding, source/key, revision, cleanup and complete items/contributions
+must agree. Missing/archived/deleted or incomplete targets refuse. No document,
+history or timing reads, schema changes, cache, new Store lifetime or mutation are
+introduced. Background actions reuse existing guest scoped-list/detail readers.
+
+Focused proof (synthetic SQLite and real authenticated HTTP):
+
+```sh
+EVIDENCE=.slim/evidence/plan-mention-handoff/service timeout 240 node --experimental-strip-types --test tests/backend/plan-mentions-service.test.ts tests/backend/production-service.test.ts tests/backend/plan-task-search-service.test.ts
+timeout 180 node --experimental-strip-types --test tests/backend/composer-summary.test.ts tests/browser/session-handoff.test.ts
+```
+
+The fixture measures cold and warmed searches across 450 plans / 1,700 tasks,
+20 sequential representative queries and two bursts of four concurrent queries.
+Its sanitized `performance.json` records measured work and latency. Local acceptance
+requires warm p95 below one second and representative requests below two seconds
+to reserve host/UI headroom, not as a product SLA or certification of every machine.
+On Linux / Node 24.22.2, the integration run measured warm p95 **11.23 ms**, maximum
+**33.03 ms** including concurrent bursts, and cold first request **10.74 ms**;
+450 plan slots, 150 session slots and 347,757 admitted bytes were observed.
+Host/distribution coverage is separate in [compatibility](compatibility.md).
+
 ## Components and trust boundaries
+
+### Managed delivery authority
+
+The host delivers `build/companion` after plugin approval; it does not authorize
+data selection. Service and companion share `shared/managed-binding.ts` discovery
+under the canonical XDG data/HOME OpenCode root, in the private marked
+`agent-progress-managed` directory. Invalid explicit config/data XDG or private binding state fails closed;
+state-root/env binding overrides, package siblings and legacy selectors are not
+fallbacks. Reads/dormant load create no binding, marker or store. Confirmed
+configuration alone persists a verified private Store/source selection. Existing
+ownership, canonical-path, marker, mode/ACL and schema boundaries remain enforced.
+
+Dormant/coalesced activation retries only at eligible native context/report
+boundaries, not a timer/watcher/probe. An active generation pins verified identity;
+changed binding retires it, not a silent store switch. Disposal retires authority
+synchronously before awaited teardown and rechecks held initialization/report work
+after awaits, before mutation. Held permission work cannot append late reports or
+captures; this does not guarantee graceful session completion.
+
+The service writes expected shipped bytes/version/binding fingerprints to owned
+private Store-directory metadata once per admitted package generation, not on each
+GET and not in a new SQLite schema. The companion's successful loaded observation
+uses actual runtime release identity. Unknown, not observed, matching and different
+are separate; mismatch warns only. Fingerprints are observational, explicitly
+weaker than legacy private hash-attested payloads, not publisher signatures or
+proof of cached execution. Host folders/ZIP umask and update gaps remain host trust
+boundaries. The service has no plugin inventory/RPC authority from its read-only
+OpenCode provider permission.
+
+Legacy migration reuses complete ownership/Store validation and `remove-capture`:
+expectation feasibility/persistence, disable, verified removal, durable same-target
+binding, then enable.
+Retained history/IDs and cleanup fences are not reset. Interrupted removal may
+leave incomplete ownership and a conflict needing separately authorized manual
+cleanup; crash-retained configuration locks stay busy until manual recovery.
+See [Setup](setup.md) for mode-qualified lifecycle/reach, migration and rollback.
+
+### Existing reporting and storage owners
 
 - plugin/index.ts registers one namespaced codemode:false report tool and inline
   skill. It gets actual caller IDs/agent from invocation context and refreshes
@@ -212,7 +290,9 @@ V2.1.2 permission.assert docs (Context7), plus file/permission regression tests.
 The SDK supplies authorization, not an atomic file reader; the opened-target
 checks are our enforcement boundary. Strict capture supports Linux and native Windows; other
 platforms return unavailable before reading. No cross-host/container/NFS support
-is claimed. Actual plugin/runtime tests use independent OpenCode2.1.4, no models.
+is claimed. Historical plugin/runtime tests used independent OpenCode2.1.4, no
+models. Current managed web/native-backend evidence uses independent 2.2.7; see
+the [compatibility scopes](compatibility.md#managed-companion-acceptance).
 
 ## Identity, attribution and finish
 
@@ -629,52 +709,32 @@ Portable CI/package checks are separate from native-host certification. The full
 subagent/desktop family outside this capsule fix. Passing focused and portable
 checks do not waive or certify that family, installation or a release.
 
-### Official-main metadata checker
+### Retired official-main compatibility route
 
-`service/extension-updates.ts` owns one in-memory checker/cache per service
-generation. `GET /v1/extension-update` runs behind existing bearer validation and
-before SetupController/store lookup, so unconfigured/failed capture is independent.
-It requests exactly GitHub Contents
-`https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main`
-with raw-file Accept, fixed User-Agent, omitted credentials and manual redirects.
-No auth/cookie/header forwarding, environment/feed override, guest URL/ref, private
-host API, installer, artifact download or GitHub Release lookup exists.
+`GET /v1/extension-update` remains authenticated, body/query-free and no-store,
+before SetupController/store lookup. For at least the next delivered release it
+returns the existing DTO with service RELEASE, unchanged repository/ref,
+unknown/unavailable, null checkedAt, false stale and no candidate. Its finite ISO
+nextCheckAt is one hour after response construction: compatibility backoff for old
+guests, not a scheduled check. See [the contract](contracts.md#retired-official-main-compatibility-route-revision-1).
 
-The existing SDK parseManifestJson validates the manifest, followed by expected
-panel identity agent-progress-probe, declared panel/page/status/service and strict
-semver validation. SDK shorthand page/status declarations remain valid. Numeric
-components and prerelease identifiers use SemVer ordering; build metadata is
-neutral. Only a higher official-main version is available. This is a metadata
-advertisement, not verification of runtime artifacts or actual install provenance.
-The separate pre-main artifact/host gates must reject a manifest-only release.
-
-One shared in-flight request,5s full header/body deadline,64KiB accepted response,
-1h success TTL,5min failure cooldown with longer valid Retry-After/rate-reset
-deadlines. Conditional ETag requests use only bounded validated header text and
-matching cached manifest knowledge. A304 without that knowledge (or with a
-contradictory ETag) fails unknown/stale, never fabricates success. Failures retain
-validated candidate/state and last success with stale=true. All diagnostics are
-fixed strings; raw upstream bodies/errors are never returned or logged. No disk
-cache. Service close aborts owned outbound HTTP before waiting for request drain;
-timeout and shutdown clear the bounded timer. There is no background daemon or
-check when no frame asks. Internal constructor transport/clock/timeout seams are
-only test construction, not production HTTP/environment configuration.
-
-Frozen DTO/lifecycle meaning: docs/contracts.md. Focused metadata checks:
+The former network checker, transport seams, cache, ETag, timeout and shutdown
+machinery are removed. Startup, reads and shutdown perform no outbound metadata
+work and no persistent write. Current guests never request this route or touch
+its former dismissal preference. The host owns source-aware discovery and explicit
+updates; Setup/Reporting health retain independent local load observations and
+legacy recovery safety boundaries. Focused source checks:
 
 ```sh
 bun run typecheck
 node --experimental-strip-types --test tests/backend/extension-updates.test.ts
 ```
 
-Tests use real authenticated service HTTP plus real loopback metadata HTTP, with
-logical fixed-target assertions and no live GitHub/private authentication. They
-cover coalescing/cache/ETag/provider failure, validation/semver, bounded redirects/
-body/deadline/shutdown, store independence and unchanged fixture selection/config/
-DB bytes. Local evidence: evidence/release-checks-live-status/updates-http.txt.
-An ignored runnable loopback-only fixture includes companion/setup siblings for UI
-integration. No current installed companion or real setup roots are touched.
-Final stable-input package/Git-distribution checks are separate validation.
+Tests use authenticated loopback service HTTP, synthetic stores and blocked
+outbound transports. They cover refusals, concurrent/repeated calls, unavailable
+stores, backoff and unchanged persistent bytes. Mixed-version tests load unchanged
+pre-retirement parser/notice source. These are source-level proofs, not final
+built-package or native-host/browser acceptance; those remain separate gates.
 
 ### Reported-working interval reader
 
@@ -718,7 +778,10 @@ The ignored isolated service fixture includes copied companion/setup siblings.
 This is not final package/distribution or browser validation; those require a
 stable-input build and companion byte-identity check.
 
-### Companion comparison / frozen setup UI seam
+### Legacy companion comparison / historical setup UI seam
+
+This subsection and the next describe retained legacy/test-injected controllers,
+not production managed selection, per-companion updates or immutable managed code.
 
 `SetupRead.update?: CompanionUpdateRead` is additive on existing setup status
 reads and mutating action replies (see docs/contracts.md). SetupController uses
@@ -745,7 +808,7 @@ read-only service. These checks are not package/release validation. Reported rea
 use of0.2.4 had no issues, without establishing the earlier slowdown's cause.
 No real-user operation is part of these fixture checks.
 
-### Host-side setup suggestions / frozen setup UI seam
+### Legacy host-side setup suggestions / historical setup UI seam
 
 `shared/progress.ts` adds Suggestion/SetupSuggestions and optional
 SetupRead.suggestions, populated only by existing GET /v1/setup while unconfigured

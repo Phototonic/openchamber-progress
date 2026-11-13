@@ -14,6 +14,7 @@ import * as summaries from '../../ui/shared/summary.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import * as digestModule from '../../ui/shared/change-digest.ts';
 import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
@@ -65,6 +66,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
@@ -138,6 +140,41 @@ async function withBackend(library: boolean, body: (b: Backend, svc: SearchProxy
   try { await body(b, searchProxy(b)); } finally { await b.stop(); }
 }
 const since = (svc: SearchProxy, mark: number) => svc.log.slice(mark).map((l) => l.path);
+
+test('managed deferred load observation refreshes on existing list and search freshness cadence',async()=>{
+  await withBackend(false,async(_b,svc)=>{
+    let observation='not-observed',calls=0;
+    const proxy={...svc,serviceRequest:async(q:GuestRequest)=>q.path==='/v1/setup'?
+      (calls++,{status:200,body:JSON.stringify({configured:true,installed:false,verified:true,separateLifecycle:false,activation:'unknown',diagnostics:[],delivery:{kind:'managed',revision:1,configuration:'configured',migration:'none',mode:'unknown',observation,expectedVersion:'1.1.1'}})}):svc.serviceRequest(q)} as SearchProxy;
+    const a=frame(proxy);try{
+      await a.loaded();await until(()=>a.vc.setup?.state==='ready','initial managed setup');
+      observation='matching';let before=calls;await a.poll();
+      await until(()=>a.vc.setup?.state==='ready'&&a.vc.setup.value.delivery?.observation==='matching','deferred load visible');
+      assert.equal(calls-before,1);
+      await a.submit({q:'export csv'});observation='different';before=calls;await a.poll();
+      await until(()=>a.vc.setup?.state==='ready'&&a.vc.setup.value.delivery?.observation==='different','freshness load visible');
+      assert.equal(calls-before,1);
+    }finally{a.stop();}
+  });
+});
+
+test('health readiness adopts identity before replacement setup read and retires held old reply',async()=>{
+  await withBackend(false,async(_b,svc)=>{
+    let ready=false,calls=0;const held=deferred<void>();
+    const reply=(configured:boolean)=>({status:200,body:JSON.stringify({configured,installed:false,verified:configured,separateLifecycle:false,activation:'unknown',diagnostics:[]})});
+    const proxy={...svc,serviceRequest:async(q:GuestRequest)=>{
+      if(q.path==='/health'&&!ready){const r=await svc.serviceRequest(q);return {...r,body:JSON.stringify({...JSON.parse(r.body),ready:false})};}
+      if(q.path==='/v1/setup'){calls++;if(calls===1){await held.promise;return reply(false);}return reply(true);}
+      return svc.serviceRequest(q);
+    }} as SearchProxy;
+    const a=frame(proxy);try{
+      await until(()=>calls===1&&a.vc.health?.ready===false,'unconfigured held setup');
+      ready=true;await a.poll();await a.loaded();held.resolve();
+      await until(()=>a.vc.setup?.state==='ready'&&a.vc.setup.value.configured,'replacement setup after identity adoption');
+      assert.equal(calls,2);assert.ok(a.vc.identity);
+    }finally{held.resolve();a.stop();}
+  });
+});
 
 test('visibility refresh before host ready does not construct a context or notify consumers', async () => {
   await withBackend(false, async (_b, svc) => {

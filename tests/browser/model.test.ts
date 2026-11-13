@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as labels from '../../ui/shared/model.ts';
+import { sessionLabel } from '../../ui/shared/live.ts';
+import { searchFilterOptions } from '../../ui/shared/scope.ts';
 import type { GuestRequest } from '@openchamber/sdk';
 import { countItems } from '../../shared/progress.ts';
-import { parseExtensionUpdate, parseHealth, parsePlanPage, parsePlansPage, parseSetup, parseTiming, setupBody } from '../../ui/shared/adapter.ts';
+import { parseHealth, parsePlanPage, parsePlansPage, parseSetup, parseTiming, setupBody } from '../../ui/shared/adapter.ts';
 import { elapsedText, relativeAge } from '../../ui/shared/format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, LiveWorkspace, type LiveSession, type LiveSnapshot } from '../../ui/shared/live.ts';
 import { currentWork, elapsedAt, itemTree, participants, showsLiveness, summarize, summaryText, type PlanDetail } from '../../ui/shared/model.ts';
@@ -10,9 +13,13 @@ import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
 import { CSS } from '../../ui/shared/style.ts';
 import { MAP_CSS } from '../../ui/shared/dependency-map-style.ts';
-import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
-import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
-import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
+import { classify, readDetail, readDocument, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
+import { oldUpdateModule } from '../fixtures/pre-retirement-updates.ts';
+// Historical consumer behavior only; none of these owners ship in current guests.
+const { parseExtensionUpdate } = oldUpdateModule('adapter.ts');
+const { readExtensionUpdate } = oldUpdateModule('source.ts');
+const { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } = oldUpdateModule('official.ts');
+const { OFFICIAL_MAIN_URL } = oldUpdateModule('config.ts');
 import { absoluteSetupPath, applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
   DOCUMENT_TEXT, envelope, HEALTH, HEALTH_UNCONFIGURED, NOW, OTHER_SRC, P1, P1_ITEMS, P2, P3, planPage, plansPage, RELAY, S, setupRead, SRC, summary, X1,
@@ -24,6 +31,65 @@ const detailOf = (): PlanDetail => {
   const d = parsePlanPage(JSON.stringify(planPage(P1, P1_ITEMS, [RELAY])));
   return { key: d.plan.key, revision: d.plan.revision, items: d.items.data, contributions: d.contributions.data, links: d.links };
 };
+
+test('pure presentation labels use explicit Russian without changing English or user text', () => {
+  assert.deepEqual(['pending', 'working', 'blocked', 'done', 'skipped'].map(s => labels.statusLabel(s as labels.ItemStatus, 'ru')), ['Ожидает', 'В работе', 'Заблокировано', 'Выполнено', 'Пропущено']);
+  assert.deepEqual(['active', 'completed', 'cancelled', 'failed'].map(s => labels.lifecycleLabel(s as labels.Lifecycle, 'ru')), ['В работе', 'Завершён', 'Отменён', 'Ошибка']);
+  for (const state of Object.keys(labels.DOCUMENT_STATE_TEXT) as labels.DocumentState[]) {
+    assert.equal(labels.documentStateText(state), labels.DOCUMENT_STATE_TEXT[state]);
+    if (state !== 'captured') assert.notEqual(labels.documentStateText(state, 'ru'), labels.DOCUMENT_STATE_TEXT[state]);
+  }
+  assert.equal(labels.documentStateText('captured', 'ru'), '');
+  assert.equal(labels.statusLabel('done'), labels.STATUS_LABEL.done);
+  assert.equal(labels.lifecycleLabel('completed'), labels.LIFECYCLE_LABEL.completed);
+  for (const n of [0, 1, 2, 5, 11, 21]) {
+    assert.equal(summaryText({ done: 0, total: n, remaining: n, skipped: 0 }, 'ru'), n ? `Выполнено: 0 из ${n} · Осталось: ${n}` : 'Нет зарегистрированных задач');
+  }
+  assert.equal(summaryText({ done: 0, total: 0, remaining: 0, skipped: 2 }, 'ru'), 'Нет задач для подсчёта · Пропущено: 2');
+  assert.equal(summaryText({ done: 1, total: 2, remaining: 1, skipped: 5 }, 'ru'), 'Выполнено: 1 из 2 · Осталось: 1 · Пропущено: 5');
+  const live = liveWith([{ id: 'owner', title: 'User <title>', activity: 'running' }, { id: 'child', parentId: 'owner' }]);
+  assert.equal(sessionLabel('owner', live, 'ru'), 'User <title>');
+  assert.equal(sessionLabel('missing', live, 'ru'), 'Сессия missing');
+  assert.equal(sessionLabel('session-long-id', live, 'ru'), 'Сессия …ong-id');
+  const activityLabels = { running: 'Работает', retrying: 'Повторяет попытку', 'waiting-permission': 'Ожидает разрешения', 'waiting-question': 'Ожидает ответа', idle: 'Бездействует', unknown: 'Состояние неизвестно' };
+  for (const [activity, label] of Object.entries(activityLabels)) {
+    const session = { ...live.sessions.get('pa')!.records[0], activity: activity as LiveSession['activity'] };
+    assert.deepEqual(liveLabel({ kind: 'live', session }, 'ru'), { ...liveLabel({ kind: 'live', session }), label });
+  }
+  for (const [kind, label] of [['loading', 'Проверка…'], ['error', 'Текущее состояние недоступно'], ['untracked', 'Текущее состояние недоступно'], ['not-seen', 'Не открыта в этом окне']] as const) assert.equal(liveLabel({ kind }, 'ru').label, label);
+  const p = { ...plan('P1'), ownerSessionId: 'owner', directory: '/fixture/Alpha' };
+  assert.equal(placeOf(p, live, undefined, 'ru').worktreeLabel, 'Основная рабочая копия');
+  assert.equal(placeOf({ ...p, directory: '' }, EMPTY_LIVE, undefined, 'ru').projectLabel, 'Неизвестное расположение');
+  const en = filterOptions([p], live, NO_FILTERS), ru = filterOptions([p], live, NO_FILTERS, [p], undefined, 'ru');
+  assert.deepEqual(ru.sessions.map(o => o.id).sort(), en.sessions.map(o => o.id).sort());
+  assert.equal(ru.sessions[0].label, 'Все сессии');
+  assert.deepEqual(ru.sessions.find(o => o.id === 'child'), { id: 'child', label: 'Сессия child', hint: 'дочерняя', sessionGenerated: true });
+  assert.deepEqual(ru.sessions.find(o => o.id === 'owner'), { id: 'owner', label: 'User <title>', hint: 'основная', sessionGenerated: false });
+  assert.equal(ru.projects[0].label, 'Все проекты');
+  assert.equal(ru.worktrees[0].label, 'Все рабочие копии');
+  const many = filterOptions(Array(1000).fill(p), live, NO_FILTERS, [p], undefined, 'ru');
+  assert.equal(many.projects[0].hint, '1\u00a0000');
+  assert.equal(many.projects[1].hint, '1\u00a0000');
+  const search = searchFilterOptions([], EMPTY_LIVE, { project: 'p:gone', worktree: 'w:gone', session: 'gone' }, { project: 'Original title' }, undefined, 'ru');
+  assert.equal(search.projects[1].label, 'Original title (недоступно здесь)');
+  assert.equal(search.worktrees[1].label, 'w:gone (недоступно здесь)');
+  // Session choices already retain the selected fallback in filterOptions, unlike missing locations.
+  assert.equal(search.sessions[1].label, 'Сессия gone');
+});
+
+test('unavailable root choices translate by stable identity without translating user worktree names', () => {
+  const f = { project: 'p:alpha', worktree: 'root:alpha', session: ALL };
+  const labels = { project: 'Alpha', worktree: 'Main checkout' };
+  const ru = searchFilterOptions([], EMPTY_LIVE, f, labels, 'source-alpha', 'ru');
+  assert.equal(ru.worktrees[1].label, 'Основная рабочая копия (недоступно здесь)');
+  assert.equal(ru.worktrees[1].id, f.worktree);
+  const en = searchFilterOptions([], EMPTY_LIVE, f, { ...labels, worktree: 'Основная рабочая копия' }, 'source-alpha', 'en');
+  assert.equal(en.worktrees[1].label, 'Main checkout (not available here)');
+  for (const title of ['Main checkout', 'Основная рабочая копия', 'Release QA']) {
+    const named = searchFilterOptions([], EMPTY_LIVE, { ...f, worktree: 'w:/example/tree' }, { ...labels, worktree: title }, 'source-alpha', 'ru');
+    assert.equal(named.worktrees[1].label, `${title} (недоступно здесь)`);
+  }
+});
 
 function liveWith(sessions: Partial<LiveSession>[], projects = [{ id: 'pa', name: 'Alpha', directory: '/fixture/Alpha' }, { id: 'pb', name: 'Beta', directory: '/fixture/Beta' }]): LiveSnapshot {
   const records = sessions.map((s) => ({ id: '', title: '', projectId: 'pa', directory: '/fixture/Alpha', parentId: null, archivedAt: null, worktree: null, activity: 'idle' as const, outcome: null, ...s }));
@@ -230,6 +296,20 @@ test('setup: body carries only roots/confirmed; phases; plain-language SetupErro
   assert.deepEqual(host.calls.map((c) => [c.method, c.path]), [['POST', '/v1/setup/install'], ['POST', '/v1/setup/install']]);
   for (const code of ['confirmation-required', 'targets-unverified', 'ownership-invalid', 'service-binding-modified', 'symlink-escape', 'collision']) assert.doesNotMatch(setupErrorText(code), /\(|-/, code);
   assert.match(setupErrorText('brand-new-code'), /brand-new-code/);
+});
+
+test('managed setup accepts only the supported discriminator and a complete reviewed identity', async () => {
+  const delivery = {kind:'managed',revision:1,configuration:'configured',migration:'none',mode:'unknown',observation:'different',expectedVersion:'1.2.3',review:{expected:'a'.repeat(64),targets:{configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:'/fixture/custom-store'},storeId:null,sourceId:null}};
+  const read=(d:unknown)=>parseSetup(JSON.stringify(setupRead({separateLifecycle:false,delivery:d})));
+  assert.equal(read(delivery).delivery?.observation,'different');
+  for(const patch of [{revision:2},{kind:'other'},{observation:'live'},{mode:'watched'},{configuration:['configured']},{migration:['none']},{observation:['matching']}]) assert.equal(read({...delivery,...patch}).delivery,undefined);
+  assert.equal(read({...delivery,review:{...delivery.review,expected:'not-reviewed'}}).delivery?.review,undefined);
+  assert.equal(parseSetup(JSON.stringify(setupRead())).delivery,undefined);
+  const host=fakeHost(()=>({status:200,body:setupRead({separateLifecycle:false,delivery})}));
+  const targets={configRoot:'/ignored',dataRoot:'/ignored',storeRoot:'/fixture/custom-store'};
+  await setupCall(host,'managed-inspect',targets);
+  await setupCall(host,'managed-migrate',targets,true,delivery.review.expected);
+  assert.deepEqual(host.calls.map(q=>JSON.parse(String(q.body))),[{storeRoot:targets.storeRoot},{storeRoot:targets.storeRoot,confirmed:true,expected:delivery.review.expected}]);
 });
 
 test('setup suggestions: parsed per field, malformed reads as unknown, configured replies ignore hints', () => {

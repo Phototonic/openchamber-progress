@@ -2,6 +2,14 @@
 
 ## Reporting health observations
 
+Managed delivery, last loaded-byte observation, stored capture control, selected
+recorded revision and viewer freshness are independent. A configured binding is
+not host approval or current tool inventory; matching load is not a heartbeat,
+report receipt or completion. Different loaded bytes warn only while binding,
+schema, control and host permission gates remain enforced. Mode is currently
+unknown: watched-file disposal and restart-dependent caller-owned config must be
+explained conditionally. Legacy/global entries can outlive extension disable.
+
 Setup replies optionally include `reportingIdentity: {storeId, sourceId, verified}` only after the configured store opens and its binding is verified. Unconfigured, unavailable-store and target-inspection replies omit it. This additive metadata does not change protocol/schema versions or grant authority to mutate. Guests must match it to the viewer store and source binding before joining installation/activation observations with a selected report; absent or mismatched identity means the association is unknown.
 
 The board's explicit reporting check performs one setup GET and at most one first-page selected-plan GET, without following cursors. A stored revision is evidence of recorded progress, not independent receipt verification, recent agent activity, tool availability or completion. No selection means no selected report checked; filtered or incomplete history never proves no reports exist. No new polling, endpoint, report write or model call is involved.
@@ -68,6 +76,74 @@ Changes to shared contract files (`shared/progress.ts`, `docs/contracts.md`) req
 an announced contract revision before consumers update; consumers must switch
 sequentially. The old `shared/contract.ts` ProbeRead is historical fixture code,
 never a production fallback.
+
+## Plan composer handoff revision 1
+
+The candidate requires **OpenChamber >=2.7.1**; the build SDK remains pinned at
+**2.7.0**. Older hosts refuse installation with their normal host-version feedback,
+rather than installing with omitted contributions. This floor does not certify
+every newer host or mobile/Electron configuration.
+
+Ready health advertises `planComposerHandoff:1`; absence means unavailable, not
+no reported plans. Protocol/schema remain **2**. The following authenticated,
+query-free **POST reads** deliberately except the generic GET-read convention:
+
+| Route | Exact JSON request | Success |
+| --- | --- | --- |
+| `/mentions/search` | `{query:string,directory:string|null}` | `{items:[{id,title,subtitle}]}` |
+| `/mentions/resolve` | `{id:string}` | `{text:string}` |
+
+Bodies are at most 16,384 bytes, strict UTF-8/JSON, with unknown keys refused.
+Search query is at most 200 JavaScript code units without NUL; directory is null
+or at most 4096 code units without NUL. Directory is ranking input, not a path to
+open. Resolve IDs contain exactly one `/` between two existing-format identifiers.
+Replies remain no-store, JSON and nosniff. Fixed code-only failures: 400 invalid
+body/query, 401 unauthorized, 404 missing/deleted/archived resolve target, 405 wrong
+method, 413 oversized body, 409 identity/revision conflict, 503 unavailable,
+incomplete or failed storage read. Raw input and exceptions are never echoed.
+
+Search matches every normalized token in the plan's own title or ID, not task
+text, documents or pooled fields. Normalization is the existing NFC/lowercase/NFC
+matcher. Empty query admits candidates. At most 20 distinct source-qualified
+`${sourceId}/${id}` rows are emitted; menu titles/subtitles fit 120 code units,
+with visible, surrogate-safe title ellipses. No URL is supplied. Discovery admits
+at most 512 raw plan and 512 session slots, 1 MiB per snapshot and 16 MiB cumulative
+snapshot/session input, with a cooperative 500 ms scan budget. These bounds precede
+filtering; results are found candidates, not a library census. Bound/gap stops
+preserve **Limited search** in subtitles; no bounded empty result proves no plans.
+SQLite busy waits and an admitted synchronous step are not a hard latency promise.
+
+Rank by normalized current directory, then an unambiguous recorded project
+association from matching directory records in the verified bound source, then
+other locations. Within each class: active before closed, latest report first,
+binary source-qualified key ties. Never infer projects from path prefixes or
+another source's session IDs. Subtitles retain lifecycle, done/total and **From
+another OpenCode setup** / **Unverified OpenCode setup** qualifications.
+
+Resolution accepts only complete current matching items and contributions from
+one store/binding/key/revision/cleanup identity. It checks at most 120 detail pages
+per attempt, three revision restarts and an 8-second cooperative deadline; partial,
+capped or mixed detail refuses rather than substituting a list summary. Archived
+detail remains inspectable in existing views but cannot resolve into a new chip.
+The host resolves at selection: a chip holds an as-of snapshot, not live progress.
+
+Composer output uses the shared pure summary/readiness owner. It includes the
+source-qualified key (a deliberate **composer-only** addition to preview identifier
+disclosure), matched revision, absolute UTC **Reported as of**, **Reported progress,
+not verified completion**, source warnings and **Review before sending**. It is
+trimmed at its outer edges and at most **16,000 JavaScript code units**, including
+selection context and whole-task omission counts. Eligible rows withheld by the
+pending-row or character limit count once; no partial title/prerequisite/safety
+sentence is emitted. Counts remain whole-plan; invalid/closed readiness invents no
+next step or authority. Mention utility text is English only: requests contain no
+device language and there is no server last-language cache. Session actions use
+the effective device language; existing preview formats remain unchanged.
+
+These are read-only operations: no reports, receipts, statuses, assignments,
+capture/control, cleanup, schema or stored documents change. No document body,
+history, timing or transcript is read by mention discovery/resolution. Summaries
+omit blocker prose/provenance/waits, tool output, source roots, paths and hashes.
+Escaped titles remain recorded data, not a redaction or prompt-injection guarantee.
 
 ## Plan/task search revision 1 (frozen additive v2 read contract)
 
@@ -428,8 +504,9 @@ exports, search indexes or automatic notifications/actions.
 
 The system has four components: an OpenCode companion plugin that captures explicit
 reports; an independent local SQLite progress store; a host-owned loopback service;
-and three guest frames (the session-scoped rail, compact Work Status, and fullscreen
-cross-project board). Capture writes directly to the store and has an independent
+and three visible guest frames (the session-scoped rail, compact Work Status, and
+fullscreen cross-project board), plus an ephemeral session-action background frame.
+Capture writes directly to the store and has an independent
 lifecycle: it continues while OpenChamber is closed or the extension is uninstalled,
 until explicitly disabled or removed. Stored history is retained on capture removal.
 The board lists recorded plans and enriches them with host workspace snapshots;
@@ -650,7 +727,8 @@ are in [the compatibility guide](compatibility.md#progress-resume-capsule-verifi
 ## Fixed authenticated read API
 
 Every route requires the host bearer, including `/health`; bind127.0.0.1 only.
-Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET:
+Guests use SDK serviceRequest and never receive bearer/port. Read routes use GET,
+except the bounded mention POST reads specified above:
 
 - `/health`: `{ok:true,ready:boolean,sqlite:boolean,protocolVersion:2,schemaVersion:2,runtime:{node,bun},diagnostics?}`.
   Unconfigured service is200/ready=false, never an empty progress success;
@@ -998,49 +1076,50 @@ Local execution/results and consumer launch receipt: `evidence/cleanup/backend.m
 
 ## DTO meanings
 
-### Official-main version awareness
+### Retired official-main compatibility route (revision 1)
 
 `GET /v1/extension-update` requires the same service bearer, no query/body, and
 works before companion/store lookup. Wrong method405, query404, body400, auth401.
-Upstream failure is an HTTP200 metadata reply, not a progress/setup failure.
-Older services may return404; missing/malformed optional replies mean unavailable.
+Retained for at least the next delivered release, it returns HTTP200 even when
+the service is unconfigured or its store cannot open. It does not consult the
+store, check a remote version, fetch metadata or mutate persistent data.
 
 ```ts
 interface ExtensionUpdateRead {
   installedVersion: string; // this extension's RELEASE
   repository: 'Phototonic/openchamber-progress';
   ref: 'main';
-  state: 'available' | 'not-newer' | 'unknown';
-  checkedAt: string | null; // most recent SUCCESSFUL validation/revalidation
+  state: 'available' | 'not-newer' | 'unknown'; // legacy vocabulary; current: unknown
+  checkedAt: string | null; // legacy success time; current: null
   stale: boolean;
-  candidateVersion?: string; // validated official-main manifest semver only
+  candidateVersion?: string; // legacy validated semver; absent in current replies
   diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' |
     'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
-  nextCheckAt: string; // finite server ISO time; next eligible check, not a timer promise
+  nextCheckAt: string; // finite ISO time; old-client compatibility backoff only
 }
 ```
 
-`available` means only that the named official main advertises a higher semver.
-`not-newer` means that official manifest is equal/older, not that a custom selected
-source, companion or loaded instance is current. Same-version changed bytes do not
-produce availability. `unknown` has no validated candidate, checkedAt=null and
-stale=false. After failure, a known candidate/state and original checkedAt remain,
-with stale=true and a fixed failure diagnostic. Do not render retained stale
-knowledge as a fresh successful check. No upstream body, message or URL is returned.
+The deprecated DTO retains the old vocabulary for compatibility, but current
+replies always contain the service `RELEASE`, the fixed repository/ref above,
+`state:"unknown"`, `checkedAt:null`, `stale:false`, `diagnostic:"unavailable"`,
+and no `candidateVersion`. `nextCheckAt` is one hour after response construction,
+not evidence of a successful check or a promise to check later. There is no
+transport configuration, cache, ETag, background timer or shutdown request.
+Protocol/schema remain2; later route removal requires a separate decision.
 
-This does not inspect actual installation provenance or audit remote runtime files.
-The host alone installs updates. Use fixed UI link
-`https://github.com/Phototonic/openchamber-progress/tree/main`; never derive a link
-from network metadata. Copy names **“Official main version X available”**, explains
-Settings → Extensions and the custom branch/tag/fork/ZIP limitation. Never claim
-the advertised candidate is installed, bundled, loaded or installable merely from
-this metadata check. Preserve SetupRead.update and its explicit companion button.
+Current guests never call this route, schedule it, read/write the obsolete
+`official-main-dismissed` preference or display an update notice on any surface.
+Existing dismissal data stays inert; no storage migration occurs. An unchanged
+old parser accepts the unavailable reply and an old guest shows no notice after
+its next successful read. A previously cached old banner can remain until that
+read or a host frame remount. New guests also make no calls against older services
+that would return available,404 or malformed data. Old guest/old service behavior
+is outside this retirement's control.
 
-Ask on visible-frame readiness and coarse nextCheckAt eligibility, not each progress
-poll/task/render/session switch. Hidden/disposed frames initiate no request; retire
-late replies on host/service generation changes. A service restart starts a new
-in-memory cache. Cache successful knowledge for1h, failures for at least5min (longer
-provider deadlines honored); multiple frames share one service in-flight request.
+OpenChamber owns update discovery and explicit installation through Settings →
+Extensions. Setup and Reporting health describe local delivery/load observations,
+not remote availability. Legacy recovery-only Setup updates remain distinct;
+retirement grants no new mutation or restart authority.
 
 ### Optional reported-working timing
 
@@ -1134,12 +1213,199 @@ the current file remains unverified. Age alone does not establish a mismatch.
 
 ## Frozen setup/control routes
 
+### Managed delivery revision 1
+
+The production service uses the following discriminated `SetupRead.delivery` seam.
+Absence, a different `kind`, or an unknown revision means legacy/unsupported:
+guests must not infer managed activation or send managed mutations. `installed`
+and an old `separateLifecycle:true` reply are not managed-delivery evidence.
+
+```ts
+interface ManagedDelivery {
+  kind: 'managed'; revision: 1;
+  configuration: 'unconfigured' | 'configured' | 'invalid';
+  migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
+  mode: 'unknown';
+  observation: 'unknown' | 'not-observed' | 'matching' | 'different';
+  expectedVersion: string | null;
+  review?: {
+    expected: string;
+    targets: { configRoot: string; dataRoot: string; storeRoot: string };
+    storeId: string | null; sourceId: string | null;
+  };
+}
+```
+
+Managed replies set `separateLifecycle:false`, `historyRetained:true`, and do not
+reuse `installed`, `update`, or legacy activation strings to claim managed host
+approval, effective tool inventory or live delivery mode. `mode:unknown` requires
+conditional watched-file versus restart-dependent fallback copy. `verified`
+describes validated explicit source selection, not a service-side proof of the
+active OpenCode runtime. The companion independently verifies its actual scope.
+`reportingIdentity` remains absent until the Store/source association verifies.
+
+Both consumers use `managedBindingFile` / `readManagedBinding` in
+`shared/managed-binding.ts`. The only descriptor is
+`<canonical OpenCode dataRoot>/agent-progress-managed/progress-binding.json`.
+`XDG_DATA_HOME` plus `opencode`, or HOME/homedir plus `.local/share/opencode`
+**only when XDG data is absent**, determines that root. Explicit invalid XDG is
+an error. Config roots use the corresponding XDG config/HOME rule. State roots,
+`AGENT_PROGRESS_BINDING`, package siblings, project folders and legacy selectors
+never select managed authority. `OPENCODE_DB` and `OPENCODE_CONFIG_DIR` are
+unsupported effective scopes; no search, fallback, automatic adoption or repair.
+The owned 0700 product directory and exact 0600 `.ownership.json` marker, private
+descriptor, canonical non-symlink roots, owner, Windows ACL/object checks,
+`readBinding`, Store schema and `verifyStore` all remain required.
+
+Absent discovery is `unconfigured`; present unsafe/invalid/unsupported state is
+`invalid` and cannot authorize writes. Opening/status/inspect creates no product
+directory, marker, binding or Store. Health stays reachable with
+`200/ready:false`; unavailable Store-backed reads keep fixed 503 errors. Valid
+retained descriptors keep their known targets while Store availability is lost.
+
+Authenticated POST `/v1/setup/managed-inspect` accepts only `{storeRoot?:string}`.
+It resolves and validates the managed source roots and the explicit store (default
+the selected/pending store, a fully validated canonical legacy candidate, or
+`<dataRoot>/openchamber-progress`), without writes, and returns a review. `expected`
+is an opaque 64-hex consent identity, not an authentication token. It binds this
+service generation, canonical targets, current descriptor/object identity,
+Store/source identity and control state, and validated legacy ownership/bytes.
+It is not a progress revision or a host grant. A service restart invalidates it.
+If legacy inspection fails but a selected managed Store/source still verifies,
+inspection may return a narrower Store-only review for capture-off. Its identity
+binds the managed descriptor/object, Store/source and control state, not legacy
+ownership. Only confirmed `managed-disable` accepts this review; enable,
+configuration and migration repeat full legacy validation and fail closed.
+
+Fixed mutation actions are `managed-configure`, `managed-enable`,
+`managed-disable`, and `managed-migrate`, at the same route prefix. They accept
+only `{storeRoot?:string, confirmed:true, expected:string}` and revalidate the
+review immediately before side effects. The UI must review private-store/source
+selection, code privileges and conditional lifecycle before confirmation; preserve
+custom-store edits across failures/cancellation. No executable bytes, descriptor
+filename, URL, command, SQL, arbitrary config/data roots or download is accepted.
+
+Configuration reuses an unambiguous verified same-scope retained source and its
+Store/history without resetting or enabling it. Unrelated sources do not become
+authority; a conflicting/unverified source refuses. A configured different store
+cannot be selected by this action. Publication is atomic and no-clobber. A private
+configuration lock serializes competing confirmations; a crash-retained lock is a
+fixed busy refusal, never permission to delete unknown staging or take over.
+Duplicate old confirmations safely refuse as stale, without another source or
+selector overwrite. Valid legacy discovery is only a migration proposal:
+configuration cannot remove/adopt it or bypass the single confirmed migration.
+
+Migration states are frozen for the lifecycle/UI consumers: `none` means no
+validated legacy candidate; `available` means a validated candidate requiring the
+explicit switch; `conflict` means unsafe ownership/identity; `unavailable` means
+an operational inspection failure, with its fixed storage/platform diagnostic
+retained separately (not ownership-conflict instructions); `pending` means a
+durable same-target interrupted switch with capture off; `complete` means removal
+and private selection persisted, **not** matching managed-load evidence.
+`managed-migrate` fully prevalidates legacy ownership, removable selectors and
+the actual Store/source before capture is disabled. One confirmed same-target
+sequence disables capture, persists a private `migration.json` selection beside
+the managed descriptor, invokes legacy `remove-capture`, persists removal and
+the expected fingerprint, publishes the managed descriptor, records completion,
+then enables capture. Store/source identity and history are retained; the managed
+install identity is distinct from the legacy identity. Filesystem/SQLite changes
+are not one transaction. A completed same-target retry does not remove again or
+re-enable capture that was deliberately disabled later.
+
+Pending recovery requires a fresh review of that same private selection and
+actual Store. A still-present legacy package undergoes full ownership validation
+again; an already-removed package requires the recorded removal phase or the
+existing durable same-install removal receipt. Unknown disappearance, modified
+remaining files, or conflicting state is not permission to finish deletion or
+restore a loader. No retry or re-enable occurs automatically. A crash-retained
+configuration lock retains its busy refusal, including during migration; the
+normal retry does not take it over. New setup must not claim managed activation
+while legacy remains.
+
+The managed companion ignores environment binding overrides and package siblings.
+Before configuration it keeps only dormant boundary-driven registration, with no
+Store, capture, delegation observation or verified guidance. Concurrent eligible
+context/report boundaries coalesce initialization. A runtime pins its verified
+selection; changed/disappeared identity retires it rather than selecting another
+Store. Disposal retires authority synchronously before awaiting hook teardown;
+held initialization and reports recheck authority before publishing a load or
+appending report/capture data. This preserves fixed report failures, not graceful
+session cancellation. Restricted effective tools remain restricted.
+
+Setup errors are fixed `{error:code}`: malformed/unknown fields and missing
+confirmation 400 (`invalid` / `confirmation-required`); stale/duplicate consent
+409 `managed-review-stale`; different configured store or a store that is the
+OpenCode config/data root or binding directory itself 409
+`managed-selection-conflict`; unverified/conflicting retained source 409
+`managed-source-conflict`; legacy switch required 409
+`managed-migration-required`; concurrent/crash-retained lock 409
+`managed-configuration-busy`. Lifecycle-owned migration additionally reserves
+409 `managed-migration-conflict` for same-target/ownership refusal before switch
+effects, and 409 `managed-migration-pending` for interrupted capture-off recovery.
+These are setup errors, not additions to the report-tool `Code` union. Invalid
+private discovery returns 409
+`managed-binding-invalid`; invalid canonical root 409 `managed-path-unverified`;
+changed/disappeared admitted selector 409 `managed-binding-modified`;
+unsupported overrides 409 `managed-scope-unsupported`. Legacy mutations against
+the production controller refuse 409 `managed-action-required`; managed actions
+against an explicitly injected legacy fixture refuse `managed-service-required`.
+Existing schema/binding/busy/corrupt/storage errors retain their 503 semantics;
+existing bounded bodies, auth, method and query checks remain unchanged.
+Migration inspection preserves schema/busy/corrupt/storage failures rather than
+converting them into `managed-migration-conflict`. Platform security query failure
+retains `windows-security-unavailable` in status diagnostics and the existing
+503 `storage` mutation response. Retry requires resolving the underlying failure;
+it does not authorize cleanup or takeover.
+
+Managed capture enable requires the valid verified managed binding and refuses a
+legacy conflict, not executable ownership in a global package. The existing
+no-body capture-disable route keeps its verified-Store safety fallback. Neither
+route edits report/task facts. Managed enable/disable setup actions also require
+the reviewed identity and confirmation above.
+Capture-off for a verified selected managed Store remains available during a
+legacy ownership/identity conflict or operational inspection failure; it neither
+validates nor edits the legacy installation. It cannot disable an unselected
+legacy Store, and does not bypass managed binding/source/Store verification.
+
+Retained pre-managed loaders invoke the selected release's default export and
+cannot use the legacy bridge in the managed-only release. Legacy `update` refuses
+them with fixed 409 `legacy-update-requires-managed-migration` before any Store,
+release, selector or history write. The existing selection remains usable; use
+Setup's explicitly confirmed switch to extension-managed capture instead.
+
+`managed-expectation-<identity-hash>.json` is a private 0600 sidecar in the verified Store
+directory, with format 1, Store/source/managed-install identity, version and
+activation fingerprint. The filename hashes the source and managed-install IDs;
+independent scopes sharing a Store never replace each other's expectation.
+Configuration persists it before source registration; migration persists it before
+capture disable or legacy discovery removal. Configuration and one newly admitted
+service package generation may establish it; GET/status never rewrite the baseline. Existing
+invalid metadata is not overwritten. Missing/unreadable expectation is `unknown`;
+a valid baseline with no scoped loaded observation is `not-observed`; matching
+latest bytes are `matching`; unequal bytes are `different` (warning only).
+Fingerprint comparison uses the runtime release version, plugin/guidance bytes
+and binding, not the legacy descriptor version. Managed install identities are
+distinct from legacy IDs. No protocol/schema/run-format change is introduced.
+None of these observations prove publisher authenticity, exact importer execution,
+host grant, current session tool inventory, recent activity or completion. Support
+summaries must omit fingerprints, paths, IDs, consent tokens and raw errors.
+
+### Legacy setup/control compatibility
+
+The following contract describes retained standalone lifecycle utilities and
+explicit test injection, not the production managed service's configuration path.
+
 `GET /v1/setup` -> SetupRead from shared/progress.ts:
 configured, verified, installed, captureEnabled(boolean|null), targets({configRoot,
 dataRoot,storeRoot}|null), version(string|null), activation, separateLifecycle=true,
 historyRetained=true, diagnostics[], optional recovery counts. No tokens.
 
-### Frozen additive companion comparison (consumed by the setup UI)
+### Frozen additive companion comparison (legacy compatibility only)
+
+This subsection and the following setup-suggestions contract describe retained
+standalone/test-injected legacy consumers, not managed configuration, approval,
+host update selection or executable-integrity guarantees. Managed consumers use
+delivery revision 1 above and never fall back to these global-install actions.
 
 Existing setup reads and action replies produced by `status()` may add:
 
@@ -1182,7 +1448,7 @@ not candidate detection. Last observed does not mean every running session is
 current. Detection uses existing setup-read occasions, never progress polling;
 the full mutation ownership/store/descriptor checks are still performed afresh.
 
-### Frozen additive setup suggestions (consumed by the setup UI)
+### Frozen additive setup suggestions (legacy compatibility only)
 
 Only the existing `GET /v1/setup` may additionally return:
 
@@ -1247,9 +1513,9 @@ or unverified targets,409 for ownership/collision/modified payload); malformed
 body400, request above16,384 bytes413, store errors503. Unknown query/path404.
 Missing binding is an explicit setup state. The service persists only its owned
 descriptor after install; a foreign/modified descriptor is never overwritten.
-The default authoritative descriptor is in product-owned XDG state outside the
-extension package. A valid legacy in-package descriptor is a migration/default
-only when stable state is absent; stable state always wins. See docs/setup.md.
+Older services used a product-owned XDG-state selector outside the package. The
+managed service neither reads that selector nor auto-adopts an in-package default.
+Retained legacy selection is an explicit migration input only. See docs/setup.md.
 
 Configured store availability is independent of descriptor ownership. A valid
 descriptor with an unreadable store remains configured=true with retained targets,

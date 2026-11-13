@@ -1,14 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanupBody, parseCleanupReceipt, parseHealth, parsePlansPage, type CleanupRequest } from '../../ui/shared/adapter.ts';
-import { cleanupEligible, cleanupMatches, cleanupTarget } from '../../ui/shared/cleanup.ts';
+import { cleanupEligible, cleanupMatches, cleanupTarget, cleanupError, cleanupFeedback } from '../../ui/shared/cleanup.ts';
 import { cleanupCall, readList } from '../../ui/shared/source.ts';
 import { RecentMemory } from '../../ui/shared/refresh.ts';
 import { StatusSelection } from '../../ui/status/selection.ts';
 import { HEALTH, plansPage, summary } from './fixtures.ts';
+import { fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupDiagnosticText, updateNotice, captureOffNote } from '../../ui/shared/setup.ts';
+import { oldUpdateModule } from '../fixtures/pre-retirement-updates.ts';
+const { officialMainText } = oldUpdateModule('official.ts');
+import { parseSetup } from '../../ui/shared/adapter.ts';
 
 const plan = parsePlansPage(JSON.stringify(plansPage([summary('finished', [], { lifecycle: 'finished' })]))).data[0];
 const request: CleanupRequest = { storeId: 'store-fixture', source: plan.sourceId, plan: plan.id, rev: 2, cleanupRev: 3, oid: 'cleanup-example' };
+test('cleanup feedback translates semantic outcomes and never echoes arbitrary service errors', () => {
+  assert.match(cleanupError('conflict', 'ru'), /План изменился/);
+  assert.match(cleanupError('private-error-sentinel', 'ru'), /не удалось подтвердить/);
+  assert.doesNotMatch(cleanupError('private-error-sentinel', 'ru'), /sentinel/);
+  const message = { kind: 'restore' } as const;
+  assert.match(cleanupFeedback(message, 'en'), /still finished/);
+  assert.match(cleanupFeedback(message, 'ru'), /завершённым/);
+});
+test('setup translates fixed explanations and version facts without changing entered paths or state', () => {
+  const s=initialSetupUi();s.form.configRoot='/fixture/Review';s.edited.configRoot=true;
+  assert.match(fieldHint('configRoot',s,undefined,'ru'),/Абсолютный путь/);
+  assert.equal(s.form.configRoot,'/fixture/Review');assert.equal(s.edited.configRoot,true);
+  assert.match(setupErrorText('store-permissions','ru'),/принадлежать вам/);
+  assert.match(setupDiagnosticText('rollback-payloads-retained','ru'),/восстановления/);
+  for(const locale of ['en','ru']) {
+    assert.doesNotMatch(setupErrorText('private storage failure at /secret',locale),/private|secret/);
+    assert.doesNotMatch(setupDiagnosticText('private storage failure at /secret',locale),/private|secret/);
+    assert.equal(typeof setupErrorText('__proto__',locale),'string');
+  }
+  const result=parseSetup(JSON.stringify({configured:true,installed:true,separateLifecycle:true,activation:'reload-required',version:'1.2.3',diagnostics:[]}));
+  const update={state:'available',candidateVersion:'1.2.4',rootVersion:null} as const;
+  const snap={version:'1.2.3',update};
+  const review={action:'update',targets:null,result} as const;
+  const en=reviewVersions(review,snap,'en'), ru=reviewVersions(review,snap,'ru');
+  assert.deepEqual(en.rows.map(r=>r[1]),ru.rows.map(r=>r[1]));
+  assert.equal(ru.rows[0][0],'Установленная версия');
+  assert.equal(updateNotice({...result,update},'ru')?.action,'Проверить обновление');
+  assert.match(captureOffNote(null,'ru').text,/не записывается/);
+});
+test('official-main instructions and stale reasons are localized without a source or updater claim', () => {
+  const notice={candidate:'1.2.4',installed:'1.2.3',stale:true,checkedAt:'2026-10-25T10:00:00Z',diagnostic:'timeout'} as const;
+  const text=officialMainText(notice,'ru',Date.parse('2026-10-25T11:00:00Z'));
+  assert.match(text.title,/1\.2\.4.*1\.2\.3/);assert.match(text.body,/превысила время ожидания/);
+  assert.match(text.body,/не может определить источник/);assert.match(text.body,/ZIP/);
+  assert.match(officialMainText(notice,'en').body,/timed out/);
+});
 test('cleanup capability and metadata are explicit and fail closed', () => {
   for (const planCleanup of [undefined, 0, true, '1', 2]) assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanup })).planCleanup, undefined);
   assert.equal(parseHealth(JSON.stringify({ ...HEALTH, planCleanup: 1 })).planCleanup, 1);

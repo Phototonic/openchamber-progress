@@ -2,12 +2,12 @@ import { mountSelect } from '@openchamber/sdk/ui';
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { age, allDone, button, el, elapsedLabel, emptyBlock, failureBlock, glyph, lifecycleBadge, loadingBlock, retryRead, testid, type Env } from '../shared/components.ts';
 import { PANEL_SURFACE_ID } from '../shared/config.ts';
-import { clockTime, plural } from '../shared/format.ts';
+import { clockTime, formatCount, plural } from '../shared/format.ts';
 import { coverageFor, liveLabel, planProject } from '../shared/live.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
-import { LIFECYCLE_LABEL, showsLiveness, summarize, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
-import { officialMainLine } from '../shared/official.ts';
+import { lifecycleLabel, showsLiveness, summarize, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
+import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
 import { segmentedBar, stateChip, warningLine, type MarkStatus } from '../shared/primitives.ts';
 import { StatusSelection } from './selection.ts';
@@ -15,6 +15,10 @@ import { projectStatus, type StatusProjection } from './projection.ts';
 import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
 
 type Ui = { selection: StatusSelection };
+const messages = {
+  en: { openFailed: 'Progress details could not open here.', noSession: 'No session selected', openSession: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', setupHelp: 'Set it up to see plans here.', setUp: 'Set up', noPlan: 'No plan reported for this session', appears: 'Progress appears here when an agent reports a plan.', featured: 'Featured plan', automatic: 'Automatic', prefer: 'Prefer reported working tasks', chosen: 'Chosen', chosenLabel: 'chosen', automaticLabel: 'chosen automatically', working: (n: number) => `${n} working`, picker: (title: string, chosen: boolean, n: number) => `Featured plan: ${title}, ${chosen ? 'chosen' : 'chosen automatically'}. ${plural(n, 'plan', 'plans')}; choose another`, updated: 'Updated ', more: (n: number) => plural(n, 'more plan', 'more plans'), moreAria: (n: number) => `${plural(n, 'more plan', 'more plans')} in this session: choose the featured plan`, open: 'Open progress', progress: 'in progress', needs: 'needs you', ready: 'ready', waiting: 'waiting', blocked: 'blocked', pending: 'pending', skipped: 'skipped', counts: (n: number, skipped: number) => ` done, ${n} remaining${skipped ? `, ${skipped} skipped` : ''}`, stale: (time: string) => `Not refreshed since ${time}. Counts may be out of date.`, capture: 'Capture off: these are the last reported counts.', unavailable: 'Task details couldn’t be loaded.', invalid: 'Ready and waiting are unavailable for this report.', incomplete: 'Some recorded prerequisites aren’t in this plan.', focus: 'Needs attention and in progress' },
+  ru: { openFailed: 'Не удалось открыть подробности прогресса.', noSession: 'Сессия не выбрана', openSession: 'Откройте сессию, чтобы увидеть её отчёты о прогрессе.', setup: 'Прогресс агента ещё не настроен', setupHelp: 'Настройте его, чтобы видеть планы.', setUp: 'Настроить', noPlan: 'В этой сессии нет отчёта о плане', appears: 'Прогресс появится здесь, когда агент сообщит о плане.', featured: 'Основной план', automatic: 'Автоматически', prefer: 'Предпочитать задачи с отчётом о работе', chosen: 'Выбран', chosenLabel: 'выбран', automaticLabel: 'выбран автоматически', working: (n: number) => `В работе: ${formatCount(n, 'ru')}`, picker: (title: string, chosen: boolean, n: number) => `Основной план: ${title}, ${chosen ? 'выбран' : 'выбран автоматически'}. Планов: ${formatCount(n, 'ru')}; выбрать другой`, updated: 'Обновлено ', more: (n: number) => `Ещё планов: ${formatCount(n, 'ru')}`, moreAria: (n: number) => `Других планов в этой сессии: ${formatCount(n, 'ru')}; выбрать основной план`, open: 'Открыть прогресс', progress: 'в работе', needs: 'нужно ваше участие', ready: 'готово к работе', waiting: 'ожидает', blocked: 'заблокировано', pending: 'не начато', skipped: 'пропущено', counts: (n: number, skipped: number) => ` выполнено, осталось: ${formatCount(n, 'ru')}${skipped ? `, пропущено: ${formatCount(skipped, 'ru')}` : ''}`, stale: (time: string) => `Не обновлялось с ${time}. Счётчики могут быть устаревшими.`, capture: 'Запись отключена: показаны последние полученные счётчики.', unavailable: 'Не удалось загрузить подробности задач.', invalid: 'Готовность и ожидание недоступны для этого отчёта.', incomplete: 'Некоторые записанные предварительные условия отсутствуют в этом плане.', focus: 'Требуют внимания и в работе' },
+} satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 let heights: HeightSync | null = null;
 
 const enter = (vc: ViewContext<Ui>) => vc.ui.selection.enter(
@@ -22,7 +26,7 @@ const enter = (vc: ViewContext<Ui>) => vc.ui.selection.enter(
 );
 
 const openRail = (vc: ViewContext<Ui>) => {
-  void vc.host.openSurface(PANEL_SURFACE_ID).catch(() => vc.host.toast({ kind: 'error', message: 'Progress details could not open here.' }).catch(() => {}));
+  void vc.host.openSurface(PANEL_SURFACE_ID).catch(() => vc.host.toast({ kind: 'error', message: messages[resolveLanguage('auto', vc.env.locale)].openFailed }).catch(() => {}));
 };
 
 const primary = (vc: ViewContext<Ui>) => {
@@ -55,26 +59,24 @@ startView<Ui>({
   wantDetails: (vc) => { const p = primary(vc); return p ? [p] : []; },
   paint(root, vc) {
     const { read, failure, env } = vc;
-    // Compact official-main line; it does not depend on setup or on this session having plans.
-    const official = () => officialMainLine(vc, () => openRail(vc));
-    const withOfficial = (block: HTMLElement) => { const line = official(); if (line) block.append(line); return block; };
+    const t = messages[resolveLanguage('auto', env.locale)];
     if (!read) {
-      if (!vc.session?.id) root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
-      if (failure) root.append(failureBlock(failure, retryRead(vc)));
-      else if (vc.health && !vc.health.ready) root.append(withOfficial(emptyBlock('setup-needed', 'Agent progress is not set up yet', 'Set it up to see plans here.', true, { label: 'Set up', onClick: () => openRail(vc) })));
-      else if (vc.session?.id) root.append(loadingBlock());
+      if (!vc.session?.id) root.append(emptyBlock('unscoped-state', t.noSession, t.openSession, true));
+      if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
+      else if (vc.health && !vc.health.ready) root.append(emptyBlock('setup-needed', t.setup, t.setupHelp, true, { label: t.setUp, onClick: () => openRail(vc) }));
+      else if (vc.session?.id) root.append(loadingBlock(env.locale));
       return;
     }
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);
     const { plan, selected } = vc.ui.selection.resolve(scope);
     if (scope.kind === 'none') {
-      root.append(withOfficial(emptyBlock('unscoped-state', 'No session selected', 'Open a session to see its reported progress.', true)));
+      root.append(emptyBlock('unscoped-state', t.noSession, t.openSession, true));
       return;
     }
     if (!scope.plans.length) {
       // No plan in scope: no sub-agent section, count or prompt, whatever the host lists.
-      root.append(failure ? failureBlock(failure, retryRead(vc)) : withOfficial(emptyBlock('empty-state', 'No plan reported for this session', 'Progress appears here when an agent reports a plan.', true)));
+      root.append(failure ? failureBlock(failure, retryRead(vc), env.locale) : emptyBlock('empty-state', t.noPlan, t.appears, true));
       return;
     }
     if (!plan) return;
@@ -96,11 +98,11 @@ startView<Ui>({
     if (scope.plans.length > 1) {
       const holder = testid(el('div', 'ap-picker ap-title-picker ap-status-pick'), 'status-plan-selector');
       mountSelect(holder, {
-        label: 'Featured plan',
+        label: t.featured,
         value: selected ?? 'automatic',
         options: [
-          { id: 'automatic', label: 'Automatic', hint: 'Prefer reported working tasks' },
-          ...scope.plans.map((x) => ({ id: x.key, label: x.title, hint: x.lifecycle === 'active' ? `${x.working.length} working` : LIFECYCLE_LABEL[x.lifecycle] })),
+          { id: 'automatic', label: t.automatic, hint: t.prefer },
+          ...scope.plans.map((x) => ({ id: x.key, label: x.title, hint: x.lifecycle === 'active' ? t.working(x.working.length) : lifecycleLabel(x.lifecycle, env.locale) })),
         ],
         onChange: (key) => vc.updateUi((ui) => {
           // A picker from a retired store/context cannot restore its old choice.
@@ -111,8 +113,8 @@ startView<Ui>({
       const trigger = holder.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
       if (trigger) {
         trigger.removeAttribute('aria-labelledby');
-        trigger.setAttribute('aria-label', `Featured plan: ${plan.title}, ${selected ? 'chosen' : 'chosen automatically'}. ${plural(scope.plans.length, 'plan', 'plans')}; choose another`);
-        trigger.prepend(el('span', 'ap-title-picker-hint', selected ? 'Chosen' : 'Automatic'));
+        trigger.setAttribute('aria-label', t.picker(plan.title, !!selected, scope.plans.length));
+        trigger.prepend(el('span', 'ap-title-picker-hint', selected ? t.chosen : t.automatic));
         openPicker = () => trigger.click();
         // The title reads as the picker too (pointer only; the trigger is the keyboard control).
         title.classList.add('ap-plan-title-pick');
@@ -120,22 +122,22 @@ startView<Ui>({
       }
       head.append(holder);
     }
-    if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan));
-    box.append(head, statusProgress(p, plan));
-    const quals = qualifiers(p, read.captureEnabled, failure && vc.lastGoodAt ? clockTime(vc.lastGoodAt, env.locale) : null);
+    if (plan.lifecycle !== 'active') head.append(lifecycleBadge(plan, env.locale));
+    box.append(head, statusProgress(p, plan, env.locale));
+    const quals = qualifiers(p, read.captureEnabled, failure && vc.lastGoodAt ? clockTime(vc.lastGoodAt, env.locale) : null, env.locale);
     if (quals) box.append(quals);
     const focus = focusRows(p, plan, env);
     if (focus) box.append(focus);
     // Age and live state, one compact line; other titles and working/lifecycle hints are in the picker.
     const meta = el('div', 'ap-meta ap-status-meta');
-    meta.append(age(plan.reportedAt, env, 'Updated '), el('span', '', liveLabel(coverageFor(plan.ownerSessionId, plan.directory, env.live)).label));
+    meta.append(age(plan.reportedAt, env, t.updated), el('span', '', liveLabel(coverageFor(plan.ownerSessionId, plan.directory, env.live), env.locale).label));
     box.append(meta);
     if (rest.length && openPicker) {
       const open = openPicker;
       const more = testid(el('button', 'ap-link ap-status-more'), 'more-plans');
       more.type = 'button';
-      more.textContent = `+${plural(rest.length, 'more plan', 'more plans')}`;
-      more.setAttribute('aria-label', `${plural(rest.length, 'more plan', 'more plans')} in this session: choose the featured plan`);
+      more.textContent = `+${t.more(rest.length)}`;
+      more.setAttribute('aria-label', t.moreAria(rest.length));
       more.addEventListener('click', () => open());
       box.append(more);
     }
@@ -151,9 +153,7 @@ startView<Ui>({
       if (observed) root.append(observed);
     }
     const actions = el('div', 'ap-row ap-between');
-    button(actions, 'open-detail', 'Open progress', () => openRail(vc), 'ghost');
-    const line = official();
-    if (line) actions.append(line);
+    button(actions, 'open-detail', t.open, () => openRail(vc), 'ghost');
     root.append(actions);
   },
   afterPaint(root, vc) {
@@ -185,38 +185,41 @@ startView<Ui>({
  * guidance (in progress, needs you, ready, waiting) only from complete current active detail;
  * otherwise the reported statuses. Without complete detail only the list's in-progress count.
  */
-function statusProgress(p: StatusProjection, plan: PlanView) {
+function statusProgress(p: StatusProjection, plan: PlanView, locale: string) {
+  const language = resolveLanguage('auto', locale), t = messages[language];
   const s: PlanSummary = p.summary;
   const wrap = el('div', 'ap-progress ap-status-progress');
-  const bar = segmentedBar(s, `${summaryText(s)}${s.working ? `, ${s.working} in progress` : ''}${s.blocked ? `, ${s.blocked} blocked` : ''}`);
+  const count = (n: number) => language === 'ru' ? formatCount(n, language) : String(n);
+  const bar = segmentedBar(s, `${summaryText(s, language)}${s.working ? `, ${count(s.working)} ${t.progress}` : ''}${s.blocked ? `, ${count(s.blocked)} ${t.blocked}` : ''}`);
   if (bar) wrap.append(bar);
   const line = el('div', 'ap-status-counts');
   const counts = testid(el('span', 'ap-status-fraction'), 'counts');
   Object.assign(counts.dataset, { done: String(s.done), total: String(s.total), remaining: String(s.remaining), skipped: String(s.skipped) });
-  if (s.total) counts.append(el('strong', '', String(s.done)), el('span', 'ap-muted', `/${s.total}`), el('span', 'ap-sr', ` done, ${s.remaining} remaining${s.skipped ? `, ${s.skipped} skipped` : ''}`));
-  else counts.append(el('span', 'ap-muted', summaryText(s)));
+  if (s.total) counts.append(el('strong', '', count(s.done)), el('span', 'ap-muted', `/${count(s.total)}`), el('span', 'ap-sr', t.counts(s.remaining, s.skipped)));
+  else counts.append(el('span', 'ap-muted', summaryText(s, language)));
   allDone(counts, s);
   line.append(counts);
   const r = p.reported;
   const guided = p.ready !== null && p.waiting !== null && r !== null;
   const chips: [MarkStatus, number, string][] = guided
-    ? [['working', r.working, 'in progress'], ['blocked', r.blocked, 'needs you'], ['ready', p.ready!, 'ready'], ['waiting', p.waiting!, 'waiting'], ['skipped', r.skipped, 'skipped']]
-    : r ? [['working', r.working, 'in progress'], ['blocked', r.blocked, 'blocked'], ['pending', r.pending, 'pending'], ['skipped', r.skipped, 'skipped']]
-    : plan.lifecycle === 'active' ? [['working', plan.working.length, 'in progress']] : [];
-  for (const [state, count, label] of chips) { const c = stateChip({ state, count, label }); if (c) line.append(c); }
+    ? [['working', r.working, t.progress], ['blocked', r.blocked, t.needs], ['ready', p.ready!, t.ready], ['waiting', p.waiting!, t.waiting], ['skipped', r.skipped, t.skipped]]
+    : r ? [['working', r.working, t.progress], ['blocked', r.blocked, t.blocked], ['pending', r.pending, t.pending], ['skipped', r.skipped, t.skipped]]
+    : plan.lifecycle === 'active' ? [['working', plan.working.length, t.progress]] : [];
+  for (const [state, count, label] of chips) { const c = stateChip({ state, count, label, locale }); if (c) line.append(c); }
   wrap.append(line);
   return wrap;
 }
 
 /** Concrete states beside the counts they qualify; never behind an explanation. */
-function qualifiers(p: StatusProjection, captureEnabled: boolean, staleAt: string | null) {
+function qualifiers(p: StatusProjection, captureEnabled: boolean, staleAt: string | null, locale: string) {
+  const t = messages[resolveLanguage('auto', locale)];
   const box = el('div', 'ap-quals');
-  if (staleAt) box.append(testid(warningLine(`Not refreshed since ${staleAt}. Counts may be out of date.`, 'warning', 'div'), 'stale-banner'));
-  if (!captureEnabled) box.append(testid(warningLine('Capture off: these are the last reported counts.', 'info', 'div'), 'capture-off'));
-  if (p.detailUnavailable) box.append(testid(warningLine('Task details couldn’t be loaded.', 'warning', 'div'), 'status-detail-unavailable'));
+  if (staleAt) box.append(testid(warningLine(t.stale(staleAt), 'warning', 'div'), 'stale-banner'));
+  if (!captureEnabled) box.append(testid(warningLine(t.capture, 'info', 'div'), 'capture-off'));
+  if (p.detailUnavailable) box.append(testid(warningLine(t.unavailable, 'warning', 'div'), 'status-detail-unavailable'));
   const r = p.readiness;
-  if (r.state === 'invalid') box.append(testid(warningLine('Ready and waiting are unavailable for this report.', 'warning', 'div'), 'status-readiness-invalid'));
-  else if (r.state === 'ready' && r.incomplete) box.append(testid(warningLine('Some recorded prerequisites aren’t in this plan.', 'warning', 'div'), 'status-readiness-incomplete'));
+  if (r.state === 'invalid') box.append(testid(warningLine(t.invalid, 'warning', 'div'), 'status-readiness-invalid'));
+  else if (r.state === 'ready' && r.incomplete) box.append(testid(warningLine(t.incomplete, 'warning', 'div'), 'status-readiness-incomplete'));
   return box.childNodes.length ? box : null;
 }
 
@@ -228,11 +231,11 @@ function focusRows(p: StatusProjection, plan: PlanView, env: Env) {
   }
   if (!p.focus.length) return null;
   const list = testid(el('ul', 'ap-status-focus'), 'current-work');
-  list.setAttribute('aria-label', 'Needs attention and in progress');
+  list.setAttribute('aria-label', messages[resolveLanguage('auto', env.locale)].focus);
   for (const item of p.focus) {
     const li = testid(el('li', 'ap-status-row'), `status-focus-${item.id}`);
     li.dataset.status = item.status;
-    li.append(glyph(item.status), el('span', 'ap-grow', item.title));
+    li.append(glyph(item.status, env.locale), el('span', 'ap-grow', item.title));
     const elapsed = elapsedLabel(plan, item, p.detail, env);
     if (elapsed) li.append(elapsed);
     list.append(li);

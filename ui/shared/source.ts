@@ -1,16 +1,18 @@
 // Reads through the host proxy. The guest never sees the service port or bearer.
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
+import type { DetailSnapshot as SharedDetailSnapshot, DetailFailureCause } from '../../shared/summary-types.ts';
+export type { DetailFailureCause } from '../../shared/summary-types.ts';
 import { planGraphQuery, parsePlanGraph } from './adapter.ts';
 import type { PlanGraphRequest, PlanGraphRead } from './model.ts';
 import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shared/document-comparison.ts';
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
 } from './adapter.ts';
-import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
@@ -67,8 +69,8 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
 export type ListResult =
-  | { ok: true; health: HealthView; read: StoreRead }
-  | { ok: true; health: HealthView; read: null } // service up, not configured: a setup state, not an empty success
+  | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead }
+  | { ok: true; health: ReturnType<typeof parseHealth>; read: null } // service up, not configured: a setup state, not an empty success
   | { ok: false; failure: ReadFailure };
 
 const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRead => ({
@@ -100,6 +102,9 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
     for (let pages = 1; cursor && pages < maxPages; pages++) {
       const next = parsePlansPage(await call(host, ROUTES.plans, query({ ...base, cursor })));
       if (next.envelope.storeId !== first.envelope.storeId) throw new ContractError('The progress store changed while reading pages.');
+      if (next.envelope.binding.sourceId !== first.envelope.binding.sourceId || next.envelope.binding.verified !== first.envelope.binding.verified) throw new ContractError('The progress binding changed while reading pages.');
+      const verification = (e: EnvelopeView) => JSON.stringify(e.sources.map(s => [s.id, s.verified]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+      if (verification(next.envelope) !== verification(first.envelope)) throw new ContractError('Recorded source verification changed while reading pages.');
       // Offset paging may see newer revisions; keep the newest copy of each plan.
       for (const p of next.data) {
         const at = plans.findIndex((x) => x.key === p.key);
@@ -122,15 +127,7 @@ export async function cleanupCall(host: ServiceHost, action: CleanupAction, requ
 }
 
 /** First-page facts only. No partial item, report or link arrays are retained here. */
-export interface DetailSnapshot {
-  readonly plan: PlanView & { counts: NonNullable<PlanView['counts']> };
-  readonly identity: { readonly storeId: string; readonly binding: { readonly sourceId: string | null; readonly verified: boolean }; readonly sourceId: string; readonly planId: string };
-  readonly captureEnabled: boolean;
-  readonly diagnostics: readonly string[];
-}
-export type DetailFailureCause =
-  | { kind: 'revision-restarts' | 'page-cap' | 'identity-contract' | 'unreachable-auth' | 'not-found' }
-  | { kind: 'store'; code: 'unavailable' | 'storage' | 'binding' | 'corrupt' | 'schema' | 'busy' | 'unknown' };
+export type DetailSnapshot = SharedDetailSnapshot<PlanView>;
 export type CompleteDetailResult = { ok: true; plan: PlanView; detail: PlanDetail; restarts: number; snapshot: DetailSnapshot | null };
 export type DetailResult = CompleteDetailResult | { ok: false; failure: ReadFailure; cause: DetailFailureCause; snapshot: DetailSnapshot | null };
 
@@ -173,12 +170,14 @@ const cleanupOf = (plan: PlanView) => `${plan.cleanup?.state ?? 'visible'}:${pla
  * changes between pages, the read restarts rather than mixing revisions. A page from another
  * store, source binding or plan is refused, even at the same revision: never a joined detail.
  */
-export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now()): Promise<DetailResult> {
+export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now(), expected?: Pick<StoreRead, 'storeId' | 'binding'>): Promise<DetailResult> {
   let snapshot: DetailSnapshot | null = null;
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
       const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
       if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
+      if (expected && (first.envelope.storeId !== expected.storeId || first.envelope.binding.sourceId !== expected.binding.sourceId || first.envelope.binding.verified !== expected.binding.verified
+        || !first.envelope.sources.some(s => s.id === plan.sourceId && s.verified))) throw new ContractError('The selected store, binding or recorded source verification changed.');
       snapshot = detailSnapshot(first);
       const identity = pageIdentity(first);
       // Timing covers the whole plan at this revision; anchor it when the reply arrives.
@@ -192,6 +191,7 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
         const cursor = itemsNext ?? contribNext!;
         const next = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id, cursor })));
         if (pageIdentity(next) !== identity) throw new ContractError('The progress store changed while the plan was read.');
+        if (expected && !next.envelope.sources.some(s => s.id === plan.sourceId && s.verified)) throw new ContractError('Recorded source verification changed while the plan was read.');
         // A progress revision or cleanup generation change mid-read restarts: never a joined detail.
         if (next.plan.revision !== first.plan.revision || cleanupOf(next.plan) !== cleanupOf(first.plan)) { mixed = true; break; }
         if (itemsNext) items.push(...next.items.data);
@@ -312,24 +312,17 @@ export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sour
 
 export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure };
 
-/** GET /v1/setup (action null) or POST /v1/setup/<action> with only roots/confirmed. */
-export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false): Promise<SetupResult> {
+/** Managed requests send only storeRoot and reviewed consent; legacy roots remain compatibility-only. */
+export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string): Promise<SetupResult> {
   try {
-    const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', setupBody(targets, confirmed)) : await call(host, ROUTES.setup);
+    const request = action?.startsWith('managed-') ? JSON.stringify({ ...(targets?.storeRoot ? {storeRoot:targets.storeRoot} : {}), ...(action !== 'managed-inspect' ? {confirmed,expected} : {}) }) : setupBody(targets, confirmed);
+    const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', request) : await call(host, ROUTES.setup);
     return { ok: true, setup: parseSetup(body) };
   } catch (error) {
     if (error instanceof HttpError) return { ok: false, code: error.code };
     const failure = classify(error);
     return { ok: false, code: failure.code, failure };
   }
-}
-
-/**
- * What official main advertises, or null when that is unknown: an older service without the route
- * (404), a failed request or an unreadable reply. Never a progress or setup failure.
- */
-export async function readExtensionUpdate(host: ServiceHost): Promise<OfficialMainView | null> {
-  try { return parseExtensionUpdate(await call(host, ROUTES.extensionUpdate)); } catch { return null; }
 }
 
 export type CaptureRead<T> = { ok: true; value: T } | { ok: false; failure: ReadFailure };

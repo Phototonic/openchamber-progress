@@ -1,5 +1,6 @@
 import type { Plugin } from '@opencode/plugin';
 import type { ToolHooks } from '@opencode/plugin/effect/tool';
+import type { SessionHooks } from '@opencode/plugin/effect/session';
 import path from 'node:path';
 import { identifier } from '../shared/progress.ts';
 import type { ResumeRead, ResumeRequest, ResumeSelection } from '../shared/progress-resume.ts';
@@ -118,7 +119,7 @@ function resumeText(selection: ResumeSelection): string {
 }
 
 /** Advisory only; optional bounded read projection, never executor/receipt/capture/mutation access. */
-export async function registerActivation(ctx: Plugin.Context, source: { id: string; verified: boolean }, enabled: () => boolean, recovery?: ResumeActivation) {
+export async function registerActivation(ctx: Plugin.Context, source: { id: string; verified: boolean }, enabled: () => boolean, recovery?: ResumeActivation, onContext?: (handler:(event:SessionHooks['context'])=>Promise<void>)=>void) {
   const pending = new Map<string, number>(); // max128 source/session reason bitsets
   const recent = new Set<string>(); // max256 qualifying source/session/message/call IDs
   const owned = Symbol('agent-progress-section');
@@ -217,7 +218,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (parentID) flag(key(parentID), PLAN);
       } catch { /* observation must never fail or change the original tool */ }
     }));
-    registrations.push(await ctx.session.hook('context', async event => {
+    const context = async (event:SessionHooks['context']) => {
       const removeOwned = () => {
         for (let i = event.system.length - 1; i >= 0; i--) if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) event.system.splice(i, 1);
       };
@@ -279,7 +280,9 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         event.system.push(section(hint, capsule));
         pending.delete(sessionKey); // consume on delivery, not on a report receipt
       } catch { pending.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
-    }));
+    };
+    registrations.push(await ctx.session.hook('context',context));
+    onContext?.(context);
     if (recovery) {
       const abort = new AbortController();
       let registration: { dispose(): Promise<void> } | undefined;

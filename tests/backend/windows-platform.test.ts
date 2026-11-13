@@ -12,10 +12,11 @@ import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
 import { captureDocument } from '../../plugin/document.ts';
 import { serviceBindingFile } from '../../service/state.ts';
+import { createManagedBindingDirectory, readManagedBinding } from '../../shared/managed-binding.ts';
 import { SetupController } from '../../service/setup-controller.ts';
 import { setupSuggestions } from '../../service/suggestions.ts';
 import type { Actor } from '../../shared/progress.ts';
-import plugin from '../../plugin/index.ts';
+import { setupLegacy } from '../../plugin/index.ts';
 
 const native = { skip: process.platform !== 'win32', timeout:120000 };
 // OS/profile temp ancestors may permit unrelated accounts to replace children.
@@ -163,7 +164,9 @@ foreach($owner in @($user,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-34185226
 
 test('Windows hard-linked owned files refuse before database, metadata or history mutation',native,async()=>{
   const f=fixture();try{
-    const selector=serviceBindingFile({XDG_STATE_HOME:path.join(f.root,'state')});
+    const env={XDG_DATA_HOME:path.join(f.root,'shared-data'),XDG_CONFIG_HOME:path.join(f.root,'shared-config')};
+    privateDirectory(path.join(env.XDG_DATA_HOME,'opencode'),true);
+    const selector=createManagedBindingDirectory(env);
     const controller=new SetupController(selector,()=>payload);try{controller.run('install',f.targets);}finally{controller.close();}
     const packageRoot=path.join(f.targets.configRoot,'plugins','agent-progress'),bindingFile=path.join(packageRoot,'progress-binding.json');
     const binding=readBinding(bindingFile),manifestFile=path.join(packageRoot,'.ownership.json'),manifest=JSON.parse(fs.readFileSync(manifestFile,'utf8'));
@@ -175,7 +178,7 @@ test('Windows hard-linked owned files refuse before database, metadata or histor
       [activeFile,()=>lifecycle('inspect',f.targets)],
       [path.join(f.targets.storeRoot,'installation-history.jsonl'),()=>lifecycle('remove-capture',f.targets)],
       [selector,()=>readBinding(selector)],
-      [path.join(path.dirname(selector),'.ownership.json'),()=>serviceBindingFile({XDG_STATE_HOME:path.join(f.root,'state')})],
+      [path.join(path.dirname(selector),'.ownership.json'),()=>serviceBindingFile(env)],
     ];
     for(const [file,run]of cases){
       const alias=path.join(f.root,`alias-${randomUUID()}`),before=fs.readFileSync(file);fs.linkSync(file,alias);
@@ -287,37 +290,47 @@ test('Windows fresh document capture authorizes before bytes and preserves captu
   }finally{store?.close();f.clean();}
 });
 
-test('Windows service state and SetupController persist privately; host/XDG suggestions remain unverified',native,t=>{
+test('Windows managed discovery is read-only and state-independent; confirmed setup persists privately',native,t=>{
   const f=fixture();let controller:SetupController|undefined;try{
-    const selector=serviceBindingFile({XDG_STATE_HOME:path.join(f.root,'state')});
+    const env={HOME:f.root,XDG_DATA_HOME:path.join(f.root,'shared-data'),XDG_CONFIG_HOME:path.join(f.root,'shared-config')};
+    const configRoot=path.join(env.XDG_CONFIG_HOME,'opencode'),dataRoot=path.join(env.XDG_DATA_HOME,'opencode');
+    privateDirectory(configRoot,true);privateDirectory(dataRoot,true);
+    const selector=serviceBindingFile(env);
+    assert.equal(fs.existsSync(path.dirname(selector)),false);assert.equal(readManagedBinding(env),undefined);
+    assert.equal(serviceBindingFile({...env,XDG_STATE_HOME:path.join(f.root,'different-state')}),selector);
+    controller=new SetupController({env},()=>payload);
+    const review=controller.run('managed-inspect',{storeRoot:f.targets.storeRoot}).delivery!.review!;
+    assert.equal(fs.existsSync(path.dirname(selector)),false);
+    const status=controller.run('managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected});assert.equal(status.configured,true);
     assert.equal(privatePaths([path.dirname(selector),path.join(path.dirname(selector),'.ownership.json')]),true);
-    controller=new SetupController(selector,()=>payload);
-    const status=controller.run('install',f.targets);assert.equal(status.configured,true);assert.equal(privatePaths([selector]),true);assert.equal(readBinding(selector).source.configRoot,f.targets.configRoot);
-    const systemRoot=process.env.SystemRoot;try{process.env.SystemRoot=path.join(f.root,'absent-system');assert.ok(controller.status().diagnostics.includes('windows-security-unavailable'));assert.throws(()=>serviceBindingFile({XDG_STATE_HOME:path.join(f.root,'state')}),/windows-security-unavailable/);}finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;}
-    controller.close();controller=new SetupController(selector,()=>({...payload,version:'0.3.0'}));controller.run('update',f.targets);assert.equal(controller.status().version,'0.3.0');
+    assert.equal(privatePaths([selector]),true);assert.equal(readManagedBinding(env)!.source.configRoot,configRoot);
+    const systemRoot=process.env.SystemRoot;try{process.env.SystemRoot=path.join(f.root,'absent-system');assert.ok(controller.status().diagnostics.includes('windows-security-unavailable'));assert.throws(()=>serviceBindingFile(env),/windows-security-unavailable/);}finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;}
+    controller.close();controller=new SetupController({env},()=>({...payload,version:'0.3.0'}));assert.equal(controller.status().version,'0.3.0');
     const hints=setupSuggestions({platform:'win32',env:{HOME:f.root,XDG_CONFIG_HOME:path.dirname(f.targets.configRoot),XDG_DATA_HOME:path.dirname(f.targets.dataRoot)},uid:undefined});assert.ok(hints);assert.ok(hints.configRoot?.value.endsWith('opencode'));
     const hostHome=t.mock.method(os,'homedir',()=>f.root);syncBuiltinESMExports();
     try{const fallback=setupSuggestions({platform:'win32',env:{},uid:undefined});assert.equal(fallback?.configRoot?.value,path.join(f.root,'.config','opencode'));assert.ok(!fallback?.configRoot?.value.includes('AppData\\Roaming'));}finally{hostHome.mock.restore();syncBuiltinESMExports();}
-    controller.run('remove-capture',f.targets);assert.equal(fs.existsSync(selector),true);
+    const checked=controller.run('managed-inspect',{}).delivery!.review!;
+    controller.run('managed-disable',{confirmed:true,expected:checked.expected});assert.equal(fs.existsSync(selector),true);
   }finally{controller?.close();f.clean();}
 });
 
-test('Windows plugin binds case aliases by directory identity and rejects a different actual source',native,async()=>{
+test('Windows retained legacy plugin binds case aliases by directory identity and rejects a different actual source',native,async()=>{
   const f=fixture();let dispose:(()=>Promise<void>)|undefined;
   const saved=new Map<string,string|undefined>();
   try{
     const configRoot=path.join(f.root,'xdg-config','opencode'),dataRoot=path.join(f.root,'xdg-data','opencode');privateDirectory(configRoot,true);privateDirectory(dataRoot,true);
     lifecycle('install',{...f.targets,configRoot,dataRoot},payload);
-    for(const[key,value]of Object.entries({AGENT_PROGRESS_BINDING:path.join(configRoot,'plugins','agent-progress','progress-binding.json').toUpperCase(),XDG_CONFIG_HOME:path.dirname(configRoot).toUpperCase(),XDG_DATA_HOME:path.dirname(dataRoot).toUpperCase(),OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
+    for(const[key,value]of Object.entries({HOME:f.root,AGENT_PROGRESS_BINDING:undefined,XDG_CONFIG_HOME:path.dirname(configRoot).toUpperCase(),XDG_DATA_HOME:path.dirname(dataRoot).toUpperCase(),XDG_STATE_HOME:path.join(f.root,'state'),XDG_CACHE_HOME:path.join(f.root,'cache'),XDG_RUNTIME_DIR:path.join(f.root,'runtime'),OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
       saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;
     }
     let execute:any,status:any;
     const ctx:any={session:{hook:async()=>({dispose:async()=>{}}),get:async({sessionID}:{sessionID:string})=>({id:sessionID,location:{directory:f.root},agent:'synthetic'})},skill:{transform:async(callback:any)=>callback({add:()=>{}})},tool:{hook:async()=>({dispose:async()=>{}}),transform:async(callback:any)=>callback({namespace:()=>{},add:(tool:any)=>{execute=tool.execute;}}),list:async()=>[{id:'agent_progress_report',options:{codemode:false}}]},rpc:{register:async(_contract:any,handlers:any)=>{status=handlers.inspect;}}};
-    dispose=await plugin.setup(ctx) as()=>Promise<void>;assert.equal((await status()).toolAvailable,true);
+    const selector=path.join(configRoot,'plugins','agent-progress','progress-binding.json').toUpperCase();
+    dispose=await setupLegacy(ctx,selector) as()=>Promise<void>;assert.equal((await status()).toolAvailable,true);
     const reply=await execute({op:'start',plan:'case-alias',oid:'start',rev:0,title:'Synthetic',items:[{id:'a',title:'Task',kind:'task'}]},{sessionID:'synthetic',agent:'synthetic'});assert.equal(JSON.parse(reply.content).rev,1);
     await dispose();dispose=undefined;
     privateDirectory(path.join(f.root,'different-data','opencode'),true);process.env.XDG_DATA_HOME=path.join(f.root,'different-data');
-    await assert.rejects(()=>plugin.setup(ctx) as Promise<unknown>,e=>(e as {code?:string}).code==='binding');
+    await assert.rejects(()=>setupLegacy(ctx,selector) as Promise<unknown>,e=>(e as {code?:string}).code==='binding');
   }finally{await dispose?.();for(const[key,value]of saved){if(value===undefined)delete process.env[key];else process.env[key]=value;}f.clean();}
 });
 

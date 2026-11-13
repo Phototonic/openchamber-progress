@@ -1,6 +1,8 @@
 import { Store, storageError } from '../../shared/store.ts';
 const [file,mode,inputJson,actorJson,captureJson]=process.argv.slice(2);
-const store=new Store(file,{busyMs:200});
+// Competing workers must outwait the winner's write (first-use backup and DDL included) so the
+// loser reports its semantic result, not a lock timeout. The message wait in the tests is longer.
+const store=new Store(file,{busyMs:5000});
 const input=JSON.parse(inputJson);
 try {
   if(mode==='before') {

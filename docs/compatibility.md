@@ -2,9 +2,30 @@
 
 ## Current use and development
 
+The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
+**2.7.0** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
+historical and do not certify managed delivery. Isolated Linux web 2.7.1 /
+independent OpenCode 2.2.7 acceptance is described below, including the native Git
+update journey. Installer, web UI and native results retain distinct scopes;
+no Windows/Electron certification is implied.
+
+Normal setup approves **Add a plugin to OpenCode**, then explicitly selects a
+private Store. Watched-file delivery can retire after disable/removal without a
+restart; caller-owned `OPENCODE_CONFIG` fallback requires an explicit restart for
+contribution add/remove or toggle changes, not necessarily same-path Git updates.
+When mode is unknown these are conditional, not a live-stop promise. External,
+remote, terminal, isolated-space and VS Code runtimes are outside managed reach.
+Legacy and explicit **Add to global config** entries can outlive the extension.
+History remains. Held-permission work cannot append after retirement but a session
+may need interruption; graceful cancellation is not guaranteed. Integrity is a
+warn-only loaded-byte comparison, explicitly weaker than former private attested
+payloads. Migration interruption/lock recovery limits are in [Setup](setup.md).
+
 Agent Progress is an installable early-access extension with Linux and native
-Windows capture. OpenCode 2.1.4 is the tested capture version; broader
-compatibility is not established. Use the [setup guide](setup.md) for installation,
+Windows capture. Linux native capture was also verified on OpenCode 2.2.7 in the
+[post-release checks](#post-release-111-checks--2026-11-12); the historical Linux
+and Windows 2.1.4 results below retain their original scope. Broader compatibility
+is not established. Use the [setup guide](setup.md) for installation,
 updates and lifecycle, including the [native Windows boundary](setup.md#native-windows).
 The selected tree's [package.json](../package.json) identifies its package version;
 [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases)
@@ -20,6 +41,344 @@ historical runs and are not the current installation procedure.
 The evidence sections retain the environments, artifacts and limitations of
 those runs; they do not certify every later checkout. References under `evidence/`
 name local-only records, not files shipped in the repository or release archives.
+
+## Managed companion acceptance
+
+The managed candidate was exercised on isolated **Linux OpenChamber web 2.7.1**,
+independent **OpenCode 2.2.7**, **Node 24.22.2** and **Bun 1.3.14**, retaining SDK
+2.7.0 and plugin SDK 2.1.4. This is not Electron, native Windows, relay, remote-host
+or every-cancellation-interleaving certification. The package version is unchanged;
+an accepted development candidate is not a new published release.
+
+`tests/fixtures/managed-companion-host.ts` owns a fresh HOME/all XDG roots,
+rootless loopback-only namespace and Chromium profile. It starts the real web UI,
+not an API-only host or synthetic SDK shell. Its local scripted provider removes
+remote providers and refuses HTTP provider transport; credentials remain absent.
+No live profile, authentication copy, paid model or real-instance restart is used.
+
+```sh
+timeout -k 10 900 node --experimental-strip-types tests/fixtures/managed-companion-host.ts \
+  --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+The 35 behavioral assertions cover visible **Add a plugin to OpenCode** / **Allow
+and enable** approval, explicit UI configuration with no pre-seeded descriptor or
+binding override, and start/change reports with matching revision/counts in rail,
+Work Status and board. Watched-file disable retires tools/guidance, re-enable
+reports a later revision, and removal retains read-only-accessible history.
+An actual legacy loader produces one capture; modified ownership and a different
+store refuse without selecting/removing their data. Same-store migration retains
+Store/source identity and history. A real expectation-publication failure after
+verified removal leaves capture off/pending; restoring the exact known synthetic
+metadata and explicitly reviewing/retrying completes that same target. Mid-unlink
+conflict is covered by the portable lifecycle regression, not host fault injection.
+
+Same-version changed native bytes warn while reporting succeeds; the service's
+expected baseline stays running during that test. A plain terminal runtime with
+the same synthetic directories lacks the managed plugin, and a restricted child
+gets no report authority/guidance. Caller-owned-config delivery is tested using
+fresh owned host processes: install requires restart, disable alone can leave the
+old runtime reporting, and an explicit restart retires it without editing the
+caller file. These are mode-specific observations, not a universal toggle deadline.
+
+The held-permission case commits neither a late report nor a capture after
+disposal. Its session required explicit interruption in this run; graceful
+cancellation remains unpromised. Fixture cleanup verified zero remaining owned
+processes/listeners. Actual unmodified 2.7.1 folder/ZIP/Git installers accept the
+declared plugin directory without a consumer build; an actual 2.7.0 installer
+refuses folder/ZIP with `host-too-old`, requiring 2.7.1, without registration.
+Portable CI, native backend-only checks and real-web acceptance have separate
+evidence scopes; no desktop-host or native Windows rerun is implied.
+
+## Native extension updates — 2026-11-13
+
+The isolated journey used unmodified **OpenChamber web 2.7.1**, independent
+**OpenCode 2.2.7**, driver/host **Node 24.22.2**, builder **Bun 1.3.14** and fresh
+**Chrome for Testing 145.0.7632.6**. The observer inside OpenCode reported Node
+compatibility **26.3.0** / Bun **1.4.4**. These are Linux web results, not desktop,
+Windows, macOS, remote-host or universal model-compliance certification. The
+shipping package version was not bumped; higher versions exist only in fixtures.
+
+```sh
+timeout -k 10 900 node --experimental-strip-types tests/fixtures/native-extension-updates-host.ts \
+  --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+Fresh HOME/all XDG roots, loopback-only network isolation and a fresh browser
+profile exclude live configuration and credentials. The unchanged host policy
+uses a fixture-only public-origin DNS mapping and constrained Git executable to
+an owned local bare remote, with credential helpers disabled. This proves the host
+flow, not public GitHub reachability. A local scripted provider supplies deliberate
+reporting; no paid model or external provider transport is used. Synthetic account
+and settings records are seeded through the published host auth-store API, not
+real integration/OAuth setup.
+
+- **Consent and retention.** Real Settings → Extensions Git install includes
+  **Add a plugin to OpenCode → Allow and enable**, followed by normal Setup review
+  and confirmation. The unchanged-permission **1.1.1 → synthetic 1.1.2** Update
+  available/Update journey needs no reapproval. Grants, scopes, storage identity,
+  synthetic account/settings, device language, private binding and history remain.
+  A separate explicit updater-module replacement while paused preserves the true
+  paused flag; it is not a same-version UI offer.
+- **Added permission.** Synthetic 1.1.3 opens the real approval dialog. **Not now**
+  leaves new files/version installed, old grants retained and the new `model`
+  capability ungranted. A safe invalid-input probe receives `400 NOT_GRANTED`
+  before model invocation. Later **Review permissions → Allow and enable** grants
+  it. Deferral is not rollback or a guarantee of old executable bytes.
+- **Cadence and refs.** Actual Settings reopen reuses its successful cached check;
+  explicit **Check installed extensions for updates** fetches again. The existing
+  module-clock input proves the one-hour boundary, not elapsed browser time.
+  Checks do not install. The separate actual Git installer/updater gate covers
+  default/main, `#main`, `#dev` and fixed `#v1.1.1`; selected refs do not follow
+  other branches/tags. Same-version changed commits produce no offer. Failed
+  broken-runtime/foreign-identity/malformed-manifest updates preserve previous
+  bytes/state. Inert folder/ZIP fixtures installed through real host endpoints
+  have no Git offer in Settings; Git-equivalent manual replacement retention is
+  not certified.
+- **Service and views.** The old service PID exits on replacement; subsequent
+  access starts another with retained progress. The continuously mounted board's
+  execution context changes. Rail/Work Status are checked on subsequent access,
+  not asserted to stay mounted simultaneously. Counts match before/after and after
+  the next report. New guests make no compatibility-route requests and show no
+  former notice/line; progress and English/Russian controls remain available.
+- **Load observations.** Watched delivery shows matching after update. Unknown
+  screenshots use an invalid synthetic expectation file, and differing-load
+  screenshots use an appended fixture companion comment plus explicit owned
+  location reload with the old service baseline. Differing load still allows an
+  authorized report. Service-failure screenshots use an owned startup-fault seam;
+  original bytes are restored and history remains. These seams are not naturally
+  occurring update failures.
+- **Caller-owned configuration.** A separate fresh-process API Git replacement
+  (unchanged approved capabilities, not a second UI consent test) from synthetic
+  1.1.3 → 1.1.4 observes matching → different → matching after the next report turn
+  without restart, then matching after explicit fixture restart. Caller config
+  stays `{}` and history survives. This is the service's loaded-fingerprint
+  observation, not independent attestation of which cached importer executed.
+  The add/remove/toggle restart caveat remains separate. No automatic restart,
+  all-session activation or graceful cancellation guarantee is established.
+
+The compatibility route remains network-free unknown/unavailable for at least one
+release. Old cached notices last until a successful compatibility read or remount;
+new guests never call the route. Source/built-service, mixed-version and portable
+distribution checks complement, rather than replace, the native journey. Private
+evidence records bundle hashes, operation counts, English/Russian screenshots and
+zero remaining owned processes/listeners after cleanup. GitHub's controlled GFM
+render strips custom-scheme Markdown links, so README offers a copyable Git URL,
+not an unverified install button.
+
+## Report tool presentation
+
+The neutral manifest contribution was exercised on isolated **Linux OpenChamber
+web 2.7.1**, independent **OpenCode 2.2.7**, **Node 24.22.2**, **Bun 1.3.14** and
+disposable Chromium. The native transcript name was confirmed as
+`agent_progress_report` before adding the rule. SDK **2.7.0**, plugin SDK **2.1.4**,
+the **>=2.7.1** host floor, grants and shipped runtime entries remain unchanged.
+
+```sh
+timeout -k 10 600 node --experimental-strip-types tests/fixtures/managed-companion-host.ts \
+  --report-tool-presentation --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+The fixture reuses managed installation/approval and explicit configuration with
+fresh HOME/XDG roots, a rootless loopback-only namespace and a credential-free
+scripted provider. It checks real start/change/revise/finish calls, identical
+replay, same-status change, conflict, unfinished refusal, schema rejection and
+accepted reporting with denied capture. Native message identities correlate each
+row with its actual transcript; pointer/Enter/Space disclosure, checklist glyph,
+literal receipts/JSON errors, native red errors and a 390 px chat are inspected.
+The native error UI flattens whitespace but retains the error message. An unrelated
+file-read row stays generic. Disabling the extension restores the generic tools
+glyph on retained messages without changing reports; the host's generic humanized
+name coincides with the neutral manifest label. Cleanup verifies no owned processes
+or listeners, zero credentials and no remote provider transport.
+
+The richer subtitle is deliberately **no-go**: effective and same-status calls are
+not distinguishable from receipt alone, and denied capture is established by a
+subsequent read, not by the accepted receipt. This is not a reproduction or diagnosis
+of a previously reported accepted-but-ineffective defect, nor proof of model
+compliance, Electron, Windows, relay or screen-reader behavior. See
+[the presentation contract](ui.md#report-calls-in-chat).
+
+Folder/ZIP SDK parsing preserves the contribution. Older-parser tolerance is not
+older-host installation support: inspected SDK 2.5.1 already recognizes `tools`.
+The existing version gate remains authoritative; the isolated 2.7.0 installer
+refuses the candidate folder and ZIP with `host-too-old`, requiring 2.7.1. No floor
+reduction or universal claim that old hosts ignore the field is made.
+
+## Plan composer fixture coverage
+
+The candidate requires **OpenChamber >=2.7.1**, retains build SDK **2.7.0**, and was exercised on isolated
+Linux **OpenChamber web 2.7.1**, with independent **OpenCode 2.2.7**, **Node
+24.22.2** and **Bun 1.3.14**. This is web/Linux evidence, not Electron, native
+Windows, phone or relay certification. The package version remains unchanged;
+a development candidate is not a new published release.
+
+The real-host driver is `tests/browser/plan-composer-qa.ts`. Supply only a fresh
+credential-free host and fixture, never a live profile:
+
+```sh
+timeout 600 node --experimental-strip-types tests/browser/plan-composer-qa.ts --artifacts <local-evidence> --host-url <isolated-loopback-host> --fixture <disposable-fixture.json> --control-url <disposable-loopback-control> --chromium <installed-browser>
+```
+
+The fixture uses synthetic HOME/all XDG roots, a throwaway host/CLI installation,
+a credential-free scripted provider and a rootless loopback-only namespace. It
+loads the current shipped service/background bytes, seeds reports through Store
+operations using real unprompted sessions, and explicitly supplies verified test
+bindings. That binding technique is test setup, not automatic source discovery
+or installation acceptance. The actual web UI is enabled, not API-only. The
+extension never sends. After recording zero provider calls for all extension
+journeys, the harness acts as the user and sends one chip to the local scripted
+provider to verify its outgoing context. No remote or paid model is called.
+Owned processes and temporary profiles are removed.
+
+Coverage includes the real `@` rows and chip, selection-time resolution compared
+with the service, removed-target refusal, the host's session **Export** submenu
+with both action labels, an inactive clicked source, a saved finished choice and
+other-plan notice, append into an existing active draft, an active-chat switch
+while the source read is held, no/one/several plans, service refusal and permission
+withdrawal. Success feedback explicitly names the **active chat** and review before
+sending. The chip gate captures the outgoing scripted-provider request and checks
+that decoded content contains the full resolved summary exactly. Read-only
+DevTools inspection of the chip handler's captured guest-reference `contextText`
+provides additional evidence; this host has no visible context-text inspector.
+Closure inspection is version-qualified test machinery, not a supported host API.
+
+Distribution checks separately cover the current SDK guest validator, background
+HTML/classic-script folder/ZIP allowlists, nine generated-entry parity checks and
+Git entry hashes with no consumer compilation. Unmodified **2.5.1** parser and
+installer checks of the earlier `>=2.5.1` feature-floor candidate accepted its
+background/actions and existing views while dropping unknown `mentions`. That is
+historical parser/installer tolerance, not a full older-host UI journey or a
+promise that a later candidate declaring a higher host floor can install there.
+Current installer gates derive the actual version from the supplied isolated
+`@openchamber/web` package, not a hardcoded minimum. On an older installer, run
+`scripts/verify-host-package.ts <candidate-folder> --expect-refusal` with
+`AGENT_PROGRESS_HOST_MODULE` pointing to that installer's unmodified `install.js`;
+the folder and sibling ZIP must both receive `host-too-old`, required `2.7.1`,
+without registration. Use synthetic HOME/all XDG roots, as for supported installs.
+Use the selected candidate's manifest and explicit host-version gate for support
+and installation claims. Full portable CI is separate from these host checks;
+its five native-runtime exclusions remain unchanged.
+
+## Post-release 1.1.1 checks — 2026-11-12
+
+These checks close the three deferred Linux checks for published **1.1.1**.
+`git ls-remote --tags origin` confirmed `v1.0.0` and `v1.1.1`; the latter resolves
+to `9cb5c422dadb550883925731c632bfc89dcf41d4`, also the checked `main`/`dev` tree.
+Test-only adjustments described below do not change release runtime bytes.
+
+Environment: **OpenChamber 2.7.0**, **OpenCode 2.2.7**, build SDK
+**@openchamber/sdk 2.7.0**, plugin/client **2.1.4**, standalone **Node 24.22.2**,
+and **Bun 1.3.14**. The extracted desktop executable reports **Electron 45.2.1 /
+Node 24.22.1 / Chromium 156.0.8078.75**. Node 24.22.2 ran the tests and imported
+host-installer module; its result is not a host-Node installer run.
+
+Only an executable copy of the installed AppImage was extracted, to
+`/tmp/opencode/agent-progress-t4-appimage/squashfs-root`. No installed profile,
+configuration, authentication or data was copied. AppImage SHA-256:
+`11a52bccbfbd00aa7b5a66ef48119df76b8cff259faee47499647a02c19bb401`;
+`resources/app.asar` SHA-256:
+`ac67c833657f0185c02486d7be03fbad0ec524174bdf21c38ac12f309801837b`.
+The managed PATH wrapper and bundled CLI were not invoked. The official CLI archive
+URL in [Historical CLI isolation](#historical-cli-isolation) now supplies **2.2.7**,
+not the historical 2.2.2 pin or the desktop manifest's bundled 2.2.6. This run
+explicitly selected and verified the new independent executable; it does **not**
+certify 2.2.6 or replace the historical 2.2.2 artifact pin. Archive SHA-256:
+`89a6cee227b54bc011179c528a5e63176032462b1a5e21723b616801cddc2ca7`;
+executable SHA-256:
+`589253d36810f21217edd51545cd435b328cdc3cf4f451fbe0cce6f88afcf5e1`.
+
+### Native sub-agent activity — passed after test maintenance
+
+```sh
+OPENCODE_BINARY=/tmp/opencode/agent-progress-probe-cli/opencode \
+  EVIDENCE=/tmp/opencode/post-release-evidence/activity-current-host \
+  timeout 680 node --experimental-strip-types --test tests/backend/subagent-activity-runtime.test.ts
+```
+
+The default regression phase finished with **exit 0; 1 test passed, no skips**.
+Both built-in and slim **2.2.25 V2** profiles report `pass: true`, driver exit 0,
+stopped hosts, removed process groups and removed private fixture roots. This is
+the source-built companion regression, not a verbatim-built companion rerun.
+The built-in profile mounted the real rail, Work Status and board, exercised
+session switching and a native activity change, and reached UI stage `complete`.
+Both profiles passed the production report/binding, restricted-child, run outcome,
+handoff, recovery, authenticated API and durable-restart assertions. Scripted local
+providers ran in loopback-only network namespaces with zero provider credentials.
+
+The first attempt exited 1 at `current-plan-roster-readiness-timeout`: the harness
+required a finished linked run outside the records disclosure, but the shipped UI
+intentionally folds every non-running record. Readiness now requires the retained
+Accepted fact regardless of folding; the semantic check requires that finished
+run to be folded. A second attempt exited 1 at `native page open:
+non-actionable-target`: OpenChamber 2.7.0 moved extension pages into the sidebar's
+**More → Extension pages** menu. The driver now uses that real menu. Neither was
+a demonstrated product defect; no product code or safety assertion was relaxed.
+The focused harness tests pass **34/34**, including folded-record readiness and
+rejection of missing Accepted facts; root and UI typechecks also exit 0.
+
+### Versioned desktop offers and companion upgrade — observed
+
+A fresh private HOME/XDG/profile under `/tmp/opencode/post-release-upgrade` used
+the extracted AppRun and existing Wayland transport, with an empty inherited
+environment and the independent CLI override. Clean tracked-file projections of
+`v1.0.0` and `v1.1.1` supplied the extension and unchanged built companion bytes.
+The real Settings → Extensions folder installer, permission approval and extension
+setup/review/confirmation installed 1.0.0; an explicit isolated **Restart OpenCode**
+loaded it and created run storage format 1.
+
+The 1.0.0 board visibly offered **Official main version 1.1.1 available · This
+extension 1.0.0**. Extension replacement used the real folder **Reinstall** and
+permission approval, not Git update discovery or a host Git-update button. The
+1.1.1 board then offered **Companion update available**, **Installed 1.0.0 → bundled
+1.1.1. Nothing changes until you review and confirm.**, and **Review update**.
+Review displayed installed 1.0.0 and bundled 1.1.1; checking confirmation and
+selecting **Update** succeeded. The board requested an OpenCode restart; a
+read-only SQLite query still found format 1 and the retained loss flag.
+
+Settings → General → **Restart OpenCode** restarted only the disposable managed
+runtime. A read-only verification command exited 0 with `format: 2`,
+`planPreserved: true`, `seededRunPreserved: true`, and `totalRuns: 1`. The released
+Store APIs had seeded one working plan, one succeeded dispatch and a gap, using
+real unprompted parent/child sessions. These are synthetic recording inputs, not
+a model-driven subagent execution. The plan snapshot and seeded run payload were
+preserved. Migration retained `loss: 1`, `last_loss_at: null`, `loss_sequence: 0`
+and `dismissed_loss_sequence: 0`. The board still showed the plan and **1 finished**;
+its expanded **Partial** cue said **Some run information wasn’t recorded. This
+happened before the update; the date is unknown.** The reload-pending copy cleared.
+
+Provider credential inventories were zero before and after; no prompt or paid
+model was called. Owned-process HOME/XDG checks found no unexpected scopes. All
+owned desktop/runtime/service processes were stopped; the owned process group and
+CDP listener were absent afterwards. This is versioned notice/companion-update
+evidence, **not** certification of host Git auto-update, rollback, model-driven
+runs, Windows or macOS. Local-only screenshots and native JSON are under
+`/tmp/opencode/post-release-evidence/`; they are not shipped artifacts.
+
+### Extracted-host folder/ZIP installer gate — passed
+
+After extracting the copied ASAR with its unpacked dependencies:
+
+```sh
+bun run package
+AGENT_PROGRESS_HOST_MODULE=/tmp/opencode/agent-progress-t4-appimage/squashfs-root/resources/app-extracted/node_modules/@openchamber/web/server/lib/guests/install.js \
+  timeout 180 bun run verify:package
+```
+
+Both commands exited **0**. The actual **2.7.0** host module reported
+`actualHostInstaller: "folder"` and `"zip"`, each with `accepted: true`, version
+`1.1.1`, and all three guest entries plus the service entry present. At that time the
+gate passed the declared minimum host compatibility value `2.5.1` to that module;
+it does not spoof the module's implementation version. Package lifecycle and
+content checks passed too. Installation used disposable registries only; this
+gate launches no guest or desktop and installs nothing into the real host. No
+new product defect was identified by these three checks.
 
 ## Native structured task capture limitation
 
@@ -229,7 +588,7 @@ wrong-version binary fails closed; do not substitute the managed PATH launcher,
 download a runtime, or select the older installer-based native case for this check.
 
 The host range is distinct from `@opencode/plugin`/client **2.1.4** and the current
-build dependency `@openchamber/sdk` **2.7.0** (minimum OpenChamber host **2.5.1**).
+build dependency `@openchamber/sdk` **2.7.0** (current candidate minimum OpenChamber host **2.7.1**).
 Verified independent2.2.2 archive SHA-256:
 `3a38b8c284450a5ca81a2c1ebbf29ebe05e618518f095da0066652167eb0eb33`;
 executable SHA-256:

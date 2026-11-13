@@ -18,6 +18,31 @@ const criteria = (patch: Partial<SearchCriteria> = {}): SearchCriteria => ({ q: 
 const identity = (b: Backend) => ({ storeId: b.f.storeId, binding: { sourceId: b.f.alpha.id, verified: true } });
 const request = (patch: Partial<SearchRequest> = {}): SearchRequest => ({ q: '', source: null, session: null, lifecycle: null, status: null, archived: 'exclude', limit: 50, cursor: null, ...patch });
 
+test('Russian search copy preserves the submitted words and machine identities', () => {
+  assert.equal(queryProblem('x'.repeat(257), 'ru'), 'Используйте не более 256 символов.');
+  const c = criteria({ q: ' <Export> CSV ', project: 'p:alpha', labels: { project: 'Alpha' } });
+  assert.equal(chipLabel('q', c, 'ru'), 'Слова: <Export> CSV');
+  assert.equal(chipLabel('project', c, 'ru'), 'Проект: Alpha');
+  assert.match(scopeText(c, 'ru'), /Поиск/);
+  assert.equal(c.q, ' <Export> CSV ');
+});
+
+test('held search failure changes presentation language without a new action or read', async () => {
+  let calls = 0;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const c = new SearchController({ service: () => ({ serviceRequest: async () => { calls++; await held; return { status: 503, body: '{"error":"busy"}' }; } }), changed: () => {}, visible: () => true });
+  const submitted = criteria({ q: '<Export> CSV', source: 'source-alpha' });
+  c.submit('language-case', submitted, { storeId: 'store-example', binding: { sourceId: 'source-alpha', verified: true } }, workspace());
+  release(); await done(c);
+  const en = c.view()!, ru = c.view('ru')!;
+  assert.equal(en.stop, 'failed'); assert.equal(ru.status.id, en.status.id);
+  assert.match(en.status.text, /Searching stopped/); assert.match(ru.status.text, /Поиск остановлен/);
+  assert.deepEqual(ru.criteria, submitted); assert.deepEqual(ru.page, en.page);
+  assert.equal(calls, 1);
+  c.dispose();
+});
+
 function controller(svc: SearchProxy) {
   let visible = true, changes = 0;
   const c = new SearchController({

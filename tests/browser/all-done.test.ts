@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as model from '../../ui/shared/model.ts';
 import { summaryText, type PlanSummary, type PlanView } from '../../ui/shared/model.ts';
 import * as format from '../../ui/shared/format.ts';
+import * as i18n from '../../ui/shared/i18n.ts';
 import * as live from '../../ui/shared/live.ts';
 import * as scope from '../../ui/shared/scope.ts';
 import { StatusSelection } from '../../ui/status/selection.ts';
@@ -46,6 +47,7 @@ function fixture() {
     if (name === './primitives.ts') return primitives;
     if (name === './model.ts') return model;
     if (name === './format.ts') return format;
+    if (name === './i18n.ts') return i18n;
     return {};
   });
   type Ui = { selection: StatusSelection };
@@ -58,6 +60,7 @@ function fixture() {
     if (name === '../shared/primitives.ts') return primitives;
     if (name === '../shared/model.ts') return model;
     if (name === '../shared/format.ts') return format;
+    if (name === '../shared/i18n.ts') return i18n;
     if (name === '../shared/live.ts') return live;
     if (name === '../shared/scope.ts') return scope;
     if (name === './selection.ts') return { StatusSelection };

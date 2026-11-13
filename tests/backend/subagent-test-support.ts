@@ -30,7 +30,8 @@ export async function makeFixture() {
   let lookup=(id:string)=>Promise.resolve(records.get(id));
   const ctx:any={location:{directory:'/synthetic/alpha'},session:{get:({sessionID}:any)=>lookup(sessionID)},tool:{hook:async(name:string,callback:any)=>{hooks.set(name,callback);return {dispose:async()=>{hooks.delete(name);}};}},event:{subscribe:({signal}:any)=>{signal.addEventListener('abort',()=>events.close(),{once:true});return events;}}};
   const actor=(id='A'):Actor=>({sourceId:source.id,sessionId:id,agent:'synthetic',directory:'/synthetic/alpha',projectId:'alpha',parentId:records.get(id)?.parentID,ancestry:id==='C1'||id==='C2'?['A']:[],verifiedSource:true});
-  const register=()=>registerDelegation(ctx,{store,sourceId:source.id,identity:(id,alive,signal)=>sessionIdentity(ctx,source,id,'unknown',{alive,signal,sameScope:true}),now:()=>clock});
+  let authority=true;
+  const register=()=>registerDelegation(ctx,{store,sourceId:source.id,identity:(id,alive,signal)=>sessionIdentity(ctx,source,id,'unknown',{alive,signal,sameScope:true}),now:()=>clock,alive:()=>authority});
   let binding=await register();
   const seed=(plan='plan-alpha',owner='A')=>store.apply({op:'start',plan,oid:'start',rev:0,title:'Synthetic plan',items:[{id:'task-1',title:'First',kind:'task'},{id:'task-2',title:'Second',kind:'task'},{id:'group',title:'Group',kind:'group'}]},actor(owner));
   seed();
@@ -44,6 +45,7 @@ export async function makeFixture() {
   const complete=async(child='C1',message='message-1')=>{await native('call-1',message);await before('call-1',message);await after('call-1',message,child);await close(message);};
   return {store,source,actor,records,hooks,ctx,get events(){return events;},seed,request,before,after,emit,native,close,complete,
     get binding(){return binding;},
+    retireAuthority(){authority=false;},
     lookup(fn:typeof lookup){lookup=fn;},advance(ms:number){clock+=ms;},
     declare:(r=request(),a=actor())=>binding.declare(r,a),
     plan:()=>store.get(source.id,'plan-alpha')!,

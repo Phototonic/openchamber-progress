@@ -17,6 +17,7 @@ import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as source from '../../ui/shared/source.ts';
+import * as language from '../../ui/shared/language.ts';
 import { HEALTH, setupRead } from './fixtures.ts';
 import { CORE_CONTRIBUTIONS, CORE_ITEMS, CORE_LINKS, deepChain, focusEnvelope, focusPage, focusSummary, SA, SB, SC, SD, scaleContributions, scaleItems, SCALE_LINKS, STORE } from './focus-controls-fixtures.ts';
 
@@ -350,6 +351,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
       // Controller detail-read starts are counted apart from the pages (and internal restarts) they request.
       if (name === './source.ts') return { ...source, readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
       if (name === './cleanup.ts') return cleanup;
+      if (name === './language.ts') return language;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };

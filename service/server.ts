@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { MENTIONS_SEARCH_PATH, MENTIONS_RESOLVE_PATH } from '@openchamber/sdk';
+import { mentionBody, searchMentions, resolveMention } from './mentions.ts';
 import { GRAPH_LIMITS } from '../shared/plan-graph.ts';
 import { RUN_LIMITS, parseReconcileBody, parseDismissLossBody, type RunRequest } from '../shared/subagent-runs.ts';
 import { parseCaptureBinding } from '../shared/document-captures.ts';
@@ -7,15 +9,17 @@ import { timingSafeEqual } from 'node:crypto';
 import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared/progress.ts';
 import { Store, storageError } from '../shared/store.ts';
 import { SetupError, type Action } from '../setup/lifecycle.ts';
+import { ManagedBindingError } from '../shared/managed-binding.ts';
+import type { ManagedSetupAction } from '../shared/progress.ts';
 import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
 import { blockedTiming } from './blocked-timing.ts';
-import { ExtensionUpdates } from './extension-updates.ts';
+import { RELEASE } from '../shared/release.ts';
 import { parseCleanup } from '../shared/cleanup.ts';
 import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
 
 /** Only fixed read/control routes. No store path, token or SQL from request bodies. */
-export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController, updates = new ExtensionUpdates()) {
+export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
   if (!token) throw new ProgressError('binding');
   const expected = Buffer.from(`Bearer ${token}`);
   const server = http.createServer({maxHeaderSize:32*1024},async (req,res) => {
@@ -26,9 +30,25 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
+      mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
+      if(mentionRoute){
+        if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
+        if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
+        if(url.search)throw new ProgressError('invalid');
+        let size=0;const chunks:Buffer[]=[];
+        for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
+        let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));}catch{throw new ProgressError('invalid');}
+        const search=url.pathname===MENTIONS_SEARCH_PATH,body=mentionBody(text,search?'search':'resolve');
+        const active=setup?setup.current():{store,error:unavailableCode};if(!active.store)return answer(503,{error:active.error??'storage'});
+        const alive=()=>!req.aborted&&!req.socket.destroyed&&!res.destroyed;
+        // Resolve pages across awaits; take the current Store per page because a concurrent request may have reopened it.
+        let held:Store|undefined=active.store;
+        const acquire=()=>{const s=held??(setup?setup.current().store:store);held=undefined;if(!s)throw new ProgressError('storage');return s;};
+        return answer(200,search?searchMentions(active.store,body.query as string,body.directory as string|null,alive):await resolveMention(acquire,body.id as string,alive));
+      }
       graphRoute=url.pathname==='/v1/plan-graph';
       if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile','/v1/subagent-runs/dismiss-loss'].includes(url.pathname);
@@ -77,7 +97,9 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
         if(url.search)return answer(404,{error:'not-found'});
         if(req.headers['content-length']&&req.headers['content-length']!=='0'||req.headers['transfer-encoding'])return answer(400,{error:'body-not-allowed'});
-        return answer(200,await updates.check());
+        // Compatibility backoff for old guests, not a scheduled remote check.
+        return answer(200,{installedVersion:RELEASE,repository:'Phototonic/openchamber-progress',ref:'main',
+          state:'unknown',checkedAt:null,stale:false,diagnostic:'unavailable',nextCheckAt:new Date(Date.now()+3_600_000).toISOString()});
       }
       if(url.pathname==='/v1/setup'||url.pathname.startsWith('/v1/setup/')) {
         if(url.search)return answer(404,{error:'not-found'});
@@ -88,12 +110,12 @@ export function createProgressServer(store: Store | undefined, token: string, un
           return answer(200,setup.status(true));
         }
         const action=url.pathname.slice('/v1/setup/'.length);
-        if(!['inspect','install','update','disable','enable','remove-capture'].includes(action))return answer(404,{error:'not-found'});
+        if(!['inspect','install','update','disable','enable','remove-capture','managed-inspect','managed-configure','managed-migrate','managed-enable','managed-disable'].includes(action))return answer(404,{error:'not-found'});
         if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
         let size=0;const chunks:Buffer[]=[];
         for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
         let body:unknown;try{const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));body=text?JSON.parse(text):{};}catch{throw new ProgressError('invalid');}
-        return answer(200,setup.run(action as Action,body));
+        return answer(200,setup.run(action as Action|ManagedSetupAction,body));
       }
       if (req.headers['content-length'] && req.headers['content-length'] !== '0' || req.headers['transfer-encoding']) return answer(400,{error:'body-not-allowed'});
       const active=setup?setup.current():{store,error:unavailableCode};const currentStore=active.store;
@@ -101,7 +123,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if (req.method !== 'POST') return answer(405,{error:'method-not-allowed'});
         if (url.search) return answer(404,{error:'not-found'});
         if(!currentStore)return answer(503,{error:active.error??'storage'});
-        if(setup&&url.pathname.endsWith('/enable')){setup.run('enable',{confirmed:true});return answer(200,{ok:true,captureEnabled:true});}
+        if(setup&&url.pathname.endsWith('/enable')){setup.enableCapture();return answer(200,{ok:true,captureEnabled:true});}
         currentStore.setEnabled(url.pathname.endsWith('/enable')); return answer(200,{ok:true,captureEnabled:url.pathname.endsWith('/enable')});
       }
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
@@ -122,7 +144,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         // routes, diagnostics here) instead of a host-level service failure.
         if (currentStore) {
           const runs=currentStore.subagentRunStorage();
-          return answer(200,{ok:true,ready:true,sqlite:true,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+          return answer(200,{ok:true,ready:true,sqlite:true,planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         }
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
@@ -162,15 +184,13 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
     } catch (e) {
+      if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
   server.requestTimeout=5000;server.headersTimeout=5000;
-  const close=server.close.bind(server);
-  server.close=(callback?)=>{updates.close();return close(callback);};
-  server.on('close',()=>updates.close());
   return server;
 }

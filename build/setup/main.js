@@ -2362,10 +2362,11 @@ function capDigest(result) {
 var normalize = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
-  const tokens = normalize(q).trim().split(/\s+/u).filter(Boolean);
+  const tokens = queryTokens(q);
   requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
   return tokens;
 }
+var queryTokens = (q) => normalize(q).trim().split(/\s+/u).filter(Boolean);
 function searchMatches(tokens, title, id) {
   const t = normalize(title), key = normalize(id);
   return tokens.every((word) => t.includes(word) || key.includes(word));
@@ -2916,6 +2917,103 @@ class Store {
   searchState(storeId, keys) {
     return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys));
   }
+  mentionCandidates(directory, alive = () => true) {
+    requireProgress(directory === null || typeof directory === "string" && directory.length <= 4096 && !directory.includes("\x00"));
+    const started = performance.now();
+    return this.transaction(false, () => {
+      const r = { binding: { ...this.readBinding }, candidates: [], limited: false, work: { planSlots: 0, sessionSlots: 0, inputBytes: 0 } };
+      const checkpoint = () => {
+        requireProgress(alive(), "storage");
+        if (performance.now() - started >= 500) {
+          r.limited = true;
+          return false;
+        }
+        return true;
+      };
+      const normalized3 = directoryFilter(directory ?? undefined), projects = new Set;
+      let sessionsComplete = false, projectUnknown = false;
+      if (normalized3 !== undefined && this.readBinding.verified && this.readBinding.sourceId) {
+        let after = "";
+        const next2 = this.db.prepare("SELECT id,length(CAST(actor AS BLOB)) AS bytes,CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id>? ORDER BY id LIMIT 1");
+        while (r.work.sessionSlots < 512 && checkpoint()) {
+          const row2 = next2.get(this.readBinding.sourceId, after);
+          if (!row2) {
+            sessionsComplete = true;
+            break;
+          }
+          r.work.sessionSlots++;
+          after = String(row2.id);
+          if (typeof row2.actor !== "string" || r.work.inputBytes + Number(row2.bytes) > 16 * 1024 * 1024) {
+            r.limited = true;
+            break;
+          }
+          r.work.inputBytes += Number(row2.bytes);
+          let a;
+          try {
+            a = JSON.parse(row2.actor);
+          } catch {
+            throw new ProgressError("corrupt");
+          }
+          requireProgress(a.sourceId === this.readBinding.sourceId && a.sessionId === row2.id && typeof a.directory === "string", "corrupt");
+          if (directoryFilter(a.directory) === normalized3) {
+            if (typeof a.projectId === "string" && a.projectId.length > 0 && a.projectId.length <= 4096)
+              projects.add(a.projectId);
+            else
+              projectUnknown = true;
+          }
+        }
+        if (!sessionsComplete)
+          r.limited = true;
+      }
+      const project = sessionsComplete && !projectUnknown && projects.size === 1 ? [...projects][0] : undefined;
+      let source = "", id = "";
+      const installed = cleanupInstalled(this.db);
+      const next = this.db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1");
+      const snapshot2 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
+      let exhausted = false;
+      while (r.work.planSlots < 512 && checkpoint()) {
+        const row2 = next.get(source, id);
+        if (!row2) {
+          exhausted = true;
+          break;
+        }
+        r.work.planSlots++;
+        source = String(row2.source);
+        id = String(row2.id);
+        requireProgress(identifier(source) && identifier(id), "corrupt");
+        const state = installed ? cleanupState(this.db, source, id) : undefined;
+        if (state && state.state !== "visible")
+          continue;
+        const bytes = Number(row2.bytes);
+        if (bytes > 1024 * 1024) {
+          r.limited = true;
+          continue;
+        }
+        if (r.work.inputBytes + bytes > 16 * 1024 * 1024) {
+          r.limited = true;
+          break;
+        }
+        const text = snapshot2.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id)?.snapshot;
+        requireProgress(typeof text === "string", "corrupt");
+        r.work.inputBytes += bytes;
+        let p;
+        try {
+          p = JSON.parse(text);
+        } catch {
+          throw new ProgressError("corrupt");
+        }
+        if (!validateDigestSnapshot(p, source, id, Number(row2.revision)) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || typeof p.directory !== "string" || p.directory.length > 4096 || !Array.isArray(p.links) || p.links.length > 64) {
+          r.limited = true;
+          continue;
+        }
+        const verified = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified === 1;
+        const locality = normalized3 !== undefined && directoryFilter(p.directory) === normalized3 ? 0 : project && verified && source === this.readBinding.sourceId && p.projectId === project ? 1 : 2;
+        r.candidates.push({ plan: this.summary(p), verified, locality });
+      }
+      r.limited ||= !exhausted;
+      return r;
+    });
+  }
   resumePlans(request, options = {}) {
     return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request, options.now));
   }
@@ -3099,14 +3197,28 @@ class Store {
     });
   }
   detail(source, id, page = 0) {
+    return this.detailPage(source, id, page);
+  }
+  mentionDetail(source, id, page = 0) {
+    return this.detailPage(source, id, page, 1024 * 1024);
+  }
+  detailPage(source, id, page, snapshotBytes) {
     return this.transaction(false, () => {
+      if (snapshotBytes !== undefined) {
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(source, id);
+        requireProgress(row2, "not-found");
+        requireProgress(Number(row2.bytes) <= snapshotBytes, "storage");
+      }
       requireProgress(Number.isSafeInteger(page) && page >= 0);
       const p = this.raw(source, id);
       requireProgress(p, "not-found");
       const start = page * LIMITS.pageSize;
-      const rows = this.db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(source, id, LIMITS.pageSize + 1, start);
+      const rows = this.db.prepare(`SELECT ${snapshotBytes === undefined ? "payload" : "CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload"} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source, id, LIMITS.pageSize + 1, start);
+      if (snapshotBytes !== undefined)
+        requireProgress(rows.every((r) => typeof r.payload === "string"), "storage");
       return {
         ...this.metadata(),
+        ...snapshotBytes === undefined ? {} : { assembly: { itemCount: p.items.length } },
         plan: this.summary(p),
         links: p.links,
         items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
@@ -3822,6 +3934,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   need(payload && typeof payload.plugin === "string" && payload.plugin.length > 0 && payload.guidance.length > 0 && payload.removal.length > 0 && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(payload.version), "payload-invalid");
   need(action === "update" ? info.installed : !info.installed, action === "update" ? "not-installed" : "collision");
   const old = info.installed ? owned(targets) : undefined;
+  if (old && !readFileSync2(path5.join(old.root, "index.js"), "utf8").includes("plugin.setupLegacy?"))
+    throw new SetupError("legacy-update-requires-managed-migration");
   if (!existsSync4(targets.storeRoot))
     privateDirectory(targets.storeRoot, true);
   const store = new Store(path5.join(targets.storeRoot, "progress.sqlite"), { create: true });
@@ -3856,7 +3970,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   if (old) {
     manifest = { ...old.manifest, active: release, releases: { ...old.manifest.releases, [release]: { version: payload.version, files: releaseHash } } };
   } else {
-    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}return(await import(pathToFileURL(path.join(dir,'index.js')).href)).default.setup(ctx);}};`;
+    const loader = `import{readFileSync,lstatSync,realpathSync}from'node:fs';import{createHash}from'node:crypto';import{pathToFileURL}from'node:url';import path from'node:path';function same(file){const a=lstatSync(file,{bigint:true}),b=lstatSync(realpathSync(file),{bigint:true});return a.nlink===1n&&a.ino!==0n&&a.dev===b.dev&&a.ino===b.ino;}export default{id:'agent-progress',async setup(ctx){const selector=new URL('./.ownership.json',import.meta.url);if(process.platform==='win32'&&lstatSync(selector,{bigint:true}).nlink>1n)throw new Error('agent-progress-installation-invalid');const m=JSON.parse(readFileSync(selector,'utf8'));if(m.product!=='openchamber-agent-progress'||m.installId!==${javascriptLiteral(binding.installId)}||!/^[a-f0-9]{64}$/.test(m.active)||!m.releases[m.active])throw new Error('agent-progress-installation-invalid');const dir=path.join(${javascriptLiteral(payloadRoot)},m.active);for(const[name,hash]of Object.entries(m.releases[m.active].files)){const file=path.join(dir,name);if(!/^[A-Za-z0-9_.-]+$/.test(name)||(process.platform==='win32'?!same(file):realpathSync(file)!==file)||!lstatSync(file).isFile()||createHash('sha256').update(readFileSync(file)).digest('hex')!==hash)throw new Error('agent-progress-payload-modified');}const plugin=await import(pathToFileURL(path.join(dir,'index.js')).href);return plugin.setupLegacy?plugin.setupLegacy(ctx,path.join(dir,'progress-binding.json')):plugin.default.setup(ctx);}};`;
     const rootFiles = { "index.js": loader, "package.json": JSON.stringify({ name: "openchamber-agent-progress", version: payload.version, type: "module", exports: { ".": "./index.js" } }), "progress-binding.json": JSON.stringify(binding), "remove.js": payload.removal, "SKILL.md": payload.guidance };
     manifest = { product: "openchamber-agent-progress", installId: binding.installId, active: release, files: hashes(rootFiles), releases: { [release]: { version: payload.version, files: releaseHash } } };
     const plugins = path5.dirname(info.packageRoot);
@@ -3884,7 +3998,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/release.ts
-var RELEASE = "1.1.1";
+var RELEASE = "1.2.0";
 
 // setup/cli.ts
 try {

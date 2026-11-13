@@ -1,6 +1,60 @@
 // Frame-owned reading/interaction state. No DOM, timers, storage or animation.
 import { anchorSelection, neighbour, relations, type MapLayout, type Transform } from './dependency-map-layout.ts';
 import { statusMatch, type ItemView, type StatusFilter } from './model.ts';
+import type { InterfaceLanguage } from './i18n.ts';
+import { formatCount } from './format.ts';
+
+export type MapAnnouncement =
+  | { kind: 'selection'; title: string; status: ItemView['status']; guidance: boolean; ready: boolean; skipped: boolean; up: number; down: number; hidden: number }
+  | { kind: 'selected-removed' | 'focused-removed' | 'list-removed' | 'current' | 'cleared' }
+  | { kind: 'filters' | 'fit'; count: number };
+const ANNOUNCEMENTS = {
+  en: {
+    'selected-removed': 'The selected task is no longer recorded. Moved to the next available map target.',
+    'focused-removed': 'The focused task is no longer recorded. Moved to the next available map target.',
+    'list-removed': 'That list task is no longer recorded in this map.',
+    current: 'Focused current reported work; active filters unchanged.',
+    cleared: 'Selection cleared.',
+    filters: (n: number, tasks: string) => `${n} ${tasks} shown. Layout unchanged.`,
+    fit: (n: number, tasks: string) => `Fit all: ${n} visible ${tasks}; active filters unchanged.`,
+    working: 'Reported working', blocked: 'Explicitly blocked', ready: 'Ready, recorded prerequisites only',
+    skipped: 'Waiting on a skipped recorded prerequisite', waiting: 'Waiting on recorded prerequisites',
+    reported: { pending: 'Reported pending', working: 'Reported working', blocked: 'Reported blocked', done: 'Reported done', skipped: 'Reported skipped' },
+    selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}. ${state}. ${m.up} direct ${up}; ${m.down} direct ${down}.${m.hidden ? ` ${m.hidden} ${hidden} hidden by filters.` : ''}`,
+    tasks: ['task', 'tasks', 'tasks', 'tasks'], prerequisites: ['prerequisite', 'prerequisites', 'prerequisites', 'prerequisites'], dependents: ['dependent', 'dependents', 'dependents', 'dependents'], relationships: ['relationship', 'relationships', 'relationships', 'relationships'],
+  },
+  ru: {
+    'selected-removed': 'Выбранная задача больше не записана. Фокус перенесён на следующий доступный элемент карты.',
+    'focused-removed': 'Задача в фокусе больше не записана. Фокус перенесён на следующий доступный элемент карты.',
+    'list-removed': 'Эта задача из списка больше не записана на карте.',
+    current: 'Показана текущая работа по отчётам; действующие фильтры не изменены.',
+    cleared: 'Выбор снят.',
+    filters: (n: number, tasks: string) => `Показано: ${formatCount(n, 'ru')} ${tasks}. Расположение не изменено.`,
+    fit: (n: number, tasks: string) => `Вся карта: ${formatCount(n, 'ru')} ${tasks} в поле зрения; действующие фильтры не изменены.`,
+    working: 'Сообщено: в работе', blocked: 'Явно заблокирована', ready: 'Готова, только по записанным зависимостям',
+    skipped: 'Ожидает пропущенную записанную зависимость', waiting: 'Ожидает записанные зависимости',
+    reported: { pending: 'Сообщено: ожидает', working: 'Сообщено: в работе', blocked: 'Сообщено: заблокирована', done: 'Сообщено: выполнена', skipped: 'Сообщено: пропущена' },
+    selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}. ${state}. Прямые записанные зависимости: ${m.up} ${up}; прямые зависимые задачи: ${m.down} ${down}.${m.hidden ? ` Фильтрами скрыто: ${m.hidden} ${hidden}.` : ''}`,
+    tasks: ['задача', 'задачи', 'задач', 'задачи'], prerequisites: ['зависимость', 'зависимости', 'зависимостей', 'зависимости'], dependents: ['задача', 'задачи', 'задач', 'задачи'], relationships: ['связь', 'связи', 'связей', 'связи'],
+  },
+} satisfies Record<InterfaceLanguage, AnnouncementCatalog>;
+// Explicit shape keeps both local catalogs complete without fixing their literal values.
+type AnnouncementCatalog = {
+  'selected-removed': string; 'focused-removed': string; 'list-removed': string; current: string; cleared: string;
+  filters: (n: number, tasks: string) => string; fit: (n: number, tasks: string) => string;
+  working: string; blocked: string; ready: string; skipped: string; waiting: string;
+  reported: Record<ItemView['status'], string>;
+  selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => string;
+  tasks: string[]; prerequisites: string[]; dependents: string[]; relationships: string[];
+};
+export function mapAnnouncementText(m: MapAnnouncement, language: InterfaceLanguage = 'en'): string {
+  const c = ANNOUNCEMENTS[language];
+  const word = (n: number, forms: string[]) => forms[({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[new Intl.PluralRules(language).select(n)] ?? 3];
+  if (m.kind === 'filters' || m.kind === 'fit') return c[m.kind](m.count, word(m.count, c.tasks));
+  if (m.kind !== 'selection') return c[m.kind];
+  const state = m.status === 'working' ? c.working : m.status === 'blocked' ? c.blocked : m.status === 'pending' && m.guidance ? m.ready ? c.ready : m.skipped ? c.skipped : c.waiting : c.reported[m.status];
+  return c.selection(m, state, word(m.up, c.prerequisites), word(m.down, c.dependents), word(m.hidden, c.relationships));
+}
 
 // Fit all must admit even a 1,000-card chain in a narrow rail. Readable initial framing is
 // separate from this intentionally tiny overview limit; it falls back to a current-work card.
@@ -59,7 +113,7 @@ export type MapInteractionCommand =
   | { type: 'viewport'; transform: Transform }
   | { type: 'selection'; id: string | null }
   | { type: 'filters'; status: StatusFilter; group: string | null }
-  | { type: 'announce'; text: string }
+  | { type: 'announce'; text: string; message?: MapAnnouncement }
   | { type: 'focus'; id: string | null; generation: number; reveal?: boolean }
   | { type: 'capture'; pointerId: number; capture: boolean }
   | { type: 'list'; id: string | null };
@@ -113,6 +167,7 @@ export class DependencyMapInteraction {
   private focusedTask: string | null = null;
   private sink: (command: MapInteractionCommand) => void;
   constructor(sink: (command: MapInteractionCommand) => void = () => {}) { this.sink = sink; }
+  private announce(message: MapAnnouncement) { this.sink({ type: 'announce', text: mapAnnouncementText(message), message }); }
   private empty(generation: number): MapInteractionState { return { identity: null, transform: { x: 0, y: 0, zoom: 1 }, selected: null, roving: null, status: 'all', group: null, initialFramingDone: false, active: false, generation, dragging: null }; }
   get value(): MapInteractionState { return { ...this.state, transform: { ...this.state.transform } }; }
   get visible(): readonly string[] {
@@ -171,7 +226,7 @@ export class DependencyMapInteraction {
       const fallback = fallbackFor(selected);
       this.state = { ...this.state, selected: fallback, roving: fallback };
       this.sink({ type: 'selection', id: fallback });
-      if (this.ownsFocus && this.state.active && this.focusedTask === selected) { this.sink({ type: 'announce', text: 'The selected task is no longer recorded. Moved to the next available map target.' }); this.focus(fallback); this.focusedTask = fallback; }
+      if (this.ownsFocus && this.state.active && this.focusedTask === selected) { this.announce({ kind: 'selected-removed' }); this.focus(fallback); this.focusedTask = fallback; }
     } else if (roving && !next.layout.positions.has(roving)) {
       // Tab can focus the initial roving card without selecting it. Retire that target too,
       // preserving the prior-order fallback rather than silently choosing the first card.
@@ -193,13 +248,13 @@ export class DependencyMapInteraction {
       const fallback = fallbackFor(focusedOther), slot = fallback ? next.layout.positions.get(fallback) : undefined;
       if (fallback) this.state = { ...this.state, roving: fallback };
       if (slot) this.viewport(anchorSelection(undefined, slot, this.state.transform, next.layout.metrics, mapRoom(next.viewport, this.state.selected)));
-      this.sink({ type: 'announce', text: 'The focused task is no longer recorded. Moved to the next available map target.' });
+      this.announce({ kind: 'focused-removed' });
       this.focus(fallback); this.focusedTask = fallback;
     }
     if (removedRoving && this.ownsFocus && this.state.active && this.focusedTask === roving) {
       const fallback = this.state.roving, slot = fallback ? next.layout.positions.get(fallback) : undefined;
       if (slot) this.viewport(anchorSelection(undefined, slot, this.state.transform, next.layout.metrics, mapRoom(next.viewport, this.state.selected)));
-      this.sink({ type: 'announce', text: 'The focused task is no longer recorded. Moved to the next available map target.' });
+      this.announce({ kind: 'focused-removed' });
       this.focus(fallback); this.focusedTask = fallback;
     }
     this.consumeTarget();
@@ -214,7 +269,7 @@ export class DependencyMapInteraction {
     if (this.input.layout.positions.has(p.id)) {
       this.select(p.id, this.ownsFocus && p.generation === this.state.generation, true);
       this.state = { ...this.state, initialFramingDone: true };
-    } else if (this.ownsFocus) this.sink({ type: 'announce', text: 'That list task is no longer recorded in this map.' });
+    } else if (this.ownsFocus) this.announce({ kind: 'list-removed' });
   }
   private viewport(transform: Transform) {
     const old = this.state.transform;
@@ -249,10 +304,9 @@ export class DependencyMapInteraction {
       this.sink({ type: 'selection', id });
       const task = i.items.find(n => n.id === id)!;
       const skipped = task.dependencies?.some(id => i.items.find(n => n.id === id)?.status === 'skipped');
-      const state = task.status === 'working' ? 'Reported working' : task.status === 'blocked' ? 'Explicitly blocked' : task.status === 'pending' && i.guidance !== false ? i.ready.includes(id) ? 'Ready, recorded prerequisites only' : skipped ? 'Waiting on a skipped recorded prerequisite' : 'Waiting on recorded prerequisites' : `Reported ${task.status}`;
       const up = relations(i.layout, id, 'upstream').length, down = relations(i.layout, id, 'downstream').length;
       const hidden = this.hiddenRelations(id, 'upstream').length + this.hiddenRelations(id, 'downstream').length;
-      this.sink({ type: 'announce', text: `${task.title}. ${state}. ${up} direct prerequisites; ${down} direct dependents.${hidden ? ` ${hidden} relationships hidden by filters.` : ''}` });
+      this.announce({ kind: 'selection', title: task.title, status: task.status, guidance: i.guidance !== false, ready: i.ready.includes(id), skipped: !!skipped, up, down, hidden });
     }
     if (focus) this.focus(id);
   }
@@ -262,7 +316,7 @@ export class DependencyMapInteraction {
     if (focus) this.focus(this.state.roving, false);
     this.state = { ...this.state, selected: null };
     this.sink({ type: 'selection', id: null });
-    this.sink({ type: 'announce', text: 'Selection cleared.' });
+    this.announce({ kind: 'cleared' });
   }
   private current() {
     const i = this.input; if (!i) return;
@@ -286,9 +340,9 @@ export class DependencyMapInteraction {
       case 'canvas-focus': this.focusedTask = e.id; break;
       case 'select': this.pending = null; this.select(e.id, e.focus ?? false); break;
       case 'relation': this.pending = null; this.select(e.id, true, true); break;
-      case 'filters': this.filters(e.status ?? this.state.status, e.group === undefined ? this.state.group : e.group); this.sink({ type: 'announce', text: `${this.visible.length} tasks shown. Layout unchanged.` }); break;
-      case 'fit': this.viewport(fitProjection(i.layout, this.visible, mapRoom(i.viewport, this.state.selected), 16, i.framingMax)); this.sink({ type: 'announce', text: `Fit all: ${this.visible.length} visible tasks; active filters unchanged.` }); break;
-      case 'current': this.current(); this.sink({ type: 'announce', text: 'Focused current reported work; active filters unchanged.' }); break;
+      case 'filters': this.filters(e.status ?? this.state.status, e.group === undefined ? this.state.group : e.group); this.announce({ kind: 'filters', count: this.visible.length }); break;
+      case 'fit': this.viewport(fitProjection(i.layout, this.visible, mapRoom(i.viewport, this.state.selected), 16, i.framingMax)); this.announce({ kind: 'fit', count: this.visible.length }); break;
+      case 'current': this.current(); this.announce({ kind: 'current' }); break;
       case 'zoom': { const room = mapRoom(i.viewport, this.state.selected); this.viewport(zoomAt(this.state.transform, e.factor, e.point ?? { x: room.width / 2, y: room.height / 2 })); break; }
       case 'clear': this.pending = null; this.clearSelection(true); break;
       case 'pan': if (Number.isFinite(e.x) && Number.isFinite(e.y)) this.viewport({ ...this.state.transform, x: this.state.transform.x + e.x, y: this.state.transform.y + e.y }); break;

@@ -6,6 +6,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { readList } from '../../ui/shared/source.ts';
 import { parseSetup } from '../../ui/shared/adapter.ts';
 import { ReportingHealth, setupFacts, supportSummary, type HealthClaim } from '../../ui/shared/reporting-health.ts';
+import { managedCopy } from '../../ui/shared/managed-copy.ts';
 
 async function fixture(){
  const f=captureFixture();f.record('private-document-sentinel');const request=f.request();
@@ -34,6 +35,58 @@ test('no selection is unknown rather than no reports; stale and newer revisions 
 });
 test('summary rejects attacker-controlled values and version metadata',()=>{
  const setup=parseSetup(JSON.stringify({configured:true,installed:true,separateLifecycle:true,activation:'private',version:'1.2.3-private',diagnostics:['secret']}));const facts=setupFacts(setup);assert.equal(facts.version,'unknown');assert.equal(facts.loaded,'unknown');for(const key of Object.keys(facts))assert(!supportSummary({...facts,[key]:'private-sentinel'}).includes('private-sentinel'));
+});
+
+test('managed load, capture and delivery stay independent and support output excludes review authority',()=>{
+ const base={configured:true,installed:false,separateLifecycle:false,captureEnabled:true,delivery:{kind:'managed',revision:1,configuration:'configured',migration:'none',mode:'unknown',observation:'different',expectedVersion:'1.2.3',review:{expected:'a'.repeat(64),targets:{configRoot:'/private/config',dataRoot:'/private/data',storeRoot:'/private/store'},storeId:'private-store',sourceId:'private-source'}}};
+ const facts=(patch:object={})=>setupFacts(parseSetup(JSON.stringify({...base,delivery:{...base.delivery,...patch}})));
+ assert.equal(facts().installation,'managed-configured'); assert.equal(facts().loaded,'different-bytes');assert.equal(facts().capture,'on');assert.equal(facts().report,'not-checked');
+ assert.equal(facts({observation:'matching'}).loaded,'matching-observation');
+ assert.equal(facts({observation:'matching',migration:'available'}).loaded,'legacy-unresolved');
+ assert.equal(facts({observation:'matching',migration:'unavailable'}).loaded,'unknown');
+ assert.equal(facts({observation:'not-observed'}).loaded,'not-observed');
+ assert.equal(facts({revision:2}).installation,'legacy-unsupported');assert.equal(facts({revision:2}).loaded,'unknown');
+ assert.doesNotMatch(supportSummary(facts()),/private|aaaa|\//);
+});
+test('managed update/load explanations retain bilingual observation and conditional restart boundaries', () => {
+  for (const locale of ['en', 'ru']) {
+    const text = managedCopy(locale);
+    assert.ok(text.unknown && text.missing && text.matching && text.different);
+    assert.match(text.observation, /OpenChamber/); assert.match(text.observation, /OPENCODE_CONFIG/);
+    assert.match(text.observation, /OpenCode/);
+    assert.match(text.observation, locale === 'en' ? /watched managed file can reload/ : /отслеживаемый управляемый файл может перезагрузиться/);
+    assert.match(text.observation, locale === 'en'
+      ? /adding, removing or toggling the extension’s plugin requires an explicit OpenCode restart/
+      : /добавление, удаление, включение или отключение плагина расширения требует явного перезапуска OpenCode/);
+    assert.match(text.observation, locale === 'en'
+      ? /update to an installed extension may be picked up without a restart; check the load observation/
+      : /Обновление уже установленного расширения может подхватиться без перезапуска; проверьте наблюдение загрузки/);
+    assert.doesNotMatch(text.observation, locale === 'en'
+      ? /OPENCODE_CONFIG requires an explicit OpenCode restart/
+      : /OPENCODE_CONFIG требует явного перезапуска OpenCode/);
+    assert.match(text.observation, locale === 'en' ? /not a heartbeat/ : /не сигнал активности/);
+    assert.match(text.observation, locale === 'en' ? /does not prove.*every running session/ : /не доказывает.*всеми работающими сессиями/);
+    assert.match(text.warning, locale === 'en' ? /does not block reporting/ : /не блокирует отчёты/);
+    assert.match(text.observation, locale === 'en' ? /Nothing is restarted here/ : /ничего не перезапускается/);
+    assert.match(text.switchEffect, locale === 'en' ? /legacy.*explicit reload/ : /старым копиям.*явная перезагрузка/);
+  }
+});
+test('copy state translates at presentation time without another check or changing support bytes', async()=>{
+  const x=await fixture();try{
+    x.panel().toggle();await x.until(()=>!!x.panel().facts);
+    const payload=supportSummary(x.panel().facts!);const calls=x.calls.length;
+    x.panel().copySummary();
+    assert.equal(x.controller.claim(x.claim,'ru').copy,'Копирование…');
+    await x.until(()=>x.panel().copy==='Copied.');
+    assert.equal(x.controller.claim(x.claim,'ru').copy,'Скопировано.');
+    assert.equal(x.calls.length,calls);assert.equal(x.copied[0],payload);
+    assert.equal(supportSummary(x.controller.claim(x.claim,'ru').facts!),payload);
+    x.controller.claim(x.claim,'ru').copySummary();await x.until(()=>x.copied.length===2);
+    assert.equal(x.copied[1],payload);assert.equal(x.calls.length,calls);
+    x.copyFail();x.panel().copySummary();await x.until(()=>x.panel().copy.includes('manually'));
+    assert.match(x.controller.claim(x.claim,'ru').copy,/вручную/);
+    assert.doesNotMatch(x.controller.claim(x.claim,'ru').copy,/private-error/);
+  }finally{await x.stop();}
 });
 
 test('service failures, stale viewer and source mismatch are independent observations',async()=>{

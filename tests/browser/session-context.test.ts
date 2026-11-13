@@ -8,6 +8,7 @@ import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
+import * as language from '../../ui/shared/language.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { contextListScope, contextScope, pageListScope, NO_FILTERS, placeOf } from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
@@ -26,20 +27,32 @@ async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r 
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
-function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void) {
+function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void, paintHook?: (vc: ViewContext<Ui>) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
+  const storageCalls: string[] = [];
+  const timers = new Map<number, { fn: () => void; ms: number }>();
+  let timerId = 0;
+  const languageStorage: Array<{ op: string; key: string; scope?: string }> = [];
+  let languageValue: unknown;
+  let languageWrite: Promise<void> | null = null;
   const infoPaints: { kind: string; root?: object }[] = [];
   let expanded = false, disclosure = false, livePopup = false;
+  let ownsFocus = true, focusCalls = 0;
+  const body = { isConnected: true };
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any,
+    control: null as any,
+    contains(active: unknown): boolean { return !!active && (active === this.control || this.firstElementChild?.contains(active)); },
     querySelector: (s: string) => s.includes('[aria-expanded="true"]') && (expanded || disclosure && !s.includes('[aria-haspopup]')) ? {} : null,
-    querySelectorAll: (s: string) => s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
-      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : [],
+    querySelectorAll(s: string): any[] { return s === '[aria-haspopup][aria-expanded="true"]' && (expanded || livePopup)
+      ? [{ closest: (selector: string) => selector === '[data-live-popup]' && livePopup ? {} : null }] : s === '[data-testid="fixture-control"]' ? [this.control ?? this.firstElementChild?.control].filter(Boolean) : []; },
     getAnimations: () => [], setAttribute() {}, append() {},
-    replaceChildren(child: any) { this.firstElementChild = child; expanded = disclosure = livePopup = false; },
+    replaceChildren(child: any) { if (this.firstElementChild?.control) { this.firstElementChild.control.isConnected = false; if (document.activeElement === this.firstElementChild.control) document.activeElement = body; } this.firstElementChild = child; expanded = disclosure = livePopup = false; },
   });
+  // Only the root owns a control; mount queries delegate to the current painted root.
+  const thisControl = (): any => mount.firstElementChild?.control;
   const mount = node();
-  const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null,
+  const document = { documentElement: node(), head: node(), visibilityState: 'visible', activeElement: null as any, body, hasFocus: () => ownsFocus,
     getElementById: (id: string) => id === 'root' ? mount : {}, addEventListener(name: string, fn: any) { listeners[`document:${name}`] = fn; }, scrollingElement: { scrollTop: 0 } };
   let handler = async (q: GuestRequest): Promise<GuestRequestResult> => {
     if (q.path === '/health') return response({ ...HEALTH, planCleanup: 1 });
@@ -50,13 +63,19 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     if (q.path === '/v1/history') return response({ ...envelope(), data: [], nextCursor: null });
     return response({ error: 'not-found' }, 404);
   };
-  const host = { serviceRequest: (q: GuestRequest) => { requests.push(q); return handler(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} },
+  const host = { serviceRequest: (q: GuestRequest) => { requests.push(q); return handler(q); }, storage: {
+    get: async (key: string, options?: { scope: string }) => { storageCalls.push(key); if (key !== 'interface-language.v1') return undefined; languageStorage.push({ op: 'get', key, scope: options?.scope }); return languageValue; },
+    set: async (key: string, value: unknown, options?: { scope: string }) => { storageCalls.push(key); if (key === 'interface-language.v1') { languageStorage.push({ op: 'set', key, scope: options?.scope }); await languageWrite; languageValue = value; } },
+    delete: async () => {},
+  },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, document, window: { addEventListener: (name: string, fn: any) => { listeners[name] = fn; } },
-    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console, setTimeout: () => 1, clearTimeout() {},
+    AbortController, requestAnimationFrame: (fn: () => void) => queueMicrotask(fn), queueMicrotask, performance, console,
+    setTimeout: (fn: () => void, ms: number) => { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
+    clearTimeout: (id: number) => { timers.delete(id); },
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
@@ -66,13 +85,13 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
+      if (name === './language.ts') return language;
       if (name === './components.ts') return { el: node, refreshLabels() {},
         retireReadingUi() { infoPaints.push({ kind: 'retire' }); },
         beginInfoPaint(root: object) { infoPaints.push({ kind: 'begin', root }); },
         commitInfoPaint(root: object) { assert.equal(mount.firstElementChild, root, 'dispose previous handles after root replacement'); infoPaints.push({ kind: 'commit', root }); },
       };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
-      if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };
       return {};
     },
   });
@@ -87,16 +106,210 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     wantProjects: () => [], wantDetails: c => c.read?.plans.slice(0, 1) ?? [],
     actionPlan: c => c.read?.plans[0] ?? null,
     onContext: c => { contexts.push({ session: c.session?.id ?? null, identity: c.identity, hasRead: !!c.read }); },
-    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls'); vc = value; paints.push(vc.read?.plans[0]?.id ?? null); },
+    paint: (_root, value) => { assert.equal(infoPaints.at(-1)?.root, _root, 'collect handles under this paint before creating controls');
+      (_root as any).control = { dataset: { testid: 'fixture-control' }, isConnected: true,
+        closest: (selector: string) => selector === '[data-testid]' ? (_root as any).control : null,
+        querySelectorAll: () => [], matches: () => false,
+        focus() { focusCalls++; document.activeElement = this; },
+      };
+      vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
   };
   exports.startView(spec);
-  return { requests, paints, contexts, listeners, infoPaints, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+  return { requests, paints, contexts, listeners, infoPaints, languageStorage, storageCalls,
+    tick: (ms: number) => { const entry = [...timers].find(([, timer]) => timer.ms === ms); assert.ok(entry, `expected scheduled ${ms} ms refresh`); timers.delete(entry[0]); entry[1].fn(); },
+    visibility: (state: string) => { document.visibilityState = state; listeners['document:visibilitychange'](); },
+    holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
+    get focusCalls() { return focusCalls; }, get focusedControl() { return document.activeElement === thisControl(); },
+    setFocus: (owns: boolean, active: 'control' | 'body' | 'outside') => { ownsFocus = owns; document.activeElement = active === 'control' ? thisControl() : active === 'body' ? body : { isConnected: true }; },
+    focusReturn: (event = 'focus') => { ownsFocus = true; listeners[event === 'focus' ? 'focus' : 'document:focusin']?.(); },
     openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
-    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture') => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: 'en', surface: spec.surface } as HostReadyContext),
+    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture', language = { locale: 'en', supported: false }) => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: language.locale, features: { deviceStorage: language.supported }, surface: spec.surface } as HostReadyContext),
     stop: () => listeners.pagehide(),
   };
 }
+
+test('QA-R current controller never asks old services for update metadata or dismissal across its lifecycle', async () => {
+  const cases: Array<{ status: number; body: unknown }> = [
+    { status: 200, body: { state: 'available', candidateVersion: '9.0.0' } },
+    { status: 404, body: { error: 'not-found' } }, { status: 200, body: 'malformed' },
+  ];
+  const results: object[] = [];
+  for (const board of [false, true]) for (const old of cases) {
+    const c = controller(board);
+    let failure: 'none' | 'unconfigured' | 'unavailable' = 'none';
+    let updateCalls = 0;
+    c.intercept(async (q, next) => {
+      if (q.path === '/v1/extension-update') { updateCalls++; return response(old.body, old.status); }
+      if (failure === 'unconfigured' && q.path === '/health') return response({ ...HEALTH, ready: false });
+      if (failure === 'unavailable' && q.path === '/health') return response({ error: 'storage' }, 503);
+      return next();
+    });
+    try {
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true }); await settle();
+      assert.ok(c.vc.read);
+      c.tick(3000); await settle();
+      c.listeners.session({ id: 'B' }); await settle();
+      c.listeners.session(null); await settle();
+      c.visibility('hidden'); await settle();
+      const hiddenRequests = c.requests.length;
+      c.focusReturn(); await settle(); assert.equal(c.requests.length, hiddenRequests);
+      c.visibility('visible'); await settle();
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: true }); await settle();
+      failure = 'unconfigured'; c.vc.retry(); await settle(); assert.equal(c.vc.health?.ready, false);
+      failure = 'unavailable'; c.vc.retry(); await settle(); assert.ok(c.vc.failure);
+      c.tick(8000); await settle();
+      failure = 'none'; c.vc.retry(); await settle(); assert.ok(c.vc.read);
+      assert.equal(updateCalls, 0);
+      assert.ok(c.languageStorage.length > 0, 'language preference remains independent');
+      assert.ok(!c.storageCalls.includes('official-main-dismissed'));
+      assert.ok(!('officialMain' in c.vc));
+      results.push({ surface: board ? 'board' : 'session', oldReply: old.status === 404 ? 'missing' : typeof old.body === 'string' ? 'malformed' : 'available', updateCalls, dismissalCalls: 0 });
+    } finally { c.stop(); }
+  }
+  if (process.env.EVIDENCE) {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    mkdirSync(process.env.EVIDENCE, { recursive: true });
+    writeFileSync(resolve(process.env.EVIDENCE, 'mixed-versions.json'), JSON.stringify({ currentController: results, oldConsumerBase: '676eea9', oldConsumerProof: 'backend/extension-updates.test.ts' }, null, 2));
+  }
+});
+
+test('unfocused background paints defer focus until this frame returns, across repeated replacements', async () => {
+  for (const event of ['focus', 'focusin']) {
+    const c = controller();
+    try {
+      c.ready('A'); await settle();
+      c.setFocus(false, 'control');
+      c.vc.retry(); await settle();
+      c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }); await settle();
+      assert.equal(c.focusCalls, 0, 'poll and external language paints must not take focus');
+      assert.equal(c.focusedControl, false);
+      c.focusReturn(event);
+      await settle();
+      assert.equal(c.focusedControl, true, 'restore the rebuilt control on genuine frame focus return');
+      assert.equal(c.focusCalls, 1);
+      c.focusReturn(event);
+      await settle();
+      assert.equal(c.focusCalls, 1, 'return is one-shot');
+    } finally { c.stop(); }
+  }
+});
+
+test('deferred repaint focus never overrides a new control, starts from body, or survives retirement', async () => {
+  for (const scenario of ['body', 'outside', 'new-control', 'focusin', 'focus-race', 'context', 'identity', 'store', 'dispose']) {
+    const c = controller();
+    try {
+      c.ready('A'); await settle();
+      c.setFocus(false, scenario === 'body' || scenario === 'outside' ? scenario : 'control');
+      c.vc.retry(); await settle();
+      if (scenario === 'new-control') c.setFocus(true, 'outside');
+      if (scenario === 'focusin') { c.setFocus(true, 'outside'); c.focusReturn('focusin'); c.setFocus(true, 'body'); }
+      if (scenario === 'focus-race') { c.focusReturn(); c.setFocus(true, 'outside'); }
+      if (scenario === 'context') { c.ready('B'); await settle(); }
+      if (scenario === 'identity') { c.ready('A', '/fixture/Alpha', 'another-account'); await settle(); }
+      if (scenario === 'store') {
+        c.intercept(async (q, next) => q.path === '/v1/plans' ? response({ ...plansPage([row]), storeId: 'replacement-store' }) : next());
+        c.vc.retry(); await settle();
+      }
+      if (scenario === 'dispose') c.stop();
+      c.focusReturn();
+      await settle();
+      assert.equal(c.focusCalls, 0, scenario);
+    } finally { c.stop(); }
+  }
+});
+
+test('language reads and focus return are independent of failed progress and use device scope', async () => {
+  const c = controller();
+  c.intercept(async () => { throw new Error('fixture service unavailable'); });
+  try {
+    c.setLanguage({ v: 1, preference: 'ru' });
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    assert.equal(c.vc.language.preference, 'ru');
+    assert.ok(c.vc.failure);
+    assert.ok(c.languageStorage.length > 0);
+    assert.ok(c.languageStorage.every(q => q.scope === 'device'));
+    const progressReads = c.requests.length;
+    c.setLanguage({ v: 1, preference: 'en' });
+    c.listeners.focus();
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    assert.equal(c.requests.length, progressReads, 'focus language check must not retry progress');
+  } finally { c.stop(); }
+});
+
+test('manual language survives context changes, while automatic follows only supported host languages', async () => {
+  const c = controller();
+  try {
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru-RU', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    c.vc.language.choose('en');
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    c.ready('B', '/fixture/Beta', 'other-account', { locale: 'ru', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+    c.vc.language.choose('auto');
+    await settle();
+    assert.equal(c.vc.env.locale, 'ru');
+    c.ready('B', '/fixture/Beta', 'other-account', { locale: 'de-DE', supported: true });
+    await settle();
+    assert.equal(c.vc.env.locale, 'en');
+  } finally { c.stop(); }
+});
+
+test('language repaint cannot retry an already failed inline document; explicit retry still can', async () => {
+  let previousLanguage = '';
+  const c = controller(false, undefined, vc => {
+    if (previousLanguage && previousLanguage !== vc.env.locale && vc.read?.plans[0]) vc.requestDocument(vc.read.plans[0]);
+    previousLanguage = vc.env.locale;
+  });
+  c.intercept(async (q, next) => q.path === '/v1/document' ? response({ error: 'busy' }, 503) : next());
+  try {
+    c.ready('A'); await settle();
+    const p = c.vc.read!.plans[0];
+    c.vc.requestDocument(p); await settle();
+    assert.equal(c.vc.document(p)?.state, 'error');
+    const reads = c.requests.filter(q => q.path === '/v1/document').length;
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }); await settle();
+    assert.equal(c.requests.filter(q => q.path === '/v1/document').length, reads);
+    c.vc.requestDocument(p); await settle();
+    assert.equal(c.requests.filter(q => q.path === '/v1/document').length, reads + 1);
+  } finally { c.stop(); }
+});
+
+test('saving, failed save and same-effective-language choice do not retry a retained document error', async () => {
+  let previous = '';
+  const c = controller(false, undefined, vc => {
+    const next = JSON.stringify([vc.language.pending, vc.language.writeError, vc.language.preference]);
+    if (previous && next !== previous && vc.read?.plans[0]) vc.requestDocument(vc.read.plans[0]);
+    previous = next;
+  });
+  c.intercept(async (q, next) => q.path === '/v1/document' ? response({ error: 'busy' }, 503) : next());
+  try {
+    c.ready('A', '/fixture/Alpha', 'fixture', { locale: 'en', supported: true }); await settle();
+    c.vc.requestDocument(c.vc.read!.plans[0]); await settle();
+    const reads = () => c.requests.filter(q => q.path === '/v1/document').length;
+    assert.equal(reads(), 1);
+    let reject!: (e: Error) => void;
+    c.holdLanguageWrite(new Promise<void>((_resolve, no) => { reject = no; }));
+    c.vc.language.choose('ru'); await settle();
+    assert.equal(c.vc.language.pending, true);
+    assert.equal(reads(), 1, 'pending save still uses the old language and must not retry');
+    reject(new Error('synthetic storage refused')); await settle();
+    assert.equal(c.vc.language.writeError, 'saveFailed');
+    assert.equal(reads(), 1, 'failed save must not retry');
+    c.holdLanguageWrite(null);
+    c.vc.language.choose('en'); await settle();
+    assert.equal(c.vc.language.preference, 'en');
+    assert.equal(c.vc.env.locale, 'en');
+    assert.equal(reads(), 1, 'same effective language must not retry');
+  } finally { c.stop(); }
+});
 
 test('background paints preserve a pressed control until release; authority changes still retire immediately', async () => {
   const c = controller();

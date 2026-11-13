@@ -10,6 +10,40 @@ import type { RunRow } from '../../shared/subagent-runs.ts';
 import { currentFor, observe, type Census, type ObservedRow, type PlanFacts } from './census.ts';
 import type { ItemStatus, PlanView } from './model.ts';
 import type { RunsPanel } from './runs.ts';
+import type { InterfaceLanguage } from './i18n.ts';
+
+const COPY = {
+  en: {
+    reasons: { user: 'stopped by the user', shutdown: 'the host shut down', superseded: 'replaced by a newer run', inactivity: 'inactive too long', unknown: 'reason not recorded' },
+    activity: { running: 'Running', retrying: 'Retrying', 'waiting-permission': 'Waiting for permission', 'waiting-question': 'Waiting for an answer', idle: 'Idle', unknown: 'State unknown' },
+    turnFailed: 'Turn failed', turnEnded: 'Turn ended', finished: 'Finished', failed: 'Failed',
+    failure: (code: string) => `Failed: ${code}`, interrupted: (reason: string) => `Interrupted: ${reason}`,
+    updated: 'last updated ', started: 'started ', dispatched: 'dispatched ', idle: 'Idle now, no outcome reported yet', running: 'Running', outcome: 'Outcome unknown',
+    pending: 'Dispatched, not confirmed yet', dispatchFailed: 'Dispatch failed before a run was confirmed', unconfirmed: 'Not confirmed by the host', noOutcome: 'No outcome reported',
+    unavailable: 'Current activity unavailable', session: (id: string) => `Session ${id}`, subagent: 'Sub-agent',
+    summary: { waiting: (n: number) => `${n} waiting on you`, running: (n: number) => `${n} running`, finished: (n: number) => `${n} finished`, failed: (n: number) => `${n} failed`, interrupted: (n: number) => `${n} interrupted`, unknown: (n: number) => `${n} unknown` },
+  },
+  ru: {
+    reasons: { user: 'остановлен пользователем', shutdown: 'хост завершил работу', superseded: 'заменён новым запуском', inactivity: 'слишком долгая неактивность', unknown: 'причина не записана' },
+    activity: { running: 'Выполняется', retrying: 'Повторная попытка', 'waiting-permission': 'Ожидает разрешения', 'waiting-question': 'Ожидает ответа', idle: 'Бездействует', unknown: 'Состояние неизвестно' },
+    turnFailed: 'Ход завершился с ошибкой', turnEnded: 'Ход завершён', finished: 'Завершён', failed: 'Ошибка',
+    failure: (code: string) => `Ошибка: ${code}`, interrupted: (reason: string) => `Прерван: ${reason}`,
+    updated: 'обновлён ', started: 'начат ', dispatched: 'отправлен ', idle: 'Сейчас бездействует, результат ещё не сообщён', running: 'Выполняется', outcome: 'Результат неизвестен',
+    pending: 'Отправлен, ещё не подтверждён', dispatchFailed: 'Ошибка отправки до подтверждения запуска', unconfirmed: 'Не подтверждён хостом', noOutcome: 'Результат не сообщён',
+    unavailable: 'Текущая активность недоступна', session: (id: string) => `Сессия ${id}`, subagent: 'Субагент',
+    summary: { waiting: (n: number) => `Ждут вас: ${n}`, running: (n: number) => `Выполняются: ${n}`, finished: (n: number) => `Завершены: ${n}`, failed: (n: number) => `С ошибкой: ${n}`, interrupted: (n: number) => `Прерваны: ${n}`, unknown: (n: number) => `Результат неизвестен: ${n}` },
+  },
+} satisfies Record<InterfaceLanguage, {
+  reasons: Record<NonNullable<RunRow['ran']['interruptionReason']>, string>; activity: Record<ObservedRow['activity'], string>;
+  turnFailed: string; turnEnded: string; finished: string; failed: string; failure: (code: string) => string; interrupted: (reason: string) => string;
+  updated: string; started: string; dispatched: string; idle: string; running: string; outcome: string;
+  pending: string; dispatchFailed: string; unconfirmed: string; noOutcome: string; unavailable: string; session: (id: string) => string; subagent: string;
+  summary: Record<SummaryPart['kind'], (n: number) => string>;
+}>;
+function observationLabel(r: ObservedRow, language: InterfaceLanguage): string {
+  const c = COPY[language];
+  return r.activity === 'idle' && r.outcome === 'failed' ? c.turnFailed : r.activity === 'idle' && r.outcome === 'completed' ? c.turnEnded : c.activity[r.activity];
+}
 
 export type RosterSurface = 'panel' | 'status' | 'page';
 export type RanKind = 'active' | 'waiting' | 'idle' | 'finished' | 'failed' | 'interrupted' | 'unknown';
@@ -106,8 +140,6 @@ export const FEATURED: Record<RosterSurface, number> = { panel: 6, status: 3, pa
 /** Earlier rows per disclosure step. */
 export const EARLIER_STEP: Record<RosterSurface, number> = { panel: 10, status: 5, page: 20 };
 
-const REASON: Record<string, string> = { user: 'stopped by the user', shutdown: 'the host shut down', superseded: 'replaced by a newer run', inactivity: 'inactive too long', unknown: 'reason not recorded' };
-
 const shortId = (id: string) => `…${id.slice(-6)}`;
 
 /** Ran from a recorded run, refined only by the host's current activity for a still-open run. */
@@ -115,40 +147,41 @@ const shortId = (id: string) => `…${id.slice(-6)}`;
  * `idleAfterStart`: the host was seen going active → idle after this window first displayed this
  * execution's start (rosterFor). Without it an idle snapshot may belong to an earlier execution.
  */
-export function ranOf(row: RunRow, host: ObservedRow | null, evidence: { idleAfterStart?: boolean } = {}): Ran {
+export function ranOf(row: RunRow, host: ObservedRow | null, evidence: { idleAfterStart?: boolean } = {}, language: InterfaceLanguage = 'en'): Ran {
+  const c = COPY[language];
   const r = row.ran;
   const historical = row.kind === 'historical-session';
   const source: Ran['source'] = r.provenance === 'native-event' ? 'event' : r.provenance === 'native-session' ? 'history' : 'dispatch';
   const end = (label: string, kind: RanKind): Ran => {
     const start = r.startedAt ?? (historical ? null : row.dispatch?.at ?? null);
     const duration = r.endedAt !== null && start !== null && r.endedAt >= start ? { ms: r.endedAt - start, fromDispatch: r.startedAt === null } : null;
-    return { kind, label, time: r.endedAt !== null ? { at: r.endedAt, prefix: '' } : { at: r.updatedAt, prefix: 'last updated ' }, duration, source };
+    return { kind, label, time: r.endedAt !== null ? { at: r.endedAt, prefix: '' } : { at: r.updatedAt, prefix: c.updated }, duration, source };
   };
-  if (r.state === 'succeeded') return end('Finished', 'finished');
-  if (r.state === 'failed') return end(r.errorType && r.errorType !== 'unknown' ? `Failed: ${r.errorType}` : 'Failed', 'failed');
-  if (r.state === 'interrupted') return end(`Interrupted: ${REASON[r.interruptionReason ?? 'unknown']}`, 'interrupted');
+  if (r.state === 'succeeded') return end(c.finished, 'finished');
+  if (r.state === 'failed') return end(r.errorType && r.errorType !== 'unknown' ? c.failure(r.errorType) : c.failed, 'failed');
+  if (r.state === 'interrupted') return end(c.interrupted(c.reasons[r.interruptionReason ?? 'unknown']), 'interrupted');
   // Open run (or no outcome yet): the host's current activity may say more, never less.
   const o = host ? observe(host) : null;
-  const started = r.startedAt !== null ? { at: r.startedAt, prefix: 'started ' } : row.dispatch ? { at: row.dispatch.at, prefix: 'dispatched ' } : null;
-  if (o?.kind === 'waiting') return { kind: 'waiting', label: o.label, time: started, duration: null, source: 'host' };
+  const started = r.startedAt !== null ? { at: r.startedAt, prefix: c.started } : row.dispatch ? { at: row.dispatch.at, prefix: c.dispatched } : null;
+  if (o?.kind === 'waiting') return { kind: 'waiting', label: observationLabel(host!, language), time: started, duration: null, source: 'host' };
   if (r.state === 'running') {
     // An idle/completed snapshot alone may be the cached result of the child's previous execution:
     // only an active → idle change seen after this execution's start is newer evidence. It updates
     // the word, not the outcome: no end time, no success.
-    if (evidence.idleAfterStart && o && (o.kind === 'idle' || o.kind === 'ended' || o.kind === 'failed')) return { kind: 'idle', label: 'Idle now, no outcome reported yet', time: started, duration: null, source: 'host' };
-    return { kind: 'active', label: 'Running', time: started, duration: null, source };
+    if (evidence.idleAfterStart && o && (o.kind === 'idle' || o.kind === 'ended' || o.kind === 'failed')) return { kind: 'idle', label: c.idle, time: started, duration: null, source: 'host' };
+    return { kind: 'active', label: c.running, time: started, duration: null, source };
   }
-  if (o?.kind === 'active') return { kind: 'active', label: o.label, time: started, duration: null, source: 'host' };
-  if (historical) return { kind: 'unknown', label: 'Outcome unknown', time: { at: r.updatedAt, prefix: 'last updated ' }, duration: null, source };
-  const label = r.dispatchState === 'pending' ? 'Dispatched, not confirmed yet' : r.dispatchState === 'failed-unconfirmed' ? 'Dispatch failed before a run was confirmed' : r.dispatchState === 'unconfirmed' ? 'Not confirmed by the host' : 'No outcome reported';
+  if (o?.kind === 'active') return { kind: 'active', label: observationLabel(host!, language), time: started, duration: null, source: 'host' };
+  if (historical) return { kind: 'unknown', label: c.outcome, time: { at: r.updatedAt, prefix: c.updated }, duration: null, source };
+  const label = r.dispatchState === 'pending' ? c.pending : r.dispatchState === 'failed-unconfirmed' ? c.dispatchFailed : r.dispatchState === 'unconfirmed' ? c.unconfirmed : c.noOutcome;
   return { kind: 'unknown', label, time: started, duration: null, source };
 }
 
 /** Ran for a child the host lists now but no run record covers. No time: only the host's word. */
-export function hostRan(r: ObservedRow): Ran {
+export function hostRan(r: ObservedRow, language: InterfaceLanguage = 'en'): Ran {
   const o = observe(r);
   const kind: RanKind = o.kind === 'active' ? 'active' : o.kind === 'waiting' ? 'waiting' : o.kind === 'unknown' ? 'unknown' : 'idle';
-  return { kind, label: o.label, time: null, duration: null, source: 'host' };
+  return { kind, label: observationLabel(r, language), time: null, duration: null, source: 'host' };
 }
 
 const taskTitles = (facts: PlanFacts) => new Map(facts.kind === 'complete' ? facts.detail.items.map((i) => [i.id, i.title] as const) : []);
@@ -188,18 +221,19 @@ export function latestChildRuns(runRows: readonly RunRow[]): Map<string, RunRow>
 }
 
 /** Same execution/coverage qualification for roster words and map proof; no receipt-age heuristic. */
-export function runActivity(r: RunRow, h: ObservedRow | null, baselines: ExecutionBaselines | null, seq: number) {
+export function runActivity(r: RunRow, h: ObservedRow | null, baselines: ExecutionBaselines | null, seq: number, language: InterfaceLanguage = 'en') {
   const ended = r.ran.state === 'succeeded' || r.ran.state === 'failed' || r.ran.state === 'interrupted';
   const execution = `${r.id}|${ended ? 'end' : 'start'}|${(ended ? r.ran.endedAt : r.ran.startedAt) ?? 'none'}|${r.ran.eventId ?? 'none'}`;
   const after = (mark: number | undefined) => !!baselines && baselines.baseline(execution, seq) < (mark ?? -1);
-  const ran = ranOf(r, h, { idleAfterStart: r.ran.state === 'running' && after(h?.idleSeq) });
+  const ran = ranOf(r, h, { idleAfterStart: r.ran.state === 'running' && after(h?.idleSeq) }, language);
   const resumed = ended && after(h?.activeSeq), o = h ? observe(h) : null;
-  const now = resumed && o && (o.kind === 'active' || o.kind === 'waiting') ? { kind: o.kind, label: o.label } : null;
+  const now = resumed && o && (o.kind === 'active' || o.kind === 'waiting') ? { kind: o.kind, label: observationLabel(h!, language) } : null;
   return { ran, now };
 }
 
 /** The roster of one root with a plan in scope, or null: nothing to show on this surface. */
-export function rosterFor(v: RosterInput): Roster | null {
+export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): Roster | null {
+  const c = COPY[language];
   if (!v.plan || !v.verified) return null;
   const plan = v.plan;
   const runs = v.runs;
@@ -242,10 +276,10 @@ export function rosterFor(v: RosterInput): Roster | null {
     // Take the baseline at first display, with or without host data yet.
     // "Again" needs an idle → active change seen after the terminal fact: a still-cached Running
     // snapshot of the same execution is not a resume and is not shown or counted.
-    const { ran, now } = runActivity(r, h, baselines, seq);
+    const { ran, now } = runActivity(r, h, baselines, seq, language);
     return {
-      key: r.id, runId: r.id, sessionId, title: r.description || (sessionId ? titles.get(sessionId) : null) || r.agent || (sessionId ? `Session ${shortId(sessionId)}` : 'Sub-agent'),
-      agent: r.agent, depth: (sessionId ? listed.get(sessionId)?.depth : undefined) ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? `Session ${shortId(r.parentSessionId)}` : null,
+      key: r.id, runId: r.id, sessionId, title: r.description || (sessionId ? titles.get(sessionId) : null) || r.agent || (sessionId ? c.session(shortId(sessionId)) : c.subagent),
+      agent: r.agent, depth: (sessionId ? listed.get(sessionId)?.depth : undefined) ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? c.session(shortId(r.parentSessionId)) : null,
       ran, now, claimed: r.claimed, accepted: isLatest || !sessionId ? acceptedOf(r, sessionId, plan, v.facts) : null, duringPlan: r.planContext?.plan === plan.id,
       historical: r.kind === 'historical-session', openable: v.verified && openable(sessionId),
     };
@@ -257,9 +291,9 @@ export function rosterFor(v: RosterInput): Roster | null {
     if (covered.has(h.id)) continue;
     const accepted = acceptedOf(null, h.id, plan, v.facts);
     // Without current coverage only a task-linked child keeps its row, and without a current word.
-    const ran: Ran = current ? hostRan(h) : { kind: 'unknown', label: 'Current activity unavailable', time: null, duration: null, source: 'host' };
+    const ran: Ran = current ? hostRan(h, language) : { kind: 'unknown', label: c.unavailable, time: null, duration: null, source: 'host' };
     if (ran.kind !== 'active' && ran.kind !== 'waiting' && !accepted) continue;
-    hostOnly.push({ key: `host-${h.id}`, runId: null, sessionId: h.id, title: h.title.trim() || `Session ${shortId(h.id)}`, agent: null, depth: h.depth,
+    hostOnly.push({ key: `host-${h.id}`, runId: null, sessionId: h.id, title: h.title.trim() || c.session(shortId(h.id)), agent: null, depth: h.depth,
       parentTitle: h.depth > 1 && h.parentId ? titles.get(h.parentId) ?? null : null, ran, now: null, claimed: null, accepted, duringPlan: false, historical: false, openable: v.verified && openable(h.id) });
   }
   // Featured: from the first useful page or the host now; later pages stay in the earlier list.
@@ -281,18 +315,18 @@ export function rosterFor(v: RosterInput): Roster | null {
   const pendingShown = [...entries].filter((e) => (e.ran.kind === 'active' || e.ran.kind === 'waiting') && runRows.find((r) => r.id === e.runId)?.ran.state === 'unknown').length;
   const summary: SummaryPart[] = [];
   const add = (kind: SummaryPart['kind'], count: number, text: string) => { if (count > 0) summary.push({ kind, count, text }); };
-  add('waiting', waiting.length, `${waiting.length} waiting on you`);
+  add('waiting', waiting.length, c.summary.waiting(waiting.length));
   if (read) {
     const running = Math.max(0, read.counts.running + activeHost.length - waiting.length);
-    add('running', running, `${running} running`);
-    add('finished', read.counts.succeeded, `${read.counts.succeeded} finished`);
-    add('failed', read.counts.failed, `${read.counts.failed} failed`);
-    add('interrupted', read.counts.interrupted, `${read.counts.interrupted} interrupted`);
+    add('running', running, c.summary.running(running));
+    add('finished', read.counts.succeeded, c.summary.finished(read.counts.succeeded));
+    add('failed', read.counts.failed, c.summary.failed(read.counts.failed));
+    add('interrupted', read.counts.interrupted, c.summary.interrupted(read.counts.interrupted));
     const unknown = Math.max(0, read.counts.unknown - pendingShown);
-    add('unknown', unknown, `${unknown} unknown`);
+    add('unknown', unknown, c.summary.unknown(unknown));
   } else {
     const running = activeHost.length - waiting.length;
-    add('running', running, `${running} running`);
+    add('running', running, c.summary.running(running));
   }
 
   const notes: RosterNote[] = [];

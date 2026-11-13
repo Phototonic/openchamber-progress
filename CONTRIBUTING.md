@@ -18,7 +18,7 @@ AI assistance is welcome. You remain responsible for the change and its verifica
 
 ### Change proposals
 
-Larger changes to behaviour, storage or compatibility are proposed under `openspec/changes/<name>/` (proposal, design, requirement scenarios and tasks) and validated with `openspec validate <name> --strict`. A proposal describes one change and how it will be delivered; the guides in `docs/` remain the contract of record and are updated in the same change as the behaviour. Small fixes and routine changes need no proposal.
+Larger changes to behaviour, storage or compatibility are proposed under `openspec/changes/<name>/` (proposal, design, requirement scenarios and tasks) and validated with `openspec validate <name> --strict`. OpenSpec artifacts are written in English. A proposal describes one change and how it will be delivered; the guides in `docs/` remain the contract of record and are updated in the same change as the behaviour. Small fixes and routine changes need no proposal.
 
 ## Local development
 
@@ -66,7 +66,7 @@ The legacy-writer fixtures read earlier committed code with `git show`; a source
 export without `.git` or a shallow clone missing that history is insufficient.
 The helper **refuses a nonempty `build/artifacts` before reading runtime entries or starting checks**. It never deletes existing archives. Do not clear a maintainer's artifact folder to make it run; use a fresh disposable checkout instead. The helper creates `/tmp/opencode` for its fixtures.
 
-It runs root/UI typechecks, portable backend tests, browser-model and automation tests, backend/guest builds with eight-entry parity checks, the SDK's `openchamber-guest-check` against the built package, then package assembly and verification. It explicitly excludes these external-runtime tests:
+It runs root/UI typechecks (including background actions), portable backend tests, browser-model and automation tests, backend/guest builds with nine-entry parity checks, the SDK's `openchamber-guest-check` against the built package, then package assembly and verification. It explicitly excludes these external-runtime tests:
 
 - `production-runtime.test.ts`
 - `plugin-failure-runtime.test.ts`
@@ -78,11 +78,15 @@ This is **not native GUI/OpenCode or host-installer certification**. The externa
 
 The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.
 
+To avoid running each check twice, all three workflows skip their check jobs on pull requests whose head is this repository's literal `main` or `dev`: the push checks already validate that head commit. A lightweight Bash gate compares branch names case-sensitively, receiving event values through environment variables rather than script interpolation. Feature branches (including `Dev` and `MAIN`) and forks (even forks named `main` or `dev`) still receive PR checks against the proposed merge. Direct pushes to both branches retain all checks; `main` push publication is unchanged. For same-repository `main`/`dev` PRs this deliberately checks the head, not the PR's synthetic merge commit; the resulting merge is checked on its destination push. The duplicate PR workflow still runs its gate, but its check jobs do no work. GitHub reports job-condition skips as success, unlike a cancelled check or a workflow omitted by branch/path filters (which can leave required checks pending). Existing job and check names are unchanged. Before adding required checks, account for these successful skips: a skipped PR job is not evidence that its head's push passed.
+
 Only `main` pushes can publish releases. A `dev` push runs portable checks but is never release-eligible; its publish job may appear as skipped. Accept the candidate on `dev` first, then promote the same commit to `main` after the required gates pass.
 
 ### Security scans and action updates
 
 Gitleaks checks pushes and pull requests to `main` and `dev` for secrets; its weekly scan re-checks the default branch's full history. CodeQL analyzes JavaScript and TypeScript on those same events for security problems without a build step. Dependabot checks GitHub Actions versions weekly and opens update PRs; npm/Bun version updates are not configured.
+
+The same duplicate-PR job conditions above apply to security scans; neither push nor weekly coverage is removed. CodeQL includes test drivers as well as shipped source, generated bundles and tooling. Data embedded in executable JavaScript must be encoded as a complete literal (use `javascriptLiteral` for code that may also appear in an HTML script element); do not wrap interpolated data in quotes. Deliberate executable test snippets are code, not data to sanitize. Test-only findings should be reviewed in that context, not dismissed by excluding shipped paths or broadly disabling queries.
 
 If Gitleaks flags a synthetic test fixture, confirm it cannot be a real credential, then add a narrowly scoped allowlist in `.gitleaks.toml` with a comment naming the file and explaining why the value is synthetic. Never disable the scan or broadly exempt tests. Treat a potentially real credential as a security issue: do not publish it, and arrange private reporting and rotation rather than allowlisting it.
 
@@ -98,6 +102,7 @@ bun run build:backend
 bun run bundle:guest ui/panel/main.ts ui/panel/main.js
 bun run bundle:guest ui/status/main.ts ui/status/main.js
 bun run bundle:guest ui/page/main.ts ui/page/main.js
+bun run bundle:guest background/main.ts background/main.js
 ```
 
 ### Package and integration checks
@@ -113,6 +118,8 @@ bun run verify:package
 
 The `build` alias runs `build:backend` only; it does not rebuild guests.
 `package` copies the accepted guest bundles byte for byte and does not compile them.
+The background HTML/classic script is required alongside the three visible guests
+in folder, ZIP and Git distributions; it runs only when a session action is invoked.
 Assembly writes the extension and companion folders/ZIPs under `build/artifacts/`; these are local outputs, not files to commit. Verification exercises those folders and ZIPs, checks entries/versions, and runs isolated service and companion lifecycle checks.
 
 `bun run check` combines the root typecheck, backend tests, backend build, package assembly, and package verification. It **does not** include the UI typecheck or browser tests. Use it for relevant integration changes, not as a mandatory gate for a typo or documentation-only PR.
@@ -157,7 +164,7 @@ The [Create a release REST API](https://docs.github.com/en/rest/releases/release
 
 The entire body is size-checked before any tag is created, but GitHub can still reject release creation for other reasons, or a draft can fail body verification. Inspect the tag and any draft read-only. If a persistent rejection needs corrected content, leave that version's tag unchanged: never delete, move or reuse it by hand. Retrying the same commit resubmits the same content. Correct the notes in a file for a higher package version, prepare matching source/compiled versions and accepted artifacts, and promote through the normal gates. The publisher treats it as a new release with a new tag; the stranded earlier tag or draft remains untouched. Editing notes without increasing the version does not trigger publication, and the new version must still pass all validation and collision checks.
 
-The automation does not bump versions, commit to `main`, or publish to npm. Same-version pushes—including the earlier 0.2.5 launch setup—skip publication without creating a tag or release; an empty release history does not bootstrap one. Version 0.2.6 starts the versioned release sequence; publication requires the exact main revision to pass the workflow. This publication policy is separate from OpenChamber's official-main version notice and the explicitly confirmed companion update/reload flow.
+The automation does not bump versions, commit to `main`, or publish to npm. Same-version pushes—including the earlier 0.2.5 launch setup—skip publication without creating a tag or release; an empty release history does not bootstrap one. Version 0.2.6 starts the versioned release sequence; publication requires the exact main revision to pass the workflow. This publication policy is separate from OpenChamber's Git update discovery and approval. Host offers follow the installed ref and require a higher package version; same-version commits alone do not produce an offer. Agent Progress makes no separate remote version check or update notice, and managed companion bytes ship with the extension rather than a second update confirmation. See [Setup](docs/setup.md#updates-observations-and-integrity) for approval deferral and loaded-byte observation limits.
 
 ## Before opening a PR
 

@@ -5,6 +5,7 @@
 // Kept apart from components.ts so a guest (or a test supplement) can mount a primitive without
 // the whole plan view; it depends only on the SDK kit.
 import { mountMenu, type MenuHandle, type MenuItem } from '@openchamber/sdk/ui';
+import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -52,6 +53,10 @@ export const MARK_LABEL: Record<MarkStatus, string> = {
   ready: 'Ready to start',
   waiting: 'Waiting on prerequisites',
 };
+const LABELS: Record<InterfaceLanguage, { marks: Record<MarkStatus, string>; actions: string }> = {
+  en: { marks: MARK_LABEL, actions: 'Plan actions' },
+  ru: { marks: { pending: 'Ожидает', working: 'По отчёту в работе', blocked: 'Заблокирована', done: 'Выполнена', skipped: 'Пропущена', ready: 'Готова к началу', waiting: 'Ожидает предпосылок' }, actions: 'Действия с планом' },
+};
 
 /** Plain interface icons (never status). Decorative unless given a name. */
 export type IconName = 'info' | 'more' | 'chevron-down' | 'close' | 'warning' | 'copy' | 'external' | 'filter';
@@ -84,6 +89,7 @@ function svg(parts: Part[], className: string) {
 }
 
 export interface MarkOptions {
+  locale?: string;
   /** Spoken name; defaults to MARK_LABEL. Ignored when decorative. */
   label?: string;
   /** True when adjacent text already says the status: the mark is then hidden from accessibility. */
@@ -103,7 +109,7 @@ export function statusMark(status: MarkStatus, options: MarkOptions = {}): HTMLS
   if (options.decorative) root.setAttribute('aria-hidden', 'true');
   else {
     root.setAttribute('role', 'img');
-    root.setAttribute('aria-label', options.label ?? MARK_LABEL[status]);
+    root.setAttribute('aria-label', options.label ?? LABELS[resolveLanguage('auto', options.locale ?? 'en')].marks[status]);
   }
   root.append(svg(MARK_SHAPES[status], 'ap-mark-svg'));
   return root;
@@ -120,6 +126,7 @@ export function icon(name: IconName, label?: string): HTMLSpanElement {
 }
 
 export interface StateChipOptions {
+  locale?: string;
   /** The state this chip counts; also its mark. */
   state: MarkStatus;
   /** Whole-plan count; a zero chip is not drawn. */
@@ -144,7 +151,8 @@ export function stateChip(options: StateChipOptions): HTMLButtonElement | HTMLSp
   root.dataset.testid = 'state-chip';
   root.dataset.state = options.state;
   root.dataset.count = String(count);
-  root.append(statusMark(options.state, { decorative: true }), node('b', 'ap-state-chip-n', String(count)), node('span', 'ap-state-chip-label', options.label));
+  const locale = resolveLanguage('auto', options.locale ?? 'en');
+  root.append(statusMark(options.state, { decorative: true, locale }), node('b', 'ap-state-chip-n', new Intl.NumberFormat(locale, { useGrouping: locale !== 'en' }).format(count)), node('span', 'ap-state-chip-label', options.label));
   if (root instanceof HTMLButtonElement) {
     root.type = 'button';
     root.setAttribute('aria-pressed', String(Boolean(options.pressed)));
@@ -348,6 +356,7 @@ export function infoDisclosure(options: InfoOptions): InfoHandle {
 }
 
 export interface PlanActionsOptions {
+  locale?: string;
   items: MenuItem[];
   onSelect: (id: string) => void;
   /** Accessible name of the ⋯ trigger. */
@@ -372,7 +381,7 @@ export function planActions(options: PlanActionsOptions): PlanActionsHandle {
   root.dataset.testid = 'plan-actions';
   const menu = mountMenu(root, { label: '⋯', variant: 'ghost', size: 'xs', items: options.items, onSelect: options.onSelect });
   const trigger = root.querySelector<HTMLButtonElement>('button');
-  trigger?.setAttribute('aria-label', options.label ?? 'Plan actions');
+  trigger?.setAttribute('aria-label', options.label ?? LABELS[resolveLanguage('auto', options.locale ?? 'en')].actions);
   trigger?.classList.add('ap-actions-btn');
   return { root, menu, trigger, dispose: () => menu.dispose() };
 }

@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createProgressServer } from '../../service/server.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { cleanupFixture } from './cleanup.ts';
+import { isolatedEnvironment, publishFixtureBinding } from './managed.ts';
 
 /** All roots, history and bindings are disposable. No installation or real user config. */
 export async function launchCleanupService(built=false,pages=true) {
@@ -24,10 +25,14 @@ export async function launchCleanupService(built=false,pages=true) {
   try {
     let port:number;
     if(built){
-      const binding=`${f.root}/binding.json`;writeFileSync(binding,JSON.stringify({protocolVersion:2,schemaVersion:2,installId:'cleanup-fixture',version:RELEASE,database:f.store.file,storeId:f.body().storeId,source:f.source}),{mode:0o600});
-      mkdirSync(`${f.root}/home`,{mode:0o700});
+      const env=isolatedEnvironment(f.root);
+      const roots={configRoot:`${f.root}/config/opencode`,dataRoot:`${f.root}/data/opencode`};
+      for(const dir of Object.values(roots))mkdirSync(dir,{recursive:true,mode:0o700});
+      f.store.db.prepare('UPDATE sources SET config_root=?,data_root=? WHERE id=?').run(roots.configRoot,roots.dataRoot,f.source.id);
+      Object.assign(f.source,roots);
+      publishFixtureBinding(env,{protocolVersion:2,schemaVersion:2,installId:'cleanup-fixture',version:RELEASE,database:f.store.file,storeId:f.body().storeId,source:f.source});
       const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');port=(reservation.address()as {port:number}).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
-      spawnBuilt=()=>spawn(process.execPath,[path.resolve('build/service/main.js')],{env:{PATH:process.env.PATH,HOME:`${f.root}/home`,XDG_CONFIG_HOME:`${f.root}/config`,XDG_DATA_HOME:`${f.root}/data`,XDG_STATE_HOME:`${f.root}/state`,AGENT_PROGRESS_BINDING:binding,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});child=spawnBuilt();
+      spawnBuilt=()=>spawn(process.execPath,[path.resolve('build/service/main.js')],{env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});child=spawnBuilt();
     }else{
       server=createProgressServer(f.store,'fixture-only');server.listen(0,'127.0.0.1');await once(server,'listening');port=(server.address()as {port:number}).port;
     }

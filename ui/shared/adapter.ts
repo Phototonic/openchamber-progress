@@ -7,7 +7,7 @@ import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
-  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, OfficialMainView, PlanView, SetupView, SourceView,
+  AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
 
@@ -31,9 +31,9 @@ const LIFECYCLES: Record<string, Lifecycle> = { active: 'active', finished: 'com
 const DOC_STATES: readonly DocumentState[] = ['unbound', 'captured', 'denied', 'missing', 'moved', 'oversized', 'non-text', 'unavailable', 'changed-during-read'];
 
 /** Routes and query names from docs/contracts.md. Cursors are opaque and passed back verbatim. */
-export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup', extensionUpdate: '/v1/extension-update' } as const;
+export const ROUTES = { health: '/health', plans: '/v1/plans', plan: '/v1/plan', document: '/v1/document', history: '/v1/history', changeDigest: '/v1/change-digest', search: '/v1/search', searchState: '/v1/search-state', setup: '/v1/setup' } as const;
 export const CAPTURE_ROUTES = { index: '/v1/document-captures', comparison: '/v1/document-comparison' } as const;
-export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture'] as const;
+export const SETUP_ACTIONS = ['inspect', 'install', 'update', 'disable', 'enable', 'remove-capture', 'managed-inspect', 'managed-configure', 'managed-migrate', 'managed-enable', 'managed-disable'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 
 export function query(params: Record<string, string | number | null | undefined>) {
@@ -48,12 +48,13 @@ function versions(v: Rec) {
   }
 }
 
-export function parseHealth(body: string): HealthView {
+export function parseHealth(body: string): HealthView & { planComposerHandoff?: 1 } {
   const v: unknown = JSON.parse(body);
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
-  return { ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
+  const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
+  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
 }
 
 export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {
@@ -542,7 +543,16 @@ export function parseSearchState(body: string, storeId: string, keys: SearchKeyV
 /** GET /v1/setup and POST /v1/setup/<action> replies. */
 export function parseSetup(body: string): SetupView {
   const v: unknown = JSON.parse(body);
-  check(isRec(v) && typeof v.configured === 'boolean' && typeof v.installed === 'boolean' && v.separateLifecycle === true, 'Setup reply is unreadable.');
+  check(isRec(v) && typeof v.configured === 'boolean' && typeof v.installed === 'boolean' && typeof v.separateLifecycle === 'boolean', 'Setup reply is unreadable.');
+  const d = isRec(v.delivery) ? v.delivery : null;
+  const managed = d?.kind === 'managed' && d.revision === 1 && v.separateLifecycle === false
+    && ['unconfigured','configured','invalid'].includes(d.configuration as string)
+    && ['none','available','conflict','unavailable','pending','complete'].includes(d.migration as string)
+    && ['unknown','not-observed','matching','different'].includes(d.observation as string)
+    && d.mode === 'unknown' && (d.expectedVersion === null || isStr(d.expectedVersion));
+  const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)
+    && isRec(d.review.targets) && isStr(d.review.targets.configRoot) && isStr(d.review.targets.dataRoot) && isStr(d.review.targets.storeRoot)
+    && (d.review.storeId === null || isStr(d.review.storeId)) && (d.review.sourceId === null || isStr(d.review.sourceId)) ? d.review : null;
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -558,6 +568,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}) } as SetupView['delivery'] } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,
@@ -567,35 +578,6 @@ export function parseSetup(body: string): SetupView {
     action: optStr(v.action),
     ...(s ? { suggestions: { configRoot: hint(s.configRoot), dataRoot: hint(s.dataRoot), storeRoot: hint(s.storeRoot) } } : {}),
     ...(update ? { update } : {}),
-  };
-}
-
-const STRICT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const DIAGNOSTICS: readonly OfficialMainView['diagnostic'][] = ['ok', 'unavailable', 'rate-limited', 'invalid-manifest', 'invalid-response', 'redirect', 'too-large', 'timeout', 'shutdown'];
-const isTime = (v: unknown): v is string => isStr(v) && !Number.isNaN(Date.parse(v));
-
-/**
- * GET /v1/extension-update. Every field must match the frozen meaning, including the fixed
- * official repository and branch, and the states must agree with each other (an availability
- * names a candidate; unknown has neither candidate nor last success). Anything else throws; the
- * caller treats that as unknown, never as "up to date".
- */
-export function parseExtensionUpdate(body: string): OfficialMainView {
-  const v: unknown = JSON.parse(body);
-  check(isRec(v), 'Update reply is not an object.');
-  const semver = (x: unknown): x is string => isStr(x) && x.length <= 64 && STRICT_SEMVER.test(x);
-  check(semver(v.installedVersion) && v.repository === 'Phototonic/openchamber-progress' && v.ref === 'main', 'Update reply names another extension or source.');
-  check(v.state === 'available' || v.state === 'not-newer' || v.state === 'unknown', 'Update reply has an unknown state.');
-  check((v.checkedAt === null || isTime(v.checkedAt)) && typeof v.stale === 'boolean' && isTime(v.nextCheckAt), 'Update reply has unreadable times.');
-  check(v.candidateVersion === undefined || semver(v.candidateVersion), 'Update reply has an unreadable version.');
-  check(DIAGNOSTICS.includes(v.diagnostic as OfficialMainView['diagnostic']), 'Update reply has an unknown diagnostic.');
-  if (v.state === 'available') check(v.candidateVersion !== undefined && v.checkedAt !== null, 'Update reply announces no version.');
-  if (v.state === 'not-newer') check(v.checkedAt !== null, 'Update reply has no successful check.');
-  if (v.state === 'unknown') check(v.candidateVersion === undefined && v.checkedAt === null && v.stale === false, 'Update reply contradicts itself.');
-  return {
-    installedVersion: v.installedVersion, state: v.state, checkedAt: v.checkedAt as string | null, stale: v.stale,
-    ...(v.candidateVersion !== undefined ? { candidateVersion: v.candidateVersion as string } : {}),
-    diagnostic: v.diagnostic as OfficialMainView['diagnostic'], nextCheckAt: v.nextCheckAt as string,
   };
 }
 

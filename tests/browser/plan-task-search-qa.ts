@@ -141,10 +141,10 @@ try {
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result.value as T;
   };
-  const guest = <T = any>(f: string, code: string) => evaluate<T>(`(()=>{const w=frame('${f}').contentWindow,d=w.document;${code}})()`);
+  const guest = <T = any>(f: string, code: string) => evaluate<T>(`(()=>{const w=frame(${javascriptLiteral(f)}).contentWindow,d=w.document;${code}})()`);
   /** Polls in the page on animation frames; resolves with the page time when `cond` held. */
   const wait = async (f: string, cond: string, what = cond, ms = 20_000) => {
-    const at = await evaluate<number | null>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame('${f}').contentWindow,d=w.document;if(${cond})return performance.now()}catch{}await new Promise(r=>requestAnimationFrame(r));}return null})()`);
+    const at = await evaluate<number | null>(`(async()=>{const end=performance.now()+${ms};while(performance.now()<end){try{const w=frame(${javascriptLiteral(f)}).contentWindow,d=w.document;if(${cond})return performance.now()}catch{}await new Promise(r=>requestAnimationFrame(r));}return null})()`);
     if (at === null) throw new Error(`timed out waiting (${f}): ${what}`);
     return at;
   };
@@ -443,11 +443,11 @@ try {
       { id: 'M', title: 'Coordinator', projectId: 'alpha', directory: '/fixture/main', parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] },
       { id: 'map-child', title: 'Map worker', projectId: 'alpha', directory: '/fixture/main', parentId: 'M', archivedAt: null, worktree: null, activity, outcome: null, items: [] },
     ];
-    await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await evaluate(`qa.sessionCoverage={alpha:[{directory:'/fixture/main',state:'ready'}]};qa.setSessions('alpha',${javascriptLiteral(sessionRecords('running'))});true`);
     await wait('page', `d.querySelector('[data-testid="map-card-who-B"]')?.textContent==='Assigned to Map worker'`, 'verified host title');
     check('attribution:render:verified-source-host-title', (await card('page', 'B')).name.includes('Assigned to Map worker'));
     await mapShot('verified-host-title', 'page');
-    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('waiting-question'))});true`);
+    await evaluate(`qa.setSessions('alpha',${javascriptLiteral(sessionRecords('waiting-question'))});true`);
     await wait('page', `d.querySelector('[data-testid="map-card-live-B"]')?.dataset.live==='waiting'`, 'waiting session mark');
     {
       const b = await card('page', 'B'), i = await inspector('page');
@@ -464,7 +464,7 @@ try {
     await wait('page', `parent.qa.held.some(h=>h.tag==='attribution-newer-graph')&&d.querySelector('[data-testid="map-region"]')?.dataset.current==='false'`, 'last reported picture during graph hold');
     {
       const b = await card('page', 'B'), i = await inspector('page');
-      check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${JSON.stringify(lastRevision)}`));
+      check('attribution:render:superseded-retains-revision', await guest('page', `return d.querySelector('[data-testid="map-region"]').dataset.revision===${javascriptLiteral(lastRevision)}`));
       check('attribution:render:superseded-hides-live', b.attribution === 'assigned' && b.chip === null && i.live === '' && i.activity.endsWith(`Hidden while the map shows revision ${lastRevision} as last reported.`));
       check('attribution:render:superseded-status-last-reported', b.status === 'Reported working' && !(await proof('page')).B.live.proven);
     }
@@ -486,7 +486,7 @@ try {
     }
     await shot('terminal-run', '[data-testid="map-region"]', 12, 1600);
     // Same child ID on a foreign source must keep its recorded label and get no borrowed activity.
-    await evaluate(`qa.setSessions('alpha',${JSON.stringify(sessionRecords('running'))});true`);
+    await evaluate(`qa.setSessions('alpha',${javascriptLiteral(sessionRecords('running'))});true`);
     await guest('page', `w.mapPreview.source('source-beta');return true`); await ready('page');
     await select('page', 'B');
     {
@@ -1697,7 +1697,7 @@ try {
         await focusShot('page-focus-light-listbox-arrow', 'page', 40, 200);
         const chosen = await guest<string>('page', `return d.getElementById(d.querySelector('${listSel}').getAttribute('aria-activedescendant'))?.dataset.testid??''`);
         await key('Enter');
-        await wait('page', `d.querySelector('[data-testid="${chosen}"]')?.getAttribute('aria-selected')==='true'&&d.querySelector('[data-testid="plan-detail"] article[data-testid="plan-${chosen.replace('plan-row-', '')}"]')`, 'selected plan rendered');
+        await wait('page', `d.querySelector(${javascriptLiteral(`[data-testid="${chosen}"]`)})?.getAttribute('aria-selected')==='true'&&d.querySelector(${javascriptLiteral(`[data-testid="plan-detail"] article[data-testid="plan-${chosen.replace('plan-row-', '')}"]`)})`, 'selected plan rendered');
         kcheck('K2', 'page', 'plan-list:enter-selects-and-renders', await focusedOn('page', listSel), [`selected ${chosen}; listbox keeps focus`], await focusState());
         // Tabs: arrows switch Progress → Document → History and keep focus on the tab.
         await tabTo('page', '[data-testid="detail-tabs"] [role="tab"][aria-selected="true"]');
@@ -1897,15 +1897,16 @@ try {
         const sw = await walk('board-1100-light-setup');
         const sids = [...new Set(sw.list.map((x: any) => x.testid))];
         inventory['setup-hooks'] = sids;
-        const nonGet = async () => (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET').length;
+        const nonGet = async () => (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET' && !r.path.endsWith('/managed-inspect')).length;
         const before = await nonGet();
         const action = ['setup-disable', 'setup-enable', 'setup-remove'].find((h) => sids.includes(h));
         if (action) {
           await tabTo('page', `[data-testid="${action}"] button, button[data-testid="${action}"]`);
           kcheck('K6', 'page', `${action}:reach-sends-nothing`, await nonGet() === before);
           await key('Enter');
+          await wait('page', `!!d.querySelector('[data-testid="setup-review"]')`, 'managed control review');
           await frames2();
-          const confirm = await guest<string | null>('page', `return d.querySelector('[data-testid^="setup-confirm-"]')?.dataset.testid??null`);
+          const confirm = await guest<string | null>('page', `return d.querySelector('[data-testid="setup-confirm"]')?.dataset.testid??null`);
           const cancel = await guest<boolean>('page', `return !!d.querySelector('[data-testid="setup-cancel"]')`);
           inventory['setup-confirm'] = { confirm, cancel, focus: await focusState() };
           await kexpect('K6', 'page', `${action}:open-focuses-cancel`, await focusedOn('page', '[data-testid="setup-cancel"]'), ['Cancel receives focus when the confirmation opens'], await focusState());
@@ -1927,9 +1928,10 @@ try {
           } else skip('K6', 'page', `${action}: no cancel control appeared (${confirm})`);
           if (confirm) {
             if (!(await guest<boolean>('page', `return !!d.querySelector('[data-testid="${confirm}"]')`))) { await tabTo('page', `[data-testid="${action}"] button, button[data-testid="${action}"]`); await key('Enter'); await frames2(); }
+            await tabTo('page','[data-testid="setup-ack"] [role="checkbox"]');await key('Space');
             await tabTo('page', `[data-testid="${confirm}"] button, button[data-testid="${confirm}"]`); await key('Enter');
-            await wait('page', `qa.intercepted.filter(r=>r.method!=='GET').length===${before + 1}`, 'one intercepted setup action');
-            const sent = (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET').slice(before);
+            await wait('page', `qa.intercepted.filter(r=>r.method!=='GET'&&!r.path.endsWith('/managed-inspect')).length===${before + 1}`, 'one intercepted setup mutation');
+            const sent = (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET' && !r.path.endsWith('/managed-inspect')).slice(before);
             kcheck('K6', 'page', `${action}:deliberate-confirm-one-intercepted`, sent.length === 1, ['Setup action answered by the shell from the synthetic setup fixture; never forwarded'], sent.map((r) => `${r.method} ${r.path}`));
             await frames2();
             const sd = await focusState();

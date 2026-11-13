@@ -22,6 +22,23 @@ async function serverFixture(run:(f:any)=>Promise<void>) {
   });
 }
 
+test('managed authority fences recovery before native reads and across held root/page awaits',async()=>{
+  for(const boundary of ['before','root','page','root-error'] as const)await serverFixture(async f=>{
+    const entered=deferred(),held=deferred<any>();let roots=0,pages=0;
+    f.ctx.session.get=async()=>{roots++;if(boundary==='root'||boundary==='root-error'){entered.resolve();await held.promise;if(boundary==='root-error')throw Error('Synthetic failure');}return f.records.get('A');};
+    f.ctx.session.list=async()=>{pages++;entered.resolve();return await held.promise;};
+    await f.post();
+    if(boundary==='before')f.retireAuthority();
+    const pending=f.binding.drainRuns();
+    if(boundary!=='before'){await entered.promise;f.retireAuthority();}
+    const before=durableSnapshot(f.store.db);
+    held.resolve({data:[{...f.records.get('C1'),time:{created:1000,updated:2000}}],cursor:{next:null}});
+    await pending;await f.binding.drainRuns();
+    assert.deepEqual(durableSnapshot(f.store.db),before,'retired recovery publishes no history or failure metadata');
+    assert.equal(roots,boundary==='before'?0:1);assert.equal(pages,boundary==='page'?1:0);
+  });
+});
+
 test('authenticated dismissal validates identity and bounds, fences races and persists store-wide while capture is off',async t=>{
   const now=1_800_000_000_000;t.mock.method(Date,'now',()=>now);
   await serverFixture(async f=>{

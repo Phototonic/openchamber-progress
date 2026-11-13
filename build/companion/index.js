@@ -24225,9 +24225,8 @@ var Resolved = durable({
 var Event17 = { Updated: Updated12, Resolved, Definitions: inventory(Updated12, Resolved) };
 // plugin/index.ts
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { homedir } from "node:os";
-import path8 from "node:path";
-import { realpathSync as realpathSync6, readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3, lstatSync as lstatSync7 } from "node:fs";
+import path9 from "node:path";
 
 // shared/binding.ts
 import { lstatSync as lstatSync2, readFileSync, realpathSync as realpathSync2 } from "node:fs";
@@ -24709,6 +24708,86 @@ function verifyStore(store, b) {
   requireProgress(envelope.storeId === b.storeId && envelope.sources.some((s) => s.id === b.source.id && s.configRoot === b.source.configRoot && s.dataRoot === b.source.dataRoot && s.verified === b.source.verified), "binding");
 }
 
+// shared/managed-binding.ts
+import { lstatSync as lstatSync3, realpathSync as realpathSync3, readFileSync as readFileSync2, writeFileSync, linkSync, unlinkSync, renameSync } from "node:fs";
+import path3 from "node:path";
+import { homedir } from "node:os";
+class ManagedBindingError extends Error {
+  code;
+  constructor(code = "managed-binding-invalid") {
+    super(code);
+    this.code = code;
+  }
+}
+function need(value3, code) {
+  if (!value3)
+    throw new ManagedBindingError(code);
+}
+var markerText = '{"product":"openchamber-agent-progress-managed","format":1}';
+function managedPath(value3, missing2 = false) {
+  if (windows)
+    return windowsPath(value3, missing2);
+  need(value3.length <= 4096 && !value3.includes("\x00") && path3.isAbsolute(value3) && path3.resolve(value3) === value3, "managed-path-unverified");
+  let current = value3;
+  while (!lstatSync3(current, { throwIfNoEntry: false })) {
+    need(missing2, "managed-path-unverified");
+    const parent = path3.dirname(current);
+    need(parent !== current, "managed-path-unverified");
+    current = parent;
+  }
+  need(realpathSync3(current) === current && !lstatSync3(current).isSymbolicLink(), "managed-path-unverified");
+  return value3;
+}
+function managedSourceRoots(env = process.env) {
+  return platformSecurityScope(() => {
+    need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+    const home = () => managedPath(env.HOME ?? homedir(), true);
+    const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path3.join(home(), fallback), true);
+    return {
+      configRoot: managedPath(path3.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
+      dataRoot: managedPath(path3.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
+    };
+  });
+}
+function managedBindingFile(env = process.env) {
+  return platformSecurityScope(() => {
+    const { dataRoot } = managedSourceRoots(env);
+    const root = managedPath(path3.join(dataRoot, "agent-progress-managed"), true);
+    const stat = lstatSync3(root, { throwIfNoEntry: false });
+    if (stat) {
+      need(stat.isDirectory() && privatePaths([root]));
+      const marker = path3.join(root, ".ownership.json");
+      const m = lstatSync3(marker, { throwIfNoEntry: false });
+      need(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync2(marker, "utf8") === markerText);
+    }
+    return path3.join(root, "progress-binding.json");
+  });
+}
+function readManagedBinding(env = process.env) {
+  return platformSecurityScope(() => readManagedBindingInner(env));
+}
+function readManagedBindingInner(env) {
+  const file = managedBindingFile(env);
+  if (!lstatSync3(file, { throwIfNoEntry: false }))
+    return;
+  let binding;
+  try {
+    binding = readBinding(file);
+  } catch (e) {
+    if (e instanceof SyntaxError)
+      throw new ManagedBindingError;
+    throw e;
+  }
+  const roots = managedSourceRoots(env);
+  need(binding.source.configRoot === roots.configRoot && binding.source.dataRoot === roots.dataRoot);
+  need(![roots.configRoot, roots.dataRoot, path3.dirname(file)].includes(path3.dirname(binding.database)));
+  need([roots.configRoot, roots.dataRoot].every((root) => lstatSync3(root).isDirectory() && isOwned(root)));
+  return binding;
+}
+
+// shared/release.ts
+var RELEASE = "1.2.0";
+
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
@@ -24770,8 +24849,8 @@ import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypt
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync3, unlinkSync, realpathSync as realpathSync3, existsSync as existsSync2 } from "node:fs";
-import path3 from "node:path";
+import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync4, unlinkSync as unlinkSync2, realpathSync as realpathSync4, existsSync as existsSync2 } from "node:fs";
+import path4 from "node:path";
 var definitions = {
   cleanup_format: "CREATE TABLE cleanup_format(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1))",
   cleanup_state: "CREATE TABLE cleanup_state(source TEXT NOT NULL, plan TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN('visible','archived','deleted')), generation INTEGER NOT NULL CHECK(generation>0), oid TEXT NOT NULL, request_hash TEXT NOT NULL, receipt TEXT NOT NULL CHECK(json_valid(receipt)), PRIMARY KEY(source,plan))"
@@ -24839,16 +24918,16 @@ function backup(db, file) {
   return platformSecurityScope(() => backupPrivate(db, file));
 }
 function backupPrivate(db, file) {
-  const parent = path3.dirname(file);
-  const owned = lstatSync3(parent);
+  const parent = path4.dirname(file);
+  const owned = lstatSync4(parent);
   requireProgress(owned.isDirectory() && !owned.isSymbolicLink() && privatePaths([parent]), "binding");
   if (windows) {
     const secured = [parent, file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync2);
     const resolved = windowsPaths(secured);
     requireProgress(existsSync2(file) && sameWindowsDirectory(resolved[0], parent) && resolved.every((v, i) => sameWindowsObject(v, secured[i])) && privatePaths(secured), "binding");
   } else
-    requireProgress(realpathSync3(parent) === parent, "binding");
-  const destination = path3.join(path3.dirname(file), `cleanup-backup-${randomUUID()}.sqlite`);
+    requireProgress(realpathSync4(parent) === parent, "binding");
+  const destination = path4.join(path4.dirname(file), `cleanup-backup-${randomUUID()}.sqlite`);
   const fd = openSync2(destination, "wx", 384);
   closeSync2(fd);
   let copy3;
@@ -24857,7 +24936,7 @@ function backupPrivate(db, file) {
       requireProgress(sameWindowsObject(windowsPaths([destination])[0], destination), "binding");
     requireProgress(privatePaths([destination]), "binding");
     db.prepare("VACUUM INTO ?").run(destination);
-    const stat = lstatSync3(destination);
+    const stat = lstatSync4(destination);
     requireProgress(stat.isFile() && !stat.isSymbolicLink() && privatePaths([parent, destination]), "binding");
     if (windows)
       requireProgress(sameWindowsObject(windowsPaths([destination])[0], destination), "binding");
@@ -24867,7 +24946,7 @@ function backupPrivate(db, file) {
   } catch (e) {
     copy3?.close();
     copy3 = undefined;
-    unlinkSync(destination);
+    unlinkSync2(destination);
     throw e;
   } finally {
     copy3?.close();
@@ -26404,8 +26483,8 @@ function captureComparison(db, binding, r, before, after) {
 
 // shared/store.ts
 import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
-import path4 from "node:path";
+import { existsSync as existsSync3, lstatSync as lstatSync5, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync5, chmodSync } from "node:fs";
+import path5 from "node:path";
 
 // shared/plan-task-search.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -26563,10 +26642,11 @@ function capDigest(result3) {
 var normalize3 = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
-  const tokens = normalize3(q).trim().split(/\s+/u).filter(Boolean);
+  const tokens = queryTokens(q);
   requireProgress(tokens.length <= SEARCH_LIMITS.tokens);
   return tokens;
 }
+var queryTokens = (q) => normalize3(q).trim().split(/\s+/u).filter(Boolean);
 function searchMatches(tokens, title, id2) {
   const t = normalize3(title), key = normalize3(id2);
   return tokens.every((word) => t.includes(word) || key.includes(word));
@@ -26934,17 +27014,17 @@ class Store {
         file = windowsPath(file, true);
         this.file = file;
       }
-      requireProgress(path4.isAbsolute(file), "binding");
-      const parent = lstatSync4(path4.dirname(file));
-      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? sameWindowsDirectory(windowsPath(path4.dirname(file)), path4.dirname(file)) : parent.uid === process.getuid?.() && realpathSync4(path4.dirname(file)) === path4.dirname(file) && (parent.mode & 511) === 448), "binding");
+      requireProgress(path5.isAbsolute(file), "binding");
+      const parent = lstatSync5(path5.dirname(file));
+      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? sameWindowsDirectory(windowsPath(path5.dirname(file)), path5.dirname(file)) : parent.uid === process.getuid?.() && realpathSync5(path5.dirname(file)) === path5.dirname(file) && (parent.mode & 511) === 448), "binding");
       const existed = existsSync3(file);
       requireProgress(existed || options2.create && !options2.readOnly, "not-found");
       if (windows) {
-        const secured = [path4.dirname(file), file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync3);
+        const secured = [path5.dirname(file), file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync3);
         requireProgress(windowsPaths(secured).every((v, i) => sameWindowsObject(v, secured[i])) && privatePaths(secured), "binding");
       }
       if (existed) {
-        const stat = lstatSync4(file);
+        const stat = lstatSync5(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
         const head4 = Buffer.alloc(16);
@@ -27116,6 +27196,103 @@ class Store {
   }
   searchState(storeId, keys4) {
     return this.transaction(false, () => searchState(this.db, this.readBinding, storeId, keys4));
+  }
+  mentionCandidates(directory, alive = () => true) {
+    requireProgress(directory === null || typeof directory === "string" && directory.length <= 4096 && !directory.includes("\x00"));
+    const started = performance.now();
+    return this.transaction(false, () => {
+      const r = { binding: { ...this.readBinding }, candidates: [], limited: false, work: { planSlots: 0, sessionSlots: 0, inputBytes: 0 } };
+      const checkpoint = () => {
+        requireProgress(alive(), "storage");
+        if (performance.now() - started >= 500) {
+          r.limited = true;
+          return false;
+        }
+        return true;
+      };
+      const normalized3 = directoryFilter(directory ?? undefined), projects = new Set;
+      let sessionsComplete = false, projectUnknown = false;
+      if (normalized3 !== undefined && this.readBinding.verified && this.readBinding.sourceId) {
+        let after = "";
+        const next2 = this.db.prepare("SELECT id,length(CAST(actor AS BLOB)) AS bytes,CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id>? ORDER BY id LIMIT 1");
+        while (r.work.sessionSlots < 512 && checkpoint()) {
+          const row2 = next2.get(this.readBinding.sourceId, after);
+          if (!row2) {
+            sessionsComplete = true;
+            break;
+          }
+          r.work.sessionSlots++;
+          after = String(row2.id);
+          if (typeof row2.actor !== "string" || r.work.inputBytes + Number(row2.bytes) > 16 * 1024 * 1024) {
+            r.limited = true;
+            break;
+          }
+          r.work.inputBytes += Number(row2.bytes);
+          let a;
+          try {
+            a = JSON.parse(row2.actor);
+          } catch {
+            throw new ProgressError("corrupt");
+          }
+          requireProgress(a.sourceId === this.readBinding.sourceId && a.sessionId === row2.id && typeof a.directory === "string", "corrupt");
+          if (directoryFilter(a.directory) === normalized3) {
+            if (typeof a.projectId === "string" && a.projectId.length > 0 && a.projectId.length <= 4096)
+              projects.add(a.projectId);
+            else
+              projectUnknown = true;
+          }
+        }
+        if (!sessionsComplete)
+          r.limited = true;
+      }
+      const project = sessionsComplete && !projectUnknown && projects.size === 1 ? [...projects][0] : undefined;
+      let source = "", id2 = "";
+      const installed = cleanupInstalled(this.db);
+      const next = this.db.prepare("SELECT source,id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE (source,id)>(?,?) ORDER BY source,id LIMIT 1");
+      const snapshot3 = this.db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?");
+      let exhausted = false;
+      while (r.work.planSlots < 512 && checkpoint()) {
+        const row2 = next.get(source, id2);
+        if (!row2) {
+          exhausted = true;
+          break;
+        }
+        r.work.planSlots++;
+        source = String(row2.source);
+        id2 = String(row2.id);
+        requireProgress(identifier2(source) && identifier2(id2), "corrupt");
+        const state = installed ? cleanupState(this.db, source, id2) : undefined;
+        if (state && state.state !== "visible")
+          continue;
+        const bytes2 = Number(row2.bytes);
+        if (bytes2 > 1024 * 1024) {
+          r.limited = true;
+          continue;
+        }
+        if (r.work.inputBytes + bytes2 > 16 * 1024 * 1024) {
+          r.limited = true;
+          break;
+        }
+        const text = snapshot3.get(Math.min(1024 * 1024, 16 * 1024 * 1024 - r.work.inputBytes), source, id2)?.snapshot;
+        requireProgress(typeof text === "string", "corrupt");
+        r.work.inputBytes += bytes2;
+        let p;
+        try {
+          p = JSON.parse(text);
+        } catch {
+          throw new ProgressError("corrupt");
+        }
+        if (!validateDigestSnapshot(p, source, id2, Number(row2.revision)) || typeof p.title !== "string" || !p.title.trim() || p.title.length > 256 || typeof p.directory !== "string" || p.directory.length > 4096 || !Array.isArray(p.links) || p.links.length > 64) {
+          r.limited = true;
+          continue;
+        }
+        const verified = this.db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified === 1;
+        const locality = normalized3 !== undefined && directoryFilter(p.directory) === normalized3 ? 0 : project && verified && source === this.readBinding.sourceId && p.projectId === project ? 1 : 2;
+        r.candidates.push({ plan: this.summary(p), verified, locality });
+      }
+      r.limited ||= !exhausted;
+      return r;
+    });
   }
   resumePlans(request3, options2 = {}) {
     return this.transaction(false, () => resumeSelection(this.db, this.readBinding, request3, options2.now));
@@ -27300,14 +27477,28 @@ class Store {
     });
   }
   detail(source, id2, page = 0) {
+    return this.detailPage(source, id2, page);
+  }
+  mentionDetail(source, id2, page = 0) {
+    return this.detailPage(source, id2, page, 1024 * 1024);
+  }
+  detailPage(source, id2, page, snapshotBytes) {
     return this.transaction(false, () => {
+      if (snapshotBytes !== undefined) {
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(source, id2);
+        requireProgress(row2, "not-found");
+        requireProgress(Number(row2.bytes) <= snapshotBytes, "storage");
+      }
       requireProgress(Number.isSafeInteger(page) && page >= 0);
       const p = this.raw(source, id2);
       requireProgress(p, "not-found");
       const start = page * LIMITS.pageSize;
-      const rows = this.db.prepare("SELECT payload FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?").all(source, id2, LIMITS.pageSize + 1, start);
+      const rows = this.db.prepare(`SELECT ${snapshotBytes === undefined ? "payload" : "CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload"} FROM contributions WHERE source=? AND plan=? ORDER BY revision LIMIT ? OFFSET ?`).all(source, id2, LIMITS.pageSize + 1, start);
+      if (snapshotBytes !== undefined)
+        requireProgress(rows.every((r) => typeof r.payload === "string"), "storage");
       return {
         ...this.metadata(),
+        ...snapshotBytes === undefined ? {} : { assembly: { itemCount: p.items.length } },
         plan: this.summary(p),
         links: p.links,
         items: { data: p.items.slice(start, start + LIMITS.pageSize).map((i) => {
@@ -27617,7 +27808,7 @@ class Store {
         p.lifecycle = r.outcome;
       }
       if (r.op === "bind" || r.op === "start" && r.source) {
-        requireProgress(capture && path4.isAbsolute(capture.path), "invalid");
+        requireProgress(capture && path5.isAbsolute(capture.path), "invalid");
         p.document = { ...p.document, path: capture.path, checklistSynchronized: false };
         p.boundCanonicalPath = capture.canonicalPath;
       }
@@ -27709,12 +27900,12 @@ function validateItems(items) {
 }
 
 // plugin/document.ts
-import { constants, realpathSync as realpathSync5, openSync as openSync4, closeSync as closeSync4, fstatSync, lstatSync as lstatSync5, readSync as readSync2 } from "node:fs";
-import path5 from "node:path";
+import { constants, realpathSync as realpathSync6, openSync as openSync4, closeSync as closeSync4, fstatSync, lstatSync as lstatSync6, readSync as readSync2 } from "node:fs";
+import path6 from "node:path";
 async function captureDocument(reference, directory, authorize, previous) {
   if (process.platform === "win32")
     return captureWindowsDocument(reference, directory, authorize, previous);
-  const requested = path5.resolve(directory, reference);
+  const requested = path6.resolve(directory, reference);
   const checkedAt = new Date().toISOString();
   const result3 = (state, canonicalPath) => ({ state, path: requested, checkedAt, ...canonicalPath ? { canonicalPath } : {} });
   if (process.platform !== "linux")
@@ -27722,21 +27913,21 @@ async function captureDocument(reference, directory, authorize, previous) {
   let fd;
   try {
     await authorize(requested);
-    const canonicalPath = realpathSync5(requested);
+    const canonicalPath = realpathSync6(requested);
     await authorize(canonicalPath);
     if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
       return result3("moved", canonicalPath);
     fd = openSync4(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let actual;
     try {
-      actual = realpathSync5(`/proc/self/fd/${fd}`);
+      actual = realpathSync6(`/proc/self/fd/${fd}`);
     } catch {
       return result3("unavailable");
     }
-    if (actual !== canonicalPath || realpathSync5(requested) !== canonicalPath)
+    if (actual !== canonicalPath || realpathSync6(requested) !== canonicalPath)
       return result3("changed-during-read");
     const before = fstatSync(fd, { bigint: true });
-    const current = lstatSync5(canonicalPath, { bigint: true });
+    const current = lstatSync6(canonicalPath, { bigint: true });
     if (!before.isFile())
       return result3("non-text", canonicalPath);
     if (before.dev !== current.dev || before.ino !== current.ino)
@@ -27754,8 +27945,8 @@ async function captureDocument(reference, directory, authorize, previous) {
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
     const after = fstatSync(fd, { bigint: true });
-    const still = lstatSync5(canonicalPath, { bigint: true });
-    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || after.ino !== still.ino || after.dev !== still.dev || realpathSync5(requested) !== canonicalPath)
+    const still = lstatSync6(canonicalPath, { bigint: true });
+    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || after.ino !== still.ino || after.dev !== still.dev || realpathSync6(requested) !== canonicalPath)
       return result3("changed-during-read");
     let text;
     try {
@@ -27782,29 +27973,29 @@ function unchanged(a, b) {
 }
 function ancestors(file) {
   const result3 = new Map;
-  for (let p = path5.dirname(file);; p = path5.dirname(p)) {
-    const stat = lstatSync5(p, { bigint: true });
+  for (let p = path6.dirname(file);; p = path6.dirname(p)) {
+    const stat = lstatSync6(p, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink())
       throw new Error("unsupported-path");
     result3.set(p, stat);
-    if (path5.dirname(p) === p)
+    if (path6.dirname(p) === p)
       break;
   }
   return result3;
 }
 async function captureWindowsDocument(reference, directory, authorize, previous) {
-  const requested = path5.resolve(directory, reference);
+  const requested = path6.resolve(directory, reference);
   const checkedAt = new Date().toISOString();
   const result3 = (state, canonicalPath) => ({ state, path: requested, checkedAt, ...canonicalPath ? { canonicalPath } : {} });
   let fd;
   try {
     await authorize(requested);
-    const raw = path5.isAbsolute(reference) ? reference : directory + "\\" + reference;
+    const raw = path6.isAbsolute(reference) ? reference : directory + "\\" + reference;
     const canonicalPath = platformSecurityScope(() => windowsDocumentPath(raw, true));
     await authorize(canonicalPath);
     if (previous?.canonicalPath && canonicalPath !== previous.canonicalPath)
       return result3("moved", canonicalPath);
-    const bound = lstatSync5(canonicalPath, { bigint: true });
+    const bound = lstatSync6(canonicalPath, { bigint: true });
     if (platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
       return result3("changed-during-read");
     if (!bound.isFile() || bound.isSymbolicLink())
@@ -27814,11 +28005,11 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
       return result3("oversized", canonicalPath);
     fd = openSync4(canonicalPath, constants.O_RDONLY);
     const before = fstatSync(fd, { bigint: true });
-    const current = lstatSync5(canonicalPath, { bigint: true });
+    const current = lstatSync6(canonicalPath, { bigint: true });
     if (!before.isFile() || before.ino === 0n || !unchanged(bound, before) || !unchanged(before, current) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
       return result3("changed-during-read");
     for (const [p, stat] of parents)
-      if (!sameFile(stat, lstatSync5(p, { bigint: true })))
+      if (!sameFile(stat, lstatSync6(p, { bigint: true })))
         return result3("changed-during-read");
     const bytes2 = Buffer.alloc(LIMITS.documentBytes + 1);
     let offset = 0;
@@ -27830,11 +28021,11 @@ async function captureWindowsDocument(reference, directory, authorize, previous)
     }
     if (offset > LIMITS.documentBytes)
       return result3("oversized", canonicalPath);
-    const after = fstatSync(fd, { bigint: true }), still = lstatSync5(canonicalPath, { bigint: true });
+    const after = fstatSync(fd, { bigint: true }), still = lstatSync6(canonicalPath, { bigint: true });
     if (!still.isFile() || still.isSymbolicLink() || !unchanged(before, after) || !unchanged(after, still) || platformSecurityScope(() => windowsDocumentPath(raw)) !== canonicalPath)
       return result3("changed-during-read");
     for (const [p, stat] of parents)
-      if (!sameFile(stat, lstatSync5(p, { bigint: true })))
+      if (!sameFile(stat, lstatSync6(p, { bigint: true })))
         return result3("changed-during-read");
     let text;
     try {
@@ -27862,7 +28053,7 @@ function activationFingerprint(binding, plugin, guidance) {
 }
 
 // plugin/activation.ts
-import path6 from "node:path";
+import path7 from "node:path";
 var REPORT_TOOL = "agent_progress_report";
 var ACTIVATION_GUIDANCE = `# Agent progress (companion)
 Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
@@ -27911,16 +28102,16 @@ function proxyReason(event) {
 function possiblePath(value3) {
   if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
     return false;
-  const name = path6.basename(value3).toLowerCase();
+  const name = path7.basename(value3).toLowerCase();
   if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
     return false;
-  return /^plan\.(md|markdown)$/.test(name) || path6.normalize(value3).split(path6.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+  return /^plan\.(md|markdown)$/.test(name) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function planPath(value3, directory) {
-  const relative = path6.relative(directory, path6.resolve(directory, value3));
-  if (!relative || relative === ".." || relative.startsWith(`..${path6.sep}`) || path6.isAbsolute(relative))
+  const relative = path7.relative(directory, path7.resolve(directory, value3));
+  if (!relative || relative === ".." || relative.startsWith(`..${path7.sep}`) || path7.isAbsolute(relative))
     return false;
-  const parts2 = relative.split(path6.sep);
+  const parts2 = relative.split(path7.sep);
   return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function successfulPath(event) {
@@ -27960,7 +28151,7 @@ function resumeText(selection) {
   }
   return "";
 }
-async function registerActivation(ctx, source, enabled, recovery) {
+async function registerActivation(ctx, source, enabled, recovery, onContext) {
   const pending = new Map;
   const recent = new Set;
   const owned = Symbol("agent-progress-section");
@@ -28035,7 +28226,7 @@ ${capsule}` : "") };
   }
   async function session(sessionID) {
     const value3 = await ctx.session.get({ sessionID });
-    return value3.id === sessionID && path6.isAbsolute(value3.location.directory) ? value3 : undefined;
+    return value3.id === sessionID && path7.isAbsolute(value3.location.directory) ? value3 : undefined;
   }
   async function dispose() {
     disposed = true;
@@ -28070,7 +28261,7 @@ ${capsule}` : "") };
         if (candidate2 && boundedID(caller.parentID) && caller.parentID !== caller.id) {
           try {
             const parent = await session(caller.parentID);
-            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path6.resolve(parent.location.directory) === path6.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
+            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path7.resolve(parent.location.directory) === path7.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
               parentID = parent.id;
           } catch {}
         }
@@ -28082,7 +28273,7 @@ ${capsule}` : "") };
           flag(key(parentID), PLAN);
       } catch {}
     }));
-    registrations.push(await ctx.session.hook("context", async (event) => {
+    const context4 = async (event) => {
       const removeOwned = () => {
         for (let i = event.system.length - 1;i >= 0; i--)
           if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
@@ -28184,7 +28375,9 @@ ${capsule}` : "") };
           removeOwned();
         } catch {}
       }
-    }));
+    };
+    registrations.push(await ctx.session.hook("context", context4));
+    onContext?.(context4);
     if (recovery) {
       const abort = new AbortController;
       let registration;
@@ -28291,7 +28484,7 @@ function createRunCapture(ctx, options2) {
   const lookups = new Set;
   let producer = randomUUID4();
   let physicalIdentities = 0;
-  const active = () => !disposed && !abort.signal.aborted;
+  const active = () => !disposed && !abort.signal.aborted && options2.alive?.() !== false;
   const key = (e) => ({ source: sourceId, parent: e.sessionID, message: e.messageID, call: e.id });
   const valid = (e) => ["subagent", "task"].includes(e.tool) && [e.sessionID, e.messageID, e.id].every(identifier2);
   const observationStarted = () => {
@@ -28305,6 +28498,8 @@ function createRunCapture(ctx, options2) {
     return epoch;
   };
   const unavailable = () => {
+    if (!active())
+      return;
     try {
       store.runCaptureUnavailable();
       epoch = store.runObservationEpoch();
@@ -28372,6 +28567,8 @@ function createRunCapture(ctx, options2) {
         throw Error("capture-unavailable");
       store.afterRun(key(e), c.generation, child, "returned");
     } catch {
+      if (!active())
+        return;
       try {
         store.afterRun(key(e), store.runControl().generation, undefined, "unconfirmed");
       } catch {}
@@ -28439,9 +28636,13 @@ function createRunCapture(ctx, options2) {
         return;
       physicalIdentities++;
       let nativeRoot;
+      if (!active())
+        return;
       try {
         nativeRoot = await ctx.session.get({ sessionID: root }, { signal: abort.signal });
       } catch {
+        if (!active())
+          return;
         const failed = store.claimRunRecovery(sourceId, root);
         if (failed)
           store.finishRunRecovery(failed, "failed");
@@ -28462,6 +28663,8 @@ function createRunCapture(ctx, options2) {
           const parent = queue[0];
           let cursor = parent.cursor;
           do {
+            if (!alive())
+              return;
             if (calls >= RUN_LIMITS.calls || performance.now() - started >= RUN_LIMITS.elapsedMs) {
               partial = true;
               break;
@@ -28485,6 +28688,8 @@ function createRunCapture(ctx, options2) {
               break;
             }
             for (const s of page.data) {
+              if (!alive())
+                return;
               if (discovered >= RUN_LIMITS.traversal || seen.size >= RUN_LIMITS.total) {
                 partial = true;
                 break;
@@ -28561,7 +28766,7 @@ function createRunCapture(ctx, options2) {
 // plugin/delegation.ts
 async function registerDelegation(ctx, options2) {
   options2.store.installDelegationControl();
-  const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity });
+  const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity, alive: options2.alive });
   const abort = new AbortController, registrations = [];
   let disposed = false, events;
   async function dispose() {
@@ -28577,8 +28782,14 @@ async function registerDelegation(ctx, options2) {
     await events;
   }
   try {
-    registrations.push(await ctx.tool.hook("execute.before", capture.before));
-    registrations.push(await ctx.tool.hook("execute.after", capture.after));
+    registrations.push(await ctx.tool.hook("execute.before", (event) => {
+      if (options2.alive?.() !== false)
+        return capture.before(event);
+    }));
+    registrations.push(await ctx.tool.hook("execute.after", (event) => {
+      if (options2.alive?.() !== false)
+        return capture.after(event);
+    }));
     try {
       capture.observationStarted();
       const stream = ctx.event.subscribe({ signal: abort.signal });
@@ -28587,7 +28798,8 @@ async function registerDelegation(ctx, options2) {
           for await (const event of stream) {
             if (disposed)
               break;
-            capture.event(event);
+            if (options2.alive?.() !== false)
+              capture.event(event);
           }
         } catch {} finally {
           if (!disposed)
@@ -28605,7 +28817,7 @@ async function registerDelegation(ctx, options2) {
 }
 
 // plugin/identity.ts
-import path7 from "node:path";
+import path8 from "node:path";
 async function sessionIdentity(ctx, source, sessionID, agent, guard) {
   const checkpoint = () => {
     if (guard)
@@ -28619,7 +28831,7 @@ async function sessionIdentity(ctx, source, sessionID, agent, guard) {
     throw new ProgressError("binding");
   }
   checkpoint();
-  requireProgress(s.id === sessionID && path7.isAbsolute(s.location.directory), "binding");
+  requireProgress(s.id === sessionID && path8.isAbsolute(s.location.directory), "binding");
   const ancestry = [], seen = new Set([s.id]);
   let parent = s.parentID, known = true;
   while (parent) {
@@ -28647,24 +28859,138 @@ async function sessionIdentity(ctx, source, sessionID, agent, guard) {
 }
 
 // plugin/index.ts
-var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(ctx) {
-  const b = readBinding(process.env.AGENT_PROGRESS_BINDING ?? new URL("./progress-binding.json", import.meta.url));
-  const configRoot = path8.join(process.env.XDG_CONFIG_HOME || path8.join(homedir(), ".config"), "opencode");
-  const dataRoot = path8.join(process.env.XDG_DATA_HOME || path8.join(homedir(), ".local/share"), "opencode");
-  requireProgress(!process.env.OPENCODE_DB && !process.env.OPENCODE_CONFIG_DIR && (windows ? platformSecurityScope(() => {
-    windowsPaths([configRoot, dataRoot, b.source.configRoot, b.source.dataRoot]);
-    return sameWindowsDirectory(configRoot, b.source.configRoot) && sameWindowsDirectory(dataRoot, b.source.dataRoot);
-  }) : realpathSync6(configRoot) === b.source.configRoot && realpathSync6(dataRoot) === b.source.dataRoot), "binding");
-  const store = new Store(b.database);
+var plugin_default = exports_plugin.define({ id: "agent-progress", setup: (ctx) => setupCompanion(ctx, () => {
+  const b = readManagedBinding();
+  if (b)
+    requireProgress(!lstatSync7(path9.join(b.source.configRoot, "plugins/agent-progress"), { throwIfNoEntry: false }), "binding");
+  return b;
+}, true) });
+function setupLegacy(ctx, file) {
+  return setupCompanion(ctx, () => {
+    const b = readBinding(file), roots = managedSourceRoots();
+    requireProgress(roots.configRoot === b.source.configRoot && roots.dataRoot === b.source.dataRoot, "binding");
+    return b;
+  }, false);
+}
+async function setupCompanion(ctx, read, managed) {
+  let b, store, active = false, retired = false;
+  const abort = new AbortController;
+  let starting;
   let deactivate;
   let delegation;
-  try {
-    verifyStore(store, b);
-    store.bindReads(b.source.id, b.source.verified);
-    async function identity4(sessionID, agent, guard) {
-      return sessionIdentity(ctx, b.source, sessionID, agent, guard);
+  let firstContext;
+  let dormant;
+  function alive() {
+    return !retired && !abort.signal.aborted;
+  }
+  function guard() {
+    requireProgress(alive() && active && store, "storage");
+    try {
+      requireProgress(canonical(read()) === canonical(b), "binding");
+    } catch (e) {
+      retired = true;
+      abort.abort();
+      cleanup2();
+      throw e;
     }
-    await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
+  }
+  function authorized() {
+    try {
+      guard();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async function cleanup2() {
+    const pending = [delegation?.dispose(), deactivate?.(), dormant?.dispose()];
+    delegation = undefined;
+    deactivate = undefined;
+    dormant = undefined;
+    try {
+      await Promise.allSettled(pending);
+    } finally {
+      const opened = store;
+      store = undefined;
+      try {
+        opened?.close();
+      } catch {}
+    }
+  }
+  async function initialize() {
+    requireProgress(alive(), "storage");
+    if (active) {
+      guard();
+      return true;
+    }
+    if (starting)
+      return starting;
+    starting = (async () => {
+      const selected = read();
+      if (!selected)
+        return false;
+      b = selected;
+      store = new Store(b.database);
+      try {
+        verifyStore(store, b);
+        store.bindReads(b.source.id, b.source.verified);
+        const check2 = () => {
+          requireProgress(alive(), "storage");
+          requireProgress(canonical(read()) === canonical(b), "binding");
+        };
+        await ctx.skill.transform((editor) => editor.add({ id: exports_skill.ID.make("agent-progress"), name: exports_skill.Name.make("Agent progress"), description: "Mirror canonical plans and deliberate progress without replacing your planner.", path: exports_skill.Info.fields.path.make(fileURLToPath2(new URL("./SKILL.md", import.meta.url))), content: GUIDANCE }));
+        check2();
+        const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
+        deactivate = await registerActivation(ctx, b.source, () => {
+          try {
+            guard();
+            return control.get()?.enabled === 1;
+          } catch {
+            return false;
+          }
+        }, {
+          storeId: b.storeId,
+          read: (request3) => store.resumePlans(request3),
+          identity: (sessionID, alive2, signal) => identity4(sessionID, "unknown", { alive: alive2, signal })
+        }, (callback3) => {
+          firstContext = callback3;
+        });
+        check2();
+        delegation = await registerDelegation(ctx, {
+          store,
+          sourceId: b.source.id,
+          alive: authorized,
+          identity: (sessionID, observing, signal) => sessionIdentity(ctx, b.source, sessionID, "unknown", { alive: () => authorized() && observing(), signal, sameScope: true })
+        });
+        check2();
+        store.observeLoaded(b.source.id, b.installId, activationFingerprint({ ...b, version: managed ? RELEASE : b.version }, readFileSync3(fileURLToPath2(import.meta.url)), readFileSync3(new URL("./SKILL.md", import.meta.url))));
+        active = true;
+        return true;
+      } catch (e) {
+        retired = true;
+        abort.abort();
+        await cleanup2();
+        throw e;
+      }
+    })();
+    try {
+      return await starting;
+    } finally {
+      starting = undefined;
+    }
+  }
+  async function identity4(sessionID, agent, guard2) {
+    return sessionIdentity(ctx, b.source, sessionID, agent, guard2 ?? { alive, signal: abort.signal });
+  }
+  try {
+    dormant = await ctx.session.hook("context", async (event) => {
+      if (active || !alive())
+        return;
+      try {
+        if (await initialize())
+          await firstContext?.(event);
+      } catch {}
+    });
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "agent_progress", description: "Deliberate plan progress; never inferred from activity." });
       editor.add({
@@ -28675,21 +29001,26 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         execute: async (value3, caller) => {
           try {
             const r = parseReportRequest(value3);
+            requireProgress(await initialize(), "binding");
+            guard();
+            const current = store;
             const observedAt = Date.now(), observedEpoch = r.op === "handoff" ? delegation.currentEpoch() : undefined;
             const actor = await identity4(caller.sessionID, caller.agent);
+            guard();
             if (r.op === "handoff") {
-              const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive: () => true, signal: new AbortController().signal, sameScope: true });
-              return { content: JSON.stringify(store.handoff(r, child2, observedAt, observedEpoch)) };
+              const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive, signal: abort.signal, sameScope: true });
+              guard();
+              return { content: JSON.stringify(current.handoff(r, child2, observedAt, observedEpoch)) };
             }
             if (r.op === "read") {
-              const view = store.detail(actor.sourceId, r.plan, r.page ?? 0);
+              const view = current.detail(actor.sourceId, r.plan, r.page ?? 0);
               return { content: JSON.stringify(r.page === undefined ? { plan: r.plan, rev: view.plan.revision, structuralRev: view.plan.structuralRevision, lifecycle: view.plan.lifecycle, counts: view.plan.counts, documentState: view.plan.document.state, detailPageSize: 20 } : view) };
             }
             if (r.op === "delegate") {
               requireProgress(delegation, "binding");
               return { content: JSON.stringify(delegation.declare(r, actor)) };
             }
-            const previous = store.get(actor.sourceId, r.plan);
+            const previous = current.get(actor.sourceId, r.plan);
             let child;
             const childID = r.child ?? r.attributed;
             if (childID) {
@@ -28701,7 +29032,9 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
             }
             const reference = r.source ?? previous?.document.path;
             const capture = reference && r.op !== "stage" ? await captureDocument(reference, actor.directory, (resource) => ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] }), r.op === "bind" || r.op === "start" ? undefined : previous ? { ...previous.document, canonicalPath: previous.boundCanonicalPath } : undefined) : undefined;
-            const receipt = store.apply(r, actor, capture, child);
+            guard();
+            requireProgress(current.list({ limit: 1 }).captureEnabled, "disabled");
+            const receipt = current.apply(r, actor, capture, child);
             return { content: JSON.stringify(receipt) };
           } catch (e) {
             const error = e instanceof ProgressError ? e : storageError(e);
@@ -28710,43 +29043,28 @@ var plugin_default = exports_plugin.define({ id: "agent-progress", async setup(c
         }
       });
     });
-    const control = store.db.prepare("SELECT enabled FROM meta WHERE singleton=1");
-    deactivate = await registerActivation(ctx, b.source, () => control.get()?.enabled === 1, {
-      storeId: b.storeId,
-      read: (request3) => store.resumePlans(request3),
-      identity: (sessionID, alive, signal) => identity4(sessionID, "unknown", { alive, signal })
-    });
-    delegation = await registerDelegation(ctx, {
-      store,
-      sourceId: b.source.id,
-      identity: (sessionID, alive, signal) => sessionIdentity(ctx, b.source, sessionID, "unknown", { alive, signal, sameScope: true })
-    });
     await ctx.rpc.register(ProgressStatus, { inspect: async () => {
+      guard();
       const tool = (await ctx.tool.list()).find((t) => t.id === "agent_progress_report");
-      return { protocolVersion: 2, version: b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
+      guard();
+      return { protocolVersion: 2, version: managed ? RELEASE : b.version, storeId: b.storeId, sourceId: b.source.id, captureEnabled: store.list({ limit: 1 }).captureEnabled, toolAvailable: !!tool, codemodeDisabled: tool?.options?.codemode === false };
     } });
-    store.observeLoaded(b.source.id, b.installId, activationFingerprint(b, readFileSync2(fileURLToPath2(import.meta.url)), readFileSync2(new URL("./SKILL.md", import.meta.url))));
+    await initialize();
     return async () => {
-      try {
-        await delegation?.dispose();
-        await deactivate?.();
-      } finally {
-        store.close();
-      }
+      retired = true;
+      abort.abort();
+      const cleaning = cleanup2();
+      await starting?.catch(() => {});
+      await cleaning;
+      await cleanup2();
     };
   } catch (error) {
-    try {
-      await delegation?.dispose();
-    } catch {}
-    try {
-      await deactivate?.();
-    } catch {}
-    try {
-      store.close();
-    } catch {}
+    retired = true;
+    abort.abort();
+    await cleanup2();
     throw error;
   }
-} });
+}
 var START_HELP = `Every plan mutation requires a fresh oid and expected rev; reuse an oid only for an identical retry. New start requires plan, title, complete items and rev:0.
 When starting or revising a plan, put real prerequisites in each task's optional dependencies array: IDs of tasks in the same plan that must finish first (max 16). Omit it when none are known; never add links just for list order or infer them from titles, sessions or activity. When replacing items in revise or stage/commit, include all still-needed links; omitted dependencies are not retained. Do not ask the user to fill them in. Links neither set blocked nor enforce execution.
 Valid start with a prerequisite (replace synthetic IDs, title and items with the real plan): task-2 needs task-1 finished first; task-1 has no prerequisite.
@@ -28765,5 +29083,6 @@ Start unrelated objectives as separate plan IDs. Mirror the complete structure o
 Large structures: op=stage with upload/chunk/items (max50/chunk and16KiB/request; at most32 chunks/1000 items), then op=commit with upload/chunks/title and expected rev. Chunks are not a committed plan. Explicitly report limits rather than dropping work. Never truncate a plan or call staging complete. Revise retains item statuses unless explicitly changed. Bind a canonical file using op=bind/source; confirm=true only when its checklist is mirrored. The original document remains authoritative; permission/read failure still commits valid checklist changes with diagnostics.
 Coordinator explicitly links a verified child session with op=link, child and assign IDs; pass plan/item IDs in the assignment. Children report assigned items only. Unlinked/unknown children stay independent. Restricted children may be relayed explicitly using attributed child ID after valid linking; this labels the parent reporter honestly, never impersonates a child. Do not loosen child restrictions. Finish is explicit: outcome finished only with actionable work all resolved; cancelled/failed retain unfinished work. Closed plans require explicit coordinator revise/commit with reopen=true. No inference, passive scraping, document rewriting or hidden assignments.`;
 export {
+  setupLegacy,
   plugin_default as default
 };

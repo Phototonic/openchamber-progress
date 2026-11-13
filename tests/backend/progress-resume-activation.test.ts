@@ -8,6 +8,7 @@ import plugin from '../../plugin/index.ts';
 import { registerActivation, ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HINT } from '../../plugin/activation.ts';
 import { Store } from '../../shared/store.ts';
 import { activationContext as context, writeEvent } from '../fixtures/activation-production.ts';
+import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
 
 function deferred() {
   let resolve!: () => void;
@@ -50,10 +51,11 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
   for (const dir of ['config/opencode', 'data/opencode', 'store', 'project']) fs.mkdirSync(`${root}/${dir}`, { recursive: true, mode: 0o700 });
   const source = { id: 'source-fixture', configRoot: `${root}/config/opencode`, dataRoot: `${root}/data/opencode`, verified: true };
   const store = new Store(`${root}/store/progress.sqlite`, { create: true }); store.registerSource(source); store.bindReads(source.id, true);
-  const binding = { protocolVersion: 2, schemaVersion: 2, installId: 'synthetic-install', version: '0.0.0', database: store.file, storeId: String(store.db.prepare('SELECT store_id FROM meta').get()!.store_id), source };
+  const binding = { protocolVersion: 2 as const, schemaVersion: 2 as const, installId: 'synthetic-install', version: '0.0.0', database: store.file, storeId: String(store.db.prepare('SELECT store_id FROM meta').get()!.store_id), source };
   const file = `${root}/binding.json`; fs.writeFileSync(file, JSON.stringify(binding), { mode: 0o600 });
   const saved = new Map<string, string | undefined>();
-  for (const [k, v] of Object.entries({ AGENT_PROGRESS_BINDING: file, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, OPENCODE_DB: undefined, OPENCODE_CONFIG_DIR: undefined })) { saved.set(k, process.env[k]); if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  const env=isolatedEnvironment(root);publishFixtureBinding(env,binding);
+  for (const [k, v] of Object.entries({ ...env, AGENT_PROGRESS_BINDING: undefined, OPENCODE_DB: undefined, OPENCODE_CONFIG_DIR: undefined })) { saved.set(k, process.env[k]); if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   const hooks = new Map<string, any>(), tools = new Map<string, any>();
   const events = new Events();
   const streams = new Set<Events>();

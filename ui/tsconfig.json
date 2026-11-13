@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": { "types": ["node"], "lib": ["ES2023", "DOM", "DOM.Iterable"] },
-  "include": ["**/*.ts", "../tests/browser/**/*.ts"]
+  "include": ["**/*.ts", "../background/**/*.ts", "../tests/browser/**/*.ts"]
 }

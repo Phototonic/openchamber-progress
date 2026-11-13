@@ -7,8 +7,9 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { OpenCode } from '@opencode/client';
 import { ProgressStatus } from '../../plugin/status.ts';
-import { lifecycle } from '../../setup/lifecycle.ts';
 import { requireRuntimeVersion } from '../fixtures/runtime-version.ts';
+import { createFixtureBinding } from '../fixtures/managed.ts';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
 test('native runtime rolls back partial native hook/RPC registrations; failed setup leaves no SQLite handle and recovers',{timeout:45000},async()=>{
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-plugin-failure-runtime-');let child:ReturnType<typeof spawn>|undefined;
@@ -16,7 +17,7 @@ test('native runtime rolls back partial native hook/RPC registrations; failed se
     for(let dir=path.dirname(root);;dir=path.dirname(dir)){for(const name of ['opencode.json','opencode.jsonc','.opencode/opencode.json','.opencode/opencode.jsonc'])assert.equal(fs.existsSync(path.join(dir,name)),false,'ancestor config not allowed');if(dir===path.dirname(dir))break;}
     assert.equal(fs.existsSync('/etc/opencode'),false,'system config not allowed');
     for(const name of ['config/opencode','data/opencode','home','cache','state','runtime','tmp','project'])fs.mkdirSync(`${root}/${name}`,{recursive:true,mode:0o700});
-    const wrapper=`import original from ${JSON.stringify(path.resolve('plugin/index.ts'))};
+    const wrapper=`import original from ${javascriptLiteral(path.resolve('plugin/index.ts'))};
 import {existsSync,appendFileSync,readFileSync} from 'node:fs';
 export default {...original,async setup(ctx){
  const fails=stage=>existsSync(process.env.PERF_FAILURE_MARKER)&&readFileSync(process.env.PERF_FAILURE_MARKER,'utf8')===stage;
@@ -26,7 +27,10 @@ export default {...original,async setup(ctx){
 }};`;
     fs.writeFileSync(`${root}/entry.ts`,wrapper);
     assert.equal(spawnSync('bun',['build',`${root}/entry.ts`,'--target=node','--format=esm',`--outfile=${root}/plugin.js`],{stdio:'ignore'}).status,0);
-    lifecycle('install',{configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true},{plugin:fs.readFileSync(`${root}/plugin.js`,'utf8'),guidance:fs.readFileSync('plugin/SKILL.md','utf8'),removal:'// unused fixture',version:'0.2.2'});
+    createFixtureBinding(root);
+    const fixturePlugin=`${root}/config/opencode/plugins/failure-companion`;fs.mkdirSync(fixturePlugin,{recursive:true,mode:0o700});
+    fs.copyFileSync(`${root}/plugin.js`,`${fixturePlugin}/index.js`);fs.copyFileSync('plugin/SKILL.md',`${fixturePlugin}/SKILL.md`);
+    fs.writeFileSync(`${fixturePlugin}/package.json`,JSON.stringify({name:'synthetic-failure-companion',type:'module',exports:{'.':'./index.js'}}));
     fs.writeFileSync(`${root}/fail`,'tool');
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as any).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
     const env={PATH:'/usr/bin:/bin',HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_CACHE_HOME:`${root}/cache`,XDG_STATE_HOME:`${root}/state`,XDG_RUNTIME_DIR:`${root}/runtime`,TMPDIR:`${root}/tmp`,OPENCODE_PASSWORD:'synthetic-local-only',DBUS_SESSION_BUS_ADDRESS:'disabled:',PERF_FAILURE_MARKER:`${root}/fail`,PERF_FAILURE_EVENTS:`${root}/events`};
