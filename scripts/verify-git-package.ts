@@ -171,6 +171,6 @@ const r=spawnSync('/usr/bin/git',['-c','credential.helper=','-c','core.hooksPath
   assert.equal((await updateGuest({guest:await guest(normal),origin:normal.origin,persistPath:normal.persist,openchamberVersion:'2.5.1',gitBinary:wrapper,lookup})).ok,false);
   assert.deepEqual(files(normal.copy).map(file=>({path:path.relative(normal.copy,file),sha256:hash(file)})),beforeFailure);
   const executed=readFileSync(commands,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.ok(executed.some(c=>c.op==='clone')&&executed.some(c=>c.op==='fetch')&&executed.some(c=>c.op==='show'));
-  console.log(JSON.stringify({projectionFiles:inventory.length,initialCommit:initial,runtimeEntries,realGitCommands:executed.length,consumerCommands:[...new Set(executed.map(c=>c.op))],publicReachabilityProven:false,guestFrameEvidence:'separate Designer acceptance',guestBytes:'unchanged supplied projection; caller supplies acceptance and hashes'}));
+  console.log(JSON.stringify({projectionFiles:inventory.length,initialCommit:initial,runtimeEntries,guestEntries,realGitCommands:executed.length,consumerCommands:[...new Set(executed.map(c=>c.op))],publicReachabilityProven:false,guestFrameEvidence:'separate browser acceptance',guestBytes:'unchanged supplied projection; caller supplies acceptance and hashes'}));
   reader.close();metadata.closeAllConnections();await new Promise<void>(r=>metadata.close(()=>r()));
 }

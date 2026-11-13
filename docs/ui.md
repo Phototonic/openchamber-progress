@@ -198,7 +198,7 @@ Chromium, synthetic SDK events and disposable built services. It records bounded
 results, request metadata and synthetic screenshots. This is rendered browser
 evidence, not native-host or screen-reader certification.
 
-Three guest frames read production contract v2 (`shared/progress.ts`,
+Three visible guest frames read production contract v2 (`shared/progress.ts`,
 `docs/contracts.md`) through `host.serviceRequest`. Rail/page also expose its optional,
 explicit finished-plan cleanup actions; Work Status remains read-only. Full-page History
 alone adds a "Since you last reviewed" change digest (see Change digests); the board alone

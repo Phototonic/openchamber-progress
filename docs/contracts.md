@@ -95,7 +95,7 @@ matcher. Empty query admits candidates. At most 20 distinct source-qualified
 `${sourceId}/${id}` rows are emitted; menu titles/subtitles fit 120 code units,
 with visible, surrogate-safe title ellipses. No URL is supplied. Discovery admits
 at most 512 raw plan and 512 session slots, 1 MiB per snapshot and 16 MiB cumulative
-snapshot input, with a cooperative 500 ms scan budget. These bounds precede
+snapshot/session input, with a cooperative 500 ms scan budget. These bounds precede
 filtering; results are found candidates, not a library census. Bound/gap stops
 preserve **Limited search** in subtitles; no bounded empty result proves no plans.
 SQLite busy waits and an admitted synchronous step are not a hard latency promise.
@@ -491,8 +491,9 @@ exports, search indexes or automatic notifications/actions.
 
 The system has four components: an OpenCode companion plugin that captures explicit
 reports; an independent local SQLite progress store; a host-owned loopback service;
-and three guest frames (the session-scoped rail, compact Work Status, and fullscreen
-cross-project board). Capture writes directly to the store and has an independent
+and three visible guest frames (the session-scoped rail, compact Work Status, and
+fullscreen cross-project board), plus an ephemeral session-action background frame.
+Capture writes directly to the store and has an independent
 lifecycle: it continues while OpenChamber is closed or the extension is uninstalled,
 until explicitly disabled or removed. Stored history is retained on capture removal.
 The board lists recorded plans and enriches them with host workspace snapshots;
