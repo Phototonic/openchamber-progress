@@ -62,14 +62,15 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
+**Updating:** Git installs use **Settings → Extensions → Check for updates → Update**. The URL above follows the remote default branch (`main` here); append `#main` to select it explicitly, `#dev` for development builds, or a published tag such as `#v1.1.1` to stay on that tag. A fixed tag does not follow later releases. Offers depend on a higher package version, not just a new commit: same-version development changes produce no offer. Folder and ZIP installs need manual replacement, not Git update checks. See [update and approval details](docs/setup.md#updates-observations-and-integrity).
+
 **Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
 
 - **Capture follows managed delivery.** Watched-file delivery retires capture after extension disable/removal; caller-owned configuration requires an explicit OpenCode restart. Mode may be unknown. Terminal, external/remote, isolated-space and VS Code runtimes are outside this managed path. A legacy plugin or explicit **Add to global config** entry can outlive the extension and needs deliberate separate removal. History is retained; a held-permission session may need interruption.
 - **Your data stays local.** Plans live in a private SQLite store on your machine. It can contain plan text and project paths, so treat it, and any screenshots, as private.
-- **One small network check.** The views check GitHub's public metadata for the latest official version. This is informational only; nothing installs itself.
-- **Updates follow the host.** Companion bytes ship with the extension under host approval/update rules. Loaded-byte differences warn, not block reporting: this is explicitly weaker than the old private hash-attested payloads, not publisher authentication. See Setup for migration, interrupted-removal/manual recovery and configuration-lock caveats.
+- **Updates follow the host.** OpenChamber checks the selected Git source; Agent Progress no longer makes a separate version-metadata request or shows its own update notice. Companion bytes ship with the extension under host approval/update rules. Loaded-byte differences warn, not block reporting: this is explicitly weaker than the old private hash-attested payloads, not publisher authentication. See Setup for approval, load observations, migration and recovery caveats.
 
 The [setup guide](docs/setup.md) covers each of these in full.
 

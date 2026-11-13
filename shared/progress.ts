@@ -75,7 +75,7 @@ export interface PlanGraphRead {
   cleanup: { state: 'visible' | 'archived'; revision: number }; complete: true; itemCount: number; items: PlanGraphItem[];
 }
 export interface DocumentRead { document: DocumentRef; text: string | null; nextCursor: string | null }
-/** Official-main metadata only; not actual installation provenance or bundle audit. */
+/** @deprecated Retained old-client wire vocabulary; current replies are unknown/unavailable only. */
 export interface ExtensionUpdateRead {
   installedVersion: string;
   repository: 'Phototonic/openchamber-progress';

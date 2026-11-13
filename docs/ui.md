@@ -254,7 +254,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | Module | Role |
 | --- | --- |
 | `i18n.ts` / `language.ts` | Effective en/ru resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
-| `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/change-digest`, `/v1/search`, `/v1/search-state`, `/v1/setup`, `/v1/extension-update`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
+| `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/change-digest`, `/v1/search`, `/v1/search-state`, `/v1/setup`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy, and the task-view projection (row membership, branch aggregates, jump order; see Task view). |
 | `dependency-derivation.ts` / `readiness.ts` | Pure shared dependency derivation and enriched readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
 | `summary.ts` | Pure deterministic Markdown for progress updates, handoffs and explicitly historical summary-only snapshots (see Previewable summaries). Uses complete matching detail and the shared readiness projection. |
@@ -264,7 +264,6 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 | `runs.ts` / `subagents.ts` / `census-view.ts` | Sub-agents: one bounded sub-agent runs revision-1 visit per eligible section (`GET /v1/subagent-runs`, one automatic `POST …/reconcile`, and the explicit recording-gap `POST …/dismiss-loss` on rail and board), the pure roster joining recorded runs, host activity and the plan's explicit task facts (Ran / Claimed / Accepted), and its section for rail, Work Status and page (see Sub-agents). |
 | `scope.ts` | Server list scope per surface, owned-first ordering, page project/worktree grouping, coverage gap. |
 | `setup.ts` | Setup UI, phases, plain-language SetupError and diagnostic text. |
-| `official.ts` | Official-main version notice (rail and page) and the compact Work Status line. |
 | `cleanup.ts` / `cleanup-view.ts` | Bound cleanup targets, eligibility and plain error copy; rail/page actions and inline delete confirmation. The shared controller owns mutations and cache retirement. |
 | `app.ts` / `refresh.ts` | Frame lifecycle, caches and repaint rules (under Controller below). |
 | `change-digest.ts` / `change-digest-checkpoint.ts` / `change-digest-view.ts` | Page-History digest: one pinned visit per frame and explicit review (controller), device-scoped review checkpoints (no other storage scope), and the section's DOM plus pure text rules (see Change digests). |
@@ -345,7 +344,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
   5. one meta line: "Updated …" and the owner session's live state;
   6. **+N more plans** (`more-plans`), which opens the picker; its options show full titles with reported working-count hints for active plans or lifecycle hints for closed plans. Select a plan to see its done/total counts;
   7. only with a featured plan and something useful to show, **Sub-agents**: the summary line, one line per running sub-agent (title and its Ran words with real time) that expands in place to every recorded fact, and every other record in one folded list with the existing pager and the one short coverage line (a recording gap only while it needs attention; no Dismiss warning here). No ⓘ here (its popover would be clipped by the auto height);
-  8. **Open progress** and the compact official-main line.
+  8. **Open progress**.
   "No plan reported for this session" has no sub-agent section, count or prompt. Everything wraps at 190 px without horizontal overflow; the host's Project section stays outside the guest.
 - Detail loading follows the featured plan. Live project subscriptions take the selected session's own project first, then the featured plan's, including a selection beyond the first three list entries; the two-session-stream/32-total-subscription limits remain unchanged.
 - "Open progress" calls `openSurface` to open the rail, whose selection remains independent. The compact picker does not synchronize other panes. Unconfigured shows "Set up", which opens the rail's setup flow.
@@ -725,14 +724,20 @@ never reclaim focus the user moved. English/Russian labels, errors, disclosures
 and accessible names share the existing localization owners and narrow layouts.
 
 Unknown mode copy distinguishes watched-file disposal from caller-owned
-`OPENCODE_CONFIG` fallback requiring explicit restart. Binding/history survive
+`OPENCODE_CONFIG` fallback requiring explicit restart for contribution add/remove
+or toggle changes, not necessarily every same-path Git replacement. Binding/history survive
 disable/removal. Terminal, external/remote, isolated-space and VS Code runtimes
 are outside managed reach; legacy and explicit **Add to global config** copies
 can outlive the extension. Closing a view is not disable. A held-permission report
 cannot append after retirement, but its session may require interruption: no
 graceful cancellation guarantee. Host updates choose companion bytes. Differing
 loaded bytes warn only, explicitly weaker than private hash-attested legacy
-payloads; matching is not heartbeat, inventory or progress proof.
+payloads; matching is not heartbeat, inventory or progress proof. Setup/Reporting
+health distinguishes unknown/not observed, matching and differing loads in English
+and Russian. In the isolated caller-owned-config Git update test, the service's
+loaded-fingerprint observation went matching → different → matching after the next
+report turn without restart; this does not independently attest which cached
+importer executed. No automatic restart or all-session activation is implied.
 
 ### Historical legacy UI reference (not the managed path)
 
@@ -832,27 +837,30 @@ From the optional `timing` of `GET /v1/plan` (`docs/contracts.md`). It shows how
   - Reduced motion doesn't affect it: the times stay truthful text.
 - **Test ID.** `elapsed-<itemId>` (`data-kind` = `exact` | `lower-bound` | `unknown`).
 
-## Official-main notice
+## Host-owned extension updates
 
-From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the official repository's **main** branch advertises. It is not the source this extension was installed from, and not a bundled or installed version.
-- **Shown** when `state` is `available` and that candidate version isn't dismissed:
-  - title "Official main version 0.2.5 available · This extension 0.2.4";
-  - plain directions to check and update in OpenChamber Settings → Extensions for the standard official Git URL;
-  - a note that custom branches, tags, forks or ZIP installs may not follow main and the extension can't tell its source.
-- **Action.** **View official main** opens the fixed `OFFICIAL_MAIN_URL` (`config.ts`) through `host.openUrl`; no URL comes from a reply. There is no one-click update, no Settings navigation and no install.
-- **Stale.** A failed later check keeps the known candidate, qualified with "This may be out of date: the latest check … ; last confirmed …".
-- **Nothing shown** for `not-newer`, `unknown`, an older service (404) or a reply that fails strict parsing (fixed repository/branch, strict semver, consistent states). It is never shown as "up to date".
-- **Dismiss** hides that candidate version only, kept in host storage (`official-main-dismissed`); a newer candidate shows again. Dismissing sends no service request. A dismissal made while a check is in flight wins over the stored value that check read (`OfficialMainState`, `official.ts`).
-- **Placement.**
-  - Rail and page: after the companion update notice and the reload note, and also in the not-set-up state, since the check doesn't depend on companion setup or the store.
-  - Work Status: a compact "Official main 0.2.5 available" line that opens the rail; retained stale knowledge adds "check out of date" visibly and qualifies the tooltip.
-  - Work Status uses the host sidebar's horizontal gutters and scrolling, without an extra guest inset or reserved scrollbar gutter; its vertical padding and the full rail/page spacing are unchanged.
-  - The official-main notice remains independent of managed delivery/load observations; the separate companion notice above is historical legacy UI, not the managed update path.
-- **When it checks.**
-  - Each visible frame asks once at host readiness, then when due: the reply's `nextCheckAt`, bounded to 5–60 min, so a skewed browser clock stays within the bounds.
-  - One request per frame at a time. A hidden or disposed frame starts none and drops a retired reply.
-  - Never on the 3 s poll, a session switch or a render. The service caches (1 h) and backs off upstream.
-- **Test IDs.** `extension-update-notice` (`data-version`, `data-stale`), `extension-update-open`, `extension-update-dismiss`, `extension-update-line`.
+The rail, Work Status and board have no official-main update notice or compact
+line, version-read scheduler, dismissal storage activity or replacement update
+indicator. They never request `/v1/extension-update`, including readiness, refresh,
+session/visibility changes and unconfigured/failure states. Existing dismissal
+data stays inert; progress reads, Setup, language controls and height/focus behavior
+remain independent. Work Status keeps the host sidebar's horizontal gutters and
+scrolling, without an extra guest inset or reserved scrollbar gutter.
+
+Use **Settings → Extensions** for OpenChamber's Git check and explicit Update;
+source selection, version-based offers and permission deferral are described in
+[Setup](setup.md#updates-observations-and-integrity). There is no guest updater or
+Settings-navigation action. Managed load observations above concern local loaded
+bytes, not remote availability or a separate companion update.
+
+For at least one release the service retains authenticated
+`GET /v1/extension-update` as a fixed, network-free unknown/unavailable compatibility
+reply ([contract](contracts.md)). An unchanged old guest accepts it and shows no
+notice after its next successful read; a notice already cached in an open frame
+can remain until that read or remount. Current guests do not trigger even an older
+service's checker, regardless of whether it would reply available, 404 or malformed.
+An old service with old guests retains its old behavior; rollback to both can
+restore the former metadata traffic.
 
 ## Controller
 
@@ -874,7 +882,7 @@ From `GET /v1/extension-update` (`docs/contracts.md`). It says only what the off
   - The rail also remembers the chosen plan for up to 8 recent sessions, so a revisit paints its own selection at once (host storage stays the durable copy and is re-read).
   - **Limit:** a frame the host rebuilds (for example, the per-project rail open state swapping rail and Work Status on a project switch) starts cold.
 - **Polling.** 3 s; 8 s after a failure; paused while hidden; stopped on `pagehide`. While board search results are shown, that same poll runs the search freshness read instead of the list read (`ViewSpec.freshness`), with the list refresh's setup recheck (a pending reload notice is re-read after each successful poll); every cache reset, hiding and disposal also retire view-owned search work (`ViewSpec.retire`), and the dependency map's graph work in the board and rail. A shown, unsettled map re-pins on this cadence through `ViewSpec.refreshed`. No second timer exists. Board search also binds part-read retirement to its run + selection (`ViewSpec.partsKey`) and bounds the part caches while searching (`ViewSpec.retainParts`); completions are accepted only by the exact pending cache entry they created. A detail reply captured under an obsolete capture flag is discarded and read again; preview bindings include capture state so old copy callbacks cannot use a superseded preview. Completed cached summaries from the previous capture state stay unavailable while the replacement detail is pending.
-- **Label ticker and official-main check.** See the two sections above: one 30 s text-only ticker while visible with labels; the official-main check at readiness and when due (5–60 min), never on the poll.
+- **Label ticker.** One 30 s text-only ticker while visible with labels (see above); no remote-version scheduler.
 - **Workspace subscriptions.**
   - Projects: 1 stream. Session streams are capped at rail 4, status 2 and page 16. Remaining slots up to the host's total of 32 watch worktrees for configured projects in SDK order. This reads existing host discovery; it never opens projects, starts discovery itself or watches every project's sessions.
   - Membership uses an exact configured main checkout or a ready, unambiguous SDK worktree (including its subfolders). The same resolver chooses board groups/filters and session subscriptions. Captured repository IDs are not compared to SDK path-derived project IDs. Current session coverage can supply its owning project.
@@ -1035,7 +1043,7 @@ disposable; failures exit nonzero and retain measured evidence.
   - companion update: comparison parsing (valid, absent, malformed, contradictory), notice kinds (upgrade, rebuild, downgrade; nothing for current or unknown; independent of a pending reload), and review versions from inspect plus the snapshot (stale or missing makes no claim)
   - refresh orchestration: same-scope coalescing, latest-switch-wins with bounded overlap, stop on dispose; recent-scope memory bounds and keying; subscription cap, restart and late release
   - elapsed time: whole-minute text boundaries, optional timing parsing (absent, unreadable, bad or future entries), service-clock + monotonic anchoring regardless of browser clock, and the anchor following a revision restart
-  - official main: strict reply parsing (fixed source, consistent states, older service 404 → unknown), notice rules (availability only, version-specific dismiss, stale qualifier, fixed link and copy), compact-line stale text/tooltip with its rail action preserved, and a dismissal made while a check is held staying dismissed (`OfficialMainState`)
+  - update retirement: current controllers make no compatibility-route or dismissal-storage calls across readiness, refresh, session, visibility and disposal, including old-service available/404/malformed replies; the unchanged pre-retirement consumer is checked separately against the network-free reply in `tests/backend/extension-updates.test.ts`
   - blue elapsed labels (muted for an unknown start)
   - reported-progress motion: the gate (closed, stale/failed, capture off, nothing working); CSS contract (motion only under `data-motion`, `transform`/`opacity`-only keyframes, reduced motion and hidden also stopping pseudo-elements, readable text token); the map stylesheet's one gated bead animation (`stroke-dashoffset` only, whole bead spacings per 2.4 s linear cycle, no `!important`, no transitions, nothing animating blocked arrows)
 - **`dependency-map-arrows.test.ts`:** arrow state over the reported endpoint statuses (the whole prerequisite × dependent table, direction), eligible pictures (lifecycle, archived, current/ready), the motion permission (Map shown, visible, fresh, capture, something working, eligible picture), the shipped cost bounds below/at/above each limit and inside the contract's outer bounds, eligible flow counts (hidden endpoints, selection chain; filters never bypass the full-plan arrow ceiling) and the waiting-inspector sentence (direct prerequisites once, hidden ones included, zero parts omitted, singular wording, skipped warning kept, nothing new without current guidance).

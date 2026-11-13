@@ -126,10 +126,38 @@ extension-managed capture** rather than updating that loader to managed-only cod
 
 Host extension updates now choose companion bytes under the host's approval/update
 rules. There is no independently selected normal-path companion version or
-per-companion-update confirmation. The separate official-main GitHub metadata
-notice remains informational and unchanged; it neither installs nor audits code.
+per-companion-update confirmation. Use **Settings → Extensions → Check for updates**
+(the icon is labelled **Check installed extensions for updates**), then the
+extension's **Update** action when **Update available** appears. Checking alone
+does not install. On tested web 2.7.1, reopening Settings reuses a cached successful
+check; an explicit check fetches again. The one-hour cache boundary was verified
+with the host's module-clock input, not an hour-long browser wait.
+
+The ordinary unchanged-permission Git update needed no new approval and retained
+grants, scopes, installation storage, device language, private binding and history.
+Synthetic host account/settings records and the paused flag were retained too;
+this is not real integration/OAuth retention certification. Paused-state retention
+was additionally checked through an explicit updater-module call, not a UI offer.
+When an update requests an added capability, the host opens its approval dialog.
+**Not now does not roll back the package**: in the tested host the new files/version
+were already installed, while the new capability remained ungranted and its use
+was refused. **Review permissions → Allow and enable** grants it later.
+
+Agent Progress no longer fetches version metadata or displays an official-main
+notice. For at least one release, authenticated `GET /v1/extension-update` remains
+as a fixed, network-free unknown/unavailable compatibility reply. Its one-hour
+backoff is not a promised future check. An old notice cached in an open frame can
+remain until a successful compatibility read or a frame remount. Current guests
+never call that route; host Git traffic is separate.
+
 Package versions are independent of protocol/schema 2. A development checkout can
 share a version label with a release; labels alone do not prove identical bytes.
+
+In the isolated web 2.7.1 Git journey, replacement stopped the old service process;
+subsequent access started a new one with retained progress. The continuously open
+board got a new package execution context; rail and Work Status were checked on
+subsequent access with matching counts. This is not proof that every session or
+all three frames reload simultaneously.
 
 Reporting health separates configured delivery, last loaded-companion observation,
 capture control, selected recorded revision and viewer freshness. Load is not a
@@ -145,6 +173,15 @@ same-version difference **warns only** and does not stop otherwise authorized
 reporting/guidance. Binding, ownership, schema, control and permissions still fail
 closed. An unavailable expected observation is unknown, never matching or authority
 to recreate a missing store.
+
+Check Setup/Reporting health after replacement rather than assuming every Git
+update needs a restart. In a fresh caller-owned `OPENCODE_CONFIG` test, the service's
+loaded-fingerprint observation went matching → different → matching after the next
+report turn without a restart. That is not independent proof of which cached
+importer executed. The explicit restart caveat for adding/removing/toggling the
+contribution in caller-owned configuration remains distinct (see Reach above).
+Unknown or differing observations do not establish universal activation; no
+automatic restart or graceful session cancellation is promised.
 
 **This is explicitly weaker than the former private hash-attested immutable
 payloads.** These observations measure bytes read around activation, not publisher
@@ -191,7 +228,22 @@ no document bodies and do not themselves report, capture or grant restricted too
 ## Git distribution validation and main promotion
 
 The Git URL is `https://github.com/Phototonic/openchamber-progress.git`; selected refs
-determine committed bytes. `private:true` prevents npm publication, not Git access.
+determine committed bytes:
+
+- No fragment follows the remote default branch (`main` for this distribution).
+- `https://github.com/Phototonic/openchamber-progress.git#main` selects main explicitly.
+- `https://github.com/Phototonic/openchamber-progress.git#dev` follows development builds.
+- A published tag, for example `https://github.com/Phototonic/openchamber-progress.git#v1.1.1`,
+  stays at that tag; it does not follow later release tags.
+
+Branches are not immutable commit pins. OpenChamber compares the selected ref's
+package version, not commit IDs or changed bytes. A new same-version commit does
+not produce an Update offer. Folder/ZIP installs have no Git update discovery:
+replace them manually with accepted built files (developers rebuild their source
+first). Local folder watching is not remote self-updating. Git-equivalent retention
+and approval behavior is not certified for manual folder/ZIP replacement.
+
+`private:true` prevents npm publication, not Git access.
 Git, folder and ZIP packages carry the declared companion folder plus service,
 setup, background and all three guests. No consumer compilation/dependency fetch.
 Standalone release assets remain compatible legacy/recovery transports.

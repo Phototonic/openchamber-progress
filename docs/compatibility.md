@@ -4,14 +4,15 @@
 
 The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
 **2.7.0** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
-historical and do not certify managed delivery. Research observed Linux web 2.7.1 /
-independent OpenCode 2.2.7; API-only research is not rendered approval proof or
-acceptance of the current candidate. Managed-host acceptance and installer/native
-results must be recorded separately; no Windows/Electron certification is implied.
+historical and do not certify managed delivery. Isolated Linux web 2.7.1 /
+independent OpenCode 2.2.7 acceptance is described below, including the native Git
+update journey. Installer, web UI and native results retain distinct scopes;
+no Windows/Electron certification is implied.
 
 Normal setup approves **Add a plugin to OpenCode**, then explicitly selects a
 private Store. Watched-file delivery can retire after disable/removal without a
-restart; caller-owned `OPENCODE_CONFIG` fallback requires an explicit restart.
+restart; caller-owned `OPENCODE_CONFIG` fallback requires an explicit restart for
+contribution add/remove or toggle changes, not necessarily same-path Git updates.
 When mode is unknown these are conditional, not a live-stop promise. External,
 remote, terminal, isolated-space and VS Code runtimes are outside managed reach.
 Legacy and explicit **Add to global config** entries can outlive the extension.
@@ -90,6 +91,84 @@ declared plugin directory without a consumer build; an actual 2.7.0 installer
 refuses folder/ZIP with `host-too-old`, requiring 2.7.1, without registration.
 Portable CI, native backend-only checks and real-web acceptance have separate
 evidence scopes; no desktop-host or native Windows rerun is implied.
+
+## Native extension updates — 2026-11-13
+
+The isolated journey used unmodified **OpenChamber web 2.7.1**, independent
+**OpenCode 2.2.7**, driver/host **Node 24.22.2**, builder **Bun 1.3.14** and fresh
+**Chrome for Testing 145.0.7632.6**. The observer inside OpenCode reported Node
+compatibility **26.3.0** / Bun **1.4.4**. These are Linux web results, not desktop,
+Windows, macOS, remote-host or universal model-compliance certification. The
+shipping package version was not bumped; higher versions exist only in fixtures.
+
+```sh
+timeout -k 10 900 node --experimental-strip-types tests/fixtures/native-extension-updates-host.ts \
+  --host-module <isolated-2.7.1-server-index.js> \
+  --opencode-binary <independent-2.2.7-binary> \
+  --chromium <installed-chromium> --artifacts <local-evidence>
+```
+
+Fresh HOME/all XDG roots, loopback-only network isolation and a fresh browser
+profile exclude live configuration and credentials. The unchanged host policy
+uses a fixture-only public-origin DNS mapping and constrained Git executable to
+an owned local bare remote, with credential helpers disabled. This proves the host
+flow, not public GitHub reachability. A local scripted provider supplies deliberate
+reporting; no paid model or external provider transport is used. Synthetic account
+and settings records are seeded through the published host auth-store API, not
+real integration/OAuth setup.
+
+- **Consent and retention.** Real Settings → Extensions Git install includes
+  **Add a plugin to OpenCode → Allow and enable**, followed by normal Setup review
+  and confirmation. The unchanged-permission **1.1.1 → synthetic 1.1.2** Update
+  available/Update journey needs no reapproval. Grants, scopes, storage identity,
+  synthetic account/settings, device language, private binding and history remain.
+  A separate explicit updater-module replacement while paused preserves the true
+  paused flag; it is not a same-version UI offer.
+- **Added permission.** Synthetic 1.1.3 opens the real approval dialog. **Not now**
+  leaves new files/version installed, old grants retained and the new `model`
+  capability ungranted. A safe invalid-input probe receives `400 NOT_GRANTED`
+  before model invocation. Later **Review permissions → Allow and enable** grants
+  it. Deferral is not rollback or a guarantee of old executable bytes.
+- **Cadence and refs.** Actual Settings reopen reuses its successful cached check;
+  explicit **Check installed extensions for updates** fetches again. The existing
+  module-clock input proves the one-hour boundary, not elapsed browser time.
+  Checks do not install. The separate actual Git installer/updater gate covers
+  default/main, `#main`, `#dev` and fixed `#v1.1.1`; selected refs do not follow
+  other branches/tags. Same-version changed commits produce no offer. Failed
+  broken-runtime/foreign-identity/malformed-manifest updates preserve previous
+  bytes/state. Inert folder/ZIP fixtures installed through real host endpoints
+  have no Git offer in Settings; Git-equivalent manual replacement retention is
+  not certified.
+- **Service and views.** The old service PID exits on replacement; subsequent
+  access starts another with retained progress. The continuously mounted board's
+  execution context changes. Rail/Work Status are checked on subsequent access,
+  not asserted to stay mounted simultaneously. Counts match before/after and after
+  the next report. New guests make no compatibility-route requests and show no
+  former notice/line; progress and English/Russian controls remain available.
+- **Load observations.** Watched delivery shows matching after update. Unknown
+  screenshots use an invalid synthetic expectation file, and differing-load
+  screenshots use an appended fixture companion comment plus explicit owned
+  location reload with the old service baseline. Differing load still allows an
+  authorized report. Service-failure screenshots use an owned startup-fault seam;
+  original bytes are restored and history remains. These seams are not naturally
+  occurring update failures.
+- **Caller-owned configuration.** A separate fresh-process API Git replacement
+  (unchanged approved capabilities, not a second UI consent test) from synthetic
+  1.1.3 → 1.1.4 observes matching → different → matching after the next report turn
+  without restart, then matching after explicit fixture restart. Caller config
+  stays `{}` and history survives. This is the service's loaded-fingerprint
+  observation, not independent attestation of which cached importer executed.
+  The add/remove/toggle restart caveat remains separate. No automatic restart,
+  all-session activation or graceful cancellation guarantee is established.
+
+The compatibility route remains network-free unknown/unavailable for at least one
+release. Old cached notices last until a successful compatibility read or remount;
+new guests never call the route. Source/built-service, mixed-version and portable
+distribution checks complement, rather than replace, the native journey. Private
+evidence records bundle hashes, operation counts, English/Russian screenshots and
+zero remaining owned processes/listeners after cleanup. GitHub's controlled GFM
+render strips custom-scheme Markdown links, so README offers a copyable Git URL,
+not an unverified install button.
 
 ## Report tool presentation
 

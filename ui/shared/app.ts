@@ -14,7 +14,6 @@
 //   time text only and never expires activity or run state (census.ts). Observation currency comes
 //   only from the workspace subscriptions themselves; ctx.connection is the integration link.
 // - sub-agent runs (runs.ts): one visit per eligible section; the same visible list poll re-reads it
-// - official-main version check: at host readiness, then when due (coarse), visible frames only
 // - full-page History only: one "Since you last reviewed" visit (change-digest.ts), created lazily;
 //   panel/status never construct it, so they start no digest read or checkpoint write
 // - board search only (spec.freshness/retire): while results are shown, the same poll revalidates
@@ -25,10 +24,8 @@ import type { CleanupAction, SetupAction } from './adapter.ts';
 import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
 import { LiveWorkspace, type LiveSnapshot } from './live.ts';
-import { OFFICIAL_MAIN_URL } from './config.ts';
-import type { DocumentBody, HealthView, HistoryEntry, OfficialMainView, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DocumentBody, HealthView, HistoryEntry, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
-import { OFFICIAL_MAIN_DISMISSED_KEY, OfficialMainState } from './official.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
@@ -42,7 +39,7 @@ import type { InterfaceLanguage, LanguagePreference } from './i18n.ts';
 const APP_EN = {
   loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
   copyFailed: 'Clipboard unavailable. Select and copy the preview text below.',
-  sessionFailed: 'That session could not be opened here.', linkFailed: 'The link could not be opened here.',
+  sessionFailed: 'That session could not be opened here.',
   nearbyFocus: 'The row you were on is no longer shown, so focus moved to a nearby row.',
   removedFocus: (tasks: boolean) => `The task you were on was removed, so focus moved to ${tasks ? 'Tasks' : 'its group'}.`,
   focusSuffix: (notice: string, name: string) => `${notice}, so focus moved to ${name}.`,
@@ -50,7 +47,7 @@ const APP_EN = {
 const APP_RU: typeof APP_EN = {
   loading: 'Загрузка полного плана…', copying: 'Копирование…', copied: 'Markdown скопирован.',
   copyFailed: 'Буфер обмена недоступен. Выделите и скопируйте текст сводки ниже.',
-  sessionFailed: 'Не удалось открыть эту сессию здесь.', linkFailed: 'Не удалось открыть ссылку здесь.',
+  sessionFailed: 'Не удалось открыть эту сессию здесь.',
   nearbyFocus: 'Строка больше не отображается, поэтому фокус перемещён на соседнюю строку.',
   removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
   focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
@@ -62,13 +59,6 @@ export const RETRY_MS = 8000;
 export const RECENT_SCOPES = 8;
 /** Cadence of the one in-place label ticker (ages and whole-minute elapsed times). */
 const LABEL_TICK_MS = 30_000;
-/**
- * Official-main check cadence for a visible frame: when the service says the next check is due,
- * bounded to 5–60 min (a skewed browser clock only moves it within the bounds). The service
- * caches, coalesces and backs off its single upstream request; this only asks it again.
- */
-const MAIN_MIN_MS = 5 * 60_000;
-const MAIN_MAX_MS = 60 * 60_000;
 // A repaint replaces the root, which would restart each reported-progress animation. Starting them
 // at the document timeline's origin keeps one shared phase (they share one period, style.ts), so a
 // repaint or a return from hidden shows no jump. Views without motion skip the style read.
@@ -120,12 +110,6 @@ export interface ViewContext<U> {
   cancelCleanup: () => void;
   confirmDelete: () => void;
   runCleanup: (action: 'archive' | 'restore', plan: PlanView) => void;
-  /** What official main advertises; null while unknown (not checked yet, older service, failure). */
-  officialMain: OfficialMainView | null;
-  /** Candidate version whose notice the user dismissed. */
-  officialMainDismissed: string | null;
-  dismissOfficialMain: (version: string) => void;
-  openOfficialMain: () => void;
   /** Task-reading state of the plan this view reads in detail; null without a reading identity. */
   reading: ReadingView | null;
   /**
@@ -471,11 +455,6 @@ export function startView<U>(spec: ViewSpec<U>) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let labelTimer: ReturnType<typeof setTimeout> | null = null;
   let labelDue = 0;
-  const official = new OfficialMainState();
-  let mainTimer: ReturnType<typeof setTimeout> | null = null;
-  let mainGeneration = 0;
-  let mainInFlight = false;
-  let mainDueAt = 0;
   let disposed = false;
   let renderQueued = false;
   let languageSignature = '';
@@ -975,38 +954,6 @@ export function startView<U>(spec: ViewSpec<U>) {
   }
 
   /**
-   * Official-main version check. One request per frame at a time; a hidden or disposed frame
-   * starts none and drops the reply of a retired one (generation). Independent of setup, store
-   * and the progress poll.
-   */
-  function checkMain() {
-    if (disposed || mainInFlight || document.visibilityState === 'hidden') return;
-    mainInFlight = true;
-    const generation = ++mainGeneration;
-    void official.check(host, host.storage).then(({ next, apply }) => {
-      if (generation !== mainGeneration) return;
-      mainInFlight = false;
-      if (disposed) return;
-      if (apply()) bump();
-      const due = next ? Date.parse(next.nextCheckAt) - Date.now() : MAIN_MIN_MS;
-      mainDueAt = performance.now() + Math.min(MAIN_MAX_MS, Math.max(MAIN_MIN_MS, due));
-      planMain();
-    });
-  }
-  function planMain() {
-    if (mainTimer) clearTimeout(mainTimer);
-    mainTimer = null;
-    if (disposed || document.visibilityState === 'hidden' || mainInFlight) return;
-    mainTimer = setTimeout(checkMain, Math.max(0, mainDueAt - performance.now()));
-  }
-  /** Leaving view retires the in-flight check; its reply is ignored and a visible frame asks again when due. */
-  function retireMain() {
-    if (mainTimer) clearTimeout(mainTimer);
-    mainTimer = null;
-    if (mainInFlight) { mainGeneration++; mainInFlight = false; }
-  }
-
-  /**
    * One text-only ticker per frame for age and elapsed labels. It runs only while the frame is
    * visible and shows such a label, never repaints, and each tick recomputes from the labels'
    * own anchors, so a pause loses nothing.
@@ -1117,9 +1064,6 @@ export function startView<U>(spec: ViewSpec<U>) {
       // A retired button must never confirm a newer dialog's target.
       confirmDelete: () => { if (confirmation && confirmation === cleanup.target) void runCleanup('delete', confirmation); },
       runCleanup: (action, plan) => { if (read && actionContext === cleanupContext()) void runCleanup(action, cleanupTarget(plan, read.storeId, actionContext)); },
-      officialMain: official.value, officialMainDismissed: official.dismissed,
-      dismissOfficialMain: (version) => { official.dismiss(version); bump(); void host.storage.set(OFFICIAL_MAIN_DISMISSED_KEY, version).catch(() => {}); },
-      openOfficialMain: () => { void host.openUrl(OFFICIAL_MAIN_URL).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].linkFailed }).catch(() => {})); },
       reading: readingView(),
       summary: summaryView,
       digest: (p) => {
@@ -1469,7 +1413,6 @@ export function startView<U>(spec: ViewSpec<U>) {
       requestedScope = scopeKey(currentScope());
       spec.onContext?.(context());
       gate.request();
-      checkMain();
     } else if (!integrationAccountChanged) applyContext(nextSession, nextDirectory);
     schedule();
   });
@@ -1489,7 +1432,6 @@ export function startView<U>(spec: ViewSpec<U>) {
       language.visible();
       if (ctx) refreshLabels(mount, paintedLanguage ?? language.snapshot().language);
       planLabels();
-      if (ctx) planMain();
       digests?.visible();
       if (ctx && setupNeedsRefresh) loadSetup();
       retry();
@@ -1503,7 +1445,6 @@ export function startView<U>(spec: ViewSpec<U>) {
       retireHiddenDetails();
       if (timer) { clearTimeout(timer); timer = null; }
       planLabels();
-      retireMain();
     }
   });
   // Focus return re-reads only the shared review checkpoint of an open digest (coalesced).
@@ -1519,7 +1460,6 @@ export function startView<U>(spec: ViewSpec<U>) {
     gate.stop();
     if (timer) clearTimeout(timer);
     planLabels();
-    retireMain();
     live.dispose();
     memory.clear();
     clearReading();

@@ -14,12 +14,12 @@ import type { ManagedSetupAction } from '../shared/progress.ts';
 import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
 import { blockedTiming } from './blocked-timing.ts';
-import { ExtensionUpdates } from './extension-updates.ts';
+import { RELEASE } from '../shared/release.ts';
 import { parseCleanup } from '../shared/cleanup.ts';
 import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
 
 /** Only fixed read/control routes. No store path, token or SQL from request bodies. */
-export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController, updates = new ExtensionUpdates()) {
+export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
   if (!token) throw new ProgressError('binding');
   const expected = Buffer.from(`Bearer ${token}`);
   const server = http.createServer({maxHeaderSize:32*1024},async (req,res) => {
@@ -97,7 +97,9 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
         if(url.search)return answer(404,{error:'not-found'});
         if(req.headers['content-length']&&req.headers['content-length']!=='0'||req.headers['transfer-encoding'])return answer(400,{error:'body-not-allowed'});
-        return answer(200,await updates.check());
+        // Compatibility backoff for old guests, not a scheduled remote check.
+        return answer(200,{installedVersion:RELEASE,repository:'Phototonic/openchamber-progress',ref:'main',
+          state:'unknown',checkedAt:null,stale:false,diagnostic:'unavailable',nextCheckAt:new Date(Date.now()+3_600_000).toISOString()});
       }
       if(url.pathname==='/v1/setup'||url.pathname.startsWith('/v1/setup/')) {
         if(url.search)return answer(404,{error:'not-found'});
@@ -190,8 +192,5 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
   });
   server.requestTimeout=5000;server.headersTimeout=5000;
-  const close=server.close.bind(server);
-  server.close=(callback?)=>{updates.close();return close(callback);};
-  server.on('close',()=>updates.close());
   return server;
 }

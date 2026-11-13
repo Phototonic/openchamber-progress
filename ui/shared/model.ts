@@ -202,22 +202,6 @@ export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null
  * version the same or higher. `newer-installed`: the installed version is higher. `rootVersion` is
  * the folder's loader/remove utility from when the companion was installed; updates keep it. Absent: no claim.
  */
-/**
- * What the official repository's main branch advertises (GET /v1/extension-update). `available`
- * names only official main: not the source this extension was actually installed from, not a
- * bundled or installed version. `checkedAt` is the last successful check; `stale` means a later
- * check failed and this is older knowledge.
- */
-export interface OfficialMainView {
-  installedVersion: string;
-  state: 'available' | 'not-newer' | 'unknown';
-  checkedAt: string | null;
-  stale: boolean;
-  candidateVersion?: string;
-  diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' | 'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
-  nextCheckAt: string;
-}
-
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
   delivery?: {

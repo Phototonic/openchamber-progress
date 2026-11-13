@@ -1076,49 +1076,50 @@ Local execution/results and consumer launch receipt: `evidence/cleanup/backend.m
 
 ## DTO meanings
 
-### Official-main version awareness
+### Retired official-main compatibility route (revision 1)
 
 `GET /v1/extension-update` requires the same service bearer, no query/body, and
 works before companion/store lookup. Wrong method405, query404, body400, auth401.
-Upstream failure is an HTTP200 metadata reply, not a progress/setup failure.
-Older services may return404; missing/malformed optional replies mean unavailable.
+Retained for at least the next delivered release, it returns HTTP200 even when
+the service is unconfigured or its store cannot open. It does not consult the
+store, check a remote version, fetch metadata or mutate persistent data.
 
 ```ts
 interface ExtensionUpdateRead {
   installedVersion: string; // this extension's RELEASE
   repository: 'Phototonic/openchamber-progress';
   ref: 'main';
-  state: 'available' | 'not-newer' | 'unknown';
-  checkedAt: string | null; // most recent SUCCESSFUL validation/revalidation
+  state: 'available' | 'not-newer' | 'unknown'; // legacy vocabulary; current: unknown
+  checkedAt: string | null; // legacy success time; current: null
   stale: boolean;
-  candidateVersion?: string; // validated official-main manifest semver only
+  candidateVersion?: string; // legacy validated semver; absent in current replies
   diagnostic: 'ok' | 'unavailable' | 'rate-limited' | 'invalid-manifest' |
     'invalid-response' | 'redirect' | 'too-large' | 'timeout' | 'shutdown';
-  nextCheckAt: string; // finite server ISO time; next eligible check, not a timer promise
+  nextCheckAt: string; // finite ISO time; old-client compatibility backoff only
 }
 ```
 
-`available` means only that the named official main advertises a higher semver.
-`not-newer` means that official manifest is equal/older, not that a custom selected
-source, companion or loaded instance is current. Same-version changed bytes do not
-produce availability. `unknown` has no validated candidate, checkedAt=null and
-stale=false. After failure, a known candidate/state and original checkedAt remain,
-with stale=true and a fixed failure diagnostic. Do not render retained stale
-knowledge as a fresh successful check. No upstream body, message or URL is returned.
+The deprecated DTO retains the old vocabulary for compatibility, but current
+replies always contain the service `RELEASE`, the fixed repository/ref above,
+`state:"unknown"`, `checkedAt:null`, `stale:false`, `diagnostic:"unavailable"`,
+and no `candidateVersion`. `nextCheckAt` is one hour after response construction,
+not evidence of a successful check or a promise to check later. There is no
+transport configuration, cache, ETag, background timer or shutdown request.
+Protocol/schema remain2; later route removal requires a separate decision.
 
-This does not inspect actual installation provenance or audit remote runtime files.
-The host alone installs updates. Use fixed UI link
-`https://github.com/Phototonic/openchamber-progress/tree/main`; never derive a link
-from network metadata. Copy names **“Official main version X available”**, explains
-Settings → Extensions and the custom branch/tag/fork/ZIP limitation. Never claim
-the advertised candidate is installed, bundled, loaded or installable merely from
-this metadata check. Preserve SetupRead.update and its explicit companion button.
+Current guests never call this route, schedule it, read/write the obsolete
+`official-main-dismissed` preference or display an update notice on any surface.
+Existing dismissal data stays inert; no storage migration occurs. An unchanged
+old parser accepts the unavailable reply and an old guest shows no notice after
+its next successful read. A previously cached old banner can remain until that
+read or a host frame remount. New guests also make no calls against older services
+that would return available,404 or malformed data. Old guest/old service behavior
+is outside this retirement's control.
 
-Ask on visible-frame readiness and coarse nextCheckAt eligibility, not each progress
-poll/task/render/session switch. Hidden/disposed frames initiate no request; retire
-late replies on host/service generation changes. A service restart starts a new
-in-memory cache. Cache successful knowledge for1h, failures for at least5min (longer
-provider deadlines honored); multiple frames share one service in-flight request.
+OpenChamber owns update discovery and explicit installation through Settings →
+Extensions. Setup and Reporting health describe local delivery/load observations,
+not remote availability. Legacy recovery-only Setup updates remain distinct;
+retirement grants no new mutation or restart authority.
 
 ### Optional reported-working timing
 

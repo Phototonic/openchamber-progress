@@ -39,8 +39,8 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       }return null;
     };
     const guest=async<T=any>(surface:string,expression:string):Promise<T|null>=>{const context=await guestContext(surface);return context?evaluate<T>(expression,context.id,context.sessionId):null;};
-    const guestClick=async(surface:string,selector:string)=>{
-      const found=await wait<any>(async()=>{const context=await guestContext(surface);if(!context)return null;await evaluate(`document.querySelector(${literal(selector)})?.scrollIntoView({block:'nearest'})`,context.id,context.sessionId);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const local=await evaluate<any>(`(()=>{const e=document.querySelector(${literal(selector)});if(!e||!e.checkVisibility())return null;const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`,context.id,context.sessionId);return local?{context,local}:null;},Boolean,'visible actionable guest control');
+    const guestClick=async(surface:string,selector:string,beforeProbe?:()=>Promise<void>)=>{
+      const found=await wait<any>(async()=>{if(beforeProbe)await beforeProbe();const context=await guestContext(surface);if(!context)return null;await evaluate(`document.querySelector(${literal(selector)})?.scrollIntoView({block:'nearest'})`,context.id,context.sessionId);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const local=await evaluate<any>(`(()=>{const e=document.querySelector(${literal(selector)});if(!e||!e.checkVisibility())return null;const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`,context.id,context.sessionId);return local?{context,local}:null;},Boolean,`visible actionable guest control: ${surface} ${selector}`);
       const {context,local}=found;
       const owner=await send('DOM.getFrameOwner',{frameId:context.frame});const box=await send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId});await pointer(local.x+box.model.content[0],local.y+box.model.content[1]);
     };
@@ -171,6 +171,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:1,y:1});await shot('narrow');
       await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
     };
-    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length})};
+    return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
+      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,events}};
   }catch(e){await stop();throw e;}
 }

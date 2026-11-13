@@ -8,7 +8,6 @@ import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
 import { lifecycleLabel, showsLiveness, summarize, summaryText, type PlanSummary, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
-import { officialMainLine } from '../shared/official.ts';
 import { contextListScope, contextScope, projectsFor } from '../shared/scope.ts';
 import { segmentedBar, stateChip, warningLine, type MarkStatus } from '../shared/primitives.ts';
 import { StatusSelection } from './selection.ts';
@@ -61,13 +60,10 @@ startView<Ui>({
   paint(root, vc) {
     const { read, failure, env } = vc;
     const t = messages[resolveLanguage('auto', env.locale)];
-    // Compact official-main line; it does not depend on setup or on this session having plans.
-    const official = () => officialMainLine(vc, () => openRail(vc));
-    const withOfficial = (block: HTMLElement) => { const line = official(); if (line) block.append(line); return block; };
     if (!read) {
-      if (!vc.session?.id) root.append(withOfficial(emptyBlock('unscoped-state', t.noSession, t.openSession, true)));
+      if (!vc.session?.id) root.append(emptyBlock('unscoped-state', t.noSession, t.openSession, true));
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
-      else if (vc.health && !vc.health.ready) root.append(withOfficial(emptyBlock('setup-needed', t.setup, t.setupHelp, true, { label: t.setUp, onClick: () => openRail(vc) })));
+      else if (vc.health && !vc.health.ready) root.append(emptyBlock('setup-needed', t.setup, t.setupHelp, true, { label: t.setUp, onClick: () => openRail(vc) }));
       else if (vc.session?.id) root.append(loadingBlock(env.locale));
       return;
     }
@@ -75,12 +71,12 @@ startView<Ui>({
     const generation = enter(vc);
     const { plan, selected } = vc.ui.selection.resolve(scope);
     if (scope.kind === 'none') {
-      root.append(withOfficial(emptyBlock('unscoped-state', t.noSession, t.openSession, true)));
+      root.append(emptyBlock('unscoped-state', t.noSession, t.openSession, true));
       return;
     }
     if (!scope.plans.length) {
       // No plan in scope: no sub-agent section, count or prompt, whatever the host lists.
-      root.append(failure ? failureBlock(failure, retryRead(vc), env.locale) : withOfficial(emptyBlock('empty-state', t.noPlan, t.appears, true)));
+      root.append(failure ? failureBlock(failure, retryRead(vc), env.locale) : emptyBlock('empty-state', t.noPlan, t.appears, true));
       return;
     }
     if (!plan) return;
@@ -158,8 +154,6 @@ startView<Ui>({
     }
     const actions = el('div', 'ap-row ap-between');
     button(actions, 'open-detail', t.open, () => openRail(vc), 'ghost');
-    const line = official();
-    if (line) actions.append(line);
     root.append(actions);
   },
   afterPaint(root, vc) {
