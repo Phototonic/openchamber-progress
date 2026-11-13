@@ -5,6 +5,7 @@ import { setupLegacy } from '../../plugin/index.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
 import { Store } from '../../shared/store.ts';
 import { SetupController } from '../../service/setup-controller.ts';
+import { isolatedEnvironment } from '../fixtures/managed.ts';
 
 function fixture(){
   const root=fs.mkdtempSync('/tmp/opencode/agent-progress-plugin-setup-');
@@ -12,7 +13,7 @@ function fixture(){
   lifecycle('install',{configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true},{plugin:'// fixture',guidance:'fixture',removal:'// fixture',version:'0.2.2'});
   const binding=`${root}/config/opencode/plugins/agent-progress/progress-binding.json`;
   const saved=new Map<string,string|undefined>();
-  for(const [key,value] of Object.entries({AGENT_PROGRESS_BINDING:binding,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
+  for(const [key,value] of Object.entries({...isolatedEnvironment(root),AGENT_PROGRESS_BINDING:undefined,OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){
     saved.set(key,process.env[key]);if(value===undefined)delete process.env[key];else process.env[key]=value;
   }
   const fds=()=>fs.readdirSync('/proc/self/fd').filter(fd=>{try{return fs.readlinkSync(`/proc/self/fd/${fd}`)===`${root}/store/progress.sqlite`;}catch{return false;}}).length;

@@ -6,12 +6,13 @@ import {SetupController} from '../../service/setup-controller.ts';
 import {readManagedBinding,managedBindingFile} from '../../shared/managed-binding.ts';
 import {Store} from '../../shared/store.ts';
 import {RELEASE} from '../../shared/release.ts';
+import {isolatedEnvironment} from '../fixtures/managed.ts';
 
 const payload={plugin:'// different bytes at the same release',guidance:'Synthetic',removal:'// removal',version:RELEASE};
 const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>resolve=r);return {promise,resolve};};
 function fixture(){
   const root=fs.mkdtempSync('/tmp/opencode/managed-lifecycle-');
-  const env={HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_STATE_HOME:`${root}/state`,XDG_CACHE_HOME:`${root}/cache`};
+  const env=isolatedEnvironment(root);
   for(const dir of ['home','config/opencode','data/opencode','project','state','cache'])fs.mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
   const saved=new Map<string,string|undefined>();
   for(const [k,v]of Object.entries({...env,AGENT_PROGRESS_BINDING:'/synthetic/ignored.json',OPENCODE_DB:undefined,OPENCODE_CONFIG_DIR:undefined})){saved.set(k,process.env[k]);if(v===undefined)delete process.env[k];else process.env[k]=v;}

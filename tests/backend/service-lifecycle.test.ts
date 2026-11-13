@@ -11,6 +11,7 @@ import { RELEASE } from '../../shared/release.ts';
 import { serviceBindingFile } from '../../service/state.ts';
 import { Store } from '../../shared/store.ts';
 import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
+import { isolatedEnvironment } from '../fixtures/managed.ts';
 
 function fixture() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-backend-reassembly-');
@@ -18,7 +19,7 @@ function fixture() {
   for(const [entry,output]of [['plugin/index.ts','companion/index.js'],['setup/cli.ts','setup/main.js'],['service/main.ts','service/main.js']])assert.equal(spawnSync('bun',['build',entry,'--target=node','--format=esm',`--outfile=${root}/compiled/${output}`],{stdio:'ignore'}).status,0);
   cpSync('plugin/SKILL.md',`${root}/compiled/companion/SKILL.md`);
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
-  const env={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_STATE_HOME:`${root}/state`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`};
+  const env=isolatedEnvironment(root);
   const payload={plugin:readFileSync(`${root}/compiled/companion/index.js`,'utf8'),guidance:readFileSync('plugin/SKILL.md','utf8'),removal:readFileSync(`${root}/compiled/setup/main.js`,'utf8'),version:JSON.parse(readFileSync('package.json','utf8')).version};
   // Legacy utility/controller regressions inject their selector explicitly. Production main
   // no longer accepts this environment or package-adoption authority.
