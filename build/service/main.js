@@ -15,7 +15,6 @@ var __export = (target, all) => {
 
 // service/main.ts
 import { readFileSync as readFileSync5 } from "node:fs";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // service/server.ts
 import http from "node:http";
@@ -5004,6 +5003,136 @@ function lifecycleInner(action, targets, payload, testBoundary) {
   return { ...info, installed: true, action, writes: true, activation: "reload-required", active: release, version: payload.version, historyRetained: true };
 }
 
+// shared/managed-binding.ts
+import { lstatSync as lstatSync6, realpathSync as realpathSync6, readFileSync as readFileSync3, writeFileSync as writeFileSync2, linkSync, unlinkSync as unlinkSync2, renameSync as renameSync2 } from "node:fs";
+import path6 from "node:path";
+import { homedir } from "node:os";
+import { randomUUID as randomUUID5 } from "node:crypto";
+class ManagedBindingError extends Error {
+  code;
+  constructor(code = "managed-binding-invalid") {
+    super(code);
+    this.code = code;
+  }
+}
+function need2(value, code) {
+  if (!value)
+    throw new ManagedBindingError(code);
+}
+var markerText = '{"product":"openchamber-agent-progress-managed","format":1}';
+function managedPath(value, missing = false) {
+  if (windows)
+    return windowsPath(value, missing);
+  need2(value.length <= 4096 && !value.includes("\x00") && path6.isAbsolute(value) && path6.resolve(value) === value, "managed-path-unverified");
+  let current = value;
+  while (!lstatSync6(current, { throwIfNoEntry: false })) {
+    need2(missing, "managed-path-unverified");
+    const parent = path6.dirname(current);
+    need2(parent !== current, "managed-path-unverified");
+    current = parent;
+  }
+  need2(realpathSync6(current) === current && !lstatSync6(current).isSymbolicLink(), "managed-path-unverified");
+  return value;
+}
+function managedSourceRoots(env = process.env) {
+  return platformSecurityScope(() => {
+    need2(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+    const home = () => managedPath(env.HOME ?? homedir(), true);
+    const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path6.join(home(), fallback), true);
+    return {
+      configRoot: managedPath(path6.join(base("XDG_CONFIG_HOME", ".config"), "opencode"), true),
+      dataRoot: managedPath(path6.join(base("XDG_DATA_HOME", ".local/share"), "opencode"), true)
+    };
+  });
+}
+function managedBindingFile(env = process.env) {
+  return platformSecurityScope(() => {
+    const { dataRoot } = managedSourceRoots(env);
+    const root = managedPath(path6.join(dataRoot, "agent-progress-managed"), true);
+    const stat = lstatSync6(root, { throwIfNoEntry: false });
+    if (stat) {
+      need2(stat.isDirectory() && privatePaths([root]));
+      const marker = path6.join(root, ".ownership.json");
+      const m = lstatSync6(marker, { throwIfNoEntry: false });
+      need2(m?.isFile() && !m.isSymbolicLink() && privatePaths([marker]) && readFileSync3(marker, "utf8") === markerText);
+    }
+    return path6.join(root, "progress-binding.json");
+  });
+}
+function readManagedBinding(env = process.env) {
+  return platformSecurityScope(() => readManagedBindingInner(env));
+}
+function readManagedBindingInner(env) {
+  const file = managedBindingFile(env);
+  if (!lstatSync6(file, { throwIfNoEntry: false }))
+    return;
+  let binding;
+  try {
+    binding = readBinding(file);
+  } catch (e) {
+    if (e instanceof SyntaxError)
+      throw new ManagedBindingError;
+    throw e;
+  }
+  const roots = managedSourceRoots(env);
+  need2(binding.source.configRoot === roots.configRoot && binding.source.dataRoot === roots.dataRoot);
+  need2(![roots.configRoot, roots.dataRoot, path6.dirname(file)].includes(path6.dirname(binding.database)));
+  need2([roots.configRoot, roots.dataRoot].every((root) => lstatSync6(root).isDirectory() && isOwned(root)));
+  return binding;
+}
+function createManagedBindingDirectory(env = process.env) {
+  return platformSecurityScope(() => {
+    const file = managedBindingFile(env), root = path6.dirname(file), { dataRoot } = managedSourceRoots(env);
+    need2(lstatSync6(dataRoot).isDirectory() && isOwned(dataRoot));
+    if (!lstatSync6(root, { throwIfNoEntry: false })) {
+      privateDirectory(root);
+      const marker = path6.join(root, ".ownership.json");
+      writeFileSync2(marker, markerText, { mode: 384, flag: "wx" });
+      syncFile(marker);
+      syncDirectory(root);
+      syncDirectory(dataRoot);
+    }
+    managedBindingFile(env);
+    return file;
+  });
+}
+function publishPrivateJson(file, value, replace = false) {
+  const stage = `${file}.stage-${randomUUID5()}`;
+  try {
+    writeFileSync2(stage, JSON.stringify(value), { mode: 384, flag: "wx" });
+    syncFile(stage);
+    if (replace)
+      renameSync2(stage, file);
+    else {
+      linkSync(stage, file);
+      unlinkSync2(stage);
+    }
+    syncDirectory(path6.dirname(file));
+  } finally {
+    if (lstatSync6(stage, { throwIfNoEntry: false }))
+      unlinkSync2(stage);
+  }
+}
+function managedExpectationFile(binding) {
+  return path6.join(path6.dirname(binding.database), "managed-expectation.json");
+}
+function readManagedExpectation(binding) {
+  const file = managedExpectationFile(binding);
+  if (!lstatSync6(file, { throwIfNoEntry: false }))
+    return;
+  managedPath(file);
+  const stat = lstatSync6(file);
+  need2(stat.isFile() && !stat.isSymbolicLink() && privatePaths([path6.dirname(file), file]));
+  const e = JSON.parse(readFileSync3(file, "utf8"));
+  need2(e.format === 1 && e.storeId === binding.storeId && e.sourceId === binding.source.id && e.installId === binding.installId && typeof e.version === "string" && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(e.version) && /^[a-f0-9]{64}$/.test(e.fingerprint));
+  return e;
+}
+function writeManagedExpectation(binding, expectation) {
+  const file = managedExpectationFile(binding);
+  const prior = readManagedExpectation(binding);
+  publishPrivateJson(file, expectation, !!prior);
+}
+
 // service/task-timing.ts
 var TIMING_LIMITS = { revisions: 128, bytes: 8 * 1024 * 1024 };
 function taskTiming(store, detail, now = new Date) {
@@ -5975,10 +6104,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj2, path6) {
-  if (!path6)
+function getElementAtPath(obj2, path7) {
+  if (!path7)
     return obj2;
-  return path6.reduce((acc, key) => acc?.[key], obj2);
+  return path7.reduce((acc, key) => acc?.[key], obj2);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -6314,11 +6443,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path6, issues) {
+function prefixIssues(path7, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path6);
+    iss.path.unshift(path7);
     return iss;
   });
 }
@@ -6780,16 +6909,16 @@ function flattenError(error, mapper = (issue2) => issue2.message) {
 }
 function formatError(error, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error2, path6 = []) => {
+  const processError = (error2, path7 = []) => {
     for (const issue2 of error2.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path6, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
       } else {
-        const fullpath = [...path6, ...issue2.path];
+        const fullpath = [...path7, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -6828,17 +6957,17 @@ function formatError(error, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error2, path6 = []) => {
+  const processError = (error2, path7 = []) => {
     var _a2;
     for (const issue2 of error2.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path6, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
       } else {
-        const fullpath = [...path6, ...issue2.path];
+        const fullpath = [...path7, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -6877,8 +7006,8 @@ function treeifyError(error, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path6 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path6) {
+  const path7 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path7) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23735,13 +23864,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path6 = ref.slice(1).split("/").filter(Boolean);
-  if (path6.length === 0) {
+  const path7 = ref.slice(1).split("/").filter(Boolean);
+  if (path7.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path6[0] === defsKey) {
-    const key = path6[1] === undefined ? undefined : decodeJSONPointerSegment(path6[1]);
+  if (path7[0] === defsKey) {
+    const key = path7[1] === undefined ? undefined : decodeJSONPointerSegment(path7[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24689,12 +24818,12 @@ var normalizeSocketObject = (entry2) => {
   return { id: entry2.id, candidatesByPlatform };
 };
 var socketEntrySchema = exports_external.union([
-  socketPathSchema.transform((path6) => ({
-    id: path6,
+  socketPathSchema.transform((path7) => ({
+    id: path7,
     candidatesByPlatform: {
-      linux: [path6],
-      darwin: [path6],
-      win32: [path6]
+      linux: [path7],
+      darwin: [path7],
+      win32: [path7]
     }
   })),
   socketBindingObjectSchema.transform(normalizeSocketObject)
@@ -25250,27 +25379,27 @@ var fail = (code, message) => ({
 var fieldPath = (issuePath) => (issuePath[0] === "openchamber" ? issuePath.slice(1) : issuePath).reduce((field, segment) => Number.isInteger(segment) ? `${field}[${String(segment)}]` : `${field ? `${field}.` : ""}${String(segment)}`, "");
 var failureFromIssue = (issue2) => {
   const segments = issue2.path.map(String);
-  const path6 = (segments[0] === "openchamber" ? segments.slice(1) : segments).join(".");
+  const path7 = (segments[0] === "openchamber" ? segments.slice(1) : segments).join(".");
   const isPackageEnvelope = segments[0] === "openchamber";
-  if (!path6 && issue2.code === "invalid_type") {
+  if (!path7 && issue2.code === "invalid_type") {
     return isPackageEnvelope ? fail("missing-openchamber", "package.json openchamber must be a plain object.") : fail("not-object", "Manifest must be a plain object.");
   }
   if (segments.length === 1 && segments[0] === "version") {
     return fail("invalid-version", "package.json version must be semver like 1.0.0.");
   }
-  if (path6 === "apiVersion") {
+  if (path7 === "apiVersion") {
     return fail("unsupported-api-version", `Unsupported apiVersion. This host accepts ${OPENCHAMBER_SDK_MANIFEST_API_VERSIONS.join(" and ")}.`);
   }
-  if (path6 === "engines" || path6.startsWith("engines.")) {
+  if (path7 === "engines" || path7.startsWith("engines.")) {
     return fail("invalid-engines", "engines.openchamber must be a version like 1.22.0 or >=1.22.0.");
   }
-  if (path6 === "contributes.panel" && issue2.code === "custom") {
+  if (path7 === "contributes.panel" && issue2.code === "custom") {
     return fail("invalid-panel", issue2.message);
   }
-  if (path6 === "contributes" || path6 === "contributes.panel") {
+  if (path7 === "contributes" || path7 === "contributes.panel") {
     return fail("missing-panel", "The manifest needs id, name and icon.");
   }
-  switch (path6) {
+  switch (path7) {
     case "contributes.panel.id":
       return fail("invalid-panel-id", "id must be kebab-case starting with a letter.");
     case "contributes.panel.name":
@@ -25288,80 +25417,80 @@ var failureFromIssue = (issue2) => {
     default:
       break;
   }
-  if (path6 === "contributes.page" || path6.startsWith("contributes.page.")) {
+  if (path7 === "contributes.page" || path7.startsWith("contributes.page.")) {
     return fail("invalid-page", 'contributes.page must be true or { entry: "<package HTML>", title?: "Page title" }.');
   }
-  if (path6 === "contributes.statusSection" || path6.startsWith("contributes.statusSection.")) {
+  if (path7 === "contributes.statusSection" || path7.startsWith("contributes.statusSection.")) {
     return fail("invalid-status-section", issue2.code === "custom" ? issue2.message : `contributes.statusSection must be true or { entry?: "<package .html>", source?: { path: "/status", interval?: ${GUEST_STATUS_SOURCE_INTERVAL_MIN} to ${GUEST_STATUS_SOURCE_INTERVAL_MAX} }, title?: "1 to ${GUEST_STATUS_SECTION_TITLE_MAX} characters", height?: ${GUEST_STATUS_SECTION_HEIGHT_MIN} to ${GUEST_STATUS_SECTION_HEIGHT_MAX} } with entry, source, or both.`);
   }
-  if (path6 === "contributes.background" || path6.startsWith("contributes.background.")) {
+  if (path7 === "contributes.background" || path7.startsWith("contributes.background.")) {
     return fail("invalid-background", "contributes.background needs an entry ending in .html inside the package.");
   }
-  if (path6 === "contributes.attach" || path6.startsWith("contributes.attach.")) {
+  if (path7 === "contributes.attach" || path7.startsWith("contributes.attach.")) {
     return fail("invalid-attach", 'contributes.attach must be true, false, "panel", "dialog", or { "mode": "panel" | "dialog", "entry"?: "<html inside the package, dialog only>" }.');
   }
-  if (path6.startsWith("contributes.capabilities")) {
+  if (path7.startsWith("contributes.capabilities")) {
     return fail("invalid-capabilities", 'contributes.capabilities may list "prompt", "sessions", and "files".');
   }
-  if (path6.startsWith("contributes.filesystem")) {
+  if (path7.startsWith("contributes.filesystem")) {
     return fail("invalid-filesystem", 'contributes.filesystem lists 1 to 16 patterns starting with "/" or "~/", without "..", empty segments, or backslashes.');
   }
-  if (path6.startsWith("contributes.origins")) {
+  if (path7.startsWith("contributes.origins")) {
     return fail("invalid-origins", `contributes.origins lists 1 to ${GUEST_ORIGINS_MAX} unique https origins like "https://fonts.example.com", without a path.`);
   }
-  if (path6.startsWith("contributes.actions")) {
+  if (path7.startsWith("contributes.actions")) {
     return fail("invalid-actions", 'contributes.actions lists up to 8 entries with a unique kebab-case id, a label of 1 to 40 characters, where "message", "session", "selection", "file" or "diff", optional roles (message only), optional payload ["messages"] (session only), and optional display "label", "icon" or "both" (selection only).');
   }
-  if (path6.startsWith("contributes.commands")) {
+  if (path7.startsWith("contributes.commands")) {
     return fail("invalid-commands", "contributes.commands lists up to 8 entries with a unique name matching /^[a-z][a-z0-9-]{0,23}$/ and an optional description of 1 to 80 characters.");
   }
-  if (path6.startsWith("contributes.tools")) {
+  if (path7.startsWith("contributes.tools")) {
     return fail("invalid-tools", 'contributes.tools lists up to 16 entries with a match of 1 to 128 characters ([A-Za-z0-9_.:-], "*" only at the end), optional name (1 to 40), icon (Remixicon name or package .svg path), title and subtitle templates (1 to 200), output "auto" | "text" | "json" | "markdown" | "code" | "table", language (code only), and columns (table only, 1 to 16).');
   }
-  if (path6.startsWith("contributes.fileEditors")) {
+  if (path7.startsWith("contributes.fileEditors")) {
     return fail("invalid-file-editors", `contributes.fileEditors lists 1 to ${GUEST_FILE_EDITORS_MAX} editors with a unique kebab-case id, a title of 1 to ${GUEST_FILE_EDITOR_TITLE_MAX} characters, match: 1 to ${GUEST_FILE_EDITOR_PATTERNS_MAX} file-name patterns (no "/", not only wildcards, like "*.excalidraw"), an entry ending in .html inside the package, and optional content "text" or "binary".`);
   }
-  if (path6 === "contributes.sessionEvents" || path6.startsWith("contributes.sessionEvents.")) {
-    return fail("invalid-session-events", issue2.code === "custom" && path6 === "contributes.sessionEvents" ? issue2.message : `contributes.sessionEvents is { events: [1 to ${GUEST_SESSION_EVENT_TYPES.length} distinct of ${GUEST_SESSION_EVENT_TYPES.map((type) => `"${type}"`).join(", ")}], content?: true }.`);
+  if (path7 === "contributes.sessionEvents" || path7.startsWith("contributes.sessionEvents.")) {
+    return fail("invalid-session-events", issue2.code === "custom" && path7 === "contributes.sessionEvents" ? issue2.message : `contributes.sessionEvents is { events: [1 to ${GUEST_SESSION_EVENT_TYPES.length} distinct of ${GUEST_SESSION_EVENT_TYPES.map((type) => `"${type}"`).join(", ")}], content?: true }.`);
   }
-  if (path6 === "contributes.sessionControl" || path6.startsWith("contributes.sessionControl.")) {
+  if (path7 === "contributes.sessionControl" || path7.startsWith("contributes.sessionControl.")) {
     return fail("invalid-session-control", issue2.code === "custom" ? issue2.message : "contributes.sessionControl is { content?: true, answers?: true }.");
   }
-  if (path6 === "contributes.instructions") {
+  if (path7 === "contributes.instructions") {
     return fail("invalid-instructions", issue2.code === "custom" ? issue2.message : "contributes.instructions is true.");
   }
-  if (path6 === "contributes.skills") {
+  if (path7 === "contributes.skills") {
     return fail("invalid-skills", "contributes.skills is a folder inside the package.");
   }
-  if (path6 === "contributes.opencodePlugin") {
+  if (path7 === "contributes.opencodePlugin") {
     return fail("invalid-opencode-plugin", "contributes.opencodePlugin is a plugin folder inside the package: a directory with a package.json whose entry OpenCode loads.");
   }
-  if (path6 === "contributes.mentions" || path6.startsWith("contributes.mentions.")) {
+  if (path7 === "contributes.mentions" || path7.startsWith("contributes.mentions.")) {
     return fail("invalid-mentions", issue2.code === "custom" ? issue2.message : `contributes.mentions is { label: 1 to ${GUEST_MENTIONS_LABEL_MAX} characters }.`);
   }
-  if (path6 === "contributes.blocks" || path6.startsWith("contributes.blocks")) {
+  if (path7 === "contributes.blocks" || path7.startsWith("contributes.blocks")) {
     return fail("invalid-blocks", `contributes.blocks lists 1 to ${GUEST_BLOCKS_MAX} components, each with a unique PascalCase name, a description of 1 to ${GUEST_BLOCK_DESCRIPTION_MAX} characters, up to ${GUEST_BLOCK_ARGS_MAX} unique camelCase args, an entry ending in .html inside the package, and an optional height.`);
   }
-  if (path6.startsWith("contributes.integration")) {
+  if (path7.startsWith("contributes.integration")) {
     return fail("invalid-integration", "contributes.integration needs a name, description, and oauth, token, or host.");
   }
-  if (path6.startsWith("contributes.sourceControl")) {
+  if (path7.startsWith("contributes.sourceControl")) {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.sourceControl" in GUEST_SERVICES.md for every field.`);
   }
-  if (path6.startsWith("contributes.notifications")) {
+  if (path7.startsWith("contributes.notifications")) {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.notifications" in GUEST_SERVICES.md for every field.`);
   }
-  if (path6.startsWith("contributes.tracker")) {
+  if (path7.startsWith("contributes.tracker")) {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: see "contributes.tracker" in GUEST_SERVICES.md for every field.`);
   }
-  if (path6.startsWith("contributes.quota")) {
+  if (path7.startsWith("contributes.quota")) {
     const field = fieldPath(issue2.path);
     return fail("invalid-service", issue2.code === "custom" ? `${field}: ${issue2.message}` : `${field} is invalid: contributes.quota is { providers: string[] } of up to ${QUOTA_PROVIDERS_MAX} OpenCode provider ids; see "Usage provider" in GUEST_SERVICES.md.`);
   }
-  if (path6.startsWith("contributes.service")) {
+  if (path7.startsWith("contributes.service")) {
     return fail("invalid-service", issue2.code === "custom" ? issue2.message : 'contributes.service needs entry, runtime "host", optional permissions, optional provides ("browser", "source-control", "notifications", "tracker", "quota", "opencode"), optional surface (true), optional keepRunning (true), and optional schedule (up to 8 of { id, cron, timezone? }).');
   }
   return fail("missing-panel", "The manifest needs id, name and icon.");
@@ -27035,7 +27164,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
           return answer(200, setup.status(true));
         }
         const action = url2.pathname.slice("/v1/setup/".length);
-        if (!["inspect", "install", "update", "disable", "enable", "remove-capture"].includes(action))
+        if (!["inspect", "install", "update", "disable", "enable", "remove-capture", "managed-inspect", "managed-configure", "managed-migrate", "managed-enable", "managed-disable"].includes(action))
           return answer(404, { error: "not-found" });
         if (req.method !== "POST")
           return answer(405, { error: "method-not-allowed" });
@@ -27071,7 +27200,7 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         if (!currentStore)
           return answer(503, { error: active.error ?? "storage" });
         if (setup && url2.pathname.endsWith("/enable")) {
-          setup.run("enable", { confirmed: true });
+          setup.enableCapture();
           return answer(200, { ok: true, captureEnabled: true });
         }
         currentStore.setEnabled(url2.pathname.endsWith("/enable"));
@@ -27176,6 +27305,8 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
         return answer(200, currentStore.document(source, plan, number4("cursor", 0), url2.searchParams.has("capture") ? number4("capture", 0) : undefined));
       return answer(200, currentStore.history(source, plan, number4("cursor", 0), number4("limit", 20)));
     } catch (e) {
+      if (e instanceof ManagedBindingError)
+        return answer(409, { error: e.code });
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error62 = e instanceof ProgressError ? e : storageError(e);
@@ -27196,14 +27327,14 @@ function createProgressServer(store, token, unavailableCode, setup, updates = ne
 }
 
 // service/setup-controller.ts
-import { existsSync as existsSync5, readFileSync as readFileSync3, realpathSync as realpathSync7, lstatSync as lstatSync7, writeFileSync as writeFileSync2, renameSync as renameSync2 } from "node:fs";
-import path7 from "node:path";
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { existsSync as existsSync5, readFileSync as readFileSync4, realpathSync as realpathSync8, lstatSync as lstatSync8, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync3, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
+import path8 from "node:path";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // service/suggestions.ts
-import { lstatSync as lstatSync6, realpathSync as realpathSync6 } from "node:fs";
-import path6 from "node:path";
-import { homedir } from "node:os";
+import { lstatSync as lstatSync7, realpathSync as realpathSync7 } from "node:fs";
+import path7 from "node:path";
+import { homedir as homedir2 } from "node:os";
 function setupSuggestions(context2) {
   return platformSecurityScope(() => suggestions(context2));
 }
@@ -27225,27 +27356,27 @@ function suggestions(context2) {
       }
     }
     const trimmed = value.replace(/\/+$/, "") || "/";
-    return path6.isAbsolute(trimmed) && path6.resolve(trimmed) === trimmed ? trimmed : null;
+    return path7.isAbsolute(trimmed) && path7.resolve(trimmed) === trimmed ? trimmed : null;
   }
   function root(override, fallback) {
-    const home = base(host.env.HOME ?? (nativeWindows ? homedir() : undefined));
-    const parent = override ? base(override) : home ? path6.join(home, fallback) : null;
+    const home = base(host.env.HOME ?? (nativeWindows ? homedir2() : undefined));
+    const parent = override ? base(override) : home ? path7.join(home, fallback) : null;
     if (!parent)
       return null;
-    const value = path6.join(parent, "opencode");
+    const value = path7.join(parent, "opencode");
     if (value.length > 4096)
       return null;
     let state2 = "candidate";
     try {
-      const stat = lstatSync6(value);
-      if (stat.isDirectory() && !stat.isSymbolicLink() && (nativeWindows ? sameWindowsDirectory(windowsPath(value), value) && isOwned(value) : host.uid !== undefined && stat.uid === host.uid && realpathSync6(value) === value))
+      const stat = lstatSync7(value);
+      if (stat.isDirectory() && !stat.isSymbolicLink() && (nativeWindows ? sameWindowsDirectory(windowsPath(value), value) && isOwned(value) : host.uid !== undefined && stat.uid === host.uid && realpathSync7(value) === value))
         state2 = "resolved";
     } catch {}
     return { value, state: state2 };
   }
   const configRoot = root(host.env.XDG_CONFIG_HOME, ".config");
   const dataRoot = root(host.env.XDG_DATA_HOME, ".local/share");
-  const storeValue = dataRoot ? path6.join(dataRoot.value, "openchamber-progress") : null;
+  const storeValue = dataRoot ? path7.join(dataRoot.value, "openchamber-progress") : null;
   return { configRoot, dataRoot, storeRoot: dataRoot && storeValue && storeValue.length <= 4096 ? { value: storeValue, state: dataRoot.state } : null };
 }
 
@@ -27260,25 +27391,30 @@ class SetupController {
   activation = "unknown";
   readonlyPayload;
   suggestionContext;
-  constructor(privateFile, readonlyPayload, legacyDefault, suggestionContext) {
-    this.bindingFile = privateFile;
+  managedEnv;
+  reviewNonce = randomUUID6();
+  managedDiagnostic;
+  constructor(privateFile, readonlyPayload, _legacyDefault, suggestionContext) {
     this.readonlyPayload = readonlyPayload;
     this.suggestionContext = suggestionContext;
-    if (lstatSync7(privateFile, { throwIfNoEntry: false })) {
+    if (typeof privateFile !== "string") {
+      this.managedEnv = { ...privateFile.env };
+      this.bindingFile = "";
+      this.refresh();
+      if (this.store && this.binding)
+        try {
+          this.establishExpectation(this.binding);
+        } catch {}
+      return;
+    }
+    this.bindingFile = privateFile;
+    if (lstatSync8(privateFile, { throwIfNoEntry: false })) {
       try {
         this.binding = readBinding(privateFile);
-        this.expectedDescriptor = digest(readFileSync3(privateFile));
+        this.expectedDescriptor = digest(readFileSync4(privateFile));
       } catch (e) {
         this.recordError(e);
         this.canPersist = false;
-      }
-    } else if (legacyDefault && existsSync5(legacyDefault)) {
-      try {
-        const b = readBinding(legacyDefault);
-        this.persist(b);
-        this.binding = b;
-      } catch (e) {
-        this.recordError(e);
       }
     }
     this.refresh();
@@ -27320,6 +27456,32 @@ class SetupController {
     this.securityUnavailable = e instanceof PlatformError && e.code === "windows-security-unavailable";
   }
   refresh() {
+    if (this.managedEnv) {
+      try {
+        const b = readManagedBinding(this.managedEnv);
+        if (!b) {
+          if (this.expectedDescriptor !== null)
+            throw new ManagedBindingError("managed-binding-modified");
+          this.close();
+          this.binding = undefined;
+          this.managedDiagnostic = undefined;
+          this.error = "binding";
+          return;
+        }
+        const descriptor = digest(readFileSync4(managedBindingFile(this.managedEnv)));
+        if (this.expectedDescriptor !== null && descriptor !== this.expectedDescriptor)
+          throw new ManagedBindingError("managed-binding-modified");
+        this.binding = b;
+        this.expectedDescriptor = descriptor;
+        this.load(b);
+        this.managedDiagnostic = undefined;
+      } catch (e) {
+        this.close();
+        this.recordError(e);
+        this.managedDiagnostic = e instanceof ManagedBindingError || e instanceof PlatformError ? e.code : storageError(e).code;
+      }
+      return;
+    }
     if (!this.binding)
       return;
     try {
@@ -27332,9 +27494,11 @@ class SetupController {
   }
   targets() {
     const b = this.binding;
-    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path7.dirname(b.database), confirmed: true } : undefined;
+    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path8.dirname(b.database), confirmed: true } : undefined;
   }
   status(includeSuggestions = false) {
+    if (this.managedEnv)
+      return this.managedStatus();
     this.refresh();
     const targets = this.targets();
     if (!targets) {
@@ -27365,6 +27529,13 @@ class SetupController {
     return base;
   }
   run(action, body) {
+    if (this.managedEnv) {
+      if (!action.startsWith("managed-"))
+        throw new SetupError("managed-action-required");
+      return this.runManaged(action, body);
+    }
+    if (action.startsWith("managed-"))
+      throw new SetupError("managed-service-required");
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new ProgressError("invalid");
     const r = body;
@@ -27391,7 +27562,7 @@ class SetupController {
     if (action === "install" || action === "update") {
       this.validateDescriptor();
       lifecycle("inspect", targets);
-      const database = path7.join(targets.storeRoot, "progress.sqlite");
+      const database = path8.join(targets.storeRoot, "progress.sqlite");
       if (existsSync5(database)) {
         const probe = new Store(database, { readOnly: true });
         try {
@@ -27403,7 +27574,7 @@ class SetupController {
     }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
-      const b = readBinding(path7.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
+      const b = readBinding(path8.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
@@ -27436,6 +27607,200 @@ class SetupController {
       this.activation = result.activation;
     return { ...this.status(), action };
   }
+  enableCapture() {
+    if (!this.managedEnv) {
+      this.run("enable", { confirmed: true });
+      return;
+    }
+    this.refresh();
+    if (!this.store || !this.binding)
+      throw new ProgressError(this.error);
+    if (!this.binding.source.verified)
+      throw new ProgressError("source-unverified");
+    const migration = this.managedMigration(this.targets());
+    if (migration !== "none" && migration !== "complete")
+      throw new SetupError("managed-migration-required");
+    this.store.setEnabled(true);
+  }
+  establishExpectation(b) {
+    const payload = this.readonlyPayload();
+    const fingerprint = activationFingerprint({ ...b, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance));
+    const prior = readManagedExpectation(b);
+    if (prior?.version === payload.version && prior.fingerprint === fingerprint)
+      return;
+    writeManagedExpectation(b, { format: 1, storeId: b.storeId, sourceId: b.source.id, installId: b.installId, version: payload.version, fingerprint });
+  }
+  managedMigration(targets) {
+    try {
+      return lifecycle("inspect", targets).installed ? "available" : "none";
+    } catch {
+      return "conflict";
+    }
+  }
+  managedStatus() {
+    this.refresh();
+    const b = this.binding, targets = this.targets();
+    const base = {
+      configured: !!b,
+      verified: !!this.store && !!b?.source.verified,
+      installed: false,
+      captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : null,
+      targets: targets ? { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot } : null,
+      version: null,
+      activation: "unknown",
+      separateLifecycle: false,
+      historyRetained: true,
+      diagnostics: this.managedDiagnostic ? [this.managedDiagnostic] : [],
+      delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: targets ? this.managedMigration(targets) : "none", mode: "unknown", observation: "unknown", expectedVersion: null }
+    };
+    if (this.store && b) {
+      base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
+      try {
+        const expected = readManagedExpectation(b);
+        if (expected) {
+          base.delivery.expectedVersion = expected.version;
+          base.version = expected.version;
+          const loaded = this.store.loadedFingerprint(b.source.id, b.installId);
+          base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
+        }
+      } catch {
+        base.diagnostics.push("managed-expectation-unavailable");
+      }
+    }
+    return base;
+  }
+  managedCandidate(storeRoot) {
+    const env = this.managedEnv, roots = managedSourceRoots(env), file2 = managedBindingFile(env), b = readManagedBinding(env);
+    if (this.expectedDescriptor !== null && (!b || digest(readFileSync4(file2)) !== this.expectedDescriptor))
+      throw new ManagedBindingError("managed-binding-modified");
+    const selected = managedPath(storeRoot ?? (b ? path8.dirname(b.database) : path8.join(roots.dataRoot, "openchamber-progress")), true);
+    if ([roots.configRoot, roots.dataRoot, path8.dirname(file2)].includes(selected))
+      throw new SetupError("managed-selection-conflict");
+    const targets = { ...roots, storeRoot: selected, confirmed: true };
+    const legacy = lifecycle("inspect", targets);
+    if (lstatSync8(selected, { throwIfNoEntry: false }) && !isOwned(selected))
+      throw new SetupError("store-permissions");
+    if (b && path8.dirname(b.database) !== selected)
+      throw new SetupError("managed-selection-conflict");
+    let storeId = null, sourceId = null, sources = [], enabled = null;
+    const database = path8.join(selected, "progress.sqlite");
+    if (lstatSync8(database, { throwIfNoEntry: false })) {
+      const store = new Store(database, { readOnly: true });
+      try {
+        store.subagentRunStorage();
+        if (b)
+          verifyStore(store, b);
+        const e = store.list({ limit: 1 });
+        storeId = e.storeId;
+        sources = e.sources;
+        enabled = e.captureEnabled;
+        const matches = e.sources.filter((s) => s.configRoot === roots.configRoot && s.dataRoot === roots.dataRoot);
+        if (matches.length > 1 || matches.some((s) => !s.verified))
+          throw new SetupError("managed-source-conflict");
+        sourceId = matches[0]?.id ?? null;
+      } finally {
+        store.close();
+      }
+    } else if (b)
+      throw new ProgressError("storage");
+    const identity3 = (p) => {
+      const s = lstatSync8(p, { throwIfNoEntry: false });
+      return s ? [s.dev, s.ino, s.mode, s.uid] : null;
+    };
+    const expected = digest(JSON.stringify({
+      nonce: this.reviewNonce,
+      targets,
+      descriptor: b ? digest(readFileSync4(file2)) : null,
+      descriptorObject: identity3(file2),
+      storeObject: identity3(database),
+      rootObject: identity3(selected),
+      storeId,
+      sourceId,
+      sources,
+      enabled,
+      legacy: legacy.installed ? { fingerprint: legacy.fingerprint, ownership: digest(readFileSync4(path8.join(roots.configRoot, "plugins/agent-progress/.ownership.json"))) } : null
+    }));
+    return { review: { expected, targets: { ...roots, storeRoot: selected }, storeId, sourceId }, binding: b, targets };
+  }
+  runManaged(action, body) {
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      throw new ProgressError("invalid");
+    const r = body;
+    if (!Object.keys(r).every((k) => ["storeRoot", "confirmed", "expected"].includes(k)) || r.storeRoot !== undefined && (typeof r.storeRoot !== "string" || !r.storeRoot.length || r.storeRoot.length > 4096) || r.confirmed !== undefined && typeof r.confirmed !== "boolean" || r.expected !== undefined && (typeof r.expected !== "string" || !/^[a-f0-9]{64}$/.test(r.expected)))
+      throw new ProgressError("invalid");
+    const candidate2 = this.managedCandidate(r.storeRoot);
+    if (action === "managed-inspect") {
+      if (r.confirmed !== undefined || r.expected !== undefined)
+        throw new ProgressError("invalid");
+      const status = this.managedStatus();
+      status.delivery.review = candidate2.review;
+      status.delivery.migration = this.managedMigration(candidate2.targets);
+      return { ...status, action };
+    }
+    if (r.confirmed !== true)
+      throw new SetupError("confirmation-required");
+    if (r.expected !== candidate2.review.expected)
+      throw new SetupError("managed-review-stale");
+    if (action === "managed-migrate")
+      throw new SetupError("managed-migration-required");
+    if (!["managed-configure", "managed-enable", "managed-disable"].includes(action))
+      throw new ProgressError("invalid");
+    if (action !== "managed-disable" && this.managedMigration(candidate2.targets) !== "none")
+      throw new SetupError("managed-migration-required");
+    if (action === "managed-enable" || action === "managed-disable") {
+      this.refresh();
+      if (!this.store || !this.binding)
+        throw new ProgressError(this.error);
+      this.store.setEnabled(action === "managed-enable");
+      return { ...this.managedStatus(), action };
+    }
+    if (candidate2.binding)
+      return { ...this.managedStatus(), action };
+    const file2 = createManagedBindingDirectory(this.managedEnv);
+    const lock = path8.join(path8.dirname(file2), ".configuration-lock");
+    let locked = false;
+    try {
+      try {
+        closeSync4(openSync4(lock, "wx", 384));
+        locked = true;
+      } catch (e) {
+        if (e.code === "EEXIST")
+          throw new SetupError("managed-configuration-busy");
+        throw e;
+      }
+      if (readManagedBinding(this.managedEnv))
+        throw new SetupError("managed-review-stale");
+      const latest = this.managedCandidate(r.storeRoot);
+      if (latest.review.expected !== candidate2.review.expected)
+        throw new SetupError("managed-review-stale");
+      const { targets } = candidate2;
+      if (!lstatSync8(targets.storeRoot, { throwIfNoEntry: false }))
+        privateDirectory(targets.storeRoot, true);
+      if (!isOwned(targets.storeRoot) || !privatePaths([targets.storeRoot]))
+        throw new SetupError("store-permissions");
+      const store = new Store(path8.join(targets.storeRoot, "progress.sqlite"), { create: true });
+      let b;
+      try {
+        store.subagentRunStorage();
+        const e = store.list({ limit: 1 });
+        const source = e.sources.find((s) => s.id === candidate2.review.sourceId) ?? { id: randomUUID6(), ...managedSourceRoots(this.managedEnv), verified: true };
+        store.registerSource(source);
+        b = { protocolVersion: 2, schemaVersion: 2, installId: `managed-${digest(JSON.stringify([e.storeId, source]))}`, version: this.readonlyPayload().version, database: store.file, storeId: e.storeId, source };
+        verifyStore(store, b);
+        this.establishExpectation(b);
+        publishPrivateJson(file2, b);
+      } finally {
+        store.close();
+      }
+      this.refresh();
+      return { ...this.managedStatus(), action };
+    } finally {
+      if (locked) {
+        unlinkSync3(lock);
+        syncDirectory(path8.dirname(file2));
+      }
+    }
+  }
   validateDescriptor() {
     try {
       return platformSecurityScope(() => this.validateDescriptorInner());
@@ -27446,80 +27811,30 @@ class SetupController {
   validateDescriptorInner() {
     if (!this.canPersist)
       throw new SetupError("service-binding-collision");
-    const parent = path7.dirname(this.bindingFile);
-    if (!lstatSync7(parent).isDirectory() || !windows && realpathSync7(parent) !== parent)
+    const parent = path8.dirname(this.bindingFile);
+    if (!lstatSync8(parent).isDirectory() || !windows && realpathSync8(parent) !== parent)
       throw new SetupError("service-binding-collision");
     if (windows && (!sameWindowsDirectory(windowsPath(parent), parent) || !privatePaths([parent])))
       throw new SetupError("service-binding-collision");
-    const stat = lstatSync7(this.bindingFile, { throwIfNoEntry: false });
+    const stat = lstatSync8(this.bindingFile, { throwIfNoEntry: false });
     if (stat) {
       if (windows && (!sameWindowsObject(windowsPath(this.bindingFile), this.bindingFile) || !privatePaths([this.bindingFile])))
         throw new SetupError("service-binding-modified");
-      if (stat.isSymbolicLink() || this.expectedDescriptor === null || digest(readFileSync3(this.bindingFile)) !== this.expectedDescriptor)
+      if (stat.isSymbolicLink() || this.expectedDescriptor === null || digest(readFileSync4(this.bindingFile)) !== this.expectedDescriptor)
         throw new SetupError("service-binding-modified");
     } else if (this.expectedDescriptor !== null)
       throw new SetupError("service-binding-modified");
   }
   persist(b) {
     this.validateDescriptor();
-    const file2 = `${this.bindingFile}.stage-${randomUUID5()}`;
+    const file2 = `${this.bindingFile}.stage-${randomUUID6()}`;
     const text2 = JSON.stringify(b);
-    writeFileSync2(file2, text2, { mode: 384, flag: "wx" });
+    writeFileSync3(file2, text2, { mode: 384, flag: "wx" });
     syncFile(file2);
-    renameSync2(file2, this.bindingFile);
-    syncDirectory(path7.dirname(file2));
+    renameSync3(file2, this.bindingFile);
+    syncDirectory(path8.dirname(file2));
     this.expectedDescriptor = digest(text2);
   }
-}
-
-// service/state.ts
-import { existsSync as existsSync6, lstatSync as lstatSync8, realpathSync as realpathSync8, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import path8 from "node:path";
-function serviceBindingFile(env = process.env) {
-  try {
-    return platformSecurityScope(() => serviceBindingFileInner(env));
-  } catch (e) {
-    throw e instanceof PlatformError ? new SetupError(e.code) : e;
-  }
-}
-function serviceBindingFileInner(env) {
-  let base = env.XDG_STATE_HOME || path8.join(env.HOME || homedir2(), ".local/state");
-  if (windows)
-    base = windowsPath(base, true);
-  if (!path8.isAbsolute(base) || path8.resolve(base) !== base)
-    throw new SetupError("service-binding-collision");
-  const root = path8.join(base, "agent-progress-service");
-  let existing = root;
-  while (!existsSync6(existing))
-    existing = path8.dirname(existing);
-  if (windows ? !sameWindowsDirectory(existing, realpathSync8(existing)) : realpathSync8(existing) !== existing)
-    throw new SetupError("service-binding-collision");
-  const marker = path8.join(root, ".ownership.json");
-  const identity3 = '{"product":"openchamber-agent-progress-service","format":1}';
-  if (!existsSync6(root)) {
-    if (windows) {
-      if (!existsSync6(base))
-        privateDirectory(base, true);
-      privateDirectory(root);
-    } else {
-      mkdirSync3(base, { recursive: true, mode: 448 });
-      mkdirSync3(root, { mode: 448 });
-    }
-    writeFileSync3(marker, identity3, { mode: 384, flag: "wx" });
-    syncFile(marker);
-    syncDirectory(root);
-    syncDirectory(base);
-  }
-  const owned2 = lstatSync8(root);
-  if (!owned2.isDirectory() || owned2.isSymbolicLink() || !windows && (owned2.uid !== process.getuid?.() || (owned2.mode & 511) !== 448) || !existsSync6(marker))
-    throw new SetupError("service-binding-collision");
-  if (windows && (!sameWindowsDirectory(windowsPath(root), root) || !sameWindowsObject(windowsPath(marker), marker) || !privatePaths([root, marker])))
-    throw new SetupError("service-binding-collision");
-  const m = lstatSync8(marker);
-  if (!m.isFile() || m.isSymbolicLink() || !windows && (m.uid !== process.getuid?.() || (m.mode & 511) !== 384) || readFileSync4(marker, "utf8") !== identity3)
-    throw new SetupError("service-binding-collision");
-  return path8.join(root, "progress-binding.json");
 }
 
 // service/main.ts
@@ -27529,9 +27844,7 @@ try {
   const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
   if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
     throw new Error;
-  const legacy = fileURLToPath2(new URL("./progress-binding.json", import.meta.url));
-  const bindingFile = process.env.AGENT_PROGRESS_BINDING ?? serviceBindingFile();
-  setup = new SetupController(bindingFile, () => ({ plugin: readFileSync5(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync5(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync5(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }), process.env.AGENT_PROGRESS_BINDING ? undefined : legacy);
+  setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync5(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync5(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync5(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
   const server = createProgressServer(undefined, token, undefined, setup);
   server.on("error", () => {
     setup?.close();

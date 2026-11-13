@@ -9,6 +9,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared/progress.ts';
 import { Store, storageError } from '../shared/store.ts';
 import { SetupError, type Action } from '../setup/lifecycle.ts';
+import { ManagedBindingError } from '../shared/managed-binding.ts';
+import type { ManagedSetupAction } from '../shared/progress.ts';
 import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
 import { blockedTiming } from './blocked-timing.ts';
@@ -106,12 +108,12 @@ export function createProgressServer(store: Store | undefined, token: string, un
           return answer(200,setup.status(true));
         }
         const action=url.pathname.slice('/v1/setup/'.length);
-        if(!['inspect','install','update','disable','enable','remove-capture'].includes(action))return answer(404,{error:'not-found'});
+        if(!['inspect','install','update','disable','enable','remove-capture','managed-inspect','managed-configure','managed-migrate','managed-enable','managed-disable'].includes(action))return answer(404,{error:'not-found'});
         if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
         let size=0;const chunks:Buffer[]=[];
         for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
         let body:unknown;try{const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));body=text?JSON.parse(text):{};}catch{throw new ProgressError('invalid');}
-        return answer(200,setup.run(action as Action,body));
+        return answer(200,setup.run(action as Action|ManagedSetupAction,body));
       }
       if (req.headers['content-length'] && req.headers['content-length'] !== '0' || req.headers['transfer-encoding']) return answer(400,{error:'body-not-allowed'});
       const active=setup?setup.current():{store,error:unavailableCode};const currentStore=active.store;
@@ -119,7 +121,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if (req.method !== 'POST') return answer(405,{error:'method-not-allowed'});
         if (url.search) return answer(404,{error:'not-found'});
         if(!currentStore)return answer(503,{error:active.error??'storage'});
-        if(setup&&url.pathname.endsWith('/enable')){setup.run('enable',{confirmed:true});return answer(200,{ok:true,captureEnabled:true});}
+        if(setup&&url.pathname.endsWith('/enable')){setup.enableCapture();return answer(200,{ok:true,captureEnabled:true});}
         currentStore.setEnabled(url.pathname.endsWith('/enable')); return answer(200,{ok:true,captureEnabled:url.pathname.endsWith('/enable')});
       }
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
@@ -180,6 +182,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
     } catch (e) {
+      if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
       if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});

@@ -10,6 +10,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { serviceBindingFile } from '../../service/state.ts';
 import { Store } from '../../shared/store.ts';
+import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
 
 function fixture() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-backend-reassembly-');
@@ -19,12 +20,18 @@ function fixture() {
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
   const env={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:`${root}/home`,XDG_STATE_HOME:`${root}/state`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`};
   const payload={plugin:readFileSync(`${root}/compiled/companion/index.js`,'utf8'),guidance:readFileSync('plugin/SKILL.md','utf8'),removal:readFileSync(`${root}/compiled/setup/main.js`,'utf8'),version:JSON.parse(readFileSync('package.json','utf8')).version};
+  // Legacy utility/controller regressions inject their selector explicitly. Production main
+  // no longer accepts this environment or package-adoption authority.
+  createManagedBindingDirectory(env);
+  const fixtureEntry=`import {readFileSync} from 'node:fs';import {createProgressServer} from ${JSON.stringify(path.resolve('service/server.ts'))};import {SetupController} from ${JSON.stringify(path.resolve('service/setup-controller.ts'))};const setup=new SetupController(${JSON.stringify(serviceBindingFile(env))},()=>({...JSON.parse(readFileSync(${JSON.stringify(root+'/payload.json')},'utf8')),plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8')}));const server=createProgressServer(undefined,process.env.OPENCHAMBER_SERVICE_TOKEN,undefined,setup);server.listen(Number(process.env.OPENCHAMBER_SERVICE_PORT),'127.0.0.1');process.on('SIGTERM',()=>server.close(()=>{setup.close();process.exit(0)}));`;
+  writeFileSync(`${root}/legacy-service.ts`,fixtureEntry);writeFileSync(`${root}/payload.json`,JSON.stringify(payload));
+  assert.equal(spawnSync('bun',['build',`${root}/legacy-service.ts`,'--target=node','--format=esm',`--outfile=${root}/compiled/service/legacy-fixture.js`],{stdio:'ignore'}).status,0);
   return {root,targets,env,payload,clean(){rmSync(root,{recursive:true,force:true});}};
 }
-async function serve(f:ReturnType<typeof fixture>) {
+async function serve(f:ReturnType<typeof fixture>,legacyFixture=true) {
   const extension=`${f.root}/extension`;mkdirSync(extension,{recursive:true});cpSync(`${f.root}/compiled`,`${extension}/build`,{recursive:true});writeFileSync(`${extension}/package.json`,'{"type":"module"}');
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(resolve=>reservation.close(()=>resolve()));
-  const child=spawn(process.execPath,[`${extension}/build/service/main.js`],{env:{...f.env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
+  const child=spawn(process.execPath,[`${extension}/build/service/${legacyFixture?'legacy-fixture':'main'}.js`],{env:{...f.env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'fixture-only'},stdio:'ignore'});
   let spawnError=false;child.once('error',()=>{spawnError=true;});
   const request=(route:string,body?:unknown)=>fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(2000)});
   async function stop(){if(child.exitCode===null&&!child.signalCode){const exit=once(child,'exit');child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}}
@@ -33,11 +40,31 @@ async function serve(f:ReturnType<typeof fixture>) {
 test('extension replacement preserves authoritative binding, configured views and store identity',async()=>{
   const f=fixture();let running:Awaited<ReturnType<typeof serve>>|undefined;
   try {
-    running=await serve(f);assert.equal((await running.request('/v1/setup/install',f.targets)).status,200);
+    running=await serve(f,false);
+    const reviewed=await(await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).json();
+    assert.equal((await running.request('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:reviewed.delivery.review.expected})).status,200);
     const first=await(await running.request('/v1/plans')).json();await running.stop();rmSync(running.extension,{recursive:true});
-    running=await serve(f);const health=await(await running.request('/health')).json();assert.equal(health.ready,true);
-    const setup=await(await running.request('/v1/setup')).json();assert.equal(setup.configured,true);assert.equal(setup.installed,true);assert.deepEqual(setup.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
+    running=await serve(f,false);const health=await(await running.request('/health')).json();assert.equal(health.ready,true);
+    const setup=await(await running.request('/v1/setup')).json();assert.equal(setup.configured,true);assert.equal(setup.installed,false);assert.equal(setup.delivery.kind,'managed');assert.deepEqual(setup.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
     assert.equal((await(await running.request('/v1/plans')).json()).storeId,first.storeId);
+  }finally{await running?.stop();f.clean();}
+});
+test('production entry ignores package/env selectors and keeps invalid XDG diagnostics reachable',async()=>{
+  const f=fixture();let running:Awaited<ReturnType<typeof serve>>|undefined;
+  try {
+    lifecycle('install',f.targets,f.payload);
+    const legacy=`${f.targets.configRoot}/plugins/agent-progress/progress-binding.json`;
+    cpSync(legacy,`${f.root}/compiled/service/progress-binding.json`);
+    Object.assign(f.env,{AGENT_PROGRESS_BINDING:legacy});
+    running=await serve(f,false);
+    let status=await(await running.request('/v1/setup')).json();
+    assert.equal(status.configured,false);assert.equal(status.delivery.configuration,'unconfigured');
+    assert.equal((await running.request('/v1/plans')).status,503);
+    await running.stop();rmSync(running.extension,{recursive:true});
+    f.env.XDG_DATA_HOME='relative';running=await serve(f,false);
+    const health=await(await running.request('/health')).json();assert.equal(health.ready,false);
+    status=await(await running.request('/v1/setup')).json();assert.equal(status.delivery.configuration,'invalid');
+    assert.ok(status.diagnostics.includes('managed-path-unverified'));
   }finally{await running?.stop();f.clean();}
 });
 test('reload pending survives restart, clears only after loaded tool observation and renews on changed same-version files',()=>{
@@ -69,17 +96,17 @@ test('shared store second-source first inspect ignores other-source payloads but
     assert.equal(lifecycle('inspect',f.targets).diagnostics.includes('unreferenced-payloads-retained'),true);
   }finally{f.clean();}
 });
-test('stable descriptor adopts legacy once, ignores later defaults and refuses foreign/modified/symlink state',()=>{
+test('explicit fixture selector never adopts a legacy default and refuses foreign/modified/symlink state',()=>{
   const f=fixture();try {
     lifecycle('install',f.targets,f.payload);const legacy=`${f.root}/legacy.json`;cpSync(`${f.targets.configRoot}/plugins/agent-progress/progress-binding.json`,legacy);
     const binding=serviceBindingFile(f.env);let setup=new SetupController(binding,()=>f.payload,legacy);
-    assert.equal(setup.status().configured,true);setup.close();writeFileSync(legacy,'foreign legacy default');
+    assert.equal(setup.status().configured,false);setup.close();cpSync(legacy,binding);writeFileSync(legacy,'foreign legacy default');
     setup=new SetupController(binding,()=>f.payload,legacy);assert.equal(setup.status().configured,true);
     writeFileSync(binding,'user modified');assert.throws(()=>setup.run('update',f.targets),/service-binding-modified/);assert.equal(readFileSync(binding,'utf8'),'user modified');setup.close();
     setup=new SetupController(binding,()=>f.payload,legacy);assert.throws(()=>setup.run('update',f.targets),/service-binding-collision/);setup.close();
     rmSync(binding);symlinkSync(`${f.root}/missing-foreign-file`,binding);
     setup=new SetupController(binding,()=>f.payload,legacy);assert.throws(()=>setup.run('update',f.targets),/service-binding-collision/);setup.close();assert.equal(readlinkSync(binding),`${f.root}/missing-foreign-file`);
-    writeFileSync(path.join(path.dirname(binding),'.ownership.json'),'foreign owner');assert.throws(()=>serviceBindingFile(f.env),/service-binding-collision/);
+    writeFileSync(path.join(path.dirname(binding),'.ownership.json'),'foreign owner');assert.throws(()=>serviceBindingFile(f.env),/managed-binding-invalid/);
   }finally{f.clean();}
 });
 

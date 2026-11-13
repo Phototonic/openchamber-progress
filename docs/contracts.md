@@ -1204,6 +1204,137 @@ the current file remains unverified. Age alone does not establish a mismatch.
 
 ## Frozen setup/control routes
 
+### Managed delivery revision 1
+
+The production service uses the following discriminated `SetupRead.delivery` seam.
+Absence, a different `kind`, or an unknown revision means legacy/unsupported:
+guests must not infer managed activation or send managed mutations. `installed`
+and an old `separateLifecycle:true` reply are not managed-delivery evidence.
+
+```ts
+interface ManagedDelivery {
+  kind: 'managed'; revision: 1;
+  configuration: 'unconfigured' | 'configured' | 'invalid';
+  migration: 'none' | 'available' | 'conflict' | 'pending' | 'complete';
+  mode: 'unknown';
+  observation: 'unknown' | 'not-observed' | 'matching' | 'different';
+  expectedVersion: string | null;
+  review?: {
+    expected: string;
+    targets: { configRoot: string; dataRoot: string; storeRoot: string };
+    storeId: string | null; sourceId: string | null;
+  };
+}
+```
+
+Managed replies set `separateLifecycle:false`, `historyRetained:true`, and do not
+reuse `installed`, `update`, or legacy activation strings to claim managed host
+approval, effective tool inventory or live delivery mode. `mode:unknown` requires
+conditional watched-file versus restart-dependent fallback copy. `verified`
+describes validated explicit source selection, not a service-side proof of the
+active OpenCode runtime. The companion independently verifies its actual scope.
+`reportingIdentity` remains absent until the Store/source association verifies.
+
+Both consumers use `managedBindingFile` / `readManagedBinding` in
+`shared/managed-binding.ts`. The only descriptor is
+`<canonical OpenCode dataRoot>/agent-progress-managed/progress-binding.json`.
+`XDG_DATA_HOME` plus `opencode`, or HOME/homedir plus `.local/share/opencode`
+**only when XDG data is absent**, determines that root. Explicit invalid XDG is
+an error. Config roots use the corresponding XDG config/HOME rule. State roots,
+`AGENT_PROGRESS_BINDING`, package siblings, project folders and legacy selectors
+never select managed authority. `OPENCODE_DB` and `OPENCODE_CONFIG_DIR` are
+unsupported effective scopes; no search, fallback, automatic adoption or repair.
+The owned 0700 product directory and exact 0600 `.ownership.json` marker, private
+descriptor, canonical non-symlink roots, owner, Windows ACL/object checks,
+`readBinding`, Store schema and `verifyStore` all remain required.
+
+Absent discovery is `unconfigured`; present unsafe/invalid/unsupported state is
+`invalid` and cannot authorize writes. Opening/status/inspect creates no product
+directory, marker, binding or Store. Health stays reachable with
+`200/ready:false`; unavailable Store-backed reads keep fixed 503 errors. Valid
+retained descriptors keep their known targets while Store availability is lost.
+
+Authenticated POST `/v1/setup/managed-inspect` accepts only `{storeRoot?:string}`.
+It resolves and validates the managed source roots and the explicit store (default
+`<dataRoot>/openchamber-progress`), without writes, and returns a review. `expected`
+is an opaque 64-hex consent identity, not an authentication token. It binds this
+service generation, canonical targets, current descriptor/object identity,
+Store/source identity and control state, and validated legacy ownership/bytes.
+It is not a progress revision or a host grant. A service restart invalidates it.
+
+Fixed mutation actions are `managed-configure`, `managed-enable`,
+`managed-disable`, and `managed-migrate`, at the same route prefix. They accept
+only `{storeRoot?:string, confirmed:true, expected:string}` and revalidate the
+review immediately before side effects. The UI must review private-store/source
+selection, code privileges and conditional lifecycle before confirmation; preserve
+custom-store edits across failures/cancellation. No executable bytes, descriptor
+filename, URL, command, SQL, arbitrary config/data roots or download is accepted.
+
+Configuration reuses an unambiguous verified same-scope retained source and its
+Store/history without resetting or enabling it. Unrelated sources do not become
+authority; a conflicting/unverified source refuses. A configured different store
+cannot be selected by this action. Publication is atomic and no-clobber. A private
+configuration lock serializes competing confirmations; a crash-retained lock is a
+fixed busy refusal, never permission to delete unknown staging or take over.
+Duplicate old confirmations safely refuse as stale, without another source or
+selector overwrite. Valid legacy discovery is only a migration proposal:
+configuration cannot remove/adopt it or bypass the single confirmed migration.
+
+Migration states are frozen for the lifecycle/UI consumers: `none` means no
+validated legacy candidate; `available` means a validated candidate requiring the
+explicit switch; `conflict` means unsafe ownership/identity; `pending` means a
+durable same-target interrupted switch with capture off; `complete` means removal
+and private selection persisted, **not** matching managed-load evidence. The
+`managed-migrate` action is reserved for the lifecycle implementation; until that
+owner implements the sequence it refuses `managed-migration-required`. Pending
+recovery must revalidate the same reviewed target, never auto-enable or restore a
+global loader. New setup must not claim managed activation while legacy remains.
+
+Setup errors are fixed `{error:code}`: malformed/unknown fields and missing
+confirmation 400 (`invalid` / `confirmation-required`); stale/duplicate consent
+409 `managed-review-stale`; different configured store or a store that is the
+OpenCode config/data root or binding directory itself 409
+`managed-selection-conflict`; unverified/conflicting retained source 409
+`managed-source-conflict`; legacy switch required 409
+`managed-migration-required`; concurrent/crash-retained lock 409
+`managed-configuration-busy`. Lifecycle-owned migration additionally reserves
+409 `managed-migration-conflict` for same-target/ownership refusal before switch
+effects, and 409 `managed-migration-pending` for interrupted capture-off recovery.
+These are setup errors, not additions to the report-tool `Code` union. Invalid
+private discovery returns 409
+`managed-binding-invalid`; invalid canonical root 409 `managed-path-unverified`;
+changed/disappeared admitted selector 409 `managed-binding-modified`;
+unsupported overrides 409 `managed-scope-unsupported`. Legacy mutations against
+the production controller refuse 409 `managed-action-required`; managed actions
+against an explicitly injected legacy fixture refuse `managed-service-required`.
+Existing schema/binding/busy/corrupt/storage errors retain their 503 semantics;
+existing bounded bodies, auth, method and query checks remain unchanged.
+
+Managed capture enable requires the valid verified managed binding and refuses a
+legacy conflict, not executable ownership in a global package. The existing
+no-body capture-disable route keeps its verified-Store safety fallback. Neither
+route edits report/task facts. Managed enable/disable setup actions also require
+the reviewed identity and confirmation above.
+
+`managed-expectation.json` is a private 0600 sidecar in the verified Store
+directory, with format 1, Store/source/managed-install identity, version and
+activation fingerprint. Configuration and one newly admitted service package
+generation may establish it; GET/status never rewrite the baseline. Existing
+invalid metadata is not overwritten. Missing/unreadable expectation is `unknown`;
+a valid baseline with no scoped loaded observation is `not-observed`; matching
+latest bytes are `matching`; unequal bytes are `different` (warning only).
+Fingerprint comparison uses the runtime release version, plugin/guidance bytes
+and binding, not the legacy descriptor version. Managed install identities are
+distinct from legacy IDs. No protocol/schema/run-format change is introduced.
+None of these observations prove publisher authenticity, exact importer execution,
+host grant, current session tool inventory, recent activity or completion. Support
+summaries must omit fingerprints, paths, IDs, consent tokens and raw errors.
+
+### Legacy setup/control compatibility
+
+The following contract describes retained standalone lifecycle utilities and
+explicit test injection, not the production managed service's configuration path.
+
 `GET /v1/setup` -> SetupRead from shared/progress.ts:
 configured, verified, installed, captureEnabled(boolean|null), targets({configRoot,
 dataRoot,storeRoot}|null), version(string|null), activation, separateLifecycle=true,
@@ -1317,9 +1448,9 @@ or unverified targets,409 for ownership/collision/modified payload); malformed
 body400, request above16,384 bytes413, store errors503. Unknown query/path404.
 Missing binding is an explicit setup state. The service persists only its owned
 descriptor after install; a foreign/modified descriptor is never overwritten.
-The default authoritative descriptor is in product-owned XDG state outside the
-extension package. A valid legacy in-package descriptor is a migration/default
-only when stable state is absent; stable state always wins. See docs/setup.md.
+Older services used a product-owned XDG-state selector outside the package. The
+managed service neither reads that selector nor auto-adopts an in-package default.
+Retained legacy selection is an explicit migration input only. See docs/setup.md.
 
 Configured store availability is independent of descriptor ownership. A valid
 descriptor with an unreadable store remains configured=true with retained targets,
