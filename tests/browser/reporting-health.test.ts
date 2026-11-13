@@ -6,6 +6,7 @@ import { createProgressServer } from '../../service/server.ts';
 import { readList } from '../../ui/shared/source.ts';
 import { parseSetup } from '../../ui/shared/adapter.ts';
 import { ReportingHealth, setupFacts, supportSummary, type HealthClaim } from '../../ui/shared/reporting-health.ts';
+import { managedCopy } from '../../ui/shared/managed-copy.ts';
 
 async function fixture(){
  const f=captureFixture();f.record('private-document-sentinel');const request=f.request();
@@ -46,6 +47,19 @@ test('managed load, capture and delivery stay independent and support output exc
  assert.equal(facts({observation:'not-observed'}).loaded,'not-observed');
  assert.equal(facts({revision:2}).installation,'legacy-unsupported');assert.equal(facts({revision:2}).loaded,'unknown');
  assert.doesNotMatch(supportSummary(facts()),/private|aaaa|\//);
+});
+test('managed update/load explanations retain bilingual observation and conditional restart boundaries', () => {
+  for (const locale of ['en', 'ru']) {
+    const text = managedCopy(locale);
+    assert.ok(text.unknown && text.missing && text.matching && text.different);
+    assert.match(text.observation, /OpenChamber/); assert.match(text.observation, /OPENCODE_CONFIG/);
+    assert.match(text.observation, /OpenCode/);
+    assert.match(text.observation, locale === 'en' ? /watched managed file can reload/ : /отслеживаемый управляемый файл может перезагрузиться/);
+    assert.match(text.observation, locale === 'en' ? /does not prove.*every running session/ : /не доказывает.*всеми работающими сессиями/);
+    assert.match(text.warning, locale === 'en' ? /does not block reporting/ : /не блокирует отчёты/);
+    assert.match(text.observation, locale === 'en' ? /Nothing is restarted here/ : /ничего не перезапускается/);
+    assert.match(text.switchEffect, locale === 'en' ? /legacy.*explicit reload/ : /старым копиям.*явная перезагрузка/);
+  }
 });
 test('copy state translates at presentation time without another check or changing support bytes', async()=>{
   const x=await fixture();try{

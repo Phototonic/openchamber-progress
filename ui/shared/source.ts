@@ -8,11 +8,11 @@ import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shar
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseDocumentPage, parseExtensionUpdate, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
 } from './adapter.ts';
-import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, OfficialMainView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
+import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
   serviceRequest(request: GuestRequest): Promise<GuestRequestResult>;
@@ -323,14 +323,6 @@ export async function setupCall(host: ServiceHost, action: SetupAction | null, t
     const failure = classify(error);
     return { ok: false, code: failure.code, failure };
   }
-}
-
-/**
- * What official main advertises, or null when that is unknown: an older service without the route
- * (404), a failed request or an unreadable reply. Never a progress or setup failure.
- */
-export async function readExtensionUpdate(host: ServiceHost): Promise<OfficialMainView | null> {
-  try { return parseExtensionUpdate(await call(host, ROUTES.extensionUpdate)); } catch { return null; }
 }
 
 export type CaptureRead<T> = { ok: true; value: T } | { ok: false; failure: ReadFailure };

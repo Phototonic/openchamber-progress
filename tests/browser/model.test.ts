@@ -5,7 +5,7 @@ import { sessionLabel } from '../../ui/shared/live.ts';
 import { searchFilterOptions } from '../../ui/shared/scope.ts';
 import type { GuestRequest } from '@openchamber/sdk';
 import { countItems } from '../../shared/progress.ts';
-import { parseExtensionUpdate, parseHealth, parsePlanPage, parsePlansPage, parseSetup, parseTiming, setupBody } from '../../ui/shared/adapter.ts';
+import { parseHealth, parsePlanPage, parsePlansPage, parseSetup, parseTiming, setupBody } from '../../ui/shared/adapter.ts';
 import { elapsedText, relativeAge } from '../../ui/shared/format.ts';
 import { canOpen, coverageFor, EMPTY_LIVE, liveLabel, LiveWorkspace, type LiveSession, type LiveSnapshot } from '../../ui/shared/live.ts';
 import { currentWork, elapsedAt, itemTree, participants, showsLiveness, summarize, summaryText, type PlanDetail } from '../../ui/shared/model.ts';
@@ -13,9 +13,13 @@ import { RecentMemory, RefreshGate } from '../../ui/shared/refresh.ts';
 import { ALL, applyFilters, contextListScope, contextScope, coverageGap, filterOptions, NO_FILTERS, normalizeFilters, pageListScope, pickPlan, placeOf } from '../../ui/shared/scope.ts';
 import { CSS } from '../../ui/shared/style.ts';
 import { MAP_CSS } from '../../ui/shared/dependency-map-style.ts';
-import { classify, readDetail, readDocument, readExtensionUpdate, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
-import { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } from '../../ui/shared/official.ts';
-import { OFFICIAL_MAIN_URL } from '../../ui/shared/config.ts';
+import { classify, readDetail, readDocument, readHistory, readList, setupCall, type ServiceHost } from '../../ui/shared/source.ts';
+import { oldUpdateModule } from '../fixtures/pre-retirement-updates.ts';
+// Historical consumer behavior only; none of these owners ship in current guests.
+const { parseExtensionUpdate } = oldUpdateModule('adapter.ts');
+const { readExtensionUpdate } = oldUpdateModule('source.ts');
+const { OFFICIAL_MAIN_HOWTO, OfficialMainState, officialMainLine, officialMainNotice, officialMainText } = oldUpdateModule('official.ts');
+const { OFFICIAL_MAIN_URL } = oldUpdateModule('config.ts');
 import { absoluteSetupPath, applySuggestions, bundledComparison, captureOffNote, deriveStore, fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupPhase, updateNotice } from '../../ui/shared/setup.ts';
 import {
   DOCUMENT_TEXT, envelope, HEALTH, HEALTH_UNCONFIGURED, NOW, OTHER_SRC, P1, P1_ITEMS, P2, P3, planPage, plansPage, RELAY, S, setupRead, SRC, summary, X1,

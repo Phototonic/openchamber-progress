@@ -3,7 +3,6 @@ import { javascriptLiteral } from '../shared/javascript-literal.ts';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,chmodSync} from 'node:fs';
 import path from 'node:path';
-import http from 'node:http';
 import {createServer} from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -18,24 +17,17 @@ import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
 const extension=path.resolve(process.argv[2]!);assert.ok(process.argv[2]);
 const manifest=JSON.parse(readFileSync(`${extension}/package.json`,'utf8'));
 assert.equal(manifest.version,RELEASE);
-const [major,minor,patch]=RELEASE.split('.').map(Number);
-const futureVersion=`${major}.${minor}.${patch!+1}`;
 const root=mkdtempSync('/tmp/opencode/agent-progress-live-package-');
 for(const dir of ['home','config/opencode','data/opencode','state','selector'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
 const entry=`${extension}/build/service/main.js`,hash=()=>createHash('sha256').update(readFileSync(entry)).digest('hex'),originalHash=hash();
-let now=Date.now(),status=404,outbound=0;const release=()=>JSON.stringify({...manifest,version:futureVersion});
-const metadata=http.createServer((req,res)=>{
-  assert.equal(req.url,'/manifest');assert.equal(req.method,'GET');assert.equal(req.headers.accept,'application/vnd.github.raw+json');assert.equal(req.headers.authorization,undefined);assert.equal(req.headers.cookie,undefined);
-  outbound++;res.writeHead(status,{'content-type':'application/json'});res.end(status===200?release():'inaccessible fixture metadata');
-});
+const attempts=`${root}/outbound-attempts`;
+writeFileSync(attempts,'');
+let results:Record<string,unknown>|undefined;
 let child:ReturnType<typeof spawn>|undefined;
 let phase='readiness';
 try{
-  metadata.listen(0,'127.0.0.1');await once(metadata,'listening');
-  const clock=`${root}/clock.json`,preload=`${root}/preload.mjs`;writeFileSync(clock,JSON.stringify({now}));
-  const origin=`http://127.0.0.1:${(metadata.address() as {port:number}).port}`;
-  writeFileSync(preload,`// TEST ONLY: native entry unchanged; fixed official URL redirected to loopback.\nimport fs from 'node:fs';\nconst native=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;if(url!=='https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main')throw new Error('fixture rejects nonallowlisted URL');return native(${javascriptLiteral(origin+'/manifest')},init);};Date.now=()=>JSON.parse(fs.readFileSync(${javascriptLiteral(clock)},'utf8')).now;\n`);
-  const advance=(ms:number)=>{now+=ms;writeFileSync(clock,JSON.stringify({now}));};
+  const preload=`${root}/preload.mjs`;
+  writeFileSync(preload,`// TEST ONLY: block outbound clients; native entry unchanged.\nimport fs from 'node:fs';import http from 'node:http';import https from 'node:https';import net from 'node:net';import {syncBuiltinESMExports} from 'node:module';\nconst blocked=()=>{fs.appendFileSync(${javascriptLiteral(attempts)},'attempt\\n');throw Error('fixture forbids outbound transport');};globalThis.fetch=blocked;http.request=http.get=https.request=https.get=net.connect=net.createConnection=blocked;syncBuiltinESMExports();\n`);
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
   const env=isolatedEnvironment(root),selector=managedBindingFile(env);
   child=spawn(process.execPath,['--import',preload,entry],{cwd:root,env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'native-package-fixture-only'},stdio:['ignore','pipe','pipe']});
@@ -49,12 +41,16 @@ try{
   phase='route refusals';
   assert.equal((await fetch(base+'/v1/extension-update')).status,401);
   assert.equal((await fetch(base+'/v1/extension-update',{headers:{authorization:'Bearer wrong'}})).status,401);
-  assert.equal((await request('/v1/extension-update?ref=dev')).status,404);assert.equal((await request('/v1/extension-update',{})).status,405);assert.equal(outbound,0);
-  phase='unconfigured unknown';const unknown=await json('/v1/extension-update');assert.equal(unknown.state,'unknown');assert.equal(unknown.checkedAt,null);assert.equal(unknown.candidateVersion,undefined);assert.equal(unknown.diagnostic,'unavailable');
-  status=200;advance(300000);
-  phase='available/coalesced cache';const replies=await Promise.all(Array.from({length:6},()=>json('/v1/extension-update'))),available=replies[0];
-  assert.equal(available.installedVersion,RELEASE);assert.equal(available.repository,'Phototonic/openchamber-progress');assert.equal(available.ref,'main');assert.equal(available.state,'available');assert.equal(available.candidateVersion,futureVersion);assert.equal(available.stale,false);assert.equal(outbound,2,'one retry shared across concurrent frames');
-  await json('/v1/extension-update');assert.equal(outbound,2,'packaged cache prevents progress-cadence outbound work');
+  assert.equal((await request('/v1/extension-update?ref=dev')).status,404);assert.equal((await request('/v1/extension-update',{})).status,405);
+  const unavailable=async()=>{
+    const before=Date.now(),reply=await json('/v1/extension-update'),after=Date.now();
+    assert.deepEqual({...reply,nextCheckAt:undefined},{installedVersion:RELEASE,repository:'Phototonic/openchamber-progress',ref:'main',state:'unknown',checkedAt:null,stale:false,diagnostic:'unavailable',nextCheckAt:undefined});
+    assert.ok(Date.parse(reply.nextCheckAt)>=before+3600000&&Date.parse(reply.nextCheckAt)<=after+3600000);
+    return reply;
+  };
+  phase='unconfigured compatibility';await unavailable();
+  await Promise.all(Array.from({length:6},()=>unavailable()));await unavailable();
+  assert.equal(readFileSync(attempts,'utf8'),'');
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
   phase='fixture managed configuration';
   const review=await(await request('/v1/setup/managed-inspect',{storeRoot:targets.storeRoot})).json();
@@ -77,16 +73,17 @@ try{
   phase='timing reads';const timed=await detail('exact');assert.deepEqual(timed.timing.items,{I1:{since:exact!,kind:'exact'}});assert.ok(Date.parse(timed.timing.readAt)>=Date.parse(exact!));
   const capped=await detail('capped');assert.equal(capped.timing.items.I1.kind,'lower-bound');assert.equal((await detail('unknown')).timing.items.I1,undefined);
   assert.equal((await detail('exact')).timing.items.I1.since,exact!);
-  // A configured but unavailable store cannot suppress the independent metadata reply.
+  // A configured but unavailable store cannot suppress the compatibility reply.
   chmodSync(b.database,0o000);
-  phase='configured store fault / retained stale';
+  phase='configured store fault / compatibility';
   try{
-    assert.equal((await request('/v1/plans')).status,503);status=503;advance(3600000);const stale=await json('/v1/extension-update');assert.equal(stale.state,'available');assert.equal(stale.stale,true);assert.equal(stale.checkedAt,available.checkedAt);assert.equal(stale.diagnostic,'unavailable');assert.equal(stale.candidateVersion,futureVersion);
+    assert.equal((await request('/v1/plans')).status,503);await unavailable();
   }finally{chmodSync(b.database,0o600);}
   assert.equal((await detail('exact')).timing.items.I1.kind,'exact');
   assert.equal(hash(),originalHash,'native production entry was never rewritten');
-  console.log(JSON.stringify({nativePackagedEntrySha256:originalHash,entryUnmodified:true,testOnlyExternalPreload:true,logicalFixedOfficialURL:true,outboundMetadataRequests:outbound,unconfiguredUnknown:true,availableCached:true,configuredStoreFailureIndependent:true,staleCandidateRetained:true,timing:['exact-neutral-working','lower-bound','unknown-missing-history','groups-excluded'],protocolVersion:2,schemaVersion:2,liveGitHubRequests:0}));
+  results={nativePackagedEntrySha256:originalHash,entryUnmodified:true,testOnlyExternalPreload:true,outboundTransportAttempts:0,unconfiguredUnavailable:true,concurrentCompatibilityReads:true,configuredStoreFailureIndependent:true,timing:['exact-neutral-working','lower-bound','unknown-missing-history','groups-excluded'],protocolVersion:2,schemaVersion:2};
 }catch(error){console.error(JSON.stringify({nativePackageVerificationFailedAt:phase}));throw error;}finally{
   if(child&&child.exitCode===null&&!child.signalCode){const exit=once(child,'exit');child.kill('SIGTERM');const timer=setTimeout(()=>child?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}
-  metadata.closeAllConnections();if(metadata.listening)await new Promise<void>(r=>metadata.close(()=>r()));rmSync(root,{recursive:true,force:true});
+  try{assert.equal(readFileSync(attempts,'utf8'),'','zero outbound attempts through shutdown');}finally{rmSync(root,{recursive:true,force:true});}
 }
+if(results)console.log(JSON.stringify(results));

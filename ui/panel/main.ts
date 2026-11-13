@@ -4,7 +4,6 @@ import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languag
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
-import { officialMainBlock } from '../shared/official.ts';
 import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/setup.ts';
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
@@ -98,24 +97,19 @@ startView<Ui>({
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
-    // The official-main notice does not depend on companion setup or the store.
-    const official = officialMainBlock(vc);
     if (!read) {
       if (!vc.session?.id) root.append(emptyBlock('unscoped-state', t.noSession, t.openProgress));
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
       else if (vc.health && !vc.health.ready) {
-        if (official) root.append(official);
         root.append(emptyBlock('setup-needed', t.setup, t.connect, true));
         root.append(setupBlock(vc, { compact: true }));
       } else if (vc.session?.id) root.append(loadingBlock(env.locale));
-      else if (official) root.append(official);
       root.append(languageBlock(vc.language, env.locale));
       return;
     }
     if (failure && vc.lastGoodAt) root.append(staleBlock(failure, vc.lastGoodAt, env.locale, retryRead(vc)));
     const reload = reloadNote(vc);
     if (reload) root.append(reload);
-    if (official) root.append(official);
     if (!read.captureEnabled) root.append(testid(warningLine(t.capture), 'capture-off'));
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     // One run visit of the selected session, shared by its separate roster and the map's cards (never widened).

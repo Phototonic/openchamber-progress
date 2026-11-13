@@ -327,8 +327,6 @@ button.ap-state-chip:focus-visible{outline:2px solid var(--oc-focus);outline-off
 .ap-obs-sub>*+*::before{content:"·";margin-right:6px}
 @media(forced-colors:active){.ap-obs-mark{border-color:CanvasText!important}.ap-obs[data-state=active] .ap-obs-mark,.ap-obs[data-state=failed] .ap-obs-mark,.ap-obs[data-state=ended] .ap-obs-mark{background:CanvasText}}
 
-/* Official-main notice */
-.ap-official{display:flex;flex-direction:column;gap:4px}
 
 /* Plan selector */
 .ap-picker .oc-sdk-select{width:100%}

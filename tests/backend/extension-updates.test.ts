@@ -1,156 +1,113 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import https from 'node:https';
 import { once } from 'node:events';
-import { readFileSync, writeFileSync, readdirSync, lstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, lstatSync, chmodSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createProgressServer } from '../../service/server.ts';
-import { ExtensionUpdates, OFFICIAL_MANIFEST, UPDATE_LIMITS, compareUpdateVersions } from '../../service/extension-updates.ts';
 import { SetupController } from '../../service/setup-controller.ts';
 import { productionFixture } from '../fixtures/production.ts';
-import type { ExtensionUpdateRead } from '../../shared/progress.ts';
+import { oldUpdateModule } from '../fixtures/pre-retirement-updates.ts';
 import { RELEASE } from '../../shared/release.ts';
 
-const manifest=JSON.parse(readFileSync(new URL('../../package.json',import.meta.url),'utf8'));
-const [major,minor,patch]=RELEASE.split('.').map(Number);
-const futureVersion=`${major}.${minor}.${patch!+1}`;
-// A newer release whose minor has two digits, so numeric (not string) ordering decides it.
-const twoDigitMinor=`${major}.${minor!+10}.0`;
-const body=(version=futureVersion)=>JSON.stringify({...manifest,version});
-const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>resolve=r);return{promise,resolve};};
-type Responder=(req:http.IncomingMessage,res:http.ServerResponse)=>void;
+const snapshot = (root: string) => Object.fromEntries(readdirSync(root, { recursive: true }).map(String)
+  .filter(p => lstatSync(resolve(root, p)).isFile()).map(p => [p, readFileSync(resolve(root, p)).toString('base64')]));
+const expected = (now: number) => ({ installedVersion: RELEASE, repository: 'Phototonic/openchamber-progress', ref: 'main',
+  state: 'unknown', checkedAt: null, stale: false, diagnostic: 'unavailable', nextCheckAt: new Date(now + 3_600_000).toISOString() });
 
-async function fixture(options:{timeoutMs?:number; setup?:SetupController; corrupt?:boolean}={}) {
-  let now=Date.UTC(2026,0,1), responder:Responder=(_req,res)=>res.end(body());
-  const metadata=http.createServer((req,res)=>responder(req,res));metadata.listen(0,'127.0.0.1');await once(metadata,'listening');
-  const outbound:{url:string;init:RequestInit}[]=[];
-  const checker=new ExtensionUpdates({now:()=>now,timeoutMs:options.timeoutMs,transport:async(url,init)=>{
-    outbound.push({url,init});return fetch(`http://127.0.0.1:${(metadata.address() as any).port}/manifest`,init);
-  }});
-  const server=createProgressServer(undefined,'fixture-only',options.corrupt?'corrupt':undefined,options.setup,checker);
-  server.listen(0,'127.0.0.1');await once(server,'listening');
-  const base=`http://127.0.0.1:${(server.address() as any).port}`,headers={authorization:'Bearer fixture-only'};
-  return {metadata,server,checker,outbound,base,headers,
-    set(fn:Responder){responder=fn;},advance(ms:number){now+=ms;},get now(){return now;},
-    async get(){const r=await fetch(`${base}/v1/extension-update`,{headers});assert.equal(r.status,200);return await r.json() as ExtensionUpdateRead;},
-    async close(){await new Promise<void>(r=>server.close(()=>r()));metadata.closeAllConnections();await new Promise<void>(r=>metadata.close(()=>r()));},
-  };
-}
-
-test('QA-U fixed authenticated route refuses guest controls before outbound/store work',{timeout:15000},async()=>{
-  const f=productionFixture();
-  const setup=new SetupController(`${f.root}/unconfigured-binding.json`,()=>{throw new Error('unused');});
-  // A store lookup here would fail this test, not just return an unconfigured state.
-  setup.current=()=>{throw new Error('must not consult companion/store');};
-  const h=await fixture({setup});
+test('QA-R authenticated retained route is network-free from startup through shutdown, independent of stores', { timeout: 20000 }, async t => {
+  const nativeRequest = http.request.bind(http);
+  let outbound = 0;
+  const blocked = () => { outbound++; throw Error('Outbound transport forbidden'); };
+  // Requests into our loopback server use the saved nativeRequest, never these clients.
+  const mocks = [mock.method(globalThis, 'fetch', blocked), mock.method(http, 'request', blocked), mock.method(http, 'get', blocked),
+    mock.method(https, 'request', blocked), mock.method(https, 'get', blocked)];
+  const request = (base: string, options: { path?: string; method?: string; bearer?: string | null; body?: string; chunked?: boolean } = {}) =>
+    new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: any }>((resolve, reject) => {
+      const headers: Record<string, string> = { ...(options.bearer === null ? {} : { authorization: `Bearer ${options.bearer ?? 'fixture-only'}` }),
+        ...(options.body ? options.chunked ? { 'transfer-encoding': 'chunked' } : { 'content-length': String(Buffer.byteLength(options.body)) } : {}) };
+      const req = nativeRequest(base + (options.path ?? '/v1/extension-update'), { method: options.method ?? 'GET', headers }, res => {
+        let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk);
+        res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, body: JSON.parse(text) }));
+      });
+      req.on('error', reject); req.setTimeout(3000, () => req.destroy(Error('Fixture request timeout'))); req.end(options.body);
+    });
+  const api: object[] = [];
   try {
-    for(const headers of [{},{authorization:'Bearer wrong'}] as Record<string,string>[])assert.equal((await fetch(`${h.base}/v1/extension-update`,{headers})).status,401);
-    assert.equal((await fetch(`${h.base}/v1/extension-update`,{method:'POST',headers:h.headers})).status,405);
-    for(const query of ['?url=http://evil.invalid','?ref=dev','?repository=other','?source=x','?ref=main&ref=dev'])
-      assert.equal((await fetch(`${h.base}/v1/extension-update${query}`,{headers:h.headers})).status,404);
-    const status=await new Promise<number>((resolve,reject)=>{
-      const req=http.request(`${h.base}/v1/extension-update`,{method:'GET',headers:{...h.headers,'content-length':'2'}},res=>{res.resume();resolve(res.statusCode!);});req.on('error',reject);req.end('{}');
-    });assert.equal(status,400);assert.equal(h.outbound.length,0);
-    const result=await h.get();assert.equal(result.state,'available');assert.equal(result.installedVersion,RELEASE);
-    assert.equal(result.repository,'Phototonic/openchamber-progress');assert.equal(result.ref,'main');assert.equal(result.stale,false);assert.equal(result.diagnostic,'ok');
-    const sent=h.outbound[0]!;assert.equal(sent.url,OFFICIAL_MANIFEST);
-    assert.equal(sent.url,'https://api.github.com/repos/Phototonic/openchamber-progress/contents/package.json?ref=main');
-    const headers=new Headers(sent.init.headers);assert.equal(headers.get('accept'),'application/vnd.github.raw+json');
-    assert.equal(headers.has('authorization'),false);assert.equal(headers.has('cookie'),false);assert.equal(sent.init.credentials,'omit');assert.equal(sent.init.redirect,'manual');assert.equal(sent.init.method,'GET');
-    assert.equal(Object.keys(result).some(k=>/url|html|body|token/i.test(k)),false);
-  }finally{await h.close();setup.close();f.cleanup();}
-});
-
-test('QA-U manifest validation and numeric/prerelease ordering through actual HTTP',{timeout:15000},async()=>{
-  const h=await fixture({corrupt:true});
-  try {
-    const cases:[string,string][]=[[futureVersion,'available'],[RELEASE,'not-newer'],['0.2.3','not-newer'],[twoDigitMinor,'available'],['0.10.0','not-newer'],[`${RELEASE}-rc.1`,'not-newer'],[`${futureVersion}-beta.2`,'available'],[`${RELEASE}+changed`,'not-newer']];
-    for(const [version,state] of cases){h.set((_req,res)=>res.end(body(version)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.state,state);assert.equal(r.candidateVersion,version);}
-    h.set((_req,res)=>res.end(JSON.stringify({...manifest,version:RELEASE,description:'same version, other bytes'})));
-    h.advance(UPDATE_LIMITS.successMs);assert.equal((await h.get()).state,'not-newer');
-    for(const [a,b,expected] of [['0.10.0','0.9.0',1],['1.0.0-beta.10','1.0.0-beta.2',1],['1.0.0-1','1.0.0-a',-1],['1.0.0-rc','1.0.0',-1],['1.0.0-a','1.0.0-a.1',-1],['1.0.0+abc','1.0.0+def',0]] as const)assert.equal(compareUpdateVersions(a,b),expected);
-    const invalid:unknown[]=[null,{}, {version:'0.2.5'}, {...manifest,version:'01.2.5'}, {...manifest,version:'0.2.5-01'}, {...manifest,version:'<script>'}, {...manifest,version:'0.2.5',openchamber:{...manifest.openchamber,apiVersion:999}}];
-    for(const field of ['panel','page','statusSection','service']){
-      const m=structuredClone(manifest);m.version='0.2.5';delete m.openchamber.contributes[field];invalid.push(m);
+    for (const state of ['unconfigured', 'configured', 'unreadable'] as const) {
+      const f = productionFixture();
+      const setup = new SetupController(`${f.root}/service-binding.json`, () => ({ plugin: 'export default {}', guidance: 'Fixture only', removal: '// fixture', version: RELEASE }));
+      if (state !== 'unconfigured') setup.run('install', { configRoot: f.source.configRoot, dataRoot: f.source.dataRoot, storeRoot: `${f.root}/selected-store`, confirmed: true });
+      const selected = state === 'unconfigured' ? undefined : setup.current().store!;
+      const database = selected?.file;
+      if (state === 'unreadable') setup.close();
+      writeFileSync(`${f.root}/synthetic-settings.json`, '{"retained":true}');
+      const before = snapshot(f.root);
+      if (state === 'unreadable') chmodSync(database!, 0o000);
+      const originalCurrent = setup.current.bind(setup);
+      let lookups = 0;
+      setup.current = () => { lookups++; throw Error('Compatibility route must not consult store'); };
+      const server = createProgressServer(undefined, 'fixture-only', undefined, setup);
+      try {
+        server.listen(0, '127.0.0.1'); await once(server, 'listening');
+        const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        const refused = [
+          { bearer: null, status: 401, error: 'unauthorized' }, { bearer: 'wrong', status: 401, error: 'unauthorized' },
+          { method: 'POST', status: 405, error: 'method-not-allowed' },
+          ...['?ref=dev', '?source=x', '?ref=main&ref=dev'].map(query => ({ path: `/v1/extension-update${query}`, status: 404, error: 'not-found' })),
+          { body: '{}', status: 400, error: 'body-not-allowed' }, { body: '{}', chunked: true, status: 400, error: 'body-not-allowed' },
+        ];
+        for (const options of refused) {
+          const r = await request(base, options); assert.equal(r.status, options.status); assert.deepEqual(r.body, { error: options.error });
+          assert.equal(r.headers['cache-control'], 'no-store');
+        }
+        for (let round = 0; round < 2; round++) {
+          const now = Date.UTC(2026, 0, 1) + round * 4_000_000;
+          mock.timers.enable({ apis: ['Date'], now });
+          try {
+            const replies = await Promise.all(Array.from({ length: 6 }, () => request(base)));
+            for (const r of replies) {
+              assert.equal(r.status, 200); assert.deepEqual(r.body, expected(now));
+              assert.equal(Date.parse(r.body.nextCheckAt) - Date.now(), 3_600_000, 'backoff follows response construction, not a cache');
+              assert.equal(r.headers['cache-control'], 'no-store'); assert.equal(r.headers['x-content-type-options'], 'nosniff');
+              const old = oldUpdateModule('adapter.ts').parseExtensionUpdate(JSON.stringify(r.body));
+              assert.equal(old.state, 'unknown');
+              const oldGuest = oldUpdateModule('official.ts');
+              const hooks = { officialMain: old, officialMainDismissed: null, env: { locale: 'en' } };
+              assert.equal(oldGuest.officialMainBlock(hooks), null); assert.equal(oldGuest.officialMainLine(hooks, () => {}), null);
+            }
+          } finally { mock.timers.reset(); }
+        }
+        assert.equal(lookups, 0);
+        setup.current = originalCurrent;
+        assert.equal((await request(base, { path: '/v1/plans' })).status, state === 'configured' ? 200 : 503, 'normal store reads retain their independent result');
+        if (state === 'unreadable') { assert.equal(lstatSync(database!).mode & 0o777, 0); chmodSync(database!, 0o600); }
+        assert.deepEqual(snapshot(f.root), before, 'route and refusals preserve synthetic persistent bytes');
+        api.push({ state, successfulReads: 12, refusals: refused.length, storeLookups: lookups, outboundAttempts: outbound });
+      } finally {
+        await new Promise<void>(r => server.close(() => r()));
+        if (database) chmodSync(database, 0o600);
+        setup.close(); f.cleanup();
+      }
     }
-    const wrong=structuredClone(manifest);wrong.openchamber.contributes.panel.id='foreign-extension';invalid.push(wrong);
-    const unsafe=structuredClone(manifest);unsafe.openchamber.contributes.service.entry='https://evil.invalid/run.js';invalid.push(unsafe);
-    for(const value of invalid){h.set((_req,res)=>res.end(JSON.stringify(value)));h.advance(UPDATE_LIMITS.successMs);const r=await h.get();assert.equal(r.diagnostic,'invalid-manifest');assert.equal(r.stale,true);assert.equal(r.candidateVersion,RELEASE);}
-    h.set((_req,res)=>res.end('{not JSON'));h.advance(UPDATE_LIMITS.failureMs);assert.equal((await h.get()).diagnostic,'invalid-manifest');
-    // This is deliberately metadata only: no fixture runtime entries exist at this origin.
-    h.set((_req,res)=>res.end(body()));h.advance(UPDATE_LIMITS.failureMs);const recovered=await h.get();assert.equal(recovered.state,'available');assert.equal(recovered.stale,false);assert.equal(recovered.diagnostic,'ok');
-    assert.equal((await fetch(`${h.base}/v1/plans`,{headers:h.headers})).status,503,'store failure remains independent');
-  }finally{await h.close();}
+    assert.equal(outbound, 0);
+    if (process.env.EVIDENCE) { mkdirSync(process.env.EVIDENCE, { recursive: true }); writeFileSync(resolve(process.env.EVIDENCE, 'api.json'), JSON.stringify({ cases: api, outboundAttempts: outbound }, null, 2)); }
+  } finally { for (const m of mocks) m.mock.restore(); }
 });
 
-test('QA-U service-wide coalescing, TTL, conditional cache, stale retention and provider deadlines',{timeout:15000},async()=>{
-  const h=await fixture();
-  try {
-    const entered=deferred(),release=deferred();
-    h.set((_req,res)=>{entered.resolve();void release.promise.then(()=>{res.setHeader('etag','"main-v1"');res.end(body());});});
-    const requests=Array.from({length:8},()=>h.get());await entered.promise;assert.equal(h.outbound.length,1);release.resolve();
-    const first=(await Promise.all(requests))[0]!;assert.equal(first.state,'available');assert.equal(h.outbound.length,1);
-    assert.equal(Date.parse(first.nextCheckAt),h.now+UPDATE_LIMITS.successMs);
-    await h.get();h.advance(UPDATE_LIMITS.successMs-1);await h.get();assert.equal(h.outbound.length,1);
-    h.advance(1);h.set((req,res)=>{assert.equal(req.headers['if-none-match'],'"main-v1"');res.writeHead(304);res.end();});
-    const refreshed=await h.get();assert.equal(refreshed.diagnostic,'ok');assert.equal(refreshed.candidateVersion,futureVersion);assert.notEqual(refreshed.checkedAt,first.checkedAt);
-    h.advance(UPDATE_LIMITS.successMs);h.set((_req,res)=>{res.writeHead(304,{etag:'"foreign"'});res.end();});
-    const mismatch=await h.get();assert.equal(mismatch.diagnostic,'invalid-response');assert.equal(mismatch.checkedAt,refreshed.checkedAt);assert.equal(mismatch.stale,true);
-    h.advance(UPDATE_LIMITS.failureMs);
-    h.set((_req,res)=>{res.writeHead(503);res.end('private raw body must not escape');});
-    const stale=await h.get();assert.equal(stale.state,'available');assert.equal(stale.stale,true);assert.equal(stale.checkedAt,refreshed.checkedAt);assert.equal(stale.diagnostic,'unavailable');
-    const count=h.outbound.length;await h.get();h.advance(UPDATE_LIMITS.failureMs-1);await h.get();assert.equal(h.outbound.length,count);
-    h.advance(1);h.set((_req,res)=>{res.writeHead(429,{'retry-after':'7200','x-ratelimit-remaining':'0','x-ratelimit-reset':String((h.now+3*60*60*1000)/1000)});res.end();});
-    const rate=await h.get();assert.equal(rate.diagnostic,'rate-limited');assert.equal(Date.parse(rate.nextCheckAt),h.now+3*60*60*1000);assert.equal(rate.checkedAt,refreshed.checkedAt);
-    const rateCount=h.outbound.length;h.advance(2*60*60*1000);await h.get();assert.equal(h.outbound.length,rateCount);
-    h.advance(60*60*1000);h.set((_req,res)=>{res.writeHead(403,{'retry-after':new Date(h.now+600_000).toUTCString()});res.end();});
-    assert.equal(Date.parse((await h.get()).nextCheckAt),h.now+600_000);
-  }finally{await h.close();}
-});
-
-test('QA-U unknown HTTP/redirect/size/invalid responses never become current, 304 requires matching cache',{timeout:15000},async()=>{
-  const h=await fixture();
-  try {
-    const cases:[Responder,string][]=[
-      [(_req,res)=>{res.writeHead(304);res.end();},'invalid-response'],
-      ...[401,403,404,500].map(status=>[((_req,res)=>{res.writeHead(status);res.end('inaccessible');}) as Responder,'unavailable'] as [Responder,string]),
-      [(_req,res)=>{res.writeHead(302,{location:'https://evil.invalid/redirect'});res.end();},'redirect'],
-      [(_req,res)=>{res.writeHead(200,{'content-length':String(UPDATE_LIMITS.bytes+1)});res.end('x');},'too-large'],
-      [(_req,res)=>{res.writeHead(200);res.write('x'.repeat(UPDATE_LIMITS.bytes));res.end('x');},'too-large'],
-      [(_req,res)=>res.end(Buffer.from([0xff,0xfe])),'invalid-manifest'],
-    ];
-    for(const [respond,diagnostic] of cases){h.set(respond);h.advance(UPDATE_LIMITS.failureMs);const r=await h.get();assert.equal(r.state,'unknown');assert.equal(r.checkedAt,null);assert.equal(r.candidateVersion,undefined);assert.equal(r.diagnostic,diagnostic);assert.equal(r.stale,false);assert.ok(Number.isFinite(Date.parse(r.nextCheckAt)));}
-    assert.equal(h.outbound.length,cases.length,'redirects were not followed');
-  }finally{await h.close();}
-});
-
-test('QA-U body/header deadline and service shutdown abort owned real HTTP work',{timeout:15000},async()=>{
-  for(const sendHeaders of [false,true]){
-    const h=await fixture({timeoutMs:75});
-    try {
-      const entered=deferred();h.set((_req,res)=>{if(sendHeaders){res.writeHead(200);res.flushHeaders();res.write('{');}entered.resolve();});
-      const waiting=h.get();await entered.promise;const result=await waiting;assert.equal(result.diagnostic,'timeout');assert.equal(result.state,'unknown');assert.equal(h.outbound[0]!.init.signal!.aborted,true);
-    }finally{await h.close();}
+test('QA-R service source graph contains no outbound metadata client', () => {
+  // The HTTP server is required; HTTP client calls and provider modules are not.
+  // Follow runtime relative imports rather than inspecting only the route's text.
+  const visited = new Set<string>();
+  function visit(file: string) {
+    if (visited.has(file)) return; visited.add(file);
+    const text = readFileSync(file, 'utf8');
+    assert.doesNotMatch(text, /\bfetch\s*\(|\b(?:http|https)\.(?:request|get)\s*\(|api\.github\.com|\b(?:undici|axios|node-fetch)\b/, file);
+    for (const match of text.matchAll(/^import\s+(?!type\b)[\s\S]*?from\s*['"]([^'"]+)['"]/gm)) {
+      if (match[1]!.startsWith('.')) visit(resolve(file, '..', match[1]!));
+    }
   }
-  const h=await fixture();
-  try {
-    const entered=deferred();h.set((_req,res)=>{res.writeHead(200);res.flushHeaders();entered.resolve();});
-    const waiting=h.get();await entered.promise;const closed=new Promise<void>(r=>h.server.close(()=>r()));
-    const result=await waiting;assert.equal(result.diagnostic,'shutdown');assert.equal(h.outbound[0]!.init.signal!.aborted,true);await closed;
-  }finally{await h.close();}
-});
-
-test('QA-U GETs preserve isolated extension/companion selection/config/store bytes',{timeout:15000},async()=>{
-  const f=productionFixture();
-  const setup=new SetupController(`${f.root}/service-binding.json`,()=>({plugin:'export default {}',guidance:'Fixture only',removal:'// fixture',version:'0.2.4'}));
-  setup.run('install',{configRoot:f.source.configRoot,dataRoot:f.source.dataRoot,storeRoot:`${f.root}/store`,confirmed:true});
-  f.store.apply({op:'start',plan:'P1',oid:'start',rev:0,title:'Preserved',items:[]},f.actor);
-  writeFileSync(`${f.root}/config/user-config.json`,'{"keep":"user settings"}');writeFileSync(`${f.root}/extension-package.json`,body('0.2.4'));
-  const snapshot=(root:string):Record<string,string>=>Object.fromEntries(readdirSync(root,{recursive:true}).map(String).map(p=>[p,resolve(root,p)]).filter(([,p])=>lstatSync(p!).isFile()).map(([p,file])=>[p!,readFileSync(file!).toString('base64')]));
-  const before=snapshot(f.root),history=f.store.history(f.source.id,'P1');
-  const h=await fixture({setup});
-  try {
-    await h.get();await h.get();h.advance(UPDATE_LIMITS.successMs);h.set((_req,res)=>{res.writeHead(404);res.end();});await h.get();
-    assert.deepEqual(snapshot(f.root),before);assert.deepEqual(f.store.history(f.source.id,'P1'),history);
-  }finally{await h.close();setup.close();f.cleanup();}
+  visit(resolve('service/main.ts'));
+  assert.ok(visited.has(resolve('service/server.ts')));
 });

@@ -18,7 +18,10 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   let spec: any;
   const nodes: any[] = [];
   const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
-  const components = { el, allDone: () => {}, testid: (node: any) => node, emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }), button: (_p: any, _id: string, text: string) => nodes.push({ text }), detailsBlock: () => ({ text: '' }), failureFacts: () => [] };
+  const components = { el, allDone: () => {}, testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
+    emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
+    button: (_p: any, _id: string, text: string) => nodes.push({ text }), detailsBlock: () => ({ text: '' }), failureFacts: () => [],
+    failureBlock: () => ({ text: 'Read failed' }), retryRead: () => () => {}, loadingBlock: () => ({ text: 'Loading' }) };
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: any = {};
@@ -43,11 +46,25 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
     if (path.endsWith('/reporting-health-view.ts')) return { reportingHealthBlock: () => ({ text: '' }) };
     if (path.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null };
     if (path.endsWith('/setup.ts')) return { setupBlock: () => ({ text: '' }) };
-    if (path.endsWith('/official.ts')) return { officialMainBlock: () => null, officialMainLine: () => null };
     return {};
   } });
   return { spec, nodes, exports, rendered: () => nodes.map(n => n?.text ?? '').join(' ') };
 }
+
+for (const surface of ['panel', 'status', 'page']) test(`QA-R ${surface}: current source render has no update notice in pending, setup and failed views`, () => {
+  const h = surfaceHarness(surface);
+  for (const locale of ['en', 'ru']) for (const state of ['pending', 'unconfigured', 'failed']) {
+    h.nodes.length = 0;
+    const vc = { ui: { presentation: 'list', tab: 'progress', archived: false, filters: {}, search: null },
+      env: { locale }, language: {}, session: null, health: state === 'pending' ? null : { ready: false },
+      failure: state === 'failed' ? { kind: 'unavailable' } : null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
+    // A stale old availability cannot supply presentation authority to a new entry.
+    Object.defineProperty(vc, 'officialMain', { get() { throw Error('Retired metadata consumed'); } });
+    h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, vc);
+    assert.ok(!h.nodes.some(n => /extension-update/.test(n?.dataset?.testid ?? '')));
+    assert.doesNotMatch(h.rendered(), /Official main|официальной main/);
+  }
+});
 
 for (const surface of ['panel', 'status', 'page']) test(`${surface}: actual empty render follows language without changing state`, () => {
   const { spec, nodes, rendered } = surfaceHarness(surface);

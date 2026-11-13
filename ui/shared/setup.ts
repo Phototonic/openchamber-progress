@@ -609,11 +609,8 @@ function versionRows(info: SetupView, locale:string): [string, string][] {
 }
 
 /**
- * Setup notes in the progress reading order (rail and page, above the plan): the companion update
- * notice with its review, then the pending-reload note. They are independent: an update can be
- * available while a reload is pending. The update notice clears only when the service reports the
- * bundled files selected, the reload note only when it observes them loaded. File installation is
- * never presented as activation, and nothing here restarts anything.
+ * Managed Setup observations in the progress reading order. Delivery is not activation;
+ * differing bytes warn only. Legacy recovery keeps its separate review/reload semantics below.
  */
 export function reloadNote<U>(vc: Host<U>) {
   const locale = vc.env.locale;
@@ -622,7 +619,7 @@ export function reloadNote<U>(vc: Host<U>) {
   if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
   if (info.delivery.observation === 'different') {
     const warning = testid(el('div'), 'managed-integrity-warning');
-    mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning});
+    mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning+' '+managedCopy(locale).observation});
     return warning;
   }
   return null;

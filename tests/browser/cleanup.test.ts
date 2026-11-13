@@ -7,7 +7,8 @@ import { RecentMemory } from '../../ui/shared/refresh.ts';
 import { StatusSelection } from '../../ui/status/selection.ts';
 import { HEALTH, plansPage, summary } from './fixtures.ts';
 import { fieldHint, initialSetupUi, reviewVersions, setupErrorText, setupDiagnosticText, updateNotice, captureOffNote } from '../../ui/shared/setup.ts';
-import { officialMainText } from '../../ui/shared/official.ts';
+import { oldUpdateModule } from '../fixtures/pre-retirement-updates.ts';
+const { officialMainText } = oldUpdateModule('official.ts');
 import { parseSetup } from '../../ui/shared/adapter.ts';
 
 const plan = parsePlansPage(JSON.stringify(plansPage([summary('finished', [], { lifecycle: 'finished' })]))).data[0];
