@@ -79,15 +79,18 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
     const request = readingRequest(reading);
     return readingRequest(reading, null, c.detailPlan(request));
   };
+  // Search selection metadata deliberately omits the list's delegation token.
+  const searchPlan = (c: ViewContext<Ui>): PlanView[] => (c.read?.plans.slice(0, 1) ?? []).map(({ delegationToken: _token, ...p }) => p);
   const spec: ViewSpec<Ui> = {
     surface, maxSessionSubscriptions: 2, initialUi: () => ({ n: 0 }),
     scope: ({ session }) => session ? { session: session.id } : null,
     wantProjects: () => [], wantDetails: (c) => surface === 'status' ? [] : c.read?.plans.slice(0, 1) ?? [],
     ...(searching ? {
-      // The search poll leaves the listed token frozen. Only the open plan's bounded head
-      // may update its overlay; the rendered QA exercises the actual board/SearchController.
+      // Only the open plan's bounded head may update its overlay; requests remain token-free,
+      // like SearchController.selectedPlan(). Rendered QA exercises the actual board.
+      wantDetails: searchPlan,
       freshness: () => async () => ({ state: 'fresh' as const, captureEnabled: true }),
-      refreshDetails: (c: ViewContext<Ui>) => c.read?.plans.slice(0, 1) ?? [],
+      refreshDetails: searchPlan,
       reading: (c: ViewContext<Ui>) => ({ plan: c.read?.plans[0]?.key ?? '', scope: `search:${c.ui.n}` }),
     } : {}),
     ...(inbox ? {
@@ -98,7 +101,7 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
     paint: (_root, c) => { vc = c; },
   };
   exports.startView(spec);
-  const listed = (): PlanView => inbox ? inboxPlan(vc) : vc.read!.plans[0];
+  const listed = (): PlanView => inbox ? inboxPlan(vc) : searching ? searchPlan(vc)[0] : vc.read!.plans[0];
   return {
     state, requests,
     ready: () => listeners.ready({ session: { id: 'A' }, directory: null, connection: { account: 'example' }, locale: 'en', surface }),
@@ -107,7 +110,7 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
     route: (r: typeof detail) => { detail = r; }, normal,
     get plan() { return listed(); },
     get detail() { return vc.detail(listed()); },
-    get intent() { const d = vc.detail(listed()); return d?.state === 'ready' ? currentIntent(listed(), d.value) : null; },
+    get intent() { const d = vc.detail(listed()); return d?.state === 'ready' ? currentIntent(searching ? vc.detailPlan(listed()) ?? listed() : listed(), d.value) : null; },
     reads: () => requests.filter((q) => q.path === '/v1/plan').length,
     stop: () => listeners.pagehide(),
     leave: () => vc.setUi({ n: vc.ui.n + 1 }),
@@ -159,12 +162,26 @@ test('search cadence clears a same-revision cancellation without rereading the l
     assert.equal(c.intent?.state, 'waiting');
     const lists = c.requests.filter(q => q.path === '/v1/plans').length;
     const detail = (c.detail as { value: PlanDetail }).value;
+    assert.equal(c.plan.delegationToken, undefined, 'search requests stay token-free after head adoption');
+    // Adopt a new waiting token before checking unchanged polls (reservation stays waiting).
+    c.state.token = 'intent-reserved';
+    c.state.overlay = { ...overlay(INTENT_PENDING), token: c.state.token };
+    const beforeAdoption = c.reads();
+    await c.poll();
+    assert.equal(c.reads(), beforeAdoption + 1, 'adoption needs only the head');
+    for (let i = 0; i < 3; i++) {
+      const reads = c.reads();
+      await c.poll();
+      assert.equal(c.reads(), reads + 1, 'one head per unchanged pending poll');
+      assert.equal(c.intent?.state, 'waiting');
+      assert.equal((c.detail as { value: PlanDetail }).value.items, detail.items);
+    }
     const reads = c.reads();
     c.state.token = 'intent-cancelled'; c.state.overlay = overlay(INTENT_CANCELLED);
     await c.poll();
     assert.equal(c.intent?.state, 'clear');
     assert.equal(c.plan.revision, 3);
-    assert.equal(c.plan.delegationToken, 'intent-cancelled');
+    assert.equal(c.plan.delegationToken, undefined);
     assert.equal(c.reads(), reads + 1, 'one bounded head, no second full-detail read');
     assert.equal(c.requests.filter(q => q.path === '/v1/plans').length, lists);
     assert.equal((c.detail as { value: PlanDetail }).value.items, detail.items, 'complete tasks are retained, not replaced by the head page');
