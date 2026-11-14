@@ -6,7 +6,7 @@
 // projection by default. --real-service instead routes guest requests through the actual HTTP
 // service and a disposable synthetic SQLite store (unsupported capability is stripped and
 // a labelled transport hold exposes the rechecking state without changing service responses).
-// Neither mode is native-host or physical-phone proof: simulated device hints and touch only.
+// Neither mode is native-host or physical-phone proof: synthetic device hints and emulated touch only.
 // Usage: node --experimental-strip-types tests/browser/needs-you-inbox-qa.ts [--source] [--real-service] [--chromium <path>] --artifacts <dir>
 //   writes results.json (checks), requests.json (bounded request metadata) and screenshots.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
@@ -395,7 +395,11 @@ try {
   await c.send('Emulation.setEmitTouchEventsForMouse', { enabled: true, configuration: 'mobile' });
   await show(['panel'], 390);
   await wait('panel', `d.querySelector('${INBOX} h2')?.textContent.startsWith('Нужно ваше участие')`, 'Russian inbox');
-  const coarse = await guest<boolean>('panel', `return w.matchMedia('(pointer: coarse)').matches`);
+  // The synthetic ready.device reaches the guest's own host-ready path (applyDeviceHooks), which writes
+  // the root hooks the phone layout reads; coarse targets then apply whatever the media query says.
+  const rootHooks = await guest<{ pointer: string | null; formFactor: string | null; bottom: string }>('panel', `const h=d.documentElement;return {pointer:h.getAttribute('data-device-pointer'),formFactor:h.getAttribute('data-device-form-factor'),bottom:h.style.getPropertyValue('--ap-safe-bottom')}`);
+  check('phone:device-hooks-host-ready', rootHooks.pointer === 'coarse' && rootHooks.formFactor === 'phone' && rootHooks.bottom === '16px', rootHooks);
+  const coarse = rootHooks.pointer === 'coarse' || await guest<boolean>('panel', `return w.matchMedia('(pointer: coarse)').matches`);
   const phone = await guest<any>('panel', `const hs=[...d.querySelectorAll('${INBOX} .ap-inbox-open, ${INBOX} .ap-inbox-also>summary')].map(n=>Math.round(n.getBoundingClientRect().height));return {min:Math.min(...hs),scope:d.querySelector('.ap-inbox-scope').textContent,also:d.querySelector('[data-testid="also-blocked"] summary').textContent,wait:d.querySelector('[data-testid="needs-you-row"][data-task="task-b"] [data-testid="needs-you-wait"]').textContent}`);
   check('I1:phone-russian-copy', /во всех текущих планах/.test(phone.scope) && phone.also === 'Также заблокировано · 4' && /^Ожидает не менее/.test(phone.wait), phone);
   check('I1:phone-coarse-targets-44px', !coarse || phone.min >= 44, { coarse, min: phone.min });
@@ -418,6 +422,8 @@ try {
   check('I1:board-russian-search-hint-fits', hint.placeholder === 'Поиск' && hint.label === 'Поиск по названиям и ID' && hint.fits, hint);
   const boardOverflow = await noOverflow('page');
   check('I1:board-phone-no-overflow', boardOverflow.ok, boardOverflow);
+  const boardPhone = await guest<{ pointer: string | null; small: string[] }>('page', `const sel='${INBOX} :is(button,summary,a[href])';return {pointer:d.documentElement.getAttribute('data-device-pointer'),small:[...d.querySelectorAll(sel)].filter(n=>{const r=n.getBoundingClientRect();return r.width&&r.height&&(r.width<43.5||r.height<43.5)}).map(n=>(n.closest('[data-testid]')?.dataset.testid??n.tagName)+' '+Math.round(n.getBoundingClientRect().width)+'x'+Math.round(n.getBoundingClientRect().height))}`);
+  check('phone:board-device-hooks-and-44px-inbox-targets', boardPhone.pointer === 'coarse' && boardPhone.small.length === 0, boardPhone);
   await shot('page', 'board-phone-ru-dark', INBOX);
   await c.send('Emulation.setEmitTouchEventsForMouse', { enabled: false });
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
@@ -426,6 +432,7 @@ try {
   // ---------------------------------------------------------------- board (desktop)
   await show(['page'], 1200);
   await wait('page', `d.querySelector('${INBOX} h2')?.textContent.startsWith('Needs you')&&d.querySelector('[data-testid="plan-row-plan-alpha"]')`, 'board inbox');
+  check('desktop:device-hooks-removed-without-hints', await guest<boolean>('page', `const h=d.documentElement;return !h.hasAttribute('data-device-pointer')&&!h.hasAttribute('data-device-form-factor')&&!h.style.getPropertyValue('--ap-safe-bottom')`));
   check('I1:board-inbox-at-start', await guest<boolean>('page', `const box=d.querySelector('${INBOX}'),b=d.querySelector('.ap-board');return !!b&&!!(box.compareDocumentPosition(b)&w.Node.DOCUMENT_POSITION_FOLLOWING)`));
   await shot('page', 'board', '[data-testid="progress-root"]');
   await click('page', `${INBOX} [data-testid="needs-you-row"][data-task="task-a"] .ap-inbox-open`);
@@ -578,7 +585,7 @@ try {
   assets.dispose();
   await real?.close();
   rmSync(profile, { recursive: true, force: true });
-  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability and held-transport seams' : 'synthetic contract fixture', realReplies, device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
+  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability and held-transport seams' : 'synthetic contract fixture', realReplies, device: 'synthetic ready.device applied by the guests\' own host-ready path (root hooks checked) and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
   writeFileSync(join(artifacts, 'requests.json'), JSON.stringify(requestLog.slice(-400), null, 1));
   console.log(JSON.stringify({ pass: !failure && results.every((r) => r.pass), checks: results.length, failure, shots: shots.length }));
   if (failure || !results.every((r) => r.pass)) process.exitCode = 1;
