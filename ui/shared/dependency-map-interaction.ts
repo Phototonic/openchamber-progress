@@ -62,6 +62,14 @@ export function mapAnnouncementText(m: MapAnnouncement, language: InterfaceLangu
 // magnify past it (the input's `framingMax`); only the zoom controls go above it, up to `max`.
 export const MAP_ZOOM = Object.freeze({ min: 0.0001, max: 2, readable: 0.75, step: 1.2, fit: 1 });
 /**
+ * Touch gestures (pointerType touch only; mouse and pen keep the desktop rules). `slop`: CSS px a
+ * finger may wander before a press becomes a pan (a tap stays a tap). `pinchMin`: the lowest zoom a
+ * pinch reaches on its own (Fit all and the zoom controls may already be lower; a pinch never zooms
+ * further out from there). `readable`: the initial-framing zoom for a coarse pointer, where 75% card
+ * text is too small to read at arm's length.
+ */
+export const MAP_TOUCH = Object.freeze({ slop: 10, pinchMin: 0.1, readable: 1 });
+/**
  * The wide board's selection panel: over the canvas's right edge while a task is selected, once the
  * board's map is at least `minMap` px wide. `width` is capped at `share` of the canvas; `margin` is
  * its distance from the canvas edges. The rail never has one (its inspector stays stacked).
@@ -93,6 +101,9 @@ export interface MapInteractionInput {
   status: StatusFilter;
   /** Highest zoom that framing may choose (Fit all, Focus current work, initial entry). Default `MAP_ZOOM.max`; the board passes `MAP_ZOOM.fit`. */
   framingMax?: number;
+  /** Lowest zoom initial framing / Focus current work accept before centring one card instead. Default
+   * `MAP_ZOOM.readable`; a coarse-pointer frame passes `MAP_TOUCH.readable`. Presentation only. */
+  readable?: number;
 }
 export interface MapInteractionState {
   readonly identity: string | null;
@@ -105,6 +116,8 @@ export interface MapInteractionState {
   readonly active: boolean;
   readonly generation: number;
   readonly dragging: number | null;
+  /** The second finger of an active touch pinch (its capture is rebound like `dragging`), else null. */
+  readonly pinching: number | null;
 }
 /** Commands are action-local, not retained messages to replay on paint. Viewport commands should
  * update only the world transform, coalesced by the binding's requestAnimationFrame. Capture must
@@ -128,7 +141,13 @@ export type MapInteractionEvent =
   | { type: 'zoom'; factor: number; point?: MapPoint }
   | { type: 'pan'; x: number; y: number }
   | { type: 'filters'; status?: StatusFilter; group?: string | null }
-  | { type: 'pointer-down'; pointerId: number; point: MapPoint; background: boolean; primary: boolean }
+  /**
+   * `touch`: a finger (pointerType touch). A finger may also start on a card: it pans once it moves
+   * past `MAP_TOUCH.slop`, otherwise the card's own click selects and nothing is cleared. A second
+   * finger turns the gesture into a pinch. `origin`: the canvas's client top-left, so a pinch zooms
+   * around the point between the fingers. Mouse/pen (`touch` absent) keep the desktop rules.
+   */
+  | { type: 'pointer-down'; pointerId: number; point: MapPoint; background: boolean; primary: boolean; touch?: boolean; origin?: MapPoint }
   | { type: 'pointer-move'; pointerId: number; point: MapPoint }
   | { type: 'pointer-end'; pointerId: number; point?: MapPoint; cancelled?: boolean };
 
@@ -158,7 +177,10 @@ export function mapRoom(viewport: MapViewport, selected: string | null): MapView
 export class DependencyMapInteraction {
   private input: MapInteractionInput | null = null;
   private state: MapInteractionState = this.empty(0);
-  private drag: { id: number; start: MapPoint; point: MapPoint; moved: boolean } | null = null;
+  // `clears`: a press that began on the background clears selection when it ends without moving.
+  // `captured`: a finger on a card is captured only once it pans, so a tap keeps its native click.
+  private drag: { id: number; start: MapPoint; point: MapPoint; moved: boolean; clears: boolean; slop: number; touch: boolean; captured: boolean; origin: MapPoint } | null = null;
+  private pinch: { id: number; point: MapPoint } | null = null;
   private explicit: { id: string; serial: number } | null = null;
   private consumed = 0;
   private serial = 0;
@@ -168,7 +190,7 @@ export class DependencyMapInteraction {
   private sink: (command: MapInteractionCommand) => void;
   constructor(sink: (command: MapInteractionCommand) => void = () => {}) { this.sink = sink; }
   private announce(message: MapAnnouncement) { this.sink({ type: 'announce', text: mapAnnouncementText(message), message }); }
-  private empty(generation: number): MapInteractionState { return { identity: null, transform: { x: 0, y: 0, zoom: 1 }, selected: null, roving: null, status: 'all', group: null, initialFramingDone: false, active: false, generation, dragging: null }; }
+  private empty(generation: number): MapInteractionState { return { identity: null, transform: { x: 0, y: 0, zoom: 1 }, selected: null, roving: null, status: 'all', group: null, initialFramingDone: false, active: false, generation, dragging: null, pinching: null }; }
   get value(): MapInteractionState { return { ...this.state, transform: { ...this.state.transform } }; }
   get visible(): readonly string[] {
     const i = this.input; if (!i) return [];
@@ -323,15 +345,24 @@ export class DependencyMapInteraction {
     const visible = new Set(this.visible), work = [...i.working, ...i.ready].filter(id => visible.has(id));
     const room = mapRoom(i.viewport, this.state.selected);
     let t = fitProjection(i.layout, work.length ? work : this.visible, room, 16, i.framingMax);
-    if (work.length && t.zoom < MAP_ZOOM.readable) {
+    const readable = i.readable ?? MAP_ZOOM.readable;
+    if (work.length && t.zoom < readable) {
       const p = i.layout.positions.get(work[0])!;
       // A narrow viewport may require less than the usual readable zoom for a whole card.
-      const zoom = Math.min(MAP_ZOOM.readable, Math.max(MAP_ZOOM.min, (room.width - 16) / i.layout.metrics.width));
+      const zoom = Math.min(readable, Math.max(MAP_ZOOM.min, (room.width - 16) / i.layout.metrics.width));
       t = { zoom, x: room.width / 2 - (p.x + i.layout.metrics.width / 2) * zoom, y: room.height / 2 - (p.y + i.layout.metrics.height / 2) * zoom };
     }
     this.viewport(t);
   }
-  private endDrag() { if (this.drag) this.sink({ type: 'capture', pointerId: this.drag.id, capture: false }); this.drag = null; this.state = { ...this.state, dragging: null }; }
+  private endDrag() {
+    if (this.pinch) this.sink({ type: 'capture', pointerId: this.pinch.id, capture: false });
+    if (this.drag?.captured) this.sink({ type: 'capture', pointerId: this.drag.id, capture: false });
+    this.drag = this.pinch = null; this.state = { ...this.state, dragging: null, pinching: null };
+  }
+  private captureDrag() {
+    const drag = this.drag; if (!drag || drag.captured) return;
+    drag.captured = true; this.sink({ type: 'capture', pointerId: drag.id, capture: true });
+  }
   /** Returns whether a scoped keyboard event was handled; binding may preventDefault only then. */
   dispatch(e: MapInteractionEvent): boolean {
     if (!this.state.active || !this.input) return false;
@@ -346,18 +377,68 @@ export class DependencyMapInteraction {
       case 'zoom': { const room = mapRoom(i.viewport, this.state.selected); this.viewport(zoomAt(this.state.transform, e.factor, e.point ?? { x: room.width / 2, y: room.height / 2 })); break; }
       case 'clear': this.pending = null; this.clearSelection(true); break;
       case 'pan': if (Number.isFinite(e.x) && Number.isFinite(e.y)) this.viewport({ ...this.state.transform, x: this.state.transform.x + e.x, y: this.state.transform.y + e.y }); break;
-      case 'pointer-down': if (!e.primary || !e.background || this.drag) return false; this.drag = { id: e.pointerId, start: { ...e.point }, point: { ...e.point }, moved: false }; this.state = { ...this.state, dragging: e.pointerId }; this.sink({ type: 'capture', pointerId: e.pointerId, capture: true }); break;
+      case 'pointer-down': {
+        if (e.touch) {
+          const drag = this.drag;
+          if (drag?.touch && !this.pinch && drag.id !== e.pointerId) {
+            // Second finger: a pinch. From now on neither finger selects or clears anything.
+            drag.moved = true; drag.clears = false; this.captureDrag();
+            this.pinch = { id: e.pointerId, point: { ...e.point } };
+            this.state = { ...this.state, pinching: e.pointerId };
+            this.sink({ type: 'capture', pointerId: e.pointerId, capture: true });
+            break;
+          }
+          if (drag) return false;
+          this.drag = { id: e.pointerId, start: { ...e.point }, point: { ...e.point }, moved: false, clears: e.background, slop: MAP_TOUCH.slop, touch: true, captured: false, origin: { ...(e.origin ?? { x: 0, y: 0 }) } };
+          this.state = { ...this.state, dragging: e.pointerId };
+          // A finger on the background is captured at once; on a card only once it pans (captureDrag).
+          if (e.background) this.captureDrag();
+          break;
+        }
+        if (!e.primary || !e.background || this.drag) return false;
+        this.drag = { id: e.pointerId, start: { ...e.point }, point: { ...e.point }, moved: false, clears: true, slop: 5, touch: false, captured: false, origin: { x: 0, y: 0 } };
+        this.state = { ...this.state, dragging: e.pointerId }; this.captureDrag(); break;
+      }
       case 'pointer-move': {
-        const drag = this.drag; if (drag?.id !== e.pointerId) return false;
-        if (!drag.moved && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= 5) drag.moved = true;
+        const drag = this.drag, pinch = this.pinch;
+        if (drag && pinch && (e.pointerId === drag.id || e.pointerId === pinch.id)) {
+          // Pinch: zoom by the change in finger distance around the point between them, and pan by
+          // that point's movement. Applied instantly with the viewport (no animation, no repaint).
+          const a0 = drag.point, b0 = pinch.point;
+          const a1 = e.pointerId === drag.id ? e.point : a0, b1 = e.pointerId === pinch.id ? e.point : b0;
+          const m0 = { x: (a0.x + b0.x) / 2, y: (a0.y + b0.y) / 2 }, m1 = { x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2 };
+          const d0 = Math.hypot(b0.x - a0.x, b0.y - a0.y), d1 = Math.hypot(b1.x - a1.x, b1.y - a1.y);
+          const t0 = this.state.transform;
+          let t: Transform = { ...t0, x: t0.x + m1.x - m0.x, y: t0.y + m1.y - m0.y };
+          if (d0 > 0 && d1 > 0 && Number.isFinite(d1 / d0)) {
+            const zoom = Math.max(Math.min(MAP_TOUCH.pinchMin, t0.zoom), Math.min(MAP_ZOOM.max, t0.zoom * d1 / d0));
+            t = zoomAt(t, zoom / t.zoom, { x: m1.x - drag.origin.x, y: m1.y - drag.origin.y });
+          }
+          drag.point = { ...a1 }; pinch.point = { ...b1 };
+          this.viewport(t);
+          break;
+        }
+        if (drag?.id !== e.pointerId) return false;
+        if (!drag.moved && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= drag.slop) { drag.moved = true; this.captureDrag(); }
         if (drag.moved) { this.dispatch({ type: 'pan', x: e.point.x - drag.point.x, y: e.point.y - drag.point.y }); drag.point = { ...e.point }; }
         break;
       }
       case 'pointer-end': {
-        const drag = this.drag; if (drag?.id !== e.pointerId) return false;
-        const moved = drag.moved || (e.point && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= 5);
+        const drag = this.drag, pinch = this.pinch;
+        if (drag && pinch && (e.pointerId === drag.id || e.pointerId === pinch.id)) {
+          // One finger of a pinch lifts (or is cancelled): the other keeps panning from where it is.
+          const rest = e.pointerId === drag.id ? pinch : { id: drag.id, point: drag.point };
+          this.sink({ type: 'capture', pointerId: e.pointerId, capture: false });
+          this.pinch = null;
+          this.drag = { ...drag, id: rest.id, start: { ...rest.point }, point: { ...rest.point }, moved: true, clears: false, captured: true };
+          this.state = { ...this.state, dragging: rest.id, pinching: null };
+          break;
+        }
+        if (drag?.id !== e.pointerId) return false;
+        const moved = drag.moved || (e.point && Math.hypot(e.point.x - drag.start.x, e.point.y - drag.start.y) >= drag.slop);
+        const clears = drag.clears;
         this.endDrag();
-        if (!e.cancelled && !moved) this.clearSelection(true);
+        if (!e.cancelled && !moved && clears) this.clearSelection(true);
         break;
       }
       case 'key': {
