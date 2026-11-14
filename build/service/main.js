@@ -5813,7 +5813,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
         if (!url.searchParams.has("needsYou"))
           return {};
         if (!value.sourceBinding.verified || !value.sourceBinding.sourceId)
-          throw new ProgressError("conflict");
+          return {};
         return { needsYou: needsYou(currentStore, { storeId: value.storeId, binding: value.sourceBinding, source: value.sourceBinding.sourceId, timing: url.searchParams.has("needsYouTiming") }) };
       };
       if (url.pathname === "/v1/search") {
