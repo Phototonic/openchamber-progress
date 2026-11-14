@@ -122,7 +122,7 @@ test('availability, unverified/failed identity and control failures fail closed;
     f.lookup = async (id: string) => ({ ...f.info(id), parentID: 'ses_missing-parent' });
     const lookups = f.lookupCount;
     assert.equal(copy(await next(f)).length, 1, 'conditional guidance neither scans nor grants ancestry authority');
-    assert.equal(f.lookupCount, lookups + 1, 'only current session is needed for conditional guidance');
+    assert.ok(f.lookupCount > lookups, 'child contexts may validate ancestry for an assigned-only brief; failed ancestry preserves conditional guidance');
     const statementPrototype = Object.getPrototypeOf(f.store.db.prepare('SELECT enabled FROM meta'));
     const failure = t.mock.method(statementPrototype, 'get', () => { throw new Error('control unavailable'); });
     await f.after(write('plan.md', 'control-failure')); assert.equal(copy(await next(f)).length, 0);

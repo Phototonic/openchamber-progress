@@ -16,6 +16,9 @@ export interface LiveSession {
   archivedAt: number | null; worktree: LiveWorktree | null; activity: Activity; outcome: 'completed' | 'failed' | null;
   /** Host creation time: display order only, never an activity time. */
   createdAt?: number;
+  agent?: string;
+  links?: { title: string; kind: 'issue' | 'change' }[];
+  moreLinks?: boolean;
   /**
    * Transition evidence, numbered by the workspace's monotonic sequence (`LiveSnapshot.seq`):
    * `idleSeq` when this subscription itself saw the session go from active (running, retrying,
@@ -47,6 +50,21 @@ export interface LiveSnapshot {
 }
 
 export const EMPTY_LIVE: LiveSnapshot = { projectsState: 'off', projects: [], worktrees: new Map(), sessions: new Map(), capped: [] };
+
+/** Optional host context, never task evidence. URLs are validated but not retained. */
+export function hostWorkContext(value: { agent?: unknown; links?: unknown }): Pick<LiveSession, 'agent' | 'links' | 'moreLinks'> {
+  const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && !/[\u0000-\u001f\u007f]/u.test(v);
+  const agent = text(value.agent) ? value.agent.slice(0, 80) : undefined;
+  const links: NonNullable<LiveSession['links']> = [];
+  let moreLinks = false;
+  if (Array.isArray(value.links)) for (const link of value.links.slice(0, 100)) {
+    if (!link || typeof link !== 'object' || !text(link.title) || !text(link.url) || !['issue', 'change'].includes(link.kind) || !Number.isFinite(link.linkedAt) || link.linkedAt < 0) continue;
+    try { const url = new URL(link.url); if (!['https:', 'http:'].includes(url.protocol)) continue; } catch { continue; }
+    if (links.length === 5) { moreLinks = true; break; }
+    links.push({ title: link.title.slice(0, 200), kind: link.kind });
+  }
+  return { ...(agent ? { agent } : {}), ...(links.length ? { links } : {}), ...(moreLinks ? { moreLinks: true } : {}) };
+}
 
 export type Coverage =
   | { kind: 'live'; session: LiveSession; project?: LiveProject }
@@ -291,7 +309,7 @@ export class LiveWorkspace {
           if (r.activity === 'idle') idleSeq = before && ACTIVE.has(before.activity) ? ++this.seq : before?.activity === 'idle' ? before.idleSeq : undefined;
           else if (ACTIVE.has(r.activity)) activeSeq = before?.activity === 'idle' ? ++this.seq : before && ACTIVE.has(before.activity) ? before.activeSeq : undefined;
           seen.set(r.id, { activity: r.activity, idleSeq, activeSeq });
-          return { id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome, createdAt: Number.isFinite(r.createdAt) ? r.createdAt : undefined, ...(idleSeq !== undefined ? { idleSeq } : {}), ...(activeSeq !== undefined ? { activeSeq } : {}) };
+          return { id: r.id, title: r.title, projectId: r.projectId, directory: r.directory, parentId: r.parentId, archivedAt: r.archivedAt, worktree: r.worktree ? { directory: r.worktree.directory, name: r.worktree.name, branch: r.worktree.branch } : null, activity: r.activity, outcome: r.outcome, createdAt: Number.isFinite(r.createdAt) ? r.createdAt : undefined, ...hostWorkContext(r), ...(idleSeq !== undefined ? { idleSeq } : {}), ...(activeSeq !== undefined ? { activeSeq } : {}) };
         });
         if (seen.size > SEEN_LIMIT) { const listed = new Set(s.sessions.map((r) => r.id)); for (const id of seen.keys()) if (!listed.has(id)) seen.delete(id); }
         lastReady = records;

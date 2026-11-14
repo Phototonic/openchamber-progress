@@ -1,6 +1,6 @@
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
+import { button, detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, recoveredHeading, retryRead, staleBlock, testid } from '../shared/components.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
@@ -8,7 +8,7 @@ import { initialSetupUi, reloadNote, setupBlock, type SetupUi } from '../shared/
 import { cleanupBlock, cleanupNotice } from '../shared/cleanup-view.ts';
 import { censusFor, planFacts } from '../shared/census.ts';
 import { runClaim, subagentsBlock } from '../shared/census-view.ts';
-import { planProject } from '../shared/live.ts';
+import { planProject, sessionLabel } from '../shared/live.ts';
 import { createMapFrame, planViewSwitch, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { warningLine } from '../shared/primitives.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
@@ -26,6 +26,7 @@ type Ui = { selected: string | null; setup: SetupUi; presentation: 'list' | 'map
 const recentSelection = new RecentMemory<string>(RECENT_SCOPES);
 let contextSession: string | null | undefined;
 let contextAuthority = '';
+let contextAction = false;
 let selectionGeneration = 0;
 /** The rail hosts the full map itself (the host can't open the board from here). View as list stays in this frame. */
 const viewChoice = new DefaultViewChoice();
@@ -73,6 +74,7 @@ startView<Ui>({
   // The chosen plan is remembered per session, so reopening the panel keeps it.
   onContext: (vc) => {
     const id = vc.session?.id ?? null;
+    if (contextAction !== !!vc.progressAction) { contextSession = undefined; contextAction = !!vc.progressAction; }
     if (contextAuthority !== vc.identity) { recentSelection.clear(); contextSession = undefined; contextAuthority = vc.identity; }
     if (id === contextSession) return; // another step of the same switch keeps the selection
     contextSession = id;
@@ -96,8 +98,24 @@ startView<Ui>({
     const mapShown = vc.ui.presentation === 'map' && !!shown && !!session;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));
+    if (vc.progressAction) root.append(pinnedScope(vc, language));
+    if (vc.progressContext) {
+      const text = {
+        en: { checking: 'Checking the selected session’s location and access…', invalid: 'This Progress action has no valid session context.', unavailable: 'The selected session is unavailable here. Its current location and access could not be verified.' },
+        ru: { checking: 'Проверка расположения и доступа выбранной сессии…', invalid: 'У этого действия нет допустимого контекста сессии.', unavailable: 'Выбранная сессия здесь недоступна. Не удалось подтвердить её текущее расположение и доступ.' },
+      }[language];
+      const state = testid(el('p', 'ap-note', text[vc.progressContext]), 'session-action-context');
+      state.setAttribute('role', 'status');
+      root.append(state);
+      if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
+      root.append(languageBlock(vc.language, env.locale));
+      return;
+    }
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
     if (!read) {
+      if (vc.progressAction && failure?.code === 'ACTION_CONTEXT') root.append(testid(el('p', 'ap-note', language === 'ru'
+        ? 'Не удалось подтвердить полный отчёт о прогрессе выбранной сессии и его установку OpenCode.'
+        : 'The selected session’s complete progress and OpenCode setup could not be verified.'), 'session-action-read-refused'));
       if (!vc.session?.id) root.append(emptyBlock('unscoped-state', t.noSession, t.openProgress));
       if (failure) root.append(failureBlock(failure, retryRead(vc), env.locale));
       else if (vc.health && !vc.health.ready) {
@@ -123,6 +141,9 @@ startView<Ui>({
     } else {
       const generation = selectionGeneration;
       const plan = pickPlan(scope.plans, vc.ui.selected);
+      if (vc.progressAction && scope.plans.length > 1) root.append(testid(el('p', 'ap-note', language === 'ru'
+        ? (scope.plans.some(p => p.key === vc.ui.selected) ? 'Выбранный план' : 'План выбран автоматически')
+        : (scope.plans.some(p => p.key === vc.ui.selected) ? 'Chosen plan' : 'Plan chosen automatically')), 'session-action-choice'));
       // The title is the picker (several plans): built fresh each paint, so it carries this paint's choice guard.
       const choose = plan && scope.plans.length > 1 ? (standalone = false) => picker(scope.plans, plan, scope.kind === 'session' ? scope.sessionId : null, standalone, (key) => {
         if (generation !== selectionGeneration) return;
@@ -172,6 +193,29 @@ startView<Ui>({
     root.append(languageBlock(vc.language, env.locale));
   },
 });
+
+const scopeCopy = {
+  en: { label: 'Progress for selected session', reset: 'Show current session', done: 'Showing the current session' },
+  ru: { label: 'Прогресс выбранной сессии', reset: 'Показать текущую сессию', done: 'Показана текущая сессия' },
+} satisfies Record<InterfaceLanguage, Record<string, string>>;
+
+/**
+ * The pinned scope of a session action, with its explicit local way back (also while the target is
+ * checking, unavailable or invalid). Focus that was on the reset goes to the resulting state's heading.
+ */
+function pinnedScope(vc: ViewContext<Ui>, language: InterfaceLanguage) {
+  const copy = scopeCopy[language];
+  const line = testid(el('div', 'ap-row ap-note'), 'session-action-scope');
+  if (vc.session) line.append(el('span', '', `${copy.label}: ${sessionLabel(vc.session.id, vc.live, language)}`));
+  if (vc.progressReset) {
+    const reset = vc.progressReset;
+    button(line, 'session-action-reset', copy.reset, () => {
+      vc.handoff({ heading: (root) => recoveredHeading(root) ?? root.querySelector<HTMLElement>('[role="alert"] button'), notice: (_heading, locale = language) => scopeCopy[locale].done });
+      reset();
+    }, 'ghost');
+  }
+  return line;
+}
 
 function current(vc: ViewContext<Ui>) {
   if (!vc.read) return null;

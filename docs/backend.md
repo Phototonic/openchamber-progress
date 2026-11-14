@@ -326,6 +326,25 @@ authoritative location metadata without changing the bound document path. If the
 document stays in the old worktree, it remains the source; a relocated document
 requires an explicit new binding rather than silently following the move.
 
+## Assigned-child reports and combined handoff
+
+The existing activation/read owner supplies a bounded current assigned-task brief
+only after dispatch binding is verified and the child actually has the report
+tool. Binding is established by the dispatch after-hook, so a first execution can
+finish before receiving this brief. No preparation/resume automation or inferred
+report repairs that gap. Coordinators declare before dispatch; children read fresh
+revisions and report actual working, done or blocked states for assigned tasks only.
+
+The handoff router accepts optional `taskUpdate:{plan,rev,changes}`. The Store's
+transaction-local task/claim/receipt path commits both components atomically with
+ordinary child authority, capture permission and lifecycle fences. Success returns
+`handoff` plus `taskReceipt`; the task contribution is direct, not a parent relay.
+Bare handoffs remain claims only. Full-input receipt replay cannot upgrade a bare
+claim, reapply pruned task changes or infer success from an older claim hash.
+Conflicts remain visible and require an intentional fresh operation. See
+[the handoff contract](contracts.md#optional-authored-child-handoff) for retention,
+mixed-writer and independent claim/acceptance/task semantics.
+
 ## Storage and document consistency
 
 Finished-plan cleanup is the bounded exception to default history retention;

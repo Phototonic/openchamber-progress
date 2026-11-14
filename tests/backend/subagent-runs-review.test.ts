@@ -3,6 +3,93 @@ import assert from 'node:assert/strict';
 import { Store } from '../../shared/store.ts';
 import type { RunRow } from '../../shared/subagent-runs.ts';
 import { fixture, deferred } from './subagent-test-support.ts';
+import { parseReportRequest } from '../../shared/progress.ts';
+
+const finalReport=(rev:number,oid='final')=>({op:'handoff',oid,summary:'Synthetic final result',outcome:'partial',taskUpdate:{plan:'plan-alpha',rev,changes:[{id:'task-1',status:'blocked',blocker:{reason:'Needs a decision',nextAction:'Choose format'}}]}});
+const code=(expected:string,revision?:number)=>(e:any)=>e.code===expected&&(revision===undefined||e.revision===revision);
+async function assigned(f:any) {
+  f.store.apply({op:'link',plan:'plan-alpha',oid:'assign',rev:1,child:'C1',assign:['task-1']},f.actor(),undefined,f.actor('C1'));
+  f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,f.actor('C1'),'returned');f.store.observeExecution(start);
+}
+test('combined parser rejects authority, duplicate IDs and malformed blocker inputs',()=>{
+  assert.deepEqual(parseReportRequest(finalReport(2)),finalReport(2));
+  for(const taskUpdate of [null,{}, {...finalReport(2).taskUpdate,attributed:'C2'}, {...finalReport(2).taskUpdate,changes:[]}, {...finalReport(2).taskUpdate,changes:[{id:'task-1',status:'done',blocker:{reason:'Invalid'}}]}, {...finalReport(2).taskUpdate,changes:[{id:'task-1',status:'done'},{id:'task-1',status:'working'}]}])assert.throws(()=>parseReportRequest({...finalReport(2),taskUpdate}),code('invalid'));
+});
+test('combined handoff commits once with direct provenance and full-input durable replay',async()=>fixture(async f=>{
+  await assigned(f);const r=finalReport(2),reply=f.store.handoff(r,f.actor('C1'),2500);
+  assert.equal(reply.taskReceipt.rev,3);assert.equal(reply.handoff.outcome,'partial');
+  const p=f.plan();assert.equal(p.items[0]!.status,'blocked');assert.equal(p.items[0]!.blocker!.reporterSessionId,'C1');
+  const contributions=f.store.detail(f.source.id,p.id).contributions.data;
+  assert.equal(contributions.at(-1)!.mode,'direct');assert.equal(contributions.at(-1)!.attributedSessionId,'C1');
+  const reopened=new Store(f.store.file);reopened.bindReads(f.source.id,true);
+  try {assert.deepEqual(reopened.handoff(r,f.actor('C1'),2600),reply);}finally{reopened.close();}
+  assert.equal(f.plan().revision,3);
+  for(const altered of [{...r,taskUpdate:{...r.taskUpdate,rev:3}},{...r,taskUpdate:{...r.taskUpdate,changes:[{id:'task-1',status:'done'}]}},{op:'handoff',oid:r.oid,summary:r.summary,outcome:r.outcome}])assert.throws(()=>f.store.handoff(altered,f.actor('C1'),2600),code('operation-reused'));
+}));
+test('combined parent-child competition conflicts visibly in both orders',async()=>{
+  for(const childFirst of [false,true])await fixture(async f=>{
+    await assigned(f);const parent=()=>f.store.apply({op:'change',plan:'plan-alpha',oid:'parent-change',rev:2,changes:[{id:'task-2',status:'working'}]},f.actor());
+    const child=()=>f.store.handoff(finalReport(2),f.actor('C1'),2500);
+    (childFirst?child:parent)();assert.throws(childFirst?parent:child,code('conflict',3));assert.equal(f.plan().revision,3);
+    if(!childFirst)assert.equal(f.store.subagentRuns({storeId:f.store.list().storeId,binding:{sourceId:f.source.id,verified:true},source:f.source.id,root:'A'}).data[0]!.claimed,null);
+  });
+});
+test('combined rejects mixed scope, bare upgrade, missing replay evidence and transaction failure',async()=>{
+  await fixture(async f=>{
+    await assigned(f);
+    for(const id of ['task-2','unknown','group'])assert.throws(()=>f.store.handoff({...finalReport(2),taskUpdate:{...finalReport(2).taskUpdate,changes:[{id:'task-1',status:'done'},{id,status:'done'}]}},f.actor('C1'),2500),code('assignment'));
+    assert.equal(f.plan().revision,2);
+    const bare={op:'handoff',oid:'bare',summary:'Synthetic',outcome:'done'};
+    f.store.handoff(bare,f.actor('C1'),2500);
+    assert.throws(()=>f.store.handoff({...bare,taskUpdate:finalReport(2).taskUpdate},f.actor('C1'),2500),code('operation-reused'));
+    assert.throws(()=>f.store.handoff(finalReport(2),f.actor('C1'),2500),code('conflict'));
+    assert.equal(f.plan().revision,2);
+  });
+  await fixture(async f=>{
+    await assigned(f);
+    f.store.db.exec("CREATE TEMP TRIGGER fail_combined BEFORE UPDATE OF receipt ON receipts BEGIN SELECT RAISE(ABORT,'synthetic failure'); END");
+    assert.throws(()=>f.store.handoff(finalReport(2),f.actor('C1'),2500),code('storage'));assert.equal(f.plan().revision,2);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM runs_claims').get()!.n,0);
+    f.store.db.exec('DROP TRIGGER fail_combined');f.store.handoff(finalReport(2),f.actor('C1'),2500);
+    f.store.db.prepare('DELETE FROM receipts WHERE oid=?').run('final');
+    assert.throws(()=>f.store.handoff(finalReport(2),f.actor('C1'),2500),code('operation-reused'));assert.equal(f.plan().revision,3);
+  });
+});
+test('combined replay survives claim detachment but never reconstructs after pruning',async()=>fixture(async f=>{
+  await assigned(f);const r=finalReport(2),reply=f.store.handoff(r,f.actor('C1'),4000);
+  // Delayed native chronology detaches the claim from this execution. The task
+  // contribution remains a deliberate fact, not an execution-derived status.
+  f.store.observeExecution({...start,id:'delayed-end',sequence:11,at:3000,state:'succeeded'});
+  assert.deepEqual(f.store.handoff(r,f.actor('C1'),4100),reply);assert.equal(f.plan().revision,3);
+  // A later proven execution can adopt the session-only claim without changing
+  // either receipt or progress. Legacy claim hashes still cover prose only.
+  f.store.beforeRun({...key,call:'resumed'},f.actor(),'subagent',{},3500);
+  f.store.afterRun({...key,call:'resumed'},0,f.actor('C1'),'returned');
+  f.store.observeExecution({...start,id:'resumed-start',sequence:12,at:3501});
+  f.store.observeExecution({...start,id:'resumed-end',sequence:13,at:5000,state:'succeeded'});
+  assert.deepEqual(f.store.handoff(r,f.actor('C1'),5100),reply);assert.equal(f.plan().revision,3);
+  const template=String(f.store.db.prepare('SELECT payload FROM runs_rows LIMIT 1').get()!.payload);
+  f.store.db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1022) INSERT INTO runs_rows SELECT 'protected-'||i,'source-alpha','A',NULL,'message-other','call-other-'||i,0,0,6000,json_set(json_remove(?,'$._startEvent','$._retiredClaim'),'$.id','protected-'||i,'$.claimed',json('null'),'$.childSessionId',json('null'),'$.ran.state','unknown') FROM n`).run(template);
+  f.store.beforeRun({...key,call:'pressure-1'},f.actor(),'subagent',{},7000);
+  f.store.beforeRun({...key,call:'pressure-2'},f.actor(),'subagent',{},8000);
+  assert.throws(()=>f.store.handoff(r,f.actor('C1'),9000),code('not-found'));assert.equal(f.plan().revision,3);
+}));
+test('combined receipts remain bounded by plan cleanup and lost legacy evidence refuses',async()=>{
+  for(const action of ['archive','delete'] as const)await fixture(async f=>{
+    await assigned(f);const r=finalReport(2);f.store.handoff(r,f.actor('C1'),2500);
+    f.store.apply({op:'change',plan:'plan-alpha',oid:'resolve',rev:3,changes:[{id:'task-1',status:'done'},{id:'task-2',status:'done'}]},f.actor());
+    f.store.apply({op:'finish',plan:'plan-alpha',oid:'finish',rev:4,outcome:'finished'},f.actor());
+    f.store.cleanup(action,{storeId:f.store.list().storeId,source:f.source.id,plan:'plan-alpha',rev:5,cleanupRev:0,oid:'cleanup',...(action==='delete'?{confirmed:true}:{})});
+    assert.throws(()=>f.store.handoff(r,f.actor('C1'),2600),code(action==='archive'?'closed':'not-found'));
+  });
+  await fixture(async f=>{
+    await assigned(f);const r=finalReport(2);f.store.handoff(r,f.actor('C1'),2500);
+    // An old writer can preserve public bare claims while losing unknown receipt
+    // metadata. That summary-only representation must never certify task replay.
+    f.store.db.prepare("UPDATE receipts SET receipt=json_remove(receipt,'$._handoffChild') WHERE oid='final'").run();
+    assert.throws(()=>f.store.handoff(r,f.actor('C1'),2600),code('operation-reused'));assert.equal(f.plan().revision,3);
+  });
+});
 
 const key={source:'source-alpha',parent:'A',message:'message',call:'call'};
 const start={source:'source-alpha',child:'C1',id:'start',sequence:10,at:2000,state:'running' as const,errorType:null,interruptionReason:null};

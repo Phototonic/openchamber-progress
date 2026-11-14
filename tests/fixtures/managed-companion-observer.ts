@@ -1,17 +1,21 @@
 /** Credential-free fixture provider. No prompts, document text or raw errors are recorded. */
 import { Model, Provider, Plugin } from '@opencode/plugin';
-import { appendFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 
 export default Plugin.define({id:'managed-fixture-observer',async setup(ctx){
   const root=process.env.MANAGED_FIXTURE_ROOT!;
   const record=(value:object)=>appendFileSync(`${root}/events.jsonl`,JSON.stringify(value)+'\n');
   const provider=Provider.ID.make('managed-fixture'),model=Model.ID.make('script');
+  const seen=new Set<string>();
   await ctx.provider.transform(e=>{for(const p of e.list())e.remove(p.provider.id);e.add({info:{...Provider.Info.empty(provider),activation:'enabled',package:`aisdk:file://${root}/sdk.mjs`},models:[Model.Info.default(provider,model)]});});
   await ctx.model.transform(e=>e.default.set(provider,model));
   await ctx.session.hook('title',e=>{e.result='Synthetic managed fixture';});
   await ctx.session.hook('retry',e=>{e.decision={retry:false};});
   await ctx.session.hook('http.request',()=>{record({type:'forbidden-http'});throw new Error('External provider transport forbidden');});
-  await ctx.session.hook('context',e=>record({type:'context',session:e.sessionID,reportTool:Object.hasOwn(e.tools,'agent_progress_report'),guidance:e.system.join('\n').split('# Agent progress (companion)').length-1}));
+  await ctx.session.hook('context',e=>{
+    record({type:'context',session:e.sessionID,reportTool:Object.hasOwn(e.tools,'agent_progress_report'),guidance:e.system.join('\n').split('# Agent progress (companion)').length-1});
+    if(existsSync(`${root}/jobs.json`))e.system.push({type:'text',text:`MANAGED_FIXTURE_ID:${e.sessionID}`});
+  });
   await ctx.tool.hook('execute.after',e=>{
     if(e.tool!=='agent_progress_report')return;
     let receipt:{rev?:number;error?:string}={};try{receipt=JSON.parse((e as any).result?.content??'{}');}catch{}
@@ -23,6 +27,13 @@ export default Plugin.define({id:'managed-fixture-observer',async setup(ctx){
     e.language={specificationVersion:'v3',provider,modelId:model,supportedUrls:{},async doGenerate(){throw new Error('Auxiliary generation forbidden');},async doStream(options:any){
       let step:any;try{step=JSON.parse(readFileSync(`${root}/step.json`,'utf8'));unlinkSync(`${root}/step.json`);}catch{}
       const system=options.prompt.filter((x:any)=>x.role==='system').map((x:any)=>typeof x.content==='string'?x.content:JSON.stringify(x.content)).join('\n');
+      if(existsSync(`${root}/jobs.json`)){
+        const identity=system.match(/MANAGED_FIXTURE_ID:(\S+)/)?.[1];
+        if(!identity)throw new Error('Missing fixture identity');
+        const jobs=JSON.parse(readFileSync(`${root}/jobs.json`,'utf8')),job=jobs[identity];
+        const key=`${identity}:${job?.generation??'initial'}`;
+        step=seen.has(key)?undefined:job?.step;seen.add(key);
+      }
       record({type:'outgoing',reportTool:options.tools?.some((t:any)=>t.name==='agent_progress_report')??false,guidance:system.split('# Agent progress (companion)').length-1});
       return {stream:new ReadableStream({start(c){
         c.enqueue({type:'stream-start',warnings:[]});

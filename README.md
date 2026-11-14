@@ -19,6 +19,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 - **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view. Blue beads travel along the arrows from a task reported working to the tasks waiting on it, and an arrow from a blocked task ends in a stop bar.
 - **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
+- **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session. Choose **Show current session** to follow the visible chat again; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context).
 - **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
 - **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
 - **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.
@@ -67,6 +68,8 @@ No build step or dependency install is needed. Prefer a download? Each version i
 **Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).
 
 ## Good to know
+
+- **Child reports are deliberate.** Assigned children with reporting permission receive their task brief only after verified binding, on a naturally occurring context. A first-turn-only child may finish without reporting. A bare final handoff records a claim only; an explicit combined handoff can atomically report assigned task changes too. Neither means the coordinator accepted the work. Optional host agent/resource labels are context, not task authority; Workflows navigation is not offered on the current SDK.
 
 - **Capture follows managed delivery.** Watched-file delivery retires capture after extension disable/removal; caller-owned configuration requires an explicit OpenCode restart. Mode may be unknown. Terminal, external/remote, isolated-space and VS Code runtimes are outside this managed path. A legacy plugin or explicit **Add to global config** entry can outlive the extension and needs deliberate separate removal. History is retained; a held-permission session may need interruption.
 - **Your data stays local.** Plans live in a private SQLite store on your machine. It can contain plan text and project paths, so treat it, and any screenshots, as private.

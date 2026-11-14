@@ -50,7 +50,9 @@ restricted-child tool policies; an explicit parent relay labels both identities.
 Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
 
-For the next `subagent` delegation, the coordinator may use `op=delegate` with
+For known assigned work, read the plan and declare before the next supported
+`subagent` dispatch. Include plan/task IDs and the reporting expectation in the
+assignment; those IDs alone grant no authority. Use `op=delegate` with
 `plan`, fresh `oid`, expected `rev` and `assign` (at most 50 unique task IDs).
 Empty `assign` explicitly cancels the parent's pending declaration. This does not
 dispatch a child or assign tasks. Intent persists across restart without a
@@ -70,13 +72,25 @@ reporting permission or accepted handoff. It never relaxes child restrictions.
 A permitted child may optionally send one safe final claim, without a plan:
 `op:"handoff"`, fresh `oid`, `summary` and `outcome:"done"|"partial"|"blocked"`.
 Summary must be a nonblank single line, at most 200 JavaScript code units, with
-no NUL/newlines. No plan, revision, source, task, child or attributed identity is
-accepted. Identical retries use the same oid; a second claim for that execution
+no NUL/newlines. No top-level plan, revision, source, child or attributed identity is
+accepted. Optional `taskUpdate:{plan,rev,changes}` commits explicit statuses for
+1–50 unique currently assigned tasks atomically with the claim, returning
+`taskReceipt`. Use a fresh read first. Report actual working, blocked with safe
+reason/next action when known, and final done/blocked changes only for your tasks;
+never change siblings, structure or plan lifecycle. Outcome alone selects no status.
+Identical full-input retries use the same oid; altered reuse refuses; a second claim for that execution
 conflicts. Do not expose a tool hidden by host policy or relay another child's
 handoff. Supply purpose-written safe prose, never prompts, outputs or secrets;
 bounds/literal rendering are not redaction. Absence is ordinary, host completion
 is independent, and a claimed done run can still have explicitly blocked tasks.
 Only deliberate task reporting changes task progress.
+
+Reporting is after verified binding only, on naturally occurring eligible child
+contexts. Do not insert preparation turns, automatically resume a child or backfill
+reports. A first-turn-only child may finish before binding and have no direct
+reports. Repeated guidance is not a reason to report. Older tools reject
+`taskUpdate`; inspect current state before deliberately using separate change and
+bare handoff operations, never automatically strip the unsupported field.
 
 For a deliberately blocked task, optionally report `blocker` with only
 `category`, `reason` and `nextAction`. Categories are `decision`, `dependency`,
