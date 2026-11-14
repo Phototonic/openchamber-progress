@@ -966,14 +966,22 @@ export function startView<U>(spec: ViewSpec<U>) {
       const previous = headReads.get(p.key);
       if (previous?.reading === key && previous.current()) { previous.queued = true; continue; }
       const pending = { reading: key, queued: false, current };
+      const before = details.get(p.key);
       headReads.set(p.key, pending);
       void readPlanHead(guardedHost(current), p).then(result => {
-        if (!current() || headReads.get(p.key) !== pending || pending.queued) return;
+        if (!current() || headReads.get(p.key) !== pending) return;
+        const cached = details.get(p.key);
         const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
         if (result.ok && sameIdentity) {
+          // A queued poll is demand for another read, not evidence this success is stale.
+          // Never roll back newer detail (or revive a failure that overtook this head).
+          if (cached && (result.plan.revision < Math.max(cached.revision, cached.requested) ||
+            (cached !== before && cached.value.state === 'error') ||
+            (result.plan.cleanup?.revision ?? 0) < Math.max(cached.cleanup, cached.requestedCleanup))) return;
           // Unchanged heads leave the detail, its timing anchors and DOM untouched.
           loadDetails([result.plan]);
         } else {
+          if (pending.queued || cached !== before) return;
           const failure: ReadFailure = result.ok ? { kind: 'invalid', code: 'CONTRACT', message: 'The reading identity changed.' } : result.failure;
           details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: p.cleanup?.revision ?? 0, requestedCleanup: p.cleanup?.revision ?? 0, captureEnabled: read?.captureEnabled, generation, listRead: listReads, value: { state: 'error', failure } });
           bump();
@@ -981,8 +989,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       }).finally(() => {
         if (headReads.get(p.key) !== pending) return;
         headReads.delete(p.key);
-        // One follow-up for any number of refreshes that overtook this reply. The
-        // overtaken result is never painted, including failures such as store busy.
+        // One follow-up for any number of refreshes that overtook this reply.
+        // Current successes can advance detail first; queued failures never paint.
         if (pending.queued && current()) refreshDetails(refresh);
       });
     }

@@ -678,6 +678,9 @@ current plan head rechecks existence, revision and cleanup independently of
 inbox membership; changed heads re-read detail, unchanged heads retain it. Head
 reads are single-flight per reading identity (including its opening token), with
 one coalesced follow-up; retired or superseded replies never replace current detail.
+An intervening poll does not discard a still-current successful head: it can advance
+detail before the follow-up, even when every head read outlasts the poll interval.
+Older revisions and replies overtaken by a newer detail failure cannot revive it.
 Data-only cache resets retain that reading's reveal-once token, so recovery never
 re-reveals or refocuses its task. Removed or
 no-longer-blocked work is explained. **Back to session progress** returns focus to
