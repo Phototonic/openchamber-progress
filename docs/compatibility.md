@@ -431,6 +431,47 @@ SDK upgrade nor a task-named event family may auto-enable capture.
 
 ## Native Windows verification
 
+### Managed startup and released migration regression gate
+
+The `Windows setup, storage and capture` CI job retains the existing native
+platform suite and adds `tests/backend/windows-service.test.ts`, in the same
+provisioned non-admin account. `Fetch released Windows migration fixture` fetches
+`v1.1.1`; the test uses that tag's emitted lifecycle/Store and actual payloads,
+not a reconstruction using current installer code. No host, profile, model,
+administrator product operation or runtime dependency download is used.
+
+The test launches a fresh child using the unmodified built service, synthetic
+HOME with spaces/Unicode, no explicit XDG config/data, and an intact legacy
+installation but no managed selector. A test-only preload records security-query
+and legacy-read counts over IPC. Before listen and first health must both have
+zero queries/legacy reads. First health must finish within 1.25 seconds and total
+startup within 12 seconds. These margins are below OpenChamber **v2.7.1**
+[`packages/web/server/lib/guests/service.js`](https://github.com/openchamber/openchamber/blob/v2.7.1/packages/web/server/lib/guests/service.js):
+15-second startup deadline, 1.5-second authenticated health polls, 200 ms between
+polls. The SDK 2.7.0 Setup proxy has a separate 20-second request limit; native
+inspection, diagnostic status and migration timings are checked against it.
+
+Authenticated inspect/confirmed migration must preserve Store/source identity,
+schema-2 empty history/run storage and retained releases, remove only verified
+legacy discovery, and enable capture on completion. Post-inspect injected security
+timeout/private-creation refusals must return precise stage/code and leave legacy
+bytes/enabled state intact. Fresh children also exercise selected and invalid
+hard-linked state: health never admits it, a real read refuses it, and legitimate
+restoration permits a fresh read. The existing Windows suite retains explicit-XDG,
+canonical-alias, ACL mutation, foreign-owner and unsafe-ancestor coverage.
+
+`Upload sanitized Windows migration trace` uploads `windows-migration-trace` even
+when tests fail. Its JSONL contains only fixed stages, error **classes** (platform,
+filesystem, storage, setup, test or timeout), allowlisted codes, timings, security
+query/legacy-read counts, marker/lock/expectation/record/selector booleans,
+capture-enabled and migration-phase observations. Fixed harness codes distinguish
+assertion/request/proxy-budget failures from product refusals. It contains no raw
+logs, paths, SIDs, auth, commands or database content. Expected injected failures
+and the final state are recorded. This gate is prepared for the native runner;
+Linux checks alone do **not** establish that it passes or identify a reporter's
+particular Windows syscall failure. A passing run is not Windows desktop host
+installation or managed companion-delivery certification.
+
 The native implementation adds no separate binary or compilation requirement for
 users. It uses the existing bundled JavaScript, ordinary Windows file identity
 checks, and Windows PowerShell 5.1/public .NET APIs for ownership and private ACLs.

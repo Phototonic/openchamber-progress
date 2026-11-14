@@ -3,13 +3,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
 import { Store, storageError, digest, canonical } from '../shared/store.ts';
-import { ProgressError, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState } from '../shared/progress.ts';
+import { ProgressError, type Code, type SetupRead, type ManagedSetupAction, type ManagedReview, type ManagedMigrationState, type ManagedActionStage } from '../shared/progress.ts';
 import { managedBindingFile, managedSourceRoots, managedPath, readManagedBinding, createManagedBindingDirectory, publishPrivateJson, ManagedBindingError, readManagedExpectation, writeManagedExpectation } from '../shared/managed-binding.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
 import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
-import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
+import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
 
 /** Only the trusted service entry chooses bindingFile/payload; HTTP cannot. */
 export class SetupController {
@@ -23,12 +23,18 @@ export class SetupController {
   private readonly reviewNonce = randomUUID();
   private managedDiagnostic: string | undefined;
   private migrationDiagnostic: string | undefined;
+  private checked = false;
+  private runsAvailable = false;
+  private expectationPending = true;
+  private lastAction?: SetupRead['lastAction'];
+  private migrationStage: ManagedActionStage = 'managed-state-create';
+  lastMigrationFailure() { return this.lastAction?{...this.lastAction}:undefined; }
   constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext) {
     this.readonlyPayload=readonlyPayload;this.suggestionContext=suggestionContext;
     if(typeof privateFile !== 'string') {
-      this.managedEnv={...privateFile.env};this.bindingFile='';this.refresh();
-      // One admitted package generation may establish its baseline; GET/status never rewrites it.
-      if(this.store&&this.binding)try{this.establishExpectation(this.binding);}catch{/* Unknown expectation is not authorization. */}
+      // Listening and host liveness must not wait on cold security helpers. No
+      // background admission: real setup/data operations validate synchronously.
+      this.managedEnv={...privateFile.env};this.bindingFile='';
       return;
     }
     this.bindingFile=privateFile;
@@ -40,17 +46,34 @@ export class SetupController {
   }
   private readonly bindingFile: string;
   current() { this.refresh();return {store:this.store,error:this.error,configured:!!this.binding}; }
+  /** Last admission observation only. This snapshot grants no filesystem authority. */
+  health() {
+    const diagnostics=this.managedDiagnostic?[this.managedDiagnostic]:this.store?[]:
+      this.securityUnavailable?['windows-security-unavailable']:this.binding||!this.canPersist?[this.error]:[];
+    return {state:!this.checked?'starting':this.store?'ready':diagnostics.length?'refused':'unconfigured',
+      ready:!!this.store,sqlite:!!this.store,diagnostics,subagentRuns:!!this.store&&this.runsAvailable};
+  }
   close() {this.store?.close();this.store=undefined;}
   private load(b:Binding) {
     let next:Store;
     try{next=new Store(b.database);}catch(e){if(e instanceof PlatformError)throw e;const error=storageError(e);throw error.code==='binding'||error.code==='not-found'?new ProgressError('storage'):error;}
     // Validate optional run storage before admitting the store, not later in
     // /health capability discovery where a schema refusal fails host readiness.
-    try{verifyStore(next,b);next.subagentRunStorage();next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
+    try{verifyStore(next,b);const runs=next.subagentRunStorage();this.runsAvailable=runs==='current'||runs==='previous';next.bindReads(b.source.id,b.source.verified);}catch(e){next.close();throw e;}
     this.store?.close();this.store=next;this.binding=b;this.securityUnavailable=false;
   }
   private recordError(e:unknown) {this.error=storageError(e).code;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
   private refresh() {
+    platformSecurityScope(()=>this.refreshInner());
+    // Once per admitted package generation, outside read-only security scopes.
+    // Failure remains an unknown expectation, not an authorization or a retry loop.
+    if(this.managedEnv&&this.store&&this.binding&&this.expectationPending){
+      this.expectationPending=false;
+      try{this.establishExpectation(this.binding);}catch{/* Unknown expectation is not authorization. */}
+    }
+  }
+  private refreshInner() {
+    this.checked=true;
     if(this.managedEnv) {
       try {
         const b=readManagedBinding(this.managedEnv);
@@ -62,7 +85,7 @@ export class SetupController {
         if(this.expectedDescriptor!==null&&descriptor!==this.expectedDescriptor)throw new ManagedBindingError('managed-binding-modified');
         this.binding=b;this.expectedDescriptor=descriptor;
         this.load(b);this.managedDiagnostic=undefined;
-      }catch(e){this.close();this.recordError(e);this.managedDiagnostic=e instanceof ManagedBindingError||e instanceof PlatformError?e.code:storageError(e).code;}
+      }catch(e){this.close();this.recordError(e);this.managedDiagnostic=e instanceof ManagedBindingError?e.code:platformErrorCode(e)??storageError(e).code;}
       return;
     }
     if(!this.binding)return;
@@ -92,6 +115,11 @@ export class SetupController {
   run(action:Action|ManagedSetupAction,body:unknown):SetupRead {
     if(this.managedEnv) {
       if(!action.startsWith('managed-'))throw new SetupError('managed-action-required');
+      if(action==='managed-migrate'){
+        this.lastAction=undefined;this.migrationStage='managed-state-create';
+        try{return this.runManaged(action,body);}
+        catch(e){this.lastAction={stage:this.migrationStage,code:migrationActionCode(e)};throw e;}
+      }
       return this.runManaged(action as ManagedSetupAction,body);
     }
     if(action.startsWith('managed-'))throw new SetupError('managed-service-required');
@@ -160,6 +188,9 @@ export class SetupController {
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
   private managedMigration(_targets?:Targets):ManagedMigrationState {
+    return platformSecurityScope(()=>this.managedMigrationInner());
+  }
+  private managedMigrationInner():ManagedMigrationState {
     this.migrationDiagnostic=undefined;
     try{
       const record=readMigration(this.managedEnv!),legacy=legacyMigration(this.managedEnv!);
@@ -176,11 +207,16 @@ export class SetupController {
   }
   private managedStatus():SetupRead {
     this.refresh();
+    return platformSecurityScope(()=>this.managedStatusInner());
+  }
+  private managedStatusInner():SetupRead {
     const b=this.binding,targets=this.targets();
     const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
+      ...(this.lastAction?{lastAction:{...this.lastAction}}:{}),
       delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:this.managedMigration(targets),mode:'unknown',observation:'unknown',expectedVersion:null}};
+    if(this.lastAction&&!base.diagnostics.includes(this.lastAction.code))base.diagnostics.push(this.lastAction.code);
     if(this.migrationDiagnostic&&!base.diagnostics.includes(this.migrationDiagnostic))base.diagnostics.push(this.migrationDiagnostic);
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
@@ -205,6 +241,7 @@ export class SetupController {
   }
   private managedControlCandidate(storeRoot?:string): {review:ManagedReview;binding:Binding;targets:Targets} {
     this.refresh();
+    if(this.securityUnavailable)throw new PlatformError('windows-security-unavailable');
     if(!this.store||!this.binding)throw new ProgressError(this.error);
     const b=this.binding,targets=this.targets()!;
     if(!b.source.verified)throw new ProgressError('source-unverified');
@@ -215,6 +252,9 @@ export class SetupController {
     return {review:{expected,targets,storeId:b.storeId,sourceId:b.source.id},binding:b,targets};
   }
   private managedFullCandidate(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
+    return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot));
+  }
+  private managedFullCandidateInner(storeRoot?:string): {review:ManagedReview;binding?:Binding;targets:Targets} {
     const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env),b=readManagedBinding(env);
     const record=readMigration(env),legacy=legacyMigration(env);
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
@@ -256,7 +296,7 @@ export class SetupController {
     if(action==='managed-inspect') {
       if(r.confirmed!==undefined||r.expected!==undefined)throw new ProgressError('invalid');
       const status=this.managedStatus();status.delivery!.review=candidate.review;
-      status.delivery!.migration=this.managedMigration(candidate.targets);return {...status,action};
+      return {...status,action};
     }
     if(r.confirmed!==true)throw new SetupError('confirmation-required');
     if(r.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
@@ -293,11 +333,12 @@ export class SetupController {
         this.establishExpectation(b);store.registerSource(source);verifyStore(store,b);
         publishPrivateJson(file,b);
       }finally{store.close();}
-      this.refresh();return {...this.managedStatus(),action};
+      return {...this.managedStatus(),action};
     }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
   }
   private migrate(candidate:ReturnType<SetupController['managedCandidate']>):SetupRead {
-    const env=this.managedEnv!,prior=readMigration(env),legacy=legacyMigration(env);
+    const env=this.managedEnv!;
+    const {prior,legacy}=platformSecurityScope(()=>({prior:readMigration(env),legacy:legacyMigration(env)}));
     if(prior?.phase==='complete'&&legacy)throw new SetupError('managed-migration-conflict');
     if(prior?.phase==='complete'&&!legacy)return {...this.managedStatus(),action:'managed-migrate'};
     if(!prior&&!legacy)throw new SetupError('managed-migration-required');
@@ -306,11 +347,14 @@ export class SetupController {
     if(candidate.binding&&!sameMigrationTarget(candidate.binding,retained)||path.dirname(retained.database)!==candidate.targets.storeRoot)throw new SetupError('managed-migration-conflict');
     if(legacy&&(!sameMigrationTarget(legacy.binding,retained)||prior&&legacy.binding.installId!==prior.legacyInstallId))throw new SetupError('managed-migration-conflict');
     if(!legacy&&(!prior||prior.phase==='pending'&&!removalRecorded(prior)))throw new SetupError('managed-migration-pending');
-    const file=createManagedBindingDirectory(env),lock=path.join(path.dirname(file),'.configuration-lock');let locked=false;
+    this.migrationStage='managed-state-create';
+    const file=createManagedBindingDirectory(env),lock=path.join(path.dirname(file),'.configuration-lock');let locked=false,failed=false;
     try{
+      this.migrationStage='lock';
       try{closeSync(openSync(lock,'wx',0o600));locked=true;}catch(e){if((e as NodeJS.ErrnoException).code==='EEXIST')throw new SetupError('managed-configuration-busy');throw e;}
       if(this.managedCandidate(candidate.targets.storeRoot).review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
-      const store=new Store(retained.database);
+      this.migrationStage='expectation-publication';
+      const store=new Store(retained.database);let storeFailed=false;
       try{
         verifyStore(store,retained);store.subagentRunStorage();
         const binding=prior?.binding??candidate.binding??{...retained,installId:`managed-${digest(JSON.stringify([retained.storeId,retained.source]))}`,version:this.readonlyPayload().version};
@@ -319,15 +363,17 @@ export class SetupController {
         // irreversible legacy removal, not after removing discovery.
         this.establishExpectation(binding);
         // Full owned()+selector+actual Store/source validation above precedes even disable.
-        store.setEnabled(false);writeMigration(env,record);
-        if(legacy)lifecycle('remove-capture',candidate.targets);
-        record.phase='removed';writeMigration(env,record);
-        if(!candidate.binding)publishPrivateJson(file,binding);
-        record.phase='complete';writeMigration(env,record);
-        store.setEnabled(true);
-      }finally{store.close();}
-      this.refresh();return {...this.managedStatus(),action:'managed-migrate'};
-    }finally{if(locked){unlinkSync(lock);syncDirectory(path.dirname(file));}}
+        this.migrationStage='migration-record';store.setEnabled(false);writeMigration(env,record);
+        this.migrationStage='legacy-removal';if(legacy)lifecycle('remove-capture',candidate.targets);
+        this.migrationStage='migration-record';record.phase='removed';writeMigration(env,record);
+        this.migrationStage='binding-publication';if(!candidate.binding)publishPrivateJson(file,binding);
+        this.migrationStage='migration-record';record.phase='complete';writeMigration(env,record);
+        this.migrationStage='capture-enable';store.setEnabled(true);
+      }catch(e){storeFailed=true;throw e;}finally{try{store.close();}catch(e){if(!storeFailed)throw e;}}
+      return {...this.managedStatus(),action:'managed-migrate'};
+    }catch(e){failed=true;throw e;}finally{
+      if(locked)try{unlinkSync(lock);syncDirectory(path.dirname(file));}catch(e){if(!failed){this.migrationStage='lock';throw e;}}
+    }
   }
   private validateDescriptor() {
     try{return platformSecurityScope(()=>this.validateDescriptorInner());}catch(e){throw e instanceof PlatformError?new SetupError(e.code):e;}
@@ -350,4 +396,16 @@ export class SetupController {
     renameSync(file,this.bindingFile);syncDirectory(path.dirname(file));
     this.expectedDescriptor=digest(text);
   }
+}
+
+/** Bounded last-action diagnostics; raw OS text and unknown codes never leave here. */
+function migrationActionCode(e:unknown):string {
+  const platform=platformErrorCode(e);if(platform)return platform;
+  if(e instanceof ProgressError||e instanceof ManagedBindingError)return e.code;
+  const code=(e as NodeJS.ErrnoException)?.code;
+  const allowed=['EACCES','EPERM','EIO','ENOSPC','EEXIST','EBUSY','ENOENT','ENOTDIR','EROFS','EMFILE','ENFILE',
+    'confirmation-required','managed-review-stale','managed-selection-conflict','managed-source-conflict','managed-configuration-busy',
+    'managed-migration-required','managed-migration-conflict','managed-migration-pending','store-permissions','path-unverified',
+    'ownership-invalid','modified-owned-files','foreign-files','staged-activation-retained','not-installed','collision','windows-security-unavailable'];
+  return typeof code==='string'&&allowed.includes(code)?code:storageError(e).code;
 }

@@ -91,7 +91,7 @@ export async function launchNeedsYouService(built=false) {
     const deadline=Date.now()+7000;
     while(true){
       if(child && (child.exitCode !== null || child.signalCode))throw new Error('fixture-service-exited');
-      try{const r=await request('/health');if(r.ok && (await r.json()).ready)break;}catch{}
+      try{const r=await request('/health');if(r.ok){const h=await r.json();if(h.ready)break;if(h.state==='starting')await request('/v1/plans');}}catch{}
       if(Date.now()>=deadline)throw new Error('fixture-service-readiness');
       await delay(25);
     }

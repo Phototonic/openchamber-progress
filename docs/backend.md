@@ -236,7 +236,10 @@ captures; this does not guarantee graceful session completion.
 
 The service writes expected shipped bytes/version/binding fingerprints to owned
 private Store-directory metadata once per admitted package generation, not on each
-GET and not in a new SQLite schema. The companion's successful loaded observation
+GET and not in a new SQLite schema. Admission is lazy: the first successful
+Setup/data validation may establish that baseline, outside its read-only security
+scope, rather than delaying service construction/listening. A failed baseline is
+unknown, not authorization and not an automatic retry loop. The companion's successful loaded observation
 uses actual runtime release identity. Unknown, not observed, matching and different
 are separate; mismatch warns only. Fingerprints are observational, explicitly
 weaker than legacy private hash-attested payloads, not publisher signatures or
@@ -251,6 +254,27 @@ Retained history/IDs and cleanup fences are not reset. Interrupted removal may
 leave incomplete ownership and a conflict needing separately authorized manual
 cleanup; crash-retained configuration locks stay busy until manual recovery.
 See [Setup](setup.md) for mode-qualified lifecycle/reach, migration and rollback.
+
+`/health` authenticates as before but bypasses `current()` and `status()`. It
+returns an honest last-admission snapshot (`starting`, `unconfigured`, `ready`,
+`refused`), fixed diagnostics and capabilities captured during admission; no
+discovery, SQLite open or legacy inspection runs there. Unknown is never ready.
+All real Setup/store operations retain fresh fail-closed checks, descriptor
+pinning, private ACL/ancestor/hard-link and schema validation. Read-only managed
+validation shares a synchronous security scope and batches known paths, never a
+TTL or process-lifetime ACL cache. No admission work is scheduled in the background.
+The UI explicitly requests Setup admission then re-reads health on the new
+`starting`/`refused` snapshots; old services without the state field are unchanged.
+Explicit synchronous operations can still occupy the event loop; cheap health
+does not promise concurrent responsiveness during a slow security query.
+
+The HTTP error funnel preserves only allowlisted `PlatformError` codes. Migration
+retains one bounded in-memory `lastAction: {stage, code}` in both error replies and
+Setup status; inspection does not clear it. The stage is a fixed operation
+boundary, and codes are fixed product/platform or allowlisted filesystem codes,
+never raw messages. Primary migration/publication failures survive secondary
+cleanup errors. Durable pending/conflict/lock recovery rules are unchanged; this
+diagnostic is not persisted and grants no recovery authority.
 
 ### Existing reporting and storage owners
 
@@ -900,9 +924,11 @@ assembly were added:
 
 - SetupController retains a validated descriptor independently from store open
   failures. Descriptor collisions still fail closed; store failures no longer
-  masquerade as missing configuration. Each health/setup/read reopens and validates
-  once, with the existing SQLite busy bound; no retry loop or recovery mutation.
-- Health returns503 for a failed configured store. Setup retains configured=true,
+  masquerade as missing configuration. Setup/data reads reopen and validate
+  with the existing SQLite busy bound; no retry loop or recovery mutation. Current
+  health is the cheap snapshot described above, not the original recovery probe.
+- Current health stays HTTP 200 for a failed configured controller, with false
+  readiness and the last fixed diagnostic. Setup retains configured=true,
   resolved roots and the fixed store diagnostic, with captureEnabled=null.
 - Reload-required is conservatively recomputed from a verified installed payload
   after restart; no descriptor or frozen DTO shape changed. A service restart or

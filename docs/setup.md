@@ -100,6 +100,19 @@ files. Manual cleanup requires a separately authorized review of the retained
 ownership/removal receipt and the exact remaining product files; never recursively
 delete a config/store directory or remove unrelated files to clear the conflict.
 
+Migration errors retain fixed platform codes such as
+`windows-security-unavailable` and `private-permissions`, rather than reducing
+them to `storage`. The response and subsequent Setup diagnostics retain one
+in-memory `lastAction` stage/code until the next migration attempt or service
+restart. Stages are `managed-state-create` (including admission before creation),
+`lock` (including locked revalidation/cleanup), `expectation-publication`,
+`migration-record` (including capture disable), `legacy-removal`,
+`binding-publication` and `capture-enable`. These identify the failed boundary,
+not proof of rollback or permission to repair it. Cleanup failure does not replace
+an earlier primary failure. No raw exception, path, SID, token, command or database
+content is included. A successful inspection does not erase the previous failure;
+a successful explicit migration retry clears it.
+
 A crash while holding the private configuration lock leaves **busy** state. There
 is no time-based stale-lock takeover or automatic lock deletion. Stop only the
 known configuration operation, establish that no owner is active, and arrange
@@ -210,6 +223,16 @@ with fixed diagnostics. Restore valid ownership/access or use a compatible build
 restarting cannot make a future format compatible. Reads revalidate and can recover
 when access is restored, without automatic reset or permission repair.
 
+Authenticated `/health` is a cheap liveness snapshot, not a new storage or legacy
+inspection. A newly started managed service reports `starting`, `ready:false` and
+`sqlite:false` until a real Setup/data operation validates it. Later snapshots are
+`unconfigured`, `ready` or `refused`, reflecting the last admission only. A ready
+snapshot never authorizes a data access: each such operation still revalidates.
+The views explicitly read Setup then health once on `starting`/`refused`, so a
+restored store can recover without a restart. Health alone does not retry checks.
+There is no timer, worker or background admission; synchronous Setup/data checks
+can still delay other requests while that explicit operation runs.
+
 Code rollback retains private selection/history but older services may not discover
 the new descriptor. Migration does not reinstall global capture on rollback.
 Prefer forward recovery with a compatible managed build. Deliberate legacy recovery
@@ -283,6 +306,12 @@ one identical retry only on timeout (up to 60 seconds configured wait). Later
 queries have one 10-second attempt. Termination/OS overhead is additional; these
 are not setup-operation deadlines. Non-zero exits, spawn errors and malformed
 results are not retried. No path is admitted without parsed security evidence.
+
+Managed service construction and health perform **zero security queries** and no
+legacy payload/Store preflight. Read-only validation scopes coalesce their known
+paths; security results do not survive the synchronous operation, and mutation
+boundaries retain fresh validation. There is no process-lifetime or TTL ACL cache.
+The host's liveness deadline is separate from these security-helper budgets.
 
 Use one account and local NTFS storage. Config/data roots require current-account
 ownership; dedicated store and managed state require private ACLs permitting only

@@ -50,6 +50,9 @@ export function migrationError(e:unknown):SetupError|ProgressError|PlatformError
 }
 /** Canonical legacy location only; the full removal preflight validates it and the actual Store. */
 export function legacyMigration(env:NodeJS.ProcessEnv):{binding:Binding;targets:Targets}|undefined {
+  return platformSecurityScope(()=>legacyMigrationInner(env));
+}
+function legacyMigrationInner(env:NodeJS.ProcessEnv):{binding:Binding;targets:Targets}|undefined {
   const roots=managedSourceRoots(env),root=path.join(roots.configRoot,'plugins/agent-progress');
   if(!lstatSync(root,{throwIfNoEntry:false}))return;
   try{
@@ -60,6 +63,9 @@ export function legacyMigration(env:NodeJS.ProcessEnv):{binding:Binding;targets:
 }
 /** Removal can finish before the wrapper writes its next phase. Require its durable same-install receipt. */
 export function removalRecorded(record:MigrationRecord) {
+  return platformSecurityScope(()=>removalRecordedInner(record));
+}
+function removalRecordedInner(record:MigrationRecord) {
   const file=path.join(path.dirname(record.binding.database),'installation-history.jsonl');
   managedPath(file);
   const s=lstatSync(file);

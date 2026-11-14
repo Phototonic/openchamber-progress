@@ -95,6 +95,8 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  /** Last failed migration action in this service process; not a recovery authority. */
+  lastAction?: { stage: ManagedActionStage; code: string };
   /** Missing/unknown revision means legacy/unsupported, never managed success. */
   delivery?: ManagedDelivery;
   reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
@@ -107,6 +109,7 @@ export interface SetupRead {
   suggestions?: SetupSuggestions;
   update?: CompanionUpdateRead;
 }
+export type ManagedActionStage = 'managed-state-create' | 'lock' | 'expectation-publication' | 'migration-record' | 'legacy-removal' | 'binding-publication' | 'capture-enable';
 export type ManagedSetupAction = 'managed-inspect' | 'managed-configure' | 'managed-migrate' | 'managed-enable' | 'managed-disable';
 /** Fixed setup errors, independent of report-tool Code. Pending/conflict are reserved for migration. */
 export type ManagedSetupErrorCode = 'managed-action-required' | 'managed-service-required' |

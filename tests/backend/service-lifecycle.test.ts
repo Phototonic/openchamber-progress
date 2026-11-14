@@ -46,7 +46,7 @@ test('extension replacement preserves authoritative binding, configured views an
     const reviewed=await(await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).json();
     assert.equal((await running.request('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:reviewed.delivery.review.expected})).status,200);
     const first=await(await running.request('/v1/plans')).json();await running.stop();rmSync(running.extension,{recursive:true});
-    running=await serve(f,false);const health=await(await running.request('/health')).json();assert.equal(health.ready,true);
+    running=await serve(f,false);const health=await(await running.request('/health')).json();assert.equal(health.ready,false);assert.equal(health.state,'starting');
     const setup=await(await running.request('/v1/setup')).json();assert.equal(setup.configured,true);assert.equal(setup.installed,false);assert.equal(setup.delivery.kind,'managed');assert.deepEqual(setup.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
     assert.equal((await(await running.request('/v1/plans')).json()).storeId,first.storeId);
   }finally{await running?.stop();f.clean();}

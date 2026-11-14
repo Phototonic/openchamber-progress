@@ -24749,6 +24749,13 @@ function managedPath(value3, missing2 = false) {
 function managedSourceRoots(env = process.env) {
   return platformSecurityScope(() => {
     need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+    if (windows) {
+      const home2 = env.HOME ?? homedir();
+      const config = env.XDG_CONFIG_HOME ?? path3.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path3.join(home2, ".local/share");
+      const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
+      const roots = windowsPaths([...inputs, path3.join(config, "opencode"), path3.join(data, "opencode")], true);
+      return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
+    }
     const home = () => managedPath(env.HOME ?? homedir(), true);
     const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path3.join(home(), fallback), true);
     return {
@@ -24760,7 +24767,8 @@ function managedSourceRoots(env = process.env) {
 function managedBindingFile(env = process.env) {
   return platformSecurityScope(() => {
     const { dataRoot } = managedSourceRoots(env);
-    const root = managedPath(path3.join(dataRoot, "agent-progress-managed"), true);
+    const proposed = path3.join(dataRoot, "agent-progress-managed");
+    const root = windows ? windowsPaths([proposed, path3.join(proposed, ".ownership.json"), path3.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
     const stat = lstatSync3(root, { throwIfNoEntry: false });
     if (stat) {
       need(stat.isDirectory() && privatePaths([root]));

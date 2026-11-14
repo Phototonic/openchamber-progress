@@ -30,6 +30,32 @@ const failedHealth = (code: string) => ({ ...HEALTH, ready: false, sqlite: false
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
 
+test('snapshot starting/refused explicitly admits once before reading data, with fresh capabilities',async()=>{
+  for(const state of ['starting','refused']){
+    const calls:string[]=[];let admitted=false;
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      if(q.path==='/v1/setup'){admitted=true;return response(setupRead());}
+      if(q.path==='/health')return response(admitted?{...HEALTH,state:'ready'}:{...failedHealth('storage'),state});
+      return response(plansPage([row]));
+    }},{session:'A'});
+    assert.ok(result.ok&&result.read);assert.deepEqual(calls,['/health','/v1/setup','/health','/v1/plans']);
+  }
+});
+
+test('snapshot admission refusal and proxy errors never authorize plans or create a retry loop',async()=>{
+  for(const failure of ['refused','proxy','unconfigured']){
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      if(q.path==='/v1/setup')return failure==='proxy'?response({error:'storage'},503):response(setupRead());
+      return response(calls.length===1?{...HEALTH_UNCONFIGURED,state:'starting'}:failure==='unconfigured'?{...HEALTH_UNCONFIGURED,state:'unconfigured'}:{...failedHealth('corrupt'),state:'refused'});
+    }},{session:'A'});
+    assert.deepEqual(calls,failure==='proxy'?['/health','/v1/setup']:['/health','/v1/setup','/health']);
+    if(failure==='unconfigured')assert.ok(result.ok&&result.read===null);else assert.equal(result.ok,false);
+  }
+});
+
 test('readList classifies health-reported store failures; only /health is called', async () => {
   for (const [code, kind] of [['corrupt', 'damaged'], ['schema', 'incompatible'], ['busy', 'busy'], ['storage', 'unavailable']] as const) {
     const calls: GuestRequest[] = [];

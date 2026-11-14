@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { readBinding, type Binding } from './binding.ts';
 import type { ManagedSetupErrorCode } from './progress.ts';
-import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory } from './platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory } from './platform.ts';
 
 export class ManagedBindingError extends Error {
   readonly code: ManagedSetupErrorCode;
@@ -29,6 +29,15 @@ export function managedPath(value: string, missing = false): string {
 export function managedSourceRoots(env: NodeJS.ProcessEnv = process.env) {
   return platformSecurityScope(() => {
     need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, 'managed-scope-unsupported');
+    if(windows){
+      const home=env.HOME??homedir();
+      const config=env.XDG_CONFIG_HOME??path.join(home,'.config'),data=env.XDG_DATA_HOME??path.join(home,'.local/share');
+      // Validate the raw inputs too: joining first must not normalize away unsafe
+      // syntax. All known roots/ancestors share one query and one bounded scope.
+      const inputs=[...(env.XDG_CONFIG_HOME===undefined||env.XDG_DATA_HOME===undefined?[home]:[]),config,data];
+      const roots=windowsPaths([...inputs,path.join(config,'opencode'),path.join(data,'opencode')],true);
+      return {configRoot:roots[inputs.length]!,dataRoot:roots[inputs.length+1]!};
+    }
     const home = () => managedPath(env.HOME ?? homedir(), true);
     const base = (key: 'XDG_DATA_HOME' | 'XDG_CONFIG_HOME', fallback: string) =>
       managedPath(env[key] !== undefined ? env[key]! : path.join(home(), fallback), true);
@@ -40,7 +49,8 @@ export function managedSourceRoots(env: NodeJS.ProcessEnv = process.env) {
 export function managedBindingFile(env: NodeJS.ProcessEnv = process.env): string {
   return platformSecurityScope(() => {
     const { dataRoot } = managedSourceRoots(env);
-    const root = managedPath(path.join(dataRoot, 'agent-progress-managed'), true);
+    const proposed=path.join(dataRoot,'agent-progress-managed');
+    const root = windows?windowsPaths([proposed,path.join(proposed,'.ownership.json'),path.join(proposed,'progress-binding.json')],true)[0]!:managedPath(proposed,true);
     const stat = lstatSync(root, { throwIfNoEntry: false });
     if (stat) {
       need(stat.isDirectory() && privatePaths([root]));
@@ -83,12 +93,15 @@ export function createManagedBindingDirectory(env: NodeJS.ProcessEnv = process.e
 /** Atomic publication; absent selectors use no-clobber publication, not replacement. */
 export function publishPrivateJson(file: string, value: unknown, replace = false) {
   const stage = `${file}.stage-${randomUUID()}`;
+  let failed=false;
   try {
     writeFileSync(stage, JSON.stringify(value), { mode: 0o600, flag: 'wx' }); syncFile(stage);
     if (replace) renameSync(stage, file);
     else { linkSync(stage, file); unlinkSync(stage); }
     syncDirectory(path.dirname(file));
-  } finally { if (lstatSync(stage, { throwIfNoEntry: false })) unlinkSync(stage); }
+  } catch(e) {failed=true;throw e;} finally {
+    try{if (lstatSync(stage, { throwIfNoEntry: false })) unlinkSync(stage);}catch(e){if(!failed)throw e;}
+  }
 }
 
 export interface ManagedExpectation {
@@ -100,6 +113,9 @@ export function managedExpectationFile(binding: Binding) {
 }
 /** Missing/unreadable expectation is an unknown observation, never a matching load. */
 export function readManagedExpectation(binding: Binding): ManagedExpectation | undefined {
+  return platformSecurityScope(()=>readManagedExpectationInner(binding));
+}
+function readManagedExpectationInner(binding: Binding): ManagedExpectation | undefined {
   const file = managedExpectationFile(binding);
   if (!lstatSync(file, { throwIfNoEntry: false })) return undefined;
   managedPath(file);

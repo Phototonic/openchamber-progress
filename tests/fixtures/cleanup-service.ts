@@ -41,7 +41,7 @@ export async function launchCleanupService(built=false,pages=true) {
     async function waitReady(){const deadline=Date.now()+7000;let ready=false;
     while(Date.now()<deadline){
       if(child&&(child.exitCode!==null||child.signalCode))throw new Error('fixture-service-exited');
-      try{const response=await request('/health');const health=await response.json();if(response.ok&&health.ready&&health.planCleanup===1){ready=true;break;}}catch{}
+      try{const response=await request('/health');const health=await response.json();if(response.ok&&health.ready&&health.planCleanup===1){ready=true;break;}if(response.ok&&health.state==='starting')await request('/v1/plans');}catch{}
       await delay(25);
     }
     if(!ready)throw new Error('fixture-service-readiness');}

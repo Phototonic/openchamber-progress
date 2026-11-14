@@ -8,6 +8,11 @@ export class PlatformError extends Error {
   readonly reason?: 'timeout'|'spawn'|'exit';
   constructor(code: string, reason?: 'timeout'|'spawn'|'exit') { super(code); this.code = code; this.reason = reason; }
 }
+/** Public diagnostics are fixed codes, never arbitrary exception text. */
+export function platformErrorCode(error: unknown) {
+  const codes = ['windows-security-unavailable','private-permissions','path-unverified','unsafe-parent','symlink-escape'] as const;
+  return error instanceof PlatformError ? codes.find(code=>code===error.code) : undefined;
+}
 type Security = { owned: boolean; private: boolean; reparse: boolean; unsafeParent: boolean };
 const cache = new Map<string, { snapshot: string; result: Security }>();
 const reparseCache = new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();

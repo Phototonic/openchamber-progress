@@ -77,10 +77,17 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
 });
 
-/** Null checks health only; {} deliberately reads the unfiltered history board. */
+/** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
   try {
-    const health = parseHealth(await call(host, ROUTES.health));
+    let health = parseHealth(await call(host, ROUTES.health));
+    if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
+      // New services separate host liveness from data admission. One explicit
+      // Setup read validates/retries; polling health alone cannot do that work.
+      // Old services omit state and retain their existing request sequence.
+      await call(host, ROUTES.setup);
+      health = parseHealth(await call(host, ROUTES.health));
+    }
     if (!health.ready) {
       // A configured store that cannot open — or fails binding verification — reports its
       // fixed failure code in health diagnostics. That is a classified failure on every
