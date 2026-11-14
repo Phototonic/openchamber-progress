@@ -129,6 +129,24 @@ known configuration operation, establish that no owner is active, and arrange
 separately authorized manual recovery of the exact lock after verifying the
 private selection. Do not treat busy as absent configuration or select a new store.
 
+Managed-directory bootstrap also retains narrow **manual-recovery crash windows**
+from versions 1.2.0 and 1.3.0. A crash after directory creation but before the
+ownership marker, or between linking a published file and removing its staging
+link, can leave invalid private metadata. Such an unmarked directory, hard-link
+anomaly, permissive ACL or foreign content is refused, never adopted, repaired or
+deleted automatically. A valid marked same-target directory with no migration
+journal can be reused after fresh validation and confirmation; it is not the same
+as an unmarked directory. The step protocol's planned `prepare` stage uses this
+existing bootstrap, not a new claim file or crash-proof directory publication.
+
+If bootstrap is refused, stop submitting migration actions, retain the files and
+record only the fixed diagnostic stage/code for support. Establish that no
+configuration or migration worker is active, then arrange separately authorized
+manual inspection and recovery of the specific partial metadata. Do not clear the
+managed directory, staging files or locks, loosen permissions, reset the Store,
+or restore a global loader to force progress. Preserve Store data, payloads and
+history; do not post local paths or metadata contents in a public report.
+
 Already-running legacy processes may retain code after discovery removal. Stop or
 reload those processes explicitly if global execution must end before capture
 resumes. The host may also need an explicit affected-location reload to retire a
