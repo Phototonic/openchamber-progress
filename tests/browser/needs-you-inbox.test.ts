@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRow } from '../../shared/needs-you.ts';
 import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY } from '../fixtures/attention-contracts.ts';
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
-import { readList, readNeedsYou, type ServiceHost } from '../../ui/shared/source.ts';
+import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, readingRequest, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { checkReading, inboxSummary, readingRequest, ReadingFocus, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import type { InboxWindowView, PlanDetail } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
@@ -150,6 +150,31 @@ const settle = async () => { for (let i = 0; i < 8; i++) await new Promise<void>
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
 const first = (v: Rec) => ({ state: 'ready' as const, window: parse(v) });
 
+test('search freshness carries an optional inbox without making its absence fail freshness', async () => {
+  const keys = [{ source: SRC, plan: 'p' }];
+  const s = service(() => ok({ ...envelope(), planTaskSearch: 1, data: [{ ...keys[0], exists: true, revision: 3, cleanup: { state: 'visible', revision: 0 } }], needsYou: wire([['p', 'a', 'decision']]) }));
+  const r = await readSearchState(s.host, STORE, keys, { demand: 'rows', mono: () => 42 });
+  assert.equal(s.calls[0].query?.needsYou, '1');
+  assert.equal(s.calls[0].query?.needsYouTiming, '1');
+  assert.ok(r.ok && r.inbox?.state === 'ready');
+  if (r.ok && r.inbox?.state === 'ready') assert.equal(r.inbox.window.rows[0].wait?.receivedAt, 42);
+});
+
+test('a cursor-only first-window change retires held continuation and uses the new cursor', async () => {
+  const held = deferred<GuestRequestResult>();
+  const s = service(() => held.promise);
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  c.adopt('owner', first(wire([['p', 'a', 'decision']], partial('old-cursor'))));
+  c.more();
+  assert.equal(c.adopt('owner', first(wire([['p', 'a', 'decision']], partial('new-cursor')))), true);
+  assert.equal(c.model()!.restarted, true);
+  held.resolve(ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  await settle();
+  assert.equal(c.model()!.needsYou.length, 1, 'retired reply cannot splice old pages');
+  c.more();
+  assert.equal(s.calls.at(-1)?.query?.cursor, 'new-cursor');
+});
+
 test('continuation is explicit, pinned and cumulative; held, hidden and moved traversals restart honestly', async () => {
   let held: ReturnType<typeof deferred<GuestRequestResult>> | null = null;
   const s = service((q) => (held = deferred<GuestRequestResult>(), held.promise));
@@ -241,6 +266,9 @@ test('opening a row revalidates the current plan and task before any reveal; not
   c.adopt('o', first(newer));
   assert.equal(readingRequest(reading, c.model()).revision, 5);
   const plan = { ...inboxRequest(reading.target, 'Plan plan-alpha', 'coordinator-alpha'), directory: '/fixture/Alpha' };
+  const archived = { ...plan, revision: 6, cleanup: { state: 'archived' as const, revision: 1 } };
+  assert.equal(readingRequest(reading, null, archived), archived, 'latest detail remains authoritative after the plan leaves the inbox');
+  assert.equal(readingRequest(reading, null, { ...archived, key: `${SRC}/another-plan` }).key, plan.key, 'another plan cannot replace this target');
   const detail = (items: PlanDetail['items'], revision = 3): { state: 'ready'; value: PlanDetail } => ({ state: 'ready', value: { key: plan.key, revision, items, contributions: [], links: [] } });
   const ctx = { storeId: STORE, boundSource: SRC };
   assert.equal(checkReading(reading, null, null, ctx, 'en').kind, 'loading');
@@ -254,4 +282,28 @@ test('opening a row revalidates the current plan and task before any reveal; not
   const gone = checkReading(reading, detail([{ id: 'task-a', title: 'Group', kind: 'group', status: 'pending' }]), { ...plan, lifecycle: 'completed' }, ctx, 'en');
   assert.ok(gone.kind === 'ready' && !gone.reveal && gone.notice === '“Task task-a” is no longer in this plan. The plan stays open to read. This plan is no longer active.');
   assert.equal(checkReading(reading, detail([], 4), plan, ctx, 'en').kind, 'loading', 'detail ahead of its plan metadata waits');
+});
+
+test('data-only cache resets never repeat the reading task reveal or focus', () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { hasFocus: () => true } });
+  try {
+    const r = { token: 9, target: { task: 'task-a' } } as InboxReading;
+    const plan = { id: 'plan-alpha', sourceId: SRC } as import('../../ui/shared/model.ts').PlanView;
+    const article = { dataset: { testid: 'plan-plan-alpha', source: SRC }, querySelector: () => ({}) };
+    const root = { querySelectorAll: () => [article] } as unknown as HTMLElement;
+    const focus = new ReadingFocus();
+    let reveals = 0;
+    const paint = () => focus.afterPaint(root, r, { kind: 'ready', plan, reveal: true, notice: null, message: 'Task' }, () => { reveals++; });
+    paint();
+    focus.reset('reset');
+    paint();
+    assert.equal(reveals, 1, 'recovery of the surviving reading must not steal focus again');
+    r.token++;
+    paint();
+    assert.equal(reveals, 2, 'a genuinely new reading still reveals its task');
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
 });

@@ -30,7 +30,7 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, MAX_LIST_PAGES, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { INBOX_CSS } from './inbox-style.ts';
 import { applyDeviceHooks } from './phone-layout.ts';
@@ -194,6 +194,8 @@ export interface ViewSpec<U> {
   wantProjects: (vc: ViewContext<U>) => string[];
   /** Plans whose full detail this view shows right now. */
   wantDetails: (vc: ViewContext<U>) => PlanView[];
+  /** Open source-wide readings whose head must be checked even after they leave the list/inbox. */
+  refreshDetails?: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Synchronous presentation decision before paint; must not start reads or change list scope. */
   prepareUi?: (vc: ViewContext<U>) => Partial<U> | null;
@@ -796,6 +798,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         return;
       }
       if (result.state === 'fresh') {
+        if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), result.inbox)) versions.data++;
         if (read && read.captureEnabled !== result.captureEnabled) {
           const withCapture = (value: StoreRead): StoreRead => ({ ...value, captureEnabled: result.captureEnabled,
             diagnostics: [...value.diagnostics.filter((d) => d !== 'capture-disabled'), ...(!result.captureEnabled ? ['capture-disabled'] : [])] });
@@ -813,6 +816,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         }
         // Counts as a successful refresh: a failed detail is retried once, as after a list read.
         listReads++;
+        refreshDetails(generation);
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (setupRefreshDue()) loadSetup();
@@ -882,6 +886,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
+      refreshDetails(generation);
       if ([...details.values()].some((d) => d.value.state === 'error')) versions.data++;
       // Only a complete, current-generation list read for a real scope is remembered.
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
@@ -947,6 +952,48 @@ export function startView<U>(spec: ViewSpec<U>) {
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
+  }
+
+  const headReads = new Map<string, { reading: string; queued: boolean; current: () => boolean }>();
+  function refreshDetails(refresh: number) {
+    if (!read || !spec.refreshDetails || document.visibilityState === 'hidden') return;
+    const generation = cacheGeneration, id = identity;
+    for (const p of spec.refreshDetails(context())) {
+      // A plan key alone cannot distinguish leaving and reopening the same inbox task.
+      const readingKey = () => JSON.stringify(spec.reading?.(context()) ?? null);
+      const key = readingKey(), bound = reading;
+      const current = () => !disposed && refresh === gate.current && generation === cacheGeneration && id === identity && readingKey() === key && (!bound || reading === bound) && document.visibilityState !== 'hidden' && !!spec.refreshDetails?.(context()).some(n => n.key === p.key);
+      const previous = headReads.get(p.key);
+      if (previous?.reading === key && previous.current()) { previous.queued = true; continue; }
+      const pending = { reading: key, queued: false, current };
+      const before = details.get(p.key);
+      headReads.set(p.key, pending);
+      void readPlanHead(guardedHost(current), p).then(result => {
+        if (!current() || headReads.get(p.key) !== pending) return;
+        const cached = details.get(p.key);
+        const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
+        if (result.ok && sameIdentity) {
+          // A queued poll is demand for another read, not evidence this success is stale.
+          // Never roll back newer detail (or revive a failure that overtook this head).
+          if (cached && (result.plan.revision < Math.max(cached.revision, cached.requested) ||
+            (cached !== before && cached.value.state === 'error') ||
+            (result.plan.cleanup?.revision ?? 0) < Math.max(cached.cleanup, cached.requestedCleanup))) return;
+          // Unchanged heads leave the detail, its timing anchors and DOM untouched.
+          loadDetails([result.plan]);
+        } else {
+          if (pending.queued || cached !== before) return;
+          const failure: ReadFailure = result.ok ? { kind: 'invalid', code: 'CONTRACT', message: 'The reading identity changed.' } : result.failure;
+          details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: p.cleanup?.revision ?? 0, requestedCleanup: p.cleanup?.revision ?? 0, captureEnabled: read?.captureEnabled, generation, listRead: listReads, value: { state: 'error', failure } });
+          bump();
+        }
+      }).finally(() => {
+        if (headReads.get(p.key) !== pending) return;
+        headReads.delete(p.key);
+        // One follow-up for any number of refreshes that overtook this reply.
+        // Current successes can advance detail first; queued failures never paint.
+        if (pending.queued && current()) refreshDetails(refresh);
+      });
+    }
   }
 
   function loadDetails(plans: PlanView[], force = false) {

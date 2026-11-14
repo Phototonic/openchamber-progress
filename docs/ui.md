@@ -658,7 +658,7 @@ The rail starts with a **Needs you** inbox, above the selected session's plans;
 the board places the same inbox before its list/search content. It spans all
 current plans in the verified source, not just the chosen session or board filter.
 Only explicitly reported decision and review waits enter Needs you. **Also blocked**
-is a separate, initially collapsed disclosure for dependency/external/other waits,
+is a separate, initially collapsed disclosure of other reported blockers: dependency/external/other waits,
 unknown categories, and tasks with no usable details. These are reported waits,
 not inferred obligations or proof that the viewer must act.
 
@@ -674,23 +674,38 @@ The **Work Status line** comes before the featured plan. It says "N tasks need
 you", "At least N tasks need you", or "Nothing needs you", and opens the rail
 without a task payload or automatic host-session navigation. An unreadable,
 unverified or unsupported inbox has no Work Status line. The line's count is
-source-wide; the plan card's **Blocked** chip remains plan-local.
+source-wide; stale and capture-off qualifiers stay on this line even without a
+featured plan. The plan card's **Blocked** chip remains plan-local.
 
 Health must advertise exactly `needsYouInbox:1`. The first window rides on the
 frame's existing first list-page read (`needsYou=1`); rail and board add
 `needsYouTiming=1`, while Work Status requests counts without timing. There is no
-extra timer, automatic continuation or inbox poll. **Check more plans** explicitly
+summary on an unverified binding: the ordinary list remains readable and the
+inbox reports unavailable. During board search, the first search-freshness batch
+of each existing refresh cycle carries and adopts one inbox window instead.
+There is no extra timer, automatic continuation or inbox poll. **Check more plans** explicitly
 requests `/v1/needs-you`, pinned to store/source and timing mode. Counts are
-cumulative, never added as page deltas. Changed first windows, identity changes
-or a continuation 409 retire loaded pages; the list visibly starts again rather
-than splicing revisions. Waiting labels reuse the frame's monotonic label ticker.
+cumulative, never added as page deltas. Changed first windows (including cursor-only
+changes), identity changes or a continuation 409 retire loaded pages; the list
+visibly starts again rather than splicing revisions. Waiting labels reuse the
+frame's monotonic label ticker.
 
 Opening a row reads current plan detail in place, labels it **Opened from Needs
 you** (or Also blocked), reveals the canonical task, and focuses it. It does not
 approve, resolve, settle, reassign or open another host session. The reading is
-pinned to observed identity and rechecks current revision/cleanup; removed or
+pinned to observed identity. On the existing successful refresh cadence, its
+current plan head rechecks existence, revision and cleanup independently of
+inbox membership; changed heads re-read detail, unchanged heads retain it. Head
+reads are single-flight per reading identity (including its opening token), with
+one coalesced follow-up; retired or superseded replies never replace current detail.
+An intervening poll does not discard a still-current successful head: it can advance
+detail before the follow-up, even when every head read outlasts the poll interval.
+Older revisions and replies overtaken by a newer detail failure cannot revive it.
+Data-only cache resets retain that reading's reveal-once token, so recovery never
+re-reveals or refocuses its task. Removed or
 no-longer-blocked work is explained. **Back to session progress** returns focus to
-the opener when available, otherwise the inbox heading. Board reading occupies
+the opener when available, reopening Also blocked before focusing its row,
+otherwise the inbox heading. Board reading occupies
 the detail pane. No report/status write is added.
 
 QA hooks: `needs-you-inbox` (`data-availability`), `needs-you-heading`,
