@@ -63,6 +63,8 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 
 No build step or dependency install is needed. Prefer a download? Each version is also published as a ZIP on [GitHub Releases](https://github.com/Phototonic/openchamber-progress/releases).
 
+**Verifying a download (Linux):** Download both ZIPs, `entries-<version>.sha256` and `sha256.txt` into an empty folder. In that folder, run `sha256sum -c --ignore-missing sha256.txt`. The inventory also lists files inside the ZIPs; `--ignore-missing` skips those before extraction. To check extracted files, unpack each ZIP into its matching `agent-progress-extension-<version>` or `agent-progress-companion-<version>` folder, then run `sha256sum -c entries-<version>.sha256` from the download folder, replacing `<version>` with the release number.
+
 **Updating:** Git installs use **Settings → Extensions → Check for updates → Update**. The URL above follows the remote default branch (`main` here); append `#main` to select it explicitly, `#dev` for development builds, or a published tag such as `#v1.1.1` to stay on that tag. A fixed tag does not follow later releases. Offers depend on a higher package version, not just a new commit: same-version development changes produce no offer. Folder and ZIP installs need manual replacement, not Git update checks. See [update and approval details](docs/setup.md#updates-observations-and-integrity).
 
 **Requires:** OpenChamber 2.7.1 or later. Linux OpenCode 2.2.7 and historical Linux/native Windows 2.1.4 checks have different scopes; they do not certify every managed host/platform. See [tested configurations](docs/compatibility.md).

@@ -108,7 +108,7 @@ The localization inventory is owned by the existing UI layers:
 | Surface | Text owners and boundaries |
 | --- | --- |
 | Basic views and task reading | `app.ts`, the three `main.ts` entries, `components.ts`, `primitives.ts`, `model.ts`, `live.ts`, `scope.ts`, `format.ts`: loading/failure/empty states, labels, pickers, tooltips, accessibility and time ticker |
-| Setup and service controls | `setup.ts`, `official.ts`, `cleanup*.ts`, `reporting-health*.ts`: consent/access warnings, confirmations, safe errors and feedback; `supportSummary()` remains language-independent machine text |
+| Setup and service controls | `setup.ts`, `cleanup*.ts`, `reporting-health*.ts`: consent/access warnings, confirmations, safe errors and feedback; `supportSummary()` remains language-independent machine text |
 | Search, History and documents | `search*.ts`, `change-digest*.ts`, `capture-comparison*.ts`: semantic saved messages and bounded-read qualifications, never query text, captured bytes or review state |
 | Map and sub-agents | `dependency-map-view.ts`, `dependency-map-interaction.ts`, `census-view.ts`, `subagents.ts`: labels and structured announcements, not graph facts or activity evidence |
 | Copy and exports | `summary.ts`, preview lifecycle in `app.ts`, task-copy controls in `components.ts`: extension-owned words only, with the same disclosure limits and literal escaping |

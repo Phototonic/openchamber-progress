@@ -530,9 +530,9 @@ build), `node_modules/.bin/tsc -p ui/tsconfig.json --noEmit`, and
 All three `ui/*/main.js` SHA256 hashes were verified against the screenshot bundle
 hashes in `evidence/compatibility/ui-runtime.json`.
 
-## Agnostic activation (historical0.2.4 package validation)
+## Agnostic activation (historical 0.2.4 package validation)
 
-The credential-free2.1.4 native probe in
+The credential-free 2.1.4 native probe in
 `tests/backend/progress-activation-runtime.test.ts` uses a separate test observer
 and deterministic local AISDK package inside a fresh Linux network namespace.
 It asserts **production** guidance and one-shot hints in actual outgoing scripted
@@ -1047,7 +1047,7 @@ Final claim/gate record: `evidence/compatibility/probe.md`. Sanitized results:
 `backend-auth-live.json`, `backend-auth-subtests-summary.json` and per-scenario
 JSON under `evidence/compatibility/`. `backend-auth-live-review.md` and
 `backend-auth-safety.md` record source/protocol provenance, historical refusals,
-reviewed fixes, hashes and cleanup. Strict typechecks,25 auth tests and a
+reviewed fixes, hashes and cleanup. Strict typechecks, 25 auth tests and a
 scenario-specific synthetic runtime probe passed before each subtest run.
 
 Limits: slim blocked/uninstalled/no safe binding recipe; model-exercised parent
