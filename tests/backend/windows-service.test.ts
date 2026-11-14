@@ -25,7 +25,10 @@ const codes=['windows-security-unavailable','private-permissions','path-unverifi
 
 /** Released emitted lifecycle AND Store, not a current-source reconstruction. */
 async function released(root:string){
-  const show=(file:string)=>execFileSync('git',['show',`v1.1.1:${file}`],{encoding:'utf8',maxBuffer:16*1024*1024,timeout:10000});
+  // Checkout belongs to the runner account; the native test principal is a
+  // different non-admin user. Trust only this explicit test checkout for Git
+  // object reads, never a global safe-directory wildcard or product ACL change.
+  const show=(file:string)=>execFileSync('git',['-c',`safe.directory=${process.cwd()}`,'show',`v1.1.1:${file}`],{encoding:'utf8',maxBuffer:16*1024*1024,timeout:10000});
   const text=show('build/service/main.js'),end=text.lastIndexOf('// service/main.ts\n');assert.ok(end>0);
   const module=path.join(root,'released.mjs');
   fs.writeFileSync(module,text.slice(0,end)+'\nexport {lifecycle,Store,readBinding};\n',{mode:0o600});
