@@ -598,6 +598,13 @@ duplicate/disable/disposal checks apply to all reasons, with no extra queues,
 per-tool history or progress lookup. A shared inner/outer Code Mode call identity
 may conservatively lose a second reason rather than create more history.
 
+Dispatch wording conditionally tells coordinators of planned or multi-step work
+to start an unmirrored plan now (`op=start`, complete real task structure) before
+further dispatches, and to declare `op=delegate` with assigned task IDs before
+the next planned dispatch so a permitted, verified assigned child can report.
+Already-current state needs no mutation. This advice adds no missing-plan
+detector, plan query, hook, automatic report or interaction requirement.
+
 Dispatch accepts only exact `subagent` completed events with typed native input,
 bounded returned child session ID, running/completed status and string output.
 Tracker accepts only exact `linear_save_issue` / `linear_save_comment` completed

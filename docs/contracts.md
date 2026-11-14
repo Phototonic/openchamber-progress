@@ -579,6 +579,15 @@ Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
 
+The dispatch hint conditionally asks coordinators of planned or multi-step work
+to start an Agent Progress mirror with `op=start` and the complete real task
+structure before further dispatches, if none mirrors that work yet. For planned
+work it asks for `op=delegate` with assigned task IDs before the next dispatch so
+a permitted, verified assigned child can report its own tasks. It asks not to
+repeat reports or declarations that are already current. This is advice, not
+detection of a missing plan or a new requirement for ad-hoc dispatches; no
+plan-presence query is performed.
+
 Proxy qualification is finite and fail-closed. Exact `subagent` requires a completed
 outer event, typed native input (agent/description/prompt strings and correctly
 typed optional sessionID/model/background), structured returned bounded child ID,

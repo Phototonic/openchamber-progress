@@ -15,12 +15,13 @@ Needs-input leaves actual work pending or blocked. A successful write is not rea
 For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
 const PLAN_OBSERVATION = 'A possible plan document was written or revised, possibly by a delegated child.';
 export const DISPATCH_OBSERVATION = 'A dispatch ran.';
+const DISPATCH_HINT = 'If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. Do not repeat reports or declarations that are already current.';
 export const TRACKER_OBSERVATION = 'A tracker update was observed.';
 const HINT_CONDITION = 'If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.';
 export const ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
 const PLAN = 1, DISPATCH = 2, TRACKER = 4;
 function hintText(reasons: number) {
-  return [reasons & PLAN ? PLAN_OBSERVATION : '', reasons & DISPATCH ? DISPATCH_OBSERVATION : '', reasons & TRACKER ? TRACKER_OBSERVATION : '', HINT_CONDITION].filter(Boolean).join(' ');
+  return [reasons & PLAN ? PLAN_OBSERVATION : '', reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : '', reasons & TRACKER ? TRACKER_OBSERVATION : '', HINT_CONDITION].filter(Boolean).join(' ');
 }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === 'object' && value !== null && !Array.isArray(value);

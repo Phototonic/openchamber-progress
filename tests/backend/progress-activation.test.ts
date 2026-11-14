@@ -297,6 +297,26 @@ test('dispose or observed disable during parent await prevents both late flags',
   });
 });
 
+test('no-plan dispatch hint asks for explicit start and delegation; tracker hints do not', async () => {
+  await activationFixture(async f => {
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0);
+    for (const status of ['completed', 'running']) {
+      await f.after(dispatchEvent(`no-plan-${status}`, status));
+      const text = copy(await next(f))[0].text.slice(BASE.length);
+      assert.match(text, /if .*planned or multi-step work.*no Agent Progress plan mirrors it yet/i);
+      assert.match(text, /start one now.*op=start.*complete real task structure.*before further dispatches/i);
+      assert.match(text, /planned work.*op=delegate.*assigned task IDs.*before the next dispatch/i);
+      assert.match(text, /permitted, verified assigned sub-agent.*report its own tasks/i);
+      assert.match(text, /do not repeat.*already current/i);
+      assert.match(text, /grants no assignment or authority.*no work start, review, approval or completion/i);
+      assert.equal(proxyHint(await next(f)), false);
+    }
+    await f.after(trackerEvent('save_issue'));
+    assert.doesNotMatch(copy(await next(f))[0].text.slice(BASE.length), /op=start|op=delegate/);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0, 'conditional advice never creates a plan');
+  });
+});
+
 test('positive native dispatch and tracker metadata hint only the actor once without echo or mutation', async () => {
   await activationFixture(async f => {
     const lookedUp: string[] = [];
