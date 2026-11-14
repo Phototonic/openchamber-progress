@@ -80,6 +80,8 @@ export type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | 
 export interface ViewContext<U> {
   host: HostClient;
   ctx: HostReadyContext;
+  /** Re-delivered ready hints; presentation only. Device changes repaint, never trigger reads. */
+  device?: HostReadyContext['device'];
   session: SessionSnapshot | null;
   directory: string | null;
   /** Native session action validation; null for ordinary opening or a verified target. */
@@ -1014,6 +1016,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
     const env: Env = {
+      device: ctx?.device,
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
       unverifiedSources: new Set(read ? read.sources.filter((s) => !s.verified).map((s) => s.id) : []),
@@ -1022,7 +1025,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1476,7 +1479,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const first = !ctx;
     const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     const hostContextChanged = !first && (hostDirectory !== (next.directory ?? null) || hostSession?.id !== next.session?.id);
-    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
+    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface || JSON.stringify(ctx.device) !== JSON.stringify(next.device)) versions.ctx++;
     // Ready's explicit item (including null for ordinary opening) is authoritative.
     // A pre-ready replay is retained only if an older snapshot omits the field.
     hostSession = next.session ?? null;

@@ -3,6 +3,14 @@ import { countItems } from '../../shared/progress.ts';
 import type { ChangeDigest, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestScope, DigestTask } from '../../shared/change-digest.ts';
 import { directoryKey } from './path.ts';
 import type { InterfaceLanguage } from './i18n.ts';
+import type { HostReadyContext } from '@openchamber/sdk';
+
+/** Optional presentation hints only; never source, visibility or permission evidence. */
+export type DeviceView = NonNullable<HostReadyContext['device']>;
+/** Ephemeral source-wide reveal target. Revalidate current plan/task before existing reading.reveal;
+ * it must not change the host session or the separate native session-action pin.
+ */
+export interface InboxTaskTarget { storeId: string; source: string; plan: string; task: string; revision: number; cleanupRev: number }
 
 export type ItemStatus = 'pending' | 'working' | 'blocked' | 'done' | 'skipped';
 export type Lifecycle = 'active' | 'completed' | 'cancelled' | 'failed';

@@ -14,6 +14,19 @@ import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips,
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
+import type { DeviceView } from './model.ts';
+
+/** P1 applies these to the document element from Env.device; CSS remains responsive without hints.
+ * Content/map owners consume the same attributes/variables, never introduce another layout owner.
+ */
+export const PHONE_LAYOUT_HOOKS = Object.freeze({
+  formFactor: 'data-device-form-factor', pointer: 'data-device-pointer',
+  safeTop: '--ap-safe-top', safeRight: '--ap-safe-right', safeBottom: '--ap-safe-bottom',
+  safeLeft: '--ap-safe-left', keyboard: '--ap-keyboard-height',
+});
+export const ATTENTION_HOOKS = Object.freeze({
+  inbox: 'needs-you-inbox', count: 'needs-you-count', alsoBlocked: 'also-blocked', pending: 'delegation-pending',
+});
 
 // Keys are the existing English copy; only these fixed messages are translated, never user text.
 const RUSSIAN = {
@@ -141,6 +154,7 @@ const taskCount = (n: number, locale: InterfaceLanguage) => countText(n, 'task',
 const moreSessions = (n: number, locale: InterfaceLanguage) => countText(n, 'more', locale);
 
 export interface Env {
+  device?: DeviceView;
   locale: InterfaceLanguage;
   now: number;
   /** Monotonic time of this paint (performance.now), for elapsed labels. */
