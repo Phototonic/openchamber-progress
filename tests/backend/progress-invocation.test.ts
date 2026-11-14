@@ -56,7 +56,18 @@ test('registered report provides safe recovery hints and executable start help w
     const update={op:'change',plan:full.plan,oid:'change-1',rev:0,changes:[{id:'a',status:'done'}]};
     assert.deepEqual(await call(update),{error:'conflict',rev:1});
     assert.equal((await call({...update,rev:read.rev})).rev,2);
-    assert.equal(view().data.length,1);
+    // A change that names a group or an unknown ID refuses with a constant recovery hint and no revision.
+    const grouped={op:'start',plan:'grouped-plan',oid:'grouped-start',rev:0,title:'Grouped',items:[{id:'G',title:'Group',kind:'group',status:'working'},{id:'t',title:'Task',kind:'task',parentId:'G'}]};
+    assert.equal((await call(grouped)).rev,1);
+    for(const id of ['G','PRIVATE_MISSING_SENTINEL']){
+      const reply=await call({op:'change',plan:'grouped-plan',oid:`grouped-${id.length}`,rev:1,changes:[{id:'t',status:'done'},{id,status:'done'}]});
+      assert.equal(reply.error,'invalid');assert.match(reply.hint,/existing task IDs only.*revise/);assert.ok(reply.hint.length<=256);
+      assert.doesNotMatch(JSON.stringify(reply),/PRIVATE_/);
+    }
+    assert.equal((await call({op:'read',plan:'grouped-plan'})).rev,1,'refused changes advance nothing, including valid task entries in the same batch');
+    const revised=await call({op:'revise',plan:'grouped-plan',oid:'grouped-revise',rev:1,items:[{id:'G',title:'Group',kind:'group',status:'done'},{id:'t',title:'Task',kind:'task',parentId:'G',status:'done'}]});
+    assert.equal(revised.rev,2,'revise sets a group status');
+    assert.equal(view().data.length,2);
 
     // Every advertised example is executable; help must not omit hidden start prerequisites.
     const advertised:any[]=[];

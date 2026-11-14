@@ -18,6 +18,7 @@ import * as path from '../../ui/shared/path.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as source from '../../ui/shared/source.ts';
 import * as language from '../../ui/shared/language.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
 import { HEALTH, setupRead } from './fixtures.ts';
 import { CORE_CONTRIBUTIONS, CORE_ITEMS, CORE_LINKS, deepChain, focusEnvelope, focusPage, focusSummary, SA, SB, SC, SD, scaleContributions, scaleItems, SCALE_LINKS, STORE } from './focus-controls-fixtures.ts';
 
@@ -340,7 +341,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
     }
     return route(q);
   };
-  const h = { serviceRequest: async (q: GuestRequest) => { requests.push(q); return svc(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
+  const h = { serviceRequest: async (q: GuestRequest) => { requests.push(q); return svc(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onConnection() { return () => {}; }, onItem() { return () => {}; }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
     AbortController,
@@ -352,6 +353,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
       if (name === './source.ts') return { ...source, readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
       if (name === './cleanup.ts') return cleanup;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };

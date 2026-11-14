@@ -37,7 +37,7 @@ const RUSSIAN = {
   'Jump to reported in progress': 'К отмеченным как выполняемые', 'No tasks reported in progress': 'Нет отмеченных как выполняемые задач', 'Reported in progress': 'По отчёту в работе',
   'Jump to blocked': 'К заблокированным', 'No blocked tasks': 'Нет заблокированных задач', 'Blocked': 'Заблокировано',
   'Jump to reported blocked': 'К отмеченным как заблокированные', 'No tasks reported blocked': 'Нет отмеченных как заблокированные задач', 'Reported blocked': 'По отчёту заблокировано',
-  'Sessions': 'Сессии', 'Session': 'Сессия', 'Main session': 'Основная сессия', 'Child session': 'Дочерняя сессия', '{n} assigned': 'Назначено: {n}',
+  'Sessions': 'Сессии', 'Main session': 'Основная сессия', 'Child session': 'Дочерняя сессия', '{n} assigned': 'Назначено: {n}',
   'reports relayed by the main session': 'отчёты переданы основной сессией',
   'Loading {what}': 'Загрузка: {what}', '{what} could not be loaded. {failure}.': 'Не удалось загрузить: {what}. {failure}.', 'Try again': 'Попробовать снова',
   'Plan document': 'Документ плана', 'No earlier capture is available.': 'Предыдущего снимка нет.', 'the document': 'документ',
@@ -522,11 +522,11 @@ function jump(control: HTMLElement, plan: PlanView, kind: JumpKind, targets: Ite
 /**
  * Who is involved. `compact`: one footer row for the main session (live state and a verified Open),
  * and a count of the other sessions, whose full facts are in the Sessions panel (⋯ → Sessions).
+ * The full list carries no heading of its own: the Sessions panel that holds it is the one heading.
  */
 export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env, compact = false, openAll?: () => void) {
   const list = participants(plan, detail);
   const section = testid(el('section', compact ? 'ap-section ap-sessions' : 'ap-section'), 'contributors');
-  if (!compact) section.append(el('h3', 'ap-h', say(list.length > 1 ? 'Sessions' : 'Session', env.locale)));
   const wrap = el('div', 'ap-people');
   for (const p of compact ? list.slice(0, 1) : list) {
     const { cov, node } = sessionChip(plan, p.sessionId, env);
@@ -537,6 +537,15 @@ export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env,
     if (p.assigned) facts.push(say('{n} assigned', env.locale, { n: p.assigned }));
     if (p.relayed) facts.push(say('reports relayed by the main session', env.locale));
     row.append(el('span', 'ap-small ap-muted', facts.join(' · ')));
+    if (!compact && trustedSource(plan, env) && cov.kind === 'live') {
+      const host = cov.session;
+      const labels = env.locale === 'ru'
+        ? { agent: 'Агент по данным хоста', issue: 'Задача, связанная в хосте', change: 'Изменение, связанное в хосте', more: 'В хосте есть другие связи.' }
+        : { agent: 'Host-reported agent', issue: 'Host-linked issue', change: 'Host-linked change', more: 'More links are available in the host.' };
+      if (host.agent) row.append(testid(el('p', 'ap-small ap-muted', `${labels.agent}: ${host.agent}`), 'session-host-agent'));
+      for (const link of host.links ?? []) row.append(testid(el('p', 'ap-small ap-muted', `${labels[link.kind]}: ${link.title}`), 'session-host-link'));
+      if (host.moreLinks) row.append(el('p', 'ap-small ap-muted', labels.more));
+    }
     wrap.append(row);
   }
   section.append(wrap);
@@ -1358,6 +1367,11 @@ function plainPanel(p: Paint, kind: PanelKind, title: string, content: HTMLEleme
   return box;
 }
 
+/** ⋯ → Sessions: every participant under the panel's single Sessions heading. */
+function sessionsPanel(p: Paint) {
+  return plainPanel(p, 'sessions', say('Sessions', p.env.locale), peopleBlock(p.plan, p.detail, p.env));
+}
+
 /** The ⋯ plan actions: copies, task view, order, document, sessions and any surface entries. */
 function planMenu(p: Paint | null, plan: PlanView, hooks: DetailHooks, docMode: 'disclosure' | 'inline' | 'omit', extra: PlanAction[], fallback: { reading: ReadingView | null }, locale: InterfaceLanguage) {
   const items: MenuItem[] = [];
@@ -1451,7 +1465,7 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
   if (paint && panel?.plan === plan.key) {
     if (panel.kind === 'task-view' && reading) root.append(taskViewPanel(paint));
     else if (panel.kind === 'document' && options.document === 'disclosure') root.append(plainPanel(paint, 'document', say('Plan document', env.locale), documentBlock(plan, env, 'inline', hooks.document)));
-    else if (panel.kind === 'sessions') root.append(plainPanel(paint, 'sessions', say('Sessions', env.locale), peopleBlock(plan, ready, env)));
+    else if (panel.kind === 'sessions') root.append(sessionsPanel(paint));
   }
   if (paint) root.append(taskList(paint));
   else {

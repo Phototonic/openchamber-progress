@@ -541,7 +541,9 @@ Tool replies retain `error` and optional conflict `rev`. Only `error: "invalid"`
 may additionally carry optional `hint`, bounded constant recovery text (at most
 256 characters), with no submitted values, unknown field names, paths or exception
 messages echoed. Consumers must continue to branch on `error`, not hint wording;
-older/generic errors may omit it. Service HTTP errors remain code-only. This adds
+older/generic errors may omit it. A `change` naming a group or an unknown item ID
+gets a hint that `change` updates existing tasks only and that group status or
+structure changes use `revise`. Service HTTP errors remain code-only. This adds
 no protocol/schema version, persisted field, read behavior or permission change.
 
 ## Advisory activation does not change the protocol
@@ -576,6 +578,15 @@ not a receipt. Proxy reasons are actor-only: no child/parent/ancestor fan-out.
 Only plan writes retain the verified-direct-parent relay. Existing 128 pending
 recipient and 256 recent call caps remain; no new queues, per-tool history, plan
 lookup, source read, report or automatic progress mutation is introduced.
+
+The dispatch hint conditionally asks coordinators of planned or multi-step work
+to start an Agent Progress mirror with `op=start` and the complete real task
+structure before further dispatches, if none mirrors that work yet. For planned
+work it asks for `op=delegate` with assigned task IDs before the next dispatch so
+a permitted, verified assigned child can report its own tasks. It asks not to
+repeat reports or declarations that are already current. This is advice, not
+detection of a missing plan or a new requirement for ad-hoc dispatches; no
+plan-presence query is performed.
 
 Proxy qualification is finite and fail-closed. Exact `subagent` requires a completed
 outer event, typed native input (agent/description/prompt strings and correctly
@@ -1685,6 +1696,21 @@ An older writer's revision cannot certify inherited provenance. The base protoco
 and SQLite schema version remain 2. Existing detail pagination and source binding
 apply; list/history routes gain no discovery or authorization semantics.
 
+An explicit combined handoff's task component is an ordinary task mutation and
+advances the plan revision once; a bare handoff never does.
+
+## Native session reading reset
+
+The panel's native session action is a reading context, not report authority.
+Its explicit localized **Show current session** reset is frame-local: it retires
+pinned reads/selections and adopts the host's current session/directory without
+writing reports, host state or preferences. Retained-item replays must not undo
+that reset; a different valid target or cleared host item ends replay suppression.
+Visibility/chat changes alone never reset the pinned target. OpenChamber 2.7.1
+can retain its item on ordinary reopening; see
+[upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938) and
+[the UI contract](ui.md#native-session-entry-and-optional-host-context).
+
 ## Sub-agent runs revision 1 — read seam
 
 The optional additive run-format 2 extension leaves base schema/protocol 2 and
@@ -1834,8 +1860,10 @@ potential `503 schema` health. Do not down-migrate to restore them.
 ### Optional authored child handoff
 
 The existing report tool accepts `op:"handoff"`, `oid`, `summary` and
-`outcome:"done"|"partial"|"blocked"`, without plan/revision, child, task,
-attributed identity or source. Summary is a nonblank single line, at most 200
+`outcome:"done"|"partial"|"blocked"`. A bare handoff is claim-only. An optional
+`taskUpdate:{plan,rev,changes}` explicitly requests an atomic task report for one
+plan; no top-level plan/revision, child, attributed identity or source is accepted.
+Summary is a nonblank single line, at most 200
 JavaScript code units, with no NUL or line separators. Oversized/malformed input
 is rejected, not truncated. The report router handles this branch separately
 from the strict plan-request parser. The host's actual invocation session and
@@ -1850,6 +1878,38 @@ interval containing its server report time, never every run of that session.
 No dispatch or task is invented to hold it. A pruned claim's retry is unavailable
 or conflicts and never recreates history. Missing handoff is ordinary; native
 completion and explicitly reported task progress remain independent.
+
+`taskUpdate.changes` contains 1–50 unique task IDs using ordinary status/blocker
+semantics, within the existing 16 KiB input limit. Every target must currently be
+assigned to the invoking child in the active, visible plan. Groups, unknown,
+sibling and unassigned targets refuse the whole operation. Ordinary capture
+permissions and retirement fences still apply. The actual child's claim, task
+changes and combined receipt commit in one Store transaction; success adds
+`taskReceipt` (the ordinary plan/revision receipt) beside `handoff`. Contributions
+are direct child reports and advance the plan once. Outcome never implies a task
+status, coordinator acceptance or plan finish.
+
+Revision, authority, claim or capture failure commits neither requested component.
+A separately justified correction of an invalid older claim association may still
+persist, never the rejected task changes. Conflicts expose the current revision;
+the child must reread and deliberately issue a fresh operation, not silently rebase.
+Combined replay binds normalized full input, source and actual child, including
+the expected revision and every status/blocker. An identical retry returns the
+original result without another contribution/revision. Changed reuse refuses;
+a bare claim cannot be upgraded by reusing its oid. Pruned/missing combined
+evidence and legacy summary-only claim hashes never reconstruct task changes.
+Private receipt bookkeeping reuses existing owners without changing schema 2,
+run format 2 or the public claim shape. Cleanup/older writers may remove evidence;
+ambiguity refuses, rather than guessing that the task component committed.
+
+Assignment guidance is delivered only on a naturally occurring eligible context
+after verified binding, under current source/ancestry/assignment checks. Its
+bounded assigned-only brief is read-only, at most 4 KiB, and qualifies the shown
+revision as requiring a fresh read. Coordinators declare task IDs before supported
+dispatch; names and IDs in prompts grant no authority. No automatic preparation,
+resume or backfill occurs. A first-turn-only child can finish without task reports.
+Restricted children receive no asserted assigned reporting scope; an explicit
+authorized parent relay remains a separate, honestly labelled fallback.
 
 ### Retention and recovery publication
 

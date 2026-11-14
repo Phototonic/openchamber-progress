@@ -15,6 +15,7 @@ import * as path from '../../ui/shared/path.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as source from '../../ui/shared/source.ts';
 import * as language from '../../ui/shared/language.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
 import { launchNeedsYouService } from '../fixtures/needs-you.ts';
 
 type Fixture = Awaited<ReturnType<typeof launchNeedsYouService>>;
@@ -353,7 +354,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
   const state = { hold };
   const h = {
     serviceRequest: async (q: GuestRequest) => { requests.push(q); if (state.hold?.when(q)) await state.hold.gate; return real.serviceRequest(q); },
-    storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; },
+    storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onConnection() { return () => {}; }, onItem() { return () => {}; }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; },
   };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
@@ -364,6 +365,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './source.ts') return source;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;

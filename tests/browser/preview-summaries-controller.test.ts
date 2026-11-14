@@ -11,6 +11,7 @@ import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as language from '../../ui/shared/language.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { EXPECTED_HANDOFF, EXPECTED_PROGRESS, EXPECTED_HANDOFF_RU, EXPECTED_PROGRESS_RU, SUMMARY_ITEMS, pagedSummaryItems, summaryEnvelope, summaryPage, summaryPlan, summaryReports } from '../fixtures/preview-summaries.ts';
 import { HEALTH, setupRead } from './fixtures.ts';
@@ -77,6 +78,8 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
       return reply({ error: 'not-found' }, 404);
     },
     storage: { get: async () => undefined, set: async () => {}, delete: async () => {} },
+    onItem() { return () => {}; },
+    onConnection() { return () => {}; },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; },
   };
   const exports: any = {};
@@ -92,6 +95,7 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };

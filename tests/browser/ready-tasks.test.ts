@@ -13,6 +13,7 @@ import { assignment, invalidReason, readiness, type Readiness } from '../../ui/s
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as language from '../../ui/shared/language.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
 import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as source from '../../ui/shared/source.ts';
 import { HEALTH, setupRead } from './fixtures.ts';
@@ -296,7 +297,7 @@ function controller() {
     return route(q);
   };
   const items = { list: boundaryItems(21), summary: readySummary(boundaryItems(21)) };
-  const h = { serviceRequest: async (q: GuestRequest) => { requests.push(q); return svc(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
+  const h = { serviceRequest: async (q: GuestRequest) => { requests.push(q); return svc(q); }, storage: { get: async () => undefined, set: async () => {}, delete: async () => {} }, onConnection() { return () => {}; }, onItem() { return () => {}; }, onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
     AbortController,
@@ -309,6 +310,7 @@ function controller() {
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };
       if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
       if (name === './official.ts') return { OfficialMainState: class { check = async () => ({ next: null, apply: () => false }); } };

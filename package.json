@@ -1,6 +1,6 @@
 {
   "name": "openchamber-agent-progress-probe",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -17,6 +17,7 @@
       "page": { "entry": "ui/page/index.html", "title": "Agent progress" },
       "background": { "entry": "background/index.html" },
       "actions": [
+        { "id": "open-progress", "label": "Open Agent Progress", "where": "session", "mode": "open" },
         { "id": "insert-handoff", "label": "Insert handoff", "where": "session", "mode": "background" },
         { "id": "insert-progress-update", "label": "Insert progress update", "where": "session", "mode": "background" }
       ],

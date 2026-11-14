@@ -122,7 +122,7 @@ test('availability, unverified/failed identity and control failures fail closed;
     f.lookup = async (id: string) => ({ ...f.info(id), parentID: 'ses_missing-parent' });
     const lookups = f.lookupCount;
     assert.equal(copy(await next(f)).length, 1, 'conditional guidance neither scans nor grants ancestry authority');
-    assert.equal(f.lookupCount, lookups + 1, 'only current session is needed for conditional guidance');
+    assert.ok(f.lookupCount > lookups, 'child contexts may validate ancestry for an assigned-only brief; failed ancestry preserves conditional guidance');
     const statementPrototype = Object.getPrototypeOf(f.store.db.prepare('SELECT enabled FROM meta'));
     const failure = t.mock.method(statementPrototype, 'get', () => { throw new Error('control unavailable'); });
     await f.after(write('plan.md', 'control-failure')); assert.equal(copy(await next(f)).length, 0);
@@ -294,6 +294,26 @@ test('dispose or observed disable during parent await prevents both late flags',
     if (mode === 'dispose') await f.reload(); else f.store.setEnabled(true);
     assert.equal(hint(await next(f, 'ses_child')), false);
     assert.equal(hint(await next(f, 'ses_parent')), false);
+  });
+});
+
+test('no-plan dispatch hint asks for explicit start and delegation; tracker hints do not', async () => {
+  await activationFixture(async f => {
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0);
+    for (const status of ['completed', 'running']) {
+      await f.after(dispatchEvent(`no-plan-${status}`, status));
+      const text = copy(await next(f))[0].text.slice(BASE.length);
+      assert.match(text, /if .*planned or multi-step work.*no Agent Progress plan mirrors it yet/i);
+      assert.match(text, /start one now.*op=start.*complete real task structure.*before further dispatches/i);
+      assert.match(text, /planned work.*op=delegate.*assigned task IDs.*before the next dispatch/i);
+      assert.match(text, /permitted, verified assigned sub-agent.*report its own tasks/i);
+      assert.match(text, /do not repeat.*already current/i);
+      assert.match(text, /grants no assignment or authority.*no work start, review, approval or completion/i);
+      assert.equal(proxyHint(await next(f)), false);
+    }
+    await f.after(trackerEvent('save_issue'));
+    assert.doesNotMatch(copy(await next(f))[0].text.slice(BASE.length), /op=start|op=delegate/);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM plans').get().n, 0, 'conditional advice never creates a plan');
   });
 });
 

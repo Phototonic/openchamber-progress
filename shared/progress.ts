@@ -141,7 +141,7 @@ export interface Request {
   upload?: string; chunk?: number; chunks?: number; page?: number;
 }
 export type BlockerRequest = Request;
-export interface HandoffRequest { op:'handoff'; oid:string; summary:string; outcome:'done'|'partial'|'blocked' }
+export interface HandoffRequest { op:'handoff'; oid:string; summary:string; outcome:'done'|'partial'|'blocked'; taskUpdate?: { plan:string; rev:number; changes:BlockerChangeInput[] } }
 export function identifier(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value); }
 const BLOCKER_CATEGORIES: readonly string[] = ['decision','dependency','review','external','other'];
 function blockerText(value: unknown): value is string { return typeof value === 'string' && value.trim().length > 0 && value.length <= BLOCKER_LIMITS.textCodeUnits && !value.includes('\0'); }
@@ -170,8 +170,14 @@ export function parseReportRequest(value: unknown): Request|HandoffRequest {
   validRequest(value && typeof value === 'object' && !Array.isArray(value), 'request');
   if((value as {op?:unknown}).op==='handoff') {
     const r=value as HandoffRequest;
-    requireProgress(Object.keys(r).every(k=>['op','oid','summary','outcome'].includes(k))&&identifier(r.oid)&&typeof r.summary==='string'&&r.summary.trim().length>0&&r.summary.length<=200&&!/[\u0000\r\n\u2028\u2029]/.test(r.summary)&&['done','partial','blocked'].includes(r.outcome)&&Buffer.byteLength(JSON.stringify(r))<=LIMITS.requestBytes);
-    return {op:'handoff',oid:r.oid,summary:r.summary,outcome:r.outcome};
+    requireProgress(Object.keys(r).every(k=>['op','oid','summary','outcome','taskUpdate'].includes(k))&&identifier(r.oid)&&typeof r.summary==='string'&&r.summary.trim().length>0&&r.summary.length<=200&&!/[\u0000\r\n\u2028\u2029]/.test(r.summary)&&['done','partial','blocked'].includes(r.outcome)&&Buffer.byteLength(JSON.stringify(r))<=LIMITS.requestBytes);
+    if (Object.hasOwn(r,'taskUpdate')) {
+      const t=r.taskUpdate;
+      requireProgress(t && typeof t==='object' && !Array.isArray(t) && Object.keys(t).every(k=>['plan','rev','changes'].includes(k)));
+      const change=parseRequest({op:'change',oid:r.oid,...t});
+      requireProgress(new Set(change.changes!.map(c=>c.id)).size===change.changes!.length);
+    }
+    return JSON.parse(JSON.stringify(r)) as HandoffRequest;
   }
   const r = value as Request;
   const fields: Record<Request['op'], string[]> = {
@@ -223,10 +229,11 @@ export function parseReportRequest(value: unknown): Request|HandoffRequest {
 export const BLOCKER_SCHEMA = { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: false, properties: { category: { type: 'string', enum: ['decision','dependency','review','external','other'] }, reason: { type: 'string', minLength: 1, maxLength: 512 }, nextAction: { type: 'string', minLength: 1, maxLength: 512 } } }], description: 'Blocked tasks only. Optional complete replacement: category, nonblank reason and nextAction (each at most 512 JS code units, no NUL). Null clears details, not status; omit to retain only verified-current details.' } as const;
 export const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['op'], properties: {
-    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish','handoff'], description: 'Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid.' },
+    op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish','handoff'], description: 'Plan operations require plan; mutations require oid/rev. Handoff takes op, oid, summary, outcome done/partial/blocked and optional taskUpdate; no top-level plan/rev. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid.' },
     plan: { type: 'string', description: 'Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } }, blocker: BLOCKER_SCHEMA }, required: ['id','title','kind'], additionalProperties: false } },
     changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] }, blocker: BLOCKER_SCHEMA }, required: ['id','status'], additionalProperties: false } },
+    taskUpdate: { type:'object', additionalProperties:false, required:['plan','rev','changes'], description:'Handoff only: optional explicit atomic assigned-task update. Fresh read required; outcome never selects task status. Identical full-input retries only.', properties:{plan:{type:'string'},rev:{type:'integer',minimum:0},changes:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,required:['id','status'],properties:{id:{type:'string'},status:{enum:['pending','working','blocked','done','skipped']},blocker:BLOCKER_SCHEMA}}}} },
     child: { type: 'string' }, assign: { type: 'array', items: { type: 'string' } }, attributed: { type: 'string' }, source: { type: 'string' }, confirm: { type: 'boolean' }, outcome: { enum: ['finished','cancelled','failed','done','partial','blocked'] }, summary:{type:'string',minLength:1,maxLength:200,description:'Handoff only: one safe nonblank line; no NUL/newlines. Literal rendering is not secret redaction.'}, reopen: { type: 'boolean' }, upload: { type: 'string' }, chunk: { type: 'integer' }, chunks: { type: 'integer' }, page: { type: 'integer' },
   },
 } as const;
@@ -243,5 +250,6 @@ const VALIDATION_HINTS = {
   source: 'Optional source must be a nonempty path string of at most 4096 characters without NUL.',
   items: 'Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.',
   start: 'Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure.',
+  change: 'Change updates existing task IDs only. Groups are not work: set a group status or change the item structure with revise.',
 } as const;
-function validRequest(value: unknown, hint: keyof typeof VALIDATION_HINTS): asserts value { if (!value) throw new ProgressError('invalid', undefined, VALIDATION_HINTS[hint]); }
+export function validRequest(value: unknown, hint: keyof typeof VALIDATION_HINTS): asserts value { if (!value) throw new ProgressError('invalid', undefined, VALIDATION_HINTS[hint]); }

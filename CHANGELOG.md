@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-14
+
+Progress reported by the sub-agents doing the work, and a direct way to open a session's progress. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- Verified, assigned sub-agents can report their own task statuses after their dispatch is bound to the plan. Direct reports retain the child's attribution in the rail and dependency map (#95).
+  - Eligible post-binding contexts receive a bounded assigned-task brief. A first turn before binding does not gain reporting authority.
+  - An optional `handoff.taskUpdate` combines the final handoff claim and explicit assigned-task changes atomically, with revision conflicts and replay checks preserved. A bare handoff remains claim-only; coordinators still own plan structure and finish.
+- The **Open Agent Progress** session action opens the existing panel for the clicked session. **Show current session** explicitly resets its frame-local pinned scope, including when the target is unavailable (#95).
+  - OpenChamber 2.7.1 retains the action item on close/reopen. After a reset, an identical action for the same session cannot be distinguished from a replay; select a different session's action first, then the original, or reload OpenChamber. See [the upstream issue](https://github.com/openchamber/openchamber/issues/6938).
+- The `subagent-reporting-sessions` OpenSpec change is archived into the `session-progress-context` and `subagent-task-reporting` capability specs.
+
+### Changed
+
+- The advisory dispatch hint now tells coordinators to start a plan if none mirrors the work yet and to declare task assignments before the next dispatch. It remains advice only (#96).
+
+### Fixed
+
+- A refused `change` naming a group or unknown item now returns a recovery hint: `change` updates existing task IDs only; set group status or change structure with `revise` (#94).
+- The expanded Sessions panel has one heading rather than a duplicate heading, without removing participant or host-context details (#95).
+
 ## [1.2.0] - 2026-11-14
 
 Capture that comes with the extension, and progress you can hand to the agent. The minimum host is now OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -231,7 +253,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.1
 [1.0.0]: https://github.com/Phototonic/openchamber-progress/compare/v0.7.0...v1.0.0

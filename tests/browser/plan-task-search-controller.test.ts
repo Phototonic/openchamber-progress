@@ -15,6 +15,7 @@ import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as language from '../../ui/shared/language.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
 import * as digestModule from '../../ui/shared/change-digest.ts';
 import * as checkpoint from '../../ui/shared/change-digest-checkpoint.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
@@ -49,6 +50,8 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
   const host = {
     serviceRequest: (q: GuestRequest) => svc.serviceRequest(q),
     storage: device.storage(),
+    onItem() { return () => {}; },
+    onConnection() { return () => {}; },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; },
     openSession: async () => { throw new Error('search must never open a session'); }, toast: async () => {},
   };
@@ -67,6 +70,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './change-digest.ts') return digestModule;
       if (name === './change-digest-checkpoint.ts') return checkpoint;
       if (name === './components.ts') return { el: node, refreshLabels() {}, retireReadingUi() {}, beginInfoPaint() {}, commitInfoPaint() {} };

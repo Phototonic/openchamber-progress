@@ -222,8 +222,14 @@ function parseReportRequest(value) {
   validRequest(value && typeof value === "object" && !Array.isArray(value), "request");
   if (value.op === "handoff") {
     const r2 = value;
-    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome"].includes(k)) && identifier(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
-    return { op: "handoff", oid: r2.oid, summary: r2.summary, outcome: r2.outcome };
+    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome", "taskUpdate"].includes(k)) && identifier(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
+    if (Object.hasOwn(r2, "taskUpdate")) {
+      const t = r2.taskUpdate;
+      requireProgress(t && typeof t === "object" && !Array.isArray(t) && Object.keys(t).every((k) => ["plan", "rev", "changes"].includes(k)));
+      const change = parseRequest({ op: "change", oid: r2.oid, ...t });
+      requireProgress(new Set(change.changes.map((c) => c.id)).size === change.changes.length);
+    }
+    return JSON.parse(JSON.stringify(r2));
   }
   const r = value;
   const fields = {
@@ -307,7 +313,8 @@ var VALIDATION_HINTS = {
   title: "Use a nonempty title of at most 256 characters.",
   source: "Optional source must be a nonempty path string of at most 4096 characters without NUL.",
   items: "Items must be an array of at most 50 entries, each with id, nonempty title (at most 512 characters) and kind task or group; use valid statuses and identifiers.",
-  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure."
+  start: "Start requires title and items, plus oid and rev. Use rev:0 for a new plan and include the complete item structure.",
+  change: "Change updates existing task IDs only. Groups are not work: set a group status or change the item structure with revise."
 };
 function validRequest(value, hint) {
   if (!value)
@@ -2170,6 +2177,9 @@ function reassociateClaims(db, source, child) {
       attachClaim(db, owners[0]);
   }
 }
+function knownHandoff(db, source, child, oid) {
+  return !!(db.prepare("SELECT 1 FROM runs_claims WHERE source=? AND child=? AND oid=?").get(source, child, oid) ?? db.prepare("SELECT 1 FROM runs_retired WHERE source=? AND child=? AND oid=?").get(source, child, oid) ?? db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND (json_extract(payload,'$.claimed.oid')=? OR json_extract(payload,'$._retiredClaim[0]')=?) LIMIT 1").get(source, child, oid, oid));
+}
 function handoff(db, r, actor, now, epoch = observationEpoch(db)) {
   requireProgress(runControl(db).enabled, "disabled");
   requireProgress(actor.verifiedSource && identifier(actor.parentId) && actor.ancestry?.[0] === actor.parentId && actor.ancestry.length <= 32, "assignment");
@@ -3535,11 +3545,47 @@ class Store {
     requireProgress(r.op === "delegate");
     return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
   }
-  handoff(value, actor, now = Date.now(), epoch) {
+  handoff(value, actor, now = Date.now(), epoch, capture) {
     const r = parseReportRequest(value);
     requireProgress(r.op === "handoff");
     requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-    const result = this.transaction(true, () => handoff(this.db, r, actor, now, epoch));
+    const result = this.transaction(true, () => {
+      requireProgress(runControl(this.db).enabled, "disabled");
+      if (r.taskUpdate) {
+        const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.taskUpdate.plan) : undefined;
+        requireProgress(cleanup2?.state !== "deleted", "not-found");
+        requireProgress(cleanup2?.state !== "archived", "closed");
+      }
+      const old = this.db.prepare("SELECT plan,payload_hash,receipt FROM receipts WHERE source=? AND oid=? AND json_extract(receipt,'$._handoffChild')=? LIMIT 1").get(actor.sourceId, r.oid, actor.sessionId);
+      const hash3 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+      if (old) {
+        requireProgress(old.payload_hash === hash3, "operation-reused");
+        const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, String(old.plan)) : undefined;
+        requireProgress(cleanup2?.state !== "deleted", "not-found");
+        requireProgress(cleanup2?.state !== "archived", "closed");
+        requireProgress(knownHandoff(this.db, actor.sourceId, actor.sessionId, r.oid), "not-found");
+        const claim2 = handoff(this.db, r, actor, now, epoch);
+        if ("error" in claim2)
+          return claim2;
+        const { _handoffChild, ...receipt2 } = JSON.parse(String(old.receipt));
+        return receipt2;
+      }
+      if (!r.taskUpdate)
+        return handoff(this.db, r, actor, now, epoch);
+      requireProgress(!knownHandoff(this.db, actor.sourceId, actor.sessionId, r.oid), "operation-reused");
+      const t = r.taskUpdate;
+      requireProgress(!this.db.prepare("SELECT 1 FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, t.plan, r.oid), "operation-reused");
+      const previous = this.raw(actor.sourceId, t.plan);
+      requireProgress(previous, "not-found");
+      requireProgress(previous.sessionId !== actor.sessionId, "assignment");
+      const taskReceipt = this.applyMutation({ op: "change", oid: r.oid, ...t }, actor, capture);
+      const claim = handoff(this.db, r, actor, now, epoch);
+      if ("error" in claim)
+        requireProgress(false, claim.error);
+      const receipt = { ...claim, taskReceipt };
+      this.db.prepare("UPDATE receipts SET payload_hash=?,receipt=? WHERE source=? AND plan=? AND oid=?").run(hash3, JSON.stringify({ ...receipt, _handoffChild: actor.sessionId }), actor.sourceId, t.plan, r.oid);
+      return receipt;
+    });
     if ("error" in result)
       requireProgress(false, result.error);
     return result;
@@ -4170,7 +4216,7 @@ class Store {
         requireProgress(new Set(r.changes.map((c) => c.id)).size === r.changes.length);
         for (const c of r.changes) {
           const item = p.items.find((i) => i.id === c.id);
-          requireProgress(item?.kind === "task");
+          validRequest(item?.kind === "task", "change");
           item.status = c.status;
           item.reporterSessionId = actor.sessionId;
           annotate(item, c.blocker);
@@ -5024,7 +5070,7 @@ function blockedTiming(store, detail, now = new Date) {
 }
 
 // shared/release.ts
-var RELEASE = "1.2.0";
+var RELEASE = "1.3.0";
 
 // service/server.ts
 function createProgressServer(store, token, unavailableCode, setup) {

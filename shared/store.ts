@@ -15,7 +15,7 @@ import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
 import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
-import { VERSION, LIMITS, ProgressError, requireProgress as need, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
+import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 import { canonical } from './canonical.ts';
 export { canonical } from './canonical.ts';
@@ -117,9 +117,42 @@ export class Store {
   }); }
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
-  handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number) {
+  handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number,capture?:Capture) {
     const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');
-    const result=this.transaction(true,()=>runs.handoff(this.db,r,actor,now,epoch));
+    const result=this.transaction(true,()=>{
+      need(runs.runControl(this.db).enabled,'disabled');
+      if(r.taskUpdate){
+        const cleanup=cleanupInstalled(this.db)?cleanupState(this.db,actor.sourceId,r.taskUpdate.plan):undefined;
+        need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
+      }
+      // Private replay bookkeeping lives in existing plan receipts, not public run claims.
+      const old=this.db.prepare("SELECT plan,payload_hash,receipt FROM receipts WHERE source=? AND oid=? AND json_extract(receipt,'$._handoffChild')=? LIMIT 1").get(actor.sourceId,r.oid,actor.sessionId);
+      const hash=digest(canonical({request:r,session:actor.sessionId,source:actor.sourceId}));
+      if(old){
+        need(old.payload_hash===hash,'operation-reused');
+        const cleanup=cleanupInstalled(this.db)?cleanupState(this.db,actor.sourceId,String(old.plan)):undefined;
+        need(cleanup?.state!=='deleted','not-found');need(cleanup?.state!=='archived','closed');
+        need(runs.knownHandoff(this.db,actor.sourceId,actor.sessionId,r.oid),'not-found');
+        const claim=runs.handoff(this.db,r,actor,now,epoch);
+        if('error' in claim)return claim;
+        const {_handoffChild,...receipt}=JSON.parse(String(old.receipt));
+        return receipt;
+      }
+      if(!r.taskUpdate)return runs.handoff(this.db,r,actor,now,epoch);
+      // Bare/legacy claims cannot certify a task mutation, even with identical prose.
+      need(!runs.knownHandoff(this.db,actor.sourceId,actor.sessionId,r.oid),'operation-reused');
+      const t=r.taskUpdate;
+      need(!this.db.prepare('SELECT 1 FROM receipts WHERE source=? AND plan=? AND oid=?').get(actor.sourceId,t.plan,r.oid),'operation-reused');
+      const previous=this.raw(actor.sourceId,t.plan);need(previous,'not-found');
+      need(previous.sessionId!==actor.sessionId,'assignment');
+      const taskReceipt=this.applyMutation({op:'change',oid:r.oid,...t},actor,capture);
+      const claim=runs.handoff(this.db,r,actor,now,epoch);
+      // Throw here: a claim refusal must roll back the tentative task change too.
+      if('error' in claim)need(false,claim.error);
+      const receipt={...claim,taskReceipt};
+      this.db.prepare('UPDATE receipts SET payload_hash=?,receipt=? WHERE source=? AND plan=? AND oid=?').run(hash,JSON.stringify({...receipt,_handoffChild:actor.sessionId}),actor.sourceId,t.plan,r.oid);
+      return receipt;
+    });
     // A rejected retry can still have corrected an unsupported association.
     // Only expected caller refusals cross this boundary; storage faults roll back.
     if('error' in result)need(false,result.error);
@@ -497,7 +530,7 @@ export class Store {
           else need(actor.ancestry?.includes(p.sessionId),'assignment');
         }
         need(new Set(r.changes!.map(c => c.id)).size === r.changes!.length);
-        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); need(item?.kind === 'task'); item.status = c.status; item.reporterSessionId=actor.sessionId; annotate(item,c.blocker); }
+        for (const c of r.changes!) { const item = p.items.find(i => i.id === c.id); validRequest(item?.kind === 'task','change'); item.status = c.status; item.reporterSessionId=actor.sessionId; annotate(item,c.blocker); }
         changed = r.changes!.map(c => c.id);
       }
       if (r.op === 'link') {

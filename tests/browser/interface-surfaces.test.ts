@@ -20,7 +20,7 @@ function surfaceHarness(surface: string, overrides: Record<string, object> = {})
   const el = (_tag: string, _class = '', text = ''): any => ({ text, dataset: {}, childNodes: [], append(...children: any[]) { this.childNodes.push(...children); nodes.push(...children); }, setAttribute() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
   const components = { el, allDone: () => {}, testid: (node: any, id: string) => { node.dataset ??= {}; node.dataset.testid = id; return node; },
     emptyBlock: (_id: string, title: string, text: string) => ({ text: `${title} ${text}` }), languageBlock: () => ({ text: '' }),
-    button: (_p: any, _id: string, text: string) => nodes.push({ text }), detailsBlock: () => ({ text: '' }), failureFacts: () => [],
+    button: (_p: any, id: string, text: string, click?: () => void) => nodes.push({ text, dataset: { testid: id }, click }), recoveredHeading: (root: any) => root.recovered ?? null, detailsBlock: () => ({ text: '' }), failureFacts: () => [],
     failureBlock: () => ({ text: 'Read failed' }), retryRead: () => () => {}, loadingBlock: () => ({ text: 'Loading' }) };
   const noopController = class { beginPaint() {} claim() { return {}; } };
   const js = ts.transpileModule(readFileSync(new URL(`../../ui/${surface}/main.ts`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -79,6 +79,33 @@ for (const surface of ['panel', 'status', 'page']) test(`${surface}: actual empt
   assert.match(rendered(), surface === 'page' ? /Current plans/ : /No session selected/);
   assert.doesNotMatch(rendered(), /Сессия не выбрана|Текущие планы/);
   assert.equal(vc.ui, ui);
+});
+
+test('panel: a pinned scope offers a localized Show current session that hands focus off before resetting', () => {
+  const h = surfaceHarness('panel');
+  const copy = { en: ['Progress for selected session: Session A', 'Show current session', 'Showing the current session'], ru: ['Прогресс выбранной сессии: Сессия A', 'Показать текущую сессию', 'Показана текущая сессия'] } as const;
+  for (const locale of ['en', 'ru'] as const) for (const state of [null, 'checking', 'unavailable', 'invalid']) {
+    h.nodes.length = 0;
+    const calls: string[] = []; let handoff: any = null;
+    const vc = { ui: { presentation: 'list', selected: null }, env: { locale }, language: {}, session: state === 'invalid' ? null : { id: 'A' }, live: live.EMPTY_LIVE,
+      progressAction: true, progressContext: state, progressReset: () => calls.push('reset'), handoff: (value: any) => { calls.push('handoff'); handoff = value; },
+      read: null, failure: null, health: null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 };
+    h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, vc);
+    const line = h.nodes.find(n => n?.dataset?.testid === 'session-action-scope');
+    assert.ok(line, `${locale}/${state}: labelled pinned-scope line`);
+    assert.equal(h.nodes.some(n => n?.text === copy[locale][0]), state !== 'invalid', `${locale}/${state}: honest scope label`);
+    const reset = h.nodes.find(n => n?.dataset?.testid === 'session-action-reset');
+    assert.equal(reset?.text, copy[locale][1], `${locale}/${state}: reset offered beside the label`);
+    reset.click();
+    assert.deepEqual(calls, ['handoff', 'reset'], 'hand-off is requested before the scope changes');
+    assert.equal(handoff.notice(null, locale), copy[locale][2]);
+    const heading = { testid: 'empty-state' }, retry = { testid: 'retry' };
+    assert.equal(handoff.heading({ recovered: heading, querySelector: () => retry }), heading, 'resulting state heading first');
+    assert.equal(handoff.heading({ querySelector: (s: string) => s === '[role="alert"] button' ? retry : null }), retry, 'a failed read lands on its Try again');
+  }
+  h.nodes.length = 0;
+  h.spec.paint({ append: (...children: any[]) => h.nodes.push(...children) }, { ui: { presentation: 'list', selected: null }, env: { locale: 'en' }, language: {}, session: { id: 'B' }, live: live.EMPTY_LIVE, progressAction: false, read: null, failure: null, health: null, setup: {}, ctx: {}, identity: 'test', sessionSubscriptions: 0 });
+  assert.equal(h.nodes.some(n => /^session-action-/.test(n?.dataset?.testid ?? '')), false, 'ordinary opening has no pinned line or reset');
 });
 
 test('status counts, readiness chips and qualifiers rerender in Russian and English', () => {

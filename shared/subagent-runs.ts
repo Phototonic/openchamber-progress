@@ -364,6 +364,12 @@ function reassociateClaims(db:DatabaseSync,source:string,child:string) {
   }
 }
 type HandoffDisposition={handoff:NonNullable<RunRow['claimed']>}|{error:'not-found'|'operation-reused'|'busy'|'conflict'|'invalid'};
+/** Claim evidence only; never reconstruct task receipt evidence from a bare claim. */
+export function knownHandoff(db:DatabaseSync,source:string,child:string,oid:string):boolean {
+  return !!(db.prepare('SELECT 1 FROM runs_claims WHERE source=? AND child=? AND oid=?').get(source,child,oid)
+    ??db.prepare('SELECT 1 FROM runs_retired WHERE source=? AND child=? AND oid=?').get(source,child,oid)
+    ??db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND (json_extract(payload,'$.claimed.oid')=? OR json_extract(payload,'$._retiredClaim[0]')=?) LIMIT 1").get(source,child,oid,oid));
+}
 /** Expected refusals are mapped after commit so corrections and loss survive. */
 export function handoff(db:DatabaseSync,r:HandoffRequest,actor:Actor,now:number,epoch=observationEpoch(db)):HandoffDisposition {
   need(runControl(db).enabled,'disabled');need(actor.verifiedSource&&identifier(actor.parentId)&&actor.ancestry?.[0]===actor.parentId&&actor.ancestry.length<=32,'assignment');

@@ -23,7 +23,8 @@ import { applyHostReady } from '@openchamber/sdk/ui';
 import type { CleanupAction, SetupAction } from './adapter.ts';
 import { cleanupEligible, cleanupMatches, cleanupTarget, initialCleanup, type CleanupState, type CleanupTarget } from './cleanup.ts';
 import { beginInfoPaint, commitInfoPaint, el, refreshLabels, retireReadingUi, type Env } from './components.ts';
-import { LiveWorkspace, type LiveSnapshot } from './live.ts';
+import { LiveWorkspace, projectFor, type LiveSnapshot } from './live.ts';
+import { progressItem, progressTargetState, progressTargetRead, type ProgressItem, type ProgressContextState } from './session-context.ts';
 import type { DocumentBody, HealthView, HistoryEntry, PlanDetail, PlanView, ReadingState, SetupTargets, SetupView, StoreRead } from './model.ts';
 import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
@@ -81,6 +82,15 @@ export interface ViewContext<U> {
   ctx: HostReadyContext;
   session: SessionSnapshot | null;
   directory: string | null;
+  /** Native session action validation; null for ordinary opening or a verified target. */
+  progressContext?: ProgressContextState | null;
+  progressAction?: boolean;
+  /**
+   * Panel only, while a session action pins the scope: return to the host's current session in this
+   * frame. A pending hand-off requested just before it survives the transition; replays of the same
+   * delivered item are then ignored until the host delivers a different or cleared item.
+   */
+  progressReset?: () => void;
   health: HealthView | null;
   /** Data for the current scope only (null while that scope is loading or not configured). */
   read: StoreRead | null;
@@ -437,6 +447,13 @@ export function startView<U>(spec: ViewSpec<U>) {
   let ctx: HostReadyContext | null = null;
   let session: SessionSnapshot | null = null;
   let directory: string | null = null;
+  let hostSession: SessionSnapshot | null = null;
+  let hostDirectory: string | null = null;
+  let item: ProgressItem = { kind: 'ordinary' };
+  /** Delivered item the user explicitly reset away from in this frame; never stored. */
+  let resetItem: string | null = null;
+  let itemBeforeReady = false;
+  const targetState = () => item.kind === 'invalid' ? 'invalid' as const : item.kind === 'target' ? progressTargetState(item.target, live.snapshot) : null;
   let health: HealthView | null = null;
   let read: StoreRead | null = null;
   let readScope = '';
@@ -688,10 +705,16 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   const live = new LiveWorkspace(host, spec.maxSessionSubscriptions, () => {
     const sig = JSON.stringify([live.snapshot.projectsState, live.snapshot.projects, [...live.snapshot.worktrees], [...live.snapshot.sessions], live.snapshot.capped]);
-    if (sig !== liveSig) { liveSig = sig; versions.live++; schedule(); }
+    if (sig !== liveSig) {
+      liveSig = sig; versions.live++;
+      if (ctx && item.kind !== 'ordinary' && scopeMoved()) {
+        contextGeneration++; versions.ctx++; clearReading(); spec.onContext?.(context()); retry();
+      }
+      schedule();
+    }
   });
 
-  const currentScope = () => spec.scope({ session, directory }, ui);
+  const currentScope = () => targetState() ? null : spec.scope({ session, directory }, ui);
   // The proxy cannot abort an already sent request. Retired reads must also stop
   // issuing continuation pages after a held health/detail/document reply arrives.
   const guardedHost = (current: () => boolean) => ({
@@ -785,8 +808,16 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    const result = await readList(guardedHost(() => generation === gate.current), scope);
+    let result = await readList(guardedHost(() => generation === gate.current), scope);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
+    if (item.kind === 'target' && scope && result.ok) {
+      const validated = result.read && progressTargetRead(result.read);
+      result = validated ? { ...result, read: validated } : { ok: false, failure: { kind: 'invalid', code: 'ACTION_CONTEXT', message: 'The complete source-qualified session context could not be verified.' } };
+    }
+    // Action reads never retain old data as an alternative to denied/incomplete context.
+    if (item.kind !== 'ordinary' && !result.ok) {
+      resetCaches(); clearReading(); read = null; readScope = ''; readSig = ''; lastGoodAt = null;
+    }
     if (result.ok && !result.health.ready && read) {
       // The service no longer finds its setup, but this frame showed data from it: keep that
       // data visibly stale instead of replacing it with a setup form.
@@ -981,6 +1012,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const confirmation = cleanup.target;
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
+    const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
     const env: Env = {
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
@@ -990,7 +1022,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, session, directory, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1302,7 +1334,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       languageFocus = false;
     }
-    live.want(spec.wantProjects(vc));
+    const targetProject = item.kind === 'target' ? projectFor(item.target.directory, live.snapshot) : undefined;
+    live.want(targetProject ? [targetProject.id, ...spec.wantProjects(vc)] : spec.wantProjects(vc));
     if (vc.read) loadDetails(spec.wantDetails(vc));
     const keep = spec.retainParts?.(vc);
     if (keep) retainParts(keep);
@@ -1380,6 +1413,59 @@ export function startView<U>(spec: ViewSpec<U>) {
     if (moved) contextChanged(); else schedule();
   };
 
+  const applyItem = (value: unknown) => {
+    if (spec.surface !== 'panel') return;
+    const next = progressItem(value);
+    const key = JSON.stringify(next);
+    if (resetItem !== null) {
+      // The host may keep re-delivering the item the user reset away from (ready snapshots,
+      // theme updates, an ordinary reopen). Only a different or cleared item ends the reset.
+      if (key === resetItem) return;
+      resetItem = null;
+    }
+    if (key === JSON.stringify(item)) return;
+    item = next;
+    if (ctx) changeItem();
+  };
+  /** Explicit local return to the host's current session: frame-local, no host or store write. */
+  const resetProgress = (pinned: string) => {
+    if (disposed || !ctx || spec.surface !== 'panel' || item.kind === 'ordinary' || JSON.stringify(item) !== pinned) return;
+    resetItem = pinned;
+    item = { kind: 'ordinary' };
+    // The context transition cancels hand-offs; keep the one this activation just requested.
+    const requested = handoff;
+    changeItem();
+    handoff = requested;
+  };
+  const changeItem = () => {
+    // Even ordinary → action for the same ID is a new authority/selection boundary.
+    gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi();
+    read = null; readScope = ''; readSig = ''; failure = null; lastGoodAt = null;
+    contextGeneration++; versions.ctx++;
+    applyEffectiveContext();
+    requestedScope = scopeKey(currentScope());
+    spec.onContext?.(context()); retry(); schedule();
+  };
+  const applyEffectiveContext = () => applyContext(
+    item.kind === 'target' ? { id: item.target.id, title: '', busy: false } : item.kind === 'invalid' ? null : hostSession,
+    item.kind === 'target' ? item.target.directory : item.kind === 'invalid' ? null : hostDirectory,
+  );
+
+  host.onItem((value) => {
+    if (disposed) return;
+    if (!ctx) itemBeforeReady = true;
+    applyItem(value);
+  });
+  const revalidateAction = () => {
+    gate.retire(); resetCaches(); clearReading(); read = null; readScope = ''; readSig = ''; failure = null; lastGoodAt = null;
+    contextGeneration++; versions.ctx++; live.restart(); requestedScope = scopeKey(currentScope()); retry(); schedule();
+  };
+  host.onConnection((next) => {
+    if (!ctx || disposed || item.kind === 'ordinary' || next.account === ctx.connection?.account) return;
+    ctx = { ...ctx, connection: next };
+    identity = ''; ui = spec.initialUi(); revalidateAction(); spec.onContext?.(context());
+  });
+
   host.onReady((next) => {
     applyHostReady(next, document.documentElement);
     if (!document.getElementById('ap-style')) {
@@ -1389,14 +1475,22 @@ export function startView<U>(spec: ViewSpec<U>) {
     }
     const first = !ctx;
     const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
+    const hostContextChanged = !first && (hostDirectory !== (next.directory ?? null) || hostSession?.id !== next.session?.id);
     if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
+    // Ready's explicit item (including null for ordinary opening) is authoritative.
+    // A pre-ready replay is retained only if an older snapshot omits the field.
+    hostSession = next.session ?? null;
+    hostDirectory = next.directory ?? null;
+    if (first) {
+      if ((!itemBeforeReady || next.item !== undefined) && spec.surface === 'panel') item = progressItem(next.item);
+    } else applyItem(next.item);
     ctx = next;
     language.ready(next.locale, next.features?.deviceStorage === true);
     document.documentElement.lang = paintedLanguage ?? language.snapshot().language;
     // Ready is authoritative, not just a theme notification. Adopt both fields before
     // any refresh/onContext callback; later directory/session events repeat this state.
-    const nextSession = next.session ?? null;
-    const nextDirectory = next.directory ?? null;
+    const nextSession = item.kind === 'target' ? { id: item.target.id, title: '', busy: false } : item.kind === 'invalid' ? null : hostSession;
+    const nextDirectory = item.kind === 'target' ? item.target.directory : item.kind === 'invalid' ? null : hostDirectory;
     if (integrationAccountChanged) {
       contextGeneration++;
       gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi(); identity = ''; read = null; readScope = ''; readSig = ''; health = null;
@@ -1414,13 +1508,23 @@ export function startView<U>(spec: ViewSpec<U>) {
       spec.onContext?.(context());
       gate.request();
     } else if (!integrationAccountChanged) applyContext(nextSession, nextDirectory);
+    if (hostContextChanged && !integrationAccountChanged && item.kind !== 'ordinary') revalidateAction();
     schedule();
   });
   host.onSession((next) => {
-    applyContext(next ?? null, directory);
+    const changed = hostSession?.id !== next?.id;
+    hostSession = next ?? null;
+    if (changed && ctx && item.kind !== 'ordinary') revalidateAction();
+    applyEffectiveContext();
   });
   host.onDirectory((next) => {
-    applyContext(session, next ?? null);
+    const changed = hostDirectory !== (next ?? null);
+    hostDirectory = next ?? null;
+    if (changed && ctx && item.kind !== 'ordinary') {
+      // Workspace changes require current coverage again, not the visible chat's identity.
+      revalidateAction();
+    }
+    applyEffectiveContext();
   });
 
   // Motion stops while hidden or disposed (style.ts `[data-ap-hidden]`) and resumes on the shared phase.

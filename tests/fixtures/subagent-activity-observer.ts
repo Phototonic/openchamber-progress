@@ -62,8 +62,8 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
   });
   await ctx.tool.hook('execute.after', async e => {
     if (e.tool === 'agent_progress_report') {
-      let reply: any; try { const result = (e as any).result; reply = JSON.parse(result?.output?.content ?? result?.content); } catch {}
-      record({ type: 'report-reply', callID: e.id, sessionID: e.sessionID, status: e.status, error: reply?.error, rev: reply?.rev, pending: reply?.pending, disposition: reply?.disposition });
+      let reply: any; try { const result = (e as any).result; reply=JSON.parse(result.content[0].text); } catch {}
+      record({ type: 'report-reply', callID: e.id, sessionID: e.sessionID, status: e.status, error: reply?.error, rev: reply?.rev, taskRev:reply?.taskReceipt?.rev, handoff:!!reply?.handoff, parsed:!!reply, pending: reply?.pending, disposition: reply?.disposition });
     }
     if (e.tool !== 'subagent') return;
     const result: any = e.status === 'completed' ? e.result : undefined;
@@ -122,9 +122,10 @@ export default Plugin.define({ id: 'subagent-activity-probe', async setup(ctx) {
       const key = `${identity}:${job?.generation ?? 'initial'}`;
       let calls = !seen.has(key) ? job?.calls : undefined;
       if (!seen.has(key) && session.agent === 'nested-worker') calls = [{ id: 'nested', input: { agent: 'restricted-worker', description: 'Synthetic nested child', prompt: 'Synthetic fixed probe.' } }];
-      if(!seen.has(key)&&session.agent==='reporting-worker')calls=[{id:'child-handoff',tool:'agent_progress_report',input:{op:'handoff',oid:'native-claim',summary:'Synthetic child reports its bounded work complete.',outcome:'done'}}];
+      if(!seen.has(key)&&!job&&session.agent==='reporting-worker')calls=jobs.firstReportingCall?[jobs.firstReportingCall]:[{id:'child-handoff',tool:'agent_progress_report',input:{op:'handoff',oid:'native-claim',summary:'Synthetic child reports its bounded work complete.',outcome:'done'}}];
       seen.add(key);
-      record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], hold: job?.hold === true, fault: job?.fault === true });
+      const assignedBrief=options.prompt.some((m:any)=>m.role==='system'&&typeof m.content==='string'&&m.content.includes('Assigned-only scope:'));
+      record({ type: 'dispatch', sessionID: identity, agent: session.agent, calls: calls?.map((c: any) => c.id) ?? [], assignedBrief, hold: job?.hold === true, fault: job?.fault === true });
       if (job?.fault) throw new Error('Synthetic provider failure');
       if(session.agent==='failing-worker'){
         const deadline=Date.now()+15000;
