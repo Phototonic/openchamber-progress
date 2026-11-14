@@ -135,6 +135,9 @@ export interface ManagedReview {
 }
 export interface ManagedDelivery {
   kind: 'managed'; revision: 1;
+  /** Advertised only by a complete bounded-step implementation. Absent means unsupported. */
+  managedMigrationSteps?: 1;
+  migrationProgress?: import('./managed-steps.ts').ManagedStepProgress;
   configuration: 'unconfigured' | 'configured' | 'invalid';
   migration: ManagedMigrationState;
   /** Local service cannot establish host grant, inventory or watched-file mode. */
