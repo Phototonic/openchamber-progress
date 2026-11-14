@@ -43,7 +43,7 @@ export const INBOX_COPY = {
     restarted: 'The list changed while loading, so it started again from the top.',
     showMore: (n: number) => `Show ${n} more`, showFewer: 'Show fewer',
     also: (n: number, exact: boolean) => `Also blocked · ${exact ? n : `${n}+`}`,
-    alsoNote: 'Waiting on something other than you, such as another task or an outside party, or no reason was reported.',
+    alsoNote: 'Other reported blockers, including dependencies, outside parties and unspecified reasons.',
     open: (task: string, plan: string) => `Open ${task} in ${plan}`,
     plan: 'Plan: ', reason: 'Reason', next: 'Next step', unknown: 'Unknown',
     waiting: 'Waiting', waitUnknown: 'Waiting time unknown', waitUnavailable: 'Waiting time unavailable',
@@ -94,7 +94,7 @@ export const INBOX_COPY = {
     restarted: 'Список изменился во время загрузки, поэтому он начат заново.',
     showMore: (n: number) => `Показать ещё ${num(n, 'ru')}`, showFewer: 'Свернуть',
     also: (n: number, exact: boolean) => `Также заблокировано · ${exact ? num(n, 'ru') : `${num(n, 'ru')}+`}`,
-    alsoNote: 'Ожидают не вас: например, другую задачу или внешнюю сторону, либо причина не указана.',
+    alsoNote: 'Другие указанные блокировки: зависимости, внешние стороны и неуказанные причины.',
     open: (task: string, plan: string) => `Открыть «${task}» в плане «${plan}»`,
     plan: 'План: ', reason: 'Причина', next: 'Следующий шаг', unknown: 'Неизвестно',
     waiting: 'Ожидает', waitUnknown: 'Время ожидания неизвестно', waitUnavailable: 'Время ожидания недоступно',
@@ -147,14 +147,15 @@ export function openReading(row: InboxRowView, storeId: string): InboxReading {
   return { token: ++readings, target: inboxTarget(row, storeId), task: row.task.title, planTitle: row.planTitle, coordinator: row.coordinatorSessionId, group: row.group, rowKey: row.rowKey };
 }
 /**
- * Detail request of a reading (see inboxRequest). A newer revision of the same plan in the latest
- * inbox window re-reads it on the existing cadence; nothing else polls the reading.
+ * Detail request of a reading (see inboxRequest). Keep current detail metadata even after the
+ * plan leaves the inbox; the frame revalidates its head on the existing refresh cadence.
  */
-export function readingRequest(r: InboxReading, model?: InboxModel | null) {
+export function readingRequest(r: InboxReading, model?: InboxModel | null, latest?: PlanView | null) {
   const key = `${r.target.source}/${r.target.plan}`;
   let revision = r.target.revision;
   for (const row of [...model?.needsYou ?? [], ...model?.alsoBlocked ?? []]) if (row.planKey === key && row.revision > revision) revision = row.revision;
-  return inboxRequest({ ...r.target, revision }, r.planTitle, r.coordinator);
+  const request = inboxRequest({ ...r.target, revision }, r.planTitle, r.coordinator);
+  return latest?.key === key && latest.revision >= revision && (latest.cleanup?.revision ?? 0) >= r.target.cleanupRev ? latest : request;
 }
 
 function categoryTag(row: InboxRowView, locale: string) {
@@ -322,7 +323,7 @@ export function inboxSection(panel: InboxPanel, env: Env, options: { open: (row:
  * Work Status entry: one line with the count, opening the rail (where the inbox already is). No
  * line without an advertised, verified, readable inbox; never a guessed zero.
  */
-export function statusInboxLine(m: InboxModel, locale: string, open: () => void) {
+export function statusInboxLine(m: InboxModel, locale: string, open: () => void, stale: number | null = null) {
   if (m.availability !== 'ready') return null;
   const t = inboxCopy(locale);
   const line = testid(el('div', 'ap-inbox-line'), 'needs-you-line');
@@ -341,6 +342,8 @@ export function statusInboxLine(m: InboxModel, locale: string, open: () => void)
   b.append(dot, count, scope);
   b.addEventListener('click', open);
   line.append(b);
+  if (stale !== null) line.append(testid(warningLine(t.stale(clockTime(stale, locale)), 'warning', 'p'), 'needs-you-stale'));
+  if (!m.captureEnabled) line.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
   return line;
 }
 
@@ -418,6 +421,8 @@ export class ReadingFocus {
       this.back = null;
       if (key === null || !owns) return;
       const row = [...root.querySelectorAll<HTMLElement>('[data-testid="needs-you-row"]')].find((n) => n.dataset.row === key);
+      const disclosure = row?.closest('details');
+      if (disclosure) disclosure.open = true;
       (row?.querySelector<HTMLElement>('.ap-inbox-open') ?? root.querySelector<HTMLElement>('[data-testid="needs-you-heading"]'))?.focus({ preventScroll: true });
       return;
     }

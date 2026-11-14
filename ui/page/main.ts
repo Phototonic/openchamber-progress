@@ -64,7 +64,11 @@ type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number;
 let inboxFocus: ReadingFocus | null = null;
 const readingFocus = () => (inboxFocus ??= new ReadingFocus());
 let inboxCheck: ReadingCheck | null = null;
-const inboxRequestOf = (vc: ViewContext<Ui>) => (vc.ui.inbox ? readingRequest(vc.ui.inbox, vc.inbox?.model) : null);
+const inboxRequestOf = (vc: ViewContext<Ui>) => {
+  if (!vc.ui.inbox) return null;
+  const request = readingRequest(vc.ui.inbox, vc.inbox?.model);
+  return readingRequest(vc.ui.inbox, vc.inbox?.model, vc.detailPlan(request));
+};
 const inboxKey = (ui: Ui) => (ui.inbox ? ui.inbox.target.source + '/' + ui.inbox.target.plan : null);
 
 const visiblePlans = (vc: ViewContext<Ui>) => {
@@ -232,9 +236,8 @@ startView<Ui>({
   // No plan cleanup from a source-wide inbox reading.
   actionPlan: (vc) => (vc.ui.inbox ? null : selectedPlan(vc)),
   forgetPlans: (keys, ui) => {
-    const inbox = keys.has(inboxKey(ui) ?? '') ? { inbox: null } : {};
-    if (!keys.has(ui.selected ?? '')) return inbox;
-    captures.retire(); reporting.retire(); search.select(null); return { selected: null, ...inbox };
+    if (!keys.has(ui.selected ?? '')) return {};
+    captures.retire(); reporting.retire(); search.select(null); return { selected: null };
   },
   beforeUiChange: (previous, next) => {
     // Explicit board navigation (mode, filters, search, selection) leaves an open inbox reading.
@@ -256,6 +259,7 @@ startView<Ui>({
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
     const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
   },
+  refreshDetails: (vc) => { const request = inboxRequestOf(vc); return request ? [request] : []; },
   // Task reading follows the board's own scope and selection (never the host session); the
   // Progress/Document/History/Map tabs of one selection share it. A search run is its own scope.
   reading: (vc) => {
@@ -265,7 +269,7 @@ startView<Ui>({
     return { plan: p.key, scope: readingScope(vc) };
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
-  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
+  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service, vc.health?.needsYouInbox === 1 ? { demand: 'rows', mono: () => performance.now() } : undefined) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
   retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); inboxFocus?.reset(); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },

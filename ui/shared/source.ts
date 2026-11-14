@@ -24,7 +24,7 @@ export interface ServiceHost {
 export type FailureKind = 'not-approved' | 'paused' | 'disconnected' | 'unavailable' | 'busy' | 'damaged' | 'incompatible' | 'invalid' | 'not-found' | 'setup-lost';
 export interface ReadFailure { kind: FailureKind; code: string; message: string }
 /** A retired search read supplies neither freshness authority nor capture metadata. */
-export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
+export type FreshnessResult = { state: 'fresh'; captureEnabled: boolean; inbox?: InboxFirst } | { state: 'retired' } | { state: 'failed'; failure: ReadFailure; identity: boolean };
 
 /** Bounds per refresh; beyond them the read says it is partial instead of guessing. */
 export const MAX_LIST_PAGES = 10;
@@ -138,7 +138,7 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
 }
 
 /** The optional summary never fails the ordinary list read it rides on. */
-function firstInbox(asked: boolean, body: string, read: StoreRead, timing: boolean, receivedAt: number): InboxFirst {
+function firstInbox(asked: boolean, body: string, read: Pick<StoreRead, 'storeId' | 'binding'>, timing: boolean, receivedAt: number): InboxFirst {
   if (!asked) return { state: 'unsupported' };
   if (!read.binding.verified || !read.binding.sourceId) return { state: 'unverified' };
   let value: unknown;
@@ -331,12 +331,15 @@ export async function readSearchWindow(host: ServiceHost, request: SearchRequest
   }
 }
 
-export type SearchStateResult = { ok: true; state: SearchStateView } | { ok: false; failure: ReadFailure; status: number | null };
+export type SearchStateResult = { ok: true; state: SearchStateView; inbox?: InboxFirst } | { ok: false; failure: ReadFailure; status: number | null };
 
 /** Point-lookup freshness of at most 50 displayed keys (GET /v1/search-state). Failure is never "missing". */
-export async function readSearchState(host: ServiceHost, storeId: string, keys: SearchKeyView[]): Promise<SearchStateResult> {
+export async function readSearchState(host: ServiceHost, storeId: string, keys: SearchKeyView[], inbox?: { demand: InboxDemand; mono: () => number }): Promise<SearchStateResult> {
   try {
-    return { ok: true, state: parseSearchState(await call(host, ROUTES.searchState, searchStateQuery(storeId, keys)), storeId, keys) };
+    const body = await call(host, ROUTES.searchState, { ...searchStateQuery(storeId, keys), ...(inbox ? needsYouListQuery(inbox.demand === 'rows') : {}) });
+    const receivedAt = inbox?.mono() ?? 0;
+    const state = parseSearchState(body, storeId, keys);
+    return { ok: true, state, ...(inbox ? { inbox: firstInbox(true, body, state, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }

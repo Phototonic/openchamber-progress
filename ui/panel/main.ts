@@ -43,7 +43,11 @@ const listSwitch = (root: HTMLElement) => root.querySelector<HTMLElement>('[data
 let inboxFocus: ReadingFocus | null = null;
 const readingFocus = () => (inboxFocus ??= new ReadingFocus());
 let inboxCheck: ReadingCheck | null = null;
-const inboxRequestOf = (vc: ViewContext<Ui>) => (vc.ui.inbox ? readingRequest(vc.ui.inbox, vc.inbox?.model) : null);
+const inboxRequestOf = (vc: ViewContext<Ui>) => {
+  if (!vc.ui.inbox) return null;
+  const request = readingRequest(vc.ui.inbox, vc.inbox?.model);
+  return readingRequest(vc.ui.inbox, vc.inbox?.model, vc.detailPlan(request));
+};
 const openInbox = (vc: ViewContext<Ui>, row: InboxRowView) => {
   if (!vc.read) return;
   const reading = openReading(row, vc.read.storeId);
@@ -74,8 +78,7 @@ startView<Ui>({
       return true;
     });
     if (keys.has(ui.selected ?? '') && vc.session) void vc.storage.delete(storeKey(vc.session.id)).catch(() => {});
-    const inbox = ui.inbox && keys.has(ui.inbox.target.source + '/' + ui.inbox.target.plan) ? { inbox: null } : {};
-    return keys.has(ui.selected ?? '') ? { selected: null, ...inbox } : inbox;
+    return keys.has(ui.selected ?? '') ? { selected: null } : {};
   },
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
   // The selected session's own project first: its sub-agents need no reported plan to be listed.
@@ -85,6 +88,7 @@ startView<Ui>({
     return [...new Set([...(own ? [own.id] : []), ...projectsFor(read.plans, live, directory)])];
   },
   wantDetails: (vc) => { const r = inboxRequestOf(vc); if (r) return [r]; const p = current(vc); return p ? [p] : []; },
+  refreshDetails: (vc) => { const request = inboxRequestOf(vc); return request ? [request] : []; },
   // Task reading belongs to the selected session's view of the plan: another session (even of the
   // same plan) or plan starts at Show all again; nothing about it is stored.
   reading: (vc) => {
