@@ -12,7 +12,8 @@ import {readManagedBinding,managedBindingFile,managedExpectationFile} from '../.
 import {readMigration,migrationFile} from '../../setup/managed-migration.ts';
 import {Store} from '../../shared/store.ts';
 import {ProgressError} from '../../shared/progress.ts';
-import {PlatformError} from '../../shared/platform.ts';
+import {PlatformError,writerTarget,writerTargetPort} from '../../shared/platform.ts';
+import {acquireWriterSlots} from '../../service/writer-fence.ts';
 import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
@@ -172,8 +173,7 @@ test('a historical default-only loader refuses update before selection and keeps
 });
 
 const payload={plugin:'// Synthetic legacy bytes',guidance:'Synthetic guidance',removal:'// Synthetic removal',version:'1.1.1'};
-function fixture(){
-  const root=fs.mkdtempSync('/tmp/opencode/managed-migration-');
+function fixture(root=fs.mkdtempSync('/tmp/opencode/managed-migration-')){
   const env={HOME:`${root}/home`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`};
   for(const dir of ['home','config/opencode','data/opencode'])fs.mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/legacy-store`,confirmed:true};
@@ -285,11 +285,37 @@ test('migration inspection preserves operational diagnostics instead of claiming
       const original=Store.prototype.subagentRunStorage;
       t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw code==='windows-security-unavailable'?new PlatformError(code):new ProgressError(code);return original.call(this);});
       const status=f.setup.status();assert.equal(status.delivery!.migration,'unavailable');assert.ok(status.diagnostics.includes(code));
-      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,409);assert.deepEqual(await r.json(),{error:'managed-action-required'});});
+      await http(f,async request=>{const r=await request('managed-inspect',{}),body=await r.json();
+        if(r.status!==409)t.diagnostic(JSON.stringify({status:r.status,code:body.error,ports:f.setup.writerTargets().map(writerTargetPort)}));
+        assert.equal(r.status,409,JSON.stringify(body));assert.deepEqual(body,{error:'managed-action-required'});});
       assert.equal(f.store.list().captureEnabled,true);assert.equal(fs.existsSync(f.legacyRoot),phase==='legacy');
       assert.equal(fs.existsSync(managedBindingFile(f.env)),phase==='record');
     }finally{t.mock.restoreAll();f.cleanup();}
   });
+});
+
+test('parallel synthetic targets can collide on a coordination port before legacy route refusal',async t=>{
+  const root=fs.mkdtempSync('/tmp/opencode/managed-port-collision-');
+  const ports=new Map<number,string>();let pair:[string,string,number]|undefined;
+  // Pigeonhole bound over the real 4000-port function, not a test port override.
+  for(let i=0;i<=4000&&!pair;i++){
+    const candidate=path.join(root,`target-${i}`),port=writerTargetPort(writerTarget('scope',path.join(candidate,'data/opencode')));
+    const prior=ports.get(port);if(prior)pair=[prior,candidate,port];else ports.set(port,candidate);
+  }
+  assert.ok(pair,'two distinct synthetic targets must share a port');
+  const a=fixture(pair[0]),b=fixture(pair[1]);let release:(()=>Promise<void>)|undefined;
+  try{
+    release=await acquireWriterSlots(a.setup.writerTargets());
+    await http(b,async request=>{
+      const busy=await request('managed-inspect',{}),body=await busy.json();
+      t.diagnostic(JSON.stringify({firstPort:pair[2],secondPort:writerTargetPort(b.setup.writerTargets()[0]),status:busy.status,code:body.error}));
+      assert.equal(busy.status,503);assert.deepEqual(body,{error:'managed-step-port-busy'});
+      assert.equal(b.store.list().captureEnabled,true);assert.ok(fs.existsSync(b.legacyRoot));
+      await release!();release=undefined;
+      const refused=await request('managed-inspect',{});
+      assert.equal(refused.status,409);assert.deepEqual(await refused.json(),{error:'managed-action-required'});
+    });
+  }finally{await release?.();b.cleanup();a.cleanup();fs.rmSync(root,{recursive:true,force:true});}
 });
 
 test('unsafe private migration records remain ownership conflicts, not operational outages',()=>{

@@ -408,7 +408,8 @@ PowerShell 5.1/.NET, not a new executable/compiler/module. Fixed profile-free,
 noninteractive scripts receive UTF-8 JSON through stdin; paths are not executable
 command text. Missing/blocked PowerShell is a fixed privacy/setup failure.
 
-The first security query per loaded service/companion has a 30-second attempt and
+Outside the migration step engine, the first security query per loaded
+service/companion has a 30-second attempt and
 one identical retry only on timeout (up to 60 seconds configured wait). Later
 queries have one 10-second attempt. Termination/OS overhead is additional; these
 are not setup-operation deadlines. Non-zero exits, spawn errors and malformed
@@ -422,19 +423,31 @@ The host's liveness deadline is separate from these security-helper budgets.
 OpenChamber 2.7.1 also limits both the guest bridge and service proxy to **20 seconds**
 per request (`packages/sdk/src/contract.ts:499`, `host.ts:607-618`, and
 `packages/web/server/lib/guests/service.js:725,832,855-856` at tag `v2.7.1`).
-The native fixture gates inspect at 8 seconds / 20 security queries / 20 legacy
-reads, migrate at 16 seconds / 56 queries / 30 reads, injected creation failures
-at 7 seconds / 14 queries / 10 reads, and subsequent status at 6 seconds / 14
-queries / 10 reads. These are runner regression budgets, not a guarantee for every
-machine. A blocked security helper still fails closed; it is not skipped to meet
-a deadline. Full legacy preflight facts are reused only within a synchronous
-candidate; locked revalidation and removal independently check current ownership.
-The portable fake-helper test counts actual spawn calls (including retries), not
-legacy file reads. It substitutes the OS/path dialect, so it cannot certify NTFS
-security or native latency. Binding contents and ownership manifests discover
-additional paths after initial validation; these checks are not one batched
-spawn per request. The current runner budgets do not establish that Setup fits
-the proxy deadline on machines with slow PowerShell startup.
+Migration now runs as separate inspection pages and confirmed steps, with at most
+**six actual PowerShell starts per request**, including failures, replay, checks,
+publication and cleanup. The 17-second work and 18-second response deadlines sit
+below the host limit; the undelayed runner gates each request at eight seconds.
+The native suite also exercises helpers delayed by 2.5 seconds, concurrent health,
+pause/reopen/resume and failed workers. Native results remain pending CI; these
+are acceptance budgets, not a latency guarantee for every machine.
+
+Every request uses fresh ownership checks; no ACL result survives a mutation or
+request boundary. A blocked helper fails closed, never skips a check to meet the
+deadline, and step mode does not inherit the cold-query retry. Workers retain
+their fence until exit; timeout is not rollback. The portable HTTP fixture counts
+real helper-launch calls at a substituted OS boundary, not legacy file reads or
+native NTFS security. Fresh inspect/configure is the documented exception above:
+3 and 24 launches respectively, with its synchronous slow-PowerShell limit.
+Measured portable manifest/selector journeys use 1, 1, 4, 1, 1, 1 launches for
+the six inspection pages, 6 for prepare, 5 per ordinary advance/removal batch,
+6 for recording removal, 1 for a successful replay, 3 per pause/stop/resume,
+and 4 for an active-operation status read. Receipt recovery uses 2, 3, 2, 2,
+1, 1 for inspection and 3 for prepare, then skips already completed removal.
+Old-route refusals measure 1 for legacy inspect/configure and 0 for migrate.
+These are fixture measurements, not a promise that every refusal has the same
+cost; the six-launch ceiling includes failure and settlement work.
+See [the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)
+for accounting and settlement rules.
 
 Use one account and local NTFS storage. Config/data roots require current-account
 ownership; dedicated store and managed state require private ACLs permitting only

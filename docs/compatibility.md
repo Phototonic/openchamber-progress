@@ -433,6 +433,25 @@ SDK upgrade nor a task-named event family may auto-enable capture.
 
 ### Managed startup and released migration regression gate
 
+The fix for [#99](https://github.com/Phototonic/openchamber-progress/issues/99)
+keeps construction and health free of security queries and moves legacy migration
+to negotiated, explicitly confirmed steps. Each migration request admits at most
+six PowerShell launches, with 17-second work and 18-second response deadlines
+under the host's 20-second boundary. The UI preserves progress and capture
+warnings, stops on failures (including failed replays), and offers explicit
+pause, resume, status and reviewed capture recovery. Portable fixtures and
+rendered synthetic-shell QA do not certify native Windows latency or ACLs.
+
+**Known fresh-configure limit:** no-legacy setup retains the existing nonce-bound
+inspect/configure flow under the same writer fences. Portable helper accounting
+measures 3 inspection launches and 24 configuration launches. The synchronous
+configuration path can still exceed the host limit with very slow PowerShell and
+delay health. Timeout does not undo partial changes: inspect before explicitly
+retrying, without deleting recovery records or changing permissions. Follow-up
+work is a separate fresh-configuration plan on the step engine, not a relaxation
+of validation or consent. See [Setup](setup.md#install-review-confirm) for recovery
+and scope; native Windows results for this revision remain pending CI.
+
 The `Windows setup, storage and capture` CI job retains the existing native
 platform suite and adds `tests/backend/windows-service.test.ts`, in the same
 provisioned non-admin account. `Fetch released Windows migration fixture` fetches
@@ -441,7 +460,7 @@ not a reconstruction using current installer code. No host, profile, model,
 administrator product operation or runtime dependency download is used.
 
 The test launches a fresh child using the unmodified built service, synthetic
-HOME with spaces/Unicode, no explicit XDG config/data, and an intact legacy
+HOME and XDG folders with spaces/Unicode, and an intact legacy
 installation but no managed selector. A test-only preload records security-query
 and legacy-read counts over IPC. Before listen and first health must both have
 zero queries/legacy reads. First health must finish within 1.25 seconds and total
@@ -451,11 +470,15 @@ startup within 12 seconds. These margins are below OpenChamber **v2.7.1**
 polls. The SDK 2.7.0 Setup proxy has a separate 20-second request limit; native
 inspection, diagnostic status and migration timings are checked against it.
 
-Authenticated inspect/confirmed migration must preserve Store/source identity,
-schema-2 empty history/run storage and retained releases, remove only verified
-legacy discovery, and enable capture on completion. Post-inspect injected security
-timeout/private-creation refusals must return precise stage/code and leave legacy
-bytes/enabled state intact. Fresh children also exercise selected and invalid
+Authenticated inspection pages and confirmed migration steps must preserve
+Store/source identity, seeded schema-2 history/run storage and retained releases,
+remove only verified legacy discovery, and enable capture on completion. Each
+request, including replay, stays within six launches and eight seconds on the
+undelayed runner. A second journey adds 2.5 seconds per helper, still below the
+20-second host boundary. Both exercise concurrent health and pause/reopen/resume
+before and after capture is off. Injected timeout/private-creation refusals and
+a worker that outlives its response must retain precise stage/code and fences,
+not authorize a competing writer. Fresh children also exercise selected and invalid
 hard-linked state: health never admits it, a real read refuses it, and legitimate
 restoration permits a fresh read. The existing Windows suite retains explicit-XDG,
 canonical-alias, ACL mutation, foreign-owner and unsafe-ancestor coverage.

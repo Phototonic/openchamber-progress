@@ -13,6 +13,7 @@ import { once } from 'node:events';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import type { ManagedStepProgress } from '../../shared/managed-steps.ts';
 import { stepEngine } from './managed-migration-engine.ts';
+import { managedReview } from '../fixtures/managed-steps.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -57,15 +58,16 @@ const shell = `<!doctype html><html><head><meta charset="utf-8"><meta name="view
 // ---- Synthetic service ----
 let engine = stepEngine({ inspectPages: 2 });
 let capable = true;
+let fresh = false, freshConfigured = false;
 const log: { method: string; path: string; action?: string; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
   const p = engine.progress;
-  const migration = !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
+  const migration = fresh ? 'none' : !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
   return {
-    configured: false, verified: false, installed: false, captureEnabled: !p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null,
-    targets: null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
-    delivery: { kind: 'managed', revision: 1, configuration: 'unconfigured', migration, mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', ...(capable ? { managedMigrationSteps: 1 } : {}), ...(capable && p ? { migrationProgress: p } : {}) },
+    configured: freshConfigured, verified: freshConfigured, installed: false, captureEnabled: fresh ? freshConfigured : !p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null,
+    targets: freshConfigured ? managedReview.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
+    delivery: { kind: 'managed', revision: 1, configuration: freshConfigured ? 'configured' : 'unconfigured', migration, mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', ...(capable ? { managedMigrationSteps: 1 } : {}), ...(capable && p ? { migrationProgress: p } : {}) },
   };
 }
 const server = createServer(async (req, res) => {
@@ -81,6 +83,16 @@ const server = createServer(async (req, res) => {
       const json = (status: number, value: unknown) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(value) })); };
       if (q.path === '/health') return json(200, health);
       if (q.path === '/v1/setup' && q.method === 'GET') return json(200, setupRead());
+      if (fresh && q.path === '/v1/setup/managed-inspect') {
+        const read = setupRead();
+        return json(200, { ...read, delivery: { ...read.delivery, review: managedReview } });
+      }
+      if (fresh && q.path === '/v1/setup/managed-configure') {
+        const body = JSON.parse(q.body ?? '{}');
+        if (body.confirmed !== true || body.expected !== managedReview.expected || body.storeRoot !== managedReview.targets.storeRoot) return json(409, { error: 'managed-review-stale' });
+        freshConfigured = true;
+        return json(200, setupRead());
+      }
       if (q.path === '/v1/setup/managed-step') {
         if (!capable) return json(404, { error: 'not-found' });
         entry.action = JSON.parse(q.body ?? '{}').action;
@@ -297,7 +309,41 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-continue"]')&&d.querySelector('[data-testid="setup-migration-progress"][data-step="remove-discovery"]')`, 'durable step after lost reply');
   check('dropped-after-effect:refresh-shows-durable-step', await card('data-capture') === 'off' && log.filter(l => l.action === 'advance').length === 2 && !log.some(l => l.action === 'status'));
 
-  // 7. Older service: no capability → existing flow, zero step requests.
+  // 7. Port contention and replayed failure retain fixed recovery copy, not success.
+  await open('en', 'light', 1280, 900, e => { e.faults.portBusy = true; });
+  await click('[data-testid="setup-migrate"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-step-port-busy"]')`, 'port occupied');
+  check('port-busy:recovery-copy', await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('Another program is using the coordination port. Close it and retry.')`));
+  check('port-busy:no-mutation', engine.requests.length === 1 && engine.requests[0].action === 'inspect' && !engine.progress);
+  await shot('port-busy-en');
+  await open('ru', 'dark', 390, 844, e => e.faults.failedReplay.add('remove-discovery:0'));
+  await startSwitch(); await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"][data-code="managed-step-deadline"]')`, 'failed replay');
+  check('failed-replay:failed-not-applied', await card('data-state') === 'failed' && await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === 'Шаг перехода не выполнен');
+  check('failed-replay:stopped', log.filter(l => l.action === 'advance').length === 3 && await focused() === 'setup-migration-resume');
+  check('failed-replay:fits-390', (await fits()).ok, await fits());
+  await shot('failed-replay-ru');
+  await idle('failed-replay:no-automatic-retry');
+
+  // 8. Fresh setup still uses inspect → review → explicit configure, not migration steps.
+  fresh = true;
+  for (const locale of ['en', 'ru'] as const) {
+    freshConfigured = false;
+    await open(locale, locale === 'en' ? 'light' : 'dark', locale === 'en' ? 1280 : 390, locale === 'en' ? 900 : 844);
+    check(`fresh-${locale}:opening-is-read-only`, !log.some(l => l.method === 'POST'));
+    await click('[data-testid="setup-inspect"] button');
+    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-configure"]')`, 'fresh review');
+    check(`fresh-${locale}:inspect-only-before-confirm`, log.filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/setup/managed-inspect');
+    await shot(`fresh-review-${locale}`);
+    await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-notice"]')&&d.querySelector('[data-testid="setup-panel"][data-phase="configured"]')`, 'fresh configured');
+    check(`fresh-${locale}:configure-once-no-steps`, stepCalls() === 0 && log.filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/setup/managed-inspect,/v1/setup/managed-configure' && freshConfigured);
+    check(`fresh-${locale}:fits`, (await fits()).ok, await fits());
+    await shot(`fresh-configured-${locale}`);
+  }
+  fresh = false; freshConfigured = false;
+
+  // 9. Older service: no capability → existing flow, zero step requests.
   capable = false;
   await open('en', 'light', 1280, 900);
   const steps0 = stepCalls();

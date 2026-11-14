@@ -65,6 +65,16 @@ const ERROR_TEXT = {
   corrupt: 'The progress store is damaged. It was left untouched.',
   schema: 'The progress store uses a newer format than this extension.',
   binding: 'This extension is not connected to a progress store yet.',
+  'not-found': 'The requested setup record was not found. Check Setup status again.',
+  conflict: 'The stored state changed. Check Setup status before retrying.',
+  'operation-reused': 'This request belongs to an earlier action. Check Setup status before retrying.',
+  assignment: 'This action is not allowed for the selected progress data.',
+  'source-unverified': 'The OpenCode source could not be verified. Check the folders again.',
+  closed: 'The selected progress record is closed. Check Setup status before retrying.',
+  unfinished: 'An earlier action is unfinished. Check Setup status before continuing.',
+  disabled: 'Capture is off. Review its current state before turning it on.',
+  'stage-incomplete': 'The current step is incomplete. Check Setup status before continuing.',
+  'staged-activation-retained': 'Recovery files remain from an earlier action. Review the installation before retrying; do not delete them blindly.',
 };
 const ERROR_RU: typeof ERROR_TEXT = {
   'missing-folders': 'Укажите все три папки абсолютными путями.',
@@ -108,6 +118,16 @@ const ERROR_RU: typeof ERROR_TEXT = {
   corrupt: 'Хранилище прогресса повреждено. Оно оставлено нетронутым.',
   schema: 'Хранилище прогресса использует более новый формат, чем это расширение.',
   binding: 'Расширение ещё не подключено к хранилищу прогресса.',
+  'not-found': 'Запись настройки не найдена. Проверьте состояние настройки снова.',
+  conflict: 'Сохранённое состояние изменилось. Проверьте состояние настройки перед повтором.',
+  'operation-reused': 'Этот запрос относится к предыдущему действию. Проверьте состояние настройки перед повтором.',
+  assignment: 'Это действие недоступно для выбранных данных прогресса.',
+  'source-unverified': 'Не удалось проверить источник OpenCode. Проверьте папки снова.',
+  closed: 'Выбранная запись прогресса закрыта. Проверьте состояние настройки перед повтором.',
+  unfinished: 'Предыдущее действие не завершено. Проверьте состояние настройки перед продолжением.',
+  disabled: 'Запись выключена. Проверьте её состояние перед включением.',
+  'stage-incomplete': 'Текущий шаг не завершён. Проверьте состояние настройки перед продолжением.',
+  'staged-activation-retained': 'Остались файлы восстановления от предыдущего действия. Проверьте установку перед повтором; не удаляйте их вслепую.',
 };
 
 /** Plain-language text for a fixed SetupError code; unknown codes stay honest. */

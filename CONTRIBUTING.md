@@ -74,6 +74,15 @@ It runs root/UI typechecks (including background actions), portable backend test
 - `subagent-activity-runtime.test.ts`
 - `subagent-upgrade-runtime.test.ts` — isolated built-release upgrade/reload/rollback rehearsal; independent OpenCode binary required, no model or GUI
 
+Backend fixtures that acquire target-derived Setup coordination ports run in a
+separate `--test-concurrency=1` invocation; the rest remain parallel. Distinct
+synthetic directories can hash to the same port, which correctly refuses a
+concurrent writer. Keep new fenced HTTP/worker test files in the list in
+`scripts/ci-backend.ts`. For standalone mixed setup/managed suite runs use
+`--test-concurrency=1`, and do not overlap portable CI runs on the same machine.
+This isolates tests, not product requests; no port override or relaxed refusal
+is used.
+
 This is **not native GUI/OpenCode or host-installer certification**. The external host-installer gate is separate, as described below. Full `bun run check` retains the native backend prerequisites; it is not the portable CI command.
 
 The [workflow](.github/workflows/ci.yml) runs on pushes to `main` and `dev`, and on pull requests targeting either branch. It retains the Linux portable checks on exactly Node 24.19.0, repeats them on the newest Node 24 release, and adds a targeted Windows native-filesystem suite. A newer push to a pull request cancels that pull request's earlier run. Versioned publication also waits for the Windows job. Neither job substitutes for actual OpenCode/OpenChamber integration acceptance.

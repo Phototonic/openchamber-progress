@@ -20,11 +20,15 @@ export interface EngineFaults {
   lose: Set<string>;
   /** The first enable is left uncertain and needs a reviewed resume. */
   unsettledEnable: boolean;
+  /** Return a failed receipt rather than a new failure for these steps. */
+  failedReplay: Set<string>;
+  /** Refuse the next request because the cross-process coordination port is occupied. */
+  portBusy: boolean;
 }
 
 export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: number; operationId?: string } = {}) {
   const plan = options.plan ?? managedStepPlan;
-  const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false };
+  const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false, failedReplay: new Set(), portBusy: false };
   let p: ManagedStepProgress | null = null;
   let page = 0;
   const requests: ManagedStepRequest[] = [];
@@ -37,6 +41,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
   const captureAfter = (done: ManagedStepRef, before: Capture): Capture => done.name === 'disable' ? off : done.name === 'enable' ? on : before;
 
   function handle(r: ManagedStepRequest): { status: number; body: string } | 'drop' {
+    if (faults.portBusy) { faults.portBusy = false; return refuse(503, 'lock', 'managed-step-port-busy'); }
     if (r.action === 'inspect') {
       if (p && p.recovery === 'review') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review: { ...managedReview, expected: CAPTURE_REVIEW } } });
       if (p && p.state !== 'complete') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review: managedReview } });
@@ -71,9 +76,10 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
     if (p.state !== 'pending' || index(r.step) !== index(p.step)) return refuse(409, 'journal', 'managed-step-conflict');
     const step = p.step!, k = key(step);
     if (faults.lose.delete(k)) return 'drop';
-    if (faults.fail.delete(k)) {
+    const failedReplay = faults.failedReplay.delete(k);
+    if (faults.fail.delete(k) || failedReplay) {
       p = progress({ sequence: p.sequence + 1, state: 'failed', worker: 'unsettled', effect: 'uncertain', capture: unknown, diagnostic: { stage: step.name, code: 'managed-step-deadline' }, recovery: 'reconcile' });
-      return refuse(503, step.name, 'managed-step-deadline');
+      return failedReplay ? reply(503, { disposition: 'replayed', error: p.diagnostic }) : refuse(503, step.name, 'managed-step-deadline');
     }
     if (step.name === 'enable' && faults.unsettledEnable) {
       faults.unsettledEnable = false;

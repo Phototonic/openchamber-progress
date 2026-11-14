@@ -11,12 +11,13 @@ import { managedStepCopy, managedErrorText } from '../../ui/shared/managed-copy.
 import { migrationStepText, migrationTitle, setupErrorText } from '../../ui/shared/setup.ts';
 import { stepEngine, CAPTURE_REVIEW } from './managed-migration-engine.ts';
 import { setupRead } from './fixtures.ts';
+import { MANAGED_ACTION_CODES } from '../../shared/progress.ts';
 
 const fx = managedStepFixtures();
 const host = (status: number, body: unknown, calls: unknown[] = []) => ({ serviceRequest: async (q: unknown) => { calls.push(q); return { status, body: typeof body === 'string' ? body : JSON.stringify(body) }; } });
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>(r => setImmediate(r)); };
 
-test('every shared contract reply parses exactly; refusal iff error', () => {
+test('every shared contract reply parses exactly; errors override disposition', () => {
   for (const [name, reply] of Object.entries(fx.replies)) {
     const parsed = parseManagedStepResponse(structuredClone(reply));
     assert.deepEqual(parsed, reply, name);
@@ -40,7 +41,7 @@ test('progress and responses fail closed on unknown keys, values and inconsisten
   for (const [name, value] of Object.entries(bad)) assert.equal(parseManagedStepProgress(value), undefined, name);
   const reply = fx.replies.deadline;
   for (const [name, value] of Object.entries({
-    refusedWithoutError: { ...reply, error: null }, errorWithoutRefusal: { ...reply, disposition: 'applied' }, version2: { ...reply, version: 2 },
+    refusedWithoutError: { ...reply, error: null }, version2: { ...reply, version: 2 },
     extra: { ...reply, message: 'raw' }, accountingNegative: { ...reply, accounting: { securitySpawns: -1, elapsedMs: 0 } },
     incompleteWithoutCursor: { ...fx.replies.incomplete, inspection: { state: 'incomplete', stage: 'store', cursor: null } },
     reviewBadDigest: { ...fx.replies.reviewed, inspection: { ...fx.replies.reviewed.inspection, review: { ...fx.replies.reviewed.inspection!.review, expected: 'A'.repeat(64) } } },
@@ -89,6 +90,25 @@ test('negotiation: only the literal capability enables steps; embedded progress 
   assert.throws(() => read({ ...delivery, managedMigrationSteps: 1, migrationProgress: { ...progress, extra: true } }), /migration progress/);
   assert.throws(() => read({ ...delivery, migrationProgress: progress }), /migration progress/, 'progress without the capability');
   assert.throws(() => read({ ...delivery, managedMigrationSteps: 1, migrationProgress: null }), /migration progress/);
+});
+
+test('failed replay keeps its error, stops the driver and never renders as applied', async () => {
+  const request: ManagedStepRequest = { version: 1, action: 'advance', operationId: managedOperationId, expectedSequence: 3, step: { name: 'remove-discovery', batch: 0 } };
+  assert.equal((await managedStepCall(host(503, fx.replies.failedReplay), request)).kind, 'reply');
+  assert.equal((await managedStepCall(host(200, fx.replies.failedReplay), request)).kind, 'invalid');
+  const other = structuredClone(fx.replies.failedReplay);
+  other.progress!.operationId = '22222222-2222-4222-8222-222222222222';
+  assert.equal((await managedStepCall(host(503, other), request)).kind, 'invalid');
+  const calls: unknown[] = [];
+  // A failure refreshes status, but must never request the success refresh.
+  const refresh: boolean[] = [];
+  const stopped = new StepDriver({ send: r => managedStepCall(host(503, fx.replies.failedReplay, calls), r), context: () => 'k', changed: () => {}, refresh: complete => { refresh.push(complete); } });
+  await stopped.continueRun(fx.replies.disabled.progress);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(stopped.state.outcome, { code: 'managed-step-deadline', stage: 'remove-discovery', uncertain: false });
+  assert.equal(stopped.state.busy, null);
+  assert.equal(migrationTitle(stopped.state.progress!, false), 'failed');
+  assert.deepEqual(refresh, [false]);
 });
 
 function driverFor(engine: ReturnType<typeof stepEngine>, extra: Partial<StepIo> = {}) {
@@ -286,6 +306,11 @@ test('copy: EN/RU for every stage and code, short step text, no paths', () => {
   for (const code of [...MANAGED_STEP_CODES, 'managed-step-no-reply', 'managed-step-reply-invalid', 'managed-step-retired', 'managed-inspection-incomplete']) {
     assert.ok(managedErrorText(code, 'en') && managedErrorText(code, 'ru') && managedErrorText(code, 'en') !== managedErrorText(code, 'ru'), code);
   }
+  for (const code of MANAGED_ACTION_CODES) {
+    assert.doesNotMatch(setupErrorText(code, 'en'), /Setup could not finish/, code);
+    assert.notEqual(setupErrorText(code, 'en'), setupErrorText(code, 'ru'), code);
+  }
+  assert.match(managedErrorText('managed-migration-conflict')!, /installation changed.*Check the folders again before retrying/);
   const strings = (o: unknown): string[] => typeof o === 'string' ? [o] : typeof o === 'function' ? [String((o as (...a: unknown[]) => string)(3, 9, 'X', 2))] : o && typeof o === 'object' ? Object.values(o).flatMap(strings) : [];
   for (const s of [...strings(en), ...strings(ru)]) assert.doesNotMatch(s, /[\\/]|[A-Za-z]:\\/, s);
   const p = fx.replies.disabled.progress!;

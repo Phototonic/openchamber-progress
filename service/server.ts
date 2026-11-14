@@ -52,7 +52,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     let stepRoute=false,stepStage:ManagedStepDiagnostic['stage']='journal';
     const stepRefusal=(code:string,accounting={securitySpawns:0,elapsedMs:Number(process.hrtime.bigint()-admittedAt)/1_000_000})=>
       answer(managedStepHttpStatus(code),{version:1,disposition:'refused',inspection:null,progress:null,error:{stage:stepStage,code},accounting} satisfies ManagedStepResponse);
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, migrationAction=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
@@ -151,7 +151,6 @@ export function createProgressServer(store: Store | undefined, token: string, un
           const value=reply.value as ManagedStepResponse;
           return answer(value.error?managedStepHttpStatus(value.error.code):200,value);
         }
-        migrationAction=action==='managed-migrate';
         // Fresh configuration retains the legacy single-request budget and
         // controller nonce. Hold both writer slots throughout, including review
         // validation, publication and cleanup; never bypass a running step.
@@ -237,15 +236,13 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(stepRoute)return stepRefusal(managedDiagnostic(e));
       const workerCode=managedDiagnostic(e);
       if(workerCode==='managed-step-port-busy'||workerCode==='managed-step-unsettled')return answer(503,{error:workerCode});
-      const lastAction=migrationAction?setup?.lastMigrationFailure():undefined;
-      const diagnostic=lastAction?{lastAction}:{};
       const platformCode=platformErrorCode(e);
-      if(platformCode)return answer(503,{error:platformCode,...diagnostic});
-      if(e instanceof ManagedBindingError)return answer(409,{error:e.code,...diagnostic});
-      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code,...diagnostic});
+      if(platformCode)return answer(503,{error:platformCode});
+      if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
+      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
       if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
-      return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code,...diagnostic});
+      return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
   server.requestTimeout=5000;server.headersTimeout=5000;

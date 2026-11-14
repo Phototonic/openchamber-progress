@@ -80,7 +80,7 @@ function inspection(v: unknown): ManagedInspection | null | undefined {
   return r ? { state: 'complete', stage: 'review', cursor: null, review: r } : undefined;
 }
 
-/** Strict ManagedStepResponse. A refusal always carries its fixed diagnostic and nothing else does. */
+/** Strict ManagedStepResponse. Errors override disposition, including failed replays. */
 export function parseManagedStepResponse(v: unknown): ManagedStepResponse | undefined {
   if (!isRec(v) || !exact(v, ['version', 'disposition', 'inspection', 'progress', 'error', 'accounting']) || v.version !== 1) return;
   if (!['applied', 'replayed', 'observed', 'refused'].includes(v.disposition as string)) return;
@@ -88,7 +88,7 @@ export function parseManagedStepResponse(v: unknown): ManagedStepResponse | unde
   const error = v.error === null ? null : diagnostic(v.error);
   const a = v.accounting;
   if (i === undefined || p === undefined || error === undefined || !isRec(a) || !exact(a, ['securitySpawns', 'elapsedMs']) || !count(a.securitySpawns) || !count(a.elapsedMs)) return;
-  if ((v.disposition === 'refused') !== (error !== null)) return;
+  if (v.disposition === 'refused' && error === null) return;
   return { version: 1, disposition: v.disposition as ManagedStepResponse['disposition'], inspection: i, progress: p, error, accounting: { securitySpawns: a.securitySpawns, elapsedMs: a.elapsedMs } };
 }
 
@@ -97,7 +97,7 @@ const sameRef = (a: ManagedStepRef | null, b: ManagedStepRef | null) => !!a && !
 export function replyAnswers(request: ManagedStepRequest, r: ManagedStepResponse): boolean {
   const p = r.progress;
   const operation = 'operationId' in request ? request.operationId : undefined;
-  if (r.disposition === 'refused') return !p || !operation || p.operationId === operation;
+  if (r.error) return !p || !operation || p.operationId === operation;
   if (request.action === 'inspect') return r.inspection !== null;
   if (request.action === 'status') return r.inspection === null && (!operation || p?.operationId === operation);
   if (!p || p.operationId !== operation || r.inspection !== null) return false;
@@ -133,9 +133,8 @@ export async function managedStepCall(host: ServiceHost, request: ManagedStepReq
   try { json = JSON.parse(raw); } catch { return result.status === 200 || result.status >= 500 ? { kind: result.status === 200 ? 'invalid' : 'dropped' } : { kind: 'http', status: result.status, code: `http-${result.status}` }; }
   const response = parseManagedStepResponse(json);
   if (response) {
-    // Success is HTTP 200 only; a refusal envelope uses its error status.
-    const refused = response.disposition === 'refused';
-    if (refused ? result.status < 400 || result.status > 599 : result.status !== 200) return { kind: 'invalid' };
+    // A replayed failed receipt also uses its error status, never HTTP 200.
+    if (response.error ? result.status < 400 || result.status > 599 : result.status !== 200) return { kind: 'invalid' };
     return replyAnswers(request, response) ? { kind: 'reply', status: result.status, response } : { kind: 'invalid' };
   }
   if (result.status >= 400 && isRec(json) && typeof json.error === 'string' && /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(json.error)) return { kind: 'http', status: result.status, code: json.error };
@@ -250,7 +249,7 @@ export class StepDriver {
     const res = r.response, p = res.progress;
     const outcome = res.error ? { code: res.error.code, stage: res.error.stage, uncertain: false } : p?.diagnostic ? { code: p.diagnostic.code, stage: p.diagnostic.stage, uncertain: false } : null;
     if (p) this.state = { ...this.state, progress: p, operationId: p.operationId };
-    return { progress: res.disposition === 'refused' ? null : p, outcome };
+    return { progress: res.error ? null : p, outcome };
   }
 
   /** Context observed at paint. Any change retires an active attempt; another account starts clean. */
@@ -345,7 +344,7 @@ export class StepDriver {
     const r = await this.send(a, { version: 1, action: 'status', ...(operationId ? { operationId } : {}) });
     if (!r) return;
     if (r.kind === 'http' && r.status === 404) return this.stop(null, { progress: null, operationId: null });
-    if (r.kind === 'reply' && r.response.disposition !== 'refused' && !r.response.progress) return this.stop(null, { progress: null, operationId: null });
+    if (r.kind === 'reply' && !r.response.error && !r.response.progress) return this.stop(null, { progress: null, operationId: null });
     const s = this.settle(r);
     this.stop(s.outcome, {});
   }
