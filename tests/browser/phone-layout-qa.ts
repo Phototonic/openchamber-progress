@@ -234,6 +234,20 @@ try {
   await click('page', '[data-testid="board-filters-close"] button');
   await wait('page', `d.querySelector('[data-testid="board-filters"]')?.closest('[hidden]')||!d.querySelector('[data-testid="board-filters"]:not([hidden])')`, 'filters closed');
   check('board-390:focus-after-filters', await guest<boolean>('page', `return !!d.activeElement?.closest('[data-testid="board-filters-trigger"]')`), await guest('page', `return d.activeElement?.outerHTML.slice(0,120)`));
+  // Board search by tap and typing: the kit clear button appears only once there is text, so the
+  // initial target audit cannot see it. It is 44 px, the typed text stops before it, and a tap
+  // empties the field while keeping focus there.
+  await click('page', '[data-testid="search-query"] input');
+  await wait('page', `d.activeElement?.closest('[data-testid="search-query"]')`, 'board search focused');
+  await c.send('Input.insertText', { text: 'phone' });
+  await wait('page', `(()=>{const b=d.querySelector('[data-testid="search-query"] .oc-sdk-search-clear');return b&&b.getBoundingClientRect().width>0})()`, 'search clear shown');
+  const clear = await guest<any>('page', `const b=d.querySelector('[data-testid="search-query"] .oc-sdk-search-clear'),i=d.querySelector('[data-testid="search-query"] input'),r=b.getBoundingClientRect(),q=i.getBoundingClientRect();return {w:r.width,h:r.height,value:i.value,pad:parseFloat(w.getComputedStyle(i).paddingRight),inside:r.left>=q.left-0.5&&r.right<=q.right+0.5&&r.top>=q.top-0.5&&r.bottom<=q.bottom+0.5}`);
+  check('board-390:search-clear-44', clear.value === 'phone' && clear.w >= 44 && clear.h >= 44 && clear.inside && clear.pad >= clear.w, clear);
+  await layout('page', 'board-390-search');
+  await click('page', '[data-testid="search-query"] .oc-sdk-search-clear');
+  await wait('page', `d.querySelector('[data-testid="search-query"] input')?.value===''`, 'search cleared by tap');
+  const cleared = await guest<any>('page', `const b=d.querySelector('[data-testid="search-query"] .oc-sdk-search-clear');return {hidden:b.getBoundingClientRect().width===0,focus:!!d.activeElement?.closest('[data-testid="search-query"]')}`);
+  check('board-390:search-clear-by-tap', cleared.hidden && cleared.focus, cleared);
 
   // ============================================================ device hints: safe areas and keyboard
   await device(PHONE);

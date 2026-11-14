@@ -59,9 +59,13 @@ test('phone CSS ships in the shared stylesheet, scoped away from Work Status and
     for (const selector of rule.slice(0, rule.indexOf('{')).split(/,(?![^(]*\))/)) {
       assert.match(selector, /^html(:not\(\[data-device-pointer="fine"\]\)|\[data-device-pointer="coarse"\]):not\(\[data-oc-surface="status"\]\) /, selector);
       // Unqualified generic controls would reach the map's own toolbar: those carry the exclusion.
-      if (/\) (\.oc-sdk-(btn|trigger|tab|input)|\.ap-link|textarea|input)\b/.test(selector)) assert.match(selector, /:not\(\.ap-map \*\)$/, selector);
+      if (/\) (\.oc-sdk-(btn|trigger|tab|input|search)|\.ap-link|textarea|input)\b/.test(selector)) assert.match(selector, /:not\(\.ap-map \*\)$/, selector);
     }
   }
+  // The search field's clear button (shown once there is text) reaches 44 x 44 under both scopes.
+  const clear = coarse.filter((l) => l.includes('.oc-sdk-search-clear:not(.ap-map *){'));
+  assert.equal(clear.length, 2);
+  for (const rule of clear) assert.ok(rule.includes(`width:${PHONE_TARGET_PX}px;height:${PHONE_TARGET_PX}px`), rule);
   assert.ok(PHONE_CSS.includes(`min-height:${PHONE_TARGET_PX}px`));
   // Every inset/keyboard term falls back to env() or 0, so desktop without hints is unchanged.
   for (const hook of [PHONE_LAYOUT_HOOKS.safeTop, PHONE_LAYOUT_HOOKS.safeLeft, PHONE_LAYOUT_HOOKS.safeRight, PHONE_LAYOUT_HOOKS.safeBottom]) assert.ok(PHONE_CSS.includes(`var(${hook},env(safe-area-inset-`), hook);

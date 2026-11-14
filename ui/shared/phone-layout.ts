@@ -59,6 +59,8 @@ const COARSE_RULES = `
 .oc-sdk-btn:not(.ap-map *),.oc-sdk-trigger:not(.ap-map *),.oc-sdk-tab:not(.ap-map *),.oc-sdk-input:not(.ap-map *){height:auto;min-height:${T}}
 .oc-sdk-btn:not(.ap-map *),.oc-sdk-tab:not(.ap-map *){min-width:${T}}
 .oc-sdk-option,.oc-sdk-row,[role="menuitem"]{min-height:${T}}
+.oc-sdk-search-clear:not(.ap-map *){width:${T};height:${T};right:0}
+.oc-sdk-search .oc-sdk-input:not(.ap-map *){padding-right:${T}}
 .oc-sdk-input:not(.ap-map *),textarea:not(.ap-map *),input:not([type="checkbox"]):not([type="radio"]):not(.ap-map *){font-size:max(16px,1em)}
 .ap-actions .oc-sdk-btn.ap-actions-btn{min-width:${T};height:${T}}
 .ap-title-picker .oc-sdk-trigger,.ap-focus-participant .oc-sdk-trigger{height:auto;min-height:${T};min-width:${T}}
