@@ -9,12 +9,13 @@ import * as cleanup from '../../ui/shared/cleanup.ts';
 import * as refresh from '../../ui/shared/refresh.ts';
 import * as path from '../../ui/shared/path.ts';
 import * as language from '../../ui/shared/language.ts';
-import { EMPTY_LIVE } from '../../ui/shared/live.ts';
+import * as sessionContext from '../../ui/shared/session-context.ts';
+import { EMPTY_LIVE, LiveWorkspace, hostWorkContext, projectFor, type LiveSnapshot } from '../../ui/shared/live.ts';
 import { contextListScope, contextScope, pageListScope, NO_FILTERS, placeOf } from '../../ui/shared/scope.ts';
 import { parsePlansPage } from '../../ui/shared/adapter.ts';
 import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
-import { HEALTH, plansPage, planPage, summary, setupRead, envelope, docRef } from './fixtures.ts';
+import { HEALTH, SRC, OTHER_SRC, plansPage, planPage, summary, setupRead, envelope, docRef } from './fixtures.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'done' as const }];
 const row = summary('P-A', items, { sessionId: 'A', lifecycle: 'finished', document: docRef() });
@@ -68,7 +69,11 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     set: async (key: string, value: unknown, options?: { scope: string }) => { storageCalls.push(key); if (key === 'interface-language.v1') { languageStorage.push({ op: 'set', key, scope: options?.scope }); await languageWrite; languageValue = value; } },
     delete: async () => {},
   },
+    onItem: (fn: any) => { listeners.item = fn; },
+    onConnection: (fn: any) => { listeners.connection = fn; },
     onReady: (fn: any) => { listeners.ready = fn; }, onSession: (fn: any) => { listeners.session = fn; }, onDirectory: (fn: any) => { listeners.directory = fn; } };
+  let snapshot = EMPTY_LIVE;
+  let liveChanged = () => {};
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../ui/shared/app.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -86,12 +91,16 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;
       if (name === './language.ts') return language;
+      if (name === './session-context.ts') return sessionContext;
       if (name === './components.ts') return { el: node, refreshLabels() {},
         retireReadingUi() { infoPaints.push({ kind: 'retire' }); },
         beginInfoPaint(root: object) { infoPaints.push({ kind: 'begin', root }); },
         commitInfoPaint(root: object) { assert.equal(mount.firstElementChild, root, 'dispose previous handles after root replacement'); infoPaints.push({ kind: 'commit', root }); },
       };
-      if (name === './live.ts') return { LiveWorkspace: class { snapshot = EMPTY_LIVE; sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {} } };
+      if (name === './live.ts') return { projectFor, LiveWorkspace: class {
+        constructor(_host: unknown, _max: number, changed: () => void) { liveChanged = changed; }
+        get snapshot() { return snapshot; } sessionSubscriptionCount = 0; start() {} restart() {} want() {} dispose() {}
+      } };
       return {};
     },
   });
@@ -116,6 +125,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
   };
   exports.startView(spec);
   return { requests, paints, contexts, listeners, infoPaints, languageStorage, storageCalls,
+    live: (next: LiveSnapshot) => { snapshot = next; liveChanged(); },
     tick: (ms: number) => { const entry = [...timers].find(([, timer]) => timer.ms === ms); assert.ok(entry, `expected scheduled ${ms} ms refresh`); timers.delete(entry[0]); entry[1].fn(); },
     visibility: (state: string) => { document.visibilityState = state; listeners['document:visibilitychange'](); },
     holdLanguageWrite: (value: Promise<void> | null) => { languageWrite = value; }, setLanguage: (value: unknown) => { languageValue = value; }, get vc() { return vc; }, get pickerOpen() { return expanded; }, openPicker: () => { expanded = true; }, closePicker: () => { expanded = false; }, openDisclosure: () => { disclosure = true; },
@@ -124,10 +134,180 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     focusReturn: (event = 'focus') => { ownsFocus = true; listeners[event === 'focus' ? 'focus' : 'document:focusin']?.(); },
     openLivePopup: (nestedSelect = false) => { livePopup = true; expanded = nestedSelect; },
     intercept: (fn: (q: GuestRequest, next: () => Promise<GuestRequestResult>) => Promise<GuestRequestResult>) => { const next = handler; handler = q => fn(q, () => next(q)); },
-    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture', language = { locale: 'en', supported: false }) => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: language.locale, features: { deviceStorage: language.supported }, surface: spec.surface } as HostReadyContext),
+    ready: (id: string | null | undefined, directory: string | null = '/fixture/Alpha', account = 'fixture', language = { locale: 'en', supported: false }, item: unknown = null) => listeners.ready({ session: id ? { id } : id, directory, connection: { account }, locale: language.locale, features: { deviceStorage: language.supported }, surface: spec.surface, item } as HostReadyContext),
     stop: () => listeners.pagehide(),
   };
 }
+
+const progressAction = (id = 'A', directory = '/fixture/Alpha') => ({ kind: 'session', action: 'open-progress', sessionId: id, directory, sessionTitle: 'Not an identity' });
+function actionLive(ids = ['A', 'B']): LiveSnapshot {
+  return { projectsState: 'ready', projects: [{ id: 'project', name: 'Synthetic project', directory: '/fixture/Alpha' }], worktrees: new Map(), capped: [],
+    sessions: new Map([['project', { state: 'ready', coverage: [{ directory: '/fixture/Alpha', state: 'ready' }], records: ids.map(id => ({ id, title: `Host ${id}`, projectId: 'project', directory: '/fixture/Alpha', parentId: null, archivedAt: null, worktree: null, activity: 'idle', outcome: null })) }]]) };
+}
+
+test('native Progress ready/onItem/onSession ordering pins an inactive explicit target, then ordinary opening follows chat', async () => {
+  for (const order of ['ready', 'item-first', 'session-first', 'item-after-ready']) {
+    const c = controller();
+    try {
+      c.live(actionLive());
+      if (order === 'item-first') c.listeners.item(progressAction());
+      if (order === 'session-first') c.listeners.session({ id: 'B' });
+      c.ready('B', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }, order === 'item-after-ready' ? null : progressAction());
+      if (order === 'item-after-ready') c.listeners.item(progressAction());
+      await settle();
+      assert.equal(c.vc.session?.id, 'A', order);
+      assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
+      assert.equal(c.vc.progressContext, null);
+      assert.equal(c.vc.env.locale, 'ru');
+      const mark = c.requests.length;
+      c.listeners.session({ id: 'B', title: 'Another visible chat' }); await settle();
+      assert.equal(c.vc.session?.id, 'A');
+      assert.equal(c.requests.length, mark, 'chat alone starts no extra reads');
+      c.listeners.item(progressAction('B')); await settle();
+      assert.equal(c.vc.session?.id, 'B'); assert.deepEqual(c.vc.read?.plans, []);
+      c.listeners.session({ id: 'A' }); c.listeners.item(null); await settle();
+      assert.equal(c.vc.progressAction, false); assert.equal(c.vc.session?.id, 'A');
+      assert.ok(c.requests.every(q => q.method === 'GET' && ['/health', '/v1/plans', '/v1/plan', '/v1/setup'].includes(q.path)), 'no compose/send/status/Workflows or mutation requests');
+    } finally { c.stop(); }
+  }
+});
+
+test('native manifest action adds no payload or capability and leaves both background actions unchanged', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).openchamber.contributes;
+  assert.deepEqual(manifest.actions.find((v: { id: string }) => v.id === 'open-progress'), { id: 'open-progress', label: 'Open Agent Progress', where: 'session', mode: 'open' });
+  assert.deepEqual(manifest.actions.filter((v: { id: string }) => v.id !== 'open-progress'), [
+    { id: 'insert-handoff', label: 'Insert handoff', where: 'session', mode: 'background' },
+    { id: 'insert-progress-update', label: 'Insert progress update', where: 'session', mode: 'background' },
+  ]);
+  assert.deepEqual(manifest.capabilities, ['sessions']); assert.deepEqual(manifest.background, { entry: 'background/index.html' });
+});
+
+test('a previously readable action clears data when access or setup is withdrawn, not a stale alternate source', async () => {
+  for (const mode of ['denied', 'setup-lost', 'binding-lost']) {
+    const c = controller();
+    try {
+      c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle(); assert.ok(c.vc.read);
+      c.intercept(async (q, next) => {
+        if (q.path === '/health') {
+          if (mode === 'denied') throw { code: 'NOT_GRANTED' };
+          return response({ ...HEALTH, ready: false, diagnostics: mode === 'binding-lost' ? ['binding'] : [] });
+        }
+        return next();
+      });
+      c.vc.retry(); await settle(); assert.equal(c.vc.read, null); assert.ok(c.vc.failure); assert.equal(c.vc.session?.id, 'A');
+    } finally { c.stop(); }
+  }
+});
+
+test('action waits for current exact unambiguous location coverage; removal never becomes the visible session', async () => {
+  const c = controller();
+  try {
+    c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+    assert.equal(c.vc.progressContext, 'checking');
+    assert.equal(c.requests.some(q => q.path === '/v1/plans'), false);
+    c.live(actionLive()); await settle(); assert.equal(c.vc.read?.plans[0].id, 'P-A');
+    c.live(actionLive(['B'])); await settle();
+    assert.equal(c.vc.progressContext, 'unavailable'); assert.equal(c.vc.read, null); assert.equal(c.vc.session?.id, 'A');
+    const mark = c.requests.length; c.vc.retry(); await settle();
+    assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
+    const moved = actionLive(); moved.sessions.get('project')!.records[0].directory = '/fixture/Moved';
+    c.live(moved); await settle(); assert.equal(c.vc.progressContext, 'unavailable');
+    const duplicate = actionLive(); duplicate.sessions.get('project')!.records.push({ ...duplicate.sessions.get('project')!.records[0] });
+    c.live(duplicate); await settle(); assert.equal(c.vc.progressContext, 'unavailable');
+    const denied = actionLive(); denied.sessions.get('project')!.state = 'error';
+    c.live(denied); await settle(); assert.equal(c.vc.progressContext, 'unavailable');
+    c.live(actionLive()); await settle(); assert.ok(c.vc.read);
+  } finally { c.stop(); }
+});
+
+test('malformed native metadata refuses without a visible-chat fallback; board ignores action items', async () => {
+  for (const item of [{ ...progressAction(), action: 'unknown' }, { ...progressAction(), kind: 'message' }, { ...progressAction(), sessionId: '' }, { ...progressAction(), directory: null }, { ...progressAction(), directory: '/fixture/\nBad' }, { ...progressAction(), sessionId: 'x'.repeat(201) }]) {
+    const c = controller();
+    try {
+      c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, item); await settle();
+      assert.equal(c.vc.progressContext, 'invalid'); assert.equal(c.vc.session, null); assert.equal(c.vc.read, null);
+      assert.equal(c.requests.some(q => q.path === '/v1/plans'), false);
+    } finally { c.stop(); }
+  }
+  const board = controller(true);
+  try { board.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle(); assert.equal(board.vc.progressAction, false); assert.ok(board.vc.read); }
+  finally { board.stop(); }
+});
+
+test('action source collisions filter foreign plans; only complete verified results can establish zero or multiple plans', async () => {
+  for (const mode of ['collision', 'empty', 'multiple', 'unverified', 'partial', 'denied', 'malformed']) {
+    const c = controller();
+    c.intercept(async (q, next) => {
+      if (q.path !== '/v1/plans') return next();
+      if (mode === 'denied') throw { code: 'NOT_GRANTED', message: 'Not granted' };
+      if (mode === 'malformed') return response({ data: 'bad' });
+      const rows = mode === 'empty' ? [] : mode === 'multiple' ? [row, { ...row, id: 'P-second' }] : [row, { ...row, sourceId: OTHER_SRC }];
+      return response(plansPage(rows, mode === 'partial' ? 'more' : null, mode === 'unverified' ? { sourceBinding: { sourceId: SRC, verified: false } } : {}));
+    });
+    try {
+      c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+      if (['denied', 'malformed', 'unverified', 'partial'].includes(mode)) {
+        assert.equal(c.vc.read, null, mode); assert.ok(c.vc.failure, mode);
+        assert.equal(c.requests.some(q => q.path === '/v1/plan'), false);
+      } else {
+        assert.equal(c.vc.read?.plans.length, mode === 'multiple' ? 2 : mode === 'empty' ? 0 : 1, mode);
+        assert.ok(c.vc.read?.plans.every(p => p.sourceId === SRC));
+      }
+    } finally { c.stop(); }
+  }
+});
+
+test('held action reads cannot continue or restore after replacement, account change, removed target or directory revalidation', async () => {
+  for (const change of ['item', 'account', 'connection', 'removed', 'directory', 'ready-directory', 'ordinary']) {
+    const c = controller(), held = deferred<GuestRequestResult>(); let first = true;
+    c.intercept((q, next) => q.path === '/v1/plans' && first ? (first = false, held.promise) : next());
+    try {
+      c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+      if (change === 'item') c.listeners.item(progressAction('B'));
+      if (change === 'account') c.ready('B', '/fixture/Alpha', 'replacement', undefined, progressAction());
+      if (change === 'connection') c.listeners.connection({ connected: true, account: 'replacement' });
+      if (change === 'removed') c.live(actionLive(['B']));
+      if (change === 'directory') c.listeners.directory('/fixture/Other');
+      if (change === 'ready-directory') c.ready('B', '/fixture/Other', 'fixture', undefined, progressAction());
+      if (change === 'ordinary') { c.listeners.session({ id: 'B' }); c.listeners.item(null); }
+      await settle(); const mark = c.requests.length;
+      held.resolve(response(plansPage([row], 'retired-next', { storeId: 'retired-store' }))); await settle();
+      assert.equal(c.requests.slice(mark).some(q => q.query?.cursor === 'retired-next'), false, change);
+      assert.notEqual(c.vc.read?.storeId, 'retired-store', change);
+      if (['item', 'removed', 'ordinary'].includes(change)) assert.notEqual(c.vc.read?.plans[0]?.id, 'P-A', change);
+    } finally { held.resolve(response(plansPage([]))); c.stop(); }
+  }
+});
+
+test('optional host work context is bounded, literal, URL-free and independent of session identity', () => {
+  assert.deepEqual(hostWorkContext({}), {});
+  assert.deepEqual(hostWorkContext({ agent: 42, links: 'bad' }), {});
+  const links = Array.from({ length: 8 }, () => ({ title: '<img src=x>'.repeat(30), url: 'https://example.invalid/issue', kind: 'issue', linkedAt: 1 }));
+  const result = hostWorkContext({ agent: '<script>'.repeat(20), links });
+  assert.equal(result.agent?.length, 80); assert.equal(result.links?.length, 5); assert.equal(result.links?.[0].title.length, 200); assert.equal(result.moreLinks, true);
+  assert.ok(result.links?.[0].title.startsWith('<img')); assert.equal(JSON.stringify(result).includes('https:'), false);
+  assert.deepEqual(hostWorkContext({ links: [{ ...links[0], url: 'javascript:alert(1)' }, { ...links[0], linkedAt: 'bad' }, { ...links[0], kind: 'unknown' }] }), {});
+});
+
+test('live adapter exposes optional host context without altering session identity or activity', async () => {
+  const callbacks = new Map<string, (value: any) => void>();
+  const workspace = new LiveWorkspace({
+    onProjects: async cb => { callbacks.set('projects', cb); return () => {}; },
+    onWorktrees: async (_id, cb) => { callbacks.set('worktrees', cb); return () => {}; },
+    onSessions: async (_id, cb) => { callbacks.set('sessions', cb); return () => {}; },
+  }, 2, () => {});
+  try {
+    workspace.start(); await settle();
+    callbacks.get('projects')!({ state: 'ready', projects: actionLive().projects }); workspace.want(['project']); await settle();
+    const raw = { ...actionLive().sessions.get('project')!.records[0], createdAt: 1, updatedAt: 1, items: [], agent: 'Host agent', links: [{ title: 'Host issue', kind: 'issue', url: 'https://example.invalid/issue', linkedAt: 1 }] };
+    callbacks.get('sessions')!({ state: 'ready', sessions: [raw], coverage: [{ directory: '/fixture/Alpha', state: 'ready' }] });
+    const saved = workspace.snapshot.sessions.get('project')!.records[0];
+    assert.equal(saved.id, 'A'); assert.equal(saved.activity, 'idle'); assert.equal(saved.agent, 'Host agent'); assert.equal(saved.links?.[0].title, 'Host issue');
+    callbacks.get('sessions')!({ state: 'ready', sessions: [{ ...raw, agent: {}, links: {} }] });
+    const malformed = workspace.snapshot.sessions.get('project')!.records[0];
+    assert.equal(malformed.id, 'A'); assert.equal(malformed.activity, 'idle'); assert.equal(malformed.agent, undefined); assert.equal(malformed.links, undefined);
+  } finally { workspace.dispose(); await settle(); }
+});
 
 test('QA-R current controller never asks old services for update metadata or dismissal across its lifecycle', async () => {
   const cases: Array<{ status: number; body: unknown }> = [

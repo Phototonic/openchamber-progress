@@ -17,6 +17,7 @@
       "page": { "entry": "ui/page/index.html", "title": "Agent progress" },
       "background": { "entry": "background/index.html" },
       "actions": [
+        { "id": "open-progress", "label": "Open Agent Progress", "where": "session", "mode": "open" },
         { "id": "insert-handoff", "label": "Insert handoff", "where": "session", "mode": "background" },
         { "id": "insert-progress-update", "label": "Insert progress update", "where": "session", "mode": "background" }
       ],

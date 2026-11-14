@@ -176,6 +176,7 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
       if (name.endsWith('/cleanup-view.ts')) return { cleanupNotice: () => null, cleanupBlock: () => null };
       if (name.endsWith('/official.ts')) return { officialMainBlock: () => null };
       if (name.endsWith('/model.ts')) return model;
+      if (name.endsWith('/live.ts')) return { sessionLabel: () => 'Host target' };
       return {};
     } });
     const otherPlan = { ...c.plan, id: 'P-map-none', key: `${f.alpha.id}/P-map-none` };
@@ -192,6 +193,16 @@ test('complete HTTP pairing, bounded retries, independent readings and retired c
     vc.session = null; railSpec.onContext(vc); assert.equal(railSpec.reading(vc), null); assert.equal(vc.ui.selected, null);
     preferences.shift()!(c.plan.key); await tick(); assert.equal(vc.ui.selected, null);
     records.push('actual-rail-late-preference-retired', 'actual-rail-directory-enrichment-preserved', 'actual-rail-session-and-null-reading-scope');
+    vc.progressAction = true; vc.session = { id: 'M' }; vc.env.locale = 'en';
+    railSpec.onContext(vc); preferences.shift()!(otherPlan.key); await tick();
+    assert.equal(railSpec.actionPlan(vc).key, otherPlan.key, 'action reuses a valid saved source-qualified choice');
+    railSpec.paint(node(), vc); choosePlan(c.plan.key);
+    const beforeOrdinary = preferenceReads;
+    vc.progressAction = false; railSpec.onContext(vc);
+    assert.equal(preferenceReads, beforeOrdinary + 1, 'ordinary opening of the same session restores normal preferences');
+    preferences.shift()!('foreign/same-plan'); await tick();
+    assert.equal(railSpec.actionPlan(vc).key, c.plan.key, 'stale or foreign saved keys cannot select an absent source');
+    records.push('actual-rail-action-saved-choice', 'actual-rail-action-to-ordinary-preference-restore', 'actual-rail-stale-foreign-choice-fallback');
     if (process.env.EVIDENCE) { mkdirSync(process.env.EVIDENCE, { recursive: true }); writeFileSync(`${process.env.EVIDENCE}/results.json`, JSON.stringify({ fixture: MAP_FIXTURE_VERSION, runtime: process.version, passed: true, checks: records, graphRequests: graphCalls(), detailRequests: routes.filter(p => p === '/v1/plan').length, note: 'Real disposable HTTP; semantic mismatch and HTTP faults explicitly injected. No rendered map or rail preference UI integration claimed.' }, null, 2) + '\n'); }
   } finally { map.dispose(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); f.cleanup(); }
 });

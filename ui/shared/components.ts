@@ -537,6 +537,15 @@ export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env,
     if (p.assigned) facts.push(say('{n} assigned', env.locale, { n: p.assigned }));
     if (p.relayed) facts.push(say('reports relayed by the main session', env.locale));
     row.append(el('span', 'ap-small ap-muted', facts.join(' · ')));
+    if (!compact && trustedSource(plan, env) && cov.kind === 'live') {
+      const host = cov.session;
+      const labels = env.locale === 'ru'
+        ? { agent: 'Агент по данным хоста', issue: 'Задача, связанная в хосте', change: 'Изменение, связанное в хосте', more: 'В хосте есть другие связи.' }
+        : { agent: 'Host-reported agent', issue: 'Host-linked issue', change: 'Host-linked change', more: 'More links are available in the host.' };
+      if (host.agent) row.append(testid(el('p', 'ap-small ap-muted', `${labels.agent}: ${host.agent}`), 'session-host-agent'));
+      for (const link of host.links ?? []) row.append(testid(el('p', 'ap-small ap-muted', `${labels[link.kind]}: ${link.title}`), 'session-host-link'));
+      if (host.moreLinks) row.append(el('p', 'ap-small ap-muted', labels.more));
+    }
     wrap.append(row);
   }
   section.append(wrap);

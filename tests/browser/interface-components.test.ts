@@ -80,6 +80,25 @@ test('actual DOM helpers localize status, failures and elapsed ticker without ex
   assert.match(unknown.title, /Сервис прогресса/);
 });
 
+test('session details show bounded host context as literal localized text only for the bound source', () => {
+  const { components: c } = fixture();
+  const metadata = live.hostWorkContext({ agent: '<script>agent</script>', links: [{ title: '<img src=x>Linked title', kind: 'change', url: 'https://example.invalid/change', linkedAt: 1 }] });
+  const session = { id: 'A', title: 'Host title', directory: '/fixture/Alpha', projectId: 'project', activity: 'idle', ...metadata, moreLinks: true };
+  const snapshot = { ...live.EMPTY_LIVE, projectsState: 'ready', sessions: new Map([['project', { state: 'ready', records: [session] }]]) };
+  const plan = { sourceId: 'source', directory: '/fixture/Alpha', ownerSessionId: 'A' };
+  for (const locale of ['en', 'ru']) {
+    const env = { locale, boundSource: 'source', live: snapshot };
+    const section = c.peopleBlock(plan, null, env);
+    assert.ok(section.textContent.includes(metadata.agent!)); assert.ok(section.textContent.includes(metadata.links![0].title));
+    assert.match(section.textContent, locale === 'ru' ? /Агент по данным хоста/ : /Host-reported agent/);
+    assert.match(section.textContent, locale === 'ru' ? /Изменение, связанное в хосте/ : /Host-linked change/);
+    assert.equal(section.querySelector('img'), null); assert.equal(section.querySelector('script'), null); assert.equal(section.querySelector('a'), null);
+    assert.equal(section.textContent.includes('https:'), false);
+    assert.equal(c.peopleBlock(plan, null, env, true).textContent.includes(metadata.agent!), false, 'compact session row stays compact');
+    assert.equal(c.peopleBlock({ ...plan, sourceId: 'foreign' }, null, env).textContent.includes(metadata.agent!), false, 'same-ID foreign session never borrows host context');
+  }
+});
+
 test('actual progress and picker preserve counts and literal titles while translating visible and aria copy', () => {
   const { components: c, primitives: p } = fixture();
   const s = { done: 1, total: 5, remaining: 4, skipped: 2, working: 1, blocked: 2 };
