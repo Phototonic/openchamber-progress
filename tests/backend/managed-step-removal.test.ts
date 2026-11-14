@@ -5,7 +5,7 @@ import path from 'node:path';
 import {syncBuiltinESMExports} from 'node:module';
 import cp from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-import {lifecycle,migrationEvidence,validateMigrationRemoval,removeMigrationFile} from '../../setup/lifecycle.ts';
+import {lifecycle,migrationEvidence,validateMigrationRemoval,removeMigrationFile,migrationRemovalRecordClaims,recordMigrationRemoval,migrationRemovalRecorded} from '../../setup/lifecycle.ts';
 import {Store,canonical,digest} from '../../shared/store.ts';
 import {platformSecurityScope} from '../../shared/platform.ts';
 import {parseManagedStepJournal,managedTargetDigest,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
@@ -40,7 +40,17 @@ function authorize(journal:ManagedStepJournal){
 function complete(journal:ManagedStepJournal){
   const m=journal.migration,index=m.plan.findIndex(s=>canonical(s)===canonical(m.step));
   m.receipt={requestDigest:m.intent!.requestDigest,expectedSequence:m.sequence,sequence:++m.sequence,step:m.step,outcome:'applied'};
+  if(m.step?.name==='record-removal')m.phase='removed';
   m.lastCompleted=m.step;m.step=m.plan[index+1]!;m.intent=null;m.state='pending';
+  parseManagedStepJournal(JSON.stringify(journal));
+}
+function readyRecord(journal:ManagedStepJournal){
+  while(journal.migration.step!.name==='remove-discovery'){authorize(journal);removeMigrationFile(journal);complete(journal);}
+}
+function authorizeRecord(journal:ManagedStepJournal){
+  const claims=migrationRemovalRecordClaims(journal),m=journal.migration;
+  m.state='running';m.intent={requestDigest:'6'.repeat(64),expectedSequence:m.sequence,step:m.step!,effect:'intent',
+    before:claims.before,after:claims.after,captureBefore:claims.capture,captureReviewSequence:null};
   parseManagedStepJournal(JSON.stringify(journal));
 }
 
@@ -133,6 +143,92 @@ test('completed removal evidence never authorizes deleting a replacement at an e
   }finally{f.cleanup();}
 });
 
+test('record-removal removes only the empty owned directory and appends its exact event once',()=>{
+  const f=fixture();try{
+    readyRecord(f.journal);const history=fs.readFileSync(f.history);authorizeRecord(f.journal);
+    assert.equal(migrationRemovalRecorded(f.journal),false);
+    assert.deepEqual(recordMigrationRemoval(f.journal),{removed:true,recorded:true,capture:{state:'unknown',observedAt:null}});
+    assert.equal(fs.existsSync(f.legacyRoot),false);assert.equal(migrationRemovalRecorded(f.journal),true);
+    const appended=fs.readFileSync(f.history);assert.deepEqual(appended.subarray(0,history.length),history);
+    const event=JSON.parse(appended.subarray(history.length).toString());
+    assert.equal(event.action,'remove-capture');assert.equal(event.installId,f.journal.migration.legacyInstallId);
+    assert.equal(event.operationId,f.journal.migration.operationId);assert.equal(event.at,f.journal.migration.intent!.captureBefore.observedAt);
+    assert.deepEqual(recordMigrationRemoval(f.journal),{removed:false,recorded:false,capture:{state:'unknown',observedAt:null}});
+    assert.deepEqual(fs.readFileSync(f.history),appended);assert.equal(f.store.list().captureEnabled,false);
+    complete(f.journal);validateMigrationRemoval(f.journal);
+    for(const c of f.journal.migration.legacy.claims.filter(c=>c.kind==='file'&&c.path.includes(`${path.sep}payloads${path.sep}`)))
+      assert.equal(digest(fs.readFileSync(c.path)),c.digest);
+  }finally{f.cleanup();}
+});
+
+for(const boundary of ['rmdir','append'] as const)for(const afterEffect of [false,true]){
+  test(`record-removal reconciles interruption ${afterEffect?'after':'before'} ${boundary}`,t=>{
+    const f=fixture();try{
+      readyRecord(f.journal);authorizeRecord(f.journal);const prior=structuredClone(f.journal),history=fs.readFileSync(f.history);
+      const original=boundary==='rmdir'?fs.rmdirSync:fs.appendFileSync;
+      const mock=t.mock.method(fs,boundary==='rmdir'?'rmdirSync':'appendFileSync',((...args:any[])=>{
+        if(String(args[0])===(boundary==='rmdir'?f.legacyRoot:f.history)){
+          if(afterEffect)(original as any)(...args);throw new Error('synthetic interruption');
+        }
+        return (original as any)(...args);
+      }) as any);syncBuiltinESMExports();
+      try{assert.throws(()=>recordMigrationRemoval(f.journal),/synthetic interruption/);}
+      finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.deepEqual(f.journal,prior,'effect owner never settles the journal');
+      recordMigrationRemoval(f.journal);assert.equal(migrationRemovalRecorded(f.journal),true);
+      const bytes=fs.readFileSync(f.history);assert.deepEqual(bytes.subarray(0,history.length),history);
+      assert.equal(bytes.subarray(history.length).toString().trim().split('\n').length,1);
+      recordMigrationRemoval(f.journal);assert.deepEqual(fs.readFileSync(f.history),bytes);
+    }finally{f.cleanup();}
+  });
+}
+
+for(const damage of ['foreign-directory','replacement-directory','history-link','history-replaced','history-changed','partial-history','capture-on','no-intent','wrong-event'] as const){
+  test(`record-removal refuses ${damage} before either subeffect`,()=>{
+    const f=fixture();try{
+      readyRecord(f.journal);authorizeRecord(f.journal);
+      if(damage==='foreign-directory')fs.writeFileSync(path.join(f.legacyRoot,'foreign'),'foreign');
+      if(damage==='replacement-directory'){fs.renameSync(f.legacyRoot,`${f.legacyRoot}.retained`);fs.mkdirSync(f.legacyRoot,{mode:0o700});}
+      if(damage==='history-link')fs.linkSync(f.history,path.join(f.root,'alias'));
+      if(damage==='history-replaced'){fs.renameSync(f.history,`${f.history}.retained`);fs.copyFileSync(`${f.history}.retained`,f.history);fs.chmodSync(f.history,0o600);}
+      if(damage==='history-changed')fs.appendFileSync(f.history,'{}\n');
+      if(damage==='partial-history')fs.appendFileSync(f.history,'{');
+      if(damage==='capture-on')f.store.setEnabled(true);
+      if(damage==='no-intent')f.journal.migration.intent=null;
+      if(damage==='wrong-event')f.journal.migration.intent!.after[1]!.digest='0'.repeat(64);
+      const before=fs.readFileSync(f.history);
+      assert.throws(()=>recordMigrationRemoval(f.journal));assert.equal(fs.existsSync(f.legacyRoot),true);
+      assert.deepEqual(fs.readFileSync(f.history),before);
+    }finally{f.cleanup();}
+  });
+}
+
+test('record-removal revalidates after rmdir; missing directory does not imply a history event',t=>{
+  const f=fixture();try{
+    readyRecord(f.journal);authorizeRecord(f.journal);const history=fs.readFileSync(f.history),original=fs.rmdirSync;
+    const mock=t.mock.method(fs,'rmdirSync',((p:any,options:any)=>{
+      original(p,options);if(String(p)===f.legacyRoot)f.store.setEnabled(true);
+    }) as typeof fs.rmdirSync);syncBuiltinESMExports();
+    try{assert.throws(()=>recordMigrationRemoval(f.journal),{code:'managed-step-conflict'});}
+    finally{mock.mock.restore();syncBuiltinESMExports();}
+    assert.equal(fs.existsSync(f.legacyRoot),false);assert.deepEqual(fs.readFileSync(f.history),history);
+    f.store.setEnabled(false);assert.equal(migrationRemovalRecorded(f.journal),false);
+    recordMigrationRemoval(f.journal);assert.equal(migrationRemovalRecorded(f.journal),true);
+  }finally{f.cleanup();}
+});
+
+test('record-removal tolerates later history appends only after its own exact event in the same file',()=>{
+  const f=fixture();try{
+    readyRecord(f.journal);authorizeRecord(f.journal);recordMigrationRemoval(f.journal);
+    fs.appendFileSync(f.history,JSON.stringify({action:'unrelated',installId:'other-install'})+'\n');const history=fs.readFileSync(f.history);
+    assert.equal(migrationRemovalRecorded(f.journal),true);assert.equal(recordMigrationRemoval(f.journal).recorded,false);
+    assert.deepEqual(fs.readFileSync(f.history),history);
+    // Even an exact duplicate of our event is ambiguous, not a second receipt.
+    fs.appendFileSync(f.history,history.toString().trim().split('\n').at(-2)!+'\n');
+    assert.throws(()=>recordMigrationRemoval(f.journal),{code:'managed-migration-conflict'});
+  }finally{f.cleanup();}
+});
+
 test('each one-file request fits six actual launches including both durable journal publications', {skip:process.platform==='win32'},async t=>{
   const f=fixture(),originalSystemRoot=process.env.SystemRoot;
   try{
@@ -178,6 +274,26 @@ test('each one-file request fits six actual launches including both durable jour
       assert.ok(spawns-before<=6,`discovery batch ${batch} exceeded six real security launches`);
     }
     t.diagnostic(JSON.stringify({removeDiscoverySecuritySpawns:counts}));
+    const budget=new platform.PlatformRequestBudget(),before=spawns;
+    platform.withPlatformRequestBudget(budget,()=>{
+      const {prior,claims}=platform.platformSecurityScope(()=>{
+        platform.windowsPaths(migration.managedJournalPaths(f.journal),true);
+        const current=migration.readManagedStepJournal(f.env)!;return {prior:current,claims:owner.migrationRemovalRecordClaims(current)};
+      });
+      const intent=structuredClone(prior);
+      intent.migration.state='running';intent.migration.intent={requestDigest:'6'.repeat(64),expectedSequence:prior.migration.sequence,step:prior.migration.step!,effect:'intent',
+        before:claims.before,after:claims.after,captureBefore:claims.capture,captureReviewSequence:null};
+      migration.publishManagedStepIntent(f.env,intent,prior,()=>{owner.validateMigrationRemoval(prior);});
+      const validateIntent=()=>{
+        platform.windowsPaths(migration.managedJournalPaths(intent),true);migration.validatePublishedManagedIntent(f.env,intent);
+      };
+      assert.deepEqual(owner.recordMigrationRemoval(intent,validateIntent),{removed:true,recorded:true,capture:{state:'unknown',observedAt:null}});
+      const next=structuredClone(intent);complete(next);next.migration.capture={state:'unknown',observedAt:null};
+      migration.writeManagedStepJournal(f.env,next,intent,()=>{assert.equal(owner.migrationRemovalRecorded(intent),true);});
+      f.journal=next;
+    });
+    assert.equal(budget.securitySpawns,spawns-before);assert.ok(spawns-before<=6);
+    t.diagnostic(JSON.stringify({recordRemovalSecuritySpawns:spawns-before}));
   }finally{
     t.mock.restoreAll();syncBuiltinESMExports();
     if(originalSystemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=originalSystemRoot;

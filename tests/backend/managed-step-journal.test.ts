@@ -9,7 +9,7 @@ import {canonical,digest,Store} from '../../shared/store.ts';
 import {platformSecurityScope} from '../../shared/platform.ts';
 import {publishPrivateJson} from '../../shared/managed-binding.ts';
 import {parseManagedStepJournal,managedTargetDigest,managedRequestDigest,managedJournalProgress,type ManagedStepJournal} from '../../setup/managed-step-journal.ts';
-import {readManagedStepJournal,writeManagedStepJournal,validateManagedJournalChange,migrationFile,readMigration} from '../../setup/managed-migration.ts';
+import {readManagedStepJournal,writeManagedStepJournal,publishManagedStepIntent,validatePublishedManagedIntent,validateManagedJournalChange,migrationFile,readMigration} from '../../setup/managed-migration.ts';
 import {MANAGED_STEP_LIMITS} from '../../shared/managed-steps.ts';
 
 // Wire examples intentionally use placeholder digests. Engine fixtures hash the
@@ -189,6 +189,22 @@ test('publication crashes retain either the prior journal or the durable next ch
       const store=new Store(f.binding.database,{readOnly:true});try{assert.equal(store.list().captureEnabled,true);}finally{store.close();}
     }finally{f.cleanup();}
   }
+});
+
+test('unsequenced intent publication requires exact fresh readback and cannot publish a control receipt',()=>{
+  const f=fixture();try{
+    writeManagedStepJournal(f.env,f.journal);const next=running(f.journal);
+    assert.throws(()=>validatePublishedManagedIntent(f.env,next),{code:'managed-step-unsettled'});
+    assert.throws(()=>publishManagedStepIntent(f.env,control(f.journal,'paused'),f.journal,()=>{}),{code:'managed-step-conflict'});
+    const before=fs.readFileSync(f.file);
+    assert.throws(()=>publishManagedStepIntent(f.env,next,f.journal,()=>{throw new Error('synthetic validation refusal');}),/synthetic validation refusal/);
+    assert.deepEqual(fs.readFileSync(f.file),before);
+    publishManagedStepIntent(f.env,next,f.journal,()=>{});validatePublishedManagedIntent(f.env,next);
+    assert.equal(readManagedStepJournal(f.env)!.migration.sequence,f.journal.migration.sequence);
+    assert.equal(managedJournalProgress(next).worker,'unsettled');
+    const altered=structuredClone(next);altered.migration.intent!.requestDigest='9'.repeat(64);
+    assert.throws(()=>validatePublishedManagedIntent(f.env,altered),{code:'managed-step-unsettled'});
+  }finally{f.cleanup();}
 });
 
 test('missing journal resumes only within a valid marked container; partial or unsafe state is retained',()=>{

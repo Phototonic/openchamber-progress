@@ -152,6 +152,14 @@ journal can be reused after fresh validation and confirmation; it is not the sam
 as an unmarked directory. The step protocol's planned `prepare` stage uses this
 existing bootstrap, not a new claim file or crash-proof directory publication.
 
+The not-yet-integrated step engine's lifecycle helper can reconcile an interrupted
+`record-removal`: it removes only the verified empty discovery directory and then
+records one operation-specific history event. It revalidates between those two
+effects. An exact retained event permits a read-only retry; a missing directory
+alone does not prove completion. Replaced history, duplicate events or partial
+history lines refuse without repair. This helper does not change the recovery
+limits of the currently exposed monolithic migration route.
+
 If bootstrap is refused, stop submitting migration actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no
 configuration or migration worker is active, then arrange separately authorized

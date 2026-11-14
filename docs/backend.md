@@ -343,8 +343,22 @@ the owner changes neither capture nor the journal. After an unlink it returns
 unknown capture; completion publication must freshly validate the remaining set.
 Portable tests cover each of the six discovery files interrupted before/after
 unlink and the complete admission/intent/effect/checkpoint query accounting.
-Empty-directory removal and idempotent history recording still need their engine
-integration; these helpers do not make the old monolithic route resumable.
+The `record-removal` owner now covers empty-directory removal and idempotent
+history recording. Its intent retains the original directory object and the
+same-file history prefix/event digests. The event includes the operation identity
+and the intent's fixed observation time, never a new retry timestamp. After rmdir,
+another fresh full validation precedes append. Interrupted work accepts only the
+exact event in that same owned history file; later appends are allowed after that
+proven prefix, but replacement, duplicate events and partial lines refuse without
+repair. History reads are bounded by the journal byte limit before effects.
+
+For this two-subeffect unit, unsequenced intent publication has no separate
+post-publication scan: the effect admission batch reads back and compares the
+durable intent before rmdir. Settled checkpoint publication still verifies its
+write. This coalesces reads, not authority across writes. Portable accounting
+measures six launches for the complete record-removal request, including both
+journal writes and the fresh check between rmdir and append. These owners still
+need engine integration and do not make the old monolithic route resumable.
 
 `readRemovalReceipt` returns the specific same-install history event and a freshly
 validated native file claim for format-1 recovery. It refuses remaining discovery,

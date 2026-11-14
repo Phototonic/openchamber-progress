@@ -281,6 +281,96 @@ export function removeMigrationFile(journal:ManagedStepJournal):{removed:boolean
   // forward as if it had just been observed after a mutation.
   return {removed:true,capture:{state:'unknown',observedAt:null}};
 }
+
+function removalHistory(journal:ManagedStepJournal) {
+  const file=path.join(path.dirname(journal.database),'installation-history.jsonl');
+  safe(file);const stat=lstatSync(file);
+  need(stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&privatePaths([path.dirname(file),file]),'store-permissions');
+  if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+  const before=migrationSnapshot(file),bytes=readFileSync(file);
+  need(before===migrationSnapshot(file),'installation-changed');
+  let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}
+  // Never append onto an interrupted/ambiguous history line or repair it.
+  need(text.length===0||text.endsWith('\n'),'managed-migration-conflict');
+  return {file,bytes,text,claim:{path:file,kind:'file' as const,object:migrationObject(file),digest:digest(bytes)}};
+}
+function removalEvent(journal:ManagedStepJournal,capture:ManagedCaptureObservation) {
+  need(capture.state==='off','managed-step-conflict');
+  // Frozen intent observation, not retry time. The operation identity makes this
+  // exact event distinguishable from an earlier removal of the same install.
+  return JSON.stringify({action:'remove-capture',at:capture.observedAt,installId:journal.migration.legacyInstallId,
+    operationId:journal.migration.operationId})+'\n';
+}
+/** Read-only construction of both subeffects' claims. The engine freezes these
+ * in the durable intent before directory removal or history append. */
+export function migrationRemovalRecordClaims(journal:ManagedStepJournal) {
+  return platformSecurityScope(()=>{
+    const layout=validateMigrationRemoval(journal),m=journal.migration;
+    need(m.step?.name==='record-removal'&&m.intent===null&&layout.capture.state==='off','managed-step-conflict');
+    need(readdirSync(layout.root).length===0,'foreign-files');
+    const history=removalHistory(journal),event=removalEvent(journal,layout.capture);
+    if(history.bytes.length+Buffer.byteLength(event)>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+    return {before:[layout.claims.get(layout.root)!,history.claim],
+      after:[{path:layout.root,kind:'absent' as const,object:null,digest:null},
+        {...history.claim,digest:digest(Buffer.concat([history.bytes,Buffer.from(event)]))}],capture:layout.capture};
+  });
+}
+function validateRemovalRecord(journal:ManagedStepJournal) {
+  const m=journal.migration,intent=m.intent;
+  need(m.state==='running'&&m.step?.name==='record-removal'&&intent&&canonical(intent.step)===canonical(m.step),'managed-step-conflict');
+  const layout=validateMigrationRemoval(journal);
+  need(layout.intentFor(layout.root)&&layout.capture.state==='off','managed-step-conflict');
+  if(lstatSync(layout.root,{throwIfNoEntry:false}))need(readdirSync(layout.root).length===0,'foreign-files');
+  const history=removalHistory(journal),event=removalEvent(journal,intent.captureBefore);
+  const before=intent.before[1],after=intent.after[1];
+  need(intent.before.length===2&&intent.after.length===2&&canonical(intent.before[0])===canonical(layout.claims.get(layout.root))&&
+    canonical(intent.after[0])===canonical({path:layout.root,kind:'absent',object:null,digest:null})&&
+    before?.path===history.file&&before.kind==='file'&&canonical(before.object)===canonical(history.claim.object)&&
+    after?.path===history.file&&after.kind==='file'&&canonical(after.object)===canonical(before.object),'managed-step-conflict');
+  // Later appends are permitted only after the exact intent-proven prefix/event
+  // in this same file. Neither absence nor a same-install historical event alone
+  // is a completion receipt. Partial appends remain an explicit conflict.
+  let recorded=false;
+  for(let offset=0;offset<history.bytes.length;){
+    const end=history.bytes.indexOf(10,offset);need(end>=0,'managed-migration-conflict');
+    if(history.bytes.subarray(offset,end+1).equals(Buffer.from(event))){
+      need(!recorded&&digest(history.bytes.subarray(0,offset))===before.digest&&
+        digest(history.bytes.subarray(0,end+1))===after.digest,'managed-migration-conflict');recorded=true;
+    }
+    offset=end+1;
+  }
+  if(!recorded)need(history.claim.digest===before.digest&&
+    digest(Buffer.concat([history.bytes,Buffer.from(event)]))===after.digest,'managed-migration-conflict');
+  need(!recorded||!lstatSync(layout.root,{throwIfNoEntry:false}),'managed-migration-conflict');
+  return {layout,history,event,recorded};
+}
+/** One reconciled lifecycle unit: empty discovery directory, then exact history
+ * event. A fresh scope validates each subeffect; no authority crosses rmdir.
+ * validateJournal lets the engine combine durable-intent readback with the first
+ * effect batch. It must be read-only and must prebatch any additional paths. */
+export function recordMigrationRemoval(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;recorded:boolean;capture:ManagedCaptureObservation} {
+  requirePlatformWriteBoundary();
+  let current=platformSecurityScope(()=>{validateJournal?.();return validateRemovalRecord(journal);});
+  let removed=false;
+  if(lstatSync(current.layout.root,{throwIfNoEntry:false})){
+    requirePlatformWriteBoundary();rmdirSync(current.layout.root);syncDirectory(path.dirname(current.layout.root));removed=true;
+    // rmdir invalidates the actual security scope. Recheck the retained payloads,
+    // roots, Store, capture and history before admitting the second subeffect.
+    current=platformSecurityScope(()=>validateRemovalRecord(journal));
+  }
+  if(!current.recorded){
+    requirePlatformWriteBoundary();
+    appendFileSync(current.history.file,current.event,{flag:'a',mode:0o600});syncFile(current.history.file);
+  }
+  // Completion checkpoint validation owns the post-effect read, not a second
+  // append or a hidden final scan here. Historical capture is not returned as new.
+  return {removed,recorded:!current.recorded,capture:{state:'unknown',observedAt:null}};
+}
+/** Read-only completion proof, also required inside the journal checkpoint's
+ * fresh validation batch. A missing directory without the event is incomplete. */
+export function migrationRemovalRecorded(journal:ManagedStepJournal):boolean {
+  return platformSecurityScope(()=>validateRemovalRecord(journal).recorded);
+}
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}
 /** Retained sources are candidates, not currently selected target assertions. */
 function matchesRetainedSource(source:Binding['source'],targets:Targets) {

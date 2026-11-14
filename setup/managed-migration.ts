@@ -221,6 +221,31 @@ export function validateManagedJournalChange(prior:ManagedStepJournal,next:Manag
  * The engine invokes unchanged createManagedBindingDirectory for prepare first.
  * expected is a compare-before-publication claim, not authority or an OS lock. */
 export function writeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected?:ManagedStepJournal,validate?:()=>void):void {
+  publishManagedJournal(env,next,expected,validate);
+  const written=platformSecurityScope(()=>{if(windows)windowsPaths(managedJournalPaths(next),true);return readManagedStepJournal(env);});
+  if(!written||canonical(written)!==canonical(next))throw new SetupError('managed-step-unsettled');
+}
+
+/** Publish only an unsequenced intent. Unlike a settled checkpoint, this is not
+ * a successful action receipt. The effect owner MUST read it back and compare
+ * it in its fresh admission batch before any effect (see recordMigrationRemoval).
+ * Combining those reads avoids a redundant launch without reusing authority
+ * across a mutation. A crash here leaves running/unsettled, never completion. */
+export function publishManagedStepIntent(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:ManagedStepJournal,validate:()=>void):void {
+  if(next.migration.state!=='running'||!next.migration.intent||next.migration.sequence!==expected.migration.sequence)
+    throw new SetupError('managed-step-conflict');
+  publishManagedJournal(env,next,expected,validate);
+}
+
+/** Read-only exact intent admission; caller may prebatch known paths in this
+ * same scope, but must end it before the effect. No prior ACL verdict is used. */
+export function validatePublishedManagedIntent(env:NodeJS.ProcessEnv,expected:ManagedStepJournal):void {
+  const current=readManagedStepJournal(env);
+  if(expected.migration.state!=='running'||!expected.migration.intent||!current||canonical(current)!==canonical(expected))
+    throw new SetupError('managed-step-unsettled');
+}
+
+function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected?:ManagedStepJournal,validate?:()=>void):void {
   requirePlatformWriteBoundary();
   // Parse serialized bytes before touching product state (also enforces limits).
   const checked=parseManagedStepJournal(JSON.stringify(next));
@@ -248,6 +273,4 @@ export function writeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJo
   });
   requirePlatformWriteBoundary();
   publishPrivateJson(file,checked,!!expected);
-  const written=platformSecurityScope(()=>{if(windows)windowsPaths(known,true);return readManagedStepJournal(env);});
-  if(!written||canonical(written)!==canonical(checked))throw new SetupError('managed-step-unsettled');
 }
