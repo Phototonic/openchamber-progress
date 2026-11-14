@@ -1,6 +1,6 @@
 // Needs you inbox controller: one per frame, owned by the shared frame controller (app.ts).
 // - the first window rides on the frame's ordinary list read (no extra request, timer or poll)
-// - more windows load only on an explicit "Check more plans", pinned to store + verified binding
+// - new windows load explicitly; loaded windows are rechecked one per ordinary refresh
 // - an unchanged window keeps its timing anchors and object, so a poll repaints nothing
 // - a changed first window, a 409 or an identity change restarts continuation visibly
 // - reported state only: nothing here writes, settles, assigns or navigates the host
@@ -29,6 +29,8 @@ export interface InboxModel {
   restarted: boolean;
   /** Display-only: whether loaded rows beyond the compact limit are shown. */
   expanded: boolean;
+  /** Retained continuation rows may be old until the bounded traversal finishes. */
+  rechecking: boolean;
 }
 
 export interface InboxPanel {
@@ -61,6 +63,8 @@ export class InboxController {
   private failed: ReadFailure | null = null;
   private restarted = false;
   private expanded = false;
+  /** Next loaded page to re-read; null means the last traversal finished. */
+  private recheck: number | null = null;
 
   private readonly deps: InboxDeps;
   constructor(deps: InboxDeps) { this.deps = deps; }
@@ -73,7 +77,17 @@ export class InboxController {
     if (owner !== this.owner) { this.reset(); this.owner = owner; }
     if (!first) return false;
     const sig = firstSignature(first);
-    if (sig === this.firstSig) return false;
+    if (sig === this.firstSig) {
+      // An explicit append started before this refresh cannot restore old count authority.
+      const retireAppend = this.pending !== null && this.recheck === null;
+      if (retireAppend) { this.pending = null; this.generation++; this.restarted = true; }
+      if (!this.pages.length) return retireAppend;
+      // Count authority is retired immediately, before the asynchronous re-read. Keep rows
+      // readable under a rechecking notice, not as silently current reports.
+      if (this.recheck === null) this.recheck = 0;
+      if (this.pending === null) this.readPage(this.recheck);
+      return true;
+    }
     this.first = first; this.firstSig = sig;
     if (this.pages.length || this.pending !== null) {
       // Never splice windows of different traversals: restart visibly from the new first window.
@@ -84,17 +98,23 @@ export class InboxController {
 
   /** `reset`: identity/cache reset or disposal; `hidden`: retire in-flight continuation only. */
   retire(reason: 'reset' | 'hidden' | 'dispose') {
-    if (reason === 'hidden') { if (this.pending !== null) { this.pending = null; this.generation++; } return; }
+    if (reason === 'hidden') {
+      if (this.pending !== null) { this.pending = null; this.generation++; }
+      if (this.pages.length) this.recheck = 0;
+      return;
+    }
     this.reset();
   }
 
   private reset() {
     this.owner = ''; this.first = null; this.firstSig = ''; this.pages = []; this.pagesBase = '';
     this.pending = null; this.generation++; this.failed = null; this.restarted = false; this.expanded = false;
+    this.recheck = null;
   }
 
   private dropPages(restarted: boolean) {
     this.pages = []; this.pagesBase = ''; this.pending = null; this.generation++; this.failed = null;
+    this.recheck = null;
     this.restarted = restarted;
   }
 
@@ -104,7 +124,7 @@ export class InboxController {
 
   model(): InboxModel | null {
     if (!this.first) return null;
-    const empty = { needsYou: [], alsoBlocked: [], counts: { needsYou: 0, alsoBlocked: 0 }, complete: false, gapped: false, captureEnabled: true, timing: false, canContinue: false, loadingMore: false, moreFailed: null, restarted: false, expanded: false };
+    const empty = { needsYou: [], alsoBlocked: [], counts: { needsYou: 0, alsoBlocked: 0 }, complete: false, gapped: false, captureEnabled: true, timing: false, canContinue: false, loadingMore: false, moreFailed: null, restarted: false, expanded: false, rechecking: false };
     if (this.first.state !== 'ready') return { ...empty, availability: this.first.state };
     const windows = [this.first.window, ...this.pages];
     const last = windows.at(-1)!;
@@ -118,10 +138,10 @@ export class InboxController {
     // Gaps anywhere in the traversal keep the whole result partial.
     const gapped = windows.some((w) => w.coverage.gapped);
     return {
-      availability: 'ready', needsYou, alsoBlocked, counts: last.counts,
-      complete: last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
+      availability: 'ready', needsYou, alsoBlocked, counts: this.recheck !== null ? this.first.window.counts : last.counts,
+      complete: this.recheck === null && last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
       gapped, captureEnabled: last.captureEnabled, timing: this.first.window.timing,
-      canContinue: last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded,
+      canContinue: this.recheck === null && last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded, rechecking: this.recheck !== null,
     };
   }
 
@@ -139,7 +159,14 @@ export class InboxController {
 
   /** One explicit continuation window; never automatic, never while hidden or already loading. */
   more() {
-    const last = this.last();
+    if (this.recheck !== null) return;
+    this.readPage();
+  }
+
+  /** Replace one loaded page, or append one explicitly requested new page. */
+  private readPage(index?: number) {
+    const previous = index === undefined ? this.last() : index === 0 ? (this.first?.state === 'ready' ? this.first.window : null) : this.pages[index - 1];
+    const last = previous;
     if (!last || !last.nextCursor || this.pending !== null || !this.deps.visible() || this.first?.state !== 'ready') return;
     const generation = ++this.generation;
     this.pending = generation;
@@ -153,7 +180,14 @@ export class InboxController {
     void readNeedsYou(this.deps.service(current), request, last.counts, this.deps.mono).then((r) => {
       if (!current()) return;
       this.pending = null;
-      if (r.ok) this.pages.push(r.window);
+      if (r.ok) {
+        if (index === undefined) this.pages.push(r.window);
+        else if (r.window.nextCursor !== this.pages[index]?.nextCursor) this.dropPages(true);
+        else {
+          this.pages[index] = r.window;
+          this.recheck = index + 1 < this.pages.length ? index + 1 : null;
+        }
+      }
       else if (r.status === 409) this.dropPages(true);
       else this.failed = r.failure;
       this.deps.changed();

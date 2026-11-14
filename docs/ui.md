@@ -663,10 +663,18 @@ frame's existing first list-page read (`needsYou=1`); rail and board add
 summary on an unverified binding: the ordinary list remains readable and the
 inbox reports unavailable. During board search, the first search-freshness batch
 of each existing refresh cycle carries and adopts one inbox window instead.
-There is no extra timer, automatic continuation or inbox poll. **Check more plans** explicitly
+There is no extra timer or inbox poll. **Check more plans** explicitly
 requests `/v1/needs-you`, pinned to store/source and timing mode. Counts are
-cumulative, never added as page deltas. Changed first windows (including cursor-only
-changes), identity changes or a continuation 409 retire loaded pages; the list
+cumulative, never added as page deltas. On unchanged first-window refreshes, loaded
+pages are re-traversed from its cursor, replacing at most one continuation page
+per refresh. Rows stay readable under a **Rechecking loaded plans** notice; until
+the traversal finishes, only the first window's counts have authority, shown as
+"at least" with the existing partial wording. No new pages load automatically,
+and explicit continuation waits for rechecking to finish. Failed rechecks remain
+partial and retry only on the existing refresh cadence; hiding retires held reads
+and restarts rechecking from the first cursor. A refresh retires an unfinished
+explicit continuation so its old reply cannot restore exact counts. Changed first windows (including cursor-only
+changes), a changed continuation cursor, identity changes or a continuation 409 retire loaded pages; the list
 visibly starts again rather than splicing revisions. Waiting labels reuse the
 frame's monotonic label ticker.
 

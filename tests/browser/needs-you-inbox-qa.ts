@@ -4,7 +4,8 @@
 // contract (shared/needs-you.ts): health capability, first window on the first list page, explicit
 // GET /v1/needs-you continuation, plan detail with reported blockers. It is not the real service
 // projection by default. --real-service instead routes guest requests through the actual HTTP
-// service and a disposable synthetic SQLite store (only unsupported capability is stripped).
+// service and a disposable synthetic SQLite store (unsupported capability is stripped and
+// a labelled transport hold exposes the rechecking state without changing service responses).
 // Neither mode is native-host or physical-phone proof: simulated device hints and touch only.
 // Usage: node --experimental-strip-types tests/browser/needs-you-inbox-qa.ts [--source] [--real-service] [--chromium <path>] --artifacts <dir>
 //   writes results.json (checks), requests.json (bounded request metadata) and screenshots.
@@ -72,6 +73,8 @@ const real = process.argv.includes('--real-service') ? await inboxIntegration(SR
 }))) : null;
 let conflictNext = false;
 let failLists = false;
+// Labelled transport seam to inspect rechecking while the actual service read is held.
+let continuationGate: Promise<void> | null = null;
 const realReplies: { path: string; status: number; rows?: number; counts?: unknown; complete?: boolean }[] = [];
 const personFacing = (b: Blocked) => b.category === 'decision' || b.category === 'review';
 const visibleBlocked = (p: Fixture) => p.blocked.filter((b) => mode !== 'empty' || !personFacing(b));
@@ -178,8 +181,9 @@ const server: Server = createServer(async (req, res) => {
     if (url.pathname === '/service' && req.method === 'POST') {
       let body = ''; for await (const part of req) body += part;
       const q = JSON.parse(body);
+      if (q.path === '/v1/needs-you' && continuationGate) await continuationGate;
       if (real && conflictNext && q.path === '/v1/needs-you') { conflictNext = false; real.conflict(); }
-      // Unsupported mode is an explicit older-service seam; ordinary reads use the real service.
+      // Unsupported mode is an explicit older-service seam; all supported reads use the real service.
       if (real && mode === 'unsupported' && q.path !== '/health') { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
       const r = failLists && q.path === '/v1/plans' ? { status: 503, body: { error: 'busy' } } : real ? await real.request(q) : serve(q);
       if (real && mode === 'unsupported' && q.path === '/health') delete (r.body as Record<string, unknown>).needsYouInbox;
@@ -481,6 +485,22 @@ try {
   const finalRows = await rowIds('panel');
   check('I1:continuation-explicit-pinned-and-merged', cont.length === (real ? 2 : 1) && (real ? !!cont.at(-1)?.cursor : cont[0].cursor === 'qa-c1') && cont.at(-1)?.timing === '1' && same(finalRows, ['task-a', 'task-b', 'task-d']), { cont, finalRows });
   if (real) check('integration:cumulative-counts-at-real-bound', realReplies.some(r => r.path === '/v1/needs-you' && r.complete && same(r.counts, { needsYou: 3, alsoBlocked: 53 })));
+  if (real) {
+    // Only a later plan changes: the first 50-row window and its mid-plan cursor stay fixed.
+    const beforeRecheck = (await requests()).length;
+    let release!: () => void;
+    continuationGate = new Promise<void>(resolve => { release = resolve; });
+    real.resolvePlan('plan-beta', true);
+    try {
+      await wait('panel', `d.querySelector('[data-testid="needs-you-rechecking"]')`, 'loaded pages marked as rechecking', 12_000);
+      check('regression:rechecking-keeps-readable-rows-with-partial-counts', await guest<boolean>('panel', `return !!d.querySelector('${INBOX} [data-testid="needs-you-row"][data-task="task-d"]') && d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.exact==='false' && !!d.querySelector('[data-testid="needs-you-partial"]')`));
+      await shot('panel', 'later-pages-rechecking', INBOX);
+    } finally { continuationGate = null; release(); }
+    await wait('panel', `!d.querySelector('${INBOX} [data-testid="needs-you-row"][data-task="task-d"]') && d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.count==='2'`, 'resolved later-page task leaves the inbox', 12_000);
+    check('regression:unchanged-first-window-rechecks-later-plan', (await requests()).slice(beforeRecheck).some(q => q.frame === 'panel' && q.path === '/v1/needs-you'));
+    await shot('panel', 'later-page-resolved', INBOX);
+    real.resolvePlan('plan-beta', false);
+  }
 
   // ---------------------------------------------------------------- complete empty first group
   mode = 'empty';
@@ -558,7 +578,7 @@ try {
   assets.dispose();
   await real?.close();
   rmSync(profile, { recursive: true, force: true });
-  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability seam only' : 'synthetic contract fixture', realReplies, device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
+  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability and held-transport seams' : 'synthetic contract fixture', realReplies, device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
   writeFileSync(join(artifacts, 'requests.json'), JSON.stringify(requestLog.slice(-400), null, 1));
   console.log(JSON.stringify({ pass: !failure && results.every((r) => r.pass), checks: results.length, failure, shots: shots.length }));
   if (failure || !results.every((r) => r.pass)) process.exitCode = 1;

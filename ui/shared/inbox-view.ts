@@ -41,6 +41,7 @@ export const INBOX_COPY = {
     alsoListLabel: 'Other blocked tasks',
     more: 'Check more plans', moreLoading: 'Checking more plans…', moreFailed: 'More plans couldn’t be checked right now.', retry: 'Try again',
     restarted: 'The list changed while loading, so it started again from the top.',
+    rechecking: 'Rechecking loaded plans. Later rows may be out of date; counts include only the first checked window until this finishes.',
     showMore: (n: number) => `Show ${n} more`, showFewer: 'Show fewer',
     also: (n: number, exact: boolean) => `Also blocked · ${exact ? n : `${n}+`}`,
     alsoNote: 'Other reported blockers, including dependencies, outside parties and unspecified reasons.',
@@ -92,6 +93,7 @@ export const INBOX_COPY = {
     alsoListLabel: 'Другие заблокированные задачи',
     more: 'Проверить другие планы', moreLoading: 'Проверяем другие планы…', moreFailed: 'Сейчас не удалось проверить другие планы.', retry: 'Попробовать снова',
     restarted: 'Список изменился во время загрузки, поэтому он начат заново.',
+    rechecking: 'Повторно проверяем загруженные планы. Дальние строки могут быть устаревшими; до завершения счётчики учитывают только первое проверенное окно.',
     showMore: (n: number) => `Показать ещё ${num(n, 'ru')}`, showFewer: 'Свернуть',
     also: (n: number, exact: boolean) => `Также заблокировано · ${exact ? num(n, 'ru') : `${num(n, 'ru')}+`}`,
     alsoNote: 'Другие указанные блокировки: зависимости, внешние стороны и неуказанные причины.',
@@ -280,6 +282,7 @@ export function inboxSection(panel: InboxPanel, env: Env, options: { open: (row:
   if (options.stale !== null) notes.append(testid(warningLine(t.stale(clockTime(options.stale, env.locale)), 'warning', 'p'), 'needs-you-stale'));
   if (!m.captureEnabled) notes.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
   if (m.restarted) notes.append(testid(warningLine(t.restarted, 'info', 'p'), 'needs-you-restarted'));
+  if (m.rechecking) notes.append(testid(warningLine(t.rechecking, 'info', 'p'), 'needs-you-rechecking'));
   if (m.gapped) notes.append(testid(warningLine(t.gapped, 'warning', 'p'), 'needs-you-gapped'));
   if (notes.childNodes.length) box.append(notes);
   if (!m.needsYou.length) {
