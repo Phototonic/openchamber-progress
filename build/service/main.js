@@ -2151,6 +2151,29 @@ function settleIntent(db, i, receipt, reason) {
   intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
   db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
 }
+function delegationAssignmentRecovery(db, sourceId, plan, sessionId, a, budget) {
+  const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, budget), sourceId, plan);
+  const result = { bytes: Number(current?.bytes ?? 0), complete: true, recovered: false };
+  if (!current)
+    return result;
+  if (typeof current.snapshot !== "string") {
+    result.complete = false;
+    return result;
+  }
+  try {
+    const p = JSON.parse(current.snapshot);
+    if (p.sourceId !== sourceId || p.id !== plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+      result.complete = false;
+    else
+      result.recovered = p.revision > a.declaredRevision && a.taskIds.length > 0 && a.taskIds.every((id) => {
+        const item = p.items.find((i) => i?.id === id);
+        return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
+      });
+  } catch {
+    result.complete = false;
+  }
+  return result;
+}
 function delegationRefusals(db, binding, sourceId, sessionId) {
   requireProgress(identifier(sourceId) && identifier(sessionId));
   const result = { sourceId, sessionId, complete: true, refusals: [] };
@@ -2202,25 +2225,12 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
       continue;
-    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes), sourceId, r.plan);
-    if (current) {
-      bytes += Number(current.bytes);
-      if (typeof current.snapshot !== "string")
-        result.complete = false;
-      else
-        try {
-          const p = JSON.parse(current.snapshot);
-          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
-            result.complete = false;
-          else if (p.revision > a.declaredRevision && a.taskIds.every((id) => {
-            const item = p.items.find((i) => i?.id === id);
-            return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
-          }))
-            continue;
-        } catch {
-          result.complete = false;
-        }
-    }
+    const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes);
+    bytes += recovery.bytes;
+    if (!recovery.complete)
+      result.complete = false;
+    if (recovery.recovered)
+      continue;
     if (result.refusals.length === 3) {
       result.complete = false;
       continue;
@@ -5620,7 +5630,11 @@ function delegationView(store, envelope, plan2, now = new Date) {
         const ready = (disposition) => {
           result = { availability: "ready", complete: true, disposition };
         };
-        const refused = (reason) => ready({ state: "refused", declaration: a, reason: refusalReason(reason), recovery: "redeclare-or-link" });
+        const refused = (reason) => {
+          const recovery = delegationAssignmentRecovery(db, plan2.sourceId, plan2.id, plan2.sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes);
+          facts2.push(recovery);
+          ready(recovery.recovered ? { state: "none" } : { state: "refused", declaration: a, reason: refusalReason(reason), recovery: "redeclare-or-link" });
+        };
         if (d.state === "pending" || d.state === "reserved") {
           if (!a.taskIds.length || d.state === "pending" !== (a.dispatch === null) || intentRow?.plan !== plan2.id || intentRow.oid !== a.oid || typeof intentRow.payload !== "string") {
             unavailable("invalid");

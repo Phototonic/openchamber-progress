@@ -84,6 +84,27 @@ test('cancel/redeclare changes tokens without progress and does not resurrect an
   assert.equal(f.plan().revision, revision); assert.equal(f.plan().items[0]!.assigneeSessionId, undefined);
 }));
 
+for (const mode of ['link', 'binding'] as const)
+test(`refusal projection follows current ${mode} recovery and unlinking`, async () => httpFixture(async f => {
+  const request = f.request({ assign: ['task-1', 'task-2'] }); f.declare(request);
+  f.store.beforeRun(key, f.actor(), 'subagent', {}, 1000); f.store.afterRun(key, 0, undefined, 'unconfirmed');
+  const refused = await f.inspect(); assert.equal(disposition(refused).state, 'refused');
+  const link = (oid: string, assign: string[]) => f.store.apply({ op: 'link', plan: 'plan-alpha', oid, rev: f.plan().revision, child: 'C1', assign }, f.actor(), undefined, f.actor('C1'),
+    mode === 'binding' ? { generation: 0, messageId: key.message, callId: key.call, observedAt: new Date(1000).toISOString() } : undefined);
+  link('partial', ['task-1']);
+  const partial = await f.inspect(); assert.equal(disposition(partial).state, 'refused');
+  assert.equal(f.store.delegationRefusals(f.source.id, 'A').refusals.length, 1);
+  link('recovered', ['task-1', 'task-2']);
+  const recovered = await f.inspect(); assert.equal(disposition(recovered).state, 'none');
+  assert.notEqual(recovered.token, partial.token); assert.notEqual(recovered.token, refused.token);
+  assert.equal(f.store.delegationRefusals(f.source.id, 'A').refusals.length, 0);
+  assert.equal((await f.inspect()).token, recovered.token);
+  f.store.apply({ op: 'link', plan: 'plan-alpha', oid: 'unlink', rev: f.plan().revision, child: 'C1', assign: [] }, f.actor(), undefined, f.actor('C1'));
+  const unlinked = await f.inspect(); assert.equal(disposition(unlinked).state, 'refused');
+  assert.notEqual(unlinked.token, recovered.token);
+  assert.equal(f.store.delegationRefusals(f.source.id, 'A').refusals.length, 1);
+}));
+
 for (const change of ['unrelated', 'target', 'structure', 'missing-proof', 'closed', 'capture'] as const)
 test(`waiting eligibility and freshness follow retained proof: ${change}`, async () => httpFixture(async f => {
   f.declare(); const pending = await f.inspect();

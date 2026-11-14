@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DELEGATION_VIEW_LIMITS as L, type DelegationDeclaration, type DelegationView } from '../shared/delegation-view.ts';
 import { delegationRevision } from '../shared/delegation-validation.ts';
-import { activeIntent, runStorageCompatibility } from '../shared/subagent-runs.ts';
+import { activeIntent, delegationAssignmentRecovery, runStorageCompatibility } from '../shared/subagent-runs.ts';
 import { cleanupInstalled, cleanupState } from '../shared/cleanup.ts';
 import { identifier, ProgressError, requireProgress as need, type Envelope, type PlanSummary } from '../shared/progress.ts';
 import type { Store } from '../shared/store.ts';
@@ -66,7 +66,11 @@ export function delegationView(store: Store, envelope: Envelope, plan: PlanSumma
         if (!a) { unavailable(d.declaration ? 'invalid' : 'legacy'); break; }
         if (d.sourceId !== plan.sourceId || r.plan !== plan.id || r.rev !== a.declaredRevision) { unavailable('invalid'); break; }
         const ready = (disposition: Extract<DelegationView['result'], { availability: 'ready' }>['disposition']) => { result = { availability: 'ready', complete: true, disposition }; };
-        const refused = (reason: unknown) => ready({ state: 'refused', declaration: a, reason: refusalReason(reason), recovery: 'redeclare-or-link' });
+        const refused = (reason: unknown) => {
+          const recovery = delegationAssignmentRecovery(db, plan.sourceId, plan.id, plan.sessionId, a, L.inputBytes);
+          facts.push(recovery);
+          ready(recovery.recovered ? { state: 'none' } : { state: 'refused', declaration: a, reason: refusalReason(reason), recovery: 'redeclare-or-link' });
+        };
         if (d.state === 'pending' || d.state === 'reserved') {
           if (!a.taskIds.length || (d.state === 'pending') !== (a.dispatch === null) || intentRow?.plan !== plan.id || intentRow.oid !== a.oid || typeof intentRow.payload !== 'string') { unavailable('invalid'); break; }
           try {

@@ -345,6 +345,23 @@ export interface DelegationRefusal {
 export interface DelegationRefusals {
   sourceId:string; sessionId:string; complete:boolean; refusals:DelegationRefusal[];
 }
+/** Read-only recovery evidence shared by coordinator guidance and UI projection.
+ * Recovery suppresses a note, never grants authority or changes a receipt. */
+export function delegationAssignmentRecovery(db:DatabaseSync,sourceId:string,plan:string,sessionId:string,a:DelegationDeclaration,budget:number) {
+  const current=db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?').get(Math.max(0,budget),sourceId,plan);
+  const result={bytes:Number(current?.bytes??0),complete:true,recovered:false};
+  if(!current)return result;
+  if(typeof current.snapshot!=='string'){result.complete=false;return result;}
+  try{
+    const p=JSON.parse(current.snapshot);
+    if(p.sourceId!==sourceId||p.id!==plan||p.sessionId!==sessionId||!Number.isSafeInteger(p.revision)||!Array.isArray(p.items)||!Array.isArray(p.links))result.complete=false;
+    else result.recovered=p.revision>a.declaredRevision&&a.taskIds.length>0&&a.taskIds.every(id=>{
+      const item=p.items.find((i:any)=>i?.id===id);
+      return item?.kind==='task'&&identifier(item.assigneeSessionId)&&item.assigneeSessionId!==sessionId&&p.links.some((l:any)=>l?.sessionId===item.assigneeSessionId&&Array.isArray(l.itemIds)&&l.itemIds.includes(id));
+    });
+  }catch{result.complete=false;}
+  return result;
+}
 /** Bounded receipt window, never an authority check or an intent mutation. Old
  * receipts without exact declaration identity are unavailable, not guessed.
  * Current plan assignments can suppress recovered refusals, never grant authority.
@@ -375,19 +392,10 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     if(d.state!=='retired'||d.reason==='cancelled'||!a.taskIds.length)continue;
     // Explicit links have no delegation receipt. Read the bounded current
     // assignment instead; historical refusals and their exact retries stay intact.
-    const current=db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?').get(Math.max(0,DELEGATION_VIEW_LIMITS.inputBytes-bytes),sourceId,r.plan);
-    if(current){
-      bytes+=Number(current.bytes);
-      if(typeof current.snapshot!=='string')result.complete=false;
-      else try{
-        const p=JSON.parse(current.snapshot);
-        if(p.sourceId!==sourceId||p.id!==r.plan||p.sessionId!==sessionId||!Number.isSafeInteger(p.revision)||!Array.isArray(p.items)||!Array.isArray(p.links))result.complete=false;
-        else if(p.revision>a.declaredRevision&&a.taskIds.every((id:string)=>{
-          const item=p.items.find((i:any)=>i?.id===id);
-          return item?.kind==='task'&&identifier(item.assigneeSessionId)&&item.assigneeSessionId!==sessionId&&p.links.some((l:any)=>l?.sessionId===item.assigneeSessionId&&Array.isArray(l.itemIds)&&l.itemIds.includes(id));
-        }))continue;
-      }catch{result.complete=false;}
-    }
+    const recovery=delegationAssignmentRecovery(db,sourceId,r.plan,sessionId,a,DELEGATION_VIEW_LIMITS.inputBytes-bytes);
+    bytes+=recovery.bytes;
+    if(!recovery.complete)result.complete=false;
+    if(recovery.recovered)continue;
     if(result.refusals.length===3){result.complete=false;continue;}
     const reasons=['relevant-change','conflict','structural-change','closed','assignment','source-unverified','unverified','incomplete-proof','missing-proof','budget','dispatch-unconfirmed','binding','disabled','capture-disabled','not-found','storage','corrupt','schema','busy'];
     result.refusals.push({plan:r.plan,declaration:{oid:a.oid,coordinatorSessionId:sessionId,declaredRevision:a.declaredRevision,taskIds:[...a.taskIds],dispatch:a.dispatch?{tool:'subagent',messageId:a.dispatch.messageId,callId:a.dispatch.callId}:null},reason:reasons.includes(d.reason)?d.reason:'unverified',recovery:'redeclare-or-link'});

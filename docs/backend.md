@@ -1061,6 +1061,12 @@ without reading foreign receipts; archived detail omits the overlay. Capture-off
 proof is unavailable. Tokens cover projection inputs independently of progress
 revision and are stable across unchanged reads.
 
+Before emitting a refusal, the projection reuses coordinator guidance's bounded
+current-assignment recovery check. A later explicit link or binding covering all
+declared tasks clears the note without rewriting the historical receipt; partial
+coverage keeps it, and unlinking restores it. Recovery changes the token so guests
+retire the old note. A newer declaration supersedes the historical refusal.
+
 `delegation-view-service.test.ts` covers HTTP admission, all dispositions,
 identity, refusal mapping, bounds and no-write behavior. The rendered
 `tests/browser/delegation-intent-qa.ts --real-service --artifacts <dir>` check
