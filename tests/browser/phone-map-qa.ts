@@ -2,8 +2,10 @@
 // Chromium with CDP touch emulation, over the existing synthetic SDK shell and real disposable
 // services (plan-task-search-shell.ts, production-map fixture). With --source the guests are
 // compiled from TypeScript into a disposable directory (source-guests.ts); tracked bundles are
-// never read for the guests or overwritten. Touch emulation and a simulated ready.device are
-// supporting evidence only, not physical-phone certification.
+// never read for the guests or overwritten. The synthetic ready.device reaches each guest's own
+// host-ready path, and the run checks that the root data-device-pointer hook (applyDeviceHooks)
+// agrees with the map region. Touch emulation and synthetic hints are supporting evidence only, not
+// physical-phone certification.
 // Usage: node --experimental-strip-types tests/browser/phone-map-qa.ts [--source] --chromium <path> --artifacts <dir>
 //   writes results.json and map.png, map-selected.png, map-rail.png, map-dark.png, map-ru.png,
 //   map-desktop.png into <dir>. Exits non-zero on the first failed check.
@@ -13,6 +15,9 @@ import { join } from 'node:path';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import { createGuestAssets, type GuestSurface } from './source-guests.ts';
 import { startSearchShell } from './plan-task-search-shell.ts';
+import { PHONE_LAYOUT_HOOKS } from '../../ui/shared/components.ts';
+
+const POINTER_HOOK = PHONE_LAYOUT_HOOKS.pointer;
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts'), chromium = arg('--chromium') ?? process.env.CHROMIUM;
@@ -151,6 +156,9 @@ try {
   await ready('page');
   await guest('page', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await frames2();
   check('board-coarse-flag', await guest('page', `return d.querySelector('${region}').dataset.pointer==='coarse'`), { coarseMedia: facts.coarseMedia });
+  // The phone layout's root hook comes from the same ready.device through the guest's own host-ready path.
+  check('board-root-pointer-hook-host-ready', await guest('page', `return d.documentElement.getAttribute('${POINTER_HOOK}')==='coarse'`));
+  facts.deviceHooks = 'host-ready';
   check('board-no-horizontal-overflow', await noOverflow('page'));
   check('board-touch-action', await guest('page', `return getComputedStyle(d.querySelector('${viewport}')).touchAction==='none'`));
   check('board-44px-targets', (await smallTargets('page')).length === 0, await smallTargets('page'));
@@ -194,11 +202,14 @@ try {
   check('board-zoom-button-tap', (await transform('page')).zoom > z);
   await tap(await need('page', hook('map-fit-all')));
   // Page scroll: a swipe outside the canvas scrolls the guest page; on the canvas it pans instead.
-  await guest('page', `d.scrollingElement.scrollTop=0;return true`); await frames2();
+  // Content above the board (the Needs you inbox) can push the tabs below the first screen at 390 px,
+  // so place them 200 px from the top of the frame first; the swipe stays outside the canvas.
+  await guest('page', `const s=d.scrollingElement,t=d.querySelector('[data-testid="detail-tabs"]');s.scrollTop=Math.max(0,s.scrollTop+t.getBoundingClientRect().top-200);return true`); await settle('page');
+  const top0 = await scrollTop('page');
   const header = await need('page', '[data-testid="detail-tabs"]');
   await swipe([header[0], header[1] + 120], [header[0], header[1] - 120], 10);
-  const scrolled = await scrollTop('page');
-  check('board-page-scrolls-outside-canvas', scrolled > 0, { scrolled });
+  const scrolled = await scrollTop('page') - top0;
+  check('board-page-scrolls-outside-canvas', scrolled > 0, { top0, scrolled });
   // A touch fling keeps scrolling after the finger lifts: let it come to rest first.
   await settle('page');
   await guest('page', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await settle('page');
@@ -219,6 +230,7 @@ try {
   await withDevice('page', null); await phone('page', false); await ready('page');
   await wait('page', `!d.querySelector('${region}').dataset.pointer`, 'fine media repaint');
   check('board-no-hint-fine-media-not-coarse', await guest('page', `return !d.querySelector('${region}').dataset.pointer&&!d.querySelector('${hook('map-touch-help')}')`) && await noOverflow('page'));
+  check('board-no-hint-root-hook-removed', await guest('page', `return !d.documentElement.hasAttribute('${POINTER_HOOK}')`));
 
   // ── Dark theme and Russian long labels on the phone board.
   await withDevice('page', DEVICE); await phone('page');
@@ -252,6 +264,7 @@ try {
   await tap(await need('panel', `${hook('plan-view-map')} button`));
   await ready('panel');
   await guest('panel', `d.querySelector('${viewport}').scrollIntoView({block:'center'});return true`); await frames2();
+  check('rail-root-pointer-hook-host-ready', await guest('panel', `return d.documentElement.getAttribute('${POINTER_HOOK}')==='coarse'&&d.querySelector('${region}').dataset.pointer==='coarse'`));
   check('rail-coarse-and-targets', await guest('panel', `return d.querySelector('${region}').dataset.pointer==='coarse'`) && (await smallTargets('panel')).length === 0 && await noOverflow('panel'), await smallTargets('panel'));
   await tap(await need('panel', hook('map-card-B')));
   await wait('panel', `d.querySelector('${inspector}')?.dataset.selected==='B'`, 'rail tap selected');
@@ -307,6 +320,6 @@ try {
   await new Promise(r => setTimeout(r, 300));
   rmSync(scratch, { recursive: true, force: true });
 }
-writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: !failure && results.every(r => r.pass), failure, browser: browserVersion, facts, results, screenshots: shots }, null, 2) + '\n');
+writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ passed: !failure && results.every(r => r.pass), failure, browser: browserVersion, deviceHooks: facts.deviceHooks ?? 'not-reached', facts, results, screenshots: shots }, null, 2) + '\n');
 console.log(JSON.stringify({ passed: !failure, failure, checks: results.length, screenshots: shots }, null, 2));
 if (failure) process.exit(1);

@@ -350,7 +350,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
       if (name === '@openchamber/sdk') return { connectHost: () => h };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       // Controller detail-read starts are counted apart from the pages (and internal restarts) they request.
-      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return { ...source, readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
       if (name === './cleanup.ts') return cleanup;
       if (name === './language.ts') return language;

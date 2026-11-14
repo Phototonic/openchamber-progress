@@ -103,7 +103,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
-      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return source;
       // A confirmed delete retires review markers; without the advertised device feature it does nothing.
       if (name === './change-digest-checkpoint.ts') return checkpoint;

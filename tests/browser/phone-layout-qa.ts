@@ -1,10 +1,11 @@
-// Phone-layout QA (QA-U phone) in an isolated headless Chromium: rail panel and full board at
+// Phone-layout QA in an isolated headless Chromium: rail panel and full board at
 // 390 x 844 with touch emulation, landscape, 200%/400% reflow and an ordinary desktop width, in
 // light/dark and English/Russian, reduced motion. Real CDP taps, clicks and keys only.
 // Usage: node --experimental-strip-types tests/browser/phone-layout-qa.ts --source --chromium <path> --artifacts <dir>
 //   --source builds disposable guests from the current TypeScript (never overwrites tracked bundles);
 //   without it the tracked bundles are served. Writes results.json, panel.png, board.png and more.
-// Viewport/touch emulation and simulated ready.device hints are supporting evidence only: NOT
+// The guests apply the shell's ready.device hints through their own host-ready path (applyDeviceHooks);
+// the run fails if they do not. Viewport/touch emulation and synthetic hints are supporting evidence only: NOT
 // physical-phone, native-host or relay certification.
 import { javascriptLiteral as js } from '../../shared/javascript-literal.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -34,7 +35,8 @@ const VARS = ['--ap-safe-top', '--ap-safe-right', '--ap-safe-bottom', '--ap-safe
 const fx = await startPhoneShell({ source });
 const browser = await launchChromium(chromiumPath(arg('--chromium')));
 let failure: string | null = null;
-let deviceHooks: 'host-ready' | 'simulated' | null = null;
+let deviceHooks: 'host-ready' | null = null;
+let deliveries = 0;
 try {
   const c = browser.page;
   await c.send('Runtime.enable'); await c.send('Page.enable');
@@ -63,12 +65,20 @@ try {
     await c.send('Emulation.setTouchEmulationEnabled', { enabled: m.touch, ...(m.touch ? { maxTouchPoints: 5 } : {}) });
   };
   const show = async (f: string) => { await evaluate(`qa.show('${f}',${mode.width},${mode.height});true`); await wait(f, `w.innerWidth===${mode.width}&&w.innerHeight===${mode.height}`, `${f} at ${mode.width}x${mode.height}`); };
-  /** Centre point of a guest element in page coordinates, scrolled into the frame's view. */
+  /** Centre point of a guest element in page coordinates, scrolled into the frame's view. The page can
+   * settle after the scroll (a repaint above the target, scroll anchoring), so the point is read again
+   * on later frames until two readings agree (bounded) rather than tapping a stale position. */
   const point = async (f: string, selector: string) => {
-    const p = await guest<[number, number] | null>(f, `const n=d.querySelector(${js(selector)});if(!n)return null;n.scrollIntoView({block:'center',inline:'nearest'});const r=n.getBoundingClientRect(),o=w.frameElement.getBoundingClientRect();return [o.x+r.x+Math.min(r.width/2,22),o.y+r.y+Math.min(r.height/2,22)]`);
-    if (!p) throw new Error(`missing ${selector} in ${f}`);
-    await frames2(f);
-    return p;
+    if (!(await guest<boolean>(f, `const n=d.querySelector(${js(selector)});if(!n)return false;n.scrollIntoView({block:'center',inline:'nearest'});return true`))) throw new Error(`missing ${selector} in ${f}`);
+    let last: [number, number] | null = null;
+    for (let i = 0; i < 20; i++) {
+      await frames2(f);
+      const p = await guest<[number, number] | null>(f, `const n=d.querySelector(${js(selector)});if(!n)return null;const r=n.getBoundingClientRect(),o=w.frameElement.getBoundingClientRect();return [o.x+r.x+Math.min(r.width/2,22),o.y+r.y+Math.min(r.height/2,22)]`);
+      if (!p) throw new Error(`missing ${selector} in ${f}`);
+      if (last && last[0] === p[0] && last[1] === p[1]) return p;
+      last = p;
+    }
+    throw new Error(`${selector} in ${f} did not settle: ${JSON.stringify(last)}`);
   };
   const tap = async (f: string, selector: string) => {
     const [x, y] = await point(f, selector);
@@ -102,7 +112,7 @@ try {
   };
   /** Horizontal overflow of the frame document and of any visible element (popups included). */
   const overflow = (f: string) => guest<{ ok: boolean; sw: number; cw: number; out: string[] }>(f, `const cw=d.documentElement.clientWidth,sw=d.documentElement.scrollWidth;const out=[...d.querySelectorAll('body *')].filter(n=>{if(n.closest('.ap-map-canvas,.ap-map-world,[data-testid="map-viewport"],.ap-sr'))return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0&&(r.right>cw+0.5||r.left<-0.5)}).map(n=>n.dataset.testid||String(n.className).slice(0,40)||n.tagName).slice(0,10);return {ok:sw<=cw&&!out.length,sw,cw,out}`);
-  /** Visible interactive targets smaller than 44 x 44 CSS px. The map is audited by its own lane. */
+  /** Visible interactive targets smaller than 44 x 44 CSS px. The map is audited by phone-map-qa.ts. */
   const smallTargets = (f: string) => guest<string[]>(f, `const sel='button,summary,a[href],select,input:not([type=hidden]),textarea,[role=tab],[role=option],[role=menuitem],[tabindex="0"]';return [...d.querySelectorAll(sel)].filter(n=>{if(n.closest('.ap-map,[hidden],.ap-sr'))return false;const r=n.getBoundingClientRect();if(!r.width||!r.height)return false;const s=w.getComputedStyle(n);if(s.visibility==='hidden'||s.display==='none')return false;return r.width<43.5||r.height<43.5}).map(n=>{const r=n.getBoundingClientRect();return (n.dataset.testid||n.closest('[data-testid]')?.dataset.testid||'')+' '+n.tagName+' '+Math.round(r.width)+'x'+Math.round(r.height)})`);
   const hooks = (f: string) => guest<Record<string, string | null>>(f, `const h=d.documentElement,o={};for(const a of ${js(HOOKS)})o[a]=h.getAttribute(a);for(const v of ${js(VARS)})o[v]=h.style.getPropertyValue(v)||null;return o`);
   /** Delivers a host ready (optionally with device hints) and waits until the guest processed it. */
@@ -113,15 +123,23 @@ try {
       await frames2(f);
     }
   };
-  /** Presentation hooks for this run: the guest's own host-ready wiring when present, otherwise a
-   * labelled simulation that writes exactly what applyDeviceHooks writes (unit-tested separately). */
+  /** Delivers the hints as a host ready and requires each guest's own host-ready path
+   * (applyDeviceHooks) to have written the matching root hooks: no driver-side simulation. */
   const device = async (d: typeof PHONE | Record<string, unknown> | undefined) => {
     await ready(d);
-    if (deviceHooks === null) deviceHooks = (await hooks('panel'))['data-device-pointer'] === (d as any)?.pointer && d ? 'host-ready' : 'simulated';
-    if (deviceHooks === 'simulated') for (const f of ['panel', 'page']) await guest(f, `const h=d.documentElement,v=${d === undefined ? 'null' : js(d)};
-      const set=(a,x)=>x?h.setAttribute(a,x):h.removeAttribute(a);set('data-device-form-factor',v?.formFactor);set('data-device-pointer',v?.pointer);
-      const px=x=>typeof x==='number'?x+'px':null,p=(n,x)=>x===null?h.style.removeProperty(n):h.style.setProperty(n,x);
-      p('--ap-safe-top',px(v?.insets?.top));p('--ap-safe-right',px(v?.insets?.right));p('--ap-safe-bottom',px(v?.insets?.bottom));p('--ap-safe-left',px(v?.insets?.left));p('--ap-keyboard-height',px(v?.keyboard));return true`);
+    deliveries++;
+    const v = d as { formFactor?: string; pointer?: string; keyboard?: number; insets?: Record<string, number> } | undefined;
+    const want: Record<string, string | null> = {
+      'data-device-form-factor': v?.formFactor ?? null, 'data-device-pointer': v?.pointer ?? null,
+      '--ap-safe-top': v?.insets ? `${v.insets.top}px` : null, '--ap-safe-right': v?.insets ? `${v.insets.right}px` : null,
+      '--ap-safe-bottom': v?.insets ? `${v.insets.bottom}px` : null, '--ap-safe-left': v?.insets ? `${v.insets.left}px` : null,
+      '--ap-keyboard-height': typeof v?.keyboard === 'number' ? `${v.keyboard}px` : null,
+    };
+    for (const f of ['panel', 'page']) {
+      const got = await hooks(f);
+      check(`device-hooks:${f}:${deliveries}`, JSON.stringify(got) === JSON.stringify(want), { got, want });
+    }
+    deviceHooks = 'host-ready';
     for (const f of ['panel', 'page']) await frames2(f);
   };
   const listPanel = async () => {
@@ -318,7 +336,7 @@ try {
     evidenceClass: 'synthetic SDK shell + real disposable service, real Chromium touch/viewport emulation',
     guests: source ? 'source-built temporary bundles' : 'tracked bundles', browser: browser.version,
     deviceHooks: deviceHooks ?? 'not-reached',
-    deviceHooksNote: deviceHooks === 'simulated' ? 'Guest has no host-ready call site for applyDeviceHooks yet; hook attributes were written by the driver exactly as applyDeviceHooks writes them.' : undefined,
+    deviceHooksNote: deviceHooks === 'host-ready' ? 'Root hooks written by each guest\'s own host-ready path (applyDeviceHooks) from the shell\'s synthetic ready.device; checked after every delivery.' : undefined,
     physicalPhone: false, nativeHost: false,
     results, screenshots: shots,
   };
