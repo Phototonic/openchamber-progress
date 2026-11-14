@@ -1044,6 +1044,30 @@ updates and make no comparison claim. Both ZIPs are extracted and every declared
 file is compared to its assembled folder. Local evidence:
 `evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
+## Waiting delegation read projection
+
+`service/delegation-view.ts` projects retained declaration receipts and active
+intent proof without writing. `service/server.ts` advertises `delegationIntent: 1`
+and attaches opted-in list tokens and first-detail overlays; existing inbox and
+timing options compose with it. See [the wire contract](contracts.md#waiting-delegation-projection-additive-v2-read).
+
+Projection verifies the reply's store, binding, owner, revision, structural
+revision and cleanup generation within a read transaction; a changed snapshot
+refuses rather than mixing identities. It reads at most 128 receipts of at most
+16 KiB each and reuses the bounded revision/eligibility proof. Missing legacy
+storage is unavailable, never installed by reads. Partial, malformed or over-budget
+proof cannot establish waiting or absence. Source-unverified rows get tokens
+without reading foreign receipts; archived detail omits the overlay. Capture-off
+proof is unavailable. Tokens cover projection inputs independently of progress
+revision and are stable across unchanged reads.
+
+`delegation-view-service.test.ts` covers HTTP admission, all dispositions,
+identity, refusal mapping, bounds and no-write behavior. The rendered
+`tests/browser/delegation-intent-qa.ts --real-service --artifacts <dir>` check
+relays the real guests' reads to `createProgressServer` with an isolated synthetic
+Store, exercising pending, reserved, refused, cancelled and bound handoffs,
+the board and narrow rail. This is not native-host certification.
+
 ## Declared delegation correlation
 
 `plugin/delegation.ts` owns one hook pair and event subscription, forwarding

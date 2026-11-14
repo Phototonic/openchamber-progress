@@ -1691,6 +1691,40 @@ downgrade stored data. Old probe DBs are not migrated/reset into production.
 
 Backend builds produce service/companion/setup utility entries; package assembly
 joins these with the guest bundles to produce the installable extension ZIP.
+## Waiting delegation projection (additive v2 read)
+
+Health advertises `delegationIntent: 1`. Only then may clients opt in with
+`delegationIntent=1` on existing GET `/v1/plans` and first-page `/v1/plan`
+reads. Other values and detail continuations with this option are refused.
+The option composes with `needsYou=1` and `needsYouTiming=1` on lists.
+Without opt-in, existing replies are unchanged.
+
+Each opted-in list row carries an opaque `delegationToken`. First-page detail
+may carry a `DelegationView` as `delegationIntent` (defined in
+`shared/delegation-view.ts`), pinned to that reply's store, verified source
+binding, source, plan, revision, structural revision and cleanup generation.
+Foreign/unverified bindings and archived plans omit the overlay. Clients must
+compare its token with the current list token before showing task notes.
+The token is independent of progress revision: declaration, reservation,
+cancellation, eligibility and capture changes can retire cached notes without
+a progress report. It grants no authority and is not a dispatch identity.
+
+Complete evidence has disposition `none`, `pending`, `reserved`, `bound`,
+`cancelled`, `invalidated` or `refused`. Eligible `pending` has `dispatch:null`;
+eligible `reserved` has a dispatch identity. Neither means work has started or
+a child is assigned. Refusal recovery is always `redeclare-or-link`; fixed
+reason codes are `relevant-change`, `conflict`, `structural-change`, `closed`,
+`assignment`, `source-unverified`, `unverified`, `incomplete-proof`,
+`missing-proof` and `budget`. Unknown internal refusal reasons map to
+`unverified`, busy to `budget`, and not-found to `missing-proof`.
+Incomplete evidence has no disposition and explicitly reports `budget`,
+`legacy`, `unverified`, `invalid` or `capture-unavailable`.
+
+This is read-only. Projection never settles or consumes an intent, dispatches,
+binds, installs storage, grants reporting permission, or changes task status,
+counts, assignment, revisions or report time. The dispatch and binding rules
+below remain authoritative.
+
 ## Declared delegation and assignment attribution (optional v2 metadata)
 
 `delegate` extends the existing report request with `plan`, fresh `oid`, expected

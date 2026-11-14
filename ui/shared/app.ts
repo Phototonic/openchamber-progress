@@ -33,6 +33,7 @@ import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkp
 import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
 import { InboxController, type InboxPanel } from './inbox.ts';
 import { INBOX_CSS } from './inbox-style.ts';
+import { INTENT_CSS } from './intent.ts';
 import { applyDeviceHooks } from './phone-layout.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
@@ -513,8 +514,15 @@ export function startView<U>(spec: ViewSpec<U>) {
    * paint until the list catches up. `listRead`: for a failed read, the list read it failed under;
    * it is retried after a newer one. `captureEnabled`: list envelope state at read start;
    * capture toggles change this metadata without advancing either plan revision.
+   * `requestedToken`: the list's waiting-delegation token when the read started. A changed token
+   * alone re-reads in the background (`refreshing`) while the ready detail stays painted; its
+   * overlay is gated on token equality, so a stale note is never shown. `tokenRead`: the list read
+   * a failed token refresh ran under; it is retried after a newer one.
    */
-  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number }>();
+  type DelegationToken = PlanView['delegationToken'];
+  const details = new Map<string, { revision: number; requested: number; cleanup: number; requestedCleanup: number; captureEnabled: boolean | undefined; generation: number; value: Loadable<PlanDetail>; result?: DetailResult; historical?: DetailSnapshot; listRead?: number; requestedToken?: DelegationToken; refreshing?: { token: DelegationToken }; tokenRead?: number }>();
+  /** Waiting-delegation notes are painted on task rows; Work Status has none, so it never asks. */
+  const asksIntent = spec.surface !== 'status';
   let listReads = 0;
   const documents = new Map<string, Loadable<DocumentBody>>();
   const histories = new Map<string, Loadable<{ entries: HistoryEntry[]; truncated: boolean }>>();
@@ -699,7 +707,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   const retireParts = () => {
     cacheGeneration++; detailQueue = Promise.resolve();
     if (preview) preview = freshPreview(preview.binding, preview.mode);
-    for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
+    for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key); else if (value.refreshing) details.set(key, { ...value, refreshing: undefined });
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
   const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); inbox?.retire('reset'); spec.retire?.('reset'); };
@@ -710,7 +718,10 @@ export function startView<U>(spec: ViewSpec<U>) {
    */
   let detailsDeferred = false;
   const retireHiddenDetails = () => {
-    for (const [key, value] of details) if (value.value.state === 'loading') { details.delete(key); detailsDeferred = true; }
+    for (const [key, value] of details) {
+      if (value.value.state === 'loading') { details.delete(key); detailsDeferred = true; }
+      else if (value.refreshing) { details.set(key, { ...value, refreshing: undefined }); detailsDeferred = true; }
+    }
     if (detailsDeferred) detailQueue = Promise.resolve();
   };
   const forgetPlans = (keys: Set<string>) => {
@@ -834,7 +845,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined);
+    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined, asksIntent);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (item.kind === 'target' && scope && result.ok) {
       const validated = result.read && progressTargetRead(result.read);
@@ -887,7 +898,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
       refreshDetails(generation);
-      if ([...details.values()].some((d) => d.value.state === 'error')) versions.data++;
+      // A failed waiting-delegation refresh is retried on the same terms.
+      if ([...details.values()].some((d) => d.value.state === 'error' || d.tokenRead !== undefined)) versions.data++;
       // Only a complete, current-generation list read for a real scope is remembered.
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
       // Setup status (reload-required, capture off) is shown on every surface. A pending reload is
@@ -1003,11 +1015,17 @@ export function startView<U>(spec: ViewSpec<U>) {
       const cached = details.get(p.key);
       const cleanupRev = p.cleanup?.revision ?? 0;
       const captureEnabled = read?.captureEnabled;
-      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') continue;
+      const token = p.delegationToken;
+      if (!force && cached && cached.captureEnabled === captureEnabled && (cached.revision === p.revision || cached.requested === p.revision) && (cached.cleanup === cleanupRev || cached.requestedCleanup === cleanupRev) && cached.value.state !== 'error') {
+        const shown = cached.value.state === 'ready' ? cached.value.value.intent?.token : undefined;
+        if (cached.requestedToken === token || (token != null && shown === token) || cached.refreshing || cached.tokenRead === listReads) continue;
+        refreshIntent(p, cached, token);
+        continue;
+      }
       if (cached && cached.value.state === 'loading') continue;
       if (!force && cached && cached.value.state === 'error' && cached.revision === p.revision && cached.requestedCleanup === cleanupRev && cached.listRead === listReads) continue;
       const historical = cached?.generation === cacheGeneration ? cached.result?.snapshot ?? cached.historical : undefined;
-      const pending: NonNullable<ReturnType<typeof details.get>> = { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' } };
+      const pending: NonNullable<ReturnType<typeof details.get>> = { revision: p.revision, requested: p.revision, cleanup: cleanupRev, requestedCleanup: cleanupRev, captureEnabled, generation: cacheGeneration, historical, value: { state: 'loading' }, requestedToken: token };
       details.set(p.key, pending);
       const id = identity;
       const generation = cacheGeneration;
@@ -1015,16 +1033,38 @@ export function startView<U>(spec: ViewSpec<U>) {
       const own = () => !disposed && id === identity && generation === cacheGeneration && details.get(p.key) === pending;
       detailQueue = detailQueue.then(async () => {
         if (!own()) return;
-        let result = await readDetail(guardedHost(own), p);
+        let result = await readDetail(guardedHost(own), p, undefined, undefined, asksIntent && health?.delegationIntent === 1);
         if (!own()) return;
         // A capture toggle can overtake a queued/held detail read at the same plan revision.
         if (captureEnabled !== read?.captureEnabled) { details.delete(p.key); bump(); return; }
         if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
-        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical };
+        const common = { requested: p.revision, requestedCleanup: cleanupRev, captureEnabled, generation, result, historical, requestedToken: token };
         details.set(p.key, result.ok ? { ...common, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } } : { ...common, revision: p.revision, cleanup: cleanupRev, value: { state: 'error', failure: result.failure }, listRead: listReads });
         bump();
       });
     }
+  }
+
+  /**
+   * Only the list's waiting-delegation token changed (declaration, reservation, cancel or
+   * invalidation never advance the progress revision): re-read the detail on the same queue,
+   * keeping the ready detail painted. A failure keeps it too, without a note (token mismatch).
+   */
+  function refreshIntent(p: PlanView, cached: NonNullable<ReturnType<typeof details.get>>, token: DelegationToken) {
+    const pending = { ...cached, refreshing: { token }, tokenRead: undefined };
+    details.set(p.key, pending);
+    const id = identity, generation = cacheGeneration, captureEnabled = cached.captureEnabled;
+    const own = () => !disposed && id === identity && generation === cacheGeneration && details.get(p.key) === pending;
+    detailQueue = detailQueue.then(async () => {
+      if (!own()) return;
+      let result = await readDetail(guardedHost(own), p, undefined, undefined, asksIntent && health?.delegationIntent === 1);
+      if (!own()) return;
+      if (captureEnabled !== read?.captureEnabled) { details.delete(p.key); bump(); return; }
+      if (result.snapshot && !matchesSnapshot(result.snapshot, p)) result = { ok: false, snapshot: null, cause: { kind: 'identity-contract' }, failure: { kind: 'invalid', code: 'CONTRACT', message: 'The detail reading identity was refused.' } };
+      if (result.ok) details.set(p.key, { requested: p.revision, requestedCleanup: pending.requestedCleanup, captureEnabled, generation, result, historical: pending.historical, requestedToken: token, revision: result.detail.revision, cleanup: result.plan.cleanup?.revision ?? 0, value: { state: 'ready', value: result.detail } });
+      else details.set(p.key, { ...pending, refreshing: undefined, tokenRead: listReads });
+      bump();
+    });
   }
 
   const docKey = (p: PlanView) => `${p.key}@${p.document.captureId ?? 'none'}:${p.document.state}:${p.revision}`;
@@ -1543,7 +1583,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     applyHostReady(next, document.documentElement);
     applyDeviceHooks(document.documentElement, next.device);
     if (!document.getElementById('ap-style')) {
-      const style = el('style', '', CSS + INBOX_CSS);
+      const style = el('style', '', CSS + INBOX_CSS + INTENT_CSS);
       style.id = 'ap-style';
       document.head.append(style);
     }

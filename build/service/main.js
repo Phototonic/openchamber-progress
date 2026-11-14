@@ -5519,6 +5519,158 @@ function needsYou(store, request, now = new Date) {
   }
 }
 
+// service/delegation-view.ts
+import { createHash as createHash8 } from "node:crypto";
+var hash4 = (value) => createHash8("sha256").update(JSON.stringify(value)).digest("hex");
+var integer3 = (value, min = 0) => Number.isSafeInteger(value) && Number(value) >= min;
+var id = (value) => typeof value === "string" && value.length <= DELEGATION_VIEW_LIMITS.identifierCodeUnits && identifier(value);
+var refusalReasons = new Set(["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget"]);
+var refusalReason = (reason) => typeof reason === "string" && refusalReasons.has(reason) ? reason : reason === "busy" ? "budget" : reason === "not-found" ? "missing-proof" : "unverified";
+function declaration(value, oid, owner, revision) {
+  if (!value || value.oid !== oid || !id(value.oid) || value.coordinatorSessionId !== owner || !integer3(value.declaredRevision, 1) || value.declaredRevision > revision || !Array.isArray(value.taskIds) || value.taskIds.length > DELEGATION_VIEW_LIMITS.tasks || !value.taskIds.every(id) || new Set(value.taskIds).size !== value.taskIds.length || value.dispatch !== null && (!value.dispatch || !["subagent", "task"].includes(value.dispatch.tool) || !id(value.dispatch.messageId) || !id(value.dispatch.callId)))
+    return;
+  return {
+    oid,
+    coordinatorSessionId: owner,
+    declaredRevision: value.declaredRevision,
+    taskIds: [...value.taskIds],
+    dispatch: value.dispatch === null ? null : { tool: value.dispatch.tool, messageId: value.dispatch.messageId, callId: value.dispatch.callId }
+  };
+}
+function delegationView(store, envelope, plan2, now = new Date) {
+  const identity2 = [envelope.storeId, envelope.sourceBinding, plan2.sourceId, plan2.id, plan2.sessionId, plan2.revision, plan2.structuralRevision, plan2.cleanup ?? { state: "visible", revision: 0 }];
+  if (!envelope.sourceBinding.verified || envelope.sourceBinding.sourceId !== plan2.sourceId)
+    return { token: hash4([identity2, "unverified"]) };
+  const db = store.db;
+  db.exec("BEGIN");
+  try {
+    requireProgress(Number(db.prepare("PRAGMA user_version").get().user_version) === 2, "schema");
+    const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+    requireProgress(meta.store_id === envelope.storeId && Boolean(meta.enabled) === envelope.captureEnabled && db.prepare("SELECT verified FROM sources WHERE id=?").get(plan2.sourceId)?.verified === 1, "conflict");
+    const live = db.prepare("SELECT revision,json_extract(snapshot,'$.structuralRevision') AS structural,json_extract(snapshot,'$.sessionId') AS owner FROM plans WHERE source=? AND id=?").get(plan2.sourceId, plan2.id);
+    const cleanup2 = cleanupInstalled(db) ? cleanupState(db, plan2.sourceId, plan2.id) : undefined;
+    requireProgress(live && live.revision === plan2.revision && live.structural === plan2.structuralRevision && live.owner === plan2.sessionId && (cleanup2?.state ?? "visible") === (plan2.cleanup?.state ?? "visible") && Number(cleanup2?.generation ?? 0) === (plan2.cleanup?.revision ?? 0), "conflict");
+    const storage = runStorageCompatibility(db);
+    const control = storage === "current" ? db.prepare("SELECT generation,loss,loss_sequence FROM runs_format WHERE singleton=1").get() : undefined;
+    const facts2 = [identity2, envelope.captureEnabled, storage, control];
+    let result = { availability: "unavailable", complete: false, reason: "legacy" };
+    const unavailable = (reason) => {
+      result = { availability: "unavailable", complete: false, reason };
+    };
+    if (storage === "current") {
+      const intentRow = db.prepare("SELECT plan,oid,dispatch,length(CAST(payload AS BLOB)) AS bytes,CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload FROM runs_intents WHERE source=? AND parent=?").get(plan2.sourceId, plan2.sessionId);
+      facts2.push(intentRow);
+      const rows = db.prepare("SELECT rowid,oid,length(CAST(receipt AS BLOB)) AS bytes,CASE WHEN length(CAST(receipt AS BLOB))<=16384 THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? ORDER BY rowid DESC LIMIT ?").all(plan2.sourceId, plan2.id, DELEGATION_VIEW_LIMITS.receipts + 1);
+      facts2.push(rows);
+      result = { availability: "ready", complete: true, disposition: { state: "none" } };
+      let found = false;
+      for (const row2 of rows.slice(0, DELEGATION_VIEW_LIMITS.receipts)) {
+        if (typeof row2.receipt !== "string") {
+          unavailable("budget");
+          found = true;
+          break;
+        }
+        let r;
+        try {
+          r = JSON.parse(row2.receipt);
+        } catch {
+          unavailable("invalid");
+          found = true;
+          break;
+        }
+        if (!r || typeof r !== "object" || Array.isArray(r)) {
+          unavailable("invalid");
+          found = true;
+          break;
+        }
+        const d = r?.delegation;
+        if (!d)
+          continue;
+        if (d.declaration?.coordinatorSessionId && d.declaration.coordinatorSessionId !== plan2.sessionId)
+          continue;
+        found = true;
+        const a = declaration(d.declaration, String(row2.oid), plan2.sessionId, plan2.revision);
+        if (!a) {
+          unavailable(d.declaration ? "invalid" : "legacy");
+          break;
+        }
+        if (d.sourceId !== plan2.sourceId || r.plan !== plan2.id || r.rev !== a.declaredRevision) {
+          unavailable("invalid");
+          break;
+        }
+        const ready = (disposition) => {
+          result = { availability: "ready", complete: true, disposition };
+        };
+        const refused = (reason) => ready({ state: "refused", declaration: a, reason: refusalReason(reason), recovery: "redeclare-or-link" });
+        if (d.state === "pending" || d.state === "reserved") {
+          if (!a.taskIds.length || d.state === "pending" !== (a.dispatch === null) || intentRow?.plan !== plan2.id || intentRow.oid !== a.oid || typeof intentRow.payload !== "string") {
+            unavailable("invalid");
+            break;
+          }
+          try {
+            const intent = activeIntent(db, plan2.sourceId, plan2.sessionId);
+            requireProgress(intent && intent.caller.sourceId === plan2.sourceId && intent.caller.sessionId === plan2.sessionId && intent.request.plan === plan2.id && intent.request.oid === a.oid && intent.request.rev === a.declaredRevision && JSON.stringify(intent.request.assign) === JSON.stringify(a.taskIds) && intent.dispatch === null === (a.dispatch === null) && intent.dispatch === intentRow.dispatch, "conflict");
+            if (a.dispatch) {
+              requireProgress(d.dispatchId === intent.dispatch, "binding");
+              const dispatch = db.prepare("SELECT message,call FROM runs_rows WHERE id=? AND source=? AND parent=?").get(intent.dispatch, plan2.sourceId, plan2.sessionId);
+              requireProgress(dispatch?.message === a.dispatch.messageId && dispatch.call === a.dispatch.callId, "binding");
+            }
+            delegationRevision(db, envelope.sourceBinding, intent);
+            ready({ state: d.state, eligible: true, declaration: a });
+          } catch (error) {
+            if (!(error instanceof ProgressError)) {
+              unavailable("invalid");
+              break;
+            }
+            if (error.code === "disabled")
+              ready({ state: "invalidated", declaration: a, reason: "capture-disabled" });
+            else
+              refused(error.code);
+          }
+        } else if (d.state === "retired") {
+          if (d.reason === "cancelled")
+            ready({ state: "cancelled", declaration: a, reason: "cancelled" });
+          else if (d.reason === "disabled" || d.reason === "capture-disabled")
+            ready({ state: "invalidated", declaration: a, reason: "capture-disabled" });
+          else if (a.taskIds.length)
+            refused(d.reason);
+          else
+            unavailable("invalid");
+        } else if (d.state === "bound" && a.taskIds.length && a.dispatch && id(d.childSessionId) && d.receipt?.plan === plan2.id && integer3(d.receipt.rev, a.declaredRevision) && d.receipt.rev <= plan2.revision) {
+          ready({ state: "bound", declaration: a, childSessionId: d.childSessionId, boundRevision: d.receipt.rev });
+        } else
+          unavailable("invalid");
+        break;
+      }
+      if (!found && (rows.length > DELEGATION_VIEW_LIMITS.receipts || intentRow?.plan === plan2.id))
+        unavailable("budget");
+      if (!meta.enabled)
+        unavailable("capture-unavailable");
+    }
+    const token = hash4([facts2, result]);
+    const view = (plan2.cleanup?.state ?? "visible") === "visible" ? {
+      protocolVersion: 2,
+      schemaVersion: 2,
+      delegationIntent: 1,
+      storeId: envelope.storeId,
+      sourceBinding: { sourceId: plan2.sourceId, verified: true },
+      source: plan2.sourceId,
+      plan: plan2.id,
+      revision: plan2.revision,
+      structuralRevision: plan2.structuralRevision,
+      cleanup: { state: "visible", revision: plan2.cleanup?.revision ?? 0 },
+      token,
+      readAt: now.toISOString(),
+      result
+    } : undefined;
+    db.exec("COMMIT");
+    return { token, ...view ? { view } : {} };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 // service/server.ts
 function createProgressServer(store, token, unavailableCode, setup) {
   if (!token)
@@ -5537,9 +5689,10 @@ function createProgressServer(store, token, unavailableCode, setup) {
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, inboxRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, inboxRoute = false, delegationRoute = false;
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      delegationRoute = url.searchParams.has("delegationIntent");
       mentionRoute = url.pathname === MENTIONS_SEARCH_PATH || url.pathname === MENTIONS_RESOLVE_PATH;
       if (mentionRoute) {
         if (url.origin !== "http://127.0.0.1")
@@ -5751,8 +5904,9 @@ function createProgressServer(store, token, unavailableCode, setup) {
       const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
       routes["/v1/needs-you"] = ["storeId", "binding", "source", "cursor", "limit", "timing"];
-      routes["/v1/plans"].push("needsYou", "needsYouTiming");
+      routes["/v1/plans"].push("needsYou", "needsYouTiming", "delegationIntent");
       routes["/v1/search-state"].push("needsYou", "needsYouTiming");
+      routes["/v1/plan"].push("delegationIntent");
       routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
       routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url.pathname];
@@ -5769,6 +5923,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (url.searchParams.has("needsYou") && url.searchParams.get("needsYou") !== "1")
         throw new ProgressError("invalid");
       if (url.searchParams.has("needsYouTiming") && (url.searchParams.get("needsYouTiming") !== "1" || !url.searchParams.has("needsYou")))
+        throw new ProgressError("invalid");
+      if (url.searchParams.has("delegationIntent") && url.searchParams.get("delegationIntent") !== "1")
         throw new ProgressError("invalid");
       const number = (key, fallback) => {
         const v = url.searchParams.get(key);
@@ -5787,7 +5943,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (url.pathname === "/health") {
         if (currentStore) {
           const runs = currentStore.subagentRunStorage();
-          return answer(200, { ok: true, ready: true, sqlite: true, planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+          return answer(200, { ok: true, ready: true, sqlite: true, planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, delegationIntent: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         }
         if (setup)
           return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
@@ -5840,7 +5996,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
         if (url.searchParams.has("needsYou") && cursor2 !== 0)
           throw new ProgressError("invalid");
         const list = currentStore.list({ cursor: cursor2, limit: number("limit", 20), source: text("source"), session: text("session"), directory: text("directory"), archived });
-        return answer(200, { ...list, ...summary(list) });
+        const data = url.searchParams.has("delegationIntent") ? list.data.map((plan3) => ({ ...plan3, delegationToken: delegationView(currentStore, list, plan3).token })) : list.data;
+        return answer(200, { ...list, data, ...summary(list) });
       }
       const source = text("source", true);
       const plan2 = text("plan", true);
@@ -5854,14 +6011,14 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(200, currentStore.planGraph({ storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, revision: pin("revision", 1), cleanupRev: pin("cleanupRev", 0) }));
       }
       if (comparisonRoute) {
-        const integer3 = (key, min) => {
+        const integer4 = (key, min) => {
           const value = url.searchParams.get(key);
           if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
             throw new ProgressError("invalid");
           return Number(value);
         };
-        const r = { storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, cleanupRev: integer3("cleanupRev", 0) };
-        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer3("before", 1), integer3("after", 1)));
+        const r = { storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, cleanupRev: integer4("cleanupRev", 0) };
+        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer4("before", 1), integer4("after", 1)));
       }
       if (digestRoute) {
         const revision = (key, minimum) => {
@@ -5873,8 +6030,12 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(200, currentStore.changeDigest({ storeId: text("storeId", true), source, plan: plan2, to: revision("to", 1), cleanupRev: revision("cleanupRev", 0), ...url.searchParams.has("after") ? { after: revision("after", 1) } : {} }));
       }
       if (url.pathname === "/v1/plan") {
-        const detail = currentStore.detail(source, plan2, number("cursor", 0));
-        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail) });
+        const cursor2 = number("cursor", 0);
+        if (url.searchParams.has("delegationIntent") && cursor2 !== 0)
+          throw new ProgressError("invalid");
+        const detail = currentStore.detail(source, plan2, cursor2);
+        const overlay = url.searchParams.has("delegationIntent") ? delegationView(currentStore, detail, detail.plan).view : undefined;
+        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail), ...overlay ? { delegationIntent: overlay } : {} });
       }
       if (url.pathname === "/v1/document")
         return answer(200, currentStore.document(source, plan2, number("cursor", 0), url.searchParams.has("capture") ? number("capture", 0) : undefined));
@@ -5885,7 +6046,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute || delegationRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
         return answer(409, { error: error.code });
       return answer(error.code === "invalid" ? 400 : error.code === "not-found" ? 404 : 503, { error: error.code });
     }

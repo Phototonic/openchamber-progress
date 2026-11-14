@@ -632,6 +632,38 @@ Read-only classification of an **active** plan's tasks in the shared Progress li
 - **Navigation.** Prerequisites ("Show prerequisite: …") and Unlocks entries ("Show task: …") in an expanded row are native buttons. They use the task view's navigation path (see Task view), so a target hidden by a task filter, such as a done prerequisite under Unfinished, shows all tasks again first. Activation looks only inside the plan article that holds the button (same plan ID, source and revision), opens collapsed ancestor groups, focuses the canonical row `item-<id>` (`tabindex=-1`, focus ring) and scrolls it into view instantly, so reduced motion needs nothing extra. No request, route, deep link or session action; "Open session" keeps its existing gate. A button from a replaced paint does nothing; a missing target in the current article shows a local notice. Refreshes never move focus. Focus that survives a repaint returns only to the same plan (source + ID), never a same-ID item of another plan.
 - **Limits.** A missing `dependencies` field and an explicit empty list cannot distinguish "none" from "not recorded". Readiness reflects the last read, not live state.
 
+## Waiting delegation notes
+
+On rail and board task rows, an eligible pending or reserved coordinator handoff
+adds the faint note **Next sub-agent will take this** to the declared tasks only.
+Expanded facts explain that no work has started and no sub-agent is assigned yet.
+A refused handoff instead says **Sub-agent handoff refused**, with its reason
+and recovery: the coordinator can plan the handoff again for the current plan,
+or link the task to a session. Notes are informational text, not controls, and
+are read with the task row. They do not change status, assignment, counts,
+readiness, filters, summaries or the Needs you inbox. Bound, cancelled,
+invalidated and absent declarations show no note; incomplete or doubtful proof
+never becomes a waiting claim.
+
+The guests opt in only when health advertises `delegationIntent: 1`. The
+ordinary list refresh includes `delegationIntent=1`, and the first detail read
+requests the overlay. A changed row `delegationToken` retires the old note and
+re-reads detail even when progress revision did not change, keeping task rows
+painted. Detail must match the current list token and reply identity; legacy,
+unreadable or mismatched evidence paints nothing. There is no extra polling
+loop, write, session switch or dispatch. Work Status has no task-note surface
+and never requests the extension.
+
+QA hooks: `delegation-pending` (`data-intent="waiting"`),
+`delegation-refused` (`data-intent="refused"`, `data-reason`),
+`delegation-fact-<itemId>` on expanded facts, and plan article `data-delegation`
+(`absent`, `stale`, `unknown`, `clear`, `waiting`, `refused`).
+`delegation-intent.test.ts` and `delegation-intent-controller.test.ts` cover
+validation, token retirement and refresh races. The rendered
+`delegation-intent-qa.ts --real-service --artifacts <dir>` driver additionally
+checks actual service projection through the SDK shell with synthetic data;
+the default mode retains adversarial mock and localized/touch checks.
+
 ## Needs you inbox
 
 The rail starts with a **Needs you** inbox, above the selected session's plans;
