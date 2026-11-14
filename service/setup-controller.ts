@@ -209,6 +209,14 @@ export class SetupController {
     if(!['disable','enable'].includes(action)||this.activation!=='reload-required')this.activation=result.activation;
     return {...this.status(),action};
   }
+  /** Compatibility HTTP path for fresh configuration only. The caller holds the
+   * same scope/Store writer slots as step workers for the entire synchronous
+   * operation. Keep the existing review nonce and legacy security timeouts. */
+  runFreshManaged(action:'managed-inspect'|'managed-configure',body:unknown):SetupRead {
+    if(!this.managedEnv)throw new SetupError('managed-service-required');
+    const result=this.runManaged(action,body,true);
+    this.lastAction=undefined;delete result.lastAction;return result;
+  }
   /** Existing no-body capture control route: valid binding required; never global executable ownership. */
   enableCapture() {
     if(!this.managedEnv){this.run('enable',{confirmed:true});return;}
@@ -300,12 +308,23 @@ export class SetupController {
       descriptorObject:[descriptor.dev,descriptor.ino,descriptor.mode,descriptor.uid],storeObject:[stat.dev,stat.ino,stat.mode,stat.uid],enabled:this.store.list({limit:1}).captureEnabled}));
     return {review:{expected,targets,storeId:b.storeId,sourceId:b.source.id},binding:b,targets};
   }
-  private managedFullCandidate(storeRoot?:string): ManagedCandidate {
+  private managedFullCandidate(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
     this.checked=true;
-    return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot));
+    return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot,freshOnly));
   }
-  private managedFullCandidateInner(storeRoot?:string): ManagedCandidate {
-    const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env),b=readManagedBinding(env);
+  private managedFullCandidateInner(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
+    const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env);
+    if(freshOnly){
+      // Presence is enough to route to step inspection, never authority to
+      // migrate, adopt or repair. Do not run the monolithic legacy preflight.
+      const legacy=lstatSync(path.join(roots.configRoot,'plugins','agent-progress'),{throwIfNoEntry:false});
+      const journal=lstatSync(path.join(path.dirname(file),'migration.json'),{throwIfNoEntry:false});
+      if(journal||legacy&&freshOnly==='inspect')throw new SetupError('managed-action-required');
+      if(legacy&&(!legacy.isDirectory()||legacy.isSymbolicLink()||lstatSync(file,{throwIfNoEntry:false})))
+        throw new SetupError('managed-migration-conflict');
+      if(legacy)throw new SetupError('managed-action-required');
+    }
+    const b=readManagedBinding(env);
     const record=readMigration(env),legacy=legacyMigration(env);
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');
     if(this.expectedDescriptor!==null&&(!b||digest(readFileSync(file))!==this.expectedDescriptor))throw new ManagedBindingError('managed-binding-modified');
@@ -337,14 +356,14 @@ export class SetupController {
       migration:record??null,legacy:legacy?{fingerprint:legacy.fingerprint,ownership:legacy.ownership}:null}));
     return {review:{expected,targets:{...roots,storeRoot:selected},storeId,sourceId},binding:b,targets,record,legacy};
   }
-  private runManaged(action:ManagedSetupAction,body:unknown):SetupRead {
+  private runManaged(action:ManagedSetupAction,body:unknown,freshOnly=false):SetupRead {
     if(!body||typeof body!=='object'||Array.isArray(body))throw new ProgressError('invalid');
     const r=body as Record<string,unknown>;
     if(!Object.keys(r).every(k=>['storeRoot','confirmed','expected'].includes(k))||
       r.storeRoot!==undefined&&(typeof r.storeRoot!=='string'||!r.storeRoot.length||r.storeRoot.length>4096)||
       r.confirmed!==undefined&&typeof r.confirmed!=='boolean'||r.expected!==undefined&&(typeof r.expected!=='string'||!/^[a-f0-9]{64}$/.test(r.expected)))throw new ProgressError('invalid');
     // Only inspection and capture-off admit the narrower verified-Store review.
-    const candidate=action==='managed-inspect'||action==='managed-disable'
+    const candidate=freshOnly?this.managedFullCandidate(r.storeRoot as string|undefined,action==='managed-inspect'?'inspect':'configure'):action==='managed-inspect'||action==='managed-disable'
       ?this.managedCandidate(r.storeRoot as string|undefined):this.managedFullCandidate(r.storeRoot as string|undefined);
     if(action==='managed-inspect') {
       if(r.confirmed!==undefined||r.expected!==undefined)throw new ProgressError('invalid');
@@ -369,7 +388,7 @@ export class SetupController {
       try{closeSync(openSync(lock,'wx',0o600));locked=true;}catch(e){if((e as NodeJS.ErrnoException).code==='EEXIST')throw new SetupError('managed-configuration-busy');throw e;}
       // Directory creation legitimately changes the review's missing-root facts, not the selected store.
       if(readManagedBinding(this.managedEnv!))throw new SetupError('managed-review-stale');
-      const latest=this.managedCandidate(r.storeRoot as string|undefined);
+      const latest=freshOnly?this.managedFullCandidate(r.storeRoot as string|undefined,'configure'):this.managedCandidate(r.storeRoot as string|undefined);
       if(latest.review.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
       const {targets}=candidate;
       if(!lstatSync(targets.storeRoot,{throwIfNoEntry:false}))privateDirectory(targets.storeRoot,true);
