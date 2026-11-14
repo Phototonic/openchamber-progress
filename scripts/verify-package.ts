@@ -48,10 +48,10 @@ async function verifyPackage() {
   const launch=async(folder:string,fixtureEnv:NodeJS.ProcessEnv)=>{
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
     service=spawn(process.execPath,[path.join(folder,'build/service/main.js')],{env:{...fixtureEnv,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'package-fixture-only'},cwd:root,stdio:'ignore'});
-    const request=async(route:string,body?:unknown)=>{
-      const r=await fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
+    const request=async(route:string,body?:unknown,method:'GET'|'POST'=body===undefined?'GET':'POST')=>{
+      const r=await fetch(`http://127.0.0.1:${port}${route}`,{method,headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
       lastHttpStatus=r.status;const value=await r.clone().json(),code=typeof value.error==='string'?value.error:value.error?.code;
-      lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found'].includes(code)?code:code?'unrecognized-code':null;
+      lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found','body-not-allowed'].includes(code)?code:code?'unrecognized-code':null;
       return r;
     };
     for(const deadline=Date.now()+7000;;){assert.equal(service.exitCode,null,'owned service exited');try{if((await request('/health')).ok)break;}catch{}assert.ok(Date.now()<deadline,'service readiness');await new Promise(r=>setTimeout(r,25));}
@@ -109,8 +109,11 @@ async function verifyPackage() {
     const reports=await api.json('/v1/plans');assert.equal(reports.storeId,b.storeId);assert.equal(reports.data[0].id,'managed-packaged');
     assert.equal((await api.json('/v1/setup')).delivery.observation,'matching');
     phase='managed capture controls';
-    assert.equal((await api.request('/v1/capture/disable',{})).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,false);
-    assert.equal((await api.request('/v1/capture/enable',{})).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,true);
+    const bodyRefused=await api.request('/v1/capture/disable',{});
+    assert.equal(bodyRefused.status,400);assert.deepEqual(await bodyRefused.json(),{error:'body-not-allowed'});
+    assert.equal((await api.json('/v1/plans')).captureEnabled,true,'a body-bearing refusal cannot disable capture');
+    assert.equal((await api.request('/v1/capture/disable',undefined,'POST')).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,false);
+    assert.equal((await api.request('/v1/capture/enable',undefined,'POST')).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,true);
     await stop();const replacement=`${root}/replacement`;cpSync(extension,replacement,{recursive:true});api=await launch(replacement,env);
     assert.equal((await api.json('/v1/plans')).storeId,b.storeId);assert.equal((await api.json('/v1/setup')).configured,true);
     for(const kind of ['permissions','corrupt'] as const){
