@@ -16,7 +16,7 @@ export interface LanguageSnapshot {
   readonly saveStatus: 'idle' | 'saving' | 'saved' | 'failed';
 }
 const key = 'interface-language.v1';
-function isPreference(value: unknown): value is LanguagePreference { return value === 'auto' || value === 'en' || value === 'ru'; }
+function isPreference(value: unknown): value is LanguagePreference { return value === 'auto' || value === 'en' || value === 'ru' || value === 'zh-CN'; }
 function storedPreference(value: LanguageStorageValue | undefined): LanguagePreference | null {
   if (value === undefined) return null;
   if (value && typeof value === 'object' && !Array.isArray(value)

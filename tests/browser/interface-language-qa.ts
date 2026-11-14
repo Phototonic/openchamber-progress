@@ -115,7 +115,7 @@ try {
   };
   const count = (op: string) => evaluate<number>(`qa.storageLog.filter(q=>q.key===${literal(LANGUAGE_KEY)}&&q.op===${literal(op)}).length`);
   const saved = () => evaluate(`qa.maps.get(qa.space)?.get(${literal(LANGUAGE_KEY)})??null`);
-  const selectStart = async (s: string, preference: 'auto' | 'en' | 'ru') => {
+  const selectStart = async (s: string, preference: 'auto' | 'en' | 'ru' | 'zh-CN') => {
     await show(s);
     await wait(inFrame(s, `d.querySelector(${literal(trigger)})?.disabled===false`), `${s} selector enabled`);
     await guest(s, `d.querySelector(${literal(trigger)}).focus();return true`);
@@ -126,19 +126,22 @@ try {
     await key('Enter');
     selectorStates.push(await guest(s, `const b=d.querySelector(${literal(trigger)});return {surface:${literal(s)},phase:'entered',focused:d.activeElement===b,ownsFocus:d.hasFocus(),active:d.activeElement?.tagName,expanded:b?.getAttribute('aria-expanded'),popups:d.querySelectorAll('.oc-sdk-popup').length}`));
     await wait(inFrame(s, `!!d.querySelector('.oc-sdk-popup [role="listbox"]')`), 'SDK listbox opened');
-    const options = await guest<string[]>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="listbox"] [role="option"]')].map(n=>n.id.split('-').pop())`);
-    check('selector:SDK-option-ids-auto-en-ru', JSON.stringify(options) === JSON.stringify(['auto', 'en', 'ru']));
-    check('selector:endonyms', await guest<boolean>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='English')&&[...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='Русский')`));
+    const order = ['auto', 'en', 'ru', 'zh-CN'] as const;
+    const ids = await guest<string[]>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="listbox"] [role="option"]')].map(n=>n.id)`);
+    // 选项 ID 是 `<uid>-<id>`；zh-CN 自带连字符，不能按最后一个连字符截取。
+    const options = ids.map(id => order.find(o => id.endsWith(`-${o}`)) ?? id);
+    check('selector:SDK-option-ids-auto-en-ru-zh', JSON.stringify(options) === JSON.stringify([...order]));
+    check('selector:endonyms', await guest<boolean>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='English')&&[...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='Русский')&&[...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='简体中文')`));
     await key('Home');
-    for (let i = 0; i < ['auto', 'en', 'ru'].indexOf(preference); i++) await key('ArrowDown');
+    for (let i = 0; i < ['auto', 'en', 'ru', 'zh-CN'].indexOf(preference); i++) await key('ArrowDown');
     await key('Enter'); await frames();
   };
-  const choose = async (s: string, preference: 'auto' | 'en' | 'ru') => {
+  const choose = async (s: string, preference: 'auto' | 'en' | 'ru' | 'zh-CN') => {
     await selectStart(s, preference);
     await wait(`qa.maps.get(qa.space)?.get(${literal(LANGUAGE_KEY)})?.preference===${literal(preference)}`, 'confirmed device value');
     await wait(inFrame(s, `d.querySelector(${literal(trigger)})?.disabled===false`), 'save settled');
     await focusRead();
-    await lang(preference === 'ru' ? 'ru' : preference === 'en' ? 'en' : await evaluate(`qa.ctx.locale.startsWith('ru')?'ru':'en'`));
+    await lang(preference === 'zh-CN' ? 'zh-CN' : preference === 'ru' ? 'ru' : preference === 'en' ? 'en' : await evaluate(`qa.ctx.locale.startsWith('zh')?'zh-CN':qa.ctx.locale.startsWith('ru')?'ru':'en'`));
   };
   const effects = () => evaluate<string>(`JSON.stringify({requests:qa.requests,storage:qa.storageLog.filter(q=>q.op!=='get'&&q.key!==${literal(LANGUAGE_KEY)})})`);
   const unchanged = async (name: string, run: () => Promise<unknown>) => { const before = await effects(); await run(); await frames(); check(name + ':no-extra-service-or-checkpoint-IO', before === await effects()); };

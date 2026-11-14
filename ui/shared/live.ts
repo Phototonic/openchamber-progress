@@ -141,6 +141,10 @@ const LIVE_TEXT = {
     activity: { running: 'Работает', retrying: 'Повторяет попытку', 'waiting-permission': 'Ожидает разрешения', 'waiting-question': 'Ожидает ответа', idle: 'Бездействует', unknown: 'Состояние неизвестно' },
     checking: 'Проверка…', unavailable: 'Текущее состояние недоступно', notOpen: 'Не открыта в этом окне', session: (id: string) => `Сессия ${id}`,
   },
+  'zh-CN': {
+    activity: { running: '运行中', retrying: '正在重试', 'waiting-permission': '等待授权', 'waiting-question': '等待回答', idle: '空闲', unknown: '状态未知' },
+    checking: '正在检查…', unavailable: '实时状态不可用', notOpen: '未在此窗口打开', session: (id: string) => `会话 ${id}`,
+  },
 } satisfies Record<InterfaceLanguage, { activity: Record<Activity, string>; checking: string; unavailable: string; notOpen: string; session: (id: string) => string }>;
 
 /** Plain-language live state for a session, distinct from task progress. */

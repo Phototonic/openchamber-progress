@@ -13,11 +13,12 @@ import type { InterfaceLanguage } from './i18n.ts';
 export type DigestStatus = { kind: 'none' | 'refreshing' | 'refreshed' | 'outcome' | 'hidden' | 'saving' | 'abandoned' | 'missing' | 'check-failed' | 'stale' }
   | { kind: 'checkpoint'; reason: CheckpointFailure }
   | { kind: 'already' | 'saved'; revision: number }
-  | { kind: 'message'; en: string; ru: string };
+  | { kind: 'message'; en: string; ru: string; 'zh-CN'?: string };
 const STATUS_EN = { none: '', refreshing: 'Refreshing changes since your last review…', refreshed: 'Digest refreshed.', outcome: 'This plan’s outcome changed. Refresh the digest before marking it reviewed.', hidden: 'Review not saved because this view was hidden. Mark reviewed again when you are ready.', saving: 'Saving your review…', abandoned: 'Review not saved. Mark reviewed again when you are ready.', missing: 'This plan is no longer available, so it was not marked reviewed.', 'check-failed': 'The plan couldn’t be checked, so nothing was saved. Try again.', stale: 'This plan changed since the digest loaded. Refresh the digest before marking it reviewed.' };
 const STATUS_COPY = {
   en: STATUS_EN,
   ru: { none: '', refreshing: 'Обновление изменений с последнего просмотра…', refreshed: 'Изменения обновлены.', outcome: 'Итог плана изменился. Обновите изменения перед отметкой о просмотре.', hidden: 'Просмотр не сохранён, поскольку представление было скрыто. Отметьте просмотренным ещё раз, когда будете готовы.', saving: 'Сохранение просмотра…', abandoned: 'Просмотр не сохранён. Отметьте просмотренным ещё раз, когда будете готовы.', missing: 'План больше недоступен, поэтому он не отмечен просмотренным.', 'check-failed': 'План не удалось проверить, поэтому ничего не сохранено. Повторите попытку.', stale: 'План изменился после загрузки изменений. Обновите их перед отметкой о просмотре.' },
+'zh-CN': { none: '', refreshing: '正在刷新上次审阅以来的变更…', refreshed: '摘要已刷新。', outcome: '此计划的结果已改变。标记审阅前请刷新摘要。', hidden: '视图已隐藏，审阅未保存。准备好后请再次标记审阅。', saving: '正在保存审阅…', abandoned: '审阅未保存。准备好后请再次标记审阅。', missing: '此计划已不可用，因此未标记为已审阅。', 'check-failed': '无法检查计划，因此未保存任何内容。请重试。', stale: '摘要加载后计划已改变。标记审阅前请刷新摘要。' },
 } satisfies Record<InterfaceLanguage, typeof STATUS_EN>;
 const OUTCOME_EN = {
   unchanged: 'Your previous review point is unchanged.',
@@ -28,10 +29,14 @@ const OUTCOME = { en: OUTCOME_EN, ru: {
   unchanged: 'Предыдущая точка просмотра не изменена.',
   already: (revision: number) => `Уже просмотрено до ревизии ${revision}. Обновите изменения для сравнения от этой точки.`,
   saved: (revision: number) => `Отмечено просмотренным до ревизии ${revision}. Последующие изменения появятся в следующей сводке.`,
+}, 'zh-CN': {
+  unchanged: '之前的审阅点未改变。',
+  already: (revision: number) => `已审阅至修订 ${revision}。请刷新摘要以从该处比较。`,
+  saved: (revision: number) => `已标记审阅至修订 ${revision}。后续变更将显示在下次摘要中。`,
 } } satisfies Record<InterfaceLanguage, typeof OUTCOME_EN>;
 export function digestStatusText(status: DigestStatus, language: InterfaceLanguage = 'en'): string {
   switch (status.kind) {
-    case 'message': return status[language];
+    case 'message': return status[language] ?? status.en;
     case 'checkpoint': return `${reviewCopy(status.reason, language)} ${OUTCOME[language].unchanged}`;
     case 'already': return OUTCOME[language].already(status.revision);
     case 'saved': return OUTCOME[language].saved(status.revision);
@@ -137,7 +142,15 @@ const RU_REVIEW_COPY: typeof REVIEW_COPY = {
   failed: 'Точку просмотра в этом профиле не удалось прочитать или сохранить.',
   disagreement: 'Точка просмотра в этом профиле менялась во время чтения.',
 };
-export const reviewCopy = (reason: CheckpointFailure, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_REVIEW_COPY : REVIEW_COPY)[reason];
+const ZH_REVIEW_COPY: typeof REVIEW_COPY = {
+  unsupported: '此 OpenChamber 版本无法在此设备保存审阅点。',
+  denied: '此配置文件拒绝保存审阅点。',
+  quota: '此配置文件中扩展的存储空间已满，未保存审阅点。',
+  malformed: '此配置文件中保存的审阅点无法读取。',
+  failed: '无法读取或保存此配置文件中的审阅点。',
+  disagreement: '读取时此配置文件中的审阅点持续变化。',
+};
+export const reviewCopy = (reason: CheckpointFailure, language: InterfaceLanguage = 'en') => (language === 'ru' ? RU_REVIEW_COPY : language === 'zh-CN' ? ZH_REVIEW_COPY : REVIEW_COPY)[reason];
 
 export class DigestController {
   private visit: Visit | null = null;
@@ -319,7 +332,7 @@ export class DigestController {
       status: digestStatusText(v.status), statusMessage: v.status, statusId: v.statusId,
       markReviewed: (activation) => { if (activation.isTrusted && live()) void this.markReviewed(v, generation); },
       refresh: () => { if (live() && v.phase.kind !== 'loading' && v.review !== 'pending' && this.host.visible()) { void this.start(v, true); this.host.changed(); } },
-      announce: (text) => { if (live()) { this.say(v, typeof text === 'string' ? { kind: 'message', en: text, ru: text } : text); this.host.changed(); } },
+      announce: (text) => { if (live()) { this.say(v, typeof text === 'string' ? { kind: 'message', en: text, ru: text, 'zh-CN': text } : text); this.host.changed(); } },
     };
   }
 

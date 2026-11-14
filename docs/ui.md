@@ -31,16 +31,19 @@ messages, reports, captures or history. The existing host floor is unchanged; se
 
 ## Interface language
 
-The rail and fullscreen page have a **Language / Язык** selector in their lower
-service area, alongside Setup and Details when those sections are present. It
+The rail and fullscreen page have a **Language / Язык / 语言** selector in their
+lower service area, alongside Setup and Details when those sections are present. It
 remains available without a selected session or plan, during loading, before
 setup, and after a failed progress read. Work Status uses the same preference
 without a separate selector or host-header control. The options are OpenChamber
-language, **English**, and **Русский**; there are no flags.
+language, **English**, **Русский**, and **简体中文**; there are no flags.
 
 The default is automatic: a valid Russian host locale, including `ru-RU`, uses
-Russian; English, unsupported and malformed host tags use English. An explicit
-choice overrides the host locale. All three guests use that effective language
+Russian, any Simplified Chinese host locale such as `zh-CN` or `zh-SG` uses
+Simplified Chinese, and English, unsupported and malformed host tags use English.
+The Simplified Chinese translation is also used for Traditional Chinese locales,
+because the extension ships one Chinese catalog. An explicit choice overrides the
+host locale. All three guests use that effective language
 for extension-owned text, accessible names, announcements, dates, relative time,
 durations, counts and plural forms. The guest document's `lang` follows the shown
 interface. Product names, host-owned chrome and host clipboard/toast buttons keep
@@ -48,7 +51,7 @@ their own language. User-authored titles, session names, blocker details, search
 queries, paths and document contents are not translated or written back.
 
 One SDK **device** preference, `interface-language.v1`, stores only
-`{v: 1, preference: 'auto' | 'en' | 'ru'}`. The host partitions it by browser
+`{v: 1, preference: 'auto' | 'en' | 'ru' | 'zh-CN'}`. The host partitions it by browser
 profile, runtime, extension and installation, not by plan, project, session,
 source, progress store or integration account. It is not authenticated-user
 isolation or cross-device sync. People sharing a profile/namespace share the
@@ -123,7 +126,7 @@ are unchanged for the same facts.
 Progress-update, handoff and explicitly historical summary-only Markdown use the
 effective language. English remains byte-compatible for the same input; section
 order, task order, privacy omissions, Markdown escaping, LF and absolute UTC ISO
-timestamps are unchanged in both languages. An open preview is reformatted from
+timestamps are unchanged in every language. An open preview is reformatted from
 the same validated held snapshot, without a new progress read. Changed text
 starts a new generation, clears selection/copy feedback, and cannot be confirmed
 by a late clipboard operation on older text. **Copy** copies exactly the shown
@@ -253,7 +256,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 | Module | Role |
 | --- | --- |
-| `i18n.ts` / `language.ts` | Effective en/ru resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
+| `i18n.ts` / `language.ts` | Effective en/ru/zh-CN resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/change-digest`, `/v1/search`, `/v1/search-state`, `/v1/setup`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy, and the task-view projection (row membership, branch aggregates, jump order; see Task view). |
 | `dependency-derivation.ts` / `readiness.ts` | Pure shared dependency derivation and enriched readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
@@ -389,7 +392,7 @@ closing and reopening the existing panel retains its previous action item.
 That does not deliver the ordinary no-item transition above: the panel remains
 pinned ([upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938)).
 Do not assume closing it restored current-session scope. The pinned-scope row
-offers **Show current session** (**Показать текущую сессию** in Russian), including
+offers **Show current session** (**Показать текущую сессию** in Russian, **显示当前会话** in Chinese), including
 when the pinned target is unavailable. This explicit local reset returns this
 frame to the host's actual current session/directory, or the ordinary no-session
 state. It retires old pinned reads and selections without a host/store write,
@@ -417,7 +420,7 @@ qualification. These are bounded literal host context, not assignment, task
 authority, completion or workflow selection. Missing data is ordinary; malformed
 optional data is omitted without invalidating session identity. No URLs are
 fetched or made executable and no new polling/cache is introduced. Extension
-explanations and accessible names support English/Russian; native action labels
+explanations and accessible names support English/Russian/Chinese; native action labels
 are host-owned fixed text.
 
 There is no **Open Workflows** action: SDK 2.7.0 supplies no supported Workflows
@@ -780,7 +783,7 @@ Verified capture-off remains available here too; retry only rereads status.
 Cancel initially owns confirmation focus if the opener still owns focus. Space
 toggles acknowledgement; Enter confirms; Escape/Cancel returns to the opener.
 After a confirmed result, return to that opener or Setup heading if it disappeared;
-never reclaim focus the user moved. English/Russian labels, errors, disclosures
+never reclaim focus the user moved. Localized labels, errors, disclosures
 and accessible names share the existing localization owners and narrow layouts.
 
 Unknown mode copy distinguishes watched-file disposal from caller-owned

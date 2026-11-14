@@ -261,6 +261,7 @@ export const showsLiveness = (lifecycle: Lifecycle, s: Pick<PlanSummary, 'workin
 const SUMMARY_TEXT = {
   en: { empty: 'No tasks reported', uncounted: 'No tasks left to count', done: (done: string, total: string) => `${done} of ${total} done`, remaining: (n: string) => `${n} remaining`, skipped: (n: string) => `${n} skipped` },
   ru: { empty: 'Нет зарегистрированных задач', uncounted: 'Нет задач для подсчёта', done: (done: string, total: string) => `Выполнено: ${done} из ${total}`, remaining: (n: string) => `Осталось: ${n}`, skipped: (n: string) => `Пропущено: ${n}` },
+  'zh-CN': { empty: '尚未报告任务', uncounted: '没有剩余可计数任务', done: (done: string, total: string) => `已完成 ${done} / ${total}`, remaining: (n: string) => `剩余 ${n}`, skipped: (n: string) => `已跳过 ${n}` },
 } satisfies Record<InterfaceLanguage, { empty: string; uncounted: string; done: (done: string, total: string) => string; remaining: (n: string) => string; skipped: (n: string) => string }>;
 
 export function summaryText(s: Counts, locale: InterfaceLanguage = 'en') {
@@ -537,6 +538,20 @@ const MODEL_LABELS = {
       'non-text': 'Документ плана не является обычным текстом и не был сохранён.',
       unavailable: 'Не удалось прочитать документ плана в этой системе.',
       'changed-during-read': 'Документ плана изменился во время чтения; он будет сохранён при одном из следующих отчётов.',
+    },
+  },
+  'zh-CN': {
+    status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
+    lifecycle: { active: '进行中', completed: '已结束', cancelled: '已取消', failed: '失败' },
+    document: {
+      unbound: '此计划尚未关联计划文档。', captured: '',
+      denied: '上次报告时，智能体未获准读取计划文档。',
+      missing: '上次报告时，计划文档不存在。',
+      moved: '计划文档自关联后已移动，需要智能体重新关联。',
+      oversized: '计划文档超过采集大小限制，因此未采集。',
+      'non-text': '计划文档不是纯文本，因此未采集。',
+      unavailable: '无法在此系统上读取计划文档。',
+      'changed-during-read': '计划文档在读取期间发生变化，将在后续报告时采集。',
     },
   },
 } satisfies Record<InterfaceLanguage, { status: Record<ItemStatus, string>; lifecycle: Record<Lifecycle, string>; document: Record<DocumentState, string> }>;

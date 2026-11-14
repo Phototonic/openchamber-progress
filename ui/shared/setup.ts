@@ -82,13 +82,45 @@ const ERROR_RU: typeof ERROR_TEXT = {
   schema: 'Хранилище прогресса использует более новый формат, чем это расширение.',
   binding: 'Расширение ещё не подключено к хранилищу прогресса.',
 };
+const ERROR_ZH: typeof ERROR_TEXT = {
+  'missing-folders': '请将三个文件夹都填写为绝对路径。',
+  'confirmation-required': '请先审阅这些文件夹并确认，之后才会进行更改。',
+  'targets-unverified': '无法验证这些文件夹。请使用你拥有的现有文件夹的绝对路径，且不要包含符号链接。',
+  'path-unverified': '文件夹路径不是绝对路径、不存在，或不属于你。',
+  'symlink-escape': '文件夹路径经过符号链接，出于安全考虑，设置拒绝此路径。',
+  collision: 'companion 的安装位置已存在其他内容，设置不会覆盖它。',
+  'foreign-files': '安装文件夹中包含并非由设置创建的文件，未做任何更改。',
+  'modified-owned-files': '已安装的 companion 文件在设置之外被修改，这些文件保持原样。',
+  'store-permissions': '进度存储文件夹必须归你所有，且仅你的账户可访问。',
+  'private-permissions': '用于进度的文件夹必须归你所有，且仅你的账户可访问。',
+  'windows-security-unavailable': 'Windows 无法使用内置 PowerShell 检查文件夹的所有权和私有性。请确认 Windows PowerShell 可用后重试。',
+  'not-installed': '这些文件夹中未安装 companion。',
+  'ownership-invalid': '安装内容与此扩展所设置的文件夹不匹配，未做任何更改。',
+  'payload-invalid': '此扩展附带的 companion 不完整，请重新安装扩展。',
+  'installation-changed': '更新期间安装内容发生了变化，请在重试前重新检查文件夹。',
+  'service-binding-collision': '此扩展自身的设置记录在设置之外被修改，该记录保持原样。',
+  'service-binding-modified': '此扩展自身的设置记录在设置之外被修改，该记录保持原样。',
+  'service-binding-unavailable': 'companion 文件已安装，但此扩展无法记录设置。',
+  'service-binding-unavailable-capture-disabled': 'companion 文件已安装，但此扩展无法记录设置，因此已关闭采集以确保安全。',
+  'action-invalid': '该设置操作不可用。',
+  'arguments-invalid': '设置请求未被接受。',
+  invalid: '设置请求未被接受。请检查三个文件夹是否都已填写。',
+  'request-too-large': '设置请求过大。',
+  'setup-unavailable': '此服务无法提供设置。',
+  storage: '无法打开进度存储。',
+  busy: '进度存储正忙，请稍后重试。',
+  corrupt: '进度存储已损坏，已保持原样。',
+  schema: '进度存储使用的格式比此扩展更新。',
+  binding: '此扩展尚未连接到进度存储。',
+};
 
 /** Plain-language text for a fixed SetupError code; unknown codes stay honest. */
 const diagnosticCode = (code:string) => /^[A-Za-z][A-Za-z0-9-]{0,63}$/.test(code) ? code : 'unknown';
 export const setupErrorText = (code: string, locale = 'en') => {
   const managed = managedErrorText(code,locale);
   if (managed) return managed;
-  const errors: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?ERROR_RU:ERROR_TEXT;
+  const l = resolveLanguage('auto',locale);
+  const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
   return Object.hasOwn(errors,code) ? errors[code] : textFor(locale).unknownError(diagnosticCode(code));
 };
 
@@ -106,9 +138,17 @@ const DIAGNOSTIC_RU: typeof DIAGNOSTIC_TEXT = {
   'staged-payloads-present': 'После прерванной настройки остались подготовленные файлы.',
   'service-binding-collision': 'Не удалось использовать запись настройки расширения.',
 };
+const DIAGNOSTIC_ZH: typeof DIAGNOSTIC_TEXT = {
+  'targets-unverified': '这些文件夹尚未确认。',
+  'rollback-payloads-retained': '较早版本的 companion 已保留以便恢复。',
+  'unreferenced-payloads-retained': '部分未使用的 companion 版本被保留，不会自动删除任何内容。',
+  'staged-payloads-present': '中断的设置留下了暂存文件。',
+  'service-binding-collision': '无法使用此扩展的设置记录。',
+};
 export const setupDiagnosticText = (code: string, locale = 'en') => {
-  const diagnostics: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?DIAGNOSTIC_RU:DIAGNOSTIC_TEXT;
-  const errors: Readonly<Record<string,string>> = resolveLanguage('auto',locale)==='ru'?ERROR_RU:ERROR_TEXT;
+  const l = resolveLanguage('auto',locale);
+  const diagnostics: Readonly<Record<string,string>> = l==='ru'?DIAGNOSTIC_RU:l==='zh-CN'?DIAGNOSTIC_ZH:DIAGNOSTIC_TEXT;
+  const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
   return Object.hasOwn(diagnostics,code) ? diagnostics[code] : Object.hasOwn(errors,code) ? errors[code] : diagnosticCode(code);
 };
 
@@ -202,7 +242,54 @@ const ru: typeof en = {
   sameFiles: (version) => `${version} · файлы совпадают с установленными`, utility: 'Утилита папки',
   utilityVersion: (version) => `${version} · загрузчик и скрипт удаления со времени установки компаньона; обновления сохраняют их`,
 };
-const textFor = (locale:string) => resolveLanguage('auto',locale)==='ru'?ru:en;
+const zh: typeof en = {
+  privilege: '进度服务在此计算机上运行，拥有你的完整用户权限。companion 仅在智能体报告时记录进度；它不会读取对话。',
+  lifecycle: '采集独立于此扩展：关闭、暂停或卸载扩展后仍会运行。卸载扩展前请在此移除采集；仅卸载扩展会保留采集功能（之后也可使用 companion 的移除工具）。已记录的历史始终保留。',
+  unknownError: (code) => `设置无法完成（${code}）。`,
+  configHelp: 'OpenCode 全局配置文件夹的绝对路径', dataHelp: 'OpenCode 数据文件夹的绝对路径', storeHelp: '项目之外的私有文件夹；不存在时创建',
+  storeHint: '建议放在 OpenCode 数据文件夹内；不存在时创建为私有文件夹', resolvedHint: '已在此计算机上找到；尚未确认是你的 OpenCode 文件夹', usualHint: '此计算机上的常见位置；未找到或尚未确认',
+  newerTitle: '已安装的 companion 比此扩展附带的版本较新',
+  newerBody: (installed,bundled) => `已安装 ${installed} · 附带 ${bundled}。不会自行更改。选择附带版本会退回较旧的 companion；通常更好的做法是更新此扩展。`,
+  rebuildTitle: '有不同构建的 companion 可用', rebuildBody: (version) => `此扩展附带的是版本 ${version} 的另一种构建。在你审阅并确认之前不会更改。`,
+  upgradeTitle: '有 companion 更新可用', upgradeBody: (installed,bundled) => `已安装 ${installed} → 附带 ${bundled}。在你审阅并确认之前不会更改。`,
+  review: '审阅', reviewUpdate: '审阅更新', installedVersion: '已安装版本', bundledVersion: '附带版本',
+  noComparison: '服务尚未比较附带和已安装的 companion，因此此次审阅无法确定更新会选择哪个版本。',
+  same: '附带的 companion 与已安装文件相同，更新不会更改任何内容。',
+  rebuild: '版本号相同，但文件不同：更新会选择附带的文件。',
+  downgrade: '附带的 companion 比已安装版本旧。选择它会退回该版本。',
+  updateEffect: '更新会保留这些文件夹、计划和历史，只切换 companion 文件。OpenCode 再次加载 companion 后智能体才会使用新文件。',
+  switchEffect: '切换会保留这些文件夹、计划和历史，只更改 companion 文件。OpenCode 再次加载 companion 后智能体才会使用这些文件。',
+  reload: 'OpenCode 尚未加载当前 companion 文件。方便时请重启 OpenCode，使智能体使用这些文件；已运行的会话在此之前可能继续使用旧文件。此视图不会重启任何内容。',
+  foldersNeeded: '需要填写文件夹', unchanged: '设置未更改任何内容', partial: '设置仅部分完成', dismiss: '关闭',
+  done: '已完成。', disabled: '采集已关闭。', enabled: '采集已开启。', removedNotice: '已移除采集，历史记录保留。',
+  reviewInstall: '安装前审阅', reviewOlder: '切换到较旧 companion 前审阅', reviewUpdating: '更新前审阅',
+  alreadyInstalled: '这些文件夹中已安装 companion，请改用更新。',
+  ackInstall: '我已审阅这些文件夹，并希望安装 companion', ackOlder: '我已审阅这些文件夹，并希望切换到附带的较旧 companion', ackUpdate: '我已审阅这些文件夹，并希望更新 companion',
+  install: '安装', useBundled: '使用附带版本', update: '更新', cancel: '取消', companion: 'Companion', data: 'OpenCode 数据', store: '进度存储',
+  setupStatus: '设置状态', folderSuggestions: '文件夹建议',
+  disableQuestion: '关闭采集？', enableQuestion: '重新开启采集？', removeQuestion: '移除采集？',
+  disableEffect: '使用此设置的所有已打开 OpenCode 会话中的智能体将停止记录进度。现有计划和历史会保留。',
+  enableEffect: '智能体可以再次记录进度。其他内容不变。',
+  removeEffect: '先关闭采集，再移除 companion 文件。卸载此扩展前请执行此操作；仅卸载扩展会保留采集功能。计划、修订和已采集文档会保留在进度存储中。已修改的文件保持原样。',
+  disable: '关闭采集', enable: '开启采集', remove: '移除采集',
+  setupTitle: '设置智能体进度', chooseFolders: '请选择 OpenCode 全局配置及数据文件夹，以及用于进度存储的私有文件夹。审阅并确认前不会写入任何内容。',
+  looking: '正在此计算机上查找 OpenCode 文件夹…', notDetected: '无法在此计算机上检测到 OpenCode 文件夹，请在下方输入。',
+  configFolder: 'OpenCode 配置文件夹', dataFolder: 'OpenCode 数据文件夹', storeFolder: '进度存储文件夹', check: '检查这些文件夹',
+  on: '采集已开启', off: '采集已关闭', installed: 'companion 已安装', removed: '采集已移除', interrupted: '设置已中断',
+  removedEffect: 'companion 文件已移除，采集已关闭。已记录的计划和历史保留在进度存储中。',
+  recovery: (count) => `中断的设置留下了 ${count} 个暂存项。未自动清理任何内容，请再次运行相同的更新以完成，或检查这些文件夹。`,
+  unverified: '这些文件夹尚未验证为 OpenCode 配置，因此无法跨智能体关联会话。',
+  enableBack: '重新开启采集', updateCompanion: '更新 companion', reinstall: '重新安装',
+  removedNote: '采集已移除，因此不会记录新进度。请在设置中选择“重新安装”以再次记录。',
+  disabledNote: '采集已关闭，因此不会记录新进度。请在设置中重新开启。',
+  unknownNote: '采集已关闭，因此不会记录新进度。',
+  sameFiles: (version) => `${version} · 文件与已安装版本相同`, utility: '文件夹工具',
+  utilityVersion: (version) => `${version} · 安装 companion 时的加载器和移除脚本；更新会保留它们`,
+};
+const textFor = (locale:string) => {
+  const l = resolveLanguage('auto',locale);
+  return l==='ru'?ru:l==='zh-CN'?zh:en;
+};
 
 const STORE_SUFFIX = 'openchamber-progress';
 /** A form-level absolute-path check; the service owns canonicalization and safety checks. */

@@ -5,6 +5,7 @@ import { resolveLanguage } from './i18n.ts';
 const TIME = {
   en: { unknown: 'at an unknown time', recent: 'just now', minute: 'min', hour: 'h', days: { one: 'day', few: 'days', many: 'days', other: 'days' } },
   ru: { unknown: 'в неизвестное время', recent: 'только что', minute: 'мин', hour: 'ч', days: { one: 'день', few: 'дня', many: 'дней', other: 'дня' } },
+  'zh-CN': { unknown: '时间未知', recent: '刚刚', minute: '分钟', hour: '小时', days: { one: '天', few: '天', many: '天', other: '天' } },
 };
 
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3_600], ['minute', 60]];

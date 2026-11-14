@@ -33,6 +33,16 @@ const COPY = {
     unavailable: 'Текущая активность недоступна', session: (id: string) => `Сессия ${id}`, subagent: 'Субагент',
     summary: { waiting: (n: number) => `Ждут вас: ${n}`, running: (n: number) => `Выполняются: ${n}`, finished: (n: number) => `Завершены: ${n}`, failed: (n: number) => `С ошибкой: ${n}`, interrupted: (n: number) => `Прерваны: ${n}`, unknown: (n: number) => `Результат неизвестен: ${n}` },
   },
+  'zh-CN': {
+    reasons: { user: '由用户停止', shutdown: '宿主关闭', superseded: '被较新的运行取代', inactivity: '长时间无活动', unknown: '未记录原因' },
+    activity: { running: '运行中', retrying: '正在重试', 'waiting-permission': '等待授权', 'waiting-question': '等待回答', idle: '空闲', unknown: '状态未知' },
+    turnFailed: '轮次失败', turnEnded: '轮次结束', finished: '已结束', failed: '失败',
+    failure: (code: string) => `失败：${code}`, interrupted: (reason: string) => `已中断：${reason}`,
+    updated: '上次更新于 ', started: '开始于 ', dispatched: '派发于 ', idle: '当前空闲，尚未报告结果', running: '运行中', outcome: '结果未知',
+    pending: '已派发，尚未确认', dispatchFailed: '运行确认前派发失败', unconfirmed: '宿主尚未确认', noOutcome: '尚未报告结果',
+    unavailable: '当前活动不可用', session: (id: string) => `会话 ${id}`, subagent: '子智能体',
+    summary: { waiting: (n: number) => `${n} 个等待你处理`, running: (n: number) => `${n} 个运行中`, finished: (n: number) => `${n} 个已结束`, failed: (n: number) => `${n} 个失败`, interrupted: (n: number) => `${n} 个已中断`, unknown: (n: number) => `${n} 个结果未知` },
+  },
 } satisfies Record<InterfaceLanguage, {
   reasons: Record<NonNullable<RunRow['ran']['interruptionReason']>, string>; activity: Record<ObservedRow['activity'], string>;
   turnFailed: string; turnEnded: string; finished: string; failed: string; failure: (code: string) => string; interrupted: (reason: string) => string;
