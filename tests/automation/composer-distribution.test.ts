@@ -11,6 +11,7 @@ test('composer contributions use one built background entry without content perm
   assert.deepEqual(c.background,{entry:'background/index.html'});
   assert.deepEqual(c.mentions,{label:'Agent progress'});
   assert.deepEqual(c.actions,[
+    {id:'open-progress',label:'Open Agent Progress',where:'session',mode:'open'},
     {id:'insert-handoff',label:'Insert handoff',where:'session',mode:'background'},
     {id:'insert-progress-update',label:'Insert progress update',where:'session',mode:'background'},
   ]);
