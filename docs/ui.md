@@ -649,7 +649,13 @@ The guests opt in only when health advertises `delegationIntent: 1`. The
 ordinary list refresh includes `delegationIntent=1`, and the first detail read
 requests the overlay. A changed row `delegationToken` retires the old note and
 re-reads detail even when progress revision did not change, keeping task rows
-painted. Detail must match the current list token and reply identity; legacy,
+painted. During board search, the same refresh cadence checks the open plan's
+first detail page with the overlay opted in, because search freshness does not
+carry a delegation token. At an unchanged progress/cleanup revision it updates
+only the token and overlay, retaining complete tasks and timing anchors. These
+heads share the inbox's single-flight, coalescing and retired-reading guards;
+an overtaken head cannot overwrite newer detail. Detail must match the current
+list or open-plan head token and reply identity; legacy,
 unreadable or mismatched evidence paints nothing. There is no extra polling
 loop, write, session switch or dispatch. Work Status has no task-note surface
 and never requests the extension.

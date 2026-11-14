@@ -30,7 +30,7 @@ const ITEMS = [{ id: 'task-a', title: 'Draft', kind: 'task' as const, status: 'p
 const overlay = (base: unknown) => { const v = structuredClone(base) as Rec; Object.assign(v, { storeId: 'store-1', source: SRC, sourceBinding: { sourceId: SRC, verified: true } }); return v; };
 type Ui = { n: number };
 
-function controller(surface: 'panel' | 'status' = 'panel', capable = true) {
+function controller(surface: 'panel' | 'status' = 'panel', capable = true, searching = false) {
   const listeners: Record<string, (v?: any) => void> = {};
   const requests: GuestRequest[] = [];
   const el = (): any => ({ dataset: {}, children: [], append() {}, replaceChildren() {}, setAttribute() {}, querySelector: () => null, querySelectorAll: () => [], contains: () => false, getAnimations: () => [] });
@@ -77,6 +77,13 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true) {
     surface, maxSessionSubscriptions: 2, initialUi: () => ({ n: 0 }),
     scope: ({ session }) => session ? { session: session.id } : null,
     wantProjects: () => [], wantDetails: (c) => surface === 'status' ? [] : c.read?.plans.slice(0, 1) ?? [],
+    ...(searching ? {
+      // The search poll leaves the listed token frozen. Only the open plan's bounded head
+      // may update its overlay; the rendered QA exercises the actual board/SearchController.
+      freshness: () => async () => ({ state: 'fresh' as const, captureEnabled: true }),
+      refreshDetails: (c: ViewContext<Ui>) => c.read?.plans.slice(0, 1) ?? [],
+      reading: (c: ViewContext<Ui>) => ({ plan: c.read?.plans[0]?.key ?? '', scope: `search:${c.ui.n}` }),
+    } : {}),
     paint: (_root, c) => { vc = c; },
   };
   exports.startView(spec);
@@ -92,8 +99,53 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true) {
     get intent() { const d = vc.detail(listed()); return d?.state === 'ready' ? currentIntent(listed(), d.value) : null; },
     reads: () => requests.filter((q) => q.path === '/v1/plan').length,
     stop: () => listeners.pagehide(),
+    leave: () => vc.setUi({ n: vc.ui.n + 1 }),
   };
 }
+
+test('search cadence clears a same-revision cancellation without rereading the list or replacing tasks', async () => {
+  const c = controller('panel', true, true);
+  try {
+    c.ready(); await settle();
+    assert.equal(c.intent?.state, 'waiting');
+    const lists = c.requests.filter(q => q.path === '/v1/plans').length;
+    const detail = (c.detail as { value: PlanDetail }).value;
+    const reads = c.reads();
+    c.state.token = 'intent-cancelled'; c.state.overlay = overlay(INTENT_CANCELLED);
+    await c.poll();
+    assert.equal(c.intent?.state, 'clear');
+    assert.equal(c.plan.revision, 3);
+    assert.equal(c.plan.delegationToken, 'intent-cancelled');
+    assert.equal(c.reads(), reads + 1, 'one bounded head, no second full-detail read');
+    assert.equal(c.requests.filter(q => q.path === '/v1/plans').length, lists);
+    assert.equal((c.detail as { value: PlanDetail }).value.items, detail.items, 'complete tasks are retained, not replaced by the head page');
+  } finally { c.stop(); }
+});
+
+test('search heads coalesce slow reads and reject a retired same-plan reading', async () => {
+  const c = controller('panel', true, true);
+  const held = deferred<GuestRequestResult>();
+  try {
+    c.ready(); await settle();
+    c.route(() => held.promise);
+    const reads = c.reads();
+    await c.poll(); await c.poll();
+    assert.equal(c.reads(), reads + 1, 'one head in flight');
+    c.state.token = 'intent-cancelled'; c.state.overlay = overlay(INTENT_CANCELLED);
+    c.route(c.normal);
+    held.resolve(c.normal({ method: 'GET', path: '/v1/plan', query: { delegationIntent: '1' } }));
+    await settle();
+    assert.equal(c.intent?.state, 'clear', 'a slow current success advances the overlay');
+    assert.equal(c.reads(), reads + 2, 'one coalesced follow-up');
+    const retired = deferred<GuestRequestResult>();
+    c.route(() => retired.promise); await c.poll();
+    c.leave(); await settle();
+    c.state.token = 'intent-refused'; c.state.overlay = overlay(INTENT_REFUSED);
+    retired.resolve(c.normal({ method: 'GET', path: '/v1/plan', query: { delegationIntent: '1' } }));
+    await settle();
+    assert.equal(c.intent?.state, 'clear', 'a retired head cannot paint in another reading');
+  } finally { held.resolve(reply({}, 503)); c.stop(); }
+});
 
 test('a pending declaration shows from the detail overlay; an unchanged token never re-reads detail', async () => {
   const c = controller();

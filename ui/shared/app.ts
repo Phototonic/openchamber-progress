@@ -195,7 +195,7 @@ export interface ViewSpec<U> {
   wantProjects: (vc: ViewContext<U>) => string[];
   /** Plans whose full detail this view shows right now. */
   wantDetails: (vc: ViewContext<U>) => PlanView[];
-  /** Open source-wide readings whose head must be checked even after they leave the list/inbox. */
+  /** Open readings whose head must be checked even without a fresh list row (inbox/search). */
   refreshDetails?: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Synchronous presentation decision before paint; must not start reads or change list scope. */
@@ -980,7 +980,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       const pending = { reading: key, queued: false, current };
       const before = details.get(p.key);
       headReads.set(p.key, pending);
-      void readPlanHead(guardedHost(current), p).then(result => {
+      const intent = asksIntent && health?.delegationIntent === 1;
+      void readPlanHead(guardedHost(current), p, intent).then(result => {
         if (!current() || headReads.get(p.key) !== pending) return;
         const cached = details.get(p.key);
         const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
@@ -990,6 +991,24 @@ export function startView<U>(spec: ViewSpec<U>) {
           if (cached && (result.plan.revision < Math.max(cached.revision, cached.requested) ||
             (cached !== before && cached.value.state === 'error') ||
             (result.plan.cleanup?.revision ?? 0) < Math.max(cached.cleanup, cached.requestedCleanup))) return;
+          // At the same revision, a head can still retire a declaration. Search polls do not
+          // refresh the list token. Adopt only the overlay, never the head's partial task page;
+          // keep complete detail/timing, and never overwrite a detail read that overtook us.
+          if (intent && cached?.value.state === 'ready' && cached.result?.ok &&
+            result.plan.revision === cached.revision && (result.plan.cleanup?.revision ?? 0) === cached.cleanup) {
+            if (cached !== before || cached.refreshing) return;
+            const token = result.plan.delegationToken;
+            const listed = read?.plans.find(n => n.key === p.key);
+            if (read && listed && listed.revision === result.plan.revision && (listed.cleanup?.revision ?? 0) === cached.cleanup && listed.delegationToken !== token) {
+              read = { ...read, plans: read.plans.map(n => n === listed ? { ...n, delegationToken: token } : n) };
+            }
+            if (cached.result.plan.delegationToken === token && JSON.stringify(cached.value.value.intent) === JSON.stringify(result.intent)) return;
+            const detail = { ...cached.value.value, intent: result.intent };
+            details.set(p.key, { ...cached, requestedToken: cached.requestedToken === undefined ? undefined : token,
+              value: { state: 'ready', value: detail }, result: { ...cached.result, plan: { ...cached.result.plan, delegationToken: token }, detail } });
+            bump();
+            return;
+          }
           // Unchanged heads leave the detail, its timing anchors and DOM untouched.
           loadDetails([result.plan]);
         } else {

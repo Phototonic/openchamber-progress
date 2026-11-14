@@ -259,7 +259,12 @@ startView<Ui>({
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
     const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
   },
-  refreshDetails: (vc) => { const request = inboxRequestOf(vc); return request ? [request] : []; },
+  refreshDetails: (vc) => {
+    const request = inboxRequestOf(vc); if (request) return [request];
+    // Search-state has no delegation token: revalidate the open plan on this same cadence.
+    const selected = isSearching(vc) && vc.health?.delegationIntent === 1 ? search.selectedPlan() : null;
+    return selected && selected.key === vc.ui.selected ? [selected] : [];
+  },
   // Task reading follows the board's own scope and selection (never the host session); the
   // Progress/Document/History/Map tabs of one selection share it. A search run is its own scope.
   reading: (vc) => {

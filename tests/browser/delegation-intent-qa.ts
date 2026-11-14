@@ -313,6 +313,22 @@ try {
     await wait('page', `d.querySelector('${ART} [data-testid="delegation-pending"]')`, 'board pending');
     check('real:board-pending', same((await notes('page')).map(n => n.task), ['task-c']));
     await shot('page', 'real-board-pending', '[data-testid="plan-detail"]');
+    // Open the plan through a submitted search: ordinary polls now use search-state,
+    // not the list that originally supplied its delegation token.
+    await click('page', '#ap-search-q');
+    await c.send('Input.insertText', { text: 'Export pipeline' });
+    await key('Enter');
+    await wait('page', `d.querySelector('[data-testid="search-results-heading"]')`, 'submitted search');
+    await wait('page', `d.querySelector('[data-testid="search-results"] .ap-hit-plan')`, 'plan search hit');
+    await click('page', '[data-testid="search-results"] .ap-hit-plan');
+    await wait('page', `d.querySelector('${ART} [data-testid="delegation-pending"]')`, 'search pending');
+    const searchRevision = real.plan().revision;
+    await watchGap('page');
+    real.declare(real.request({ oid: 'search-cancel', assign: [] }));
+    await wait('page', `d.querySelector('${ART}')?.dataset.delegation==='clear'`, 'search cancellation clears waiting');
+    check('real:search-same-revision-cancellation', real.plan().revision === searchRevision && (await notes('page')).length === 0 && !(await guest<boolean>('page', `return w.__gap`)));
+    await shot('page', 'real-search-cancelled', '[data-testid="plan-detail"]');
+    real.declare(real.request({ oid: 'phone-again', assign: ['task-c'] }));
     await evaluate(`qa.phone(true);true`); await show(['panel'], 390);
     await wait('panel', `d.querySelector('${ART} [data-testid="delegation-pending"]')`, 'narrow pending');
     check('real:narrow-no-overflow', (await noOverflow('panel')).ok);

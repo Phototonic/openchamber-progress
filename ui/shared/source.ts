@@ -348,17 +348,18 @@ export async function readSearchState(host: ServiceHost, storeId: string, keys: 
   }
 }
 
-export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView } | { ok: false; failure: ReadFailure; status: number | null };
+export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView; intent?: PlanDetail['intent'] } | { ok: false; failure: ReadFailure; status: number | null };
 
 /**
  * Review preflight: the FIRST page of /v1/plan only, validated envelope and plan metadata. Item and
  * contribution cursors are never followed: one bounded live read, not a detail or history download.
+ * Task-row readers may opt into the validated intent overlay and its token on this same head.
  */
-export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>): Promise<PlanHeadResult> {
+export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, intent = false): Promise<PlanHeadResult> {
   try {
-    const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+    const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
     if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
-    return { ok: true, envelope: first.envelope, plan: first.plan };
+    return { ok: true, envelope: first.envelope, plan: intent ? { ...first.plan, delegationToken: first.intent?.token ?? null } : first.plan, ...(intent ? { intent: first.intent } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
