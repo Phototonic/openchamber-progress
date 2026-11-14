@@ -183,6 +183,24 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
       assert.ok(cold.ok);assert.equal((cold.value as ManagedStepResponse).disposition,'replayed');
       const observed=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'status',operationId:begin.operationId}});
       assert.ok(observed.ok);assert.equal((observed.value as ManagedStepResponse).progress!.capture.state,'unknown');
+      let progress=(observed.value as ManagedStepResponse).progress!;
+      for(const action of ['pause','resume'] as const){
+        const reply=await worker.run(env,payload,{action:'managed-step',body:{version:1,action,operationId:begin.operationId,expectedSequence:progress.sequence}});
+        if(!reply.ok)assert.fail(reply.code);
+        assert.equal((reply.value as ManagedStepResponse).disposition,'applied');progress=(reply.value as ManagedStepResponse).progress!;
+      }
+      while(progress.state!=='complete'){
+        const request={version:1,action:'advance',operationId:begin.operationId,expectedSequence:progress.sequence,step:progress.step};
+        const reply=await worker.run(env,payload,{action:'managed-step',body:request});
+        if(!reply.ok)assert.fail(reply.code);
+        const value=reply.value as ManagedStepResponse;
+        assert.equal(value.disposition,'applied',JSON.stringify(value.error));assert.equal(value.progress!.sequence,progress.sequence+1);
+        assert.deepEqual(Object.keys(reply).sort(),['accounting','ok','value']);
+        assert.ok(!JSON.stringify(reply).includes('ownershipDigest'),'private journal claims never appear on the wire');
+        const replay=await worker.run(env,payload,{action:'managed-step',body:request});
+        assert.ok(replay.ok);assert.equal((replay.value as ManagedStepResponse).disposition,'replayed');
+        progress=value.progress!;
+      }
       const first=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect'}});
       assert.ok(first.ok);cursor=(first.value as ManagedStepResponse).inspection!.cursor!;
       const continued=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor}});

@@ -1,5 +1,5 @@
 // service/main.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync8 } from "node:fs";
 
 // service/server.ts
 import http from "node:http";
@@ -5090,6 +5090,138 @@ function validateMigrationRemoval(journal) {
     return { ...layout, capture };
   });
 }
+function removeMigrationFile(journal, validateJournal) {
+  requirePlatformWriteBoundary();
+  const m = journal.migration;
+  need(m.state === "running" && m.intent !== null && ["remove-selector", "remove-discovery"].includes(m.step?.name ?? ""), "managed-step-conflict");
+  const before = platformSecurityScope(() => {
+    validateJournal?.();
+    return validateMigrationRemoval(journal);
+  }), file = before.file(m.step);
+  need(file && before.intentFor(file) && before.completed >= 2 && before.capture.state === "off", "managed-step-conflict");
+  if (!lstatSync5(file, { throwIfNoEntry: false }))
+    return { removed: false, capture: before.capture };
+  requirePlatformWriteBoundary();
+  unlinkSync2(file);
+  syncDirectory(path5.dirname(file));
+  need(!lstatSync5(file, { throwIfNoEntry: false }), "managed-step-unsettled");
+  return { removed: true, capture: { state: "unknown", observedAt: null } };
+}
+function removalHistory(journal) {
+  const file = path5.join(path5.dirname(journal.database), "installation-history.jsonl");
+  safe2(file);
+  const stat = lstatSync5(file);
+  need(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && privatePaths([path5.dirname(file), file]), "store-permissions");
+  if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
+    throw new SetupError("managed-step-limit");
+  const before = migrationSnapshot(file), bytes = readFileSync2(file);
+  need(before === migrationSnapshot(file), "installation-changed");
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new SetupError("managed-migration-conflict");
+  }
+  need(text.length === 0 || text.endsWith(`
+`), "managed-migration-conflict");
+  return { file, bytes, text, claim: { path: file, kind: "file", object: migrationObject(file), digest: digest(bytes) } };
+}
+function removalEvent(journal, capture) {
+  need(capture.state === "off", "managed-step-conflict");
+  return JSON.stringify({
+    action: "remove-capture",
+    at: capture.observedAt,
+    installId: journal.migration.legacyInstallId,
+    operationId: journal.migration.operationId
+  }) + `
+`;
+}
+function migrationRemovalRecordClaims(journal) {
+  return platformSecurityScope(() => {
+    const layout = validateMigrationRemoval(journal), m = journal.migration;
+    need(m.step?.name === "record-removal" && m.intent === null && layout.capture.state === "off", "managed-step-conflict");
+    need(readdirSync(layout.root).length === 0, "foreign-files");
+    const history = removalHistory(journal), event = removalEvent(journal, layout.capture);
+    if (history.bytes.length + Buffer.byteLength(event) > MANAGED_STEP_LIMITS.journalBytes)
+      throw new SetupError("managed-step-limit");
+    return {
+      before: [layout.claims.get(layout.root), history.claim],
+      after: [
+        { path: layout.root, kind: "absent", object: null, digest: null },
+        { ...history.claim, digest: digest(Buffer.concat([history.bytes, Buffer.from(event)])) }
+      ],
+      capture: layout.capture
+    };
+  });
+}
+function validateRemovalRecord(journal) {
+  const m = journal.migration, intent = m.intent;
+  need(m.state === "running" && m.step?.name === "record-removal" && intent && canonical(intent.step) === canonical(m.step), "managed-step-conflict");
+  const layout = validateMigrationRemoval(journal);
+  need(layout.intentFor(layout.root) && layout.capture.state === "off", "managed-step-conflict");
+  if (lstatSync5(layout.root, { throwIfNoEntry: false }))
+    need(readdirSync(layout.root).length === 0, "foreign-files");
+  const history = removalHistory(journal), event = removalEvent(journal, intent.captureBefore);
+  const before = intent.before[1], after = intent.after[1];
+  need(intent.before.length === 2 && intent.after.length === 2 && canonical(intent.before[0]) === canonical(layout.claims.get(layout.root)) && canonical(intent.after[0]) === canonical({ path: layout.root, kind: "absent", object: null, digest: null }) && before?.path === history.file && before.kind === "file" && canonical(before.object) === canonical(history.claim.object) && after?.path === history.file && after.kind === "file" && canonical(after.object) === canonical(before.object), "managed-step-conflict");
+  let recorded = false;
+  for (let offset = 0;offset < history.bytes.length; ) {
+    const end = history.bytes.indexOf(10, offset);
+    need(end >= 0, "managed-migration-conflict");
+    if (history.bytes.subarray(offset, end + 1).equals(Buffer.from(event))) {
+      need(!recorded && digest(history.bytes.subarray(0, offset)) === before.digest && digest(history.bytes.subarray(0, end + 1)) === after.digest, "managed-migration-conflict");
+      recorded = true;
+    }
+    offset = end + 1;
+  }
+  if (!recorded)
+    need(history.claim.digest === before.digest && digest(Buffer.concat([history.bytes, Buffer.from(event)])) === after.digest, "managed-migration-conflict");
+  need(!recorded || !lstatSync5(layout.root, { throwIfNoEntry: false }), "managed-migration-conflict");
+  return { layout, history, event, recorded };
+}
+function recordMigrationRemoval(journal, validateJournal) {
+  requirePlatformWriteBoundary();
+  let current = platformSecurityScope(() => {
+    validateJournal?.();
+    return validateRemovalRecord(journal);
+  });
+  let removed = false;
+  if (lstatSync5(current.layout.root, { throwIfNoEntry: false })) {
+    requirePlatformWriteBoundary();
+    rmdirSync(current.layout.root);
+    syncDirectory(path5.dirname(current.layout.root));
+    removed = true;
+    current = platformSecurityScope(() => {
+      validateJournal?.();
+      return validateRemovalRecord(journal);
+    });
+  }
+  if (!current.recorded) {
+    requirePlatformWriteBoundary();
+    appendFileSync(current.history.file, current.event, { flag: "a", mode: 384 });
+    syncFile(current.history.file);
+  }
+  return { removed, recorded: !current.recorded, capture: { state: "unknown", observedAt: null } };
+}
+function migrationRemovalRecorded(journal) {
+  return platformSecurityScope(() => validateRemovalRecord(journal).recorded);
+}
+function migrationRemovalComplete(journal) {
+  return platformSecurityScope(() => {
+    const layout = validateMigrationRemoval(journal), m = journal.migration;
+    need(layout.completed >= m.plan.findIndex((s) => s.name === "record-removal"), "managed-step-conflict");
+    const events = removalHistory(journal).text.split(`
+`).flatMap((line) => {
+      try {
+        const event = JSON.parse(line);
+        return event?.action === "remove-capture" && event.installId === m.legacyInstallId && event.operationId === m.operationId ? [event] : [];
+      } catch {
+        return [];
+      }
+    });
+    return events.length === 1 && typeof events[0].at === "string" && Number.isFinite(Date.parse(events[0].at)) && new Date(events[0].at).toISOString() === events[0].at;
+  });
+}
 function history(targets, event) {
   const file = path5.join(targets.storeRoot, "installation-history.jsonl");
   safe2(file, true);
@@ -6459,6 +6591,16 @@ function writeManagedStepJournal(env, next, expected, validate) {
   if (!written || canonical(written) !== canonical(next))
     throw new SetupError("managed-step-unsettled");
 }
+function publishManagedStepIntent(env, next, expected, validate) {
+  if (next.migration.state !== "running" || !next.migration.intent || next.migration.sequence !== expected.migration.sequence)
+    throw new SetupError("managed-step-conflict");
+  publishManagedJournal(env, next, expected, validate);
+}
+function validatePublishedManagedIntent(env, expected) {
+  const current = readManagedStepJournal(env);
+  if (expected.migration.state !== "running" || !expected.migration.intent || !current || canonical(current) !== canonical(expected))
+    throw new SetupError("managed-step-unsettled");
+}
 function validateInitialManagedCheckpoint(journal) {
   const m = journal.migration;
   if (m.sequence !== 1 || m.state !== "pending" || m.intent !== null || m.captureRenewals.length || !sameManagedStep(m.lastCompleted, { name: "prepare", batch: 0 }) || !m.receipt || m.receipt.expectedSequence !== 0 || m.receipt.outcome !== "applied" || !sameManagedStep(m.receipt.step, m.lastCompleted))
@@ -7527,18 +7669,198 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
 }
 
 // setup/managed-step-engine.ts
+import path13 from "node:path";
+
+// setup/managed-step-effects.ts
+import { lstatSync as lstatSync11, readFileSync as readFileSync7, readdirSync as readdirSync4 } from "node:fs";
 import path12 from "node:path";
+function need5(value, code = "managed-step-conflict") {
+  if (!value)
+    throw new SetupError(code);
+}
+function snapshot3(file) {
+  const s = lstatSync11(file, { bigint: true });
+  return [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":");
+}
+function fileClaim(file) {
+  managedPath(file, true);
+  const s = lstatSync11(file, { bigint: true, throwIfNoEntry: false });
+  if (!s)
+    return { path: file, kind: "absent", object: null, digest: null };
+  need5(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path12.dirname(file), file]), "managed-migration-conflict");
+  need5(s.size <= BigInt(MANAGED_STEP_LIMITS.journalBytes), "managed-step-limit");
+  const before = [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":"), hash4 = digest(readFileSync7(file));
+  need5(before === snapshot3(file), "managed-migration-conflict");
+  return { path: file, kind: "file", object: { device: String(s.dev), inode: String(s.ino), birthNs: String(s.birthtimeNs) }, digest: hash4 };
+}
+function expectation2(journal) {
+  return { format: 1, storeId: journal.storeId, sourceId: journal.source.id, installId: journal.installId, ...journal.migration.expectation };
+}
+function completed(journal, name) {
+  const m = journal.migration;
+  return m.plan.findIndex((s) => s.name === name) <= m.plan.findIndex((s) => canonical(s) === canonical(m.lastCompleted));
+}
+function observeCapture(journal) {
+  const store = new Store(journal.database, { readOnly: true });
+  try {
+    verifyStore(store, journal);
+    store.subagentRunStorage();
+    return { state: store.list({ limit: 1 }).captureEnabled ? "on" : "off", observedAt: new Date().toISOString() };
+  } finally {
+    store.close();
+  }
+}
+function validateManagedStepTarget(env, payload, journal) {
+  return platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(managedJournalPaths(journal), true);
+    const current = readManagedStepJournal(env);
+    need5(current && canonical(current) === canonical(journal));
+    const m = journal.migration, binding = managedJournalBinding(journal);
+    need5(payload.plugin && payload.guidance && payload.version === m.expectation.version && activationFingerprint({ ...binding, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance)) === m.expectation.fingerprint, "managed-review-stale");
+    const selector = managedBindingFile(env), expectedFile = managedExpectationFile(journal);
+    for (const file of [selector, expectedFile]) {
+      need5(!readdirSync4(path12.dirname(file)).some((n) => n.startsWith(path12.basename(file) + ".stage-")), "managed-migration-conflict");
+      fileClaim(file);
+    }
+    const selected = readManagedBinding(env), expected = readManagedExpectation(journal);
+    need5(!selected || canonical(selected) === canonical(binding), "managed-selection-conflict");
+    if (completed(journal, "expectation"))
+      need5(expected && canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
+    if (completed(journal, "publish-binding"))
+      need5(selected, "managed-migration-conflict");
+    let capture3;
+    if (m.legacy.kind === "manifest") {
+      capture3 = validateMigrationRemoval(journal).capture;
+      if (completed(journal, "record-removal"))
+        need5(migrationRemovalComplete(journal), "managed-migration-conflict");
+    } else {
+      need5(readRemovalReceipt({ binding, phase: "removed", legacyInstallId: m.legacyInstallId }, m.legacy.receipt), "managed-migration-conflict");
+      capture3 = observeCapture(journal);
+    }
+    return capture3;
+  });
+}
+function managedStepEffectClaims(env, payload, journal) {
+  return platformSecurityScope(() => {
+    const captureBefore = validateManagedStepTarget(env, payload, journal), m = journal.migration;
+    need5(m.step && m.step.name !== "prepare" && !m.intent);
+    if (m.step.name === "record-removal") {
+      const claims2 = migrationRemovalRecordClaims(journal);
+      return { before: claims2.before, after: claims2.after, captureBefore: claims2.capture };
+    }
+    if (["remove-selector", "remove-discovery"].includes(m.step.name)) {
+      const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
+      need5(file && captureBefore.state === "off");
+      return { before: [layout.claims.get(file)], after: [{ path: file, kind: "absent", object: null, digest: null }], captureBefore };
+    }
+    if (m.step.name === "expectation" || m.step.name === "publish-binding") {
+      const file = m.step.name === "expectation" ? managedExpectationFile(journal) : managedBindingFile(env), before = fileClaim(file);
+      const value = m.step.name === "expectation" ? expectation2(journal) : managedJournalBinding(journal);
+      const after = m.step.name === "publish-binding" && before.kind === "file" ? before : { path: file, kind: "file", object: null, digest: digest(JSON.stringify(value)) };
+      return { before: [before], after: [after], captureBefore };
+    }
+    return { before: [], after: [], captureBefore };
+  });
+}
+function matchesAfter(actual, expected) {
+  return actual.path === expected.path && actual.kind === expected.kind && actual.digest === expected.digest && (expected.object === null && expected.kind === "file" || canonical(actual.object) === canonical(expected.object));
+}
+function publication(journal, env) {
+  const m = journal.migration, intent2 = m.intent;
+  need5(m.step?.name === "expectation" || m.step?.name === "publish-binding");
+  const isExpectation = m.step.name === "expectation", file = isExpectation ? managedExpectationFile(journal) : managedBindingFile(env);
+  const value = isExpectation ? expectation2(journal) : managedJournalBinding(journal), actual = fileClaim(file);
+  need5(intent2.before.length === 1 && intent2.after.length === 1 && intent2.before[0].path === file && intent2.after[0].path === file);
+  const after = intent2.after[0];
+  if (!isExpectation && intent2.before[0].kind === "file")
+    need5(canonical(after) === canonical(intent2.before[0]));
+  else
+    need5(after.kind === "file" && after.object === null && after.digest === digest(JSON.stringify(value)));
+  const committed = matchesAfter(actual, after);
+  if (!committed)
+    need5(canonical(actual) === canonical(intent2.before[0]), "managed-migration-conflict");
+  return { file, value, committed, replace: isExpectation && actual.kind === "file" };
+}
+function managedStepEffectCommitted(env, payload, journal) {
+  return platformSecurityScope(() => {
+    const capture3 = validateManagedStepTarget(env, payload, journal), m = journal.migration;
+    need5(m.intent && m.step);
+    const evidence = structuredClone(journal);
+    evidence.migration.state = "running";
+    if (m.state === "running")
+      validatePublishedManagedIntent(env, journal);
+    let committed;
+    if (m.step.name === "expectation" || m.step.name === "publish-binding")
+      committed = publication(journal, env).committed;
+    else if (m.step.name === "record-removal")
+      committed = migrationRemovalRecorded(evidence);
+    else if (m.step.name === "remove-selector" || m.step.name === "remove-discovery") {
+      const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
+      need5(file && layout.intentFor(file));
+      committed = !lstatSync11(file, { throwIfNoEntry: false });
+    } else {
+      need5(m.intent.before.length === 0 && m.intent.after.length === 0);
+      committed = m.step.name === "reconcile" || capture3.state === (m.step.name === "enable" ? "on" : "off");
+    }
+    return { committed, capture: capture3 };
+  });
+}
+function applyManagedStepEffect(env, payload, journal, freshCapture = false) {
+  requirePlatformWriteBoundary();
+  const m = journal.migration;
+  need5(m.state === "running" && m.intent && m.step);
+  if (m.step?.name === "record-removal") {
+    recordMigrationRemoval(journal, () => {
+      validateManagedStepTarget(env, payload, journal);
+      validatePublishedManagedIntent(env, journal);
+    });
+    return;
+  }
+  if (m.step?.name === "remove-selector" || m.step?.name === "remove-discovery") {
+    removeMigrationFile(journal, () => {
+      validateManagedStepTarget(env, payload, journal);
+      validatePublishedManagedIntent(env, journal);
+    });
+    return;
+  }
+  let store;
+  try {
+    const prepared = platformSecurityScope(() => {
+      const result = managedStepEffectCommitted(env, payload, journal);
+      if (result.committed)
+        return;
+      if (m.step?.name === "expectation" || m.step?.name === "publish-binding")
+        return publication(journal, env);
+      need5(freshCapture && ["enable", "disable"].includes(m.step?.name ?? ""), "managed-step-unsettled");
+      need5(result.capture.state === m.intent.captureBefore.state, "managed-step-unsettled");
+      store = new Store(journal.database);
+      verifyStore(store, journal);
+      store.subagentRunStorage();
+      return;
+    });
+    requirePlatformWriteBoundary();
+    if (prepared)
+      publishPrivateJson(prepared.file, prepared.value, prepared.replace);
+    else if (store)
+      store.setEnabled(m.step.name === "enable");
+  } finally {
+    store?.close();
+  }
+}
+
+// setup/managed-step-engine.ts
 function observeManagedStep(env, operationId) {
   return platformSecurityScope(() => {
-    const roots = managedSourceRoots(env), root = path12.join(roots.dataRoot, "agent-progress-managed");
+    const roots = managedSourceRoots(env), root = path13.join(roots.dataRoot, "agent-progress-managed");
     if (windows)
       windowsPaths([
         roots.configRoot,
         roots.dataRoot,
         root,
-        path12.join(root, ".ownership.json"),
-        path12.join(root, "migration.json"),
-        path12.join(root, "progress-binding.json")
+        path13.join(root, ".ownership.json"),
+        path13.join(root, "migration.json"),
+        path13.join(root, "progress-binding.json")
       ], true);
     const journal = readManagedStepJournal(env);
     if (operationId && journal?.migration.operationId !== operationId)
@@ -7553,7 +7875,7 @@ function replayBegin(env, request) {
   const m = journal.migration, receipt = m.receipt;
   if (m.operationId !== request.operationId || m.sequence !== 1 || !receipt || receipt.expectedSequence !== 0 || receipt.outcome !== "applied" || receipt.requestDigest !== managedRequestDigest(request, journal))
     throw new SetupError("managed-step-conflict");
-  return { disposition: "replayed", progress: managedJournalProgress(journal) };
+  return { disposition: "replayed", progress: managedJournalProgress(journal), journal };
 }
 function beginManagedStep(env, payload, request, budget, session) {
   requirePlatformWriteBoundary();
@@ -7588,14 +7910,218 @@ function beginManagedStep(env, payload, request, budget, session) {
     budget.require(2, 6000);
     writeManagedStepJournal(env, next, undefined, validate);
   }
-  return { disposition: "applied", progress: managedJournalProgress(next) };
+  return { disposition: "applied", progress: managedJournalProgress(next), journal: next };
+}
+var unknownCapture = { state: "unknown", observedAt: null };
+function need6(value, code = "managed-step-conflict") {
+  if (!value)
+    throw new SetupError(code);
+}
+function loadOperation(env, request, hint) {
+  if (!hint) {
+    const current = observeManagedStep(env, request.operationId);
+    need6(current, "not-found");
+    return current;
+  }
+  const known = parseManagedStepJournal(JSON.stringify(hint));
+  return platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(managedJournalPaths(known), true);
+    const current = readManagedStepJournal(env);
+    need6(current && current.migration.operationId === request.operationId, "not-found");
+    need6(canonical(current) === canonical(known));
+    return current;
+  });
+}
+function renewalFor(request, journal) {
+  if (request.action !== "advance")
+    return;
+  return journal.migration.captureRenewals.findLast((r) => r.sequence <= request.expectedSequence && sameManagedStep(r.priorIntent.step, request.step));
+}
+function result(journal, disposition, capture3 = unknownCapture, error = null) {
+  return { journal, disposition, progress: managedJournalProgress(journal, capture3), error };
+}
+function replay(request, journal) {
+  const receipt = journal.migration.receipt;
+  if (receipt?.expectedSequence !== request.expectedSequence)
+    return;
+  if (receipt.requestDigest !== managedRequestDigest(request, journal, renewalFor(request, journal)))
+    return;
+  return result(journal, "replayed", unknownCapture, receipt.outcome === "failed" ? journal.migration.diagnostic : null);
+}
+function diagnostic(error, journal) {
+  const code = error?.code;
+  return { stage: journal.migration.step?.name ?? "journal", code: code && [...MANAGED_STEP_CODES, ...MANAGED_ACTION_CODES].includes(code) ? code : "managed-step-unsettled" };
+}
+function advanceManagedStep(env, payload, request, budget, hint) {
+  requirePlatformWriteBoundary();
+  let capture3 = unknownCapture;
+  let claims2, evidence;
+  const prior = platformSecurityScope(() => {
+    const journal = loadOperation(env, request, hint);
+    if (!replay(request, journal)) {
+      const m2 = journal.migration;
+      need6(request.expectedSequence === m2.sequence && sameManagedStep(request.step, m2.step) && ["pending", "running"].includes(m2.state));
+      if (m2.intent) {
+        evidence = managedStepEffectCommitted(env, payload, journal);
+        capture3 = evidence.capture;
+      } else {
+        claims2 = managedStepEffectClaims(env, payload, journal);
+        capture3 = claims2.captureBefore;
+      }
+    }
+    return journal;
+  });
+  const repeated = replay(request, prior);
+  if (repeated)
+    return repeated;
+  const m = prior.migration;
+  need6(request.expectedSequence === m.sequence && sameManagedStep(request.step, m.step) && ["pending", "running"].includes(m.state));
+  const renewal = renewalFor(request, prior), requestDigest = managedRequestDigest(request, prior, renewal);
+  if (m.state === "running")
+    need6(m.intent && (m.intent.expectedSequence < m.sequence || m.intent.requestDigest === requestDigest));
+  let running = structuredClone(prior), freshCapture = false, published = false;
+  try {
+    if (m.intent) {
+      if (["enable", "disable"].includes(m.step.name) && !evidence.committed) {
+        need6(m.state === "pending" && renewal && canonical(renewal.priorIntent) === canonical(m.intent), "managed-step-unsettled");
+        running.migration.intent = {
+          requestDigest,
+          expectedSequence: m.sequence,
+          step: m.step,
+          effect: "intent",
+          before: [],
+          after: [],
+          captureBefore: capture3,
+          captureReviewSequence: renewal.sequence
+        };
+        freshCapture = true;
+      }
+    } else {
+      running.migration.intent = { requestDigest, expectedSequence: m.sequence, step: m.step, effect: "intent", ...claims2, captureReviewSequence: null };
+      freshCapture = ["enable", "disable"].includes(m.step.name);
+    }
+    running.migration.state = "running";
+    running.migration.diagnostic = null;
+    running.migration.capture = capture3;
+    const remaining = m.step.name === "record-removal" ? 5 : 4;
+    budget.require(remaining, remaining * 2500 + 1000);
+    if (canonical(running) !== canonical(prior)) {
+      try {
+        publishManagedStepIntent(env, running, prior, () => {
+          validateManagedStepTarget(env, payload, prior);
+        });
+      } catch (error) {
+        try {
+          budget.require(1, 3500);
+          const current = platformSecurityScope(() => {
+            if (windows)
+              windowsPaths(managedJournalPaths(running), true);
+            return readManagedStepJournal(env);
+          });
+          if (current && canonical(current) === canonical(running))
+            published = true;
+          else if (current && canonical(current) === canonical(prior))
+            return result(prior, "refused", unknownCapture, diagnostic(error, prior));
+          else
+            return result(running, "refused", unknownCapture, diagnostic(error, running));
+        } catch {
+          return result(running, "refused", unknownCapture, diagnostic(error, running));
+        }
+        throw error;
+      }
+    }
+    published = true;
+    applyManagedStepEffect(env, payload, running, freshCapture);
+    const next = structuredClone(running), n = next.migration, index = n.plan.findIndex((s) => sameManagedStep(s, n.step));
+    n.sequence++;
+    n.lastCompleted = n.step;
+    n.step = n.plan[index + 1] ?? null;
+    n.state = n.step ? "pending" : "complete";
+    if (n.lastCompleted.name === "record-removal")
+      n.phase = "removed";
+    if (!n.step)
+      n.phase = "complete";
+    n.intent = null;
+    n.diagnostic = null;
+    n.capture = unknownCapture;
+    n.receipt = { requestDigest, expectedSequence: m.sequence, sequence: n.sequence, step: n.lastCompleted, outcome: "applied" };
+    writeManagedStepJournal(env, next, running, () => {
+      const evidence2 = managedStepEffectCommitted(env, payload, running);
+      need6(evidence2.committed, "managed-step-unsettled");
+      capture3 = evidence2.capture;
+    });
+    return result(next, "applied", capture3);
+  } catch (error) {
+    const failure = diagnostic(error, running);
+    if (!published)
+      return result(prior, "refused", unknownCapture, failure);
+    const failed = structuredClone(running), f = failed.migration;
+    f.sequence++;
+    f.state = "failed";
+    f.capture = unknownCapture;
+    f.diagnostic = failure;
+    f.receipt = { requestDigest, expectedSequence: m.sequence, sequence: f.sequence, step: f.step, outcome: "failed" };
+    try {
+      budget.require(2, 6000);
+      writeManagedStepJournal(env, failed, running);
+      return result(failed, "refused", unknownCapture, failure);
+    } catch {
+      return result(running, "refused", unknownCapture, failure);
+    }
+  }
+}
+function controlManagedStep(env, payload, request, budget, hint, session) {
+  requirePlatformWriteBoundary();
+  const admitted = platformSecurityScope(() => {
+    const journal = loadOperation(env, request, hint);
+    return { journal, capture: replay(request, journal) ? unknownCapture : validateManagedStepTarget(env, payload, journal) };
+  });
+  const prior = admitted.journal;
+  let capture3 = admitted.capture;
+  const repeated = replay(request, prior);
+  if (repeated)
+    return repeated;
+  const m = prior.migration;
+  need6(request.expectedSequence === m.sequence);
+  const allowed = request.action === "pause" ? ["pending", "failed", "running"] : request.action === "abandon" ? ["pending", "failed", "running", "paused"] : ["pending", "paused", "failed", "abandoned", "running"];
+  need6(allowed.includes(m.state));
+  const review = request.action === "resume" ? request.review : undefined;
+  const captureIntent = m.intent && ["enable", "disable"].includes(m.intent.step.name);
+  const validateReview = () => {
+    need6(review && session && captureIntent && review.step === m.step?.name && session.review?.expected === review.expected, "managed-review-stale");
+    const checked = validateManagedInspectionReview(env, payload, session);
+    need6(checked.operation && canonical(checked.operation) === canonical(prior) && checked.capture.state !== "unknown", "managed-review-stale");
+    return checked.capture;
+  };
+  if (review)
+    capture3 = validateReview();
+  else if (request.action === "resume" && captureIntent) {
+    const renewal = m.captureRenewals.at(-1), authorized = renewal && canonical(renewal.priorIntent) === canonical(m.intent);
+    need6(authorized || capture3.state === (m.intent.step.name === "enable" ? "on" : "off"), "managed-step-unsettled");
+  }
+  const next = structuredClone(prior), n = next.migration;
+  n.sequence++;
+  n.state = request.action === "resume" ? "pending" : request.action === "pause" ? "paused" : "abandoned";
+  n.capture = capture3;
+  n.diagnostic = null;
+  if (review)
+    n.captureRenewals.push({ reviewDigest: review.expected, sequence: n.sequence, priorIntent: structuredClone(m.intent) });
+  n.receipt = { requestDigest: managedRequestDigest(request, prior), expectedSequence: m.sequence, sequence: n.sequence, step: n.step, outcome: "applied" };
+  budget.require(2, 6000);
+  writeManagedStepJournal(env, next, prior, () => {
+    validateManagedStepTarget(env, payload, prior);
+    if (review)
+      validateReview();
+  });
+  return result(next, "applied", capture3);
 }
 
 // service/request-worker.ts
 function isSetupRequestWorker() {
   return !isMainThread && workerData?.kind === "agent-progress-setup-request";
 }
-function diagnostic(error) {
+function diagnostic2(error) {
   const code = error?.code;
   return typeof code === "string" && [...MANAGED_ACTION_CODES, ...MANAGED_STEP_CODES].includes(code) ? code : platformErrorCode(error) ?? storageError(error).code;
 }
@@ -7607,6 +8133,7 @@ function runSetupRequestWorker() {
   let setup;
   let value, code;
   let inspection;
+  let journal;
   try {
     value = withPlatformRequestBudget(budget, () => {
       setup = new SetupController({ env: input.env }, () => input.payload);
@@ -7617,10 +8144,18 @@ function runSetupRequestWorker() {
           throw Object.assign(new Error("invalid"), { code: "invalid" });
         if (parsed.action === "begin") {
           const begun = beginManagedStep(input.env, input.payload, parsed, budget, input.inspection);
-          return { version: 1, ...begun, inspection: null, error: null, accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs } };
+          journal = begun.journal;
+          return {
+            version: 1,
+            disposition: begun.disposition,
+            progress: begun.progress,
+            inspection: null,
+            error: null,
+            accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs }
+          };
         }
         if (parsed.action === "status") {
-          const journal = observeManagedStep(input.env, parsed.operationId);
+          journal = observeManagedStep(input.env, parsed.operationId);
           return {
             version: 1,
             disposition: "observed",
@@ -7630,12 +8165,26 @@ function runSetupRequestWorker() {
             accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs }
           };
         }
+        if (parsed.action === "advance" || parsed.action === "pause" || parsed.action === "abandon" || parsed.action === "resume") {
+          const hint = input.journal ?? input.inspection?.operation;
+          const changed = parsed.action === "advance" ? advanceManagedStep(input.env, input.payload, parsed, budget, hint) : controlManagedStep(input.env, input.payload, parsed, budget, hint, input.inspection);
+          journal = changed.journal;
+          return {
+            version: 1,
+            disposition: changed.disposition,
+            progress: changed.progress,
+            inspection: null,
+            error: changed.error,
+            accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs }
+          };
+        }
         if (parsed.action !== "inspect")
           throw Object.assign(new Error("managed-step-unsupported"), { code: "managed-step-unsupported" });
         if (parsed.cursor && (!input.inspection || input.inspection.cursor !== parsed.cursor))
           throw Object.assign(new Error("managed-inspection-expired"), { code: "managed-inspection-expired" });
         const inspected = inspectManagedStep(input.env, input.payload, parsed.cursor ? input.inspection : undefined, parsed.storeRoot);
         inspection = inspected.session;
+        journal = inspection.operation;
         return {
           version: 1,
           disposition: "observed",
@@ -7655,20 +8204,20 @@ function runSetupRequestWorker() {
     });
     budget.require();
   } catch (error) {
-    code = diagnostic(error);
+    code = diagnostic2(error);
   } finally {
     try {
       setup?.close();
     } catch (error) {
-      code ??= diagnostic(error);
+      code ??= diagnostic2(error);
     }
   }
   const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
-  const result = code ? { ok: false, code, accounting } : { ok: true, value, accounting };
-  if (Buffer.byteLength(JSON.stringify(result)) > MANAGED_STEP_LIMITS.responseBytes || inspection && Buffer.byteLength(JSON.stringify(inspection)) > MANAGED_STEP_LIMITS.journalBytes)
+  const result2 = code ? { ok: false, code, accounting } : { ok: true, value, accounting };
+  if (Buffer.byteLength(JSON.stringify(result2)) > MANAGED_STEP_LIMITS.responseBytes || inspection && Buffer.byteLength(JSON.stringify(inspection)) > MANAGED_STEP_LIMITS.journalBytes || journal && Buffer.byteLength(JSON.stringify(journal)) > MANAGED_STEP_LIMITS.journalBytes)
     parentPort.postMessage({ requestId: input.requestId, result: { ok: false, code: "managed-step-limit", accounting } });
   else
-    parentPort.postMessage({ requestId: input.requestId, result, ...!code && inspection ? { inspection } : {} });
+    parentPort.postMessage({ requestId: input.requestId, result: result2, ...!code && inspection ? { inspection } : {}, ...!code && journal ? { journal } : {} });
   parentPort.close();
 }
 
@@ -7682,7 +8231,7 @@ if (isSetupRequestWorker()) {
     const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
     if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
       throw new Error;
-    setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync7(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync7(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync7(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
+    setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync8(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync8(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync8(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
     const server = createProgressServer(undefined, token, undefined, setup);
     server.on("error", () => {
       setup?.close();

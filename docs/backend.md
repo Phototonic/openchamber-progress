@@ -317,7 +317,7 @@ state only after a matching single reply and successful worker exit before the
 deadline. A fresh inspection replaces it; restart or a changed environment/package
 expires it. Private manifest/journal claims never enter the public result. The
 inspection review is not a durable action receipt or a substitute for fresh ACL
-checks. Reviewed-resume consumption and HTTP integration remain separate engine work.
+checks. HTTP integration remains separate work.
 Portable launch accounting measures at most four queries per inspection stage
 for intact, format-1 and receipt-proven fixtures, and one for fresh complete-review
 admission. This is not native timing or the full slow-machine migration gate.
@@ -336,9 +336,42 @@ no legacy scan or Store admission. A requested different operation returns
 `not-found`, never the current operation's progress. Status does not consume an
 unfinished inspection review. Portable accounting measures six launches for new
 prepare, five with an existing same-target managed selection, three for format-1
-prepare, and three for cold begin replay/status. These
-worker paths still do not advertise or expose the HTTP step protocol: advance,
-controls, final effects and transport integration remain unfinished.
+prepare, and three for cold begin replay/status.
+
+The private worker now also dispatches sequenced advance, pause, abandon and
+resume. Each advance publishes a running intent before one effect, verifies that
+effect inside the completion checkpoint's fresh validation batch, and settles
+one sequence increment. Failures retain the intent and attempt a bounded private
+failure checkpoint; if settlement cannot be proven, the result remains uncertain.
+Publication errors are read back when budget permits, since rename may have
+succeeded before an error. No failure path rolls back capture or restores discovery.
+
+Expectation and binding publication use the existing private JSON publisher;
+binding publication never clobbers a different selection. Capture effects use
+fresh Store/source/schema checks, reviewed package bytes, and (for enable) proven
+removal, expectation and selection. Lifecycle removal stays with the existing
+owner, including exact record-removal completion proof and revalidation between
+directory removal and history append. Later steps also require the retained
+same-operation history event. Reconcile reads capture and verifies transition
+completion; it does not require capture to remain on after a later user disable.
+
+Controls retain unresolved intent and cannot perform effects. Reviewed resume
+binds the current operation and capture bit, appends its prior intent to immutable
+renewal history, and grants one subsequent capture intent. An uncertain renewed
+effect needs another review, not reuse of consumed consent. Exact receipt replay
+does not reapply capture and does not need an expired inspection token.
+
+The supervisor privately carries the last journal as a discovery claim between
+workers. Admission compares it with the current private journal and revalidates
+all known paths and lifecycle facts; no ACL result crosses a request or write.
+Status can restore those claims after restart. A cold mutation that cannot reserve
+its remaining batches refuses before publishing an intent; explicit bounded
+status/resume is the recovery path, not a hidden retry or a weakened check.
+Portable integrated accounting measures five launches for expectation, capture,
+each discovery file, binding publication and reconcile, and six for record-removal.
+These are query-count measurements, not native Windows timing evidence.
+The public HTTP/status integration, ordinary capture fencing and complete
+transport failure matrix remain unfinished. The capability stays unadvertised.
 
 The supervisor acquires one conservative product-wide loopback writer slot for
 each request, covering different discovery scopes sharing a Store. Contention or
@@ -369,8 +402,8 @@ locks. Writes refuse an enclosing security scope so post-write validation cannot
 reuse its ACL cache. These helpers do **not** admit a Store or authorize a saved
 claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
 Cold progress projection reports capture as unknown unless supplied a fresh
-observation. Neither these helpers nor their tests constitute an integrated step
-engine, and the capability remains unadvertised until integration is complete.
+observation. These helpers alone do not constitute HTTP integration, and the
+capability remains unadvertised until that integration is complete.
 
 The lifecycle owner exposes a one-file removal foundation, using the frozen
 original manifest and native claims. Every request validates the remaining full
@@ -396,8 +429,8 @@ post-publication scan: the effect admission batch reads back and compares the
 durable intent before rmdir. Settled checkpoint publication still verifies its
 write. This coalesces reads, not authority across writes. Portable accounting
 measures six launches for the complete record-removal request, including both
-journal writes and the fresh check between rmdir and append. These owners still
-need engine integration and do not make the old monolithic route resumable.
+journal writes and the fresh check between rmdir and append. The private step
+engine now uses these owners; the old monolithic route is not made resumable.
 
 The format-1 upgrade writer accepts only an explicitly reviewed initial prepare
 checkpoint for the same binding and legacy identity. It freshly validates either
@@ -407,8 +440,8 @@ five-step prepare/expectation/publish-binding/enable/reconcile plan, with unknow
 capture, and repeats no disable, deletion or history append. Intact discovery
 retains the full plan even if the old coarse phase says removed. The only upgrade
 effect replaces the old journal atomically. Complete old records, different
-selectors, retained stages/locks and unsupported records refuse. Engine consent,
-fencing and lost-begin-reply handling still need integration; this writer never
+selectors, retained stages/locks and unsupported records refuse. The private
+worker supplies consent, fencing and lost-begin-reply handling; this writer never
 runs automatically on startup. Portable tests measure three security launches
 for admission plus upgrade/checkpoint, not native Windows latency.
 

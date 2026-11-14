@@ -79,8 +79,17 @@ requests without creating product files or changing capture. An unfinished revie
 expires on service restart or package/environment change and requires fresh
 inspection. Its confirmed prepare path retains a durable operation receipt for
 an exact retry after restart; bounded status reports unknown capture rather than
-replaying an old capture observation. These are not yet the public step migration
-flow: they do not change the existing Setup behavior below or advertise support.
+replaying an old capture observation. The private worker also implements separate
+effect requests and durable pause, abandon and resume. These controls retain
+unfinished work; they do not undo removal or change capture. An interrupted capture
+decision that cannot be proven requires a fresh review, and that review authorizes
+only one new capture intent. Retrying a settled enable never overrides a later
+manual disable. No worker continues automatically after restart.
+
+These are not yet the public step migration flow: HTTP routing, ordinary Setup
+status and capture-route coordination still need integration and testing before
+support is advertised. The existing Setup behavior below is unchanged. Portable
+engine tests and launch counts are not native Windows latency certification.
 
 ### Existing migration flow
 

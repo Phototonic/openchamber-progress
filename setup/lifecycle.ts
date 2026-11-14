@@ -292,10 +292,10 @@ export function validateMigrationRemoval(journal:ManagedStepJournal) {
 /** One lifecycle-owned file effect only. Callers persist its exact intent first
  * under the shared writer fence. Missing current files reconcile; they never
  * authorize deletion of a new object at that path. No Store flag is changed. */
-export function removeMigrationFile(journal:ManagedStepJournal):{removed:boolean;capture:ManagedCaptureObservation} {
+export function removeMigrationFile(journal:ManagedStepJournal,validateJournal?:()=>void):{removed:boolean;capture:ManagedCaptureObservation} {
   requirePlatformWriteBoundary();
   const m=journal.migration;need(m.state==='running'&&m.intent!==null&&['remove-selector','remove-discovery'].includes(m.step?.name??''),'managed-step-conflict');
-  const before=validateMigrationRemoval(journal),file=before.file(m.step);
+  const before=platformSecurityScope(()=>{validateJournal?.();return validateMigrationRemoval(journal);}),file=before.file(m.step);
   need(file&&before.intentFor(file)&&before.completed>=2&&before.capture.state==='off','managed-step-conflict');
   if(!lstatSync(file,{throwIfNoEntry:false}))return {removed:false,capture:before.capture};
   requirePlatformWriteBoundary();unlinkSync(file);syncDirectory(path.dirname(file));
@@ -380,7 +380,7 @@ export function recordMigrationRemoval(journal:ManagedStepJournal,validateJourna
     requirePlatformWriteBoundary();rmdirSync(current.layout.root);syncDirectory(path.dirname(current.layout.root));removed=true;
     // rmdir invalidates the actual security scope. Recheck the retained payloads,
     // roots, Store, capture and history before admitting the second subeffect.
-    current=platformSecurityScope(()=>validateRemovalRecord(journal));
+    current=platformSecurityScope(()=>{validateJournal?.();return validateRemovalRecord(journal);});
   }
   if(!current.recorded){
     requirePlatformWriteBoundary();
@@ -394,6 +394,21 @@ export function recordMigrationRemoval(journal:ManagedStepJournal,validateJourna
  * fresh validation batch. A missing directory without the event is incomplete. */
 export function migrationRemovalRecorded(journal:ManagedStepJournal):boolean {
   return platformSecurityScope(()=>validateRemovalRecord(journal).recorded);
+}
+/** After the record-removal checkpoint the unresolved intent is gone. Later
+ * steps still require this operation's lifecycle event in freshly owned history,
+ * in addition to the full remaining-set and absent-directory verification. */
+export function migrationRemovalComplete(journal:ManagedStepJournal):boolean {
+  return platformSecurityScope(()=>{
+    const layout=validateMigrationRemoval(journal),m=journal.migration;
+    need(layout.completed>=m.plan.findIndex(s=>s.name==='record-removal'),'managed-step-conflict');
+    const events=removalHistory(journal).text.split('\n').flatMap(line=>{
+      try{const event=JSON.parse(line);return event?.action==='remove-capture'&&event.installId===m.legacyInstallId&&event.operationId===m.operationId?[event]:[];}
+      catch{return [];}
+    });
+    return events.length===1&&typeof events[0].at==='string'&&Number.isFinite(Date.parse(events[0].at))&&
+      new Date(events[0].at).toISOString()===events[0].at;
+  });
 }
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}
 /** Retained sources are candidates, not currently selected target assertions. */
