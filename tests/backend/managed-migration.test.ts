@@ -312,6 +312,36 @@ test('interruption after disable is pending and an explicit retry repeats full o
   }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
 });
 
+test('interruption after pending publication reports capture still on and permits a fresh retry',t=>{
+  const f=fixture(),setEnabled=Store.prototype.setEnabled;let interrupted=false;
+  const mock=t.mock.method(Store.prototype,'setEnabled',function(this:Store,enabled:boolean){
+    if(this.file===f.legacy.database&&!enabled&&!interrupted){interrupted=true;throw new Error('Synthetic pre-disable interruption');}
+    return setEnabled.call(this,enabled);
+  });
+  try{
+    assert.throws(()=>f.migrate(),/Synthetic pre-disable interruption/);
+    assert.equal(readMigration(f.env)!.phase,'pending');assert.equal(f.store.list().captureEnabled,true);
+    assert.equal(readManagedBinding(f.env),undefined);assert.ok(fs.existsSync(f.legacyRoot));
+    f.setup.close();
+    const resumed=new SetupController({env:f.env},()=>payload);
+    try{
+      const status=resumed.status();assert.equal(status.delivery!.migration,'pending');assert.equal(status.captureEnabled,true);
+      assert.equal(status.configured,false);assert.equal(status.verified,false);assert.equal(status.reportingIdentity,undefined);
+      assert.equal(resumed.health().ready,false,'observing the pending target must not admit it');
+      const unavailable=t.mock.method(Store.prototype,'subagentRunStorage',()=>{throw new ProgressError('busy');});
+      try{
+        const refused=resumed.status();assert.equal(refused.delivery!.migration,'unavailable');assert.equal(refused.captureEnabled,null);
+        assert.ok(refused.diagnostics.includes('busy'));assert.equal(f.store.list().captureEnabled,true);
+      }finally{unavailable.mock.restore();}
+      mock.mock.restore();
+      const review=resumed.run('managed-inspect',{}).delivery!.review!;
+      const result=resumed.run('managed-migrate',{confirmed:true,expected:review.expected});
+      assert.equal(result.delivery!.migration,'complete');assert.equal(result.captureEnabled,true);
+      assert.equal(f.store.get(f.legacy.source.id,'P-history')!.revision,1);
+    }finally{resumed.close();}
+  }finally{mock.mock.restore();f.cleanup();}
+});
+
 test('descriptor publication interruption is recoverable after service restart without a second removal',t=>{
   const f=fixture(),original=fs.linkSync;let injected=false;
   const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{if(String(to)===managedBindingFile(f.env)&&!injected){injected=true;throw new Error('Synthetic binding publication interruption');}return original(from,to);})as typeof fs.linkSync);syncBuiltinESMExports();
@@ -319,7 +349,7 @@ test('descriptor publication interruption is recoverable after service restart w
     assert.throws(()=>f.migrate(),/Synthetic binding publication interruption/);
     assert.deepEqual(f.setup.status().lastAction,{stage:'binding-publication',code:'storage'});
     assert.equal(f.store.list().captureEnabled,false);assert.equal(fs.existsSync(f.legacyRoot),false);assert.equal(readMigration(f.env)!.phase,'removed');
-    assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(readManagedBinding(f.env),undefined);
+    assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(f.setup.status().captureEnabled,false);assert.equal(readManagedBinding(f.env),undefined);
     mock.mock.restore();syncBuiltinESMExports();f.setup.close();
     const resumed=new SetupController({env:f.env},()=>payload);
     try{

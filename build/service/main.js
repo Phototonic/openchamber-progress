@@ -5947,30 +5947,45 @@ class SetupController {
     writeManagedExpectation(b, { format: 1, storeId: b.storeId, sourceId: b.source.id, installId: b.installId, version: payload.version, fingerprint });
   }
   managedMigration(_targets) {
-    return platformSecurityScope(() => this.managedMigrationInner());
+    return platformSecurityScope(() => this.managedMigrationInner().state);
   }
   managedMigrationInner() {
     this.migrationDiagnostic = undefined;
+    const observed = (state, captureEnabled = null) => ({ state, captureEnabled });
     try {
       const record = readMigration(this.managedEnv), legacy = legacyMigration(this.managedEnv);
       if (record) {
         if (record.phase === "complete" && (!this.binding || legacy))
-          return "conflict";
+          return observed("conflict");
         if (this.binding && canonical(this.binding) !== canonical(record.binding))
-          return "conflict";
+          return observed("conflict");
         if (legacy && !sameMigrationTarget(legacy.binding, record.binding))
-          return "conflict";
-        return record.phase === "complete" && !legacy ? "complete" : "pending";
+          return observed("conflict");
+        if (record.phase === "complete" && !legacy)
+          return observed("complete");
+        if (!this.store) {
+          const probe = new Store(record.binding.database, { readOnly: true });
+          let enabled;
+          try {
+            verifyStore(probe, record.binding);
+            probe.subagentRunStorage();
+            enabled = probe.list({ limit: 1 }).captureEnabled;
+          } finally {
+            probe.close();
+          }
+          return observed("pending", enabled);
+        }
+        return observed("pending");
       }
       if (legacy && this.binding && !sameMigrationTarget(legacy.binding, this.binding))
-        return "conflict";
-      return legacy ? "available" : "none";
+        return observed("conflict");
+      return observed(legacy ? "available" : "none");
     } catch (e) {
       const error = migrationError(e);
       if (error instanceof SetupError)
-        return "conflict";
+        return observed("conflict");
       this.migrationDiagnostic = error.code;
-      return "unavailable";
+      return observed("unavailable");
     }
   }
   managedStatus() {
@@ -5978,12 +5993,12 @@ class SetupController {
     return platformSecurityScope(() => this.managedStatusInner());
   }
   managedStatusInner() {
-    const b = this.binding, targets = this.targets();
+    const b = this.binding, targets = this.targets(), migration = this.managedMigrationInner();
     const base = {
       configured: !!b,
       verified: !!this.store && !!b?.source.verified,
       installed: false,
-      captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : null,
+      captureEnabled: this.store ? this.store.list({ limit: 1 }).captureEnabled : migration.captureEnabled,
       targets: targets ? { configRoot: targets.configRoot, dataRoot: targets.dataRoot, storeRoot: targets.storeRoot } : null,
       version: null,
       activation: "unknown",
@@ -5991,7 +6006,7 @@ class SetupController {
       historyRetained: true,
       diagnostics: this.managedDiagnostic ? [this.managedDiagnostic] : [],
       ...this.lastAction ? { lastAction: { ...this.lastAction } } : {},
-      delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: this.managedMigration(targets), mode: "unknown", observation: "unknown", expectedVersion: null }
+      delivery: { kind: "managed", revision: 1, configuration: this.managedDiagnostic ? "invalid" : b ? "configured" : "unconfigured", migration: migration.state, mode: "unknown", observation: "unknown", expectedVersion: null }
     };
     if (this.migrationDiagnostic && !base.diagnostics.includes(this.migrationDiagnostic))
       base.diagnostics.push(this.migrationDiagnostic);

@@ -190,34 +190,44 @@ export class SetupController {
     writeManagedExpectation(b,{format:1,storeId:b.storeId,sourceId:b.source.id,installId:b.installId,version:payload.version,fingerprint});
   }
   private managedMigration(_targets?:Targets):ManagedMigrationState {
-    return platformSecurityScope(()=>this.managedMigrationInner());
+    return platformSecurityScope(()=>this.managedMigrationInner().state);
   }
-  private managedMigrationInner():ManagedMigrationState {
+  private managedMigrationInner():{state:ManagedMigrationState;captureEnabled:boolean|null} {
     this.migrationDiagnostic=undefined;
+    const observed=(state:ManagedMigrationState,captureEnabled:boolean|null=null)=>({state,captureEnabled});
     try{
       const record=readMigration(this.managedEnv!),legacy=legacyMigration(this.managedEnv!);
       if(record){
-        if(record.phase==='complete'&&(!this.binding||legacy))return 'conflict';
-        if(this.binding&&canonical(this.binding)!==canonical(record.binding))return 'conflict';
-        if(legacy&&!sameMigrationTarget(legacy.binding,record.binding))return 'conflict';
-        return record.phase==='complete'&&!legacy?'complete':'pending';
+        if(record.phase==='complete'&&(!this.binding||legacy))return observed('conflict');
+        if(this.binding&&canonical(this.binding)!==canonical(record.binding))return observed('conflict');
+        if(legacy&&!sameMigrationTarget(legacy.binding,record.binding))return observed('conflict');
+        if(record.phase==='complete'&&!legacy)return observed('complete');
+        // A pending record is not proof of capture-off: publication precedes
+        // disable. Observe the validated target read-only, without selecting it
+        // or granting the controller authority to serve its progress data.
+        if(!this.store){
+          const probe=new Store(record.binding.database,{readOnly:true});let enabled:boolean;
+          try{verifyStore(probe,record.binding);probe.subagentRunStorage();enabled=probe.list({limit:1}).captureEnabled;}finally{probe.close();}
+          return observed('pending',enabled);
+        }
+        return observed('pending');
       }
-      if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return 'conflict';
-      return legacy?'available':'none';
+      if(legacy&&this.binding&&!sameMigrationTarget(legacy.binding,this.binding))return observed('conflict');
+      return observed(legacy?'available':'none');
     }
-    catch(e){const error=migrationError(e);if(error instanceof SetupError)return 'conflict';this.migrationDiagnostic=error.code;return 'unavailable';}
+    catch(e){const error=migrationError(e);if(error instanceof SetupError)return observed('conflict');this.migrationDiagnostic=error.code;return observed('unavailable');}
   }
   private managedStatus():SetupRead {
     this.refresh();
     return platformSecurityScope(()=>this.managedStatusInner());
   }
   private managedStatusInner():SetupRead {
-    const b=this.binding,targets=this.targets();
-    const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:null,
+    const b=this.binding,targets=this.targets(),migration=this.managedMigrationInner();
+    const base:SetupRead={configured:!!b,verified:!!this.store&&!!b?.source.verified,installed:false,captureEnabled:this.store?this.store.list({limit:1}).captureEnabled:migration.captureEnabled,
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
       ...(this.lastAction?{lastAction:{...this.lastAction}}:{}),
-      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:this.managedMigration(targets),mode:'unknown',observation:'unknown',expectedVersion:null}};
+      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:migration.state,mode:'unknown',observation:'unknown',expectedVersion:null}};
     if(this.migrationDiagnostic&&!base.diagnostics.includes(this.migrationDiagnostic))base.diagnostics.push(this.migrationDiagnostic);
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};

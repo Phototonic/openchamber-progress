@@ -118,6 +118,10 @@ clears it. A pending migration record is published before capture is disabled:
 failure to publish that first record leaves legacy capture unchanged. A crash after
 publication but before disable can therefore show pending with legacy capture still
 on; pending alone is not proof of capture-off. A fresh explicit retry revalidates.
+For a fully validated pending target, Setup reads the actual capture bit even
+before a managed selector exists. This read-only observation does not configure
+the service, admit progress reads or grant recovery authority. If validation or
+the read fails, capture remains unknown rather than being inferred from the phase.
 
 A crash while holding the private configuration lock leaves **busy** state. There
 is no time-based stale-lock takeover or automatic lock deletion. Stop only the
@@ -330,6 +334,12 @@ queries / 10 reads. These are runner regression budgets, not a guarantee for eve
 machine. A blocked security helper still fails closed; it is not skipped to meet
 a deadline. Full legacy preflight facts are reused only within a synchronous
 candidate; locked revalidation and removal independently check current ownership.
+The portable fake-helper test counts actual spawn calls (including retries), not
+legacy file reads. It substitutes the OS/path dialect, so it cannot certify NTFS
+security or native latency. Binding contents and ownership manifests discover
+additional paths after initial validation; these checks are not one batched
+spawn per request. The current runner budgets do not establish that Setup fits
+the proxy deadline on machines with slow PowerShell startup.
 
 Use one account and local NTFS storage. Config/data roots require current-account
 ownership; dedicated store and managed state require private ACLs permitting only

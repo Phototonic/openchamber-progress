@@ -280,7 +280,10 @@ to storage. The pending record precedes capture disable, so record-publication
 failure does not silently turn legacy capture off. A crash in between can leave
 pending while capture is still on. Pending/conflict/lock state still requires
 fresh explicit same-target recovery; this diagnostic is not persisted and grants
-no recovery authority. Candidate preflight shares its ownership/fingerprint facts
+no recovery authority. Status observes a validated pending target's actual capture
+bit through a read-only Store even without a managed selector. It does not retain
+that Store, set configured/verified, expose its reporting identity or make health
+ready; failed validation/read leaves the bit unknown. Candidate preflight shares its ownership/fingerprint facts
 within the operation only; lock/removal/publication boundaries validate afresh.
 
 ### Existing reporting and storage owners
