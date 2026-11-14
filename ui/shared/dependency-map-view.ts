@@ -80,10 +80,17 @@ export interface DependencyMapViewInput extends MapSnapshot {
    */
   coarse?: boolean;
 }
-/** Coarse primary pointer: the host's optional `ready.device.pointer` hint wins; without it, the
- * `(pointer: coarse)` media query. Never an identity or permission signal. */
+/** The host's pointer hint when it is one the phone layout accepts ('coarse' or 'fine'), else null.
+ * Same rule as `applyDeviceHooks`, so the map and the root `data-device-pointer` hook always agree. */
+const pointerHint = (device: ViewContext<unknown>['device']): 'coarse' | 'fine' | null => {
+  const hint: unknown = device?.pointer;
+  return hint === 'coarse' || hint === 'fine' ? hint : null;
+};
+/** Coarse primary pointer: the host's optional `ready.device.pointer` hint wins; without a usable
+ * hint, the `(pointer: coarse)` media query. Never an identity or permission signal. */
 export function mapCoarsePointer(device: ViewContext<unknown>['device'], media: ((query: string) => { matches: boolean }) | undefined = globalThis.matchMedia?.bind(globalThis)): boolean {
-  if (device?.pointer) return device.pointer === 'coarse';
+  const hint = pointerHint(device);
+  if (hint) return hint === 'coarse';
   return !!media?.('(pointer: coarse)').matches;
 }
 export interface DependencyMapView {
@@ -1555,7 +1562,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
   // Without a host device hint the coarse presentation follows the pointer media query; repaint when it
   // changes (a hint change already repaints through the ready context).
-  globalThis.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => { if (shown && !latest?.device?.pointer) latest?.setUi({}); });
+  globalThis.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => { if (shown && !pointerHint(latest?.device)) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
   // Unavailable pictures do not acquire a perpetual refresh-driven repaint.

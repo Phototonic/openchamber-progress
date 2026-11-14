@@ -137,4 +137,7 @@ test('coarse pointer: the host hint wins over the media query; absent hint falls
   assert.equal(mapCoarsePointer(undefined, media(true)), true);
   assert.equal(mapCoarsePointer(undefined, media(false)), false);
   assert.equal(mapCoarsePointer(undefined, undefined), false);
+  // An unknown hint is no hint (as applyDeviceHooks removes the root hook): the media query decides.
+  assert.equal(mapCoarsePointer({ formFactor: 'phone', pointer: 'stylus' } as never, media(true)), true);
+  assert.equal(mapCoarsePointer({ formFactor: 'phone', pointer: 'stylus' } as never, media(false)), false);
 });
