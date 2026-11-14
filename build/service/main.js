@@ -3339,6 +3339,26 @@ import { timingSafeEqual } from "node:crypto";
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
+// shared/receipt-index.ts
+var name = "receipts_source_oid";
+function receiptIndexInstalled(db) {
+  const objects = db.prepare("SELECT type,name,tbl_name FROM main.sqlite_master WHERE name=? COLLATE NOCASE").all(name);
+  if (!objects.length)
+    return false;
+  requireProgress(objects.length === 1 && objects[0].type === "index" && objects[0].name === name && objects[0].tbl_name === "receipts", "schema");
+  const index = db.prepare("PRAGMA main.index_list('receipts')").all().find((r) => r.name === name);
+  requireProgress(index?.unique === 0 && index.partial === 0 && index.origin === "c", "schema");
+  const keys = db.prepare("PRAGMA main.index_xinfo('receipts_source_oid')").all().filter((r) => r.key === 1);
+  requireProgress(keys.length === 2 && keys.every((key, i) => key.seqno === i && Number(key.cid) >= 0 && key.name === ["source", "oid"][i] && key.desc === 0 && key.coll === "BINARY"), "schema");
+  return true;
+}
+function installReceiptIndex(db) {
+  if (receiptIndexInstalled(db))
+    return;
+  db.exec("CREATE INDEX receipts_source_oid ON receipts(source, oid)");
+  receiptIndexInstalled(db);
+}
+
 // shared/assignment-binding.ts
 function currentBinding(value, plan, itemId) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -3685,6 +3705,7 @@ class Store {
         try {
           this.db.exec(SCHEMA);
           this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
+          installReceiptIndex(this.db);
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -3694,6 +3715,7 @@ class Store {
         requireProgress(version === VERSION, "schema");
       requireProgress(this.db.prepare("PRAGMA table_info(meta)").all().some((r) => r.name === "product"), "corrupt");
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
+      this.transaction(false, () => receiptIndexInstalled(this.db));
     } catch (e) {
       this.db?.close();
       if (e instanceof PlatformError)
@@ -3707,7 +3729,10 @@ class Store {
     this.db.close();
   }
   installSubagentRuns() {
-    return this.transaction(true, () => installRuns(this.db));
+    return this.transaction(true, () => {
+      installReceiptIndex(this.db);
+      installRuns(this.db);
+    });
   }
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
@@ -4691,15 +4716,15 @@ function atomic(file, content, stagingRoot) {
 }
 function writeFiles(root, files) {
   privateDirectory(root);
-  for (const [name, body] of Object.entries(files)) {
-    need(/^[A-Za-z0-9_.-]+$/.test(name), "payload-invalid");
-    writeFileSync(path5.join(root, name), body, { mode: 384, flag: "wx" });
-    syncFile(path5.join(root, name));
+  for (const [name2, body] of Object.entries(files)) {
+    need(/^[A-Za-z0-9_.-]+$/.test(name2), "payload-invalid");
+    writeFileSync(path5.join(root, name2), body, { mode: 384, flag: "wx" });
+    syncFile(path5.join(root, name2));
   }
   fsyncDir(root);
 }
 function hashes(files) {
-  return Object.fromEntries(Object.entries(files).map(([name, body]) => [name, digest(body)]));
+  return Object.fromEntries(Object.entries(files).map(([name2, body]) => [name2, digest(body)]));
 }
 function releasePayload(binding, payload) {
   const files = { "index.js": payload.plugin, "SKILL.md": payload.guidance, "progress-binding.json": JSON.stringify({ ...binding, version: payload.version }) };
@@ -4750,14 +4775,14 @@ function verifyFiles(root, expected, extras = []) {
   if (!windows)
     safe2(root);
   need(lstatSync5(root).isDirectory(), "collision");
-  need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
-  const files = Object.keys(expected).map((name) => path5.join(root, name));
+  need(readdirSync(root).every((name2) => Object.hasOwn(expected, name2) || extras.includes(name2)), "foreign-files");
+  const files = Object.keys(expected).map((name2) => path5.join(root, name2));
   if (windows) {
-    const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
+    const extraFiles = extras.map((name2) => path5.join(root, name2)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash3] of Object.entries(expected)) {
-    const file = path5.join(root, name);
+  for (const [name2, hash3] of Object.entries(expected)) {
+    const file = path5.join(root, name2);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
       safe2(file);
@@ -4830,8 +4855,8 @@ function owned(targets) {
   return { root: info.packageRoot, manifest: m, binding: b, staged };
 }
 function removableSelectors(o) {
-  return o.staged.map((name) => {
-    const file = path5.join(o.root, name);
+  return o.staged.map((name2) => {
+    const file = path5.join(o.root, name2);
     let m;
     try {
       m = JSON.parse(readFileSync2(file, "utf8"));
@@ -4926,8 +4951,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
         const selectors = removableSelectors(o);
         for (const file2 of selectors)
           rmSync(file2);
-        for (const name of Object.keys(o.manifest.files))
-          rmSync(path5.join(o.root, name));
+        for (const name2 of Object.keys(o.manifest.files))
+          rmSync(path5.join(o.root, name2));
         rmSync(path5.join(o.root, ".ownership.json"));
         rmdirSync(o.root);
         fsyncDir(path5.dirname(o.root));

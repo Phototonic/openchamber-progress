@@ -329,6 +329,31 @@ is claimed. Historical plugin/runtime tests used independent OpenCode2.1.4, no
 models. Current managed web/native-backend evidence uses independent 2.2.7; see
 the [compatibility scopes](compatibility.md#managed-companion-acceptance).
 
+## Receipt lookup index
+
+The ordinary, non-unique `receipts_source_oid ON receipts(source, oid)` index
+narrows the cross-plan handoff replay lookup to one source and operation ID before
+checking the child identity. It is a physical optimization: protocol/base schema
+remain **2**, with no changes to receipt bytes, replay hashes or report authority.
+
+Store creation installs the index in the creation transaction. Companion
+activation installs it idempotently in the same `BEGIN IMMEDIATE` transaction as
+the run extension; a failure rolls back both. Ordinary opens validate an existing
+index without DDL and accept its absence. Read-only opens, service reads and setup
+inspection do not install or repair it. Setup inspection of an existing store
+therefore leaves its index state unchanged.
+
+The owned name must identify an ordinary, non-partial index on exactly `source`
+then `oid`, ascending with BINARY collation. A conflicting object, case variant
+or incompatible index fails closed with `schema`, without repair. The exact
+`runs_*` and `cleanup_*` namespace checks are unchanged.
+
+Unmodified 1.3.0 readers and writers work with or without this index, including
+already-open writers, combined handoff replay and cleanup. SQLite maintains it
+for older writers; downgrade keeps the index rather than down-migrating or
+rewriting stored facts. Reactivation validates and reuses it. This compatibility
+claim concerns the index only, not unrelated run-format changes.
+
 ## Identity, attribution and finish
 
 Store UUID and source UUID are durable. Source is an explicit confirmed canonical
