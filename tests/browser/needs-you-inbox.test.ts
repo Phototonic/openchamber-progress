@@ -258,19 +258,104 @@ test('unchanged first windows recheck loaded pages one per refresh and remove re
   assert.deepEqual(c.model()!.counts, { needsYou: 2, alsoBlocked: 0 });
 });
 
-test('an unchanged refresh retires an older held explicit continuation before it can restore exact counts', async () => {
+test('unchanged refreshes preserve an explicit continuation but recheck it before restoring exact counts', async () => {
   const held = deferred<GuestRequestResult>();
   const s = service(() => held.promise);
   const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
   const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
   c.adopt('owner', top); c.more();
   assert.equal(c.adopt('owner', top), true);
+  c.adopt('owner', top);
+  assert.equal(c.model()!.loadingMore, true, 'an unchanged refresh must not lose the user request');
   held.resolve(ok(wire([['q', 'resolved', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
   await settle();
   assert.equal(c.model()!.complete, false);
-  assert.equal(c.model()!.restarted, true);
-  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a']);
-  assert.equal(s.calls.length, 1);
+  assert.equal(c.model()!.restarted, false);
+  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'resolved']);
+  assert.equal(s.calls.length, 1, 'no replacement or automatic retry loop');
+  c.adopt('owner', top); await settle();
+  assert.equal(c.model()!.complete, true, 'the next refresh rechecks the requested page');
+  assert.equal(s.calls.length, 2);
+});
+
+test('failed rechecks stop claiming an active check and recover on the next ordinary refresh', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  const page = wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } });
+  let fail = false;
+  const s = service(() => fail ? { status: 503, body: JSON.stringify({ error: 'busy' }) } : ok(page));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  c.adopt('owner', top); c.more(); await settle();
+  fail = true;
+  c.adopt('owner', top); await settle();
+  const m = c.model()!;
+  assert.equal(m.moreFailed?.kind, 'busy');
+  assert.equal(m.rechecking, false, 'a failed read is waiting for refresh, not actively rechecking');
+  assert.equal(m.loadingMore, false);
+  assert.equal(m.canContinue, false, 'failure cannot bypass the unfinished sweep');
+  assert.equal(m.complete, false);
+  assert.deepEqual(m.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.deepEqual(m.needsYou.map(r => r.task.id), ['a', 'b']);
+  c.more(); await settle();
+  assert.equal(s.calls.length, 2, 'neither settling nor more starts a retry loop');
+  fail = false;
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 3);
+  assert.equal(c.model()!.moreFailed, null);
+  assert.equal(c.model()!.complete, true);
+});
+
+test('an append preserved across refresh joins the existing bounded sweep', async () => {
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  const middle = wire([['q', 'b', 'review']], { ...partial('cursor-2'), counts: { needsYou: 2, alsoBlocked: 0 } });
+  const end = wire([['r', 'c', 'review']], { counts: { needsYou: 3, alsoBlocked: 0 } });
+  const held = deferred<GuestRequestResult>();
+  const s = service(q => q.query?.cursor === 'cursor-1' ? ok(middle) : held.promise);
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  c.adopt('owner', top); c.more(); await settle(); c.more();
+  c.adopt('owner', top); c.adopt('owner', top);
+  assert.equal(s.calls.length, 2, 'refresh cannot overlap the requested append');
+  held.resolve(ok(end)); await settle();
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b', 'c']);
+  assert.equal(c.model()!.complete, false);
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 3);
+  assert.equal(c.model()!.complete, false, 'one refresh rechecks only one loaded page');
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 4);
+  assert.equal(c.model()!.complete, true);
+});
+
+test('preserved appends still retire on hiding, first-window changes and account changes', async () => {
+  for (const retirement of ['hidden', 'first', 'account']) {
+    const held = deferred<GuestRequestResult>();
+    const s = service(() => held.promise);
+    const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+    const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+    c.adopt('owner', top); c.more(); c.adopt('owner', top);
+    if (retirement === 'hidden') c.retire('hidden');
+    else c.adopt(retirement === 'account' ? 'another-account' : 'owner', retirement === 'first' ? first(wire([['p', 'a', 'decision']], partial('different-cursor'))) : top);
+    held.resolve(ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+    await settle();
+    assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a'], retirement);
+    assert.equal(c.model()!.loadingMore, false);
+    assert.equal(c.model()!.canContinue, true, 'retirement cannot leave an empty sweep blocking continuation');
+  }
+});
+
+test('a preserved first append that fails still offers normal explicit retry', async () => {
+  const held = deferred<GuestRequestResult>();
+  const s = service(() => held.promise);
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  c.adopt('owner', top); c.more(); c.adopt('owner', top);
+  held.resolve({ status: 503, body: JSON.stringify({ error: 'busy' }) }); await settle();
+  assert.equal(c.model()!.moreFailed?.kind, 'busy');
+  assert.equal(c.model()!.canContinue, true);
+  c.adopt('owner', top); await settle();
+  assert.equal(s.calls.length, 1, 'no loaded pages means no automatic reread');
+  c.more(); await settle();
+  assert.equal(s.calls.length, 2, 'explicit retry is not trapped by an empty recheck sweep');
 });
 
 test('rechecking retires held replies, retries only on refresh and restarts on cursor divergence or 409', async () => {

@@ -29,7 +29,7 @@ export interface InboxModel {
   restarted: boolean;
   /** Display-only: whether loaded rows beyond the compact limit are shown. */
   expanded: boolean;
-  /** Retained continuation rows may be old until the bounded traversal finishes. */
+  /** A nonfailed bounded recheck is in progress; retained continuation rows may be old. */
   rechecking: boolean;
 }
 
@@ -78,10 +78,9 @@ export class InboxController {
     if (!first) return false;
     const sig = firstSignature(first);
     if (sig === this.firstSig) {
-      // An explicit append started before this refresh cannot restore old count authority.
-      const retireAppend = this.pending !== null && this.recheck === null;
-      if (retireAppend) { this.pending = null; this.generation++; this.restarted = true; }
-      if (!this.pages.length) return retireAppend;
+      // Keep an explicit request on this unchanged traversal alive, but include its page
+      // in the next bounded sweep before allowing its counts to become authoritative.
+      if (!this.pages.length && this.pending === null) return false;
       // Count authority is retired immediately, before the asynchronous re-read. Keep rows
       // readable under a rechecking notice, not as silently current reports.
       if (this.recheck === null) this.recheck = 0;
@@ -100,7 +99,7 @@ export class InboxController {
   retire(reason: 'reset' | 'hidden' | 'dispose') {
     if (reason === 'hidden') {
       if (this.pending !== null) { this.pending = null; this.generation++; }
-      if (this.pages.length) this.recheck = 0;
+      this.recheck = this.pages.length ? 0 : null;
       return;
     }
     this.reset();
@@ -141,7 +140,7 @@ export class InboxController {
       availability: 'ready', needsYou, alsoBlocked, counts: this.recheck !== null ? this.first.window.counts : last.counts,
       complete: this.recheck === null && last.coverage.complete && last.coverage.exhausted && !gapped && last.nextCursor === null,
       gapped, captureEnabled: last.captureEnabled, timing: this.first.window.timing,
-      canContinue: this.recheck === null && last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded, rechecking: this.recheck !== null,
+      canContinue: this.recheck === null && last.nextCursor !== null, loadingMore: this.pending !== null, moreFailed: this.failed, restarted: this.restarted, expanded: this.expanded, rechecking: this.recheck !== null && this.failed === null,
     };
   }
 
@@ -189,7 +188,12 @@ export class InboxController {
         }
       }
       else if (r.status === 409) this.dropPages(true);
-      else this.failed = r.failure;
+      else {
+        this.failed = r.failure;
+        // A failed first append leaves no loaded pages to recheck. Normal explicit retry
+        // is still available; failures with retained pages wait for the next refresh.
+        if (!this.pages.length) this.recheck = null;
+      }
       this.deps.changed();
     });
   }
