@@ -77,8 +77,10 @@ The worker foundation is not yet connected to the migration HTTP routes.
 Its read-only inspection foundation can continue discovery across separate worker
 requests without creating product files or changing capture. An unfinished review
 expires on service restart or package/environment change and requires fresh
-inspection. This is not yet the public step migration flow; it does not change the
-existing Setup behavior below or advertise step support.
+inspection. Its confirmed prepare path retains a durable operation receipt for
+an exact retry after restart; bounded status reports unknown capture rather than
+replaying an old capture observation. These are not yet the public step migration
+flow: they do not change the existing Setup behavior below or advertise support.
 
 ### Existing migration flow
 

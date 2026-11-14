@@ -732,6 +732,11 @@ function beginPlatformSecurityScope() {
     }
   };
 }
+function requirePlatformWriteBoundary() {
+  if (scope)
+    throw new PlatformError("managed-step-conflict");
+  requestBudget?.require();
+}
 var windowsPowerShellBootstrap = String.raw`
 $env:PSModulePath = $PSHOME + '\Modules'
 $PSModuleAutoLoadingPreference = 'None'
@@ -6005,6 +6010,14 @@ function managedTargetDigest(journal) {
   const { legacyInstallId, legacy, expectation } = journal.migration;
   return digest(canonical({ binding: managedJournalBinding(journal), legacyInstallId, legacy, expectation }));
 }
+function managedRequestDigest(request, journal, renewal) {
+  return digest(canonical({
+    request,
+    targetDigest: journal.migration.consent.targetDigest,
+    consent: journal.migration.consent,
+    ...renewal ? { captureReviewSequence: renewal.sequence, captureReviewDigest: renewal.reviewDigest } : {}
+  }));
+}
 function parseManagedStepJournal(bytes) {
   if (Buffer.byteLength(bytes) > MANAGED_STEP_LIMITS.journalBytes)
     throw new SetupError("managed-step-limit");
@@ -6386,6 +6399,140 @@ function readManagedStepJournal(env) {
       throw new SetupError("managed-migration-conflict");
     return journal;
   });
+}
+function validateManagedJournalChange(prior, next) {
+  const fail = () => {
+    throw new SetupError("managed-step-conflict");
+  };
+  const a = prior.migration, b = next.migration;
+  if (a.operationId !== b.operationId || canonical(managedJournalBinding(prior)) !== canonical(managedJournalBinding(next)) || canonical(a.consent) !== canonical(b.consent) || canonical(a.expectation) !== canonical(b.expectation) || canonical(a.legacy) !== canonical(b.legacy) || canonical(a.plan) !== canonical(b.plan) || a.legacyInstallId !== b.legacyInstallId)
+    fail();
+  if (a.state === "complete") {
+    if (canonical(prior) !== canonical(next))
+      fail();
+    return;
+  }
+  if (b.sequence !== a.sequence && b.sequence !== a.sequence + 1)
+    fail();
+  if (b.sequence === a.sequence + 1 && b.state === a.state && a.state !== "pending")
+    fail();
+  if (b.state !== a.state && !MANAGED_OPERATION_TRANSITIONS[a.state].includes(b.state))
+    fail();
+  if (b.captureRenewals.length < a.captureRenewals.length || b.captureRenewals.length > a.captureRenewals.length + 1 || canonical(b.captureRenewals.slice(0, a.captureRenewals.length)) !== canonical(a.captureRenewals))
+    fail();
+  const added = b.captureRenewals.length > a.captureRenewals.length;
+  if (added) {
+    const renewal = b.captureRenewals.at(-1);
+    if (b.sequence !== a.sequence + 1 || b.state !== "pending" || renewal.sequence !== b.sequence || !a.intent || canonical(renewal.priorIntent) !== canonical(a.intent) || canonical(b.intent) !== canonical(a.intent) || !sameManagedStep(a.step, b.step) || !sameManagedStep(a.lastCompleted, b.lastCompleted))
+      fail();
+  }
+  if (b.sequence === a.sequence) {
+    if (b.state !== "running" || !b.intent || !sameManagedStep(a.step, b.step) || !sameManagedStep(a.lastCompleted, b.lastCompleted) || b.phase !== a.phase || canonical(b.receipt) !== canonical(a.receipt) || added)
+      fail();
+    if (a.intent && canonical(a.intent) !== canonical(b.intent)) {
+      const renewal = a.captureRenewals.at(-1);
+      if (!renewal || canonical(renewal.priorIntent) !== canonical(a.intent) || b.intent.captureReviewSequence !== renewal.sequence || b.intent.expectedSequence !== a.sequence || b.intent.requestDigest === a.intent.requestDigest)
+        fail();
+    } else if (!a.intent && b.intent.expectedSequence !== a.sequence)
+      fail();
+    return;
+  }
+  if (!b.receipt || b.receipt.expectedSequence !== a.sequence || b.receipt.sequence !== b.sequence)
+    fail();
+  if (!sameManagedStep(a.lastCompleted, b.lastCompleted)) {
+    if (a.state !== "running" || !a.intent || !sameManagedStep(a.step, b.lastCompleted) || b.intent !== null || !["pending", "complete"].includes(b.state) || b.receipt.outcome !== "applied" || a.intent.expectedSequence === a.sequence && b.receipt.requestDigest !== a.intent.requestDigest || !sameManagedStep(b.receipt.step, a.step) || added)
+      fail();
+  } else {
+    if (!sameManagedStep(a.step, b.step) || b.phase !== a.phase || canonical(a.intent) !== canonical(b.intent) || !["pending", "paused", "abandoned", "failed"].includes(b.state))
+      fail();
+    if (b.state === "failed" && b.receipt.outcome !== "failed" || b.state !== "failed" && b.receipt.outcome !== "applied")
+      fail();
+  }
+}
+function writeManagedStepJournal(env, next, expected, validate) {
+  publishManagedJournal(env, next, expected, validate);
+  const written = platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(managedJournalPaths(next), true);
+    return readManagedStepJournal(env);
+  });
+  if (!written || canonical(written) !== canonical(next))
+    throw new SetupError("managed-step-unsettled");
+}
+function validateInitialManagedCheckpoint(journal) {
+  const m = journal.migration;
+  if (m.sequence !== 1 || m.state !== "pending" || m.intent !== null || m.captureRenewals.length || !sameManagedStep(m.lastCompleted, { name: "prepare", batch: 0 }) || !m.receipt || m.receipt.expectedSequence !== 0 || m.receipt.outcome !== "applied" || !sameManagedStep(m.receipt.step, m.lastCompleted))
+    throw new SetupError("managed-step-conflict");
+}
+function upgradeManagedStepJournal(env, next, expected, validate) {
+  requirePlatformWriteBoundary();
+  const checked = parseManagedStepJournal(JSON.stringify(next)), m = checked.migration;
+  validateInitialManagedCheckpoint(checked);
+  if (expected.phase === "complete" || canonical(managedJournalBinding(checked)) !== canonical(expected.binding) || m.legacyInstallId !== expected.legacyInstallId || m.capture.state !== "unknown")
+    throw new SetupError("managed-step-conflict");
+  const file = platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(managedJournalPaths(checked), true);
+    const file2 = migrationFile(env), root = path8.dirname(file2), names = readdirSync2(root);
+    if (names.includes(".configuration-lock"))
+      throw new SetupError("managed-configuration-busy");
+    if (names.some((name) => name.startsWith("migration.json.stage-")))
+      throw new SetupError("managed-migration-conflict");
+    if (![file2, path8.join(root, ".ownership.json")].every((p) => {
+      const s = lstatSync7(p);
+      return s.isFile() && !s.isSymbolicLink() && s.nlink === 1;
+    }))
+      throw new SetupError("managed-binding-invalid");
+    if (lstatSync7(file2).size > MANAGED_STEP_LIMITS.journalBytes)
+      throw new SetupError("managed-step-limit");
+    const prior = readMigration(env), selected = readManagedBinding(env);
+    if (!prior || canonical(prior) !== canonical(expected) || selected && canonical(selected) !== canonical(expected.binding))
+      throw new SetupError("managed-step-conflict");
+    if (m.legacy.kind === "manifest") {
+      validateMigrationRemoval(checked);
+    } else {
+      const legacy = path8.join(checked.source.configRoot, "plugins", "agent-progress");
+      if (canonical(m.legacy.claims) !== canonical([{ path: legacy, kind: "absent", object: null, digest: null }]) || !readRemovalReceipt(prior, m.legacy.receipt))
+        throw new SetupError("managed-migration-conflict");
+    }
+    validate?.();
+    return file2;
+  });
+  requirePlatformWriteBoundary();
+  publishPrivateJson(file, checked, true);
+  const written = platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(managedJournalPaths(checked), true);
+    return readManagedStepJournal(env);
+  });
+  if (!written || canonical(written) !== canonical(checked))
+    throw new SetupError("managed-step-unsettled");
+}
+function publishManagedJournal(env, next, expected, validate) {
+  requirePlatformWriteBoundary();
+  const checked = parseManagedStepJournal(JSON.stringify(next));
+  const known = managedJournalPaths(checked);
+  const file = platformSecurityScope(() => {
+    if (windows)
+      windowsPaths(known, true);
+    const current = readManagedStepJournal(env);
+    if (expected ? !current || canonical(current) !== canonical(expected) : !!current)
+      throw new SetupError("managed-step-conflict");
+    if (current)
+      validateManagedJournalChange(current, checked);
+    else
+      validateInitialManagedCheckpoint(checked);
+    const file2 = migrationFile(env), root = path8.dirname(file2);
+    if (!lstatSync7(root, { throwIfNoEntry: false })?.isDirectory() || !privatePaths([root]))
+      throw new SetupError("managed-binding-invalid");
+    const roots = managedSourceRoots(env);
+    if (checked.source.configRoot !== roots.configRoot || checked.source.dataRoot !== roots.dataRoot || [roots.configRoot, roots.dataRoot, root].includes(path8.dirname(checked.database)))
+      throw new SetupError("managed-migration-conflict");
+    validate?.();
+    return file2;
+  });
+  requirePlatformWriteBoundary();
+  publishPrivateJson(file, checked, !!expected);
 }
 
 // service/suggestions.ts
@@ -7176,7 +7323,7 @@ function storePaths(binding) {
 function paths(session) {
   return [
     ...basePaths(session.roots),
-    ...session.candidate ? managedJournalPaths(session.candidate) : session.operation ? managedJournalPaths(session.operation) : session.prior ? storePaths(session.prior.binding) : [],
+    ...session.candidate ? managedJournalPaths(session.candidate) : session.operation ? managedJournalPaths(session.operation) : session.prior ? storePaths(session.prior.binding) : session.binding ? storePaths(session.binding) : [],
     ...session.discovered ? [...session.discovered.paths, ...storePaths(session.discovered.binding)] : []
   ];
 }
@@ -7234,6 +7381,22 @@ function reviewFor(session, observed) {
   }));
   return { expected, targets: { ...session.roots, storeRoot: path11.dirname(journal.database) }, storeId: journal.storeId, sourceId: journal.source.id };
 }
+function validateManagedInspectionReview(env, payload, session) {
+  return platformSecurityScope(() => {
+    need4(session.stage === MANAGED_INSPECTION_STEPS.length && session.review && session.candidate, "managed-inspection-expired");
+    batch(paths(session));
+    sameDiscovery(env, session);
+    const observed = validateCandidate(session, payload), review = reviewFor(session, observed);
+    need4(review.expected === session.review.expected);
+    return {
+      candidate: structuredClone(session.candidate),
+      prior: session.prior && structuredClone(session.prior),
+      operation: session.operation && structuredClone(session.operation),
+      capture: observed,
+      review
+    };
+  });
+}
 function inspectManagedStep(env, payload, prior, storeRoot) {
   return platformSecurityScope(() => {
     let session;
@@ -7261,6 +7424,8 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
     const stage = MANAGED_INSPECTION_STEPS[session.stage];
     if (stage === "managed-state") {
       const selected = readManagedBinding(env);
+      if (selected)
+        session.binding = selected;
       if (session.record.kind !== "absent") {
         const raw = JSON.parse(readFileSync6(session.record.path, "utf8"));
         if (raw?.migration?.format === 2)
@@ -7271,7 +7436,7 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
           throw new SetupError("managed-journal-unsupported");
       }
       const retained = session.operation ?? session.prior?.binding;
-      need4(!selected || retained && canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
+      need4(!selected || !retained || canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
       need4(session.prior?.phase !== "complete", "managed-step-conflict");
       if (retained && session.storeRoot !== undefined)
         need4(session.storeRoot === path11.dirname(retained.database), "managed-selection-conflict");
@@ -7283,6 +7448,8 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
         managedPath(legacy, true);
         if (lstatSync10(legacy, { throwIfNoEntry: false })) {
           session.discovered = discoverMigrationPaths(session.roots);
+          if (session.binding)
+            need4(session.binding.installId !== session.discovered.binding.installId && session.binding.database === session.discovered.binding.database && session.binding.storeId === session.discovered.binding.storeId && canonical(session.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
           if (session.storeRoot !== undefined)
             need4(session.storeRoot === path11.dirname(session.discovered.binding.database), "managed-selection-conflict");
           if (session.prior)
@@ -7304,7 +7471,7 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
           evidence = migrationEvidence({ ...session.roots, storeRoot: path11.dirname(discovered.binding.database), confirmed: true });
           need4(evidence.legacy.ownership === discovered.ownership);
         }
-        const binding = session.prior?.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
+        const binding = session.prior?.binding ?? session.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
         const receipt = !evidence && session.prior ? readRemovalReceipt(session.prior) : undefined;
         need4(evidence || receipt, "managed-migration-conflict");
         const legacy = evidence?.legacy ?? {
@@ -7359,6 +7526,71 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
   });
 }
 
+// setup/managed-step-engine.ts
+import path12 from "node:path";
+function observeManagedStep(env, operationId) {
+  return platformSecurityScope(() => {
+    const roots = managedSourceRoots(env), root = path12.join(roots.dataRoot, "agent-progress-managed");
+    if (windows)
+      windowsPaths([
+        roots.configRoot,
+        roots.dataRoot,
+        root,
+        path12.join(root, ".ownership.json"),
+        path12.join(root, "migration.json"),
+        path12.join(root, "progress-binding.json")
+      ], true);
+    const journal = readManagedStepJournal(env);
+    if (operationId && journal?.migration.operationId !== operationId)
+      throw new SetupError("not-found");
+    return journal;
+  });
+}
+function replayBegin(env, request) {
+  const journal = observeManagedStep(env);
+  if (!journal)
+    throw new SetupError("managed-inspection-expired");
+  const m = journal.migration, receipt = m.receipt;
+  if (m.operationId !== request.operationId || m.sequence !== 1 || !receipt || receipt.expectedSequence !== 0 || receipt.outcome !== "applied" || receipt.requestDigest !== managedRequestDigest(request, journal))
+    throw new SetupError("managed-step-conflict");
+  return { disposition: "replayed", progress: managedJournalProgress(journal) };
+}
+function beginManagedStep(env, payload, request, budget, session) {
+  requirePlatformWriteBoundary();
+  if (!session?.review || session.review.expected !== request.expected)
+    return replayBegin(env, request);
+  let reviewed;
+  try {
+    reviewed = validateManagedInspectionReview(env, payload, session);
+  } catch (error) {
+    try {
+      return replayBegin(env, request);
+    } catch {
+      throw error;
+    }
+  }
+  if (reviewed.operation)
+    return replayBegin(env, request);
+  const next = reviewed.candidate, m = next.migration;
+  m.operationId = request.operationId;
+  m.consent.reviewDigest = request.expected;
+  m.receipt = { requestDigest: managedRequestDigest(request, next), expectedSequence: 0, sequence: 1, step: m.lastCompleted, outcome: "applied" };
+  parseManagedStepJournal(JSON.stringify(next));
+  const validate = () => {
+    validateManagedInspectionReview(env, payload, session);
+  };
+  if (reviewed.prior) {
+    budget.require(2, 6000);
+    upgradeManagedStepJournal(env, next, reviewed.prior, validate);
+  } else {
+    budget.require(5, 13500);
+    createManagedBindingDirectory(env);
+    budget.require(2, 6000);
+    writeManagedStepJournal(env, next, undefined, validate);
+  }
+  return { disposition: "applied", progress: managedJournalProgress(next) };
+}
+
 // service/request-worker.ts
 function isSetupRequestWorker() {
   return !isMainThread && workerData?.kind === "agent-progress-setup-request";
@@ -7383,6 +7615,21 @@ function runSetupRequestWorker() {
         const parsed = managedStepRequest(request.body);
         if (!parsed)
           throw Object.assign(new Error("invalid"), { code: "invalid" });
+        if (parsed.action === "begin") {
+          const begun = beginManagedStep(input.env, input.payload, parsed, budget, input.inspection);
+          return { version: 1, ...begun, inspection: null, error: null, accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs } };
+        }
+        if (parsed.action === "status") {
+          const journal = observeManagedStep(input.env, parsed.operationId);
+          return {
+            version: 1,
+            disposition: "observed",
+            inspection: null,
+            progress: journal ? managedJournalProgress(journal) : null,
+            error: null,
+            accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs }
+          };
+        }
         if (parsed.action !== "inspect")
           throw Object.assign(new Error("managed-step-unsupported"), { code: "managed-step-unsupported" });
         if (parsed.cursor && (!input.inspection || input.inspection.cursor !== parsed.cursor))

@@ -258,7 +258,7 @@ function validateInitialManagedCheckpoint(journal:ManagedStepJournal):void {
  * complete same-target review and holds the shared writer fence. It preserves
  * the exact binding and legacy identity, and rechecks the owner evidence here.
  * The sole effect is atomic replacement with the initial format-2 checkpoint. */
-export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:MigrationRecord):void {
+export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:MigrationRecord,validate?:()=>void):void {
   requirePlatformWriteBoundary();
   const checked=parseManagedStepJournal(JSON.stringify(next)),m=checked.migration;
   validateInitialManagedCheckpoint(checked);
@@ -286,6 +286,7 @@ export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStep
       if(canonical(m.legacy.claims)!==canonical([{path:legacy,kind:'absent',object:null,digest:null}])||
         !readRemovalReceipt(prior,m.legacy.receipt))throw new SetupError('managed-migration-conflict');
     }
+    validate?.();
     return file;
   });
   requirePlatformWriteBoundary();publishPrivateJson(file,checked,true);

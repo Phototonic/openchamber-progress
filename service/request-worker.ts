@@ -8,6 +8,8 @@ import {MANAGED_ACTION_CODES,type ManagedSetupAction} from '../shared/progress.t
 import {storageError,canonical,digest} from '../shared/store.ts';
 import type {Payload,Action} from '../setup/lifecycle.ts';
 import {inspectManagedStep,type ManagedInspectionSession} from '../setup/managed-inspection.ts';
+import {beginManagedStep,observeManagedStep} from '../setup/managed-step-engine.ts';
+import {managedJournalProgress} from '../setup/managed-step-journal.ts';
 
 /** Private service/worker transport, never an HTTP request or client-selected entry.
  * All mutation paths must use the same writer boundary and perform their fresh
@@ -56,6 +58,15 @@ export function runSetupRequestWorker():void {
       if(request.action==='managed-step'){
         const parsed=managedStepRequest(request.body);
         if(!parsed)throw Object.assign(new Error('invalid'),{code:'invalid'});
+        if(parsed.action==='begin'){
+          const begun=beginManagedStep(input.env,input.payload,parsed,budget,input.inspection);
+          return {version:1,...begun,inspection:null,error:null,accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+        }
+        if(parsed.action==='status'){
+          const journal=observeManagedStep(input.env,parsed.operationId);
+          return {version:1,disposition:'observed',inspection:null,progress:journal?managedJournalProgress(journal):null,error:null,
+            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+        }
         if(parsed.action!=='inspect')throw Object.assign(new Error('managed-step-unsupported'),{code:'managed-step-unsupported'});
         if(parsed.cursor&&(!input.inspection||input.inspection.cursor!==parsed.cursor))
           throw Object.assign(new Error('managed-inspection-expired'),{code:'managed-inspection-expired'});
@@ -100,9 +111,10 @@ export class SetupRequestWorker {
     this.active=true;
     const context=digest(canonical({env,payload})),requestId=randomUUID();
     const saved=this.inspection?.context===context?this.inspection.session:undefined;
+    const consumesInspection=request.action==='managed-step'&&managedStepRequest(request.body)?.action!=='status';
     // A continuation is single-use, including a failure/deadline. New inspection
     // replaces it. Unrelated requests do not refresh or export its authority.
-    if(this.inspection?.context!==context||request.action==='managed-step')this.inspection=undefined;
+    if(this.inspection?.context!==context||consumesInspection)this.inspection=undefined;
     return new Promise(resolve=>{
       let settled=false,launched=false,result:SetupWorkerResult|undefined;
       let nextInspection:ManagedInspectionSession|undefined;
@@ -143,7 +155,7 @@ export class SetupRequestWorker {
         try {
           budget.require();
           worker=new Worker(this.entry,{workerData:{kind:'agent-progress-setup-request',requestId,env,payload,request,
-            startedAt,counter:budget.counter.buffer,fence,...(saved&&request.action==='managed-step'?{inspection:saved}:{})} satisfies SetupWorkerInput});
+            startedAt,counter:budget.counter.buffer,fence,...(saved&&consumesInspection?{inspection:saved}:{})} satisfies SetupWorkerInput});
           launched=true;
         } catch(error) {release(refused(diagnostic(error)));return;}
         worker.on('message',(message:SetupWorkerMessage)=>{

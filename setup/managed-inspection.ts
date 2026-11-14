@@ -22,6 +22,7 @@ export interface ManagedInspectionSession {
   roots:{configRoot:string;dataRoot:string};
   selection:ManagedPathClaim;
   record:ManagedPathClaim;
+  binding?:Binding;
   prior?:MigrationRecord;
   operation?:ManagedStepJournal;
   discovered?:ReturnType<typeof discoverMigrationPaths>;
@@ -63,7 +64,7 @@ function storePaths(binding:Binding) {
 }
 function paths(session:ManagedInspectionSession) {
   return [...basePaths(session.roots),...(session.candidate?managedJournalPaths(session.candidate):
-    session.operation?managedJournalPaths(session.operation):session.prior?storePaths(session.prior.binding):[]),
+    session.operation?managedJournalPaths(session.operation):session.prior?storePaths(session.prior.binding):session.binding?storePaths(session.binding):[]),
     ...(session.discovered?[...session.discovered.paths,...storePaths(session.discovered.binding)]:[])];
 }
 function container(env:NodeJS.ProcessEnv) {
@@ -140,6 +141,7 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
     const stage=MANAGED_INSPECTION_STEPS[session.stage]!;
     if(stage==='managed-state'){
       const selected=readManagedBinding(env);
+      if(selected)session.binding=selected;
       if(session.record.kind!=='absent'){
         const raw=JSON.parse(readFileSync(session.record.path,'utf8'));
         if(raw?.migration?.format===2)session.operation=readManagedStepJournal(env);
@@ -147,7 +149,7 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
         else throw new SetupError('managed-journal-unsupported');
       }
       const retained=session.operation??session.prior?.binding;
-      need(!selected||retained&&canonical(selected)===canonical(managedJournalBinding(retained)),'managed-migration-conflict');
+      need(!selected||!retained||canonical(selected)===canonical(managedJournalBinding(retained)),'managed-migration-conflict');
       need(session.prior?.phase!=='complete','managed-step-conflict');
       if(retained&&session.storeRoot!==undefined)need(session.storeRoot===path.dirname(retained.database),'managed-selection-conflict');
     }else if(stage==='legacy-discovery'){
@@ -156,6 +158,9 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
         const legacy=path.join(session.roots.configRoot,'plugins','agent-progress');managedPath(legacy,true);
         if(lstatSync(legacy,{throwIfNoEntry:false})){
           session.discovered=discoverMigrationPaths(session.roots);
+          if(session.binding)need(session.binding.installId!==session.discovered.binding.installId&&
+            session.binding.database===session.discovered.binding.database&&session.binding.storeId===session.discovered.binding.storeId&&
+            canonical(session.binding.source)===canonical(session.discovered.binding.source),'managed-migration-conflict');
           if(session.storeRoot!==undefined)need(session.storeRoot===path.dirname(session.discovered.binding.database),'managed-selection-conflict');
           if(session.prior)need(session.prior.legacyInstallId===session.discovered.binding.installId&&
             session.prior.binding.database===session.discovered.binding.database&&session.prior.binding.storeId===session.discovered.binding.storeId&&
@@ -177,7 +182,7 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
           evidence=migrationEvidence({...session.roots,storeRoot:path.dirname(discovered.binding.database),confirmed:true});
           need(evidence.legacy.ownership===discovered.ownership);
         }
-        const binding=session.prior?.binding??{...evidence!.binding,installId:`managed-${digest(JSON.stringify([evidence!.binding.storeId,evidence!.binding.source]))}`,version:payload.version};
+        const binding=session.prior?.binding??session.binding??{...evidence!.binding,installId:`managed-${digest(JSON.stringify([evidence!.binding.storeId,evidence!.binding.source]))}`,version:payload.version};
         const receipt=!evidence&&session.prior?readRemovalReceipt(session.prior):undefined;
         need(evidence||receipt,'managed-migration-conflict');
         const legacy=evidence?.legacy??{kind:'removal-receipt' as const,ownership:null,ownershipDigest:null,

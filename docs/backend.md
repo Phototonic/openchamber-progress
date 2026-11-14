@@ -317,10 +317,28 @@ state only after a matching single reply and successful worker exit before the
 deadline. A fresh inspection replaces it; restart or a changed environment/package
 expires it. Private manifest/journal claims never enter the public result. The
 inspection review is not a durable action receipt or a substitute for fresh ACL
-checks. Begin/resume consumption and HTTP integration remain separate engine work.
+checks. Reviewed-resume consumption and HTTP integration remain separate engine work.
 Portable launch accounting measures at most four queries per inspection stage
 for intact, format-1 and receipt-proven fixtures, and one for fresh complete-review
 admission. This is not native timing or the full slow-machine migration gate.
+
+The worker's confirmed `begin` path now consumes the supervisor review, freshly
+validates it, reserves the remaining spawn/time budget, and executes only prepare
+through the existing directory and journal owners. It assigns the client operation
+identity and full-request receipt before publication. Format-1 consent upgrades
+are wired into this same path. Lost-reply retries after restart compare the durable
+receipt instead of requiring an expired review; changed requests cannot replace
+the operation. A slow helper can leave a valid marker with no journal, requiring
+explicit retry, never automatic repair. Unmarked directories still refuse.
+
+Worker status is a bounded private-journal projection, with unknown capture and
+no legacy scan or Store admission. A requested different operation returns
+`not-found`, never the current operation's progress. Status does not consume an
+unfinished inspection review. Portable accounting measures six launches for new
+prepare, five with an existing same-target managed selection, three for format-1
+prepare, and three for cold begin replay/status. These
+worker paths still do not advertise or expose the HTTP step protocol: advance,
+controls, final effects and transport integration remain unfinished.
 
 The supervisor acquires one conservative product-wide loopback writer slot for
 each request, covering different discovery scopes sharing a Store. Contention or

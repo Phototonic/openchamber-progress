@@ -158,7 +158,7 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
       for(const p of [configRoot,dataRoot])mkdirSync(p,{mode:0o700});
       lifecycle('install',{configRoot,dataRoot,storeRoot:path.join(root,'store'),confirmed:true},{...payload,version:'1.1.1'});
       const worker=new SetupRequestWorker(entry);
-      let cursor:string|undefined;
+      let cursor:string|undefined,expected:string|undefined;
       for(const stage of ['roots','managed-state','legacy-discovery','legacy-releases','store','review']){
         const reply=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',...(cursor?{cursor}:{})}});
         if(!reply.ok)assert.fail(reply.code);
@@ -168,9 +168,21 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
         assert.deepEqual(Object.keys(reply).sort(),['accounting','ok','value']);
         assert.ok(!JSON.stringify(reply).includes('ownershipDigest'),'private ownership bytes/claims cannot leak through the public response');
         cursor=value.inspection!.cursor??undefined;
+        if(value.inspection!.state==='complete')expected=value.inspection!.review.expected;
         assert.equal(worker.busy,false);
       }
       assert.equal(existsSync(path.join(dataRoot,'agent-progress-managed')),false,'read-only inspection never creates the managed container');
+      const status=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'status'}});
+      assert.ok(status.ok);assert.equal((status.value as ManagedStepResponse).progress,null);
+      const begin={version:1,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected};
+      const prepared=await worker.run(env,payload,{action:'managed-step',body:begin});
+      if(!prepared.ok)assert.fail(prepared.code);
+      assert.equal((prepared.value as ManagedStepResponse).disposition,'applied');
+      assert.equal((prepared.value as ManagedStepResponse).progress!.sequence,1);
+      const cold=await new SetupRequestWorker(entry).run(env,payload,{action:'managed-step',body:begin});
+      assert.ok(cold.ok);assert.equal((cold.value as ManagedStepResponse).disposition,'replayed');
+      const observed=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'status',operationId:begin.operationId}});
+      assert.ok(observed.ok);assert.equal((observed.value as ManagedStepResponse).progress!.capture.state,'unknown');
       const first=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect'}});
       assert.ok(first.ok);cursor=(first.value as ManagedStepResponse).inspection!.cursor!;
       const continued=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor}});
