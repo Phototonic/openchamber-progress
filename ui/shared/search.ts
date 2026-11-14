@@ -16,7 +16,7 @@ import { directoryKey } from './path.ts';
 import { directoryWithin } from './model.ts';
 import { ALL, placeOf, trustedPlan } from './scope.ts';
 import { RefreshGate } from './refresh.ts';
-import { readSearchState, readSearchWindow, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
+import { readSearchState, readSearchWindow, type InboxDemand, type InboxFirst, type ReadFailure, type FreshnessResult, type ServiceHost } from './source.ts';
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 import { formatCount } from './format.ts';
 
@@ -430,7 +430,7 @@ export class SearchController {
    * every retained page; changed revisions/cleanup generations stay visibly qualified. Either retires
    * continuation and count authority. A failure is stale, never "missing".
    */
-  async revalidate(service: ServiceHost): Promise<FreshnessResult> {
+  async revalidate(service: ServiceHost, inbox?: { demand: InboxDemand; mono: () => number }): Promise<FreshnessResult> {
     const r = this.run;
     const keys = this.freshKeys();
     const generation = this.freshness;
@@ -439,15 +439,17 @@ export class SearchController {
     if (!r || !keys.length || !current()) return { state: 'retired' };
     const rows = [];
     let captureEnabled = true;
+    let firstInbox: InboxFirst | undefined;
     for (let i = 0; i < keys.length; i += STATE_KEYS) {
       if (!current()) return { state: 'retired' };
-      const result = await readSearchState(service, r.identity.storeId, keys.slice(i, i + STATE_KEYS));
+      const result = await readSearchState(service, r.identity.storeId, keys.slice(i, i + STATE_KEYS), i === 0 ? inbox : undefined);
       if (!current()) return { state: 'retired' }; // retired meanwhile: its answer owns nothing
       if (!result.ok) return { state: 'failed', failure: result.failure, identity: result.status === 409 };
       const b = result.state.binding;
       if (b.sourceId !== r.identity.binding.sourceId || b.verified !== r.identity.binding.verified) return { state: 'failed', failure: { kind: 'invalid', code: 'CONTRACT', message: 'The source binding changed.' }, identity: true };
       if (i > 0 && captureEnabled !== result.state.captureEnabled) return { state: 'failed', failure: { kind: 'busy', code: 'CAPTURE_CHANGED', message: 'Capture state changed during the freshness read. Try again.' }, identity: false };
       captureEnabled = result.state.captureEnabled;
+      if (i === 0) firstInbox = result.inbox;
       rows.push(...result.state.data);
     }
     let gone = 0, moved = 0, reselect = false;
@@ -467,13 +469,13 @@ export class SearchController {
     // Repaint only on a change: an unchanged poll leaves the DOM (focus, scroll, selection) alone.
     const checked = !r.checked && rows.length > 0;
     if (rows.length) r.checked = true;
-    if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled }; }
+    if (!gone && !moved) { if (checked || reselect) this.host.changed(); return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) }; }
     this.gate.retire();
     r.busy = false; r.pending = false; r.countsCurrent = false;
     if (r.stop !== 'retired' && r.stop !== 'identity' && r.stop !== 'membership') r.stop = 'changed';
     this.say(r, gone ? { kind: 'removed', count: gone } : { kind: 'changed' });
     this.host.changed();
-    return { state: 'fresh', captureEnabled };
+    return { state: 'fresh', captureEnabled, ...(inbox ? { inbox: firstInbox } : {}) };
   }
 
   /** The current state for painting, or null when not searching. */

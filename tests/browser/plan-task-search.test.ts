@@ -456,8 +456,13 @@ test('J1-B3: an idle search hidden during a two-batch freshness read sends no se
     assert.equal(c.view()!.page.checked, false, 'the retired batch was not accepted');
     assert.deepEqual(result, { state: 'retired' }, 'a retired freshness read supplies no successful freshness or metadata');
     h.show();
-    await c.revalidate({ serviceRequest: svc.serviceRequest });
+    const fresh = await c.revalidate({ serviceRequest: svc.serviceRequest }, { demand: 'rows', mono: () => 42 });
     assert.equal(svc.count('/v1/search-state'), 3, 'visible again: the next poll reads both batches');
+    assert.ok(fresh.state === 'fresh' && fresh.inbox?.state === 'ready', 'freshness carries one inbox for frame adoption');
+    const batches = svc.log.filter(q => q.path === '/v1/search-state').slice(-2);
+    assert.equal(batches[0].query?.needsYou, '1');
+    assert.equal(batches[0].query?.needsYouTiming, '1');
+    assert.equal(batches[1].query?.needsYou, undefined, 'only the first batch scans inbox');
     assert.equal(c.view()!.page.checked, true);
   });
 });

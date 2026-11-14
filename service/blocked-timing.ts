@@ -3,14 +3,17 @@ import { validateDigestSnapshot } from '../shared/change-digest.ts';
 import { cleanupInstalled, cleanupState } from '../shared/cleanup.ts';
 import type { Store } from '../shared/store.ts';
 
-/** One bounded, revision-pinned scan for the whole plan; never a task/page cache. */
-export function blockedTiming(store: Store, detail: Envelope & PlanRead, now = new Date()): BlockedTiming {
+/** Mutable remaining work, shared by all displayed plans in one inbox window. */
+export interface BlockedTimingBudget { snapshotVisits: number; inputBytes: number }
+/** One bounded, revision-pinned scan for the whole plan; never a task/page cache.
+ * A caller-owned read transaction is never committed or rolled back here. */
+export function blockedTiming(store: Store, detail: Pick<Envelope & PlanRead, 'storeId' | 'plan' | 'items'>, now = new Date(), options: { budget?: BlockedTimingBudget; transaction?: 'caller' } = {}): BlockedTiming {
   const result: BlockedTiming = { readAt: now.toISOString(), items: {} };
   const { plan } = detail;
   if (plan.lifecycle !== 'active') return result;
   let began = false;
   try {
-    store.db.exec('BEGIN'); began = true;
+    if (options.transaction !== 'caller') { store.db.exec('BEGIN'); began = true; }
     if (store.db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()?.store_id !== detail.storeId) throw new Error('identity');
     const live = store.db.prepare('SELECT revision FROM plans WHERE source=? AND id=?').get(plan.sourceId,plan.id);
     if (!live || Number(live.revision) < plan.revision) throw new Error('identity');
@@ -22,11 +25,14 @@ export function blockedTiming(store: Store, detail: Envelope & PlanRead, now = n
     // Admission happens in SQL before text crosses the SQLite/JS boundary.
     const load = store.db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?');
     for (let visits = 0; visits < BLOCKER_LIMITS.snapshotVisits; visits++) {
-      const remaining = BLOCKER_LIMITS.inputBytes - bytes;
+      if (options.budget && options.budget.snapshotVisits <= 0) break;
+      const remaining = Math.min(BLOCKER_LIMITS.inputBytes - bytes, options.budget?.inputBytes ?? BLOCKER_LIMITS.inputBytes);
+      if (options.budget) options.budget.snapshotVisits--;
       const row = load.get(remaining,plan.sourceId,plan.id,expected);
       if (!row) throw new Error('gap');
       if (Number(row.bytes) > remaining) break;
       bytes += Number(row.bytes);
+      if (options.budget) options.budget.inputBytes -= Number(row.bytes);
       const p = validateDigestSnapshot(JSON.parse(String(row.snapshot)),plan.sourceId,plan.id,expected);
       if (!p) throw new Error('history');
       const time = Date.parse(p.reportedAt);
@@ -55,7 +61,7 @@ export function blockedTiming(store: Store, detail: Envelope & PlanRead, now = n
     }
     if (!accepted) throw new Error('missing-current');
     for (const [id,since] of pending) derived[id] = { since,kind:'lower-bound' };
-    store.db.exec('COMMIT'); began = false;
+    if (began) { store.db.exec('COMMIT'); began = false; }
     result.items = derived;
   } catch {
     // Invalid history makes no start claim; it never changes reports or detail.

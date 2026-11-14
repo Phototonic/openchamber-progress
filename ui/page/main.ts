@@ -28,6 +28,8 @@ import { reportingHealthBlock } from '../shared/reporting-health-view.ts';
 import { createMapFrame, preserveMapFocus } from '../shared/dependency-map-view.ts';
 import { DefaultViewChoice, resolveDefaultView, viewReadingKey } from '../shared/default-view.ts';
 import { icon, segmentedBar, statusMark, warningLine, type MarkStatus } from '../shared/primitives.ts';
+import { checkReading, inboxSection, openReading, readingHeader, ReadingFocus, readingRequest, type InboxReading, type ReadingCheck } from '../shared/inbox-view.ts';
+import type { InboxRowView } from '../shared/model.ts';
 
 type Tab = 'progress' | 'document' | 'history' | 'map';
 const messages = {
@@ -56,7 +58,18 @@ type Submitted = { key: string; owner: string; criteria: SearchCriteria };
  * `reveal`: token of an explicit list selection whose detail is scrolled into view once (narrow layout).
  * `search`: the submitted board search (null: ordinary browsing); `draft`: its unsubmitted selects.
  */
-type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean; search: Submitted | null; draft: SearchDraft; problem: Problem | null };
+type Ui = { filters: Filters; selected: string | null; tab: Tab; reveal: number; setup: SetupUi; archived: boolean; search: Submitted | null; draft: SearchDraft; problem: Problem | null; inbox: InboxReading | null };
+/** Reveal-once and focus follow-ups of an open Needs you reading; the last paint's revalidation. */
+// Created on first use: frames that never open an inbox reading construct nothing.
+let inboxFocus: ReadingFocus | null = null;
+const readingFocus = () => (inboxFocus ??= new ReadingFocus());
+let inboxCheck: ReadingCheck | null = null;
+const inboxRequestOf = (vc: ViewContext<Ui>) => {
+  if (!vc.ui.inbox) return null;
+  const request = readingRequest(vc.ui.inbox, vc.inbox?.model);
+  return readingRequest(vc.ui.inbox, vc.inbox?.model, vc.detailPlan(request));
+};
+const inboxKey = (ui: Ui) => (ui.inbox ? ui.inbox.target.source + '/' + ui.inbox.target.plan : null);
 
 const visiblePlans = (vc: ViewContext<Ui>) => {
   if (!vc.read) return [];
@@ -210,7 +223,9 @@ window.addEventListener('blur', endFiltersPress);
 startView<Ui>({
   surface: 'page',
   maxSessionSubscriptions: 16,
-  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null }),
+  initialUi: () => ({ filters: NO_FILTERS, selected: null, tab: 'progress', reveal: 0, setup: initialSetupUi(), archived: false, search: null, draft: NO_DRAFT, problem: null, inbox: null }),
+  // Source-wide Needs you rows with waiting times, on the ordinary list read.
+  needsYou: 'rows',
   prepareUi: (vc) => {
     const plan = selectedPlan(vc) ?? (isSearching(vc) ? search.selectedPlan() : null);
     const decision = resolveDefaultView(viewChoice, vc, readingScope(vc), plan);
@@ -218,9 +233,15 @@ startView<Ui>({
     return vc.ui.tab === tab ? null : { tab };
   },
   scope: (_ctx, ui) => ({ ...pageListScope(ui.filters), archived: ui.archived ? 'only' : 'exclude' }),
-  actionPlan: selectedPlan,
-  forgetPlans: (keys, ui) => { if (!keys.has(ui.selected ?? '')) return {}; captures.retire(); reporting.retire(); search.select(null); return { selected: null }; },
+  // No plan cleanup from a source-wide inbox reading.
+  actionPlan: (vc) => (vc.ui.inbox ? null : selectedPlan(vc)),
+  forgetPlans: (keys, ui) => {
+    if (!keys.has(ui.selected ?? '')) return {};
+    captures.retire(); reporting.retire(); search.select(null); return { selected: null };
+  },
   beforeUiChange: (previous, next) => {
+    // Explicit board navigation (mode, filters, search, selection) leaves an open inbox reading.
+    if (next.inbox && next.inbox === previous.inbox && JSON.stringify([previous.archived, previous.filters, previous.search?.key, previous.selected]) !== JSON.stringify([next.archived, next.filters, next.search?.key, next.selected])) next.inbox = null;
     if (JSON.stringify([previous.filters, previous.search?.key]) !== JSON.stringify([next.filters, next.search?.key])) boardEpoch++;
     if (previous.archived !== next.archived) resetBoard();
     const scope = (u: Ui) => JSON.stringify([u.selected,u.tab,u.archived,u.filters,u.search?.key ?? null]);
@@ -234,24 +255,28 @@ startView<Ui>({
     return [...new Set([...(own ? [own.id] : []), ...projectsFor(vc.read.plans, vc.live, vc.directory, vc.env.boundSource)])];
   },
   wantDetails: (vc) => {
+    const inbox = inboxRequestOf(vc); if (inbox) return [inbox];
     if (isSearching(vc)) { const request = search.selectedPlan(); return request && request.key === vc.ui.selected ? [request] : []; }
     const p = selectedPlan(vc); return p && (vc.ui.tab === 'progress' || vc.ui.tab === 'map' || pendingTask?.key === p.key) ? [p] : [];
   },
+  refreshDetails: (vc) => { const request = inboxRequestOf(vc); return request ? [request] : []; },
   // Task reading follows the board's own scope and selection (never the host session); the
   // Progress/Document/History/Map tabs of one selection share it. A search run is its own scope.
   reading: (vc) => {
+    // An inbox reading is its own identity, apart from the board's selection and search run.
+    const inbox = inboxRequestOf(vc); if (inbox) return { plan: inbox.key, scope: `inbox:${vc.ui.inbox!.token}` };
     const p = selectedPlan(vc); if (!p) return null;
     return { plan: p.key, scope: readingScope(vc) };
   },
   // While results are shown, the poll revalidates them (and the selection) instead of the list.
-  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service) : null),
+  freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service, vc.health?.needsYouInbox === 1 ? { demand: 'rows', mono: () => performance.now() } : undefined) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); inboxFocus?.reset(reason); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.
-  retainParts: (vc) => (isSearching(vc) ? new Set([...opened, ...(vc.ui.selected ? [vc.ui.selected] : [])]) : null),
+  retainParts: (vc) => (isSearching(vc) ? new Set([...opened, ...(vc.ui.selected ? [vc.ui.selected] : []), ...(inboxKey(vc.ui) ? [inboxKey(vc.ui)!] : [])]) : null),
   paint(root, vc) {
     frame = vc;
     captures.beginPaint();
@@ -261,7 +286,7 @@ startView<Ui>({
     caret = old && document.activeElement === old ? [old.selectionStart, old.selectionEnd] : null;
     if (!ui.search && search.active) search.clear();
     // The map belongs to the selected plan's reading; graph work runs only while Map is the shown tab.
-    const mapPlan = read ? selectedPlan(vc) : null;
+    const mapPlan = read && !ui.inbox ? selectedPlan(vc) : null;
     boardMap.sync(vc, mapPlan, readingScope(vc), ui.tab === 'map' && !!mapPlan);
     root.append(el('h1', 'ap-sr', t.heading));
     const modes = testid(el('div', 'ap-row'), 'cleanup-modes');
@@ -311,6 +336,21 @@ startView<Ui>({
       p.dataset.reason = note.reason;
       root.append(p);
     }
+    inboxCheck = null;
+    if (ui.inbox) {
+      // A labelled, read-only reading of the current plan, revalidated before its task is revealed.
+      const r = ui.inbox, request = inboxRequestOf(vc)!, detail = vc.detail(request);
+      const check = inboxCheck = checkReading(r, detail, vc.detailPlan(request), { storeId: read.storeId, boundSource: env.boundSource }, env.locale);
+      const pane = testid(el('section', 'ap-detail'), 'plan-detail');
+      pane.setAttribute('aria-label', t.detail);
+      pane.append(readingHeader(r, check, 'page', env.locale, () => { readingFocus().leaving(r); vc.setUi({ inbox: null }); }, vc.retry));
+      if (check.kind === 'ready') pane.append(planDetail(check.plan, env, { detail, retryDetail: vc.retry, document: { get: () => vc.document(check.plan), request: () => vc.requestDocument(check.plan) } }, { document: 'omit', compareSession: null, reading: vc.reading }));
+      root.append(pane);
+      footer(root, vc, null);
+      return;
+    }
+    // Source-wide and independent of filters, search and selection: at the start of the board.
+    if (vc.inbox) root.append(inboxSection(vc.inbox, env, { open: (row) => openInbox(vc, row), stale: failure && vc.lastGoodAt ? vc.lastGoodAt : null }));
     if (v) { root.append(searchStrip(v)); searchBoard(root, vc, v); footer(root, vc, selectedPlan(vc)); return; }
     if (empty) {
       root.append(emptyBlock('empty-state', ui.archived ? t.noArchived : t.noPlans, ui.archived ? t.archivedHelp : t.plansHelp));
@@ -359,7 +399,8 @@ startView<Ui>({
     const input = root.querySelector<HTMLInputElement>('#ap-search-q');
     if (caret && input && document.activeElement === input) input.setSelectionRange(caret[0], caret[1]);
     currentTask(root, vc);
-    boardMap.afterPaint(root, vc, vc.read ? selectedPlan(vc) : null, progressTab);
+    boardMap.afterPaint(root, vc, vc.read && !vc.ui.inbox ? selectedPlan(vc) : null, progressTab);
+    inboxFocus?.afterPaint(root, vc.ui.inbox, inboxCheck, revealCurrentTask);
     // Once: the Filters trigger or heading after it closed or opened, or a fold's own toggle (its
     // shared hook would otherwise restore to the first project's).
     const f = boardFocus;
@@ -396,6 +437,15 @@ function focusRegroupedPlan(previous: HTMLElement, next: HTMLElement) {
 }
 
 const trusted = (p: PlanView, env: Env) => env.boundSource !== null && p.sourceId === env.boundSource;
+
+/** Opening an inbox row is read-only: it leaves board selection, filters and search as they are. */
+function openInbox(vc: ViewContext<Ui>, row: InboxRowView) {
+  if (!vc.read) return;
+  const reading = openReading(row, vc.read.storeId);
+  pendingTask = null;
+  readingFocus().opening(reading);
+  vc.setUi({ inbox: reading });
+}
 
 /** Leaves search for ordinary browsing: no run, no reveal, no typed text. */
 function endSearch() {
