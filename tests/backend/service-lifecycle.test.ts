@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,cpSync,symlinkSync,readlinkSync,renameSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,cpSync,symlinkSync,readlinkSync,renameSync,existsSync,readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawn,spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -10,7 +11,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { RELEASE } from '../../shared/release.ts';
 import { serviceBindingFile } from '../../service/state.ts';
 import { Store } from '../../shared/store.ts';
-import { createManagedBindingDirectory } from '../../shared/managed-binding.ts';
+import { createManagedBindingDirectory,managedBindingFile } from '../../shared/managed-binding.ts';
 import { isolatedEnvironment } from '../fixtures/managed.ts';
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 
@@ -45,9 +46,23 @@ test('extension replacement preserves authoritative binding, configured views an
     const configured=new SetupController({env:f.env},()=>f.payload);
     try{const review=configured.run('managed-inspect',{storeRoot:f.targets.storeRoot}).delivery!.review!;
       configured.run('managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected});}finally{configured.close();}
+    const descriptor=readFileSync(managedBindingFile(f.env));
+    assert.equal(existsSync(path.join(f.targets.configRoot,'plugins/agent-progress')),false);
+    assert.equal(existsSync(path.join(path.dirname(managedBindingFile(f.env)),'migration.json')),false);
     running=await serve(f,false);
-    const refused=await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot});assert.equal(refused.status,409);assert.deepEqual(await refused.json(),{error:'managed-action-required'});
-    const first=await(await running.request('/v1/plans')).json();await running.stop();rmSync(running.extension,{recursive:true});
+    const snapshot=(root:string):unknown=>readdirSync(root,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).map(entry=>[
+      entry.name,entry.isDirectory()?snapshot(path.join(root,entry.name)):createHash('sha256').update(readFileSync(path.join(root,entry.name))).digest('hex'),
+    ]);
+    const roots=[f.targets.configRoot,f.targets.dataRoot,f.targets.storeRoot],before=roots.map(snapshot);
+    // No legacy installation/journal: replacement retains the existing review flow.
+    const inspected=await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot});assert.equal(inspected.status,200);
+    const review=(await inspected.json()).delivery.review;
+    assert.deepEqual(review.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
+    assert.deepEqual(readFileSync(managedBindingFile(f.env)),descriptor,'inspection preserves the authoritative selection');
+    assert.deepEqual(roots.map(snapshot),before,'inspection changes no product files');
+    const first=await(await running.request('/v1/plans')).json();
+    assert.equal(review.storeId,first.storeId);assert.equal(review.sourceId,first.sourceBinding.sourceId);
+    await running.stop();rmSync(running.extension,{recursive:true});
     running=await serve(f,false);const health=await(await running.request('/health')).json();assert.equal(health.ready,false);assert.equal(health.state,'starting');
     const setup=await(await running.request('/v1/setup')).json();assert.equal(setup.configured,true);assert.equal(setup.installed,false);assert.equal(setup.delivery.kind,'managed');assert.deepEqual(setup.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
     assert.equal((await(await running.request('/v1/plans')).json()).storeId,first.storeId);
