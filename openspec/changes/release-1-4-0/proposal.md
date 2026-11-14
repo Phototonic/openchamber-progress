@@ -12,6 +12,7 @@ Phone users need usable progress surfaces, and coordinators need a reliable view
 - Allow explicit task changes atomically with coordinator finish.
 - Add a transactionally installed receipt index on `(source, oid)` without changing replay meaning or the logical schema version.
 - Update affected guides, guidance, compatibility evidence and generated distribution entries together.
+- Fix native Windows legacy-upgrade startup and setup responsiveness before this release ships: cheap honest health, precise diagnostics and resumable short migration/inspection requests with visible Setup progress.
 
 ## Capabilities
 
@@ -22,6 +23,7 @@ Phone users need usable progress surfaces, and coordinators need a reliable view
 - `delegation-intent-visibility`: read-only pending/refused intent and coordinator notices.
 - `atomic-plan-finish`: optional final task changes in one finish transaction.
 - `handoff-receipt-index`: compatible indexed handoff replay lookup.
+- `windows-setup-responsiveness`: nonblocking health and freshly validated, bounded, resumable managed migration with English/Russian phone-width progress.
 
 ### Modified Capabilities
 
@@ -38,3 +40,5 @@ IN: the capabilities above, English/Russian and accessibility coverage, isolated
 OUT: new model providers, notifications, inferred task state, additional polling loops, automatic preparation/resume turns, new permissions, replacement storage or UI frameworks, and unrelated cleanup.
 
 The release MUST NOT bypass authentication, infer authority from an intent or phone device hint, claim mobile acceptance from a narrow desktop browser, use private host navigation, silently rebase a relevant conflict, erase receipts/history to accelerate lookup, or modify the owner's running host/profile. Host-drawn Work Status is conditional research only, not a build commitment. Publication remains a maintainer approval gate.
+
+Windows setup adds no permission relaxation, cross-request ACL cache, synchronous admission on the health-serving event loop or automatic restoration of global capture. Short requests must preserve the full legacy ownership/removal and same-store/source contract; splitting the work is not permission to trust earlier security observations.
