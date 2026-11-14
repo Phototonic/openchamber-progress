@@ -232,6 +232,77 @@ test('continuation is explicit, pinned and cumulative; held, hidden and moved tr
   assert.equal(s.calls.length, 4); assert.equal(c.model()!.availability, 'unsupported');
 });
 
+test('unchanged first windows recheck loaded pages one per refresh and remove resolved later tasks', async () => {
+  const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
+  let resolved = false;
+  const s = service((q) => q.query?.cursor === 'cursor-1'
+    ? ok(wire([['q', 'b', 'review']], { ...partial('cursor-2'), counts: { needsYou: 2, alsoBlocked: 0 } }))
+    : ok(wire(resolved ? [] : [['r', 'c', 'review']], { counts: { needsYou: resolved ? 2 : 3, alsoBlocked: 0 } })));
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  c.adopt('owner', first(top));
+  c.more(); await settle(); c.more(); await settle();
+  assert.equal(c.model()!.complete, true);
+  resolved = true; // No first-window row, count or cursor changes.
+  c.adopt('owner', first(top));
+  assert.equal(c.model()!.complete, false, 'old later-page counts are not exact during rechecking');
+  assert.deepEqual(c.model()!.counts, { needsYou: 1, alsoBlocked: 0 });
+  assert.equal(c.model()!.rechecking, true);
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b', 'c'], 'rows remain readable under the rechecking notice');
+  await settle();
+  assert.equal(s.calls.length, 3, 'one continuation reread in the first refresh');
+  assert.equal(c.model()!.complete, false);
+  c.adopt('owner', first(top)); await settle();
+  assert.equal(s.calls.length, 4, 'one continuation reread in the second refresh');
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a', 'b']);
+  assert.equal(c.model()!.complete, true);
+  assert.deepEqual(c.model()!.counts, { needsYou: 2, alsoBlocked: 0 });
+});
+
+test('an unchanged refresh retires an older held explicit continuation before it can restore exact counts', async () => {
+  const held = deferred<GuestRequestResult>();
+  const s = service(() => held.promise);
+  const c = new InboxController({ service: () => s.host, visible: () => true, changed: () => {} });
+  const top = first(wire([['p', 'a', 'decision']], partial('cursor-1')));
+  c.adopt('owner', top); c.more();
+  assert.equal(c.adopt('owner', top), true);
+  held.resolve(ok(wire([['q', 'resolved', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+  await settle();
+  assert.equal(c.model()!.complete, false);
+  assert.equal(c.model()!.restarted, true);
+  assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a']);
+  assert.equal(s.calls.length, 1);
+});
+
+test('rechecking retires held replies, retries only on refresh and restarts on cursor divergence or 409', async () => {
+  for (const divergence of ['cursor', '409'] as const) {
+    const top = wire([['p', 'a', 'decision']], partial('cursor-1'));
+    let reply = deferred<GuestRequestResult>();
+    const s = service(() => reply.promise);
+    let visible = true;
+    const c = new InboxController({ service: () => s.host, visible: () => visible, changed: () => {} });
+    c.adopt('owner', first(top)); c.more();
+    reply.resolve(ok(wire([['q', 'b', 'review']], { counts: { needsYou: 2, alsoBlocked: 0 } })));
+    await settle();
+    reply = deferred(); c.adopt('owner', first(top));
+    c.adopt('owner', first(top)); c.more();
+    assert.equal(s.calls.length, 2, 'an in-flight reread never overlaps or extends the traversal');
+    visible = false; c.retire('hidden');
+    reply.resolve(ok(wire([], { counts: { needsYou: 1, alsoBlocked: 0 } }))); await settle();
+    assert.equal(c.model()!.needsYou.length, 2, 'hidden reread cannot replace a page');
+    visible = true; reply = deferred(); c.adopt('owner', first(top));
+    reply.resolve({ status: 503, body: JSON.stringify({ error: 'busy' }) }); await settle();
+    assert.equal(s.calls.length, 3, 'failure never adds an automatic retry');
+    assert.equal(c.model()!.complete, false);
+    reply = deferred(); c.adopt('owner', first(top));
+    reply.resolve(divergence === '409' ? { status: 409, body: JSON.stringify({ error: 'conflict' }) }
+      : ok(wire([['q', 'b', 'review']], { ...partial('different-cursor'), counts: { needsYou: 2, alsoBlocked: 0 } })));
+    await settle();
+    assert.equal(c.model()!.restarted, true);
+    assert.deepEqual(c.model()!.needsYou.map(r => r.task.id), ['a']);
+    assert.equal(c.model()!.rechecking, false);
+  }
+});
+
 test('readNeedsYou refuses replies for another store or binding and oversized bodies', async () => {
   const request = { storeId: STORE, binding: { sourceId: SRC, verified: true }, source: SRC, cursor: 'c', limit: 50, timing: true };
   const other = service(() => ok({ ...wire([['p', 'a', 'decision']]), storeId: 'store-9' }));
