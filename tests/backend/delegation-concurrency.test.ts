@@ -12,6 +12,148 @@ import { pathToFileURL } from 'node:url';
 const key = { source: 'source-alpha', parent: 'A', message: 'message-a', call: 'call-a' };
 const second = { ...key, message: 'message-b', call: 'call-b' };
 
+async function releasedStore(file: string) {
+  const base = 'refs/tags/v1.3.0', root = path.join(path.dirname(file), 'released');
+  const names = execFileSync('git', ['ls-tree', '-r', '--name-only', base, 'shared'], { encoding: 'utf8', timeout: 15000 }).trim().split('\n');
+  for (const name of names) {
+    const target = path.join(root, name); fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    const bytes = execFileSync('git', ['show', `${base}:${name}`], { timeout: 15000 }); fs.writeFileSync(target, bytes);
+    assert.deepEqual(fs.readFileSync(target), bytes);
+  }
+  return (await import(pathToFileURL(path.join(root, 'shared/store.ts')).href)).Store;
+}
+
+for (const mode of ['binding', 'link'] as const)
+test(`unmodified released ${mode} supplies sufficient disjoint assignment evidence`, async () => {
+  await fixture(async f => {
+    const OldStore = await releasedStore(f.store.file), old = new OldStore(f.store.file); old.bindReads(f.source.id, true);
+    try {
+      const request = f.request({ assign: ['task-2'] }); old.declareDelegation(request, f.actor());
+      old.apply({ op: 'link', plan: request.plan, oid: 'old-sibling-link', rev: 1, child: 'C1', assign: ['task-1'] },
+        f.actor(), undefined, f.actor('C1'), mode === 'binding' ? { generation: 0, messageId: key.message,
+          callId: key.call, observedAt: new Date(1000).toISOString() } : undefined);
+      f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+      f.store.afterRun(second, 0, f.actor('C2'), 'returned');
+      assert.equal(old.declareDelegation(request, f.actor()).delegation.state, 'bound');
+      assert.equal(f.plan().revision, 3);
+    } finally { old.close(); }
+  });
+});
+
+for (const mode of ['binding', 'link'] as const)
+for (const order of ['before-dispatch', 'after-dispatch', 'after-binding'] as const)
+test(`disjoint late ${mode} preserves delegation: ${order}`, async () => {
+  await fixture(async f => {
+    const request = f.request({ assign: ['task-2'] }); f.declare(request);
+    const writer = new Store(f.store.file); writer.bindReads(f.source.id, true);
+    // One intent per parent prevents two simultaneous reserved declarations.
+    // Exercise the existing assignment-binding mutation seam, not forged intents.
+    const sibling = () => writer.apply({ op: 'link', plan: request.plan, oid: 'late-sibling',
+      rev: f.plan().revision, child: 'C1', assign: ['task-1'] }, f.actor(), undefined, f.actor('C1'),
+      mode === 'binding' ? { generation: 0, messageId: key.message, callId: key.call,
+        observedAt: new Date(1000).toISOString() } : undefined);
+    try {
+      if (order === 'before-dispatch') sibling();
+      f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+      if (order === 'after-dispatch') sibling();
+      const before = f.plan();
+      f.store.afterRun(second, 0, f.actor('C2'), 'returned');
+      assert.equal(f.declare(request).delegation.state, 'bound');
+      assert.equal(f.plan().reportedAt, before.reportedAt);
+      assert.deepEqual(f.plan().items.map(i => [i.status, i.reporterSessionId]), before.items.map(i => [i.status, i.reporterSessionId]));
+      if (order === 'after-binding') sibling();
+      assert.deepEqual(f.plan().items.slice(0, 2).map(i => i.assigneeSessionId), ['C1', 'C2']);
+      assert.equal(f.plan().revision, 3);
+      f.store.apply({ op: 'change', plan: request.plan, oid: 'second-report', rev: 3,
+        changes: [{ id: 'task-2', status: 'working' }] }, f.actor('C2'));
+      assert.throws(() => f.store.apply({ op: 'change', plan: request.plan, oid: 'cross-report', rev: 4,
+        changes: [{ id: 'task-1', status: 'done' }] }, f.actor('C2')), /assignment/);
+    } finally { writer.close(); }
+  });
+});
+
+for (const mode of ['binding', 'link'] as const)
+for (const restored of [false, true])
+test(`target ${mode} refuses even when later unlinked: ${restored}`, async () => {
+  await fixture(async f => {
+    const request = f.request(); f.declare(request);
+    f.store.apply({ op: 'link', plan: request.plan, oid: 'touch-target', rev: 1, child: 'C2', assign: ['task-1'] },
+      f.actor(), undefined, f.actor('C2'), mode === 'binding' ? { generation: 0, messageId: key.message,
+        callId: key.call, observedAt: new Date(1000).toISOString() } : undefined);
+    if (restored) f.store.apply({ op: 'link', plan: request.plan, oid: 'unlink-target', rev: 2, child: 'C2', assign: [] },
+      f.actor(), undefined, f.actor('C2'));
+    const before = f.plan();
+    f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+    f.store.afterRun(second, 0, f.actor('C1'), 'returned');
+    assert.equal(f.declare(request).delegation.state, 'retired');
+    assert.deepEqual(f.plan(), before);
+  });
+});
+
+for (const operation of ['replace', 'unlink', 'binding-union'] as const)
+test(`complete disjoint assignment scope includes retained and removed tasks: ${operation}`, async () => {
+  await fixture(async f => {
+    f.store.apply({ op: 'revise', plan: 'plan-alpha', oid: 'add-task', rev: 1,
+      items: [...f.plan().items.map(({ id, title, kind }) => ({ id, title, kind })), { id: 'task-3', title: 'Third', kind: 'task' }] }, f.actor());
+    const binding = { generation: 0, messageId: key.message, callId: key.call, observedAt: new Date(1000).toISOString() };
+    f.store.apply({ op: 'link', plan: 'plan-alpha', oid: 'initial-binding', rev: 2, child: 'C1', assign: ['task-1'] }, f.actor(), undefined, f.actor('C1'), binding);
+    f.store.apply({ op: 'change', plan: 'plan-alpha', oid: 'block-target', rev: 3,
+      changes: [{ id: 'task-2', status: 'blocked', blocker: { reason: 'Decision needed' } }] }, f.actor());
+    const request = f.request({ assign: ['task-2'] }); f.declare(request);
+    f.store.apply({ op: 'link', plan: request.plan, oid: 'sibling-assignment', rev: 4, child: 'C1', assign: operation === 'unlink' ? [] : ['task-3'] },
+      f.actor(), undefined, f.actor('C1'), operation === 'binding-union' ? { ...binding, callId: 'resumed-call' } : undefined);
+    f.store.apply({ op: 'change', plan: request.plan, oid: 'sibling-report', rev: 5,
+      changes: [{ id: operation === 'unlink' ? 'task-1' : 'task-3', status: 'working' }] }, f.actor(operation === 'unlink' ? 'A' : 'C1'));
+    f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+    f.store.afterRun(second, 0, f.actor('C2'), 'returned');
+    assert.equal(f.declare(request).delegation.state, 'bound');
+    assert.equal(f.plan().items[1]!.blocker!.reportedRevision, 4);
+    assert.equal(f.plan().items[1]!.blocker!.validAtRevision, 7);
+    assert.equal(f.plan().items[0]!.assignmentBinding?.boundRevision, operation === 'binding-union' ? 3 : undefined);
+  });
+});
+
+for (const fault of ['reporter', 'mode', 'bound-revision', 'bound-time', 'status', 'other-link', 'link-metadata'] as const)
+test(`incomplete assignment transition proof refuses: ${fault}`, async () => {
+  await fixture(async f => {
+    const request = f.request({ assign: ['task-2'] }); f.declare(request);
+    f.store.apply({ op: 'link', plan: request.plan, oid: 'late-binding', rev: 1, child: 'C1', assign: ['task-1'] },
+      f.actor(), undefined, f.actor('C1'), { generation: 0, messageId: key.message, callId: key.call, observedAt: new Date(1000).toISOString() });
+    // Labelled fault injection: corrupt the retained proof, not the writer API.
+    if (fault === 'reporter') f.store.db.exec("UPDATE contributions SET payload=json_set(payload,'$.reporterSessionId','C1','$.attributedSessionId','C1') WHERE revision=2");
+    else if (fault === 'mode') f.store.db.exec("UPDATE contributions SET payload=json_set(payload,'$.mode','parent-relay','$.attributedSessionId','C1') WHERE revision=2");
+    else {
+      const row = f.store.db.prepare('SELECT snapshot FROM revisions WHERE revision=2').get()!;
+      const snapshot = JSON.parse(String(row.snapshot));
+      if (fault === 'bound-revision') snapshot.items[0].assignmentBinding.boundRevision = 1;
+      if (fault === 'bound-time') snapshot.items[0].assignmentBinding.boundAt = new Date(0).toISOString();
+      if (fault === 'status') snapshot.items[0].status = 'working';
+      if (fault === 'other-link') snapshot.links.push({ sessionId: 'N1', itemIds: [] });
+      if (fault === 'link-metadata') snapshot.links[0].unknownAuthority = true;
+      f.store.db.prepare('UPDATE revisions SET snapshot=? WHERE revision=2').run(JSON.stringify(snapshot));
+      f.store.db.prepare('UPDATE plans SET snapshot=? WHERE revision=2').run(JSON.stringify(snapshot));
+    }
+    const before = f.plan();
+    f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+    f.store.afterRun(second, 0, f.actor('C2'), 'returned');
+    assert.equal(f.declare(request).delegation.reason, 'conflict');
+    assert.deepEqual(f.plan(), before);
+  });
+});
+
+test('same-child no-op relink retains conservative empty-scope refusal', async () => {
+  await fixture(async f => {
+    const link = (oid: string, rev: number) => f.store.apply({ op: 'link', plan: 'plan-alpha', oid, rev, child: 'C1', assign: ['task-1'] }, f.actor(), undefined, f.actor('C1'));
+    link('initial', 1);
+    const request = f.request({ assign: ['task-2'] }); f.declare(request);
+    link('same-link', 2);
+    f.store.beforeRun(second, f.actor(), 'subagent', {}, 2000);
+    f.store.afterRun(second, 0, f.actor('C2'), 'returned');
+    assert.equal(f.declare(request).delegation.reason, 'conflict');
+    assert.equal(f.plan().items[1]!.assigneeSessionId, undefined);
+  });
+});
+
 test('a sibling child report between declaration and dispatch preserves the second assignment', async () => {
   await fixture(async f => {
     f.declare(f.request({ oid: 'declare-a', assign: ['task-1'] }));
@@ -205,14 +347,7 @@ test('empty contribution scope is insufficient proof even when endpoints look un
 
 test('unmodified released writers and intents use retained evidence, never endpoint-only restoration', async () => {
   await fixture(async f => {
-    const base = 'refs/tags/v1.3.0', root = path.join(path.dirname(f.store.file), 'released');
-    const names = execFileSync('git', ['ls-tree', '-r', '--name-only', base, 'shared'], { encoding: 'utf8', timeout: 15000 }).trim().split('\n');
-    for (const name of names) {
-      const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      const bytes = execFileSync('git', ['show', `${base}:${name}`], { timeout: 15000 }); fs.writeFileSync(file, bytes);
-      assert.deepEqual(fs.readFileSync(file), bytes);
-    }
-    const { Store: OldStore } = await import(pathToFileURL(path.join(root, 'shared/store.ts')).href);
+    const OldStore = await releasedStore(f.store.file);
     const old = new OldStore(f.store.file); old.bindReads(f.source.id, true);
     try {
       const request = f.request(); old.declareDelegation(request, f.actor());

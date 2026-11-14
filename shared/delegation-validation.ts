@@ -20,7 +20,7 @@ function plan(value: unknown, source: string, id: string, revision: number, owne
   const items = new Map(p.items.map(i => [i.id, i]));
   for (const link of p.links) {
     need(link && identifier(link.sessionId) && link.sessionId !== owner && !sessions.has(link.sessionId) &&
-      Array.isArray(link.itemIds) && link.itemIds.length <= 1000, 'conflict');
+      Array.isArray(link.itemIds) && link.itemIds.length > 0 && link.itemIds.length <= 1000, 'conflict');
     sessions.add(link.sessionId);
     for (const id of link.itemIds) {
       need(identifier(id) && !assigned.has(id) && items.get(id)?.kind === 'task' && items.get(id)?.assigneeSessionId === link.sessionId, 'conflict');
@@ -47,10 +47,62 @@ function taskFacts(item: Item, p: PlanState) {
   return canonical(copy);
 }
 
+/** Empty contribution scope alone says nothing about authored targets. A
+ * changed single-child link identifies the link writer only after structural
+ * and lifecycle operations have been excluded. Its complete old/new scope,
+ * plus fresh binding provenance where present, must explain the entire delta.
+ * Equal links (including no-op legacy relinks) remain ambiguous and refuse.
+ */
+function disjointLink(previous: PlanState, next: PlanState, c: Contribution, assigned: string[]) {
+  need(c.mode === 'direct' && c.reporterSessionId === previous.sessionId && c.attributedSessionId === previous.sessionId, 'conflict');
+  const oldLinks = new Map(previous.links.map(l => [l.sessionId, l]));
+  const newLinks = new Map(next.links.map(l => [l.sessionId, l]));
+  const changed = [...new Set([...oldLinks.keys(), ...newLinks.keys()])]
+    .filter(id => canonical(oldLinks.get(id) ?? null) !== canonical(newLinks.get(id) ?? null));
+  need(changed.length === 1, 'conflict');
+  const child = changed[0]!, oldLink = oldLinks.get(child), newLink = newLinks.get(child);
+  const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
+  const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
+  need(canonical(oldFacts) === canonical(newFacts), 'conflict');
+  const scope = new Set([...(oldLink?.itemIds ?? []), ...(newLink?.itemIds ?? [])]);
+  need(scope.size > 0 && assigned.every(id => !scope.has(id)), 'conflict');
+  need(canonical(next.links) === canonical([...previous.links.filter(l => l.sessionId !== child), ...(newLink ? [newLink] : [])]), 'conflict');
+  const bound = next.items.filter(i => i.assignmentBinding?.boundRevision === next.revision);
+  if (bound.length) {
+    need(bound.length <= 50 && next.reportedAt === previous.reportedAt && canonical(next.document) === canonical(previous.document), 'conflict');
+    const first = bound[0]!.assignmentBinding!;
+    for (const item of bound) {
+      const b = item.assignmentBinding!;
+      need(currentBinding(b, next, item.id) && b.childSessionId === child && b.boundAt === c.reportedAt &&
+        b.messageId === first.messageId && b.callId === first.callId && b.observedAt === first.observedAt &&
+        previous.items.find(i => i.id === item.id)?.assigneeSessionId === undefined, 'conflict');
+    }
+    // A binding unions the existing link with newly declared, unassigned tasks.
+    // The snapshot's task order need not be the declaration's assignment order.
+    need(newLink && newLink.itemIds.length === (oldLink?.itemIds.length ?? 0) + bound.length &&
+      (oldLink?.itemIds ?? []).every((id, index) => newLink.itemIds[index] === id) &&
+      bound.every(i => newLink.itemIds.includes(i.id)), 'conflict');
+  } else need(c.reportedAt === next.reportedAt, 'conflict');
+  for (let index = 0; index < previous.items.length; index++) {
+    const a = previous.items[index]!, b = next.items[index]!;
+    taskFacts(a, previous); // Do not recertify stale optional annotations.
+    const expected = structuredClone(a);
+    if (scope.has(a.id)) {
+      if (newLink?.itemIds.includes(a.id)) expected.assigneeSessionId = child;
+      else delete expected.assigneeSessionId;
+      if (!bound.length) delete expected.assignmentBinding;
+      else if (bound.some(i => i.id === a.id)) expected.assignmentBinding = b.assignmentBinding;
+    }
+    if (expected.blocker) expected.blocker.validAtRevision = next.revision;
+    if (expected.assignmentBinding) expected.assignmentBinding.validAtRevision = next.revision;
+    need(taskFacts(expected, next) === taskFacts(b, next), 'conflict');
+  }
+}
+
 /** Read-only predicate; caller MUST hold the Store transaction through use of
- * the returned revision. It proves only intervening disjoint task reports.
- * Empty contribution scopes cannot distinguish legacy no-op link/bind writes,
- * so they retain strict conflict behavior, rather than guessing from endpoints.
+ * the returned revision. It proves intervening disjoint reports and positively
+ * identified single-child link/binding transitions. Ambiguous empty scopes
+ * retain strict conflict behavior, rather than guessing from equal endpoints.
  * Read projections may use this predicate but must never settle the intent.
  */
 export function delegationRevision(db: DatabaseSync, binding: { sourceId: string | null; verified: boolean }, intent: DurableIntent): number {
@@ -88,22 +140,25 @@ export function delegationRevision(db: DatabaseSync, binding: { sourceId: string
     if (previous) {
       const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes, source, r.plan, rev)?.payload) as Contribution;
       need(c && c.revision === rev && identifier(c.reporterSessionId) && identifier(c.attributedSessionId) &&
-        ['direct','parent-relay'].includes(c.mode) && typeof c.reportedAt === 'string' && c.reportedAt === next.reportedAt &&
-        Array.isArray(c.itemIds) && c.itemIds.length > 0 && c.itemIds.length <= 50 && new Set(c.itemIds).size === c.itemIds.length &&
+        ['direct','parent-relay'].includes(c.mode) && typeof c.reportedAt === 'string' &&
+        Array.isArray(c.itemIds) && c.itemIds.length <= 50 && new Set(c.itemIds).size === c.itemIds.length &&
         c.itemIds.every(id => identifier(id) && !r.assign!.includes(id) && next.items.some(i => i.id === id && i.kind === 'task')), 'conflict');
       need(c.mode === 'direct' ? c.reporterSessionId === c.attributedSessionId : c.reporterSessionId === owner && c.attributedSessionId !== owner, 'conflict');
       if (c.attributedSessionId !== owner) need(previous.links.some(l => l.sessionId === c.attributedSessionId && c.itemIds.every(id => l.itemIds.includes(id))), 'conflict');
-      // Reports cannot change plan structure, assignment, owner or location.
-      // Compare all non-report plan facts too, including unknown future fields.
-      const { revision: _a, reportedAt: _b, items: _c, document: _d, ...before } = previous;
-      const { revision: _e, reportedAt: _f, items: _g, document: _h, ...after } = next;
+      // Compare non-report/assignment plan facts, including unknown fields.
+      const { revision: _a, reportedAt: _b, items: _c, document: _d, links: _q, ...before } = previous;
+      const { revision: _e, reportedAt: _f, items: _g, document: _h, links: _r, ...after } = next;
       need(canonical(before) === canonical(after) && previous.reportedAt <= next.reportedAt && previous.items.length === next.items.length, 'conflict');
-      for (let index = 0; index < previous.items.length; index++) {
-        const a = previous.items[index]!, b = next.items[index]!;
-        const { status: _i, reporterSessionId: _j, blocker: _k, assignmentBinding: _l, ...aStructure } = a;
-        const { status: _m, reporterSessionId: _n, blocker: _o, assignmentBinding: _p, ...bStructure } = b;
-        need(canonical(aStructure) === canonical(bStructure), 'conflict');
-        if (r.assign!.includes(a.id)) need(taskFacts(a, previous) === taskFacts(b, next), 'conflict');
+      if (c.itemIds.length === 0) disjointLink(previous, next, c, r.assign!);
+      else {
+        need(c.reportedAt === next.reportedAt && canonical(previous.links) === canonical(next.links), 'conflict');
+        for (let index = 0; index < previous.items.length; index++) {
+          const a = previous.items[index]!, b = next.items[index]!;
+          const { status: _i, reporterSessionId: _j, blocker: _k, assignmentBinding: _l, ...aStructure } = a;
+          const { status: _m, reporterSessionId: _n, blocker: _o, assignmentBinding: _p, ...bStructure } = b;
+          need(canonical(aStructure) === canonical(bStructure), 'conflict');
+          if (r.assign!.includes(a.id)) need(taskFacts(a, previous) === taskFacts(b, next), 'conflict');
+        }
       }
     }
     previous = next;
