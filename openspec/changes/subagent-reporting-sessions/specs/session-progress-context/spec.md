@@ -45,6 +45,7 @@ The pinned-scope label SHALL offer a visible, keyboard-accessible localized **Sh
 - **WHEN** the user activates the reset control while A is pinned and B is the host's current session
 - **THEN** old pinned responses are retired and the panel shows B through the ordinary scope/selection rules
 - **AND** no host navigation, task mutation or draft change occurs; repeated delivery of A's retained item does not re-pin the same frame
+- **AND** another click on A's action with identical item data remains indistinguishable from replay, even after close/reopen; a different session's action or a host reload is needed before A can pin again, as documented in issue #6938
 
 #### Scenario: Current session is absent or the pin is unavailable
 - **WHEN** the user resets an unavailable pinned target and the host has no current session

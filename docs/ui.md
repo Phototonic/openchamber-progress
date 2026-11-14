@@ -401,10 +401,12 @@ a genuinely different or host-cleared item ends that replay suppression.
 A further isolated 2.7.1 check found a limitation after reset: deliberately
 choosing **Open Agent Progress** for the same session again supplies the same
 item data as a replay, and the panel stays on the current session instead of
-pinning that target again. The supported item has no action-instance identifier;
-this same-target re-pin journey is not accepted. A different session action or
-a host-cleared item remains distinct. Do not infer a new action from visibility
-or chat changes to work around this ambiguity.
+pinning that target again, including after close/reopen. Use a different session's
+action first, then the original session's action, or reload OpenChamber. The
+supported item has no action-instance identifier; a per-click identifier has been
+requested in #6938. A host-cleared item also remains distinct. The reset lasts
+for the guest frame: do not infer a new action from visibility, size or chat
+changes to work around this documented ambiguity.
 
 Expanded **Sessions** has one localized section heading; the participant list
 retains every participant and optional host fact without repeating that heading.

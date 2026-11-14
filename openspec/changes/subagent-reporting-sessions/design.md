@@ -65,6 +65,14 @@ Remove the redundant inner heading when the existing Sessions panel wrapper alre
 
 Reuse rail selection and preference semantics within the fully validated source/session result. With multiple plans, show the existing picker and the chosen/automatic indication; do not merge plans or silently choose another source. A valid empty result shows no plan for that session. Failed/incomplete reads cannot claim an empty or complete set. Ordinary board browsing and its explicit filters remain unchanged; this slice adds no cross-frame board filter handoff.
 
+The local reset remains exactly frame-local, including through panel close/reopen.
+A fresh click on the same session still carries indistinguishable item data and
+cannot re-pin after reset until a different session's action is used or OpenChamber
+is reloaded. This is a documented limitation under #6938, not an acceptance failure
+to repair with visibility/size heuristics. The pinned SDK supplies no supported
+visibility contract or per-click identifier. Keep the current replay guard and
+verify different-session action → original-session action restores pinning.
+
 ### 5. Optional work context, no speculative Workflows action
 
 Extend the existing live-session adapter with optional validated `agent` and `links`. Show concise source-labelled text in existing session details: host-reported agent and host-linked issue/change titles. Retain the live adapter's input bounds and use bounded literal display (agent up to 80 code units; at most five link titles up to 200 each, with a more-links qualification when applicable). Missing data is normal; malformed optional data is omitted without invalidating otherwise sound session identity. Do not fetch URLs, add link execution controls or persist a new metadata cache. These fields never establish assignment, accepted work, task status or workflow-run selection.

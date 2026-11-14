@@ -77,6 +77,7 @@ if(arg('--server-worker')) {
     const checks=fs.existsSync(`${root}/checks.json`)?JSON.parse(fs.readFileSync(`${root}/checks.json`,'utf8')):[];
     write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false,zeroCredentials:checks.some((c:any)=>c.id==='no-credentials'&&c.pass),noRemoteProviderTransport:checks.some((c:any)=>c.id==='no-remote-provider-access'&&c.pass)});
     if(fs.existsSync(`${root}/journey-stage.json`))fs.copyFileSync(`${root}/journey-stage.json`,`${output}/journey-stage.json`);
+    if(fs.existsSync(`${root}/journey-checks.json`))fs.copyFileSync(`${root}/journey-checks.json`,`${output}/journey-checks.json`);
     fs.rmSync(root,{recursive:true,force:true});assert.equal(remaining.length,0,'owned process cleanup incomplete');
   }
 }else {

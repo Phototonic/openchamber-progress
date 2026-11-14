@@ -1239,8 +1239,10 @@ frame-local reset instead of expecting close/reopen to restore ordinary scope.
 The reset retires pinned reads without a host write, persistence or visibility
 heuristic; retained-item replays do not undo it. See the UI guide's reopening
 limitation, including the observed failure to re-pin the same target after reset
-when a new menu click delivers identical item data. That journey remains
-unaccepted; no action-instance signal exists in the pinned SDK item contract.
+when a new menu click delivers identical item data, even after close/reopen.
+Use a different session's action before the original one, or reload OpenChamber.
+This is a documented limitation: no action-instance signal exists in the pinned
+SDK item contract; a per-click identifier is requested in #6938.
 Optional host agent/resource titles are informational,
 not task authority. Workflows navigation is omitted because this SDK exposes no
 supported destination/availability contract. Linux web evidence does not certify

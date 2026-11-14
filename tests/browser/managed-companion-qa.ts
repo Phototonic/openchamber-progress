@@ -24,7 +24,14 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
     const shot=async(name:string)=>{const r=await send('Page.captureScreenshot',{format:'png'});writeFileSync(`${artifacts}/${name}.png`,Buffer.from(r.data,'base64'));screenshots.push(`${name}.png`);};
     const key=async(key:string,code=key)=>{await send('Input.dispatchKeyEvent',{type:'keyDown',key,code});await send('Input.dispatchKeyEvent',{type:'keyUp',key,code});};
     const pointer=async(x:number,y:number)=>{await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});};
-    const click=async(expression:string)=>{const p=await wait<any>(()=>evaluate<any>(`(()=>{const e=${expression};if(!e||!e.checkVisibility())return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`),Boolean,'visible host control');await pointer(p.x,p.y);};
+    const click=async(expression:string)=>{
+      const locate=()=>evaluate<any>(`(()=>{const e=${expression};if(!e||!e.checkVisibility())return null;e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`);
+      let p=await wait<any>(locate,Boolean,'actionable host control: '+expression);
+      await send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});
+      await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+      let previous='';
+      p=await wait<any>(async()=>{await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const point=await locate(),current=JSON.stringify(point),stable=point&&current===previous;previous=current;return stable?point:null;},Boolean,'settled host control: '+expression);await pointer(p.x,p.y);
+    };
     const text=(value:string)=>`[...document.querySelectorAll('button,[role="tab"],[role="menuitem"],label,span')].find(e=>e.checkVisibility()&&(e.textContent.trim()===${literal(value)}||e.getAttribute('aria-label')===${literal(value)}||e.getAttribute('title')===${literal(value)}))`;
     const guestContext=async(surface:string)=>{
       for(const event of events.filter(e=>e.method==='Runtime.executionContextCreated'&&e.params.context.auxData?.isDefault).toReversed()) {
