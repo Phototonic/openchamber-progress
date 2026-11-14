@@ -44,12 +44,50 @@ test('cancel/redeclare supersedes the old refusal without rearming its replay',a
   assert.equal(f.store.delegationRefusals(f.source.id,'A').refusals.length,0);
 }));
 
+for(const mode of ['link','binding'] as const)
+test(`current ${mode} recovery suppresses only fully assigned refusals without changing receipts`,async()=>fixture(async f=>{
+  const request=f.request({assign:['task-1','task-2']});f.declare(request);
+  f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,undefined,'unconfirmed');
+  const refused=f.declare(request);
+  const link=(oid:string,assign:string[])=>f.store.apply({op:'link',plan:'plan-alpha',oid,rev:f.plan().revision,child:'C1',assign},f.actor(),undefined,f.actor('C1'),
+    mode==='binding'?{generation:0,messageId:key.message,callId:key.call,observedAt:new Date(1000).toISOString()}:undefined);
+  link('partial',['task-1']);
+  assert.equal(f.store.delegationRefusals(f.source.id,'A').refusals.length,1);
+  link('recovered',['task-1','task-2']);
+  const reader=new Store(f.store.file,{readOnly:true});reader.bindReads(f.source.id,true);
+  try{
+    const changes=reader.db.prepare('SELECT total_changes() AS n').get();
+    assert.deepEqual(reader.delegationRefusals(f.source.id,'A'),{sourceId:f.source.id,sessionId:'A',complete:true,refusals:[]});
+    assert.deepEqual(reader.db.prepare('SELECT total_changes() AS n').get(),changes);
+  }finally{reader.close();}
+  assert.deepEqual(f.declare(request),refused,'recovery does not rewrite or rearm the declaration');
+  await f.reload();assert.equal(f.store.delegationRefusals(f.source.id,'A').refusals.length,0);
+  f.store.apply({op:'link',plan:'plan-alpha',oid:'unlink',rev:f.plan().revision,child:'C1',assign:[]},f.actor(),undefined,f.actor('C1'));
+  assert.equal(f.store.delegationRefusals(f.source.id,'A').refusals.length,1,'suppression follows current assignments only');
+}));
+
 test('legacy, malformed and bounded receipt evidence never fabricates a refusal or leaks text',async()=>fixture(async f=>{
   const r=f.request();f.declare(r);f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,undefined,'unconfirmed');
   f.store.db.exec("UPDATE receipts SET receipt=json_remove(receipt,'$.delegation.declaration') WHERE oid='declare'");
   assert.deepEqual(f.store.delegationRefusals(f.source.id,'A'),{sourceId:f.source.id,sessionId:'A',complete:false,refusals:[]});
+  assert.equal(delegationRefusalText(f.store.delegationRefusals(f.source.id,'A')),'Additional refusal evidence may be unavailable or omitted.');
   for(let n=0;n<=DELEGATION_VIEW_LIMITS.receipts;n++)f.store.apply({op:'change',plan:'plan-alpha',oid:`noise-${n}`,rev:n+1,changes:[{id:'task-2',status:'working'}]},f.actor());
   const bounded=f.store.delegationRefusals(f.source.id,'A');assert.equal(bounded.complete,false);assert.deepEqual(bounded.refusals,[]);
+  assert.equal(delegationRefusalText(bounded),'Additional refusal evidence may be unavailable or omitted.');
+  assert.equal(delegationRefusalText({...bounded,complete:true}),'');
+}));
+
+for(const fault of ['mismatched-link','oversized','malformed'] as const)
+test(`unverifiable current assignment does not hide a refusal: ${fault}`,async()=>fixture(async f=>{
+  f.declare();f.store.beforeRun(key,f.actor(),'subagent',{},1000);f.store.afterRun(key,0,undefined,'unconfirmed');
+  f.store.apply({op:'link',plan:'plan-alpha',oid:'recovery',rev:1,child:'C1',assign:['task-1']},f.actor(),undefined,f.actor('C1'));
+  // Labelled fault injection: damage read evidence, never an alternate writer.
+  if(fault==='mismatched-link')f.store.db.exec("UPDATE plans SET snapshot=json_set(snapshot,'$.links',json('[]'))");
+  if(fault==='oversized')f.store.db.prepare("UPDATE plans SET snapshot=json_set(snapshot,'$.padding',?)").run('x'.repeat(DELEGATION_VIEW_LIMITS.inputBytes));
+  if(fault==='malformed')f.store.db.exec("UPDATE plans SET snapshot=json_set(snapshot,'$.items',json('null'))");
+  const selection=f.store.delegationRefusals(f.source.id,'A');
+  assert.equal(selection.refusals.length,1);
+  if(fault!=='mismatched-link')assert.equal(selection.complete,false);
 }));
 
 test('malformed newer declaration cannot resurrect an older refusal',async()=>fixture(async f=>{
