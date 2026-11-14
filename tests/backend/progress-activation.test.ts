@@ -307,7 +307,7 @@ test('no-plan dispatch hint asks for explicit start and delegation; tracker hint
       assert.match(text, /start one now.*op=start.*complete real task structure.*before further dispatches/i);
       assert.match(text, /planned work.*op=delegate.*assigned task IDs.*before the next dispatch/i);
       assert.match(text, /permitted, verified assigned sub-agent.*report its own tasks/i);
-      assert.match(text, /already current.*do nothing/i);
+      assert.match(text, /do not repeat.*already current/i);
       assert.match(text, /grants no assignment or authority.*no work start, review, approval or completion/i);
       assert.equal(proxyHint(await next(f)), false);
     }
