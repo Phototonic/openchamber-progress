@@ -122,7 +122,7 @@ const REFUSAL_REASONS:Record<string,string>={
 };
 /** Fixed prose plus validated IDs only; no task titles, document or tool text. */
 export function delegationRefusalText(selection:DelegationRefusals):string {
-  if(!selection.refusals.length)return '';
+  if(!selection.refusals.length)return selection.complete?'':'Additional refusal evidence may be unavailable or omitted.';
   const header='## Delegation not applied';
   const recovery='Read current state. To recover, re-declare at the current revision before a new dispatch, or explicitly link the verified returned child session to its tasks. A refusal grants no assignment and changes no task status.';
   const lines:string[]=[];let omitted=!selection.complete;

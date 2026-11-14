@@ -25441,6 +25441,25 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
       continue;
+    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes2), sourceId, r.plan);
+    if (current) {
+      bytes2 += Number(current.bytes);
+      if (typeof current.snapshot !== "string")
+        result3.complete = false;
+      else
+        try {
+          const p = JSON.parse(current.snapshot);
+          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+            result3.complete = false;
+          else if (p.revision > a.declaredRevision && a.taskIds.every((id2) => {
+            const item = p.items.find((i) => i?.id === id2);
+            return item?.kind === "task" && identifier2(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id2));
+          }))
+            continue;
+        } catch {
+          result3.complete = false;
+        }
+    }
     if (result3.refusals.length === 3) {
       result3.complete = false;
       continue;
@@ -28772,7 +28791,7 @@ var REFUSAL_REASONS = {
 };
 function delegationRefusalText(selection) {
   if (!selection.refusals.length)
-    return "";
+    return selection.complete ? "" : "Additional refusal evidence may be unavailable or omitted.";
   const header = "## Delegation not applied";
   const recovery = "Read current state. To recover, re-declare at the current revision before a new dispatch, or explicitly link the verified returned child session to its tasks. A refusal grants no assignment and changes no task status.";
   const lines = [];
