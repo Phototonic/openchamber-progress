@@ -133,8 +133,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
       const routes: Record<string,string[]> = { '/health':[], '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
       routes['/v1/needs-you']=['storeId','binding','source','cursor','limit','timing'];
-      routes['/v1/plans'].push('needsYou');
-      routes['/v1/search-state'].push('needsYou');
+      routes['/v1/plans'].push('needsYou','needsYouTiming');
+      routes['/v1/search-state'].push('needsYou','needsYouTiming');
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
       const allowed = routes[url.pathname];
@@ -144,6 +144,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(graphRoute && Buffer.byteLength(url.search)>GRAPH_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(inboxRoute && Buffer.byteLength(url.search)>NEEDS_YOU_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(url.searchParams.has('needsYou') && url.searchParams.get('needsYou')!=='1')throw new ProgressError('invalid');
+      if(url.searchParams.has('needsYouTiming') && (url.searchParams.get('needsYouTiming')!=='1' || !url.searchParams.has('needsYou')))throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if (url.pathname === '/health') {
@@ -168,7 +169,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       const summary = (value: {storeId:string;sourceBinding:NeedsYouRequest['binding']}) => {
         if(!url.searchParams.has('needsYou'))return {};
         if(!value.sourceBinding.verified||!value.sourceBinding.sourceId)throw new ProgressError('conflict');
-        return {needsYou:needsYou(currentStore,{storeId:value.storeId,binding:value.sourceBinding,source:value.sourceBinding.sourceId})};
+        return {needsYou:needsYou(currentStore,{storeId:value.storeId,binding:value.sourceBinding,source:value.sourceBinding.sourceId,timing:url.searchParams.has('needsYouTiming')})};
       };
       if(url.pathname==='/v1/search') {
         const options=Object.fromEntries(url.searchParams) as SearchOptions;

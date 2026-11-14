@@ -44,6 +44,10 @@ test('HTTP authorized source-wide summary preserves normal list scope; read-only
     const normal = await f.get(scoped), extended = await f.get(scoped + '&needsYou=1');
     assert.equal(extended.status, 200); assert.equal(normal.value.needsYou, undefined);
     const { needsYou: inbox, ...list } = extended.value; assert.deepEqual(list, normal.value);
+    assert(inbox.rows.every((r: any) => r.timing === undefined), 'compact counts do not scan timing');
+    const timed = await f.get(scoped + '&needsYou=1&needsYouTiming=1');
+    assert.equal(timed.status, 200); assert.deepEqual(timed.value.needsYou.counts, inbox.counts);
+    assert(timed.value.needsYou.rows.some((r: any) => r.timing?.kind === 'exact'), 'displayed inbox rows request real waiting times');
     assert.deepEqual(list.data.map((p: any) => p.id), ['plan-alpha']);
     assert.deepEqual(inbox.counts, { needsYou: 3, alsoBlocked: 1 }); assert(inbox.coverage.complete);
     assert(inbox.rows.some((r: any) => r.plan === 'plan-beta')); assert(inbox.rows.every((r: any) => r.source === f.alpha.id));
@@ -63,6 +67,8 @@ test('HTTP authorized source-wide summary preserves normal list scope; read-only
     const stateQuery = new URLSearchParams({ storeId: f.storeId, keys: JSON.stringify([{ source: f.alpha.id, plan: 'plan-alpha' }]) });
     assert.equal((await f.get(`/v1/search-state?${stateQuery}`)).value.needsYou, undefined);
     const state = await f.get(`/v1/search-state?${stateQuery}&needsYou=1`); assert.equal(state.status, 200); assert.deepEqual(state.value.needsYou.counts, inbox.counts);
+    const timedState = await f.get(`/v1/search-state?${stateQuery}&needsYou=1&needsYouTiming=1`);
+    assert.equal(timedState.status, 200); assert(timedState.value.needsYou.rows.some((r: any) => r.timing));
     assert.deepEqual(dump(), before, 'all inbox/list/detail/freshness reads leave durable data/schema unchanged');
     f.apply('plan-beta', { op: 'finish', outcome: 'cancelled' }, other);
     assert.deepEqual((await f.get(`/v1/needs-you?${f.query()}`)).value.counts, { needsYou: 2, alsoBlocked: 0 });
@@ -81,6 +87,8 @@ test('HTTP refuses unauthorized, malformed, duplicate, body and stale identity r
     for (const extra of [{ limit: '0' }, { limit: '51' }, { timing: 'true' }, { cursor: 'garbage' }, { binding: '{}' }]) refused(await f.get(`/v1/needs-you?${f.query(extra)}`), 400, 'invalid');
     for (const extra of [{ storeId: 'other' }, { source: f.beta.id }, { binding: JSON.stringify({ sourceId: f.alpha.id, verified: false }) }]) refused(await f.get(`/v1/needs-you?${f.query(extra)}`), 409, 'conflict');
     refused(await f.get('/v1/plans?needsYou=0'), 400, 'invalid');
+    for (const query of ['needsYouTiming=1', 'needsYou=1&needsYouTiming=0', 'needsYou=1&needsYouTiming=true']) refused(await f.get(`/v1/plans?${query}`), 400, 'invalid');
+    refused(await f.get('/v1/plans?needsYou=1&needsYouTiming=1&needsYouTiming=1'), 404, 'not-found');
     const bodyReply = await new Promise<{ status: number; value: unknown }>((resolve, reject) => {
       const req = httpRequest(f.base + path, { method: 'GET', headers: { authorization: `Bearer ${f.token}`, 'content-length': '1' } }, res => {
         let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk); res.on('end', () => resolve({ status: res.statusCode!, value: JSON.parse(text) }));

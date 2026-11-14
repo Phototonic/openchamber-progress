@@ -1,11 +1,12 @@
-// Needs you inbox QA (lane I1) in an isolated headless Chromium with real CDP pointer/keyboard input.
+// Needs you inbox QA in isolated headless Chromium with real CDP pointer/keyboard input.
 // A synthetic SDK shell loads the three guests (source-built with --source, else the tracked bundles)
 // and relays their service requests to a SYNTHETIC in-process service shaped by the frozen inbox
 // contract (shared/needs-you.ts): health capability, first window on the first list page, explicit
 // GET /v1/needs-you continuation, plan detail with reported blockers. It is not the real service
-// projection (owned by the service lane) and not native-host or physical-phone proof: simulated
-// device hints and touch emulation only.
-// Usage: node --experimental-strip-types tests/browser/needs-you-inbox-qa.ts [--source] [--chromium <path>] --artifacts <dir>
+// projection by default. --real-service instead routes guest requests through the actual HTTP
+// service and a disposable synthetic SQLite store (only unsupported capability is stripped).
+// Neither mode is native-host or physical-phone proof: simulated device hints and touch only.
+// Usage: node --experimental-strip-types tests/browser/needs-you-inbox-qa.ts [--source] [--real-service] [--chromium <path>] --artifacts <dir>
 //   writes results.json (checks), requests.json (bounded request metadata) and screenshots.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
@@ -18,6 +19,7 @@ import type { Item, PlanSummary } from '../../shared/progress.ts';
 import { createGuestAssets } from './source-guests.ts';
 import { HEALTH, S, SRC, envelope, planPage, plansPage, summary } from './fixtures.ts';
 import { PANEL_SURFACE_ID } from '../../ui/shared/config.ts';
+import { inboxIntegration } from '../fixtures/inbox-integration.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -62,6 +64,14 @@ const PLANS: Fixture[] = [
       { id: 'task-h', title: 'Clarify the escalation path', category: 'unclassified' },
     ] },
 ];
+const real = process.argv.includes('--real-service') ? await inboxIntegration(SRC, PLANS.map(p => ({
+  id: p.id, title: p.title, session: p.session, items: [...p.other, ...p.blocked.map(b => ({
+    id: b.id, title: b.title, kind: 'task' as const, status: 'blocked' as const,
+    ...(b.absent ? {} : { blocker: { ...(b.category && b.category !== 'unclassified' ? { category: b.category as 'decision' } : {}), ...(b.reason ? { reason: b.reason } : {}), ...(b.next ? { nextAction: b.next } : {}) } }),
+  }))],
+}))) : null;
+let conflictNext = false;
+const realReplies: { path: string; status: number; rows?: number; counts?: unknown; complete?: boolean }[] = [];
 const personFacing = (b: Blocked) => b.category === 'decision' || b.category === 'review';
 const visibleBlocked = (p: Fixture) => p.blocked.filter((b) => mode !== 'empty' || !personFacing(b));
 function items(p: Fixture): Item[] {
@@ -166,7 +176,13 @@ const server: Server = createServer(async (req, res) => {
     if (asset) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(asset); return; }
     if (url.pathname === '/service' && req.method === 'POST') {
       let body = ''; for await (const part of req) body += part;
-      const r = serve(JSON.parse(body));
+      const q = JSON.parse(body);
+      if (real && conflictNext && q.path === '/v1/needs-you') { conflictNext = false; real.conflict(); }
+      // Unsupported mode is an explicit older-service seam; ordinary reads use the real service.
+      if (real && mode === 'unsupported' && q.path !== '/health') { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
+      const r = real ? await real.request(q) : serve(q);
+      if (real && mode === 'unsupported' && q.path === '/health') delete (r.body as Record<string, unknown>).needsYouInbox;
+      if (real) { const b = r.body as any, w = q.path === '/v1/needs-you' ? b : b.needsYou; realReplies.push({ path: q.path, status: r.status, ...(w?.rows ? { rows: w.rows.length, counts: w.counts, complete: w.coverage.complete } : {}) }); }
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
     }
     res.statusCode = url.pathname === '/favicon.ico' ? 204 : 404; res.end();
@@ -402,6 +418,7 @@ try {
 
   // ---------------------------------------------------------------- partial coverage and continuation
   mode = 'partial';
+  real?.partial();
   await show(['panel', 'status'], 400);
   await wait('status', `d.querySelector('[data-testid="needs-you-count"]')?.textContent==='At least 2 tasks need you'`, 'status partial count', 15_000);
   await wait('panel', `d.querySelector('[data-testid="needs-you-more"] button')&&d.querySelector('[data-testid="needs-you-partial"]')`, 'rail continuation offered');
@@ -413,14 +430,26 @@ try {
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   check('I1:continuation-coarse-target-44px', !moreHeight.coarse || moreHeight.h >= 44, moreHeight);
   const more = (await requests()).length;
+  if (real) {
+    conflictNext = true;
+    await click('panel', '[data-testid="needs-you-more"] button');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-restarted"]')`, 'real 409 restart');
+    check('integration:409-restarts-without-splicing', realReplies.some(r => r.path === '/v1/needs-you' && r.status === 409));
+    await shot('panel', 'restart', INBOX);
+    // The normal list poll brings the changed first window; no automatic continuation.
+    await waitTop(`qa.requests.filter(q=>q.frame==='panel'&&q.path==='/v1/plans').length>${await evaluate<number>(`qa.requests.filter(q=>q.frame==='panel'&&q.path==='/v1/plans').length`)}`, 'fresh first window after conflict');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-more"] button:not(:disabled)')`, 'continuation after restart');
+  }
   await click('panel', '[data-testid="needs-you-more"] button');
   await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`, 'continuation completes');
   const cont = (await requests()).slice(more).filter((q) => q.path === '/v1/needs-you');
   const finalRows = await rowIds('panel');
-  check('I1:continuation-explicit-pinned-and-merged', cont.length === 1 && cont[0].cursor === 'qa-c1' && cont[0].timing === '1' && same(finalRows, ['task-a', 'task-b', 'task-d']), { cont, finalRows });
+  check('I1:continuation-explicit-pinned-and-merged', cont.length === (real ? 2 : 1) && (real ? !!cont.at(-1)?.cursor : cont[0].cursor === 'qa-c1') && cont.at(-1)?.timing === '1' && same(finalRows, ['task-a', 'task-b', 'task-d']), { cont, finalRows });
+  if (real) check('integration:cumulative-counts-at-real-bound', realReplies.some(r => r.path === '/v1/needs-you' && r.complete && same(r.counts, { needsYou: 3, alsoBlocked: 53 })));
 
   // ---------------------------------------------------------------- complete empty first group
   mode = 'empty';
+  real?.empty();
   await wait('panel', `d.querySelector('[data-testid="needs-you-empty"]')?.dataset.complete==='true'`, 'complete empty', 15_000);
   await wait('status', `d.querySelector('[data-testid="needs-you-count"]')?.textContent==='Nothing needs you'`, 'status empty');
   const empty = await guest<any>('panel', `return {text:d.querySelector('[data-testid="needs-you-empty"]').textContent,also:d.querySelector('[data-testid="also-blocked"]')?.dataset.count,count:d.querySelector('[data-testid="needs-you-count"]').dataset.count}`);
@@ -448,8 +477,9 @@ try {
   await new Promise((r) => setTimeout(r, 300));
   server.close(); server.closeAllConnections();
   assets.dispose();
+  await real?.close();
   rmSync(profile, { recursive: true, force: true });
-  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: 'synthetic contract fixture (not the service lane projection)', device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
+  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual HTTP service and synthetic SQLite store; older-capability seam only' : 'synthetic contract fixture', realReplies, device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
   writeFileSync(join(artifacts, 'requests.json'), JSON.stringify(requestLog.slice(-400), null, 1));
   console.log(JSON.stringify({ pass: !failure && results.every((r) => r.pass), checks: results.length, failure, shots: shots.length }));
   if (failure || !results.every((r) => r.pass)) process.exitCode = 1;

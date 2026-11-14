@@ -63,6 +63,7 @@ function installGuestScrollbarActivity(doc) {
 }
 var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
 // node_modules/@openchamber/sdk/dist/manifest.js
+var GUEST_PROVIDER_LOGO_BYTES_MAX = 1024 * 1024;
 var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
 var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
 // node_modules/@openchamber/sdk/dist/session-events.js
@@ -4987,15 +4988,17 @@ function taskTiming(store, detail, now = new Date) {
 }
 
 // service/blocked-timing.ts
-function blockedTiming(store, detail, now = new Date) {
+function blockedTiming(store, detail, now = new Date, options = {}) {
   const result = { readAt: now.toISOString(), items: {} };
   const { plan } = detail;
   if (plan.lifecycle !== "active")
     return result;
   let began = false;
   try {
-    store.db.exec("BEGIN");
-    began = true;
+    if (options.transaction !== "caller") {
+      store.db.exec("BEGIN");
+      began = true;
+    }
     if (store.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id !== detail.storeId)
       throw new Error("identity");
     const live = store.db.prepare("SELECT revision FROM plans WHERE source=? AND id=?").get(plan.sourceId, plan.id);
@@ -5009,13 +5012,19 @@ function blockedTiming(store, detail, now = new Date) {
     let expected = plan.revision, newerTime = now.getTime(), newerStructural, bytes = 0, accepted = 0;
     const load = store.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
     for (let visits = 0;visits < BLOCKER_LIMITS.snapshotVisits; visits++) {
-      const remaining = BLOCKER_LIMITS.inputBytes - bytes;
+      if (options.budget && options.budget.snapshotVisits <= 0)
+        break;
+      const remaining = Math.min(BLOCKER_LIMITS.inputBytes - bytes, options.budget?.inputBytes ?? BLOCKER_LIMITS.inputBytes);
+      if (options.budget)
+        options.budget.snapshotVisits--;
       const row2 = load.get(remaining, plan.sourceId, plan.id, expected);
       if (!row2)
         throw new Error("gap");
       if (Number(row2.bytes) > remaining)
         break;
       bytes += Number(row2.bytes);
+      if (options.budget)
+        options.budget.inputBytes -= Number(row2.bytes);
       const p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), plan.sourceId, plan.id, expected);
       if (!p)
         throw new Error("history");
@@ -5057,8 +5066,10 @@ function blockedTiming(store, detail, now = new Date) {
       throw new Error("missing-current");
     for (const [id, since] of pending)
       derived[id] = { since, kind: "lower-bound" };
-    store.db.exec("COMMIT");
-    began = false;
+    if (began) {
+      store.db.exec("COMMIT");
+      began = false;
+    }
     result.items = derived;
   } catch {
     if (began)
@@ -5071,6 +5082,214 @@ function blockedTiming(store, detail, now = new Date) {
 
 // shared/release.ts
 var RELEASE = "1.3.0";
+
+// service/needs-you.ts
+import { createHash as createHash6 } from "node:crypto";
+
+// shared/needs-you.ts
+var NEEDS_YOU_LIMITS = Object.freeze({
+  plans: SEARCH_LIMITS.plans,
+  rows: SEARCH_LIMITS.hits,
+  ancestors: SEARCH_LIMITS.ancestors,
+  inputBytes: SEARCH_LIMITS.inputBytes,
+  responseBytes: SEARCH_LIMITS.responseBytes,
+  queryBytes: SEARCH_LIMITS.queryBytes,
+  cursorBytes: SEARCH_LIMITS.cursorBytes,
+  timingPlans: SEARCH_LIMITS.hits,
+  timingSnapshotVisits: BLOCKER_LIMITS.snapshotVisits,
+  timingInputBytes: BLOCKER_LIMITS.inputBytes,
+  textCodeUnits: BLOCKER_LIMITS.textCodeUnits
+});
+
+// service/needs-you.ts
+var hash3 = (v) => createHash6("sha256").update(JSON.stringify(v)).digest("hex");
+var safe3 = (v, min = 0) => Number.isSafeInteger(v) && Number(v) >= min;
+var fields2 = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
+function cursor(text) {
+  requireProgress(typeof text === "string" && Buffer.byteLength(text) <= NEEDS_YOU_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
+  let c;
+  try {
+    c = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
+  } catch {
+    requireProgress(false);
+  }
+  requireProgress(c && fields2(c, ["v", "identity", "after", "pending", "counts", "skipped", "reasons"]) && c.v === 1 && /^[a-f0-9]{64}$/.test(c.identity) && (c.after === "" || identifier(c.after)) && safe3(c.skipped) && c.counts && fields2(c.counts, ["needsYou", "alsoBlocked"]) && safe3(c.counts.needsYou) && safe3(c.counts.alsoBlocked) && Array.isArray(c.reasons) && c.reasons.length <= 2 && new Set(c.reasons).size === c.reasons.length && c.reasons.every((r) => ["invalid-snapshot", "oversized-snapshot"].includes(r)) && c.skipped > 0 === c.reasons.length > 0);
+  const p = c.pending;
+  requireProgress(p === null || p && fields2(p, ["plan", "revision", "cleanup", "offset"]) && identifier(p.plan) && p.plan > c.after && safe3(p.revision, 1) && safe3(p.cleanup) && safe3(p.offset) && p.offset < 1000);
+  return c;
+}
+function context2(p, item) {
+  const byId = new Map(p.items.map((i) => [i.id, i])), ancestors = [];
+  let parent = item.parentId;
+  while (parent) {
+    const a = byId.get(parent);
+    ancestors.unshift({ id: a.id, title: a.title });
+    parent = a.parentId;
+  }
+  const omittedAncestors = Math.max(0, ancestors.length - NEEDS_YOU_LIMITS.ancestors);
+  return { ancestors: omittedAncestors ? [ancestors[0], ...ancestors.slice(-(NEEDS_YOU_LIMITS.ancestors - 1))] : ancestors, omittedAncestors };
+}
+function blocker(item, revision) {
+  if (!Object.hasOwn(item, "blocker"))
+    return { state: "absent" };
+  if (validBlockerAnnotation(item.blocker, revision))
+    return { state: "reported", annotation: { ...item.blocker } };
+  const b = item.blocker;
+  if (b && typeof b === "object" && !Array.isArray(b) && typeof b.category === "string" && validBlockerAnnotation({ ...b, category: undefined }, revision)) {
+    return { state: "reported", annotation: { ...b, category: "unclassified" } };
+  }
+  return { state: "invalid" };
+}
+function needsYou(store, request, now = new Date) {
+  requireProgress(request && Object.keys(request).every((k) => ["storeId", "binding", "source", "cursor", "limit", "timing"].includes(k)) && identifier(request.storeId) && identifier(request.source));
+  const limit = request.limit ?? NEEDS_YOU_LIMITS.rows;
+  requireProgress(Number.isInteger(limit) && limit > 0 && limit <= NEEDS_YOU_LIMITS.rows && (request.timing === undefined || typeof request.timing === "boolean"));
+  requireProgress(request.binding && Object.keys(request.binding).length === 2 && Object.keys(request.binding).every((k) => ["sourceId", "verified"].includes(k)));
+  const observed = store.searchState(request.storeId, [{ source: request.source, plan: "inbox-identity" }]);
+  const binding = observed.sourceBinding;
+  requireProgress(binding.verified && binding.sourceId === request.source && request.binding.verified === true && request.binding.sourceId === binding.sourceId, "conflict");
+  const identity2 = hash3([request.storeId, binding, request.source, limit, request.timing ?? false]);
+  const c = request.cursor === undefined ? { v: 1, identity: identity2, after: "", pending: null, counts: { needsYou: 0, alsoBlocked: 0 }, skipped: 0, reasons: [] } : cursor(request.cursor);
+  requireProgress(c.identity === identity2, "conflict");
+  const db = store.db;
+  db.exec("BEGIN");
+  try {
+    const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+    requireProgress(meta.store_id === request.storeId && db.prepare("SELECT verified FROM sources WHERE id=?").get(request.source)?.verified === 1, "conflict");
+    const installed = cleanupInstalled(db);
+    const r = {
+      protocolVersion: 2,
+      schemaVersion: 2,
+      needsYouInbox: 1,
+      storeId: request.storeId,
+      sourceBinding: { sourceId: request.source, verified: true },
+      readAt: now.toISOString(),
+      captureEnabled: Boolean(meta.enabled),
+      rows: [],
+      counts: c.counts,
+      nextCursor: null,
+      coverage: { kind: "observed-current", complete: false, exhausted: false, gapped: c.skipped > 0, skippedRecords: c.skipped, reasons: c.reasons },
+      work: { planSlots: 0, inspectedItems: 0, inputBytes: 0, outputBytes: 0 }
+    };
+    let rowBytes = 0;
+    const timingPlans = new Map;
+    const advance = (id) => {
+      c.after = id;
+      c.pending = null;
+    };
+    const gap = (reason) => {
+      c.skipped++;
+      r.coverage.skippedRecords = c.skipped;
+      r.coverage.gapped = true;
+      if (!c.reasons.includes(reason))
+        c.reasons.push(reason);
+    };
+    while (r.work.planSlots < NEEDS_YOU_LIMITS.plans && r.rows.length < limit) {
+      const pending = c.pending;
+      const row2 = pending ? db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id=?").get(request.source, pending.plan) : db.prepare("SELECT id,revision,length(CAST(snapshot AS BLOB)) AS bytes FROM plans WHERE source=? AND id>? ORDER BY id LIMIT 1").get(request.source, c.after);
+      r.work.planSlots++;
+      if (!row2) {
+        requireProgress(!pending, "conflict");
+        r.coverage.exhausted = true;
+        break;
+      }
+      const id = String(row2.id), revision = Number(row2.revision), cleanup2 = installed ? cleanupState(db, request.source, id) : undefined;
+      const generation = Number(cleanup2?.generation ?? 0), visible = (cleanup2?.state ?? "visible") === "visible";
+      requireProgress(identifier(id), "corrupt");
+      if (pending)
+        requireProgress(revision === pending.revision && generation === pending.cleanup && visible, "conflict");
+      if (!visible) {
+        advance(id);
+        continue;
+      }
+      const bytes = Number(row2.bytes);
+      if (bytes > NEEDS_YOU_LIMITS.inputBytes) {
+        gap("oversized-snapshot");
+        advance(id);
+        continue;
+      }
+      if (r.work.inputBytes + bytes > NEEDS_YOU_LIMITS.inputBytes)
+        break;
+      const text = db.prepare("SELECT snapshot FROM plans WHERE source=? AND id=?").get(request.source, id).snapshot;
+      r.work.inputBytes += bytes;
+      let p;
+      try {
+        const value = JSON.parse(String(text));
+        if (validateDigestSnapshot(value, request.source, id, revision) && typeof value.title === "string" && value.title.trim() && value.title.length <= 256 && identifier(value.sessionId))
+          p = value;
+      } catch {}
+      if (!p) {
+        gap("invalid-snapshot");
+        advance(id);
+        continue;
+      }
+      r.work.inspectedItems += p.items.length;
+      if (p.lifecycle !== "active") {
+        requireProgress(!pending, "conflict");
+        advance(id);
+        continue;
+      }
+      const tasks2 = p.items.filter((i) => i.kind === "task" && i.status === "blocked");
+      const pos = pending ?? { plan: id, revision, cleanup: generation, offset: 0 };
+      requireProgress(!pending || pos.offset < tasks2.length, "conflict");
+      while (pos.offset < tasks2.length && r.rows.length < limit) {
+        const item = tasks2[pos.offset], annotation = blocker(item, revision);
+        const primary = annotation.state === "reported" && ["decision", "review"].includes(annotation.annotation.category ?? "");
+        const hit = {
+          source: request.source,
+          plan: id,
+          revision,
+          structuralRevision: p.structuralRevision,
+          cleanup: { state: "visible", revision: generation },
+          planTitle: p.title,
+          coordinatorSessionId: p.sessionId,
+          task: { id: item.id, title: item.title, kind: "task", status: "blocked" },
+          ...context2(p, item),
+          group: primary ? "needs-you" : "also-blocked",
+          blocker: annotation
+        };
+        const size = Buffer.byteLength(JSON.stringify(hit)) + 1;
+        if (rowBytes + size > NEEDS_YOU_LIMITS.responseBytes - 16 * 1024 - limit * 128)
+          break;
+        rowBytes += size;
+        r.rows.push(hit);
+        c.counts[primary ? "needsYou" : "alsoBlocked"]++;
+        pos.offset++;
+        if (request.timing)
+          timingPlans.set(id, p);
+      }
+      if (pos.offset < tasks2.length) {
+        c.pending = pos;
+        break;
+      }
+      advance(id);
+    }
+    r.coverage.complete = r.coverage.exhausted && !r.coverage.gapped;
+    requireProgress(safe3(c.counts.needsYou) && safe3(c.counts.alsoBlocked) && safe3(c.skipped));
+    r.nextCursor = r.coverage.exhausted ? null : Buffer.from(JSON.stringify(c)).toString("base64url");
+    requireProgress(r.nextCursor === null || Buffer.byteLength(r.nextCursor) <= NEEDS_YOU_LIMITS.cursorBytes);
+    const budget = { snapshotVisits: NEEDS_YOU_LIMITS.timingSnapshotVisits, inputBytes: NEEDS_YOU_LIMITS.timingInputBytes };
+    for (const [id, p] of timingPlans) {
+      const rows = r.rows.filter((row2) => row2.plan === id);
+      const timing = blockedTiming(store, {
+        storeId: request.storeId,
+        plan: { ...p, counts: countItems(p.items), working: p.items.filter((i) => i.kind === "task" && i.status === "working").map((i) => i.id), cleanup: rows[0].cleanup },
+        items: { data: p.items, nextCursor: null }
+      }, now, { budget, transaction: "caller" });
+      for (const row2 of rows)
+        if (timing.items[row2.task.id])
+          row2.timing = { readAt: timing.readAt, ...timing.items[row2.task.id] };
+    }
+    for (let i = 0;i < 3; i++)
+      r.work.outputBytes = Buffer.byteLength(JSON.stringify(r));
+    requireProgress(r.work.outputBytes <= NEEDS_YOU_LIMITS.responseBytes);
+    db.exec("COMMIT");
+    return r;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
 
 // service/server.ts
 function createProgressServer(store, token, unavailableCode, setup) {
@@ -5090,7 +5309,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
     const supplied = Buffer.from(req.headers.authorization ?? "");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
       return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, inboxRoute = false;
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       mentionRoute = url.pathname === MENTIONS_SEARCH_PATH || url.pathname === MENTIONS_RESOLVE_PATH;
@@ -5134,6 +5353,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(200, search ? searchMentions(active2.store, body.query, body.directory, alive) : await resolveMention(acquire, body.id, alive));
       }
       graphRoute = url.pathname === "/v1/plan-graph";
+      inboxRoute = url.pathname === "/v1/needs-you" || url.searchParams.has("needsYou");
       if (graphRoute && req.method !== "GET")
         return answer(405, { error: "method-not-allowed" });
       runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile", "/v1/subagent-runs/dismiss-loss"].includes(url.pathname);
@@ -5302,6 +5522,9 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(405, { error: "method-not-allowed" });
       const routes = { "/health": [], "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
+      routes["/v1/needs-you"] = ["storeId", "binding", "source", "cursor", "limit", "timing"];
+      routes["/v1/plans"].push("needsYou", "needsYouTiming");
+      routes["/v1/search-state"].push("needsYou", "needsYouTiming");
       routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
       routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url.pathname];
@@ -5312,6 +5535,12 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (comparisonRoute && Buffer.byteLength(url.search) > CAPTURE_LIMITS.queryBytes)
         throw new ProgressError("invalid");
       if (graphRoute && Buffer.byteLength(url.search) > GRAPH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (inboxRoute && Buffer.byteLength(url.search) > NEEDS_YOU_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (url.searchParams.has("needsYou") && url.searchParams.get("needsYou") !== "1")
+        throw new ProgressError("invalid");
+      if (url.searchParams.has("needsYouTiming") && (url.searchParams.get("needsYouTiming") !== "1" || !url.searchParams.has("needsYou")))
         throw new ProgressError("invalid");
       const number = (key, fallback) => {
         const v = url.searchParams.get(key);
@@ -5330,7 +5559,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (url.pathname === "/health") {
         if (currentStore) {
           const runs = currentStore.subagentRunStorage();
-          return answer(200, { ok: true, ready: true, sqlite: true, planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
+          return answer(200, { ok: true, ready: true, sqlite: true, planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, documentCaptureComparison: 1, ...runs === "current" || runs === "previous" ? { subagentRuns: 1 } : {}, protocolVersion: VERSION, schemaVersion: VERSION, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
         }
         if (setup)
           return answer(200, { ok: true, ready: false, sqlite: false, protocolVersion: VERSION, schemaVersion: VERSION, diagnostics: setup.status().diagnostics, runtime: { node: process.versions.node, bun: process.versions.bun ?? null } });
@@ -5338,6 +5567,27 @@ function createProgressServer(store, token, unavailableCode, setup) {
       }
       if (!currentStore)
         return answer(503, { error: active.error ?? "storage" });
+      if (url.pathname === "/v1/needs-you") {
+        const r = { storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source: text("source", true) };
+        if (url.searchParams.has("cursor"))
+          r.cursor = url.searchParams.get("cursor");
+        if (url.searchParams.has("limit"))
+          r.limit = number("limit", NEEDS_YOU_LIMITS.rows);
+        if (url.searchParams.has("timing")) {
+          const value = url.searchParams.get("timing");
+          if (value !== "0" && value !== "1")
+            throw new ProgressError("invalid");
+          r.timing = value === "1";
+        }
+        return answer(200, needsYou(currentStore, r));
+      }
+      const summary = (value) => {
+        if (!url.searchParams.has("needsYou"))
+          return {};
+        if (!value.sourceBinding.verified || !value.sourceBinding.sourceId)
+          throw new ProgressError("conflict");
+        return { needsYou: needsYou(currentStore, { storeId: value.storeId, binding: value.sourceBinding, source: value.sourceBinding.sourceId, timing: url.searchParams.has("needsYouTiming") }) };
+      };
       if (url.pathname === "/v1/search") {
         const options = Object.fromEntries(url.searchParams);
         if (url.searchParams.has("limit"))
@@ -5351,13 +5601,18 @@ function createProgressServer(store, token, unavailableCode, setup) {
         } catch {
           throw new ProgressError("invalid");
         }
-        return answer(200, currentStore.searchState(text("storeId", true), keys));
+        const state = currentStore.searchState(text("storeId", true), keys);
+        return answer(200, { ...state, ...summary(state) });
       }
       if (url.pathname === "/v1/plans") {
         const archived = url.searchParams.get("archived") ?? "exclude";
         if (archived !== "exclude" && archived !== "only")
           throw new ProgressError("invalid");
-        return answer(200, currentStore.list({ cursor: number("cursor", 0), limit: number("limit", 20), source: text("source"), session: text("session"), directory: text("directory"), archived }));
+        const cursor2 = number("cursor", 0);
+        if (url.searchParams.has("needsYou") && cursor2 !== 0)
+          throw new ProgressError("invalid");
+        const list = currentStore.list({ cursor: cursor2, limit: number("limit", 20), source: text("source"), session: text("session"), directory: text("directory"), archived });
+        return answer(200, { ...list, ...summary(list) });
       }
       const source = text("source", true);
       const plan = text("plan", true);
@@ -5402,7 +5657,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (e instanceof SetupError)
         return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
       const error = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
         return answer(409, { error: error.code });
       return answer(error.code === "invalid" ? 400 : error.code === "not-found" ? 404 : 503, { error: error.code });
     }
@@ -5500,11 +5755,11 @@ function removalRecorded(record) {
 import { lstatSync as lstatSync8, realpathSync as realpathSync7 } from "node:fs";
 import path8 from "node:path";
 import { homedir as homedir2 } from "node:os";
-function setupSuggestions(context2) {
-  return platformSecurityScope(() => suggestions(context2));
+function setupSuggestions(context3) {
+  return platformSecurityScope(() => suggestions(context3));
 }
-function suggestions(context2) {
-  const host = context2 ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
+function suggestions(context3) {
+  const host = context3 ?? { platform: process.platform, env: { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME }, uid: process.getuid?.() };
   if (host.platform !== "linux" && host.platform !== "win32")
     return;
   const nativeWindows = host.platform === "win32" && process.platform === "win32";
