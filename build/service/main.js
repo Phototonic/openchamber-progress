@@ -537,6 +537,33 @@ import path2 from "node:path";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
+
+// shared/managed-steps.ts
+var MANAGED_STEP_LIMITS = {
+  securitySpawns: 6,
+  workMs: 17000,
+  responseMs: 18000,
+  hostMs: 20000,
+  runnerMs: 8000,
+  requestBytes: 16384,
+  responseBytes: 65536,
+  journalBytes: 1048576,
+  cursorBytes: 4096,
+  pathBytes: 4096,
+  claimPaths: 256
+};
+var MANAGED_STEP_CODES = [
+  "managed-step-deadline",
+  "managed-step-budget",
+  "managed-step-conflict",
+  "managed-step-unsupported",
+  "managed-step-limit",
+  "managed-step-unsettled",
+  "managed-journal-unsupported",
+  "managed-inspection-expired"
+];
+
+// shared/platform.ts
 var windows = process.platform === "win32";
 
 class PlatformError extends Error {
@@ -555,6 +582,56 @@ function platformErrorCode(error) {
 var cache = new Map;
 var reparseCache = new Map;
 var scope = 0;
+
+class PlatformRequestBudget {
+  counter;
+  startedAt;
+  deadline;
+  writerFence;
+  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4), writerFence) {
+    if (counter.byteLength !== 4)
+      throw new PlatformError("managed-step-budget");
+    this.counter = new Int32Array(counter);
+    this.startedAt = startedAt;
+    this.deadline = startedAt + BigInt(MANAGED_STEP_LIMITS.workMs) * 1000000n;
+    this.writerFence = writerFence;
+  }
+  get securitySpawns() {
+    return Atomics.load(this.counter, 0);
+  }
+  get elapsedMs() {
+    return Math.max(0, Number(process.hrtime.bigint() - this.startedAt) / 1e6);
+  }
+  require(spawns = 0, headroomMs = 0) {
+    if (!Number.isSafeInteger(spawns) || spawns < 0 || !Number.isFinite(headroomMs) || headroomMs < 0 || this.securitySpawns < 0 || this.securitySpawns + spawns > MANAGED_STEP_LIMITS.securitySpawns)
+      throw new PlatformError("managed-step-budget");
+    if (Number(this.deadline - process.hrtime.bigint()) / 1e6 <= headroomMs)
+      throw new PlatformError("managed-step-deadline");
+  }
+  launch() {
+    this.require(1, 1000);
+    const before = this.securitySpawns;
+    if (before >= MANAGED_STEP_LIMITS.securitySpawns || Atomics.compareExchange(this.counter, 0, before, before + 1) !== before)
+      throw new PlatformError("managed-step-budget");
+    return Math.max(1, Math.floor(Number(this.deadline - process.hrtime.bigint()) / 1e6 - 1000));
+  }
+}
+var requestBudget;
+function withPlatformRequestBudget(budget, run) {
+  if (requestBudget || scope)
+    throw new PlatformError("managed-step-conflict");
+  budget.require();
+  requestBudget = budget;
+  cache.clear();
+  reparseCache.clear();
+  try {
+    return run();
+  } finally {
+    requestBudget = undefined;
+    cache.clear();
+    reparseCache.clear();
+  }
+}
 function platformSecurityScope(run) {
   const finish = beginPlatformSecurityScope();
   try {
@@ -602,9 +679,36 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
+$writerMutex = $null
+$writerOwned = $false
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if ($request.fence) {
+    # The main service holds the TCP writer slot until its Node worker exits.
+    # This account-scoped mutex additionally fences a security child that might
+    # outlive that service. Obtain it BEFORE checking the current slot nonce.
+    # Every new writer's first fresh query crosses this barrier before effects.
+    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
+    try { $writerOwned = $writerMutex.WaitOne(15000) }
+    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
+    if (-not $writerOwned) { throw 'writer-unsettled' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
+      $client.Connect('127.0.0.1', [int]$request.fence.port)
+      $stream = $client.GetStream()
+      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
+      $stream.Write($bytes, 0, $bytes.Length)
+      $reply = [byte[]]::new(3); $offset = 0
+      while ($offset -lt 3) {
+        $count = $stream.Read($reply, $offset, 3 - $offset)
+        if ($count -le 0) { throw 'writer-unsettled' }
+        $offset += $count
+      }
+      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
+    } finally { $client.Dispose() }
+  }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
@@ -648,6 +752,10 @@ try {
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
 } catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+finally {
+  if ($writerOwned) { $writerMutex.ReleaseMutex() }
+  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
+}
 `;
 function snapshot(file) {
   const s = lstatSync(file, { bigint: true });
@@ -687,17 +795,23 @@ function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create });
+  const input = JSON.stringify({ paths, create, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
   const firstQuery = !securityQueryAttempted;
-  const run = () => spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: firstQuery ? 30000 : 1e4, maxBuffer: 1024 * 1024 });
+  const run = () => {
+    const timeout = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
+    try {
+      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout, maxBuffer: 1024 * 1024 });
+    } finally {
+      securityQueryAttempted = true;
+    }
+  };
   let child;
-  try {
+  child = run();
+  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
     child = run();
-  } finally {
-    securityQueryAttempted = true;
-  }
-  if (firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run();
+  requestBudget?.require();
+  if (requestBudget && child.error?.code === "ETIMEDOUT")
+    throw new PlatformError("managed-step-deadline", "timeout");
   if (child.error || child.status !== 0)
     throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results;
@@ -6345,26 +6459,77 @@ function migrationActionCode(e) {
   return typeof code === "string" && MANAGED_ACTION_CODES.includes(code) ? code : storageError(e).code;
 }
 
+// service/request-worker.ts
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+function isSetupRequestWorker() {
+  return !isMainThread && workerData?.kind === "agent-progress-setup-request";
+}
+function diagnostic(error) {
+  const code = error?.code;
+  return typeof code === "string" && [...MANAGED_ACTION_CODES, ...MANAGED_STEP_CODES].includes(code) ? code : platformErrorCode(error) ?? storageError(error).code;
+}
+function runSetupRequestWorker() {
+  if (!isSetupRequestWorker() || !parentPort)
+    throw new Error("managed-step-unsupported");
+  const input = workerData;
+  const budget = new PlatformRequestBudget(input.startedAt, input.counter, input.fence);
+  let setup;
+  let value, code;
+  try {
+    value = withPlatformRequestBudget(budget, () => {
+      setup = new SetupController({ env: input.env }, () => input.payload);
+      const request = input.request;
+      if (request.action === "health")
+        return setup.health();
+      if (request.action === "status")
+        return setup.status();
+      if (request.action === "run")
+        return setup.run(request.name, request.body);
+      throw Object.assign(new Error("managed-step-unsupported"), { code: "managed-step-unsupported" });
+    });
+    budget.require();
+  } catch (error) {
+    code = diagnostic(error);
+  } finally {
+    try {
+      setup?.close();
+    } catch (error) {
+      code ??= diagnostic(error);
+    }
+  }
+  const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
+  const result = code ? { ok: false, code, accounting } : { ok: true, value, accounting };
+  if (Buffer.byteLength(JSON.stringify(result)) > MANAGED_STEP_LIMITS.responseBytes)
+    parentPort.postMessage({ ok: false, code: "managed-step-limit", accounting });
+  else
+    parentPort.postMessage(result);
+  parentPort.close();
+}
+
 // service/main.ts
-var setup;
-try {
-  const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
-  const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
-    throw new Error;
-  setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync6(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync6(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync6(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
-  const server = createProgressServer(undefined, token, undefined, setup);
-  server.on("error", () => {
+if (isSetupRequestWorker()) {
+  runSetupRequestWorker();
+} else {
+  let setup;
+  try {
+    const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
+    const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
+      throw new Error;
+    setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync6(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync6(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync6(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
+    const server = createProgressServer(undefined, token, undefined, setup);
+    server.on("error", () => {
+      setup?.close();
+      process.exitCode = 1;
+    });
+    server.listen(port, "127.0.0.1");
+    process.on("SIGTERM", () => server.close(() => {
+      setup?.close();
+      process.exit(0);
+    }));
+  } catch (e) {
     setup?.close();
+    console.error(e instanceof SetupError || e instanceof PlatformError ? e.code : "agent-progress-service-unavailable");
     process.exitCode = 1;
-  });
-  server.listen(port, "127.0.0.1");
-  process.on("SIGTERM", () => server.close(() => {
-    setup?.close();
-    process.exit(0);
-  }));
-} catch (e) {
-  setup?.close();
-  console.error(e instanceof SetupError || e instanceof PlatformError ? e.code : "agent-progress-service-unavailable");
-  process.exitCode = 1;
+  }
 }

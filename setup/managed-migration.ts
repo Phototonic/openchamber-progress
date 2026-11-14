@@ -3,9 +3,10 @@ import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
 import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError} from '../shared/managed-binding.ts';
 import {privatePaths,platformSecurityScope,isOwned,PlatformError} from '../shared/platform.ts';
-import {Store,canonical,storageError} from '../shared/store.ts';
+import {Store,canonical,storageError,digest} from '../shared/store.ts';
 import {ProgressError} from '../shared/progress.ts';
 import {SetupError,migrationBinding,type Targets} from './lifecycle.ts';
+import type {ManagedPathClaim} from './managed-step-journal.ts';
 
 export interface MigrationRecord {
   binding:Binding;
@@ -74,5 +75,50 @@ function removalRecordedInner(record:MigrationRecord) {
   if(!s.isFile()||s.isSymbolicLink()||!privatePaths([path.dirname(file),file]))throw new SetupError('managed-migration-conflict');
   return readFileSync(file,'utf8').trim().split('\n').some(line=>{
     try{const e=JSON.parse(line);return e.action==='remove-capture'&&e.installId===record.legacyInstallId;}catch{return false;}
+  });
+}
+
+export interface ManagedRemovalReceipt { history:ManagedPathClaim; entry:string }
+/** Specific retained evidence for format-1 recovery. This read never disables,
+ * removes, repairs or appends anything. An earlier true removalRecorded() result
+ * is deliberately not accepted as authority, nor is a coarse removed phase. */
+export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemovalReceipt):ManagedRemovalReceipt|undefined {
+  return platformSecurityScope(()=>{
+    const b=record.binding;
+    const conflict=()=>{throw new SetupError('managed-migration-conflict');};
+    if(!b.source.verified||!record.legacyInstallId||record.legacyInstallId===b.installId)conflict();
+    for(const root of [b.source.configRoot,b.source.dataRoot,path.dirname(b.database)]){
+      managedPath(root);if(!lstatSync(root).isDirectory()||!isOwned(root))conflict();
+    }
+    const legacy=managedPath(path.join(b.source.configRoot,'plugins/agent-progress'),true);
+    // A receipt cannot authorize removing or overlooking remaining discovery.
+    if(lstatSync(legacy,{throwIfNoEntry:false}))conflict();
+    for(const file of [b.database,...['-journal','-wal','-shm'].map(suffix=>b.database+suffix)]){
+      const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)continue;
+      managedPath(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([file]))conflict();
+    }
+    const store=new Store(b.database,{readOnly:true});
+    try{verifyStore(store,b);store.subagentRunStorage();}finally{store.close();}
+    const file=managedPath(path.join(path.dirname(b.database),'installation-history.jsonl'));
+    const before=lstatSync(file,{bigint:true});
+    if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||!privatePaths([path.dirname(file),file]))conflict();
+    const object={device:String(before.dev),inode:String(before.ino),birthNs:String(before.birthtimeNs)};
+    if(retained&&(retained.history.path!==file||retained.history.kind!=='file'||
+      canonical(retained.history.object)!==canonical(object)))conflict();
+    const bytes=readFileSync(file),after=lstatSync(file,{bigint:true});
+    if([before.dev,before.ino,before.birthtimeNs,before.size,before.mtimeNs,before.ctimeNs,before.nlink].join(':')!==
+      [after.dev,after.ino,after.birthtimeNs,after.size,after.mtimeNs,after.ctimeNs,after.nlink].join(':'))conflict();
+    let text:string;
+    try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new SetupError('managed-migration-conflict');}
+    let entry:string|undefined;
+    for(const line of text.split('\n')){
+      if(retained&&line!==retained.entry)continue;
+      try{const event=JSON.parse(line);if(event?.action==='remove-capture'&&event.installId===record.legacyInstallId){entry=line;break;}}catch{/* Other historical lines grant no authority. */}
+    }
+    if(!entry){if(retained)conflict();return;}
+    // Later appends are allowed only in this same freshly validated owned file
+    // with the exact retained event still present. The old hash is a claim, not
+    // an ACL verdict or a requirement that unrelated history stop growing.
+    return {history:{path:file,kind:'file',object,digest:digest(bytes)},entry};
   });
 }

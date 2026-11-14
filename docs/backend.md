@@ -286,6 +286,42 @@ that Store, set configured/verified, expose its reporting identity or make healt
 ready; failed validation/read leaves the bit unknown. Candidate preflight shares its ownership/fingerprint facts
 within the operation only; lock/removal/publication boundaries validate afresh.
 
+#### Bounded migration worker foundation
+
+`service/request-worker.ts` provides a private, request-driven worker entry in the
+existing service bundle. Its entry guard cannot run ordinary service bootstrap.
+This foundation is **not yet connected to the HTTP step engine** and does not
+advertise `managedMigrationSteps`; existing synchronous routes above are unchanged.
+
+The worker budget charges actual security-process launch attempts, including
+failed launches, through a shared counter. It refuses a seventh launch, suppresses
+the legacy cold retry, and bounds helper waits by the monotonic 17-second work
+deadline with one second of settlement headroom. The supervisor has an 18-second
+response deadline. A deadline reply never clears busy or terminates a worker as
+if its effects rolled back; settlement waits for worker exit. Callers must reserve
+their remaining validation/checkpoint work before admitting each effect.
+
+The supervisor acquires one conservative product-wide loopback writer slot for
+each request, covering different discovery scopes sharing a Store. Contention or
+an unrelated listener is a refusal, not a takeover. Windows security children
+additionally acquire an account-scoped system mutex **before** checking the
+current writer slot's per-request nonce. A child surviving its parent therefore
+either finishes while holding that barrier, or refuses when the nonce no longer
+matches. A new writer's first fresh security query must cross the barrier before
+any effect. Neither the slot nor an abandoned mutex proves an effect committed:
+ordinary fresh validation and durable-intent reconciliation remain mandatory.
+No extra security process, native dependency, persisted lease or age-based cleanup
+is introduced. All mutating paths, including ordinary capture controls, must use
+the same boundary when the engine is integrated; an in-process busy flag alone
+is not sufficient. Native Windows late-child fencing remains a separate gate.
+
+`readRemovalReceipt` returns the specific same-install history event and a freshly
+validated native file claim for format-1 recovery. It refuses remaining discovery,
+wrong Store/source identity, replacement, aliases and lost/changed receipt text.
+Later appends are accepted only in the same owned private history file with that
+exact event still present. It does not turn the earlier boolean `removalRecorded`
+observation into authority and performs no migration effect.
+
 ### Existing reporting and storage owners
 
 - plugin/index.ts registers one namespaced codemode:false report tool and inline

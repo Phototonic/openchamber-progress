@@ -1,6 +1,7 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { MANAGED_STEP_LIMITS } from './managed-steps.ts';
 
 export const windows = process.platform === 'win32';
 export class PlatformError extends Error {
@@ -17,6 +18,49 @@ type Security = { owned: boolean; private: boolean; reparse: boolean; unsafePare
 const cache = new Map<string, { snapshot: string; result: Security }>();
 const reparseCache = new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();
 let scope = 0;
+/** A worker-local request boundary, never a cached security verdict. The shared
+ * counter lets its supervisor report actual attempts even after a lost reply.
+ * Monotonic nanoseconds use the same clock in service and worker threads. */
+export class PlatformRequestBudget {
+  readonly counter: Int32Array<SharedArrayBuffer>;
+  readonly startedAt: bigint;
+  readonly deadline: bigint;
+  readonly writerFence?:{port:number;nonce:string};
+  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4),writerFence?:{port:number;nonce:string}) {
+    if(counter.byteLength!==4)throw new PlatformError('managed-step-budget');
+    this.counter=new Int32Array(counter);this.startedAt=startedAt;
+    this.deadline=startedAt+BigInt(MANAGED_STEP_LIMITS.workMs)*1_000_000n;
+    this.writerFence=writerFence;
+  }
+  get securitySpawns(){return Atomics.load(this.counter,0);}
+  get elapsedMs(){return Math.max(0,Number(process.hrtime.bigint()-this.startedAt)/1_000_000);}
+  /** Reserve before admitting effects. Reservation does not consume attempts. */
+  require(spawns=0,headroomMs=0) {
+    if(!Number.isSafeInteger(spawns)||spawns<0||!Number.isFinite(headroomMs)||headroomMs<0||
+      this.securitySpawns<0||this.securitySpawns+spawns>MANAGED_STEP_LIMITS.securitySpawns)
+      throw new PlatformError('managed-step-budget');
+    if(Number(this.deadline-process.hrtime.bigint())/1_000_000<=headroomMs)
+      throw new PlatformError('managed-step-deadline');
+  }
+  /** Charge before the OS call, including a failed/throwing process launch. */
+  launch() {
+    this.require(1,1_000);
+    // There is one worker, but CAS also prevents accidental shared-counter
+    // consumers from exceeding the ceiling rather than discovering it later.
+    const before=this.securitySpawns;
+    if(before>=MANAGED_STEP_LIMITS.securitySpawns||Atomics.compareExchange(this.counter,0,before,before+1)!==before)
+      throw new PlatformError('managed-step-budget');
+    return Math.max(1,Math.floor(Number(this.deadline-process.hrtime.bigint())/1_000_000-1_000));
+  }
+}
+let requestBudget:PlatformRequestBudget|undefined;
+/** Synchronous request work only. Awaiting or resetting a nested budget is not
+ * supported; no caller may hide an outer security scope across requests. */
+export function withPlatformRequestBudget<T>(budget:PlatformRequestBudget,run:()=>T):T {
+  if(requestBudget||scope)throw new PlatformError('managed-step-conflict');
+  budget.require();requestBudget=budget;cache.clear();reparseCache.clear();
+  try{return run();}finally{requestBudget=undefined;cache.clear();reparseCache.clear();}
+}
 /** Cache only one synchronous operation, and only unchanged object snapshots. */
 export function platformSecurityScope<T>(run: () => T): T {
   const finish=beginPlatformSecurityScope();
@@ -58,9 +102,36 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
+$writerMutex = $null
+$writerOwned = $false
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if ($request.fence) {
+    # The main service holds the TCP writer slot until its Node worker exits.
+    # This account-scoped mutex additionally fences a security child that might
+    # outlive that service. Obtain it BEFORE checking the current slot nonce.
+    # Every new writer's first fresh query crosses this barrier before effects.
+    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
+    try { $writerOwned = $writerMutex.WaitOne(15000) }
+    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
+    if (-not $writerOwned) { throw 'writer-unsettled' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
+      $client.Connect('127.0.0.1', [int]$request.fence.port)
+      $stream = $client.GetStream()
+      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
+      $stream.Write($bytes, 0, $bytes.Length)
+      $reply = [byte[]]::new(3); $offset = 0
+      while ($offset -lt 3) {
+        $count = $stream.Read($reply, $offset, 3 - $offset)
+        if ($count -le 0) { throw 'writer-unsettled' }
+        $offset += $count
+      }
+      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
+    } finally { $client.Dispose() }
+  }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
@@ -104,6 +175,10 @@ try {
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
 } catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+finally {
+  if ($writerOwned) { $writerMutex.ReleaseMutex() }
+  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
+}
 `;
 
 function snapshot(file: string) {
@@ -139,17 +214,23 @@ export function windowsSecurityQuery(paths: string[], create: string[] = [], spa
   // Pin startup hints too; the trusted script resets the effective path and
   // imports only the built-in utility module by its absolute system path.
   env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
-  const input = JSON.stringify({ paths, create });
+  const input = JSON.stringify({ paths, create, ...(requestBudget?.writerFence?{fence:requestBudget.writerFence}:{}) });
   const firstQuery = !securityQueryAttempted;
-  const run = () => spawn(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
-    ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
-    { input, encoding:'utf8', env, windowsHide:true, shell:false, timeout:firstQuery?30000:10000, maxBuffer:1024*1024 });
+  const run = () => {
+    const timeout=requestBudget?requestBudget.launch():firstQuery?30000:10000;
+    try{return spawn(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
+      ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
+      { input, encoding:'utf8', env, windowsHide:true, shell:false, timeout, maxBuffer:1024*1024 });
+    }finally{securityQueryAttempted=true;}
+  };
   // Only the process's first query gets cold-start headroom and one retry.
   // Consume that budget even on failure; steady-state calls stay bounded at 10s.
   // Existing creation targets are only inspected, never repaired, on a retry.
   let child: SpawnSyncReturns<string>;
-  try { child = run(); } finally { securityQueryAttempted = true; }
-  if (firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
+  child = run();
+  if (!requestBudget && firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
+  requestBudget?.require();
+  if(requestBudget&&(child.error as NodeJS.ErrnoException|undefined)?.code==='ETIMEDOUT')throw new PlatformError('managed-step-deadline','timeout');
   if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable',child.error?(child.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'timeout':'spawn':'exit');
   let results: Security[];
   try { results = JSON.parse(child.stdout.replace(/^\uFEFF/,'')); } catch { throw new PlatformError('windows-security-unavailable'); }

@@ -4,7 +4,11 @@ import { SetupController } from './setup-controller.ts';
 import { RELEASE } from '../shared/release.ts';
 import { SetupError } from '../setup/lifecycle.ts';
 import { PlatformError } from '../shared/platform.ts';
+import { isSetupRequestWorker, runSetupRequestWorker } from './request-worker.ts';
 
+if(isSetupRequestWorker()) {
+  runSetupRequestWorker();
+} else {
 let setup: SetupController | undefined;
 try {
   const port=Number(process.env.OPENCHAMBER_SERVICE_PORT);const token=process.env.OPENCHAMBER_SERVICE_TOKEN;
@@ -14,3 +18,4 @@ try {
   server.on('error',()=>{setup?.close();process.exitCode=1;});server.listen(port,'127.0.0.1');
   process.on('SIGTERM',()=>server.close(()=>{setup?.close();process.exit(0);}));
 }catch(e){setup?.close();console.error(e instanceof SetupError||e instanceof PlatformError?e.code:'agent-progress-service-unavailable');process.exitCode=1;}
+}
