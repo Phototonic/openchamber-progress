@@ -91,9 +91,10 @@ async function verifyPackage() {
       const good=readFileSync(b.database);
       if(kind==='permissions')chmodSync(b.database,0o000);else{const bad=Buffer.from(good);bad.write('not-a-sqlite-file',0);writeFileSync(b.database,bad);}
       const damaged=kind==='corrupt'?readFileSync(b.database):good;
-      try{const health=await api.json('/health');assert.equal(health.ready,false);assert.ok(health.diagnostics.includes(kind==='permissions'?'storage':'corrupt'));const unavailable=await api.request('/v1/plans');assert.equal(unavailable.status,503);assert.equal((await unavailable.json()).error,kind==='permissions'?'storage':'corrupt');assert.equal((await api.json('/v1/setup')).configured,true);if(kind==='corrupt')assert.deepEqual(readFileSync(b.database),damaged,'corrupt Store reads never reset or repair bytes');}
+      try{const unavailable=await api.request('/v1/plans');assert.equal(unavailable.status,503);assert.equal((await unavailable.json()).error,kind==='permissions'?'storage':'corrupt');const health=await api.json('/health');assert.equal(health.ready,false);assert.ok(health.diagnostics.includes(kind==='permissions'?'storage':'corrupt'));assert.equal((await api.json('/v1/setup')).configured,true);if(kind==='corrupt')assert.deepEqual(readFileSync(b.database),damaged,'corrupt Store reads never reset or repair bytes');}
       finally{if(kind==='permissions')chmodSync(b.database,0o600);else writeFileSync(b.database,good);}
       assert.deepEqual(readFileSync(b.database),good);
+      assert.equal((await api.request('/v1/plans')).status,200);
       assert.equal((await api.json('/health')).ready,true);
     }
     await stop();rmSync(replacement,{recursive:true});const retained=new Store(b.database,{readOnly:true});try{assert.equal(retained.get(b.source.id,'managed-packaged')!.revision,2);}finally{retained.close();}

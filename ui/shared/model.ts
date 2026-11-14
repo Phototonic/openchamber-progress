@@ -204,6 +204,7 @@ export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null
  */
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
+  lastAction?: import('../../shared/progress.ts').SetupRead['lastAction'];
   delivery?: {
     kind: 'managed'; revision: 1;
     configuration: 'unconfigured' | 'configured' | 'invalid';

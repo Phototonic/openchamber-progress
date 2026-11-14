@@ -6,7 +6,7 @@ import {once} from 'node:events';
 import path from 'node:path';
 import {SetupController} from '../../service/setup-controller.ts';
 import {createProgressServer} from '../../service/server.ts';
-import {lifecycle} from '../../setup/lifecycle.ts';
+import {lifecycle,SetupError} from '../../setup/lifecycle.ts';
 import {readBinding} from '../../shared/binding.ts';
 import {readManagedBinding,managedBindingFile,managedExpectationFile} from '../../shared/managed-binding.ts';
 import {readMigration,migrationFile} from '../../setup/managed-migration.ts';
@@ -32,6 +32,54 @@ test('two isolated legacy scopes migrate to one shared store without replacing e
     assert.equal(b.setup.status().delivery!.migration,'complete');assert.equal(a.setup.status().delivery!.migration,'complete');
   }finally{b.cleanup();a.cleanup();}
 });
+test('pending record publication failure leaves legacy capture enabled and retains the precise cause',t=>{
+  const f=fixture(),original=fs.linkSync;
+  const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+    if(String(to)===migrationFile(f.env))throw new SetupError('unsafe-parent');
+    return original(from,to);
+  })as typeof fs.linkSync);syncBuiltinESMExports();
+  try{
+    assert.throws(()=>f.migrate(),/unsafe-parent/);
+    assert.equal(f.store.list().captureEnabled,true);
+    assert.equal(readMigration(f.env),undefined);
+    const status=f.setup.status();
+    assert.deepEqual(status.lastAction,{stage:'migration-record',code:'unsafe-parent'});
+    assert.equal(status.diagnostics.includes('unsafe-parent'),false,'past failure is not a current diagnostic');
+    assert.equal(status.delivery!.migration,'available');
+  }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
+});
+
+test('one operation reuses legacy preflight facts but migration revalidates at its lock and removal boundaries',t=>{
+  const f=fixture(),read=fs.readFileSync;let reads=0;
+  const mock=t.mock.method(fs,'readFileSync',((file:any,...args:any[])=>{
+    if(String(file).startsWith(f.legacyRoot+path.sep))reads++;
+    return(read as any)(file,...args);
+  })as typeof fs.readFileSync);syncBuiltinESMExports();
+  try{
+    const review=f.review(),inspectReads=reads;reads=0;
+    f.setup.run('managed-migrate',{confirmed:true,expected:review.expected});
+    assert.ok(inspectReads<=20,`inspect legacy reads: ${inspectReads}`);
+    assert.ok(reads<=30,`migration legacy reads: ${reads}`);
+    t.diagnostic(JSON.stringify({inspectLegacyReads:inspectReads,migrateLegacyReads:reads}));
+  }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
+});
+
+test('a legacy change after initial preflight is refused by fresh locked validation',t=>{
+  const f=fixture(),open=fs.openSync;let changed=false;
+  const review=f.review();
+  const mock=t.mock.method(fs,'openSync',((file:any,...args:any[])=>{
+    const fd=(open as any)(file,...args);
+    if(path.basename(String(file))==='.configuration-lock'&&!changed){changed=true;fs.appendFileSync(path.join(f.legacyRoot,'index.js'),'// external change');}
+    return fd;
+  })as typeof fs.openSync);syncBuiltinESMExports();
+  try{
+    assert.throws(()=>f.setup.run('managed-migrate',{confirmed:true,expected:review.expected}),/managed-migration-conflict/);
+    assert.equal(changed,true);assert.equal(f.store.list().captureEnabled,true);
+    assert.equal(readMigration(f.env),undefined);assert.equal(readManagedBinding(f.env),undefined);
+    assert.deepEqual(f.setup.lastMigrationFailure(),{stage:'lock',code:'managed-migration-conflict'});
+  }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
+});
+
 test('expectation publication failure preserves enabled legacy discovery before migration',t=>{
   const f=fixture(),original=fs.linkSync;let failed=false;
   const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
@@ -41,9 +89,56 @@ test('expectation publication failure preserves enabled legacy discovery before 
   try{
     const selector=fs.readFileSync(path.join(f.legacyRoot,'.ownership.json'));
     assert.throws(()=>f.migrate(),/Synthetic expectation failure/);assert.equal(failed,true);
+    assert.deepEqual(f.setup.status().lastAction,{stage:'expectation-publication',code:'storage'});
     assert.equal(f.store.list().captureEnabled,true);assert.equal(readMigration(f.env),undefined);
     assert.deepEqual(fs.readFileSync(path.join(f.legacyRoot,'.ownership.json')),selector);assert.equal(readManagedBinding(f.env),undefined);
   }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
+});
+
+test('migration creation failures preserve fixed wire and last-action diagnostics without changing legacy state',async t=>{
+  for(const code of ['windows-security-unavailable','private-permissions','untrusted-message'] as const)await t.test(code,async t=>{
+    const f=fixture();try{
+      const review=f.review(),before=fs.readFileSync(path.join(f.legacyRoot,'.ownership.json'));
+      const original=fs.mkdirSync;
+      const mock=t.mock.method(fs,'mkdirSync',((file:any,...args:any[])=>{
+        if(path.basename(String(file))==='agent-progress-managed')throw new PlatformError(code,'timeout');
+        return(original as any)(file,...args);
+      })as typeof fs.mkdirSync);syncBuiltinESMExports();
+      const expected=code==='untrusted-message'?'storage':code;
+      await http(f,async request=>{
+        const response=await request('managed-migrate',{confirmed:true,expected:review.expected});
+        assert.equal(response.status,503);
+        assert.deepEqual(await response.json(),{error:expected,lastAction:{stage:'managed-state-create',code:expected}});
+      });
+      mock.mock.restore();syncBuiltinESMExports();
+      assert.deepEqual(f.setup.status().lastAction,{stage:'managed-state-create',code:expected});
+      assert.notEqual(f.setup.health().state,'starting','candidate/action attempts are checked observations');
+      assert.equal(f.store.list().captureEnabled,true);assert.equal(readMigration(f.env),undefined);assert.equal(readManagedBinding(f.env),undefined);
+      assert.deepEqual(fs.readFileSync(path.join(f.legacyRoot,'.ownership.json')),before);
+      assert.equal(f.setup.run('managed-inspect',{}).lastAction,undefined,'a later successful managed action clears the last failure');
+      assert.equal(f.setup.status().lastAction,undefined);
+      assert.equal(f.migrate().lastAction,undefined,'a successful explicit retry clears the prior failure');
+    }finally{t.mock.restoreAll();syncBuiltinESMExports();f.cleanup();}
+  });
+});
+
+test('publication and lock cleanup failures do not replace the primary migration cause',t=>{
+  const f=fixture(),link=fs.linkSync,unlink=fs.unlinkSync;
+  try{
+    const review=f.review();
+    t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+      if(path.basename(String(to)).startsWith('managed-expectation-'))throw new PlatformError('private-permissions');
+      return link(from,to);
+    })as typeof fs.linkSync);
+    t.mock.method(fs,'unlinkSync',((file:any)=>{
+      if(String(file).includes('managed-expectation-')||path.basename(String(file))==='.configuration-lock')throw new Error('Synthetic cleanup failure');
+      return unlink(file);
+    })as typeof fs.unlinkSync);syncBuiltinESMExports();
+    assert.throws(()=>f.setup.run('managed-migrate',{confirmed:true,expected:review.expected}),/private-permissions/);
+    assert.deepEqual(f.setup.status().lastAction,{stage:'expectation-publication',code:'private-permissions'});
+    assert.equal(f.store.list().captureEnabled,true);assert.ok(fs.existsSync(f.legacyRoot));assert.equal(readMigration(f.env),undefined);
+    assert.equal(fs.existsSync(path.join(path.dirname(managedBindingFile(f.env)),'.configuration-lock')),true,'failed cleanup retains the lock, never retries deletion');
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();f.cleanup();}
 });
 
 test('a historical default-only loader refuses update before selection and keeps reporting',async()=>{
@@ -187,7 +282,7 @@ test('migration inspection preserves operational diagnostics instead of claiming
       const original=Store.prototype.subagentRunStorage;
       t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw code==='windows-security-unavailable'?new PlatformError(code):new ProgressError(code);return original.call(this);});
       const status=f.setup.status();assert.equal(status.delivery!.migration,'unavailable');assert.ok(status.diagnostics.includes(code));
-      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,503);assert.deepEqual(await r.json(),{error:code==='windows-security-unavailable'?'storage':code});});
+      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,503);assert.deepEqual(await r.json(),{error:code});});
       assert.equal(f.store.list().captureEnabled,true);assert.equal(fs.existsSync(f.legacyRoot),phase==='legacy');
       assert.equal(fs.existsSync(managedBindingFile(f.env)),phase==='record');
     }finally{t.mock.restoreAll();f.cleanup();}
@@ -209,6 +304,7 @@ test('interruption after disable is pending and an explicit retry repeats full o
   const mock=t.mock.method(fs,'rmSync',((file:any,...args:any[])=>{if(String(file).startsWith(f.legacyRoot+path.sep)&&!injected){injected=true;throw new Error('Synthetic removal interruption');}return(original as any)(file,...args);})as typeof fs.rmSync);syncBuiltinESMExports();
   try{
     assert.throws(()=>f.migrate(),/Synthetic removal interruption/);
+    assert.deepEqual(f.setup.status().lastAction,{stage:'legacy-removal',code:'storage'});
     assert.equal(f.store.list().captureEnabled,false);assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(readManagedBinding(f.env),undefined);
     mock.mock.restore();syncBuiltinESMExports();
     const result=f.migrate();assert.equal(result.delivery!.migration,'complete');assert.equal(result.captureEnabled,true);
@@ -216,13 +312,44 @@ test('interruption after disable is pending and an explicit retry repeats full o
   }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
 });
 
+test('interruption after pending publication reports capture still on and permits a fresh retry',t=>{
+  const f=fixture(),setEnabled=Store.prototype.setEnabled;let interrupted=false;
+  const mock=t.mock.method(Store.prototype,'setEnabled',function(this:Store,enabled:boolean){
+    if(this.file===f.legacy.database&&!enabled&&!interrupted){interrupted=true;throw new Error('Synthetic pre-disable interruption');}
+    return setEnabled.call(this,enabled);
+  });
+  try{
+    assert.throws(()=>f.migrate(),/Synthetic pre-disable interruption/);
+    assert.equal(readMigration(f.env)!.phase,'pending');assert.equal(f.store.list().captureEnabled,true);
+    assert.equal(readManagedBinding(f.env),undefined);assert.ok(fs.existsSync(f.legacyRoot));
+    f.setup.close();
+    const resumed=new SetupController({env:f.env},()=>payload);
+    try{
+      const status=resumed.status();assert.equal(status.delivery!.migration,'pending');assert.equal(status.captureEnabled,true);
+      assert.equal(status.configured,false);assert.equal(status.verified,false);assert.equal(status.reportingIdentity,undefined);
+      assert.equal(resumed.health().ready,false,'observing the pending target must not admit it');
+      const unavailable=t.mock.method(Store.prototype,'subagentRunStorage',()=>{throw new ProgressError('busy');});
+      try{
+        const refused=resumed.status();assert.equal(refused.delivery!.migration,'unavailable');assert.equal(refused.captureEnabled,null);
+        assert.ok(refused.diagnostics.includes('busy'));assert.equal(f.store.list().captureEnabled,true);
+      }finally{unavailable.mock.restore();}
+      mock.mock.restore();
+      const review=resumed.run('managed-inspect',{}).delivery!.review!;
+      const result=resumed.run('managed-migrate',{confirmed:true,expected:review.expected});
+      assert.equal(result.delivery!.migration,'complete');assert.equal(result.captureEnabled,true);
+      assert.equal(f.store.get(f.legacy.source.id,'P-history')!.revision,1);
+    }finally{resumed.close();}
+  }finally{mock.mock.restore();f.cleanup();}
+});
+
 test('descriptor publication interruption is recoverable after service restart without a second removal',t=>{
   const f=fixture(),original=fs.linkSync;let injected=false;
   const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{if(String(to)===managedBindingFile(f.env)&&!injected){injected=true;throw new Error('Synthetic binding publication interruption');}return original(from,to);})as typeof fs.linkSync);syncBuiltinESMExports();
   try{
     assert.throws(()=>f.migrate(),/Synthetic binding publication interruption/);
+    assert.deepEqual(f.setup.status().lastAction,{stage:'binding-publication',code:'storage'});
     assert.equal(f.store.list().captureEnabled,false);assert.equal(fs.existsSync(f.legacyRoot),false);assert.equal(readMigration(f.env)!.phase,'removed');
-    assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(readManagedBinding(f.env),undefined);
+    assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(f.setup.status().captureEnabled,false);assert.equal(readManagedBinding(f.env),undefined);
     mock.mock.restore();syncBuiltinESMExports();f.setup.close();
     const resumed=new SetupController({env:f.env},()=>payload);
     try{
@@ -242,6 +369,7 @@ test('selection published before completion is still capture-off, and only expli
   })as typeof fs.renameSync);syncBuiltinESMExports();
   try{
     assert.throws(()=>f.migrate(),/Synthetic completion interruption/);
+    assert.deepEqual(f.setup.status().lastAction,{stage:'migration-record',code:'storage'});
     assert.ok(readManagedBinding(f.env));assert.equal(f.store.list().captureEnabled,false);
     assert.equal(f.setup.status().delivery!.migration,'pending');assert.equal(f.setup.status().captureEnabled,false);
     const r=f.review();assert.throws(()=>f.setup.run('managed-enable',{confirmed:true,expected:r.expected}),/managed-migration-required/);

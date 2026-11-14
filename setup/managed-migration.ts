@@ -32,9 +32,11 @@ export function readMigration(env:NodeJS.ProcessEnv):MigrationRecord|undefined {
   });
 }
 export function writeMigration(env:NodeJS.ProcessEnv,record:MigrationRecord) {
-  const prior=readMigration(env);
+  // One read-only preflight per publication. Never carry its security cache into
+  // the write or the next phase's revalidation.
+  const {prior,file}=platformSecurityScope(()=>({prior:readMigration(env),file:migrationFile(env)}));
   if(prior&&(canonical(prior.binding)!==canonical(record.binding)||prior.legacyInstallId!==record.legacyInstallId))throw new SetupError('managed-migration-conflict');
-  publishPrivateJson(migrationFile(env),{...record.binding,migration:{format:1,product:'openchamber-agent-progress-managed',phase:record.phase,legacyInstallId:record.legacyInstallId}},!!prior);
+  publishPrivateJson(file,{...record.binding,migration:{format:1,product:'openchamber-agent-progress-managed',phase:record.phase,legacyInstallId:record.legacyInstallId}},!!prior);
 }
 export function sameMigrationTarget(a:Binding,b:Binding) {
   return a.database===b.database&&a.storeId===b.storeId&&canonical(a.source)===canonical(b.source);
@@ -49,17 +51,23 @@ export function migrationError(e:unknown):SetupError|ProgressError|PlatformError
   return storageError(e);
 }
 /** Canonical legacy location only; the full removal preflight validates it and the actual Store. */
-export function legacyMigration(env:NodeJS.ProcessEnv):{binding:Binding;targets:Targets}|undefined {
+export function legacyMigration(env:NodeJS.ProcessEnv) {
+  return platformSecurityScope(()=>legacyMigrationInner(env));
+}
+function legacyMigrationInner(env:NodeJS.ProcessEnv):({targets:Targets}&ReturnType<typeof migrationBinding>)|undefined {
   const roots=managedSourceRoots(env),root=path.join(roots.configRoot,'plugins/agent-progress');
   if(!lstatSync(root,{throwIfNoEntry:false}))return;
   try{
     const b=readBinding(path.join(root,'progress-binding.json'));
     const targets={...roots,storeRoot:path.dirname(b.database),confirmed:true};
-    return {binding:migrationBinding(targets),targets};
+    return {...migrationBinding(targets),targets};
   }catch(e){throw migrationError(e);}
 }
 /** Removal can finish before the wrapper writes its next phase. Require its durable same-install receipt. */
 export function removalRecorded(record:MigrationRecord) {
+  return platformSecurityScope(()=>removalRecordedInner(record));
+}
+function removalRecordedInner(record:MigrationRecord) {
   const file=path.join(path.dirname(record.binding.database),'installation-history.jsonl');
   managedPath(file);
   const s=lstatSync(file);

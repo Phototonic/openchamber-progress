@@ -10,6 +10,7 @@ import { VERSION, LIMITS, ProgressError, identifier, type Code } from '../shared
 import { Store, storageError } from '../shared/store.ts';
 import { SetupError, type Action } from '../setup/lifecycle.ts';
 import { ManagedBindingError } from '../shared/managed-binding.ts';
+import { platformErrorCode } from '../shared/platform.ts';
 import type { ManagedSetupAction } from '../shared/progress.ts';
 import type { SetupController } from './setup-controller.ts';
 import { taskTiming } from './task-timing.ts';
@@ -22,6 +23,10 @@ import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/pro
 export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
   if (!token) throw new ProgressError('binding');
   const expected = Buffer.from(`Bearer ${token}`);
+  // Explicit Store injection is used by standalone callers, not managed main.
+  // Capture capabilities once here too; the health handler itself does no I/O.
+  let standaloneRuns=false,standaloneError=unavailableCode;
+  if(!setup&&store)try{standaloneRuns=['current','previous'].includes(store.subagentRunStorage());}catch(e){standaloneError=storageError(e).code;}
   const server = http.createServer({maxHeaderSize:32*1024},async (req,res) => {
     function answer(status: number, body: unknown) {
       let text = JSON.stringify(body);
@@ -30,7 +35,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, migrationAction=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
@@ -115,9 +120,21 @@ export function createProgressServer(store: Store | undefined, token: string, un
         let size=0;const chunks:Buffer[]=[];
         for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>LIMITS.requestBytes){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
         let body:unknown;try{const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));body=text?JSON.parse(text):{};}catch{throw new ProgressError('invalid');}
+        migrationAction=action==='managed-migrate';
         return answer(200,setup.run(action as Action|ManagedSetupAction,body));
       }
       if (req.headers['content-length'] && req.headers['content-length'] !== '0' || req.headers['transfer-encoding']) return answer(400,{error:'body-not-allowed'});
+      if (url.pathname === '/health') {
+        if(req.method!=='GET')return answer(405,{error:'method-not-allowed'});
+        if(url.search)return answer(404,{error:'not-found'});
+        // Authenticated host liveness, not data admission. Never refresh, inspect
+        // legacy ownership, or query SQLite to render a controller snapshot.
+        if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
+        const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
+        const {subagentRuns,...health}=snapshot;
+        return answer(200,{ok:true,...health,...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+          protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+      }
       const active=setup?setup.current():{store,error:unavailableCode};const currentStore=active.store;
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
         if (req.method !== 'POST') return answer(405,{error:'method-not-allowed'});
@@ -127,7 +144,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         currentStore.setEnabled(url.pathname.endsWith('/enable')); return answer(200,{ok:true,captureEnabled:url.pathname.endsWith('/enable')});
       }
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
-      const routes: Record<string,string[]> = { '/health':[], '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
+      const routes: Record<string,string[]> = { '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
@@ -138,17 +155,6 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(graphRoute && Buffer.byteLength(url.search)>GRAPH_LIMITS.queryBytes)throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
-      if (url.pathname === '/health') {
-        // The host marks the service ready on /health 200; a configured store that
-        // cannot open keeps the process serving fixed error states (503 on store
-        // routes, diagnostics here) instead of a host-level service failure.
-        if (currentStore) {
-          const runs=currentStore.subagentRunStorage();
-          return answer(200,{ok:true,ready:true,sqlite:true,planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
-        }
-        if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
-        return answer(503,{error:active.error??'storage'});
-      }
       if(!currentStore)return answer(503,{error:active.error??'storage'});
       if(url.pathname==='/v1/search') {
         const options=Object.fromEntries(url.searchParams) as SearchOptions;
@@ -184,11 +190,15 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
     } catch (e) {
-      if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
-      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
+      const lastAction=migrationAction?setup?.lastMigrationFailure():undefined;
+      const diagnostic=lastAction?{lastAction}:{};
+      const platformCode=platformErrorCode(e);
+      if(platformCode)return answer(503,{error:platformCode,...diagnostic});
+      if(e instanceof ManagedBindingError)return answer(409,{error:e.code,...diagnostic});
+      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code,...diagnostic});
       const error = e instanceof ProgressError ? e : storageError(e);
       if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
-      return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
+      return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code,...diagnostic});
     }
   });
   server.requestTimeout=5000;server.headersTimeout=5000;

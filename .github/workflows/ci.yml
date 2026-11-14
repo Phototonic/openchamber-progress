@@ -130,6 +130,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Fetch released Windows migration fixture
+        run: git fetch --no-tags origin tag v1.1.1
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -156,14 +158,28 @@ jobs:
             $created = $true
             Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
             $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $name), $password)
-            $process = Start-Process -FilePath (Get-Command node).Source -ArgumentList '--experimental-strip-types --test tests/backend/windows-platform.test.ts' -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $output -RedirectStandardError $errors
-            if (Test-Path $output) { Get-Content -LiteralPath $output }
+            $process = Start-Process -FilePath (Get-Command node).Source -ArgumentList '--experimental-strip-types --test --test-concurrency=1 tests/backend/windows-platform.test.ts tests/backend/windows-service.test.ts' -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $output -RedirectStandardError $errors
+            if (Test-Path $output) {
+              Get-Content -LiteralPath $output
+              # Only the test's fixed, sanitized JSON trace goes into the artifact.
+              $traces = @(Get-Content -LiteralPath $output | ForEach-Object {
+                if ($_ -match '^(?:# )?WINDOWS_MIGRATION_TRACE (.+)$') { $Matches[1] }
+              })
+              if ($traces.Count -gt 0) { $traces | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'windows-migration-trace.jsonl') -Encoding utf8 }
+            }
             if (Test-Path $errors) { Get-Content -LiteralPath $errors }
             if ($process.ExitCode -ne 0) { throw 'Native Windows tests failed.' }
           } finally {
             if ($created) { Remove-LocalUser -Name $name }
             Remove-Item -LiteralPath $output, $errors -Force -ErrorAction SilentlyContinue
           }
+      - name: Upload sanitized Windows migration trace
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-migration-trace
+          path: ${{ runner.temp }}/windows-migration-trace.jsonl
+          if-no-files-found: warn
   publish:
     name: Publish GitHub release
     needs: [portable, windows-native]

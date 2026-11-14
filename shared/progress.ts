@@ -95,6 +95,8 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  /** Last failed migration action in this service process; not a recovery authority. */
+  lastAction?: { stage: ManagedActionStage; code: string };
   /** Missing/unknown revision means legacy/unsupported, never managed success. */
   delivery?: ManagedDelivery;
   reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
@@ -107,6 +109,18 @@ export interface SetupRead {
   suggestions?: SetupSuggestions;
   update?: CompanionUpdateRead;
 }
+export const MANAGED_ACTION_STAGES = ['managed-state-create','lock','expectation-publication','migration-record','legacy-removal','binding-publication','capture-enable'] as const;
+export type ManagedActionStage = typeof MANAGED_ACTION_STAGES[number];
+/** Public failure details only; shared with the guest parser. No exception messages. */
+export const MANAGED_ACTION_CODES: readonly string[] = [
+  'invalid','not-found','conflict','operation-reused','assignment','source-unverified','closed','unfinished','disabled','busy','storage','corrupt','schema','binding','stage-incomplete',
+  'managed-action-required','managed-service-required','managed-binding-invalid','managed-binding-modified','managed-path-unverified','managed-scope-unsupported',
+  'EACCES','EPERM','EIO','ENOSPC','EEXIST','EBUSY','ENOENT','ENOTDIR','EROFS','EMFILE','ENFILE',
+  'confirmation-required','managed-review-stale','managed-selection-conflict','managed-source-conflict','managed-configuration-busy',
+  'managed-migration-required','managed-migration-conflict','managed-migration-pending','store-permissions','path-unverified',
+  'ownership-invalid','modified-owned-files','foreign-files','staged-activation-retained','not-installed','collision',
+  'windows-security-unavailable','private-permissions','unsafe-parent','symlink-escape',
+];
 export type ManagedSetupAction = 'managed-inspect' | 'managed-configure' | 'managed-migrate' | 'managed-enable' | 'managed-disable';
 /** Fixed setup errors, independent of report-tool Code. Pending/conflict are reserved for migration. */
 export type ManagedSetupErrorCode = 'managed-action-required' | 'managed-service-required' |

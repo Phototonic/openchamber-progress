@@ -115,13 +115,16 @@ function removableSelectors(o:ReturnType<typeof owned>) {
   });
 }
 /** Migration preflight repeats every removal check BEFORE its disable-first path. */
-export function migrationBinding(targets:Targets):Binding {
+export function migrationBinding(targets:Targets) {
   return platformSecurityScope(()=>{
     const o=owned(targets);removableSelectors(o);
     need(o.binding.source.verified&&privatePaths([o.root,path.join(o.root,'.ownership.json')]),'ownership-invalid');
     const store=new Store(o.binding.database,{readOnly:true});
     try{verifyStore(store,o.binding);store.subagentRunStorage();}finally{store.close();}
-    return o.binding;
+    const active=path.join(targets.storeRoot,'payloads',o.manifest.active);
+    return {binding:o.binding,
+      fingerprint:activationFingerprint(readBinding(path.join(active,'progress-binding.json')),readFileSync(path.join(active,'index.js')),readFileSync(path.join(active,'SKILL.md'))),
+      ownership:digest(readFileSync(path.join(o.root,'.ownership.json')))};
   });
 }
 function history(targets:Targets,event:unknown){const file=path.join(targets.storeRoot,'installation-history.jsonl');safe(file,true);if(windows&&existsSync(file))need(privatePaths([file]),'store-permissions');appendFileSync(file,JSON.stringify(event)+'\n',{mode:0o600});syncFile(file);}

@@ -1,6 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import {syncBuiltinESMExports} from 'node:module';
+import {PlatformError} from '../../shared/platform.ts';
 import plugin from '../../plugin/index.ts';
 import {SetupController} from '../../service/setup-controller.ts';
 import {readManagedBinding,managedBindingFile} from '../../shared/managed-binding.ts';
@@ -33,6 +36,21 @@ function fixture(){
   };
 }
 const start=(plan='P-managed')=>({op:'start',plan,oid:'start',rev:0,title:'Synthetic',items:[{id:'work',kind:'task',title:'Work'}]});
+
+test('configure keeps its primary failure when Store and lock cleanup also fail',t=>{
+  const f=fixture(),link=fs.linkSync,unlink=fs.unlinkSync,close=Store.prototype.close;let failed=false;
+  try{
+    t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+      if(path.basename(String(to)).startsWith('managed-expectation-')){failed=true;throw new PlatformError('private-permissions');}
+      return link(from,to);
+    })as typeof fs.linkSync);
+    t.mock.method(Store.prototype,'close',function(this:Store){close.call(this);if(failed)throw new Error('Synthetic close failure');});
+    t.mock.method(fs,'unlinkSync',((file:any)=>{if(path.basename(String(file))==='.configuration-lock')throw new Error('Synthetic lock cleanup failure');return unlink(file);})as typeof fs.unlinkSync);
+    syncBuiltinESMExports();
+    assert.throws(()=>f.configure(),/private-permissions/);
+    assert.equal(fs.existsSync(path.join(path.dirname(managedBindingFile(f.env)),'.configuration-lock')),true);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();f.cleanup();}
+});
 
 test('dormant registration creates nothing, activates once at the next context, preserves restricted tools and warns only on bytes',async()=>{
   const f=fixture();let dispose:any;

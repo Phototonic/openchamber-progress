@@ -314,7 +314,10 @@ test('workflow keeps PR read-only, exact same-run artifact join and version seri
   assert(!text.includes('pull_request_target'));assert(!text.includes('secrets.'));
   assert.match(text,/permissions:\n  contents: read/);assert.match(text,/publish:\n(?:    name: [^\n]+\n)?    needs: \[portable, windows-native\]/);
   assert.match(text,/windows-native:\n(?:    name: [^\n]+\n)?    runs-on: windows-2025/);
-  assert.match(text,/--experimental-strip-types --test tests\/backend\/windows-platform\.test\.ts/);
+  assert.match(text,/--experimental-strip-types --test --test-concurrency=1 tests\/backend\/windows-platform\.test\.ts tests\/backend\/windows-service\.test\.ts/);
+  assert.match(text,/git fetch --no-tags origin tag v1\.1\.1/);
+  assert.match(text,/name: Upload sanitized Windows migration trace\n        if: always\(\)/);
+  assert.match(text,/name: windows-migration-trace\n          path: \$\{\{ runner.temp \}\}\/windows-migration-trace\.jsonl/);
   assert.match(text,/New-LocalUser -Name \$name -Password \$password/);
   assert.match(text,/-Credential \$credential -LoadUserProfile -WindowStyle Hidden/);
   assert.match(text,/group: publish-v\$\{\{ needs.portable.outputs.version \}\}/);
