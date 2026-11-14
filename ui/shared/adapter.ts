@@ -4,6 +4,7 @@
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
+import { parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import type {
@@ -564,6 +565,12 @@ export function parseSetup(body: string): SetupView {
   const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)
     && isRec(d.review.targets) && isStr(d.review.targets.configRoot) && isStr(d.review.targets.dataRoot) && isStr(d.review.targets.storeRoot)
     && (d.review.storeId === null || isStr(d.review.storeId)) && (d.review.sourceId === null || isStr(d.review.sourceId)) ? d.review : null;
+  // Step migration is negotiated only by the literal capability. Its embedded progress is parsed
+  // strictly: present-but-unreadable or progress without the capability fails the whole read.
+  const steps = managed && d.managedMigrationSteps === 1;
+  const hasProgress = managed && Object.hasOwn(d, 'migrationProgress');
+  const progress = hasProgress ? parseManagedStepProgress(d.migrationProgress) : undefined;
+  check(!hasProgress || (steps && !!progress), 'Setup migration progress is unreadable.');
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -579,7 +586,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}) } as SetupView['delivery'] } : {}),
     ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
