@@ -30,7 +30,22 @@ export interface ManagedStepIntent {
   before: ManagedPathClaim[];
   after: ManagedPathClaim[];
   captureBefore: ManagedCaptureObservation;
+  /** Null for original consent; otherwise the one-use reviewed-resume sequence. */
+  captureReviewSequence: number | null;
 }
+
+/** Retained even after renewed intent settles; a review never erases uncertain effects. */
+export interface ManagedCaptureRenewal {
+  reviewDigest: string;
+  sequence: number;
+  priorIntent: ManagedStepIntent;
+}
+
+/** Receipt evidence proves prior removal only; it never authorizes deleting remaining files. */
+export type ManagedLegacyEvidence =
+  | { kind: 'manifest'; ownership: string; ownershipDigest: string; claims: ManagedPathClaim[] }
+  | { kind: 'removal-receipt'; ownership: null; ownershipDigest: null; claims: ManagedPathClaim[];
+      receipt: { history: ManagedPathClaim; entry: string } };
 
 /** Stored at the existing managed migration.json location. Keeping the Binding
  * envelope and raising migration.format makes the format-1 reader refuse, not
@@ -52,10 +67,12 @@ export interface ManagedStepJournal extends Binding {
     expectation: { version: string; fingerprint: string };
     /** Ordered frozen one-effect plan; bounded by the journal byte limit. */
     plan: ManagedStepRef[];
-    /** Complete original ownership manifest bytes, hashed by ownershipDigest.
+    /** Original bytes when available; otherwise explicit owner-validated removal evidence.
      * Parsing uses the existing lifecycle owner's validation, never trust-by-copy. */
-    legacy: { ownership: string; ownershipDigest: string; claims: ManagedPathClaim[] };
-    /** At most one unresolved effect and one most recently settled request. */
+    legacy: ManagedLegacyEvidence;
+    /** Append-only, bounded by journalBytes; no renewed effect if evidence cannot fit. */
+    captureRenewals: ManagedCaptureRenewal[];
+    /** At most one current unresolved effect and one most recently settled request. */
     intent: ManagedStepIntent | null;
     receipt: ManagedStepReceipt | null;
     capture: ManagedCaptureObservation;

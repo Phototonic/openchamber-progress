@@ -53,12 +53,15 @@ export interface ManagedStepDiagnostic {
 }
 
 export interface ManagedOperationRef { operationId: string; expectedSequence: number }
+/** Fresh consent for this interrupted capture decision only, not a new target/plan. */
+export interface ManagedCaptureReview { confirmed: true; expected: string; step: 'enable' | 'disable' }
 export type ManagedStepRequest =
   | { version: 1; action: 'inspect'; storeRoot?: string; cursor?: never }
   | { version: 1; action: 'inspect'; cursor: string; storeRoot?: never }
   | { version: 1; action: 'begin'; operationId: string; confirmed: true; expected: string }
   | ({ version: 1; action: 'advance'; step: ManagedStepRef } & ManagedOperationRef)
-  | ({ version: 1; action: 'pause' | 'resume' | 'abandon' } & ManagedOperationRef)
+  | ({ version: 1; action: 'pause' | 'abandon' } & ManagedOperationRef)
+  | ({ version: 1; action: 'resume'; review?: ManagedCaptureReview } & ManagedOperationRef)
   | { version: 1; action: 'status'; operationId?: string };
 
 /** Shape validation only. HTTP owns raw-byte limits; the engine owns authority,
@@ -70,6 +73,7 @@ export function managedStepRequest(value: unknown): ManagedStepRequest | undefin
   const text = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 &&
     !v.includes('\0') && new TextEncoder().encode(v).length <= max;
   const uuid = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v);
+  const digest = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
   const integer = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
   if (r.version !== 1) return;
   if (r.action === 'inspect') {
@@ -79,12 +83,19 @@ export function managedStepRequest(value: unknown): ManagedStepRequest | undefin
     } else if (Object.hasOwn(r, 'storeRoot') && !text(r.storeRoot, MANAGED_STEP_LIMITS.pathBytes)) return;
   } else if (r.action === 'begin') {
     if (!keys(['version', 'action', 'operationId', 'confirmed', 'expected']) || !uuid(r.operationId) ||
-      r.confirmed !== true || typeof r.expected !== 'string' || !/^[a-f0-9]{64}$/.test(r.expected)) return;
+      r.confirmed !== true || !digest(r.expected)) return;
   } else if (r.action === 'status') {
     if (!keys(['version', 'action', 'operationId']) || Object.hasOwn(r, 'operationId') && !uuid(r.operationId)) return;
   } else if (['advance', 'pause', 'resume', 'abandon'].includes(r.action as string)) {
-    if (!keys(['version', 'action', 'operationId', 'expectedSequence', ...(r.action === 'advance' ? ['step'] : [])]) ||
+    if (!keys(['version', 'action', 'operationId', 'expectedSequence', ...(r.action === 'advance' ? ['step'] : r.action === 'resume' ? ['review'] : [])]) ||
       !uuid(r.operationId) || !integer(r.expectedSequence)) return;
+    if (r.action === 'resume' && Object.hasOwn(r, 'review')) {
+      const review = r.review;
+      if (!review || typeof review !== 'object' || Array.isArray(review)) return;
+      const c = review as Record<string, unknown>;
+      if (!Object.keys(c).every(k => ['confirmed', 'expected', 'step'].includes(k)) ||
+        c.confirmed !== true || !digest(c.expected) || !['enable', 'disable'].includes(c.step as string)) return;
+    }
     if (r.action === 'advance') {
       const s = r.step;
       if (!s || typeof s !== 'object' || Array.isArray(s)) return;
@@ -129,10 +140,12 @@ export type ManagedStepResponse = {
 };
 
 /** Normative state graph, not an execution helper. Same-state journal checkpoints are allowed.
+ * Running -> paused/abandoned requires a positively fenced worker; retain unresolved intent.
+ * An active/unfenceable worker refuses controls without a transition or sequence increment.
  * Only explicit resume returns stopped states to pending. Complete never runs enable again. */
 export const MANAGED_OPERATION_TRANSITIONS = {
   pending: ['running', 'paused', 'abandoned', 'failed'],
-  running: ['pending', 'failed', 'complete'],
+  running: ['pending', 'paused', 'abandoned', 'failed', 'complete'],
   paused: ['pending', 'abandoned'],
   failed: ['pending', 'paused', 'abandoned'],
   abandoned: ['pending'],
