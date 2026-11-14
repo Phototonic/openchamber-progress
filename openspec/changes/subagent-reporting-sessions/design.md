@@ -1,0 +1,72 @@
+# Design
+
+## Evidence and existing owners
+
+`docs/contracts.md` defines coordinator-owned structure/finish, child assignment authority, expected-revision mutations, independent run claims and delegation binding. `shared/store.ts` already serializes mutations with `BEGIN IMMEDIATE` and has an internal mutation path used by dispatch binding. `shared/progress.ts` owns validation and provenance. `shared/subagent-runs.ts` owns execution association, claim replay and retention fences; its existing claim hash covers only outcome and summary. Merely adding task fields to that hash or calling two public Store methods is insufficient for atomic combined reporting.
+
+`plugin/subagent-runs.ts` reserves intent before dispatch but obtains verified child identity in the after-hook. That lookup is asynchronous. Foreground execution may finish before assignment exists; background execution can race its first context. Native execution events alone cannot correlate a child to a reserved dispatch. `plugin/activation.ts` already checks actual tool availability and capture authority; its assignment-bearing resume capsule currently runs only after proven compaction. `shared/progress-resume.ts` provides bounded source/ancestry/assignment validation without exposing an executor to activation.
+
+The panel already uses server-side session filtering, source-qualified plan selection and explicit no-session behavior. `ui/shared/app.ts` handles ready/session/directory notifications but does not yet consume action items. `ui/shared/live.ts` owns current-host coverage and source-safe enrichment. The existing background insertion handler is a useful clicked-session validation precedent, not a navigation transport.
+
+Pinned public host evidence:
+
+- [SDK 2.7.0 host types](https://cdn.jsdelivr.net/npm/@openchamber/sdk@2.7.0/dist/host.d.ts) and [README](https://cdn.jsdelivr.net/npm/@openchamber/sdk@2.7.0/README.md): `onItem` for open-mode actions; `onAction` for background invocations; `openSurface(surfaceId)` has no session/filter payload and does not open the extension page.
+- [SDK 2.7.0 workspace types](https://cdn.jsdelivr.net/npm/@openchamber/sdk@2.7.0/dist/workspace.d.ts): optional session `agent` and `links`, with link title, URL, kind and linked time. These are host context, not Progress authority.
+- [SDK 2.7.0 manifest schema](https://cdn.jsdelivr.net/npm/@openchamber/sdk@2.7.0/dist/parse.d.ts): session actions support open/background modes; sessions capability already exists. No Workflows capability or surface-discovery API exists in this version.
+- [Host 2.7.1 action router](https://raw.githubusercontent.com/openchamber/openchamber/v2.7.1/packages/ui/src/lib/guests/run-action.ts) routes open-mode actions through `openGuestWithItem`; [action construction](https://raw.githubusercontent.com/openchamber/openchamber/v2.7.1/packages/ui/src/lib/guests/actions.ts) supplies the clicked session identity/directory. [Workspace projection](https://raw.githubusercontent.com/openchamber/openchamber/v2.7.1/packages/ui/src/lib/guests/workspace.ts) supplies optional agent/links.
+
+These establish public seams, not completed behavioral acceptance.
+
+## Decisions
+
+### 1. Report after verified binding, not speculative early assignment
+
+Coordinator guidance should make `delegate` the normal boundary for work already represented by tasks: read the current plan, declare the intended task IDs, then dispatch through the supported tool. Include the plan/task IDs and reporting expectation in the assignment, while explaining that the IDs themselves do not grant permission. Preserve one pending declaration, dispatch reservation, cancellation, source/project/location/ancestry verification and durable conflict semantics. When dispatch evidence is unavailable, the existing explicit verified `link` remains a deliberate fallback, not a guessed binding.
+
+The selected behavior is **report after binding only**. Do not automatically create a preparation-only turn, delay all work, schedule a reporting turn or resume a child. On the next naturally occurring eligible child context after binding, include the assigned-task brief. A single-turn child can finish without direct task reports; an empty reporting history is not success or a reason to synthesize status. State this limitation in user-facing guidance and compatibility results. Existing explicit parent relays remain honestly labelled fallbacks, but are not used to pass direct-report acceptance.
+
+Use the existing activation owner and an assigned-only extension of its bounded read projection. Validate current store/source, native ancestry, active/visible plan and current assignment on delivery; never deliver a cached assignment from a previous turn. Reuse the existing bounded scan/admission discipline and 4 KiB capsule budget, reducing candidate output with explicit incompleteness rather than truncating an ID or claiming no assignments. Root coordinators do not need an additional ordinary-context plan scan. Activation receives a read callback, not mutation access. Keep disable/disposal and in-flight identity fencing.
+
+The brief contains concrete plan/task IDs, a last-known revision qualified as requiring a fresh read, and concise instructions: report actual working; report blocked with a safe reason/next action when known; report done only for the child's assigned work; use fresh revisions and operation IDs; never alter structure, siblings or plan lifecycle. Missing tool/identity/binding means no assigned scope is asserted. Repeated guidance alone causes no report. A blocked report uses the existing blocker annotation; no separate blocker channel is introduced.
+
+### 2. Optional explicit task update on handoff
+
+Retain the current bare handoff input and meaning. Add optional `taskUpdate:{plan,rev,changes}` to `op:"handoff"`; `changes` uses existing task-status/blocker semantics, contains 1–50 unique task IDs, and targets one plan. Keep the existing overall 16 KiB request limit and 200-code-unit safe summary limit. The caller supplies no child, source, reporter, attributed identity, structure, document path or lifecycle command. No outcome-to-status mapping exists: `outcome:"partial"` does not decide whether a task is working or blocked, and `outcome:"done"` alone still changes no task.
+
+Use the actual invoking child and verified immediate-parent ancestry for the claim. For the task component, reuse ordinary child `change` authority and current assignment checks. All listed tasks must be assigned to that child in the named active/visible plan; group, unknown, sibling and unassigned targets refuse the whole requested operation. Preserve the existing document capture/permission and retirement boundary for a task mutation, including refusal of late commits after a held permission is released. Do not treat a handoff as a way around ordinary change validation.
+
+One Store transaction owns claim admission, the existing internal task mutation and durable combined receipt. Refactor only the minimal transaction-local helpers required; do not nest public transactions or add a second write queue. The successful reply keeps the `handoff` result and adds `taskReceipt` with the normal plan/revision receipt. Task changes produce ordinary direct contributions, with the child as reporter and attributed session, and advance the plan once. Native execution state, coordinator acceptance and plan finish remain independent.
+
+If revision, assignment, claim eligibility, storage or capture checks fail, neither a new requested claim nor the requested task changes may commit. A revision error retains the current revision and is visible to the child; rereading and deliberately issuing a new operation is distinct from silent rebasing. Preserve separately justified correction of an older invalid claim association, which the current handoff owner may persist even when a retry is refused; such reconciliation must never publish the rejected task update.
+
+### 3. Replay, retention and mixed writers
+
+The durable combined receipt must bind the complete normalized input, source and actual child, including task IDs, explicit statuses/blocker metadata and expected revision. Replaying the same request returns the original combined result without another task revision/contribution or claim. Changed input with the same operation identity refuses. A previously accepted bare claim cannot be upgraded into a task update by reusing its operation ID; absent or pruned combined receipt evidence is not permission to reconstruct a new task mutation.
+
+Prefer the existing plan receipt storage and claim-retention ownership; keep base protocol/schema 2 and run format 2. Do not enlarge or change the strict public run-row claim shape merely to hold private replay bookkeeping. Test the existing claim movement/detachment/pruning paths and plan cleanup against combined receipts. New code must not treat a legacy summary-only claim hash as proof that a task component was committed. Older writers may preserve only their known claim representation; ambiguity must refuse rather than replay tasks. If safe additive receipt bookkeeping cannot fit these existing contracts, stop and amend the design before introducing a storage migration.
+
+The live report-tool schema/guidance advertises the optional input. Older companions reject it as unknown input without a task update. Do not automatically strip the field and claim combined success. After determining unsupported capability and inspecting current state, an agent may deliberately use the existing separate change and bare handoff operations. New consumers keep reading ordinary task contributions and bare run claims; no UI protocol upgrade is required. Bare handoff behavior and the one-claim-per-proven-execution limit remain unchanged.
+
+### 4. Session action opens the existing panel
+
+Declare `open-progress` with label **Open Agent Progress**, `where:"session"`, `mode:"open"`, and no payload request. The public host action opens the panel and delivers its session item. Consume the initial ready item and subsequent `onItem` updates through one existing context owner. Do not route through the background composer handler, compose text, add another background entry, persist a cross-frame selection, or guess a page URL.
+
+Validate action ID/kind and bounded explicit session/directory metadata. Resolve source association using the existing verified service binding and current host session coverage. No title, visible-chat ID, directory similarity, or same-spelled ID in a different source can substitute for this identity. Only the verified bound source's eligible plans enter action-scoped selection. Loading, missing session, ambiguous location, permission loss and incomplete/failed reads have explicit states, not a fallback to another session/source.
+
+Retain the clicked-session scope while its action item is current, even if the visible chat changes. A new valid action item replaces it; an explicit ordinary panel opening with no item returns to the established current-session behavior. A runtime/account/source change retires old responses before rendering or selecting anything. A project/worktree move must be revalidated; an unavailable target remains unavailable rather than becoming the newly visible chat. Integrate this with the current context generation/cache retirement, not a second controller.
+
+Reuse rail selection and preference semantics within the fully validated source/session result. With multiple plans, show the existing picker and the chosen/automatic indication; do not merge plans or silently choose another source. A valid empty result shows no plan for that session. Failed/incomplete reads cannot claim an empty or complete set. Ordinary board browsing and its explicit filters remain unchanged; this slice adds no cross-frame board filter handoff.
+
+### 5. Optional work context, no speculative Workflows action
+
+Extend the existing live-session adapter with optional validated `agent` and `links`. Show concise source-labelled text in existing session details: host-reported agent and host-linked issue/change titles. Retain the live adapter's input bounds and use bounded literal display (agent up to 80 code units; at most five link titles up to 200 each, with a more-links qualification when applicable). Missing data is normal; malformed optional data is omitted without invalidating otherwise sound session identity. Do not fetch URLs, add link execution controls or persist a new metadata cache. These fields never establish assignment, accepted work, task status or workflow-run selection.
+
+Do not ship **Open Workflows** in this SDK version. `openSurface` taking a string is not evidence that a guessed `workflows` identifier is supported or that a disabled feature can be detected. Document the missing contract. A later verified public destination/availability API would be a separate addition. Existing manifest labels are host-owned fixed text; extension-owned explanations, errors and accessible names follow English/Russian localization.
+
+## Validation, failure modes and rollback
+
+Use real companion/tool invocation for two delegated children after binding, with scripted working reports and final done/blocked combined handoffs. This proves transport, permission, attribution and timing in the tested workflow, not general model obedience or guaranteed first-turn reporting. Exercise unassigned/sibling writes, changed-oid replay, parent/child revision races, claim refusal after tentative task validation, transaction failure, permission retirement, mixed writers and pruning. Use real rendered rail/map attribution as well as Store assertions.
+
+Exercise the session-menu action in an isolated unmodified 2.7.1 web host, including an inactive clicked session, multiple/zero plans, source collisions, context switches, unavailable sessions and denied grants. Keep the existing composer actions working. Record actual toolchain/runtime versions and below-floor installer refusal where available; do not certify desktop/mobile/Windows from Linux web evidence.
+
+No migration or automatic backfill is planned. Roll back capability source/manifest changes and their matching generated outputs together; keep existing reports, assignments, combined receipts and claims. Never downgrade run storage, delete receipts or reverse child reports to simulate rollback. Older tools may require separate reports. Existing approved host floor, private binding and managed plugin lifecycle remain unchanged.
