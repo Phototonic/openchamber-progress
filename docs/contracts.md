@@ -1690,6 +1690,18 @@ apply; list/history routes gain no discovery or authorization semantics.
 An explicit combined handoff's task component is an ordinary task mutation and
 advances the plan revision once; a bare handoff never does.
 
+## Native session reading reset
+
+The panel's native session action is a reading context, not report authority.
+Its explicit localized **Show current session** reset is frame-local: it retires
+pinned reads/selections and adopts the host's current session/directory without
+writing reports, host state or preferences. Retained-item replays must not undo
+that reset; a different valid target or cleared host item ends replay suppression.
+Visibility/chat changes alone never reset the pinned target. OpenChamber 2.7.1
+can retain its item on ordinary reopening; see
+[upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938) and
+[the UI contract](ui.md#native-session-entry-and-optional-host-context).
+
 ## Sub-agent runs revision 1 — read seam
 
 The optional additive run-format 2 extension leaves base schema/protocol 2 and

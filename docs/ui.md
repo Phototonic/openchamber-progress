@@ -387,8 +387,27 @@ Both existing background insertion actions keep their established behavior.
 **Host reopening limitation:** an isolated OpenChamber 2.7.1 check found that
 closing and reopening the existing panel retains its previous action item.
 That does not deliver the ordinary no-item transition above: the panel remains
-pinned. Do not assume closing it restored current-session scope. A different
-session's **Open Agent Progress** action supplies a new explicit target.
+pinned ([upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938)).
+Do not assume closing it restored current-session scope. The pinned-scope row
+offers **Show current session** (**Показать текущую сессию** in Russian), including
+when the pinned target is unavailable. This explicit local reset returns this
+frame to the host's actual current session/directory, or the ordinary no-session
+state. It retires old pinned reads and selections without a host/store write,
+cross-frame message or persisted preference. When the focused reset disappears,
+focus moves to the resulting state's heading. Chat changes and visibility alone
+never unpin. Re-delivery of the retained item must not undo an explicit reset;
+a genuinely different or host-cleared item ends that replay suppression.
+
+A further isolated 2.7.1 check found a limitation after reset: deliberately
+choosing **Open Agent Progress** for the same session again supplies the same
+item data as a replay, and the panel stays on the current session instead of
+pinning that target again. The supported item has no action-instance identifier;
+this same-target re-pin journey is not accepted. A different session action or
+a host-cleared item remains distinct. Do not infer a new action from visibility
+or chat changes to work around this ambiguity.
+
+Expanded **Sessions** has one localized section heading; the participant list
+retains every participant and optional host fact without repeating that heading.
 
 Session details may show **Host-reported agent** (up to 80 code units) and up to
 five **Host-linked issue/change** titles (up to 200 each), with a more-links

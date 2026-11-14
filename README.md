@@ -19,7 +19,7 @@ Agent Progress is an [OpenChamber](https://github.com/openchamber/openchamber) e
 - **See how the work connects.** Plans with recorded prerequisites open on an interactive dependency map, with pan, zoom, keyboard navigation and a clear *Ready* / *Unlocks next* view. Blue beads travel along the arrows from a task reported working to the tasks waiting on it, and an arrow from a blocked task ends in a stop bar.
 - **Know when it's your turn.** Blockers that need a person rise to the top, with the reason and how long they've been waiting.
 - **Watch your sub-agents.** Running sub-agents get one line each, and everything else stays tucked away until you ask.
-- **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context) before expecting it to follow the visible chat again.
+- **Open the right session's progress.** Choose **Open Agent Progress** in a session's menu, even while another chat is visible. The panel stays on the clicked session. Choose **Show current session** to follow the visible chat again; see the [host reopening limitation](docs/ui.md#native-session-entry-and-optional-host-context).
 - **Hand off in one click.** Copy a ready-made progress update or handoff summary from any plan.
 - **Honest and private.** Progress comes from what agents deliberately report, never from guesses. Everything stays in a local store on your machine.
 - **Built for everyone.** Full keyboard support, tested with the Orca screen reader, and friendly to forced colours and zoom.

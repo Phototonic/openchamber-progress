@@ -1232,9 +1232,16 @@ The session action uses the existing open-mode panel item contract on OpenChambe
 >=2.7.1 / SDK 2.7.0, without a new capability or background entry. It pins the
 clicked session after source/location verification; ordinary opening restores
 current-session scope when the host actually supplies no item. The isolated
-2.7.1 host retained its previous item on ordinary toolbar reopening, so that
-restoration journey is not accepted on this host; see the UI guide's reopening
-limitation. Optional host agent/resource titles are informational,
+2.7.1 host retains its previous item on ordinary toolbar reopening
+([upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938)).
+Use the panel's localized **Show current session** control for an explicit
+frame-local reset instead of expecting close/reopen to restore ordinary scope.
+The reset retires pinned reads without a host write, persistence or visibility
+heuristic; retained-item replays do not undo it. See the UI guide's reopening
+limitation, including the observed failure to re-pin the same target after reset
+when a new menu click delivers identical item data. That journey remains
+unaccepted; no action-instance signal exists in the pinned SDK item contract.
+Optional host agent/resource titles are informational,
 not task authority. Workflows navigation is omitted because this SDK exposes no
 supported destination/availability contract. Linux web evidence does not certify
 desktop, relay, macOS or Windows; see the isolated test records for actual coverage.
