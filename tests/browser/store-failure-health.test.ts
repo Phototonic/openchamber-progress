@@ -22,6 +22,8 @@ import type { ViewContext, ViewSpec } from '../../ui/shared/app.ts';
 import type { GuestRequest, GuestRequestResult, HostReadyContext } from '@openchamber/sdk';
 import type { ReadFailure } from '../../ui/shared/source.ts';
 import { HEALTH, HEALTH_UNCONFIGURED, plansPage, planPage, setupRead, envelope, docRef, summary } from './fixtures.ts';
+import {parseSetup,parseLastAction} from '../../ui/shared/adapter.ts';
+import {lastMigrationText} from '../../ui/shared/setup.ts';
 
 const items = [{ id: 'task', title: 'Reported work', kind: 'task' as const, status: 'working' as const }];
 const row = summary('P-A', items, { sessionId: 'A', document: docRef() });
@@ -41,6 +43,28 @@ test('snapshot starting/refused explicitly admits once before reading data, with
     }},{session:'A'});
     assert.ok(result.ok&&result.read);assert.deepEqual(calls,['/health','/v1/setup','/health','/v1/plans']);
   }
+});
+
+test('every refused security/binding state is a failure, never a setup-needed success',async()=>{
+  for(const code of ['managed-binding-modified','managed-binding-invalid','windows-security-unavailable','private-permissions','path-unverified','unsafe-parent','symlink-escape','managed-scope-unsupported']){
+    const calls:string[]=[];
+    const r=await source.readList({serviceRequest:async q=>{calls.push(q.path);return response(q.path==='/health'?{...failedHealth(code),state:'refused'}:setupRead());}},null);
+    assert.equal(r.ok,false,code);assert.equal(!r.ok&&r.failure.code,code);
+    assert.deepEqual(calls,['/health','/v1/setup','/health']);
+  }
+});
+
+test('Setup retains fixed stage/code on status and failed HTTP actions, with actionable localized copy',async()=>{
+  for(const code of ['private-permissions','unsafe-parent','symlink-escape','windows-security-unavailable','path-unverified','EACCES','EPERM','EBUSY','EIO','ENOSPC']){
+    const lastAction={stage:'migration-record' as const,code};
+    assert.deepEqual(parseSetup(JSON.stringify({...setupRead(),lastAction})).lastAction,lastAction);
+    const r=await source.setupCall({serviceRequest:async()=>response({error:code,lastAction},503)},'managed-migrate',null,true,'a'.repeat(64));
+    assert.ok(!r.ok);assert.deepEqual(r.lastAction,lastAction);
+    assert.match(lastMigrationText(lastAction),/Last migration attempt failed: migration-record/);
+    assert.match(lastMigrationText(lastAction,'ru'),/Последняя попытка переноса не удалась/);
+    assert.notEqual(lastMigrationText(lastAction),lastMigrationText(lastAction,'ru'));
+  }
+  for(const lastAction of [{stage:'raw /private/path',code:'EACCES'},{stage:'lock',code:'private-secret'},{stage:'lock',code:42}])assert.equal(parseLastAction(JSON.stringify({lastAction})),undefined);
 });
 
 test('snapshot admission refusal and proxy errors never authorize plans or create a retry loop',async()=>{

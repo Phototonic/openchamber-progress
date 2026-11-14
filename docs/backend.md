@@ -248,7 +248,7 @@ boundaries. The service has no plugin inventory/RPC authority from its read-only
 OpenCode provider permission.
 
 Legacy migration reuses complete ownership/Store validation and `remove-capture`:
-expectation feasibility/persistence, disable, verified removal, durable same-target
+expectation feasibility/persistence, pending record, disable, verified removal, durable same-target
 binding, then enable.
 Retained history/IDs and cleanup fences are not reset. Interrupted removal may
 leave incomplete ownership and a conflict needing separately authorized manual
@@ -270,11 +270,18 @@ does not promise concurrent responsiveness during a slow security query.
 
 The HTTP error funnel preserves only allowlisted `PlatformError` codes. Migration
 retains one bounded in-memory `lastAction: {stage, code}` in both error replies and
-Setup status; inspection does not clear it. The stage is a fixed operation
+Setup status, separate from current diagnostics; any subsequent successful managed
+action (including inspection) clears it. The stage is a fixed operation
 boundary, and codes are fixed product/platform or allowlisted filesystem codes,
 never raw messages. Primary migration/publication failures survive secondary
-cleanup errors. Durable pending/conflict/lock recovery rules are unchanged; this
-diagnostic is not persisted and grants no recovery authority.
+cleanup errors, including managed configuration. Data/control/capture admission
+preserves fixed platform and managed-binding refusals rather than flattening them
+to storage. The pending record precedes capture disable, so record-publication
+failure does not silently turn legacy capture off. A crash in between can leave
+pending while capture is still on. Pending/conflict/lock state still requires
+fresh explicit same-target recovery; this diagnostic is not persisted and grants
+no recovery authority. Candidate preflight shares its ownership/fingerprint facts
+within the operation only; lock/removal/publication boundaries validate afresh.
 
 ### Existing reporting and storage owners
 

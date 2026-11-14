@@ -24,13 +24,25 @@ const ERROR_TEXT = {
   'missing-folders': 'Fill in all three folders as absolute paths.',
   'confirmation-required': 'Review the folders and confirm before anything changes.',
   'targets-unverified': 'These folders could not be verified. Use absolute paths to existing folders you own, without symbolic links.',
-  'path-unverified': 'A folder path is not absolute, does not exist, or is not owned by you.',
-  'symlink-escape': 'A folder path goes through a symbolic link, which setup refuses for safety.',
+  'path-unverified': 'Use an existing absolute folder path owned by your account, then review again.',
+  'symlink-escape': 'Use a folder without symbolic links or junctions, then review again.',
+  'unsafe-parent': 'A parent folder can be changed by another account. Use a protected location or ask your administrator to check its permissions.',
+  EACCES: 'Access was denied. Check your account’s folder permissions, then review again.',
+  EPERM: 'The system refused the file operation. Check folder permissions and security software, then review again.',
+  EBUSY: 'A file is in use. Close programs using it, then review again.',
+  EIO: 'The system could not read or write a file. Check the disk before retrying.',
+  ENOSPC: 'The disk is full. Free space, then review again.',
+  EEXIST: 'A setup file already exists. Check Setup status before retrying; do not delete recovery files blindly.',
+  ENOENT: 'A required file disappeared. Check the installation, then review again.',
+  ENOTDIR: 'A required folder is now a file. Check the installation before retrying.',
+  EROFS: 'The disk is read-only. Restore write access, then review again.',
+  EMFILE: 'Too many files are open. Close unused programs, then review again.',
+  ENFILE: 'The system cannot open more files. Close unused programs, then review again.',
   collision: 'Something else already exists where the companion would be installed. Setup will not overwrite it.',
   'foreign-files': 'The install folder contains files setup did not create. Nothing was changed.',
   'modified-owned-files': 'Installed companion files were changed outside setup. They were left untouched.',
   'store-permissions': 'The progress store folder must be owned by you and private to your account.',
-  'private-permissions': 'A folder used for progress must be owned by you and private to your account.',
+  'private-permissions': 'Check that the progress folder belongs to your account and is private, then review again. Setup will not change existing permissions.',
   'windows-security-unavailable': 'Windows could not check folder ownership and privacy using its built-in PowerShell. Check that Windows PowerShell is available, then try again.',
   'not-installed': 'The companion is not installed in these folders.',
   'ownership-invalid': 'The installation does not match the folders this extension is set up for. Nothing was changed.',
@@ -55,13 +67,25 @@ const ERROR_RU: typeof ERROR_TEXT = {
   'missing-folders': 'Укажите все три папки абсолютными путями.',
   'confirmation-required': 'Проверьте папки и подтвердите действие до внесения изменений.',
   'targets-unverified': 'Не удалось проверить эти папки. Укажите абсолютные пути к существующим папкам, которыми вы владеете, без символических ссылок.',
-  'path-unverified': 'Путь папки не абсолютный, папка не существует или принадлежит другому пользователю.',
-  'symlink-escape': 'Путь папки проходит через символическую ссылку. Настройка запрещает это для безопасности.',
+  'path-unverified': 'Укажите абсолютный путь к существующей папке вашей учётной записи и проверьте снова.',
+  'symlink-escape': 'Выберите папку без символических ссылок и точек соединения и проверьте снова.',
+  'unsafe-parent': 'Родительскую папку может изменить другая учётная запись. Выберите защищённое место или попросите администратора проверить права.',
+  EACCES: 'Доступ запрещён. Проверьте права своей учётной записи на папки и повторите проверку.',
+  EPERM: 'Система запретила операцию с файлом. Проверьте права на папки и защитное ПО, затем повторите проверку.',
+  EBUSY: 'Файл занят. Закройте использующие его программы и повторите проверку.',
+  EIO: 'Не удалось прочитать или записать файл. Проверьте диск перед повторной попыткой.',
+  ENOSPC: 'Диск заполнен. Освободите место и повторите проверку.',
+  EEXIST: 'Файл настройки уже существует. Проверьте состояние настройки; не удаляйте файлы восстановления вслепую.',
+  ENOENT: 'Нужный файл исчез. Проверьте установку и повторите проверку.',
+  ENOTDIR: 'Вместо нужной папки обнаружен файл. Проверьте установку перед повторной попыткой.',
+  EROFS: 'Диск доступен только для чтения. Восстановите доступ для записи и повторите проверку.',
+  EMFILE: 'Открыто слишком много файлов. Закройте ненужные программы и повторите проверку.',
+  ENFILE: 'Система не может открыть больше файлов. Закройте ненужные программы и повторите проверку.',
   collision: 'В месте установки компаньона уже есть другие данные. Настройка не будет их перезаписывать.',
   'foreign-files': 'Папка установки содержит файлы, созданные не настройкой. Ничего не изменено.',
   'modified-owned-files': 'Установленные файлы компаньона изменены вне настройки. Они оставлены нетронутыми.',
   'store-permissions': 'Папка хранилища прогресса должна принадлежать вам и быть доступна только вашей учётной записи.',
-  'private-permissions': 'Папка прогресса должна принадлежать вам и быть доступна только вашей учётной записи.',
+  'private-permissions': 'Проверьте, что папка прогресса принадлежит вашей учётной записи и приватна, затем повторите проверку. Настройка не меняет существующие права.',
   'windows-security-unavailable': 'Windows не удалось проверить владельца и приватность папки встроенным PowerShell. Проверьте доступность Windows PowerShell и повторите попытку.',
   'not-installed': 'Компаньон не установлен в этих папках.',
   'ownership-invalid': 'Установка не соответствует папкам, для которых настроено расширение. Ничего не изменено.',
@@ -254,6 +278,7 @@ export interface BundledComparison { update: CompanionUpdateView; version: strin
 export const bundledComparison = (s: SetupView | null | undefined): BundledComparison | null => (s?.update && s.version ? { update: s.update, version: s.version } : null);
 
 export interface SetupUi {
+  actionFailure?: SetupView['lastAction'] | null;
   managedReview?: { action: Extract<SetupAction, `managed-${string}`>; result: SetupView; opener: string } | null;
   managedRequest?: number;
   form: SetupTargets;
@@ -646,6 +671,11 @@ function legacyReloadNote<U>(vc: Host<U>) {
 }
 
 let managedRequestSerial = 0;
+/** A past attempt is separate from current admission and migration diagnostics. */
+export function lastMigrationText(action: NonNullable<SetupView['lastAction']>, locale='en') {
+  const label=resolveLanguage('auto',locale)==='ru'?'Последняя попытка переноса не удалась':'Last migration attempt failed';
+  return `${label}: ${action.stage} · ${action.code}. ${setupErrorText(action.code,locale)}`;
+}
 /** One inspect, then one explicit consent. No managed action is inferred from legacy booleans. */
 function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const text = managedCopy(vc.env.locale);
@@ -656,6 +686,11 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   heading.tabIndex = -1;
   wrap.append(heading);
   const state = vc.setup;
+  const lastAction=s.actionFailure===undefined?(state?.state==='ready'?state.value.lastAction:undefined):s.actionFailure;
+  if(lastAction){
+    const failure=testid(el('p','ap-doc-warn',lastMigrationText(lastAction,vc.env.locale)),'setup-last-action');
+    failure.setAttribute('role','alert');wrap.append(failure);
+  }
   if (!state) vc.requestSetup();
   if (!state || state.state !== 'ready') {
     wrap.append(partState('setup-loading',text.title,state,vc.requestSetup,vc.env.locale));
@@ -690,7 +725,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     }
     vc.updateUi(u => {
       if (u.setup.managedRequest !== request) return {};
-      const patch: Partial<SetupUi> = {busy:false};
+      const patch: Partial<SetupUi> = {busy:false,...(result.ok?{actionFailure:null}:result.lastAction?{actionFailure:result.lastAction}:{})};
       if (result.ok && !review) {
         const inspected = result.setup.delivery;
         if (inspected?.review && inspected.configuration !== 'invalid' && (action === 'managed-disable' || inspected.migration !== 'conflict' && inspected.migration !== 'unavailable')) {

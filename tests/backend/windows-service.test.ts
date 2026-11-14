@@ -13,8 +13,12 @@ import {privateDirectory,privatePaths} from '../../shared/platform.ts';
 
 // OpenChamber v2.7.1 packages/web/server/lib/guests/service.js:
 // 15s startup deadline, 1.5s per authenticated health poll (200ms between polls).
-// SDK 2.7.0 GUEST_REQUEST_TIMEOUT_MS is 20s for the separate Setup proxy.
-const HEALTH_MS=1250,START_MS=12000,PROXY_MS=20000;
+// v2.7.1 packages/sdk/src/contract.ts:499 sets 20s; host.ts:321,607-618,1067
+// applies it to the guest bridge. service.js:725,832,855-856 applies the same
+// deadline at the loopback proxy. Reserve at least 4s for bridge/startup overhead.
+const HEALTH_MS=1250,START_MS=12000;
+const BUDGETS={inspect:{ms:8000,queries:20,legacyReads:20},migrate:{ms:16000,queries:56,legacyReads:30},
+  fault:{ms:7000,queries:14,legacyReads:10},status:{ms:6000,queries:14,legacyReads:10}};
 type Counts={queries:number;legacyReads:number;elapsedMs?:number};
 type Trace={stage:string;errorClass:string|null;code:string|null;elapsedMs:number;marker:boolean;lock:boolean;expectation:boolean;pendingRecord:boolean;selector:boolean;captureEnabled:boolean|null;migrationPhase:string|null;counts:Record<string,Counts>};
 const stages=['managed-state-create','lock','expectation-publication','migration-record','legacy-removal','binding-publication','capture-enable'];
@@ -87,8 +91,10 @@ test('Windows cold built health and released 1.1.1 authenticated migration',{ski
     if(database&&fs.existsSync(database))try{const db=new DatabaseSync(database,{readOnly:true});try{const enabled=db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()?.enabled;trace.captureEnabled=enabled===1?true:enabled===0?false:null;}finally{db.close();}}catch{/* Read-only trace cannot repair. */}
     console.log('WINDOWS_MIGRATION_TRACE '+JSON.stringify(trace));
   }
-  function proxyBudget(phase:string){
-    if(counts[phase]!.elapsedMs!>=PROXY_MS){trace.code='proxy-budget-exceeded';trace.errorClass='timeout';throw new Error('proxy-budget');}
+  function proxyBudget(phase:string,budget:typeof BUDGETS.inspect){
+    if(counts[phase]!.elapsedMs!>=budget.ms){trace.code='proxy-budget-exceeded';trace.errorClass='timeout';throw new Error('proxy-budget');}
+    assert.ok(counts[phase]!.queries<=budget.queries,'operation security-query budget');
+    assert.ok(counts[phase]!.legacyReads<=budget.legacyReads,'operation legacy-read budget');
   }
   try{
     privateDirectory(root);
@@ -110,18 +116,18 @@ test('Windows cold built health and released 1.1.1 authenticated migration',{ski
     trace.stage='inspect';const inspected=await running.request('/v1/setup/managed-inspect',{},'inspect');
     assert.equal(inspected.response.status,200);assert.equal(inspected.value.delivery.migration,'available');
     assert.ok(counts.inspect!.queries>0);assert.ok(counts.inspect!.legacyReads>0);
-    proxyBudget('inspect');
+    proxyBudget('inspect',BUDGETS.inspect);
     const review=inspected.value.delivery.review.expected;
     for(const [fault,code]of [['timeout','windows-security-unavailable'],['private','private-permissions']] as const){
       trace.stage='managed-state-create';await running.fault(fault);
       const failure=await running.request('/v1/setup/managed-migrate',{confirmed:true,expected:review},fault);
       assert.equal(failure.response.status,503);assert.equal(failure.value.error,code);
       assert.deepEqual(failure.value.lastAction,{stage:'managed-state-create',code});assert.ok(counts[fault]!.queries>0);
-      trace.code=code;trace.errorClass='platform';emit();trace.code=null;trace.errorClass=null;proxyBudget(fault);
+      trace.code=code;trace.errorClass='platform';emit();trace.code=null;trace.errorClass=null;proxyBudget(fault,BUDGETS.fault);
       await running.fault(null);
       const status=await running.request('/v1/setup',undefined,`${fault}-status`);
       assert.equal(status.response.status,200);assert.deepEqual(status.value.lastAction,{stage:'managed-state-create',code});
-      proxyBudget(`${fault}-status`);
+      proxyBudget(`${fault}-status`,BUDGETS.status);
       assert.equal(status.value.delivery.migration,'available');assert.equal(fs.existsSync(managed),false);
       assert.ok(fs.readFileSync(database).equals(before),'pre-disable refusal must preserve every legacy database byte');
       for(const [name,bytes]of legacyFiles)assert.ok(fs.readFileSync(path.join(legacyRoot,name)).equals(bytes),'legacy discovery unchanged');
@@ -135,7 +141,7 @@ test('Windows cold built health and released 1.1.1 authenticated migration',{ski
       throw new Error('native-migration-refused');
     }
     assert.ok(counts.migrate!.queries>0);assert.equal(migrated.value.delivery.migration,'complete');assert.equal(migrated.value.captureEnabled,true);
-    trace.stage='capture-enable';proxyBudget('migrate');
+    trace.stage='capture-enable';proxyBudget('migrate',BUDGETS.migrate);
     assert.equal(migrated.value.reportingIdentity.storeId,legacy.storeId);assert.equal(migrated.value.reportingIdentity.sourceId,legacy.source.id);
     assert.equal(fs.existsSync(legacyRoot),false);assert.deepEqual(fs.readdirSync(path.join(storeRoot,'payloads')),payloads);
     const selector=path.join(managed,'progress-binding.json'),marker=path.join(managed,'.ownership.json');

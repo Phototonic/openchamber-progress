@@ -775,6 +775,12 @@ files. Enable and migration remain unavailable. Operational inspection failures
 instead show localized **inspection unavailable** copy, the fixed underlying
 diagnostic and **Retry inspection** (`setup-retry`), not ownership cleanup advice.
 This state uses `setup-migration-unavailable`; it does not claim a matching load.
+The Setup panel separately labels the last failed migration attempt with a fixed
+stage and code (`setup-last-action`), followed by actionable English/Russian copy.
+Failed HTTP replies supply that detail immediately, even while the current status
+is being re-read. Current diagnostics do not repeat the historical failure; a
+later successful managed action clears it. Refused health states (including
+security and managed-binding failures) never render as a normal setup-needed state.
 Verified capture-off remains available here too; retry only rereads status.
 
 Cancel initially owns confirmation focus if the opener still owns focus. Space

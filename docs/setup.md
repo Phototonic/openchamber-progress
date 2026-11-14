@@ -82,8 +82,9 @@ unselected legacy Store is not controlled. Enable and migration stay fail-closed
 
 The reviewed confirmation explains the narrower managed reach, retained history,
 global discovery removal and possible reload. Immediately before mutation,
-ownership and identity are checked again. Migration disables capture, uses the
-existing verified `remove-capture` operation, durably writes the same-target
+ownership and identity are checked again. Migration records its pending target,
+disables capture, uses the existing verified `remove-capture` operation,
+durably writes the same-target
 managed selection and expected metadata, then enables only after those steps
 succeed. Store/source IDs, reports, receipts, captures, cleanup fences, run
 records, installation history and retained legacy payloads survive. Successful
@@ -103,15 +104,20 @@ delete a config/store directory or remove unrelated files to clear the conflict.
 Migration errors retain fixed platform codes such as
 `windows-security-unavailable` and `private-permissions`, rather than reducing
 them to `storage`. The response and subsequent Setup diagnostics retain one
-in-memory `lastAction` stage/code until the next migration attempt or service
-restart. Stages are `managed-state-create` (including admission before creation),
+in-memory `lastAction` stage/code until a later managed action succeeds or the
+service restarts. Setup labels it as the **last failed migration attempt**, separate
+from current diagnostics, and shows it immediately from a failed action reply.
+Stages are `managed-state-create` (including admission before creation),
 `lock` (including locked revalidation/cleanup), `expectation-publication`,
 `migration-record` (including capture disable), `legacy-removal`,
 `binding-publication` and `capture-enable`. These identify the failed boundary,
 not proof of rollback or permission to repair it. Cleanup failure does not replace
 an earlier primary failure. No raw exception, path, SID, token, command or database
-content is included. A successful inspection does not erase the previous failure;
-a successful explicit migration retry clears it.
+content is included. Any later successful managed action, including inspection,
+clears it. A pending migration record is published before capture is disabled:
+failure to publish that first record leaves legacy capture unchanged. A crash after
+publication but before disable can therefore show pending with legacy capture still
+on; pending alone is not proof of capture-off. A fresh explicit retry revalidates.
 
 A crash while holding the private configuration lock leaves **busy** state. There
 is no time-based stale-lock takeover or automatic lock deletion. Stop only the
@@ -230,6 +236,8 @@ inspection. A newly started managed service reports `starting`, `ready:false` an
 snapshot never authorizes a data access: each such operation still revalidates.
 The views explicitly read Setup then health once on `starting`/`refused`, so a
 restored store can recover without a restart. Health alone does not retry checks.
+Background composer actions use that same admission path and check capabilities
+on the ready reply. Refused security/binding states are failures, not “setup needed”.
 There is no timer, worker or background admission; synchronous Setup/data checks
 can still delay other requests while that explicit operation runs.
 
@@ -312,6 +320,16 @@ legacy payload/Store preflight. Read-only validation scopes coalesce their known
 paths; security results do not survive the synchronous operation, and mutation
 boundaries retain fresh validation. There is no process-lifetime or TTL ACL cache.
 The host's liveness deadline is separate from these security-helper budgets.
+OpenChamber 2.7.1 also limits both the guest bridge and service proxy to **20 seconds**
+per request (`packages/sdk/src/contract.ts:499`, `host.ts:607-618`, and
+`packages/web/server/lib/guests/service.js:725,832,855-856` at tag `v2.7.1`).
+The native fixture gates inspect at 8 seconds / 20 security queries / 20 legacy
+reads, migrate at 16 seconds / 56 queries / 30 reads, injected creation failures
+at 7 seconds / 14 queries / 10 reads, and subsequent status at 6 seconds / 14
+queries / 10 reads. These are runner regression budgets, not a guarantee for every
+machine. A blocked security helper still fails closed; it is not skipped to meet
+a deadline. Full legacy preflight facts are reused only within a synchronous
+candidate; locked revalidation and removal independently check current ownership.
 
 Use one account and local NTFS storage. Config/data roots require current-account
 ownership; dedicated store and managed state require private ACLs permitting only
