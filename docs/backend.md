@@ -1045,9 +1045,9 @@ Capture toggles and plan closure/deletion fence intent even under old writers.
 Partial registrations dispose safely, and late disposed lookups cannot publish.
 
 Receipts retain additive declaration/source/dispatch identity and fixed refusal
-recovery metadata without changing schema or replay hashes. Activation reads at
-most 128 newest source receipts (16 KiB each), emits at most three current-per-plan
-refusals and marks incomplete evidence. Newer declaration evidence suppresses old
+recovery metadata without changing schema or replay hashes. Activation admits at
+most 128 newest source receipts (16 KiB each) plus one overflow sentinel, emits
+at most three current-per-plan refusals and marks incomplete evidence. Newer declaration evidence suppresses old
 refusals; archived/deleted plans and disabled/unverified contexts expose none.
 The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
 and explicitly marks omissions. It is advisory and read-only: recovery requires
