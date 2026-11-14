@@ -1082,10 +1082,14 @@ Partial registrations dispose safely, and late disposed lookups cannot publish.
 Receipts retain additive declaration/source/dispatch identity and fixed refusal
 recovery metadata without changing schema or replay hashes. Activation admits at
 most 128 newest source receipts (16 KiB each) plus one overflow sentinel, emits
-at most three current-per-plan refusals and marks incomplete evidence. Newer declaration evidence suppresses old
-refusals; archived/deleted plans and disabled/unverified contexts expose none.
+at most three current-per-plan refusals and marks incomplete evidence. Newer
+declaration evidence suppresses old
+refusals, as do bounded current assignments covering all refused tasks through
+linked children at a later revision; archived/deleted plans and
+disabled/unverified contexts expose none.
 The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
-and explicitly marks omissions. It is advisory and read-only: recovery requires
+and explicitly marks omissions, including an empty incomplete result. It is
+advisory and read-only: recovery requires
 an intentional fresh declaration or verified explicit link, never an automatic
 report, assignment, permission grant or document capture. See
 [the delegation contract](contracts.md#declared-delegation-and-assignment-attribution-optional-v2-metadata).

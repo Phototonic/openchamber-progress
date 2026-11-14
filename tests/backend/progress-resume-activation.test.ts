@@ -226,7 +226,8 @@ test('pending delegation conflict carries the parallel recipe without replacing 
   assert.ok(parts(await f.next())[0].text.includes(PARALLEL_DELEGATION_HINT));
 }));
 
-test('durable refusal is delivered on the next eligible coordinator context only, without a report',async()=>fixture(async f=>{
+for(const recovery of ['redeclare','link','binding'] as const)
+test(`durable refusal is refreshed after ${recovery} recovery on eligible coordinator context only`,async()=>fixture(async f=>{
   f.seed();
   await f.report({op:'delegate',plan:'P-alpha',oid:'refused-declaration',rev:1,assign:['I1']});
   const actor={sourceId:f.binding.source.id,sessionId:'ses_M',parentId:null,ancestry:[],agent:'synthetic',directory:'/fixture/project',verifiedSource:true};
@@ -241,7 +242,9 @@ test('durable refusal is delivered on the next eligible coordinator context only
   assert.match(text,/Plan "P-alpha", declaration "refused-declaration" at revision 1; tasks \["I1"\]: not applied because/);
   assert.match(text,/re-declare at the current revision/);assert.match(text,/explicitly link/);
   assert.deepEqual(f.store.get(actor.sourceId,'P-alpha'),before);
-  await f.report({op:'delegate',plan:'P-alpha',oid:'new-declaration',rev:2,assign:['I1']});
+  if(recovery==='redeclare')await f.report({op:'delegate',plan:'P-alpha',oid:'new-declaration',rev:2,assign:['I1']});
+  else f.store.apply({op:'link',plan:'P-alpha',oid:'recovered-link',rev:2,child:'ses_C',assign:['I1']},actor,undefined,
+    {...actor,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M']},recovery==='binding'?{generation:0,messageId:key.message,callId:key.call,observedAt:new Date(1000).toISOString()}:undefined);
   await f.context(context);assert.ok(!parts(context)[0].text.includes('## Delegation not applied'),'reused context removes obsolete refusal');
   f.store.setEnabled(false);assert.equal(parts(await f.next()).length,0);
 }));

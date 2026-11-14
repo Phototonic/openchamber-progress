@@ -1747,13 +1747,17 @@ The companion's advisory, read-only refusal projection admits at most 128 newest
 source receipts, at most 16 KiB each, and returns at most three current-per-plan
 refusals with a completeness flag. Legacy, malformed, oversized or omitted
 evidence is incomplete, never proof of success or absence. Newer pending, bound,
-cancelled or malformed declaration evidence suppresses older refusals. Disabled
+cancelled or malformed declaration evidence suppresses older refusals. Current
+assignments also suppress a refusal when all its tasks are assigned to linked
+children at a later plan revision. This check shares the bounded input budget
+and never changes the durable receipt or grants authority. Disabled
 capture or unverified context exposes none; archived/deleted plans are omitted.
 The next eligible coordinator context can explain a refusal using only fixed
 reasons, declaration identity and task IDs, with deliberate re-declare/link
 recovery. This section is capped at 4 KiB and marks omitted task IDs or evidence;
-reused context arrays are refreshed while receipts remain durable. It never
-reports automatically, grants assignment/permission, changes task status or
+an empty incomplete result still emits the evidence-unavailable notice without
+claiming a refusal. Reused context arrays are refreshed while receipts remain
+durable. It never reports automatically, grants assignment/permission, changes task status or
 captures a document. Read current state before re-declaring for a new dispatch,
 or explicitly link the verified returned child; a refusal itself grants nothing.
 

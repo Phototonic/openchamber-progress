@@ -6,14 +6,17 @@ import { activeIntent } from '../../shared/subagent-runs.ts';
 import { delegationRevision, DELEGATION_PROOF_LIMITS } from '../../shared/delegation-validation.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const key = { source: 'source-alpha', parent: 'A', message: 'message-a', call: 'call-a' };
 const second = { ...key, message: 'message-b', call: 'call-b' };
+const releaseTag = 'refs/tags/v1.3.0';
+const releasePrerequisite = spawnSync('git', ['rev-parse', '--verify', `${releaseTag}^{commit}`], { stdio: 'ignore', timeout: 15000 }).status === 0
+  ? false : 'Release compatibility tests require tag v1.3.0; run git fetch origin tag v1.3.0 (source exports without Git history are insufficient).';
 
 async function releasedStore(file: string) {
-  const base = 'refs/tags/v1.3.0', root = path.join(path.dirname(file), 'released');
+  const base = releaseTag, root = path.join(path.dirname(file), 'released');
   const names = execFileSync('git', ['ls-tree', '-r', '--name-only', base, 'shared'], { encoding: 'utf8', timeout: 15000 }).trim().split('\n');
   for (const name of names) {
     const target = path.join(root, name); fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -24,7 +27,7 @@ async function releasedStore(file: string) {
 }
 
 for (const mode of ['binding', 'link'] as const)
-test(`unmodified released ${mode} supplies sufficient disjoint assignment evidence`, async () => {
+test(`unmodified released ${mode} supplies sufficient disjoint assignment evidence`, { skip: releasePrerequisite }, async () => {
   await fixture(async f => {
     const OldStore = await releasedStore(f.store.file), old = new OldStore(f.store.file); old.bindReads(f.source.id, true);
     try {
@@ -345,7 +348,7 @@ test('empty contribution scope is insufficient proof even when endpoints look un
   });
 });
 
-test('unmodified released writers and intents use retained evidence, never endpoint-only restoration', async () => {
+test('unmodified released writers and intents use retained evidence, never endpoint-only restoration', { skip: releasePrerequisite }, async () => {
   await fixture(async f => {
     const OldStore = await releasedStore(f.store.file);
     const old = new OldStore(f.store.file); old.bindReads(f.source.id, true);

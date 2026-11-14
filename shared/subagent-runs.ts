@@ -347,7 +347,8 @@ export interface DelegationRefusals {
 }
 /** Bounded receipt window, never an authority check or an intent mutation. Old
  * receipts without exact declaration identity are unavailable, not guessed.
- * No scan of run payloads, prompts, titles or plan snapshots is needed. */
+ * Current plan assignments can suppress recovered refusals, never grant authority.
+ * No scan of run payloads, prompts or titles is needed. */
 export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:string,sessionId:string):DelegationRefusals {
   need(identifier(sourceId)&&identifier(sessionId));
   const result:DelegationRefusals={sourceId,sessionId,complete:true,refusals:[]};
@@ -372,6 +373,21 @@ export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:s
     // declaration must not resurrect an older refusal in coordinator guidance.
     if(cleanupInstalled(db)&&['archived','deleted'].includes(String(cleanupState(db,sourceId,r.plan)?.state??'')))continue;
     if(d.state!=='retired'||d.reason==='cancelled'||!a.taskIds.length)continue;
+    // Explicit links have no delegation receipt. Read the bounded current
+    // assignment instead; historical refusals and their exact retries stay intact.
+    const current=db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?').get(Math.max(0,DELEGATION_VIEW_LIMITS.inputBytes-bytes),sourceId,r.plan);
+    if(current){
+      bytes+=Number(current.bytes);
+      if(typeof current.snapshot!=='string')result.complete=false;
+      else try{
+        const p=JSON.parse(current.snapshot);
+        if(p.sourceId!==sourceId||p.id!==r.plan||p.sessionId!==sessionId||!Number.isSafeInteger(p.revision)||!Array.isArray(p.items)||!Array.isArray(p.links))result.complete=false;
+        else if(p.revision>a.declaredRevision&&a.taskIds.every((id:string)=>{
+          const item=p.items.find((i:any)=>i?.id===id);
+          return item?.kind==='task'&&identifier(item.assigneeSessionId)&&item.assigneeSessionId!==sessionId&&p.links.some((l:any)=>l?.sessionId===item.assigneeSessionId&&Array.isArray(l.itemIds)&&l.itemIds.includes(id));
+        }))continue;
+      }catch{result.complete=false;}
+    }
     if(result.refusals.length===3){result.complete=false;continue;}
     const reasons=['relevant-change','conflict','structural-change','closed','assignment','source-unverified','unverified','incomplete-proof','missing-proof','budget','dispatch-unconfirmed','binding','disabled','capture-disabled','not-found','storage','corrupt','schema','busy'];
     result.refusals.push({plan:r.plan,declaration:{oid:a.oid,coordinatorSessionId:sessionId,declaredRevision:a.declaredRevision,taskIds:[...a.taskIds],dispatch:a.dispatch?{tool:'subagent',messageId:a.dispatch.messageId,callId:a.dispatch.callId}:null},reason:reasons.includes(d.reason)?d.reason:'unverified',recovery:'redeclare-or-link'});

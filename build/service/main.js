@@ -2202,6 +2202,25 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
       continue;
+    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes), sourceId, r.plan);
+    if (current) {
+      bytes += Number(current.bytes);
+      if (typeof current.snapshot !== "string")
+        result.complete = false;
+      else
+        try {
+          const p = JSON.parse(current.snapshot);
+          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+            result.complete = false;
+          else if (p.revision > a.declaredRevision && a.taskIds.every((id) => {
+            const item = p.items.find((i) => i?.id === id);
+            return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
+          }))
+            continue;
+        } catch {
+          result.complete = false;
+        }
+    }
     if (result.refusals.length === 3) {
       result.complete = false;
       continue;
