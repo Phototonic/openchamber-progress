@@ -7,7 +7,10 @@ import type { ViewContext } from './app.ts';
 import { button, el, partState, testid } from './components.ts';
 import type { CompanionUpdateView, SetupSuggestions, SetupTargets, SetupView } from './model.ts';
 import { resolveLanguage } from './i18n.ts';
-import { managedCopy, managedErrorText } from './managed-copy.ts';
+import { managedCopy, managedErrorText, managedStepCopy } from './managed-copy.ts';
+import { MANAGED_MIGRATION_STEPS, type ManagedStepProgress } from '../../shared/managed-steps.ts';
+import { StepDriver, canAbandon, currentProgress, managedStepCall, nextAction, type StepAction, type StepStop } from './setup-steps.ts';
+import { ensureSetupStyle } from './setup-style.ts';
 
 export type SetupPhase = 'unconfigured' | 'recovery' | 'reload-required' | 'removed' | 'disabled' | 'installed';
 
@@ -641,7 +644,8 @@ export function reloadNote<U>(vc: Host<U>) {
   const locale = vc.env.locale;
   const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
   if (!info?.delivery) return null;
-  if (info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
+  const stepped = info.delivery.managedMigrationSteps === 1 ? currentProgress(stepDriver?.state.progress ?? null, info.delivery.migrationProgress) : null;
+  if ((stepped && stepped.state !== 'complete') || info.delivery.migration === 'available' || info.delivery.migration === 'pending' || info.delivery.migration === 'conflict' || info.delivery.migration === 'unavailable') return managedSetupBlock(vc,{compact:true});
   if (info.delivery.observation === 'different') {
     const warning = testid(el('div'), 'managed-integrity-warning');
     mountBanner(warning, {tone:'warning', title:managedCopy(locale).different, body:managedCopy(locale).warning+' '+managedCopy(locale).observation});
@@ -693,6 +697,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   }
   if (!state) vc.requestSetup();
   if (!state || state.state !== 'ready') {
+    // An unreadable status must not hide an unfinished switch or its capture warning.
+    const known = stepDriver?.state.progress;
+    if (known && known.state !== 'complete') wrap.append(migrationCard(vc, stepsFor(vc), known));
     wrap.append(partState('setup-loading',text.title,state,vc.requestSetup,vc.env.locale));
     return wrap;
   }
@@ -701,10 +708,16 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (!d) { wrap.dataset.phase='unsupported'; wrap.append(el('p','ap-note',text.unsupported)); return wrap; }
   wrap.dataset.phase = d.configuration;
   wrap.dataset.migration = d.migration;
+  // Step protocol only when the service advertises it; older services keep the single-request flow.
+  const driver = d.managedMigrationSteps === 1 ? stepsFor(vc) : null;
+  const progress = driver ? currentProgress(driver.state.progress, d.migrationProgress) : null;
+  const unfinished = !!progress && progress.state !== 'complete';
+  if (driver) { wrap.dataset.steps = '1'; if (driver.state.busy) wrap.setAttribute('aria-busy','true'); }
   const set = (patch: Partial<SetupUi>) => vc.updateUi(u => ({setup:{...u.setup,...patch}}) as Partial<U & {setup:SetupUi}>);
   const back = (opener:string) => vc.handoff({to:opener,heading:root=>root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]')});
   const ownsFocus = (id:string) => document.hasFocus() && !!document.activeElement?.closest(`[data-testid="${id}"]`);
   const run = async (action: Extract<SetupAction, `managed-${string}`>, opener:string, review?: SetupView) => {
+    if (driver && action === 'managed-migrate') return; // negotiated step flow: no old-route fallback
     const request = ++managedRequestSerial;
     const reviewed = review?.delivery?.review;
     // Inspection follows the user's current input; mutations use only the inspected canonical store.
@@ -730,8 +743,14 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
         const inspected = result.setup.delivery;
         if (inspected?.review && inspected.configuration !== 'invalid' && (action === 'managed-disable' || inspected.migration !== 'conflict' && inspected.migration !== 'unavailable')) {
           const next = action !== 'managed-disable' && (inspected.migration === 'available' || inspected.migration === 'pending') ? 'managed-migrate' : action;
-          patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
-          if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+          if (next === 'managed-migrate' && (driver || inspected.managedMigrationSteps === 1)) {
+            // A step-capable service never receives the single-request switch: review it step by step.
+            if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+            queueMicrotask(() => { if (stepDriver && !stepDriver.state.busy) void stepDriver.inspect('begin', store ? {storeRoot:store} : {}); });
+          } else {
+            patch.managedReview = {action:next,result:result.setup,opener}; patch.ack=false;
+            if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'});
+          }
         } else patch.error=inspected?.migration === 'conflict' ? 'managed-migration-conflict' : inspected?.migration === 'unavailable' ? 'managed-migration-unavailable' : 'managed-review-stale';
       } else {
         patch.managedReview=null; patch.ack=false;
@@ -748,6 +767,14 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     const alert = testid(el('p','ap-doc-warn',message),'setup-error'); alert.setAttribute('role','alert'); alert.dataset.code=diagnosticCode(s.error); wrap.append(alert);
   }
   if (s.notice) { const notice=testid(el('p','ap-note',text.done),'setup-notice'); notice.setAttribute('role','status'); wrap.append(notice); }
+  if (driver) {
+    const review = stepReviewCard(vc, driver);
+    if (review) { wrap.append(review); return wrap; }
+    if (progress && (unfinished || driver.state.progress?.state === 'complete')) wrap.append(migrationCard(vc, driver, progress));
+    else if (driver.state.busy === 'run' || driver.state.busy === 'control') wrap.append(startingCard(vc, driver));
+    else stepOutcome(wrap, driver, null, vc.env.locale);
+    if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
+  }
   const r = s.managedReview;
   if (r?.result.delivery?.review) {
     const reviewed = r.result.delivery.review;
@@ -769,7 +796,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   }
   wrap.append(el('p','ap-note',d.configuration === 'invalid' ? text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
   if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
-  if (d.migration === 'pending') wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
+  if (d.migration === 'pending' && !unfinished) wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
   if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',text.conflict));
   if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',text.unavailable),'setup-migration-unavailable'));
   if (d.migration === 'complete') wrap.append(el('p','ap-note',text.complete));
@@ -779,7 +806,9 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (!unresolved && d.observation === 'different') {
     const warning=testid(el('div'),'managed-integrity-warning'); mountBanner(warning,{tone:'warning',title:text.different,body:text.warning});wrap.append(warning);
   }
-  wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
+  // While a switch is unfinished its card carries the actual capture observation; an older stored
+  // reading here could contradict it mid-run.
+  if (!unfinished) wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
   for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale)));
   if (d.configuration === 'unconfigured') {
     wrap.append(el('p','ap-note',text.choose));
@@ -792,7 +821,19 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const action=(id:string,label:string,kind:Extract<SetupAction, `managed-${string}`>)=>{button(row,id,label,()=>{if(!vc.ui.setup.busy)void run(kind,id);},'outline');row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy));};
   if (d.configuration === 'configured' && info.verified && info.captureEnabled === true) action('setup-disable',text.disable,'managed-disable');
   if (d.configuration !== 'invalid' && d.migration !== 'conflict' && d.migration !== 'unavailable') {
-    if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
+    if (driver && (d.migration === 'available' || d.migration === 'pending')) {
+      if (!unfinished) {
+        button(row,'setup-migrate',d.migration==='pending'?text.resume:text.migrate,()=>{
+          const st = vc.ui.setup;
+          if (driver.state.busy || st.busy) return;
+          const store = d.configuration === 'configured' ? info.targets?.storeRoot : st.form.storeRoot.trim();
+          if (store && !absoluteSetupPath(store)) { set({error:'managed-path-input'}); return; }
+          if (st.error) set({error:null});
+          void driver.inspect('begin', store ? {storeRoot:store} : {});
+        },'outline');
+        row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled',String(s.busy || !!driver.state.busy));
+      }
+    } else if (d.migration === 'available' || d.migration === 'pending') action('setup-migrate',d.migration==='pending'?text.resume:text.migrate,'managed-migrate');
     else if (d.configuration === 'unconfigured') action('setup-inspect',text.review,'managed-configure');
     else if (info.captureEnabled === false) action('setup-enable',text.enable,'managed-enable');
   }
@@ -801,4 +842,256 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const disclosure=testid(el('div','ap-setup-disclose'),'setup-disclosure');
   for (const body of [text.privilege,text.lifecycle,text.reach]) disclosure.append(el('p','ap-note',body));
   wrap.append(disclosure);return wrap;
+}
+
+// ---- Step-by-step switch (shared/managed-steps.ts, setup/managed-steps.md) ----
+
+let stepView: Host<unknown> | null = null;
+let stepDriver: StepDriver | null = null;
+/** Alert keys already announced in this frame, so a full repaint does not repeat them. */
+const announced = new Set<string>();
+/** Host account, surface, session and directory; null while hidden. A change retires the driver. */
+const stepContext = (vc: Host<unknown>) => document.visibilityState === 'hidden' ? null
+  : JSON.stringify([vc.ctx?.connection?.account ?? '', vc.ctx?.surface ?? '', vc.session?.id ?? null, vc.directory ?? null]);
+const ACTION_HOOK: Record<NonNullable<StepAction>, string> = { continue: 'setup-migration-continue', resume: 'setup-migration-resume', review: 'setup-migration-review-capture', status: 'setup-migration-status' };
+const migrationHeading = (root: HTMLElement) => root.querySelector<HTMLElement>('[data-testid="setup-migration-heading"]') ?? root.querySelector<HTMLElement>('[data-testid="setup-status-heading"]');
+
+function readProgress(vc: Host<unknown>) {
+  const info = vc.setup?.state === 'ready' ? vc.setup.value : null;
+  return currentProgress(stepDriver?.state.progress ?? null, info?.delivery?.migrationProgress);
+}
+/** Where focus goes when a settled run removes the control it was on (docs/ui.md Restoration). */
+function stepHandoff(vc: Host<unknown>, stop: StepStop) {
+  const st = stepDriver!.state;
+  if (stop.reason === 'held') return;
+  if (stop.reason === 'review') { vc.handoff({ to: st.review ? 'setup-cancel' : 'setup-migrate', heading: migrationHeading }); return; }
+  const next = nextAction(readProgress(vc));
+  vc.handoff({ to: st.outcome?.uncertain ? ACTION_HOOK.status : next ? ACTION_HOOK[next] : 'setup-migrate', heading: migrationHeading });
+}
+function stepsFor<U>(vc: Host<U>): StepDriver {
+  ensureSetupStyle();
+  stepView = vc as unknown as Host<unknown>;
+  stepDriver ??= new StepDriver({
+    send: (request, current) => managedStepCall(stepView!.service(current), request),
+    context: () => (stepView ? stepContext(stepView) : null),
+    changed: (stop) => {
+      const v = stepView;
+      if (!v) return;
+      if (stop) stepHandoff(v, stop);
+      v.updateUi((u) => ({ setup: { ...u.setup } }));
+    },
+    refresh: (complete) => { stepView?.requestSetup(); if (complete) stepView?.retry(); },
+  });
+  stepDriver.observe(stepContext(stepView), vc.ctx?.connection?.account ?? '');
+  return stepDriver;
+}
+
+const stageLabel = (stage: string, locale: string) => managedStepCopy(locale).stages[stage] ?? stage;
+const partOf = (ref: { name: string; batch: number }) => (ref.name === 'remove-selector' || ref.name === 'remove-discovery') ? ref.batch + 1 : null;
+/** "Step 3 of 9: …" over the fixed stage list; removal batches add a part number, never a guessed total. */
+export function migrationStepText(p: ManagedStepProgress, locale = 'en') {
+  const t = managedStepCopy(locale);
+  if (!p.step) return t.status.complete;
+  return t.step(MANAGED_MIGRATION_STEPS.indexOf(p.step.name) + 1, MANAGED_MIGRATION_STEPS.length, stageLabel(p.step.name, locale), partOf(p.step));
+}
+export type MigrationTitle = keyof ReturnType<typeof managedStepCopy>['titles'];
+/** Distinct running, pending, paused, stopped, failed, interrupted and review presentations. */
+export function migrationTitle(p: ManagedStepProgress, driving: boolean): MigrationTitle {
+  if (driving) return 'running';
+  if (p.state === 'complete') return 'complete';
+  if (p.recovery === 'review') return 'review';
+  if (p.state === 'running') return p.worker === 'active' ? 'active' : 'interrupted';
+  return p.state;
+}
+
+/** Fixed stage/code plus actionable text for the last stop that still describes this progress. */
+function stepOutcome(parent: Element, driver: StepDriver, p: ManagedStepProgress | null, locale: string) {
+  const t = managedStepCopy(locale);
+  const o = driver.state.outcome;
+  const local = driver.state.progress;
+  // A newer durable status read (higher sequence) supersedes this frame's last outcome.
+  const fresh = o && (!p || !local || p.operationId !== local.operationId || p.sequence <= local.sequence);
+  const diagnostic = fresh ? o : p?.diagnostic ? { ...p.diagnostic, uncertain: false } : null;
+  if (!diagnostic) return null;
+  const box = testid(el('div', 'ap-doc-warn ap-migration-failure'), 'setup-migration-failure');
+  box.dataset.code = diagnosticCode(diagnostic.code);
+  if (diagnostic.stage) box.dataset.stage = diagnostic.stage;
+  const key = `failure:${p?.operationId ?? ''}:${p?.sequence ?? ''}:${diagnostic.stage ?? ''}:${diagnostic.code}`;
+  if (!announced.has(key)) { box.setAttribute('role', 'alert'); announced.add(key); }
+  const where = el('p', 'ap-migration-where', `${diagnostic.stage ? t.stoppedAt(stageLabel(diagnostic.stage, locale)) : t.stopped} · `);
+  where.append(el('code', 'ap-migration-code', diagnostic.code));
+  box.append(where);
+  // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
+  box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale)));
+  parent.append(box);
+  return diagnostic;
+}
+
+function inspectingLine<U>(vc: Host<U>, driver: StepDriver) {
+  const t = managedStepCopy(vc.env.locale);
+  const row = testid(el('div', 'ap-row'), 'setup-migration-inspecting');
+  const line = el('p', 'ap-note', t.checking(driver.state.inspecting ? stageLabel(driver.state.inspecting, vc.env.locale) : null));
+  line.setAttribute('role', 'status');
+  row.append(line);
+  button(row, 'setup-migration-cancel-inspect', t.cancel, () => { vc.handoff({ to: 'setup-migrate' }); driver.cancelReview(); }, 'ghost');
+  return row;
+}
+
+/** Guarded button: stays focusable while unavailable (aria-disabled) and never submits twice. */
+function stepButton(row: Element, id: string, label: string, run: () => void, variant: Parameters<typeof button>[4], disabled: boolean) {
+  button(row, id, label, () => { if (!disabled) run(); }, variant);
+  row.lastElementChild?.querySelector('button')?.setAttribute('aria-disabled', String(disabled));
+}
+
+function migrationCard<U>(vc: Host<U>, driver: StepDriver, p: ManagedStepProgress) {
+  const locale = vc.env.locale;
+  const t = managedStepCopy(locale);
+  const st = driver.state;
+  const driving = st.busy === 'run' || st.busy === 'control';
+  const pausing = driving && (st.pauseAfter || st.busy === 'control');
+  const card = testid(el('section', 'ap-setup-card ap-migration'), 'setup-migration-progress');
+  Object.assign(card.dataset, { state: p.state, worker: p.worker, effect: p.effect, capture: p.capture.state, recovery: p.recovery, sequence: String(p.sequence), driving: String(driving), step: p.step?.name ?? '', batch: p.step ? String(p.step.batch) : '' });
+  const title = migrationTitle(p, driving);
+  const heading = testid(el('h4', 'ap-setup-title', t.titles[title]), 'setup-migration-heading');
+  heading.tabIndex = -1; heading.id = 'ap-migration-heading';
+  card.setAttribute('aria-labelledby', heading.id);
+  card.append(heading);
+  if (p.state !== 'complete' && p.capture.state !== 'on') {
+    // Conspicuous and never dropped: present at every step, failure, pause and reopen while unfinished.
+    const warning = testid(el('div'), 'setup-migration-capture-warning');
+    warning.dataset.capture = p.capture.state;
+    mountBanner(warning, { tone: 'warning', title: p.capture.state === 'off' ? t.warnOff : t.warnUnknown, body: p.capture.state === 'off' ? t.warnOffBody : t.warnUnknownBody });
+    const key = `capture:${p.operationId}:${p.capture.state}`;
+    if (announced.has(key)) warning.querySelector('[role]')?.removeAttribute('role'); else announced.add(key);
+    card.append(warning);
+  }
+  if (p.state !== 'complete') {
+    const step = testid(el('p', 'ap-migration-step', migrationStepText(p, locale)), 'setup-migration-step');
+    step.setAttribute('role', 'status');
+    card.append(step);
+  }
+  const dl = el('dl', 'ap-facts ap-setup-facts');
+  dl.append(el('dt', '', t.last), el('dd', '', p.lastCompleted ? t.part(stageLabel(p.lastCompleted.name, locale), partOf(p.lastCompleted)) : t.none));
+  dl.append(el('dt', '', t.capture), testid(el('dd', '', { on: t.on, off: t.off, unknown: t.unknown }[p.capture.state]), 'setup-migration-capture'));
+  card.append(dl);
+  const stateLine = testid(el('p', 'ap-note', pausing ? t.status.pausing : driving ? t.status.running : t.status[title]), 'setup-migration-state');
+  card.append(stateLine);
+  // Failed and interrupted sentences already say the result is unknown.
+  if (!driving && p.effect === 'uncertain' && title !== 'failed' && title !== 'interrupted' && title !== 'complete') card.append(el('p', 'ap-note', t.status.uncertain));
+  const outcome = driving ? null : stepOutcome(card, driver, p, locale);
+  // After an unknown reply only a status check is offered; drop the state's own next-step advice.
+  if (outcome?.uncertain) stateLine.remove();
+  if (st.confirm) { card.append(stepConfirm(vc, driver, p)); return card; }
+  const row = el('div', 'ap-row');
+  if (driving) {
+    stepButton(row, 'setup-migration-pause', pausing ? t.pausing : t.pause, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestPause(); }, 'outline', pausing);
+  } else if (p.state !== 'complete') {
+    const busy = !!st.busy;
+    const action = outcome?.uncertain ? 'status' : nextAction(p);
+    const go = (fn: () => Promise<void>) => () => { vc.handoff({ to: 'setup-migration-pause' }); void fn(); };
+    if (action === 'continue') stepButton(row, ACTION_HOOK.continue, t.continue, go(() => driver.continueRun(p)), 'default', busy);
+    if (action === 'resume') stepButton(row, ACTION_HOOK.resume, t.resume, go(() => driver.resume(p)), 'default', busy);
+    if (action === 'review') stepButton(row, ACTION_HOOK.review, t.reviewCapture, () => { void driver.inspect('capture', { progress: p }); }, 'default', busy);
+    if (action === 'status') stepButton(row, ACTION_HOOK.status, t.check, () => { void driver.status(p); }, outcome?.uncertain ? 'default' : 'outline', busy);
+    if (action !== 'status' && canAbandon(p)) stepButton(row, 'setup-migration-abandon', t.abandon, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestAbandon(p); }, 'ghost', busy);
+  }
+  if (row.childElementCount) card.append(row);
+  return card;
+}
+
+/** Confirmed begin still in flight: no progress exists yet, so nothing beyond step 1 is claimed. */
+function startingCard<U>(vc: Host<U>, driver: StepDriver) {
+  const locale = vc.env.locale;
+  const t = managedStepCopy(locale);
+  const st = driver.state;
+  const pausing = st.pauseAfter;
+  const card = testid(el('section', 'ap-setup-card ap-migration'), 'setup-migration-progress');
+  Object.assign(card.dataset, { state: 'starting', driving: 'true', step: 'prepare', batch: '0' });
+  const heading = testid(el('h4', 'ap-setup-title', t.titles.running), 'setup-migration-heading');
+  heading.tabIndex = -1; heading.id = 'ap-migration-heading';
+  card.setAttribute('aria-labelledby', heading.id);
+  const step = testid(el('p', 'ap-migration-step', t.step(1, MANAGED_MIGRATION_STEPS.length, stageLabel('prepare', locale), null)), 'setup-migration-step');
+  step.setAttribute('role', 'status');
+  card.append(heading, step, testid(el('p', 'ap-note', pausing ? t.status.pausing : t.status.running), 'setup-migration-state'));
+  if (st.confirm) {
+    // No progress yet: the confirmation can only hold or record the pause once begin settles.
+    const box = testid(el('div', 'ap-migration-confirm'), 'setup-migration-confirm-pause');
+    box.setAttribute('role', 'group');
+    const title = el('h5', 'ap-setup-title', t.pauseTitle); title.id = 'ap-migration-confirm-title'; box.setAttribute('aria-labelledby', title.id);
+    box.append(title, el('p', 'ap-note', t.pauseBody), el('p', 'ap-note', t.stays.on));
+    const row = el('div', 'ap-row');
+    const cancel = () => { vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading }); void driver.cancelConfirm(null); };
+    stepButton(row, 'setup-migration-confirm', t.pause, () => { vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading }); void driver.confirmStop(null); }, 'default', false);
+    stepButton(row, 'setup-migration-cancel', t.keepGoing, cancel, 'ghost', false);
+    box.append(row);
+    box.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+    card.append(box);
+    return card;
+  }
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-migration-pause', pausing ? t.pausing : t.pause, () => { vc.handoff({ to: 'setup-migration-cancel' }); driver.requestPause(); }, 'outline', pausing);
+  card.append(row);
+  return card;
+}
+
+/** Pause/stop confirmation. Cancel owns focus; Escape cancels; nothing is undone either way. */
+function stepConfirm<U>(vc: Host<U>, driver: StepDriver, p: ManagedStepProgress) {
+  const t = managedStepCopy(vc.env.locale);
+  const kind = driver.state.confirm!;
+  const box = testid(el('div', 'ap-migration-confirm'), `setup-migration-confirm-${kind}`);
+  box.setAttribute('role', 'group');
+  const title = el('h5', 'ap-setup-title', kind === 'pause' ? t.pauseTitle : t.abandonTitle);
+  title.id = 'ap-migration-confirm-title'; box.setAttribute('aria-labelledby', title.id);
+  box.append(title, el('p', 'ap-note', kind === 'pause' ? t.pauseBody : t.abandonBody), el('p', p.capture.state === 'on' ? 'ap-note' : 'ap-doc-warn', t.stays[p.capture.state]));
+  const back = kind === 'pause' ? 'setup-migration-pause' : 'setup-migration-abandon';
+  const cancel = () => {
+    const next = nextAction(p);
+    vc.handoff({ to: driver.state.busy ? 'setup-migration-pause' : next ? ACTION_HOOK[next] : back, heading: migrationHeading });
+    void driver.cancelConfirm(p);
+  };
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-migration-confirm', kind === 'pause' ? t.pause : t.abandon, () => {
+    vc.handoff({ to: driver.state.busy ? 'setup-migration-pause' : undefined, heading: migrationHeading });
+    void driver.confirmStop(p);
+  }, kind === 'pause' ? 'default' : 'destructive', false);
+  stepButton(row, 'setup-migration-cancel', kind === 'pause' ? t.keepGoing : t.cancel, cancel, 'ghost', false);
+  box.append(row);
+  box.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+  return box;
+}
+
+/** Consent before begin, or fresh consent for exactly one uncertain capture decision. */
+function stepReviewCard<U>(vc: Host<U>, driver: StepDriver) {
+  const r = driver.state.review;
+  if (!r) return null;
+  const locale = vc.env.locale;
+  const text = managedCopy(locale), t = managedStepCopy(locale);
+  const busy = !!driver.state.busy;
+  const capture = r.kind === 'capture';
+  const card = testid(el('div', 'ap-setup-card'), capture ? 'setup-migration-capture-review' : 'setup-review');
+  card.dataset.action = r.kind === 'capture' ? `capture-${r.progress.step!.name}` : 'managed-migrate';
+  card.append(el('h3', 'ap-setup-title', capture ? t.captureTitle : text.migrate));
+  const reviewed = r.review.targets;
+  card.append(facts([[text.configRoot, reviewed.configRoot], [text.dataRoot, reviewed.dataRoot], [text.store, reviewed.storeRoot]]));
+  const enable = r.kind === 'capture' && r.progress.step!.name === 'enable';
+  if (r.kind === 'capture') {
+    const word = t.stateWord[r.progress.capture.state];
+    card.append(el('p', 'ap-doc-warn', enable ? t.captureEnable(word) : t.captureDisable(word)));
+  } else {
+    for (const body of [text.privilege, text.lifecycle, text.reach, text.switchEffect, t.stepwise]) card.append(el('p', 'ap-note', body));
+  }
+  const ack = testid(el('div'), 'setup-ack');
+  mountCheckbox(ack, { label: capture ? (enable ? t.ackEnable : t.ackDisable) : text.ack, checked: driver.state.ack, onChange: (checked) => driver.setAck(checked) });
+  card.append(ack);
+  const row = el('div', 'ap-row');
+  stepButton(row, 'setup-confirm', capture ? t.confirmCapture : text.confirm, () => {
+    if (!driver.state.ack) return;
+    vc.handoff({ to: 'setup-migration-pause', heading: migrationHeading });
+    void (capture ? driver.confirmCapture() : driver.confirmBegin());
+  }, 'default', busy || !driver.state.ack);
+  const cancel = () => { if (busy) return; vc.handoff({ to: capture ? ACTION_HOOK.review : 'setup-migrate', heading: migrationHeading }); driver.cancelReview(); };
+  stepButton(row, 'setup-cancel', text.cancel, cancel, 'ghost', busy);
+  card.append(row);
+  card.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !busy) { event.preventDefault(); cancel(); } });
+  return card;
 }
