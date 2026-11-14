@@ -30,7 +30,10 @@ import { RecentMemory, RefreshGate } from './refresh.ts';
 import { DigestController, type DigestPanel } from './change-digest.ts';
 import { RunsController, type RunsClaim, type RunsPanel } from './runs.ts';
 import { CheckpointStore, type CheckpointIdentity } from './change-digest-checkpoint.ts';
-import { cleanupCall, readDetail, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { cleanupCall, MAX_LIST_PAGES, readDetail, readPlanHead, readDocument, readHistory, readList, setupCall, type DetailResult, type DetailSnapshot, type InboxDemand, type ListScope, type ReadFailure, type FreshnessResult, type ServiceHost, type SetupResult } from './source.ts';
+import { InboxController, type InboxPanel } from './inbox.ts';
+import { INBOX_CSS } from './inbox-style.ts';
+import { applyDeviceHooks } from './phone-layout.ts';
 import { describeDetailFailure, formatHandoff, formatProgressUpdate, formatSummaryOnly } from './summary.ts';
 import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
@@ -80,6 +83,8 @@ export type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | 
 export interface ViewContext<U> {
   host: HostClient;
   ctx: HostReadyContext;
+  /** Re-delivered ready hints; presentation only. Device changes repaint, never trigger reads. */
+  device?: HostReadyContext['device'];
   session: SessionSnapshot | null;
   directory: string | null;
   /** Native session action validation; null for ordinary opening or a verified target. */
@@ -146,6 +151,11 @@ export interface ViewContext<U> {
    * section; a paint without a call retires the visit and any held reply. Null without a store read.
    */
   runs: (claim: Omit<RunsClaim, 'owner' | 'capable'>) => RunsPanel | null;
+  /**
+   * Source-wide Needs you inbox of the current read (inbox.ts), for surfaces that ask for it
+   * (spec.needsYou). Null without a current read; its controls are bound to that store/binding.
+   */
+  inbox: InboxPanel | null;
 }
 
 /** See ViewContext.handoff. `notice` is the outcome; ", so focus moved to <heading>." is appended. */
@@ -184,6 +194,8 @@ export interface ViewSpec<U> {
   wantProjects: (vc: ViewContext<U>) => string[];
   /** Plans whose full detail this view shows right now. */
   wantDetails: (vc: ViewContext<U>) => PlanView[];
+  /** Open source-wide readings whose head must be checked even after they leave the list/inbox. */
+  refreshDetails?: (vc: ViewContext<U>) => PlanView[];
   paint: (root: HTMLElement, vc: ViewContext<U>) => void;
   /** Synchronous presentation decision before paint; must not start reads or change list scope. */
   prepareUi?: (vc: ViewContext<U>) => Partial<U> | null;
@@ -223,6 +235,12 @@ export interface ViewSpec<U> {
   partsKey?: (vc: ViewContext<U>) => string | null;
   /** Board search only: plan keys whose detail/document/history caches are kept; others are evicted. Null: no bound. */
   retainParts?: (vc: ViewContext<U>) => ReadonlySet<string> | null;
+  /**
+   * Needs you inbox demand: `count` (Work Status: the compact count, no waiting times) or `rows`
+   * (rail/board: displayed rows with waiting times). Its first window rides on the first list page
+   * of each ordinary list read; absent asks for nothing.
+   */
+  needsYou?: InboxDemand;
 }
 
 const FOCUSABLE = 'button,summary,[tabindex],a,input,select,textarea';
@@ -511,6 +529,12 @@ export function startView<U>(spec: ViewSpec<U>) {
   let handoffNote: { hook: string; notice: NonNullable<Handoff['notice']> } | null = null;
   let digests: DigestController | null = null;
   let runs: RunsController | null = null;
+  // Created only for surfaces that show the inbox; continuation reads share the guarded proxy.
+  const inbox = spec.needsYou ? new InboxController({
+    service: (current) => guardedHost(current),
+    visible: () => document.visibilityState !== 'hidden',
+    changed: () => { versions.ui++; schedule(); },
+  }) : null;
   // connection.account is integration-link state, not an authenticated host-user boundary.
   const digestIdentity = (p: Pick<PlanView, 'sourceId' | 'id'>, r: Pick<StoreRead, 'storeId' | 'binding'>): CheckpointIdentity => ({ integrationAccount: ctx?.connection?.account || null, storeId: r.storeId, binding: { sourceId: r.binding.sourceId, verified: r.binding.verified }, source: p.sourceId, plan: p.id });
   /** Scope the current read generation is for; context changes that keep it do not re-read. */
@@ -678,7 +702,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     for (const [key, value] of details) if (value.value.state === 'loading') details.delete(key);
     for (const cache of [documents, histories]) for (const [key, value] of cache) if (value.state === 'loading') cache.delete(key);
   };
-  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); spec.retire?.('reset'); };
+  const resetCaches = () => { retireParts(); details.clear(); documents.clear(); histories.clear(); memory.clear(); runs?.retire(); inbox?.retire('reset'); spec.retire?.('reset'); };
   /**
    * Hide boundary: in-flight detail reads are retired, so a held reply released while hidden
    * issues no continuation page and paints nothing; becoming visible reads them again. Completed
@@ -774,6 +798,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         return;
       }
       if (result.state === 'fresh') {
+        if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), result.inbox)) versions.data++;
         if (read && read.captureEnabled !== result.captureEnabled) {
           const withCapture = (value: StoreRead): StoreRead => ({ ...value, captureEnabled: result.captureEnabled,
             diagnostics: [...value.diagnostics.filter((d) => d !== 'capture-disabled'), ...(!result.captureEnabled ? ['capture-disabled'] : [])] });
@@ -791,6 +816,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         }
         // Counts as a successful refresh: a failed detail is retried once, as after a list read.
         listReads++;
+        refreshDetails(generation);
         if (failure || [...details.values()].some((d) => d.value.state === 'error')) versions.data++;
         // Same setup recheck as a list refresh: a pending reload notice clears once the service observes it.
         if (setupRefreshDue()) loadSetup();
@@ -808,7 +834,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       }
       // The store or binding moved: the list read below adopts it and resets what belonged to the old one.
     }
-    let result = await readList(guardedHost(() => generation === gate.current), scope);
+    let result = await readList(guardedHost(() => generation === gate.current), scope, MAX_LIST_PAGES, spec.needsYou ? { demand: spec.needsYou, mono: () => performance.now() } : undefined);
     if (disposed || generation !== gate.current) return; // a retired context owns nothing
     if (item.kind === 'target' && scope && result.ok) {
       const validated = result.read && progressTargetRead(result.read);
@@ -853,11 +879,14 @@ export function startView<U>(spec: ViewSpec<U>) {
           if (changed.size) { resetCaches(); forgetPlans(changed); }
         }
         identity = nextIdentity;
+        // The source-wide inbox window of this same read; an unchanged one repaints nothing.
+        if (inbox?.adopt(JSON.stringify([ctx?.connection?.account ?? '', identity]), 'inbox' in result ? result.inbox : undefined)) versions.data++;
       }
       const sig = JSON.stringify([key, nextHealth, nextRead]);
       if (sig !== readSig || failure) { readSig = sig; read = nextRead; readScope = key; health = nextHealth; versions.data++; }
       // A failed detail is retried once per successful list refresh (poll or Try again), never per paint.
       listReads++;
+      refreshDetails(generation);
       if ([...details.values()].some((d) => d.value.state === 'error')) versions.data++;
       // Only a complete, current-generation list read for a real scope is remembered.
       if (scope && nextRead && identity) memory.set(memoryKey(key), { read: nextRead, sig, health: nextHealth, at: Date.now() });
@@ -923,6 +952,48 @@ export function startView<U>(spec: ViewSpec<U>) {
     read = null; readScope = ''; readSig = ''; failure = null;
     cleanup = { ...initialCleanup(), error: !result.ok, message: sameContext ? (result.ok ? { kind: action } : { kind: 'error', code: result.failure.code }) : null };
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
+  }
+
+  const headReads = new Map<string, { reading: string; queued: boolean; current: () => boolean }>();
+  function refreshDetails(refresh: number) {
+    if (!read || !spec.refreshDetails || document.visibilityState === 'hidden') return;
+    const generation = cacheGeneration, id = identity;
+    for (const p of spec.refreshDetails(context())) {
+      // A plan key alone cannot distinguish leaving and reopening the same inbox task.
+      const readingKey = () => JSON.stringify(spec.reading?.(context()) ?? null);
+      const key = readingKey(), bound = reading;
+      const current = () => !disposed && refresh === gate.current && generation === cacheGeneration && id === identity && readingKey() === key && (!bound || reading === bound) && document.visibilityState !== 'hidden' && !!spec.refreshDetails?.(context()).some(n => n.key === p.key);
+      const previous = headReads.get(p.key);
+      if (previous?.reading === key && previous.current()) { previous.queued = true; continue; }
+      const pending = { reading: key, queued: false, current };
+      const before = details.get(p.key);
+      headReads.set(p.key, pending);
+      void readPlanHead(guardedHost(current), p).then(result => {
+        if (!current() || headReads.get(p.key) !== pending) return;
+        const cached = details.get(p.key);
+        const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
+        if (result.ok && sameIdentity) {
+          // A queued poll is demand for another read, not evidence this success is stale.
+          // Never roll back newer detail (or revive a failure that overtook this head).
+          if (cached && (result.plan.revision < Math.max(cached.revision, cached.requested) ||
+            (cached !== before && cached.value.state === 'error') ||
+            (result.plan.cleanup?.revision ?? 0) < Math.max(cached.cleanup, cached.requestedCleanup))) return;
+          // Unchanged heads leave the detail, its timing anchors and DOM untouched.
+          loadDetails([result.plan]);
+        } else {
+          if (pending.queued || cached !== before) return;
+          const failure: ReadFailure = result.ok ? { kind: 'invalid', code: 'CONTRACT', message: 'The reading identity changed.' } : result.failure;
+          details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: p.cleanup?.revision ?? 0, requestedCleanup: p.cleanup?.revision ?? 0, captureEnabled: read?.captureEnabled, generation, listRead: listReads, value: { state: 'error', failure } });
+          bump();
+        }
+      }).finally(() => {
+        if (headReads.get(p.key) !== pending) return;
+        headReads.delete(p.key);
+        // One follow-up for any number of refreshes that overtook this reply.
+        // Current successes can advance detail first; queued failures never paint.
+        if (pending.queued && current()) refreshDetails(refresh);
+      });
+    }
   }
 
   function loadDetails(plans: PlanView[], force = false) {
@@ -1014,6 +1085,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
     const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
     const env: Env = {
+      device: ctx?.device,
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
       unverifiedSources: new Set(read ? read.sources.filter((s) => !s.verified).map((s) => s.id) : []),
@@ -1022,7 +1094,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, device: ctx?.device, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1125,6 +1197,7 @@ export function startView<U>(spec: ViewSpec<U>) {
         });
         return runs.claim({ ...claim, owner: JSON.stringify([ctx?.connection?.account ?? '', identity]), capable: health?.subagentRuns === 1 });
       },
+      inbox: inbox && read && identity && readScope === scopeKey(currentScope()) ? inbox.panel() : null,
     };
   }
 
@@ -1468,15 +1541,16 @@ export function startView<U>(spec: ViewSpec<U>) {
 
   host.onReady((next) => {
     applyHostReady(next, document.documentElement);
+    applyDeviceHooks(document.documentElement, next.device);
     if (!document.getElementById('ap-style')) {
-      const style = el('style', '', CSS);
+      const style = el('style', '', CSS + INBOX_CSS);
       style.id = 'ap-style';
       document.head.append(style);
     }
     const first = !ctx;
     const integrationAccountChanged = !!ctx && ctx.connection?.account !== next.connection?.account;
     const hostContextChanged = !first && (hostDirectory !== (next.directory ?? null) || hostSession?.id !== next.session?.id);
-    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface) versions.ctx++;
+    if (!ctx || ctx.locale !== next.locale || ctx.surface !== next.surface || JSON.stringify(ctx.device) !== JSON.stringify(next.device)) versions.ctx++;
     // Ready's explicit item (including null for ordinary opening) is authoritative.
     // A pre-ready replay is retained only if an older snapshot omits the field.
     hostSession = next.session ?? null;
@@ -1545,6 +1619,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       html.dataset.apHidden = '';
       digests?.hidden();
       runs?.hidden();
+      inbox?.retire('hidden');
       spec.retire?.('hidden');
       retireHiddenDetails();
       if (timer) { clearTimeout(timer); timer = null; }
@@ -1559,6 +1634,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     language.dispose();
     digests?.dispose();
     runs?.retire();
+    inbox?.retire('dispose');
     spec.retire?.('dispose');
     html.dataset.apHidden = '';
     gate.stop();

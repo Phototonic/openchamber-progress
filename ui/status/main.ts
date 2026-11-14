@@ -13,11 +13,12 @@ import { segmentedBar, stateChip, warningLine, type MarkStatus } from '../shared
 import { StatusSelection } from './selection.ts';
 import { projectStatus, type StatusProjection } from './projection.ts';
 import { afterAnimationFrames, HeightSync } from '../shared/height.ts';
+import { statusInboxLine } from '../shared/inbox-view.ts';
 
 type Ui = { selection: StatusSelection };
 const messages = {
-  en: { openFailed: 'Progress details could not open here.', noSession: 'No session selected', openSession: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', setupHelp: 'Set it up to see plans here.', setUp: 'Set up', noPlan: 'No plan reported for this session', appears: 'Progress appears here when an agent reports a plan.', featured: 'Featured plan', automatic: 'Automatic', prefer: 'Prefer reported working tasks', chosen: 'Chosen', chosenLabel: 'chosen', automaticLabel: 'chosen automatically', working: (n: number) => `${n} working`, picker: (title: string, chosen: boolean, n: number) => `Featured plan: ${title}, ${chosen ? 'chosen' : 'chosen automatically'}. ${plural(n, 'plan', 'plans')}; choose another`, updated: 'Updated ', more: (n: number) => plural(n, 'more plan', 'more plans'), moreAria: (n: number) => `${plural(n, 'more plan', 'more plans')} in this session: choose the featured plan`, open: 'Open progress', progress: 'in progress', needs: 'needs you', ready: 'ready', waiting: 'waiting', blocked: 'blocked', pending: 'pending', skipped: 'skipped', counts: (n: number, skipped: number) => ` done, ${n} remaining${skipped ? `, ${skipped} skipped` : ''}`, stale: (time: string) => `Not refreshed since ${time}. Counts may be out of date.`, capture: 'Capture off: these are the last reported counts.', unavailable: 'Task details couldn’t be loaded.', invalid: 'Ready and waiting are unavailable for this report.', incomplete: 'Some recorded prerequisites aren’t in this plan.', focus: 'Needs attention and in progress' },
-  ru: { openFailed: 'Не удалось открыть подробности прогресса.', noSession: 'Сессия не выбрана', openSession: 'Откройте сессию, чтобы увидеть её отчёты о прогрессе.', setup: 'Прогресс агента ещё не настроен', setupHelp: 'Настройте его, чтобы видеть планы.', setUp: 'Настроить', noPlan: 'В этой сессии нет отчёта о плане', appears: 'Прогресс появится здесь, когда агент сообщит о плане.', featured: 'Основной план', automatic: 'Автоматически', prefer: 'Предпочитать задачи с отчётом о работе', chosen: 'Выбран', chosenLabel: 'выбран', automaticLabel: 'выбран автоматически', working: (n: number) => `В работе: ${formatCount(n, 'ru')}`, picker: (title: string, chosen: boolean, n: number) => `Основной план: ${title}, ${chosen ? 'выбран' : 'выбран автоматически'}. Планов: ${formatCount(n, 'ru')}; выбрать другой`, updated: 'Обновлено ', more: (n: number) => `Ещё планов: ${formatCount(n, 'ru')}`, moreAria: (n: number) => `Других планов в этой сессии: ${formatCount(n, 'ru')}; выбрать основной план`, open: 'Открыть прогресс', progress: 'в работе', needs: 'нужно ваше участие', ready: 'готово к работе', waiting: 'ожидает', blocked: 'заблокировано', pending: 'не начато', skipped: 'пропущено', counts: (n: number, skipped: number) => ` выполнено, осталось: ${formatCount(n, 'ru')}${skipped ? `, пропущено: ${formatCount(skipped, 'ru')}` : ''}`, stale: (time: string) => `Не обновлялось с ${time}. Счётчики могут быть устаревшими.`, capture: 'Запись отключена: показаны последние полученные счётчики.', unavailable: 'Не удалось загрузить подробности задач.', invalid: 'Готовность и ожидание недоступны для этого отчёта.', incomplete: 'Некоторые записанные предварительные условия отсутствуют в этом плане.', focus: 'Требуют внимания и в работе' },
+  en: { openFailed: 'Progress details could not open here.', noSession: 'No session selected', openSession: 'Open a session to see its reported progress.', setup: 'Agent progress is not set up yet', setupHelp: 'Set it up to see plans here.', setUp: 'Set up', noPlan: 'No plan reported for this session', appears: 'Progress appears here when an agent reports a plan.', featured: 'Featured plan', automatic: 'Automatic', prefer: 'Prefer reported working tasks', chosen: 'Chosen', chosenLabel: 'chosen', automaticLabel: 'chosen automatically', working: (n: number) => `${n} working`, picker: (title: string, chosen: boolean, n: number) => `Featured plan: ${title}, ${chosen ? 'chosen' : 'chosen automatically'}. ${plural(n, 'plan', 'plans')}; choose another`, updated: 'Updated ', more: (n: number) => plural(n, 'more plan', 'more plans'), moreAria: (n: number) => `${plural(n, 'more plan', 'more plans')} in this session: choose the featured plan`, open: 'Open progress', progress: 'in progress', ready: 'ready', waiting: 'waiting', blocked: 'blocked', pending: 'pending', skipped: 'skipped', counts: (n: number, skipped: number) => ` done, ${n} remaining${skipped ? `, ${skipped} skipped` : ''}`, stale: (time: string) => `Not refreshed since ${time}. Counts may be out of date.`, capture: 'Capture off: these are the last reported counts.', unavailable: 'Task details couldn’t be loaded.', invalid: 'Ready and waiting are unavailable for this report.', incomplete: 'Some recorded prerequisites aren’t in this plan.', focus: 'Blocked and in progress' },
+  ru: { openFailed: 'Не удалось открыть подробности прогресса.', noSession: 'Сессия не выбрана', openSession: 'Откройте сессию, чтобы увидеть её отчёты о прогрессе.', setup: 'Прогресс агента ещё не настроен', setupHelp: 'Настройте его, чтобы видеть планы.', setUp: 'Настроить', noPlan: 'В этой сессии нет отчёта о плане', appears: 'Прогресс появится здесь, когда агент сообщит о плане.', featured: 'Основной план', automatic: 'Автоматически', prefer: 'Предпочитать задачи с отчётом о работе', chosen: 'Выбран', chosenLabel: 'выбран', automaticLabel: 'выбран автоматически', working: (n: number) => `В работе: ${formatCount(n, 'ru')}`, picker: (title: string, chosen: boolean, n: number) => `Основной план: ${title}, ${chosen ? 'выбран' : 'выбран автоматически'}. Планов: ${formatCount(n, 'ru')}; выбрать другой`, updated: 'Обновлено ', more: (n: number) => `Ещё планов: ${formatCount(n, 'ru')}`, moreAria: (n: number) => `Других планов в этой сессии: ${formatCount(n, 'ru')}; выбрать основной план`, open: 'Открыть прогресс', progress: 'в работе', ready: 'готово к работе', waiting: 'ожидает', blocked: 'заблокировано', pending: 'не начато', skipped: 'пропущено', counts: (n: number, skipped: number) => ` выполнено, осталось: ${formatCount(n, 'ru')}${skipped ? `, пропущено: ${formatCount(skipped, 'ru')}` : ''}`, stale: (time: string) => `Не обновлялось с ${time}. Счётчики могут быть устаревшими.`, capture: 'Запись отключена: показаны последние полученные счётчики.', unavailable: 'Не удалось загрузить подробности задач.', invalid: 'Готовность и ожидание недоступны для этого отчёта.', incomplete: 'Некоторые записанные предварительные условия отсутствуют в этом плане.', focus: 'Заблокированные и в работе' },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 let heights: HeightSync | null = null;
 
@@ -44,6 +45,8 @@ startView<Ui>({
   initialUi: () => ({ selection: new StatusSelection(RECENT_SCOPES) }),
   forgetPlans: (keys, ui) => { ui.selection.forget(keys); return {}; },
   scope: ({ session, directory }) => contextListScope(session?.id, directory),
+  // The source-wide Needs you count only (no waiting times): its line opens the rail's inbox.
+  needsYou: 'count',
   onContext: (vc) => { enter(vc); },
   wantProjects: (vc) => {
     const p = primary(vc);
@@ -67,6 +70,9 @@ startView<Ui>({
       else if (vc.session?.id) root.append(loadingBlock(env.locale));
       return;
     }
+    // Source-wide and independent of the featured plan: first, so it is never displaced.
+    const inbox = vc.inbox?.model ? statusInboxLine(vc.inbox.model, env.locale, () => openRail(vc), failure ? vc.lastGoodAt : null) : null;
+    if (inbox) root.append(inbox);
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);
     const { plan, selected } = vc.ui.selection.resolve(scope);
@@ -182,7 +188,7 @@ startView<Ui>({
 
 /**
  * The bar (whole plan), then "3/8" and the counts as informational chips (no list to filter):
- * guidance (in progress, needs you, ready, waiting) only from complete current active detail;
+ * guidance (in progress, blocked, ready, waiting) only from complete current active detail;
  * otherwise the reported statuses. Without complete detail only the list's in-progress count.
  */
 function statusProgress(p: StatusProjection, plan: PlanView, locale: string) {
@@ -202,7 +208,8 @@ function statusProgress(p: StatusProjection, plan: PlanView, locale: string) {
   const r = p.reported;
   const guided = p.ready !== null && p.waiting !== null && r !== null;
   const chips: [MarkStatus, number, string][] = guided
-    ? [['working', r.working, t.progress], ['blocked', r.blocked, t.needs], ['ready', p.ready!, t.ready], ['waiting', p.waiting!, t.waiting], ['skipped', r.skipped, t.skipped]]
+    // Every reported blocker counts here; only decision/review waits are Needs you (the line above).
+    ? [['working', r.working, t.progress], ['blocked', r.blocked, t.blocked], ['ready', p.ready!, t.ready], ['waiting', p.waiting!, t.waiting], ['skipped', r.skipped, t.skipped]]
     : r ? [['working', r.working, t.progress], ['blocked', r.blocked, t.blocked], ['pending', r.pending, t.pending], ['skipped', r.skipped, t.skipped]]
     : plan.lifecycle === 'active' ? [['working', plan.working.length, t.progress]] : [];
   for (const [state, count, label] of chips) { const c = stateChip({ state, count, label, locale }); if (c) line.append(c); }

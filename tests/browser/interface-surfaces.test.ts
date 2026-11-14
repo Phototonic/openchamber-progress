@@ -114,14 +114,17 @@ test('status counts, readiness chips and qualifiers rerender in Russian and Engl
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'ru');
   h.exports.qualifiers(projection, false, '12:30', 'ru');
   assert.match(h.rendered(), /выполнено, осталось: 4, пропущено: 1/);
-  assert.match(h.rendered(), /нужно ваше участие/);
+  // Q1: a reported blocker is "blocked" here; only decision/review waits are Needs you (the inbox line).
+  assert.match(h.rendered(), /1 заблокировано 2 готово к работе/);
+  assert.doesNotMatch(h.rendered(), /нужно ваше участие/);
   assert.match(h.rendered(), /готово к работе/);
   assert.match(h.rendered(), /Не обновлялось с 12:30/);
   assert.match(h.rendered(), /Готовность и ожидание недоступны/);
   h.nodes.length = 0;
   h.exports.statusProgress(projection, { lifecycle: 'active' }, 'en');
   assert.match(h.rendered(), /done, 4 remaining, 1 skipped/);
-  assert.match(h.rendered(), /needs you/);
+  assert.match(h.rendered(), /1 blocked 2 ready/);
+  assert.doesNotMatch(h.rendered(), /needs you/);
 });
 
 test('status quantities group Russian thousands but keep English and machine counts raw', () => {

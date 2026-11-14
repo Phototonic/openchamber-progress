@@ -261,8 +261,8 @@ persistent server cursor/job, server-wide cache or automatic continuation.
 
 ### Narrow freshness read
 
-Authenticated body-free **GET `/v1/search-state?storeId=ID&keys=JSON`** accepts only
-those two fields. `keys` is a JSON array of1–50 distinct `{source,plan}` identifier
+Authenticated body-free **GET `/v1/search-state?storeId=ID&keys=JSON`** accepts
+those two fields and the optional inbox extension below. `keys` is a JSON array of1–50 distinct `{source,plan}` identifier
 pairs (object field order does not affect distinctness). The same16 KiB encoded
 query and fixed error discipline applies. Wrong store returns409; empty, duplicate,
 extra-field or oversized key lists return400. It returns `SearchState`: the same
@@ -271,7 +271,7 @@ minimal identity, a required boolean `captureEnabled` from store metadata, and
 `cleanup:{state:'visible'|'archived'|'deleted',revision}`. An unknown key has
 `exists:false`, null revision and visible generation0; a deleted key retains its
 deleted cleanup generation. Capture state and plan rows share one read transaction.
-No unsent keys, items, timing or history are read.
+Without the inbox extension, no unsent keys, items, timing or history are read.
 
 Freshness is authoritative metadata point-lookup evidence, not list-filter absence.
 Archive/restore generation changes invalidate results even with unchanged progress
@@ -775,6 +775,61 @@ instance even with modified files; enabling requires verified installed ownershi
 The setup routes below share the standalone utility's validator, never a general
 filesystem endpoint. Service reports record-only coverage, not live
 SDK coverage. Navigation must be verified against the CURRENT host.
+
+## Needs you inbox revision 1 (additive v2 read)
+
+Ready `/health` advertises `needsYouInbox:1`. Only that exact capability enables
+inbox reads; absent, malformed or unknown revisions mean unavailable, not empty.
+Protocol and schema remain 2. No inbox storage, report authority or migration is added.
+
+Authenticated body-free **GET `/v1/needs-you`** accepts only `storeId`, `binding`
+(JSON `{sourceId,verified:true}`), `source`, optional opaque `cursor`, `limit`
+(1–50, default 50), and `timing` (`0|1`, default off). Required identity pins must
+match the current verified read binding; wrong store/source/binding returns 409.
+Unknown or duplicate query fields return 404; malformed parameters or bodies return
+400, wrong method 405, unauthorized 401. Query size is at most 16 KiB, cursor 4 KiB.
+All replies use the existing no-store and fixed-error discipline.
+
+The first window can ride on opted-in **first-page** `/v1/plans?needsYou=1`
+(including explicit `cursor=0`) or `/v1/search-state?...&needsYou=1` as `needsYou`.
+Displayed rows add `needsYouTiming=1`; it requires `needsYou=1`, and no other value
+is accepted. Compact counts omit timing. Normal list/freshness scope and fields
+are unchanged; the inbox is source-wide, independent of session, directory,
+archive-list or search filters. List continuation cannot request the extension.
+An unverified or absent source binding omits this optional window without failing
+the ordinary list/freshness response; consumers report the inbox unavailable.
+The directly pinned `/v1/needs-you` route still refuses an unverified binding.
+
+`NeedsYouWindow` in `shared/needs-you.ts` contains the version/capability, observed
+store and verified binding, `readAt`, `captureEnabled`, `rows`, cumulative
+`counts:{needsYou,alsoBlocked}`, opaque `nextCursor`, `coverage`, and per-window
+`work:{planSlots,inspectedItems,inputBytes,outputBytes}`. Visible active plans only;
+one row per explicitly blocked task in plan-ID keyset then stored task order.
+Rows carry source/plan/revision/structural revision/cleanup generation, plan title,
+coordinator, task identity/title, up to eight ancestors and `omittedAncestors`.
+Only validated current blocker categories `decision` or `review` enter `needs-you`;
+everything else enters `also-blocked`. Absent/invalid annotations contain no text;
+future categories preserve only validated prose/provenance with `unclassified`.
+Optional timing is reported blocked time, exact or lower-bound, never activity;
+missing timing is unknown/unavailable, not zero. Annotation text remains bounded
+to 512 code units per field and is never interpreted as markup.
+
+Each read transaction admits at most 64 raw plan-slot attempts (including an
+exhaustion lookup), 1,000 items per plan, 8 MiB snapshot input, 50 rows and 256 KiB
+encoded output. Timing for displayed rows shares one budget of 128 snapshot
+visits and 8 MiB history input across the entire window, not per task or plan.
+No timing scan is performed for a count-only window. There is no full-table count,
+background job, cache or automatic continuation.
+
+Counts are cumulative through the cursor, not page deltas. Coverage is
+`{kind:'observed-current',complete,exhausted,gapped,skippedRecords,reasons}`;
+skipped count/reasons accumulate (`invalid-snapshot`, `oversized-snapshot`). Exact
+coverage requires exhaustion, no cursor and no gaps; otherwise counts are known
+minima, including gapped exhaustion. Continuation pins identity, limit, timing mode
+and any mid-plan revision/cleanup generation; changed or missing pinned records
+return 409 and require restarting, never splicing windows. Earlier completed plans
+are not pinned forever: multiple windows are observations, not an atomic source
+census. Reads never update task status, cleanup, history, assignments or acceptance.
 
 ## Plan graph revision 1 (additive v2 read)
 

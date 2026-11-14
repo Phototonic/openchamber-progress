@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
+import { createProgressServer } from '../../service/server.ts';
+import { searchFixture } from '../fixtures/plan-task-search.ts';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -7,6 +11,119 @@ import { pathToFileURL } from 'node:url';
 import { Store } from '../../shared/store.ts';
 import { launchNeedsYouService } from '../fixtures/needs-you.ts';
 import type { Envelope, PlanRead } from '../../shared/progress.ts';
+
+async function fixture() {
+  const f = searchFixture(false), token = 'synthetic-inbox-token';
+  const server = createProgressServer(f.store, token); server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const query = (extra: Record<string, string | undefined> = {}) => new URLSearchParams({ storeId: f.storeId, binding: JSON.stringify({ sourceId: f.alpha.id, verified: true }), source: f.alpha.id, ...Object.fromEntries(Object.entries(extra).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
+  async function get(path: string, init: RequestInit = {}) {
+    const r = await fetch(base + path, { headers: { authorization: `Bearer ${token}` }, ...init });
+    return { status: r.status, headers: r.headers, value: await r.json() as any };
+  }
+  return { ...f, base, token, query, get, async close() { server.close(); await once(server, 'close'); f.cleanup(); } };
+}
+const refused = (r: { status: number; value: unknown }, status: number, error: string) => { assert.equal(r.status, status); assert.deepEqual(r.value, { error }); };
+
+test('HTTP authorized source-wide summary preserves normal list scope; read-only navigation and freshness', async () => {
+  const f = await fixture();
+  try {
+    f.seedPlan('plan-alpha', 'Alpha', ['a','b'].map(id => ({ id, title: id, kind: 'task', status: 'blocked' })));
+    f.apply('plan-alpha', { op: 'change', changes: [{ id: 'a', status: 'blocked', blocker: { category: 'decision' } }, { id: 'b', status: 'blocked', blocker: { category: 'review' } }] });
+    const other = { ...f.actor, sessionId: 'coordinator-beta', directory: '/fixture/other' };
+    f.seedPlan('plan-beta', 'Beta', [{ id: 'a', title: 'Other review', kind: 'task', status: 'blocked' }, { id: 'other', title: 'Also blocked', kind: 'task', status: 'blocked' }], other);
+    f.apply('plan-beta', { op: 'change', changes: [{ id: 'a', status: 'blocked', blocker: { category: 'review' } }] }, other);
+    f.seedPlan('plan-alpha', 'Collision', [{ id: 'a', title: 'Wrong source', kind: 'task', status: 'blocked' }], { ...f.actor, sourceId: f.beta.id });
+    f.seedPlan('closed', 'Closed', [{ id: 'a', title: 'Completed work', kind: 'task', status: 'done' }]); f.apply('closed', { op: 'finish', outcome: 'finished' });
+    const revision = f.store.get(f.alpha.id, 'closed')!.revision;
+    f.store.cleanup('archive', { storeId: f.storeId, source: f.alpha.id, plan: 'closed', rev: revision, cleanupRev: 0, oid: 'archive' });
+    const dump = () => ['sqlite_master','plans','revisions','contributions','receipts','meta','cleanup_state'].map(table => f.store.db.prepare(`SELECT * FROM ${table}`).all());
+    const before = dump();
+    assert.equal((await f.get('/health')).value.needsYouInbox, 1);
+    const scoped = `/v1/plans?source=${f.alpha.id}&session=${f.actor.sessionId}&directory=%2Ffixture%2Fmain`;
+    const normal = await f.get(scoped), extended = await f.get(scoped + '&needsYou=1');
+    assert.equal(extended.status, 200); assert.equal(normal.value.needsYou, undefined);
+    const { needsYou: inbox, ...list } = extended.value; assert.deepEqual(list, normal.value);
+    assert(inbox.rows.every((r: any) => r.timing === undefined), 'compact counts do not scan timing');
+    const timed = await f.get(scoped + '&needsYou=1&needsYouTiming=1');
+    assert.equal(timed.status, 200); assert.deepEqual(timed.value.needsYou.counts, inbox.counts);
+    assert(timed.value.needsYou.rows.some((r: any) => r.timing?.kind === 'exact'), 'displayed inbox rows request real waiting times');
+    assert.deepEqual(list.data.map((p: any) => p.id), ['plan-alpha']);
+    assert.deepEqual(inbox.counts, { needsYou: 3, alsoBlocked: 1 }); assert(inbox.coverage.complete);
+    assert(inbox.rows.some((r: any) => r.plan === 'plan-beta')); assert(inbox.rows.every((r: any) => r.source === f.alpha.id));
+    const direct = await f.get(`/v1/needs-you?${f.query({ timing: '1', limit: '2' })}`);
+    assert.equal(direct.status, 200); assert.equal(direct.value.rows.length, 2); assert(direct.value.nextCursor); assert(!direct.value.coverage.complete);
+    const continuation = await f.get(`/v1/needs-you?${f.query({ timing: '1', limit: '2', cursor: direct.value.nextCursor })}`);
+    assert.equal(continuation.status, 200); assert.equal(continuation.value.rows.length, 2); assert.deepEqual(continuation.value.counts, inbox.counts);
+    const exhausted = await f.get(`/v1/needs-you?${f.query({ timing: '1', limit: '2', cursor: continuation.value.nextCursor })}`);
+    assert.equal(exhausted.status, 200); assert(exhausted.value.coverage.complete); assert.equal(exhausted.value.nextCursor, null);
+    refused(await f.get(`/v1/needs-you?${f.query({ limit: '2', cursor: direct.value.nextCursor })}`), 409, 'conflict');
+    assert.equal(direct.headers.get('cache-control'), 'no-store'); assert.equal(direct.headers.get('x-content-type-options'), 'nosniff');
+    for (const row of inbox.rows) {
+      const detail = await f.get(`/v1/plan?${new URLSearchParams({ source: row.source, plan: row.plan })}`);
+      assert.equal(detail.status, 200); assert.equal(detail.value.plan.revision, row.revision);
+      assert(detail.value.items.data.some((item: any) => item.id === row.task.id && item.status === 'blocked'));
+    }
+    const stateQuery = new URLSearchParams({ storeId: f.storeId, keys: JSON.stringify([{ source: f.alpha.id, plan: 'plan-alpha' }]) });
+    assert.equal((await f.get(`/v1/search-state?${stateQuery}`)).value.needsYou, undefined);
+    const state = await f.get(`/v1/search-state?${stateQuery}&needsYou=1`); assert.equal(state.status, 200); assert.deepEqual(state.value.needsYou.counts, inbox.counts);
+    const timedState = await f.get(`/v1/search-state?${stateQuery}&needsYou=1&needsYouTiming=1`);
+    assert.equal(timedState.status, 200); assert(timedState.value.needsYou.rows.some((r: any) => r.timing));
+    assert.deepEqual(dump(), before, 'all inbox/list/detail/freshness reads leave durable data/schema unchanged');
+    f.apply('plan-beta', { op: 'finish', outcome: 'cancelled' }, other);
+    assert.deepEqual((await f.get(`/v1/needs-you?${f.query()}`)).value.counts, { needsYou: 2, alsoBlocked: 0 });
+    refused(await f.get(scoped + '&cursor=1&needsYou=1'), 400, 'invalid');
+  } finally { await f.close(); }
+});
+
+test('HTTP refuses unauthorized, malformed, duplicate, body and stale identity requests', async () => {
+  const f = await fixture();
+  try {
+    const path = `/v1/needs-you?${f.query()}`;
+    refused(await f.get(path, { headers: {} }), 401, 'unauthorized');
+    refused(await f.get(path, { method: 'POST' }), 405, 'method-not-allowed');
+    for (const extra of ['&source=source-alpha','&unknown=1']) refused(await f.get(path + extra), 404, 'not-found');
+    for (const key of ['source','storeId','binding']) { const q = f.query(); q.delete(key); refused(await f.get(`/v1/needs-you?${q}`), 400, 'invalid'); }
+    for (const extra of [{ limit: '0' }, { limit: '51' }, { timing: 'true' }, { cursor: 'garbage' }, { binding: '{}' }]) refused(await f.get(`/v1/needs-you?${f.query(extra)}`), 400, 'invalid');
+    for (const extra of [{ storeId: 'other' }, { source: f.beta.id }, { binding: JSON.stringify({ sourceId: f.alpha.id, verified: false }) }]) refused(await f.get(`/v1/needs-you?${f.query(extra)}`), 409, 'conflict');
+    refused(await f.get('/v1/plans?needsYou=0'), 400, 'invalid');
+    for (const query of ['needsYouTiming=1', 'needsYou=1&needsYouTiming=0', 'needsYou=1&needsYouTiming=true']) refused(await f.get(`/v1/plans?${query}`), 400, 'invalid');
+    refused(await f.get('/v1/plans?needsYou=1&needsYouTiming=1&needsYouTiming=1'), 404, 'not-found');
+    const bodyReply = await new Promise<{ status: number; value: unknown }>((resolve, reject) => {
+      const req = httpRequest(f.base + path, { method: 'GET', headers: { authorization: `Bearer ${f.token}`, 'content-length': '1' } }, res => {
+        let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk); res.on('end', () => resolve({ status: res.statusCode!, value: JSON.parse(text) }));
+      }); req.on('error', reject); req.end('x');
+    }); refused(bodyReply, 400, 'body-not-allowed');
+    f.store.bindReads(f.alpha.id, false); refused(await f.get(path), 409, 'conflict');
+    for (const route of ['/v1/plans', `/v1/search-state?${new URLSearchParams({ storeId: f.storeId, keys: JSON.stringify([{ source: f.alpha.id, plan: 'absent' }]) })}`]) {
+      const plain = await f.get(route);
+      const extended = await f.get(route + (route.includes('?') ? '&' : '?') + 'needsYou=1&needsYouTiming=1');
+      assert.equal(extended.status, 200, 'optional unverified inbox must not fail its ordinary read');
+      assert.equal(extended.value.needsYou, undefined);
+      assert.deepEqual(extended.value, plain.value);
+    }
+    f.store.bindReads(f.alpha.id, true); f.store.db.exec('PRAGMA user_version=3'); refused(await f.get(path), 503, 'schema'); f.store.db.exec('PRAGMA user_version=2');
+  } finally { await f.close(); }
+});
+
+test('held HTTP response keeps its original identity and continuation conflicts after context switch', async () => {
+  const f = await fixture();
+  try {
+    f.seedPlan('plan-alpha', 'Alpha', ['a','b'].map(id => ({ id, title: id, kind: 'task', status: 'blocked' })));
+    // Delay delivery at the response boundary, not computation or storage; no sleeps.
+    const server = createProgressServer(f.store, 'held-fixture'); let release!: () => void; let arrived!: () => void;
+    const reached = new Promise<void>(resolve => arrived = resolve), gate = new Promise<void>(resolve => release = resolve);
+    server.prependListener('request', (_req, res) => { const end = res.end.bind(res); res.end = ((...args: any[]) => { arrived(); void gate.then(() => (end as any)(...args)); return res; }) as typeof res.end; });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    try {
+      const pending = fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1/needs-you?${f.query({ limit: '1' })}`, { headers: { authorization: 'Bearer held-fixture' } });
+      await reached; f.store.bindReads(f.beta.id, false); release();
+      const reply = await pending; assert.equal(reply.status, 200); const value = await reply.json() as any;
+      assert.deepEqual(value.sourceBinding, { sourceId: f.alpha.id, verified: true }); assert(value.nextCursor);
+      refused(await f.get(`/v1/needs-you?${f.query({ limit: '1', cursor: value.nextCursor })}`), 409, 'conflict');
+    } finally { release(); server.close(); await once(server, 'close'); }
+  } finally { await f.close(); }
+});
 
 const baseline='4f582b7f3404088d01531598102833000c23cd87';
 const route='/v1/plan?source=source-fixture&plan=P-attention';
