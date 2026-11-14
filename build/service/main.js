@@ -5738,6 +5738,7 @@ import { randomBytes, randomUUID as randomUUID8, timingSafeEqual } from "node:cr
 // service/setup-controller.ts
 import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync10, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync4, closeSync as closeSync5, openSync as openSync5 } from "node:fs";
 import path11 from "node:path";
+import { homedir as homedir4 } from "node:os";
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // setup/managed-migration.ts
@@ -6488,6 +6489,18 @@ async function withSetupWriter(run, targets) {
 }
 
 // service/setup-controller.ts
+function refuseMigrationPresence(configRoot, file, action) {
+  if (lstatSync10(path11.join(path11.dirname(file), "migration.json"), { throwIfNoEntry: false }))
+    throw new SetupError("managed-action-required");
+  const legacy = lstatSync10(path11.join(configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
+  if (legacy && action === "inspect")
+    throw new SetupError("managed-action-required");
+  if (legacy && (!legacy.isDirectory() || legacy.isSymbolicLink() || lstatSync10(file, { throwIfNoEntry: false })))
+    throw new SetupError("managed-migration-conflict");
+  if (legacy)
+    throw new SetupError("managed-action-required");
+}
+
 class SetupController {
   store;
   binding;
@@ -6938,20 +6951,25 @@ class SetupController {
   }
   managedFullCandidate(storeRoot, freshOnly) {
     this.checked = true;
+    if (freshOnly) {
+      const env = this.managedEnv, home = env.HOME ?? homedir4();
+      const config = env.XDG_CONFIG_HOME ?? path11.join(home, ".config"), data = env.XDG_DATA_HOME ?? path11.join(home, ".local/share");
+      const inputs = [config, data, ...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home] : []];
+      if (!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR && inputs.every((p) => path11.isAbsolute(p) && p.length <= 4096 && !p.includes("\x00") && !/^[\\/]{2}/.test(p))) {
+        try {
+          refuseMigrationPresence(path11.join(config, "opencode"), path11.join(data, "opencode", "agent-progress-managed", "progress-binding.json"), freshOnly);
+        } catch (e) {
+          if (e instanceof SetupError)
+            throw e;
+        }
+      }
+    }
     return platformSecurityScope(() => this.managedFullCandidateInner(storeRoot, freshOnly));
   }
   managedFullCandidateInner(storeRoot, freshOnly) {
     const env = this.managedEnv, roots = managedSourceRoots(env), file = managedBindingFile(env);
-    if (freshOnly) {
-      const legacy2 = lstatSync10(path11.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
-      const journal = lstatSync10(path11.join(path11.dirname(file), "migration.json"), { throwIfNoEntry: false });
-      if (journal || legacy2 && freshOnly === "inspect")
-        throw new SetupError("managed-action-required");
-      if (legacy2 && (!legacy2.isDirectory() || legacy2.isSymbolicLink() || lstatSync10(file, { throwIfNoEntry: false })))
-        throw new SetupError("managed-migration-conflict");
-      if (legacy2)
-        throw new SetupError("managed-action-required");
-    }
+    if (freshOnly)
+      refuseMigrationPresence(roots.configRoot, file, freshOnly);
     const b = readManagedBinding(env);
     const record2 = readMigration(env), legacy = legacyMigration(env);
     if (record2 && (b ? canonical(record2.binding) !== canonical(b) : record2.phase === "complete") || legacy && b && !sameMigrationTarget(legacy.binding, b) || legacy && record2 && !sameMigrationTarget(legacy.binding, record2.binding))

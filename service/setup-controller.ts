@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync, lstatSync, writeFileSync, renameSync, unlinkSync, closeSync, openSync } from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { readBinding, verifyStore, type Binding } from '../shared/binding.ts';
 import { Store, storageError, digest, canonical } from '../shared/store.ts';
@@ -14,6 +15,16 @@ import {SetupRequestWorker,withSetupWriter,type SetupWorkerRequest,type SetupWor
 import {setupWriterTargets} from './writer-fence.ts';
 
 type ManagedCandidate={review:ManagedReview;binding?:Binding;targets:Targets;record?:MigrationRecord;legacy?:ReturnType<typeof legacyMigration>};
+
+/** Presence can only refuse the old route, never authorize fresh setup. */
+function refuseMigrationPresence(configRoot:string,file:string,action:'inspect'|'configure'):void {
+  if(lstatSync(path.join(path.dirname(file),'migration.json'),{throwIfNoEntry:false}))throw new SetupError('managed-action-required');
+  const legacy=lstatSync(path.join(configRoot,'plugins','agent-progress'),{throwIfNoEntry:false});
+  if(legacy&&action==='inspect')throw new SetupError('managed-action-required');
+  if(legacy&&(!legacy.isDirectory()||legacy.isSymbolicLink()||lstatSync(file,{throwIfNoEntry:false})))
+    throw new SetupError('managed-migration-conflict');
+  if(legacy)throw new SetupError('managed-action-required');
+}
 
 /** Only the trusted service entry chooses bindingFile/payload; HTTP cannot. */
 export class SetupController {
@@ -310,20 +321,23 @@ export class SetupController {
   }
   private managedFullCandidate(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
     this.checked=true;
+    if(freshOnly){
+      // A non-authoritative local presence hint avoids cold PowerShell just to
+      // refuse. Absence/read failure grants nothing: the full fresh validation
+      // and canonical presence check below still run before review or effects.
+      const env=this.managedEnv!,home=env.HOME??homedir();
+      const config=env.XDG_CONFIG_HOME??path.join(home,'.config'),data=env.XDG_DATA_HOME??path.join(home,'.local/share');
+      const inputs=[config,data,...(env.XDG_CONFIG_HOME===undefined||env.XDG_DATA_HOME===undefined?[home]:[])];
+      if(!env.OPENCODE_DB&&!env.OPENCODE_CONFIG_DIR&&inputs.every(p=>path.isAbsolute(p)&&p.length<=4096&&!p.includes('\0')&&!/^[\\/]{2}/.test(p))){
+        try{refuseMigrationPresence(path.join(config,'opencode'),path.join(data,'opencode','agent-progress-managed','progress-binding.json'),freshOnly);}
+        catch(e){if(e instanceof SetupError)throw e; /* The validated owner diagnoses unreadable/invalid paths. */}
+      }
+    }
     return platformSecurityScope(()=>this.managedFullCandidateInner(storeRoot,freshOnly));
   }
   private managedFullCandidateInner(storeRoot?:string,freshOnly?:'inspect'|'configure'): ManagedCandidate {
     const env=this.managedEnv!,roots=managedSourceRoots(env),file=managedBindingFile(env);
-    if(freshOnly){
-      // Presence is enough to route to step inspection, never authority to
-      // migrate, adopt or repair. Do not run the monolithic legacy preflight.
-      const legacy=lstatSync(path.join(roots.configRoot,'plugins','agent-progress'),{throwIfNoEntry:false});
-      const journal=lstatSync(path.join(path.dirname(file),'migration.json'),{throwIfNoEntry:false});
-      if(journal||legacy&&freshOnly==='inspect')throw new SetupError('managed-action-required');
-      if(legacy&&(!legacy.isDirectory()||legacy.isSymbolicLink()||lstatSync(file,{throwIfNoEntry:false})))
-        throw new SetupError('managed-migration-conflict');
-      if(legacy)throw new SetupError('managed-action-required');
-    }
+    if(freshOnly)refuseMigrationPresence(roots.configRoot,file,freshOnly);
     const b=readManagedBinding(env);
     const record=readMigration(env),legacy=legacyMigration(env);
     if(record&&(b?canonical(record.binding)!==canonical(b):record.phase==='complete')||legacy&&b&&!sameMigrationTarget(legacy.binding,b)||legacy&&record&&!sameMigrationTarget(legacy.binding,record.binding))throw new SetupError('managed-migration-conflict');

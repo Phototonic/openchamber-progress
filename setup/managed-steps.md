@@ -122,12 +122,16 @@ revalidation. Presence of legacy discovery or any journal refuses these routes
 with 409 `managed-action-required` before monolithic legacy inspection or writes;
 use negotiated step inspection instead. Legacy/journal inspection refusal is
 read-only, with at most six security launches and an eight-second undelayed
-acceptance budget; unlike migrate refusal it may perform bounded discovery checks.
+acceptance budget. Local legacy/journal presence hints refuse before security
+queries; absent or unreadable hints grant no authority and still require full
+fresh validation and the canonical presence check. These hints read no metadata
+contents and are not retained between requests or used to admit an effect.
 Without a journal, configuration with concurrent legacy discovery and a managed
 selection, or a non-directory/symlink legacy entry, refuses with 409
 `managed-migration-conflict`, not fresh-configuration authority. Inspection of
 that state still returns `managed-action-required` to direct clients to steps.
-Invalid managed metadata retains its precise ownership/path refusal.
+Without a migration hint, invalid managed metadata retains its precise
+ownership/path refusal; step inspection diagnoses metadata behind a hint.
 Retain independently bounded capture-off control. No unnegotiated fallback from
 the migration client to the old route. Delivery revision stays 1; the new literal
 capability is independent.
@@ -151,6 +155,15 @@ inspect state before explicitly retrying; never reset or repair it automatically
 Linux/macOS do not launch PowerShell. The follow-up is a fresh plan variant on
 the step engine (`prepare`, `expectation`, `publish-binding`, `enable`, `reconcile`),
 not permission to weaken current authorization or silently split a confirmed call.
+
+The five-second HTTP request/header timeouts limit receipt of bytes (HTTP 408),
+not handler execution after body parsing. They are not a five-second setup
+deadline and remain unchanged. Portable HTTP regressions model a 4.5-second first
+launch and 350 ms subsequent launches: both fresh inspection and confirmation
+complete beyond five seconds but below the host limit. Real helper timeouts
+remain `windows-security-unavailable` outside step mode and
+`managed-step-deadline` inside it, not generic `storage` failures. This does not
+remove the slow-helper or synchronous-health limitation above.
 
 ## Request budgets and measured-stage split
 

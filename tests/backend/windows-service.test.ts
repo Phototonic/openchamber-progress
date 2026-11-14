@@ -86,13 +86,13 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     const request=async(route:string,body:unknown|undefined,label:string,extra:Parameters<Awaited<ReturnType<typeof nativeService>>['request']>[3]={})=>{
       phase=label;return running!.request(route,body,label,{limitMs,...extra});
     };
-    // Migrate refuses without dispatch. Restored fresh-install inspection may
-    // perform bounded discovery, but must refuse this legacy target unchanged.
+    // Both refusals need no security evidence. In particular inspection must
+    // not enter the observer's worker-only hold from the synchronous controller.
     for(const route of ['managed-migrate','managed-inspect']){
       const migrate=route==='managed-migrate';
-      const refused=await request(`/v1/setup/${route}`,migrate?{confirmed:true,expected:'a'.repeat(64)}:{},`old-${route}`,{limitMs:migrate?HEALTH_MS:8000,maxSpawns:migrate?0:6,concurrent:!migrate,expectedStatus:409});
+      const refused=await request(`/v1/setup/${route}`,migrate?{confirmed:true,expected:'a'.repeat(64)}:{},`old-${route}`,{limitMs:migrate?HEALTH_MS:8000,maxSpawns:0,concurrent:!migrate,expectedStatus:409});
       assert.deepEqual(refused.value,{error:'managed-action-required'});
-      if(migrate){assert.equal(refused.counts.workers,0);assert.equal(refused.counts.legacyReads,0);}
+      assert.equal(refused.counts.workers,0);assert.equal(refused.counts.legacyReads,0);
       untouched();assert.equal(fs.existsSync(managed),false);
     }
     await running.settings(null,delayed?2500:0);

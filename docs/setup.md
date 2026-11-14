@@ -64,6 +64,14 @@ metadata or relaxing permissions. Linux/macOS do not launch PowerShell. Moving
 fresh configuration to a separate fresh plan on the step engine remains follow-up
 work; the current UI intentionally keeps the existing fresh review/confirm flow.
 
+The service's five-second HTTP `requestTimeout`/`headersTimeout` bounds receiving
+request bytes, not executing a fully received Setup request. It produces HTTP 408,
+not a JSON `storage` failure. Portable regressions exercise fresh inspection and
+configuration beyond five seconds with a 4.5-second first security launch and
+350 ms later launches, still below the host budget. Actual helper timeouts retain
+`windows-security-unavailable` (or `managed-step-deadline` in step mode), never
+become evidence of absent state or permission to write.
+
 ## Reach and disable/removal
 
 | Delivery | Effect and limits |
@@ -121,11 +129,15 @@ migration work. The old inspect/configure URLs do the same no-write refusal when
 legacy discovery or any migration journal applies (configuration of ambiguous
 legacy plus managed selection without a journal returns `managed-migration-conflict`,
 while inspection still returns `managed-action-required`). Legacy/journal inspect
-refusal may perform bounded discovery checks, but no writes; its acceptance budget
+refusal uses local presence hints before security queries, with no writes; its acceptance budget
 is at most six security launches and eight seconds on the undelayed runner. The
 old inspect/configure routes remain supported for fresh setup as described above;
-migration must never fall back to them. Invalid metadata retains its precise
-ownership/path refusal.
+migration must never fall back to them. A presence hint authorizes only refusal:
+it neither validates nor reads the journal/legacy contents. An absent or unreadable
+hint still runs the full fresh path, ACL and ownership checks, including canonical
+presence checks, before offering a review or writing. Invalid metadata without a
+migration hint retains its precise ownership/path refusal; step inspection
+diagnoses metadata behind a migration hint.
 Ordinary Setup reads are bounded and read-only; absent operation progress is
 omitted, not null. Ordinary capture enable/disable shares the writer fence.
 Portable HTTP tests and launch counts are not native Windows latency certification.
@@ -443,7 +455,7 @@ the six inspection pages, 6 for prepare, 5 per ordinary advance/removal batch,
 6 for recording removal, 1 for a successful replay, 3 per pause/stop/resume,
 and 4 for an active-operation status read. Receipt recovery uses 2, 3, 2, 2,
 1, 1 for inspection and 3 for prepare, then skips already completed removal.
-Old-route refusals measure 1 for legacy inspect/configure and 0 for migrate.
+Old-route refusals measure 0 for legacy/journal inspect/configure and for migrate.
 These are fixture measurements, not a promise that every refusal has the same
 cost; the six-launch ceiling includes failure and settlement work.
 See [the step protocol](../setup/managed-steps.md#request-budgets-and-measured-stage-split)

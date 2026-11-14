@@ -245,6 +245,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
+  // Receive deadlines only (408), not setup execution/response deadlines. A
+  // fully received fresh setup request may legitimately take longer than 5s.
   server.requestTimeout=5000;server.headersTimeout=5000;
   return server;
 }
