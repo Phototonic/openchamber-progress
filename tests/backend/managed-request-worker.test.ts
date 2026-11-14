@@ -7,11 +7,23 @@ import {once} from 'node:events';
 import {fork} from 'node:child_process';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
-import {SetupRequestWorker} from '../../service/request-worker.ts';
+import {SetupRequestWorker,correlatedManagedReply} from '../../service/request-worker.ts';
 import {lifecycle} from '../../setup/lifecycle.ts';
 import type {ManagedStepResponse} from '../../shared/managed-steps.ts';
+import {managedStepFixtures} from '../fixtures/managed-steps.ts';
+import {setupWriterTargets,acquireWriterSlots} from '../../service/writer-fence.ts';
+import {writerTarget,writerTargetPort,PlatformRequestBudget,withPlatformRequestBudget,requirePlatformStoreFence} from '../../shared/platform.ts';
 
 const payload={plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'};
+test('settled replies correlate operation, following sequence and named step; error overrides replay',()=>{
+  const fixtures=managedStepFixtures(),request=fixtures.requests.renewedAdvance,reply=fixtures.replies.renewedEnabled;
+  assert.equal(correlatedManagedReply(request,reply),true);
+  for(const progress of [{...reply.progress!,operationId:'22222222-2222-4222-8222-222222222222'},
+    {...reply.progress!,sequence:request.expectedSequence},{...reply.progress!,sequence:request.expectedSequence+2},
+    {...reply.progress!,lastCompleted:{name:'disable' as const,batch:0}},{...reply.progress!,lastCompleted:undefined}])
+    assert.equal(correlatedManagedReply(request,{...reply,progress} as ManagedStepResponse),false);
+  assert.equal(correlatedManagedReply({version:1,action:'advance',operationId:fixtures.journal.migration.operationId,expectedSequence:3,step:{name:'remove-discovery',batch:0}},fixtures.replies.failedReplay),true);
+});
 function fixture(){
   const root=mkdtempSync('/tmp/opencode/request-worker-');
   const env={HOME:path.join(root,'home'),XDG_CONFIG_HOME:path.join(root,'config'),XDG_DATA_HOME:path.join(root,'data'),XDG_STATE_HOME:path.join(root,'state'),XDG_CACHE_HOME:path.join(root,'cache')};
@@ -115,7 +127,7 @@ const poll=setInterval(()=>{if(existsSync(workerData.env.GATE)){clearInterval(po
 setTimeout(()=>{clearInterval(poll);parentPort.close();},10000).unref();\n`,{mode:0o600});
   writeFileSync(driver,`const {SetupRequestWorker}=await import(process.env.HELPER);
 const worker=new SetupRequestWorker(new URL(process.env.ENTRY));
-const result=await worker.run({}, {plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'}, {action:'health'});
+const result=await worker.run(process.env, {plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'}, {action:'health'});
 process.send(result,()=>process.disconnect());\n`,{mode:0o600});
   const owner=new SetupRequestWorker(pathToFileURL(entry));
   const holding=owner.run({...env,GATE:gate,READY:ready},payload,{action:'health'});
@@ -140,7 +152,7 @@ process.send(result,()=>process.disconnect());\n`,{mode:0o600});
 
 test('an unrelated listener is a refusal and is never taken over',{skip:process.platform==='win32'},async()=>{
   const {root,env}=fixture();
-  const listener=createServer();listener.listen({host:'127.0.0.1',port:47329,exclusive:true});await once(listener,'listening');
+  const listener=createServer();listener.listen({host:'127.0.0.1',port:writerTargetPort(setupWriterTargets(env)[0]!),exclusive:true});await once(listener,'listening');
   try {
     const worker=new SetupRequestWorker(new URL('../../service/main.ts',import.meta.url));
     const result=await worker.run(env,payload,{action:'health'});
@@ -148,6 +160,27 @@ test('an unrelated listener is a refusal and is never taken over',{skip:process.
     assert.equal(result.accounting.securitySpawns,0);assert.equal(listener.listening,true);
     assert.equal(worker.busy,false);
   }finally{await new Promise<void>(resolve=>listener.close(()=>resolve()));rmSync(root,{recursive:true,force:true});}
+});
+
+test('target-derived slots permit unrelated targets but fence same scopes and shared Stores',async()=>{
+  const a=fixture(),b=fixture();let releaseA:(()=>Promise<void>)|undefined,releaseB:(()=>Promise<void>)|undefined;
+  try{
+    const first=setupWriterTargets(a.env,path.join(a.root,'store/progress.sqlite')),other=setupWriterTargets(b.env,path.join(b.root,'store/progress.sqlite'));
+    assert.equal(writerTargetPort(first[0]!),writerTargetPort(setupWriterTargets(a.env)[0]!));
+    assert.notEqual(writerTargetPort(first[0]!),writerTargetPort(other[0]!));
+    releaseA=await acquireWriterSlots(first);releaseB=await acquireWriterSlots(other);
+    await assert.rejects(acquireWriterSlots(first),{code:'managed-step-port-busy'});
+    await releaseB();releaseB=undefined;
+    const shared=setupWriterTargets(b.env,path.join(a.root,'store/progress.sqlite'));
+    await assert.rejects(acquireWriterSlots(shared),{code:'managed-step-port-busy'},'different discovery roots still serialize shared capture');
+    const store=writerTarget('store',path.join(a.root,'store'));
+    const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:writerTargetPort(first[0]!),nonce:'a'.repeat(64),targets:first});
+    withPlatformRequestBudget(budget,()=>{
+      requirePlatformStoreFence(path.join(a.root,'store/progress.sqlite'));
+      assert.throws(()=>requirePlatformStoreFence(path.join(b.root,'store/progress.sqlite')),{code:'managed-step-conflict'});
+    });
+    assert.ok(first.includes(store));
+  }finally{await releaseB?.();await releaseA?.();rmSync(a.root,{recursive:true,force:true});rmSync(b.root,{recursive:true,force:true});}
 });
 
 for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta.url)],['built',new URL('../../build/service/main.js',import.meta.url)]] as const){

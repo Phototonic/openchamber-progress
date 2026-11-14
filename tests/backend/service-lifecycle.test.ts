@@ -42,9 +42,11 @@ async function serve(f:ReturnType<typeof fixture>,legacyFixture=true) {
 test('extension replacement preserves authoritative binding, configured views and store identity',async()=>{
   const f=fixture();let running:Awaited<ReturnType<typeof serve>>|undefined;
   try {
+    const configured=new SetupController({env:f.env},()=>f.payload);
+    try{const review=configured.run('managed-inspect',{storeRoot:f.targets.storeRoot}).delivery!.review!;
+      configured.run('managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected});}finally{configured.close();}
     running=await serve(f,false);
-    const reviewed=await(await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).json();
-    assert.equal((await running.request('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:reviewed.delivery.review.expected})).status,200);
+    const refused=await running.request('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot});assert.equal(refused.status,409);assert.deepEqual(await refused.json(),{error:'managed-action-required'});
     const first=await(await running.request('/v1/plans')).json();await running.stop();rmSync(running.extension,{recursive:true});
     running=await serve(f,false);const health=await(await running.request('/health')).json();assert.equal(health.ready,false);assert.equal(health.state,'starting');
     const setup=await(await running.request('/v1/setup')).json();assert.equal(setup.configured,true);assert.equal(setup.installed,false);assert.equal(setup.delivery.kind,'managed');assert.deepEqual(setup.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});

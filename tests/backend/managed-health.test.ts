@@ -10,7 +10,7 @@ import {PlatformError} from '../../shared/platform.ts';
 import {ManagedBindingError} from '../../shared/managed-binding.ts';
 
 const payload=()=>({plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'});
-test('data, control and capture routes preserve fixed admission refusals',async t=>{
+test('data routes preserve fixed admission and coordination refusals',async t=>{
   const root=fs.mkdtempSync('/tmp/opencode/managed-refusal-'),{env}=createFixtureBinding(root);
   const setup=new SetupController({env},payload),server=createProgressServer(undefined,'fixture-only',undefined,setup);
   try{
@@ -19,9 +19,14 @@ test('data, control and capture routes preserve fixed admission refusals',async 
     for(const error of [new PlatformError('private-permissions'),new PlatformError('windows-security-unavailable'),new ManagedBindingError('managed-binding-modified'),new PlatformError('untrusted-message')]){
       const mock=t.mock.method(fs,'lstatSync',()=>{throw error;});syncBuiltinESMExports();
       try{
-        for(const route of ['/v1/plans','/v1/capture/disable','/v1/capture/enable','/v1/document-captures']){
+        // Managed capture now runs in a separate worker, so these main-thread
+        // filesystem mocks exercise only data admission. Worker HTTP faults are
+        // covered by managed-step-http.test.ts.
+        for(const route of ['/v1/plans','/v1/document-captures']){
           const r=await fetch(url+route,{method:route.includes('/capture/')?'POST':'GET',headers:{authorization:'Bearer fixture-only'},signal:AbortSignal.timeout(1000)});
-          assert.equal(r.status,503);assert.equal((await r.json()).error,error.code==='untrusted-message'?'storage':error.code);
+          // Target routing can now detect a changed binding before controller
+          // admission; that ownership conflict uses the existing HTTP 409 rule.
+          assert.equal(r.status,error instanceof ManagedBindingError?409:503);assert.equal((await r.json()).error,error.code==='untrusted-message'?'storage':error.code);
         }
       }finally{mock.mock.restore();syncBuiltinESMExports();}
     }

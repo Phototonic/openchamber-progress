@@ -66,15 +66,18 @@ completion is not guaranteed.** Never automatically restart a real instance.
 
 ### Setup coordination port
 
-The bounded setup worker uses loopback TCP port **47329** to coordinate writers
-across service processes. It does not expose progress data on that port. A port
-collision is reported as `managed-step-port-busy`: **Another program is using
-the port Agent Progress uses to coordinate setup; close it and retry.** An active
-setup request in another service can also hold the port; let that request settle
-first. The service does not identify, terminate or take over the other listener,
-choose an alternate coordination port, or remove a lock to force progress.
-The worker foundation is not yet connected to the migration HTTP routes.
-Its read-only inspection foundation can continue discovery across separate worker
+The bounded setup worker derives loopback TCP coordination ports from the
+canonical discovery data root and Store root, rather than reserving one port for
+all profiles/users. Each key hashes to a port in **49152–53247** (see the backend
+guide for the stable derivation). Writers to the same discovery target or shared
+Store serialize; unrelated targets can proceed independently. No progress data is
+exposed on these ports. Hash collisions or an unrelated listener fail closed as
+`managed-step-port-busy`: **The coordination port for this setup target is busy.
+Let other setup activity finish, then retry. If it stays busy, check for another
+program using the port.** The service never identifies/stops another listener,
+switches ports to evade contention, or removes a lock to force progress.
+The managed step HTTP route uses this worker boundary. Read-only inspection
+continues discovery across separate worker
 requests without creating product files or changing capture. An unfinished review
 expires on service restart or package/environment change and requires fresh
 inspection. Its confirmed prepare path retains a durable operation receipt for
@@ -86,15 +89,18 @@ decision that cannot be proven requires a fresh review, and that review authoriz
 only one new capture intent. Retrying a settled enable never overrides a later
 manual disable. No worker continues automatically after restart.
 
-These are not yet the public step migration flow: HTTP routing, ordinary Setup
-status and capture-route coordination still need integration and testing before
-support is advertised. The existing Setup behavior below is unchanged. Portable
-engine tests and launch counts are not native Windows latency certification.
+Authenticated health and Setup delivery advertise `managedMigrationSteps: 1`.
+Clients must negotiate it before using `/v1/setup/managed-step`. The old migrate
+and inspect URLs return 409 `managed-action-required` with no migration work;
+update the extension and service together rather than falling back to those URLs.
+Ordinary Setup reads are bounded and read-only; absent operation progress is
+omitted, not null. Ordinary capture enable/disable shares the writer fence.
+Portable HTTP tests and launch counts are not native Windows latency certification.
 
-### Existing migration flow
+### Confirmed step migration
 
-For at least one release, Setup supports a single confirmed **Switch to
-extension-managed capture** for a fully validated canonical legacy installation.
+Setup supports one confirmed **Switch to extension-managed capture** journey,
+executed as separate bounded requests for a fully validated canonical legacy installation.
 A folder name alone is not ownership. Inspection validates its complete ownership
 manifest, releases, descriptor and actual Store/source identity. Modified or
 foreign files are a conflict, not permission to delete them. A different selected
@@ -121,29 +127,22 @@ filesystem removal is not proof of managed activation.
 
 An uncertain/failed reply must be inspected before retry. Setup can show a pending,
 capture-off state and offer a fresh explicit same-target review/confirmation.
-Failures before removal or after recorded complete removal can be recovered by
-that bounded retry. **An interruption midway through sequential discovery-file
-removal can leave an incomplete package that fails full ownership validation.**
-That is a conflict: do not automatically repair/delete remaining files, restore a
-global loader or enable capture. Preserve the pending selection and retained
-files. Manual cleanup requires a separately authorized review of the retained
-ownership/removal receipt and the exact remaining product files; never recursively
-delete a config/store directory or remove unrelated files to clear the conflict.
+The private format-2 journal retains intent before each effect and a receipt after
+completion. Explicit same-target resume can reconcile interrupted discovery-file
+removal from that evidence; absence alone is not permission to delete or skip a
+file. Changed ownership/bytes, unsupported journals and ambiguous staging refuse.
+Do not repair/delete remaining files, restore a global loader or enable capture
+to force progress. Pause/abandon stops following requests; it is not rollback.
+Closing or restarting never continues the migration automatically.
 
-Migration errors retain fixed platform codes such as
-`windows-security-unavailable` and `private-permissions`, rather than reducing
-them to `storage`. The response and subsequent Setup diagnostics retain one
-in-memory `lastAction` stage/code until a later managed action succeeds or the
-service restarts. Setup labels it as the **last failed migration attempt**, separate
-from current diagnostics, and shows it immediately from a failed action reply.
-Stages are `managed-state-create` (including admission before creation),
-`lock` (including locked revalidation/cleanup), `expectation-publication`,
-`migration-record` (including capture disable), `legacy-removal`,
-`binding-publication` and `capture-enable`. These identify the failed boundary,
-not proof of rollback or permission to repair it. Cleanup failure does not replace
-an earlier primary failure. No raw exception, path, SID, token, command or database
-content is included. Any later successful managed action, including inspection,
-clears it. A pending migration record is published before capture is disabled:
+Step errors retain fixed platform codes such as `windows-security-unavailable`
+and `private-permissions`, alongside the actual requested step or journal/lock
+stage. No raw exception, path, account identity, token, command or database content
+is included. A non-null error means failure even if the disposition says
+`replayed`: that is a failed receipt, not a successful retry. Budget/deadline/busy
+refusals use 503, stale/unsupported/ownership conflicts 409. A worker crash or
+timeout is treated as effect uncertainty, never rollback; the writer slot stays
+held until the worker exits. A pending migration record is published before capture is disabled:
 failure to publish that first record leaves legacy capture unchanged. A crash after
 publication but before disable can therefore show pending with legacy capture still
 on; pending alone is not proof of capture-off. A fresh explicit retry revalidates.
@@ -165,19 +164,20 @@ link, can leave invalid private metadata. Such an unmarked directory, hard-link
 anomaly, permissive ACL or foreign content is refused, never adopted, repaired or
 deleted automatically. A valid marked same-target directory with no migration
 journal can be reused after fresh validation and confirmation; it is not the same
-as an unmarked directory. The step protocol's planned `prepare` stage uses this
+as an unmarked directory. The step protocol's `prepare` stage uses this
 existing bootstrap, not a new claim file or crash-proof directory publication.
 
-The not-yet-integrated step engine's lifecycle helper can reconcile an interrupted
+The step engine's lifecycle helper can reconcile an interrupted
 `record-removal`: it removes only the verified empty discovery directory and then
 records one operation-specific history event. It revalidates between those two
 effects. An exact retained event permits a read-only retry; a missing directory
 alone does not prove completion. Replaced history, duplicate events or partial
-history lines refuse without repair. This helper does not change the recovery
-limits of the currently exposed monolithic migration route.
+history lines refuse without repair. After resume, evaluating the retained intent
+as running is read-only evidence checking; executing an effect still requires a
+freshly validated, durably published running intent.
 
 The format-1 upgrade helper likewise requires explicit same-target consent from
-the future step driver. It preserves the original binding and legacy identity.
+the step driver. It preserves the original binding and legacy identity.
 Only a freshly verified removal receipt plus absent discovery allows the shorter
 plan; the old phase alone does not. Upgrade itself changes only the private
 journal, not capture, selectors or history. Once upgraded, retain format 2 on

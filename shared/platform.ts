@@ -1,6 +1,7 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import { MANAGED_STEP_LIMITS } from './managed-steps.ts';
 
 export const windows = process.platform === 'win32';
@@ -15,6 +16,21 @@ export function platformErrorCode(error: unknown) {
   return error instanceof PlatformError ? codes.find(code=>code===error.code) : undefined;
 }
 type Security = { owned: boolean; private: boolean; reparse: boolean; unsafeParent: boolean };
+/** Coordination identity only, not path/ACL authority. Resolve existing aliases
+ * for the lock key; the ordinary owners still refuse unsafe paths before work. */
+export function writerTarget(kind:'scope'|'store',value:string):string {
+  let current=path.resolve(value);const missing:string[]=[];
+  while(!lstatSync(current,{throwIfNoEntry:false})){
+    const parent=path.dirname(current);if(parent===current)break;
+    missing.unshift(path.basename(current));current=parent;
+  }
+  const canonical=path.join(realpathSync.native(current),...missing);
+  return `${kind}:${process.platform==='win32'?canonical.toLowerCase():canonical}`;
+}
+/** Dynamic/private range; hash collisions are conservative busy refusals. */
+export function writerTargetPort(target:string):number {
+  return 49152+createHash('sha256').update(target).digest().readUInt32BE(0)%4096;
+}
 const cache = new Map<string, { snapshot: string; result: Security }>();
 const reparseCache = new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();
 let scope = 0;
@@ -25,8 +41,8 @@ export class PlatformRequestBudget {
   readonly counter: Int32Array<SharedArrayBuffer>;
   readonly startedAt: bigint;
   readonly deadline: bigint;
-  readonly writerFence?:{port:number;nonce:string};
-  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4),writerFence?:{port:number;nonce:string}) {
+  readonly writerFence?:{port:number;nonce:string;targets?:string[]};
+  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4),writerFence?:{port:number;nonce:string;targets?:string[]}) {
     if(counter.byteLength!==4)throw new PlatformError('managed-step-budget');
     this.counter=new Int32Array(counter);this.startedAt=startedAt;
     this.deadline=startedAt+BigInt(MANAGED_STEP_LIMITS.workMs)*1_000_000n;
@@ -54,6 +70,19 @@ export class PlatformRequestBudget {
   }
 }
 let requestBudget:PlatformRequestBudget|undefined;
+let writerTargets:string[]|undefined;
+/** Synchronous legacy writers share target binding without inheriting the new
+ * step budget. The outer HTTP owner holds these slots until this call returns. */
+export function withPlatformWriterTargets<T>(targets:string[],run:()=>T):T {
+  if(writerTargets)throw new PlatformError('managed-step-conflict');
+  writerTargets=targets;
+  try{
+    const result=run();
+    if(result!==null&&(typeof result==='object'||typeof result==='function')&&typeof (result as {then?:unknown}).then==='function')
+      throw new PlatformError('managed-step-conflict');
+    return result;
+  }finally{writerTargets=undefined;}
+}
 /** Synchronous request work only. Awaiting or resetting a nested budget is not
  * supported; no caller may hide an outer security scope across requests. */
 export function withPlatformRequestBudget<T>(budget:PlatformRequestBudget,run:()=>T):T {
@@ -81,6 +110,14 @@ export function beginPlatformSecurityScope():()=>void {
 export function requirePlatformWriteBoundary():void {
   if(scope)throw new PlatformError('managed-step-conflict');
   requestBudget?.require();
+}
+/** A pre-dispatch metadata read may route locks, but never grant authority. The
+ * fresh owner must bind its actual Store to an acquired slot before any effect. */
+export function requirePlatformStoreFence(database:string):void {
+  requestBudget?.require();
+  const targets=requestBudget?.writerFence?requestBudget.writerFence.targets??[]:writerTargets;
+  if(targets&&!targets.includes(writerTarget('store',path.dirname(database))))
+    throw new PlatformError('managed-step-conflict');
 }
 
 /** Windows PowerShell can expand inherited module paths during startup. */
@@ -120,6 +157,7 @@ try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
   if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
     # The main service holds the TCP writer slot until its Node worker exits.
     # This account-scoped mutex additionally fences a security child that might
     # outlive that service. Obtain it BEFORE checking the current slot nonce.
@@ -143,6 +181,7 @@ try {
       }
       if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
     } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
   }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {

@@ -81,6 +81,7 @@ try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
   if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
     # The main service holds the TCP writer slot until its Node worker exits.
     # This account-scoped mutex additionally fences a security child that might
     # outlive that service. Obtain it BEFORE checking the current slot nonce.
@@ -104,6 +105,7 @@ try {
       }
       if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
     } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
   }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {

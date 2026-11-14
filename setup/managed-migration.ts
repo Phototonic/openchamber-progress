@@ -148,7 +148,7 @@ export function readManagedStepJournal(env:NodeJS.ProcessEnv):ManagedStepJournal
   return platformSecurityScope(()=>{
     const file=migrationFile(env),root=path.dirname(file);
     if(!lstatSync(root,{throwIfNoEntry:false}))return;
-    if(lstatSync(path.join(root,'.ownership.json')).nlink!==1)throw new SetupError('managed-binding-invalid');
+    if(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink!==1)throw new SetupError('managed-binding-invalid');
     // Never sweep interrupted publication or a retained old configuration lock.
     const names=readdirSync(root);
     if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');

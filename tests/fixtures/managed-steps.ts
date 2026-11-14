@@ -81,6 +81,8 @@ export function managedStepFixtures() {
     renewedReplayAfterDisable: response({ ...renewedEnabled, capture: captureOff }, { disposition: 'replayed' }),
     deadline: response({ ...disabled, sequence: 4, state: 'failed', worker: 'unsettled', effect: 'uncertain', capture: captureUnknown,
       diagnostic: deadline, recovery: 'reconcile' }, { disposition: 'refused', error: deadline }),
+    failedReplay: response({ ...disabled, sequence: 4, state: 'failed', worker: 'unsettled', effect: 'uncertain', capture: captureUnknown,
+      diagnostic: deadline, recovery: 'reconcile' }, { disposition: 'replayed', error: deadline }),
     complete: response(complete, { disposition: 'applied' }),
     completedReplayAfterDisable: response({ ...complete, capture: captureOff }, { disposition: 'replayed' }),
     unsupportedJournal: response(null, { disposition: 'refused', error: { stage: 'journal', code: 'managed-journal-unsupported' } }),

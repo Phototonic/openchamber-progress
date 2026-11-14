@@ -1,8 +1,9 @@
 // service/main.ts
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 
 // service/server.ts
 import http from "node:http";
+import path16 from "node:path";
 // node_modules/@openchamber/sdk/dist/scrollbar-style.js
 var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
 var GUEST_SCROLLBAR_CSS = `
@@ -525,11 +526,11 @@ function capDigest(result) {
 }
 
 // shared/plan-task-search.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, createHash as createHash2 } from "node:crypto";
 import { openSync as openSync2, closeSync as closeSync2, lstatSync as lstatSync2, unlinkSync, realpathSync as realpathSync2, existsSync as existsSync2 } from "node:fs";
 import path2 from "node:path";
 
@@ -537,8 +538,10 @@ import path2 from "node:path";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 // shared/managed-steps.ts
+var MANAGED_STEP_ROUTE = "/v1/setup/managed-step";
 var MANAGED_STEP_LIMITS = {
   securitySpawns: 6,
   workMs: 17000,
@@ -655,6 +658,22 @@ function platformErrorCode(error) {
   const codes = ["windows-security-unavailable", "private-permissions", "path-unverified", "unsafe-parent", "symlink-escape"];
   return error instanceof PlatformError ? codes.find((code) => code === error.code) : undefined;
 }
+function writerTarget(kind, value) {
+  let current = path.resolve(value);
+  const missing = [];
+  while (!lstatSync(current, { throwIfNoEntry: false })) {
+    const parent = path.dirname(current);
+    if (parent === current)
+      break;
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+  const canonical = path.join(realpathSync.native(current), ...missing);
+  return `${kind}:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
+}
+function writerTargetPort(target) {
+  return 49152 + createHash("sha256").update(target).digest().readUInt32BE(0) % 4096;
+}
 var cache = new Map;
 var reparseCache = new Map;
 var scope = 0;
@@ -693,6 +712,20 @@ class PlatformRequestBudget {
   }
 }
 var requestBudget;
+var writerTargets;
+function withPlatformWriterTargets(targets, run) {
+  if (writerTargets)
+    throw new PlatformError("managed-step-conflict");
+  writerTargets = targets;
+  try {
+    const result = run();
+    if (result !== null && (typeof result === "object" || typeof result === "function") && typeof result.then === "function")
+      throw new PlatformError("managed-step-conflict");
+    return result;
+  } finally {
+    writerTargets = undefined;
+  }
+}
 function withPlatformRequestBudget(budget, run) {
   if (requestBudget || scope)
     throw new PlatformError("managed-step-conflict");
@@ -737,6 +770,12 @@ function requirePlatformWriteBoundary() {
     throw new PlatformError("managed-step-conflict");
   requestBudget?.require();
 }
+function requirePlatformStoreFence(database) {
+  requestBudget?.require();
+  const targets = requestBudget?.writerFence ? requestBudget.writerFence.targets ?? [] : writerTargets;
+  if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
+    throw new PlatformError("managed-step-conflict");
+}
 var windowsPowerShellBootstrap = String.raw`
 $env:PSModulePath = $PSHOME + '\Modules'
 $PSModuleAutoLoadingPreference = 'None'
@@ -770,6 +809,7 @@ try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
   if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
     # The main service holds the TCP writer slot until its Node worker exits.
     # This account-scoped mutex additionally fences a security child that might
     # outlive that service. Obtain it BEFORE checking the current slot nonce.
@@ -793,6 +833,7 @@ try {
       }
       if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
     } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
   }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
@@ -1098,7 +1139,7 @@ function parseCleanup(action, value) {
   return r;
 }
 function requestHash(action, r) {
-  return createHash("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false])).digest("hex");
+  return createHash2("sha256").update(JSON.stringify([action, r.storeId, r.source, r.plan, r.rev, r.cleanupRev, r.oid, r.confirmed ?? false])).digest("hex");
 }
 function preflight(db, action, r, installed) {
   requireProgress(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get()?.store_id === r.storeId, "conflict");
@@ -1202,7 +1243,7 @@ function searchMatches(tokens, title, id) {
   return tokens.every((word) => t.includes(word) || key.includes(word));
 }
 var safe = (n, min = 0) => Number.isSafeInteger(n) && Number(n) >= min;
-var hash = (v) => createHash2("sha256").update(JSON.stringify(v)).digest("hex");
+var hash = (v) => createHash3("sha256").update(JSON.stringify(v)).digest("hex");
 var fields = (v, keys) => Object.keys(v).length === keys.length && Object.keys(v).every((k) => keys.includes(k));
 function parseCursor(text) {
   requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
@@ -1968,7 +2009,7 @@ function graphItems(value, wire = false) {
 }
 
 // shared/subagent-runs.ts
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 
 // shared/canonical.ts
 function canonical(value) {
@@ -2335,7 +2376,7 @@ function safeErrorType(v) {
   return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : "unknown";
 }
 function hash2(v) {
-  return createHash3("sha256").update(canonical(v)).digest("hex");
+  return createHash4("sha256").update(canonical(v)).digest("hex");
 }
 function keyId(k) {
   return hash2([k.source, k.parent, k.message, k.call]);
@@ -3519,7 +3560,7 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // service/server.ts
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
@@ -3535,7 +3576,7 @@ function currentBinding(value, plan, itemId) {
 }
 
 // shared/store.ts
-import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync3, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync3, chmodSync } from "node:fs";
 import path3 from "node:path";
 
@@ -3643,7 +3684,7 @@ function resumeSelection(db, binding, r, now = () => performance.now()) {
 
 // shared/store.ts
 function digest(value) {
-  return createHash4("sha256").update(value).digest("hex");
+  return createHash5("sha256").update(value).digest("hex");
 }
 function directoryFilter(value) {
   return windows ? value?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value;
@@ -5380,7 +5421,7 @@ import { lstatSync as lstatSync6, realpathSync as realpathSync6, readFileSync as
 import path6 from "node:path";
 import { homedir } from "node:os";
 import { randomUUID as randomUUID5 } from "node:crypto";
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 class ManagedBindingError extends Error {
   code;
   constructor(code = "managed-binding-invalid") {
@@ -5504,7 +5545,7 @@ function publishPrivateJson(file, value, replace = false) {
   }
 }
 function managedExpectationFile(binding) {
-  const identity2 = createHash5("sha256").update(JSON.stringify([binding.source.id, binding.installId])).digest("hex");
+  const identity2 = createHash6("sha256").update(JSON.stringify([binding.source.id, binding.installId])).digest("hex");
   return path6.join(path6.dirname(binding.database), `managed-expectation-${identity2}.json`);
 }
 function readManagedExpectation(binding) {
@@ -5686,371 +5727,13 @@ function blockedTiming(store, detail, now = new Date) {
 // shared/release.ts
 var RELEASE = "1.3.0";
 
-// service/server.ts
-function createProgressServer(store, token, unavailableCode, setup) {
-  if (!token)
-    throw new ProgressError("binding");
-  const expected = Buffer.from(`Bearer ${token}`);
-  let standaloneRuns = false, standaloneError = unavailableCode;
-  if (!setup && store)
-    try {
-      standaloneRuns = ["current", "previous"].includes(store.subagentRunStorage());
-    } catch (e) {
-      standaloneError = storageError(e).code;
-    }
-  const server = http.createServer({ maxHeaderSize: 32 * 1024 }, async (req, res) => {
-    function answer(status, body) {
-      let text = JSON.stringify(body);
-      if (Buffer.byteLength(text) > LIMITS.responseBytes) {
-        status = 413;
-        text = JSON.stringify({ error: "response-too-large" });
-      }
-      res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
-      res.end(text);
-    }
-    const supplied = Buffer.from(req.headers.authorization ?? "");
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
-      return answer(401, { error: "unauthorized" });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, migrationAction = false;
-    try {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      mentionRoute = url.pathname === MENTIONS_SEARCH_PATH || url.pathname === MENTIONS_RESOLVE_PATH;
-      if (mentionRoute) {
-        if (url.origin !== "http://127.0.0.1")
-          return answer(404, { error: "not-found" });
-        if (req.method !== "POST")
-          return answer(405, { error: "method-not-allowed" });
-        if (url.search)
-          throw new ProgressError("invalid");
-        let size = 0;
-        const chunks = [];
-        for await (const chunk of req) {
-          const b = Buffer.from(chunk);
-          size += b.length;
-          if (size > LIMITS.requestBytes) {
-            req.resume();
-            return answer(413, { error: "request-too-large" });
-          }
-          chunks.push(b);
-        }
-        let text2;
-        try {
-          text2 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-        } catch {
-          throw new ProgressError("invalid");
-        }
-        const search = url.pathname === MENTIONS_SEARCH_PATH, body = mentionBody(text2, search ? "search" : "resolve");
-        const active2 = setup ? setup.current() : { store, error: unavailableCode };
-        if (!active2.store)
-          return answer(503, { error: active2.error ?? "storage" });
-        const alive = () => !req.aborted && !req.socket.destroyed && !res.destroyed;
-        let held = active2.store;
-        const acquire = () => {
-          const s = held ?? (setup ? setup.current().store : store);
-          held = undefined;
-          if (!s)
-            throw new ProgressError("storage");
-          return s;
-        };
-        return answer(200, search ? searchMentions(active2.store, body.query, body.directory, alive) : await resolveMention(acquire, body.id, alive));
-      }
-      graphRoute = url.pathname === "/v1/plan-graph";
-      if (graphRoute && req.method !== "GET")
-        return answer(405, { error: "method-not-allowed" });
-      runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile", "/v1/subagent-runs/dismiss-loss"].includes(url.pathname);
-      if (runsRoute) {
-        if (url.origin !== "http://127.0.0.1")
-          return answer(404, { error: "not-found" });
-        const active2 = setup ? setup.current() : { store, error: unavailableCode };
-        if (!active2.store)
-          return answer(503, { error: active2.error ?? "storage" });
-        if (url.pathname !== "/v1/subagent-runs") {
-          if (req.method !== "POST")
-            return answer(405, { error: "method-not-allowed" });
-          if (url.search)
-            return answer(404, { error: "not-found" });
-          let size = 0;
-          const chunks = [];
-          for await (const chunk of req) {
-            const b = Buffer.from(chunk);
-            size += b.length;
-            if (size > RUN_LIMITS.queryBytes) {
-              req.resume();
-              return answer(413, { error: "request-too-large" });
-            }
-            chunks.push(b);
-          }
-          let text2;
-          try {
-            text2 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-          } catch {
-            throw new ProgressError("invalid");
-          }
-          return answer(200, url.pathname.endsWith("/dismiss-loss") ? active2.store.dismissRunLoss(parseDismissLossBody(text2)) : active2.store.requestRunReconciliation(parseReconcileBody(text2)));
-        }
-        if (req.method !== "GET")
-          return answer(405, { error: "method-not-allowed" });
-        if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
-          return answer(400, { error: "body-not-allowed" });
-        const allowed2 = ["storeId", "binding", "source", "root", "plan", "cleanupRev", "view", "cursor"];
-        if ([...url.searchParams.keys()].some((k) => !allowed2.includes(k) || url.searchParams.getAll(k).length !== 1))
-          return answer(404, { error: "not-found" });
-        if (Buffer.byteLength(url.search) > RUN_LIMITS.queryBytes)
-          throw new ProgressError("invalid");
-        const r = Object.fromEntries(url.searchParams);
-        r.binding = parseCaptureBinding(url.searchParams.get("binding"));
-        if (url.searchParams.has("cleanupRev")) {
-          const v = url.searchParams.get("cleanupRev");
-          if (!/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)))
-            throw new ProgressError("invalid");
-          r.cleanupRev = Number(v);
-        }
-        return answer(200, active2.store.subagentRuns(r));
-      }
-      comparisonRoute = ["/v1/document-captures", "/v1/document-comparison"].includes(url.pathname);
-      if (comparisonRoute && req.method !== "GET")
-        return answer(405, { error: "method-not-allowed" });
-      digestRoute = url.pathname === "/v1/change-digest";
-      searchRoute = url.pathname === "/v1/search" || url.pathname === "/v1/search-state";
-      if (url.origin !== "http://127.0.0.1")
-        return answer(404, { error: "not-found" });
-      if (searchRoute && req.method !== "GET")
-        return answer(405, { error: "method-not-allowed" });
-      cleanupRoute = ["/v1/plan/archive", "/v1/plan/restore", "/v1/plan/delete"].includes(url.pathname);
-      if (cleanupRoute) {
-        if (req.method !== "POST")
-          return answer(405, { error: "method-not-allowed" });
-        if (url.search)
-          return answer(404, { error: "not-found" });
-        let size = 0;
-        const chunks = [];
-        for await (const chunk of req) {
-          const b = Buffer.from(chunk);
-          size += b.length;
-          if (size > LIMITS.requestBytes) {
-            req.resume();
-            return answer(413, { error: "request-too-large" });
-          }
-          chunks.push(b);
-        }
-        let body;
-        try {
-          body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-        } catch {
-          throw new ProgressError("invalid");
-        }
-        const action = url.pathname.endsWith("/archive") ? "archive" : url.pathname.endsWith("/restore") ? "restore" : "delete";
-        const request = parseCleanup(action, body);
-        const active2 = setup ? setup.current() : { store, error: unavailableCode };
-        if (!active2.store)
-          return answer(503, { error: active2.error ?? "storage" });
-        return answer(200, active2.store.cleanup(action, request));
-      }
-      if (url.pathname === "/v1/extension-update") {
-        if (req.method !== "GET")
-          return answer(405, { error: "method-not-allowed" });
-        if (url.search)
-          return answer(404, { error: "not-found" });
-        if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
-          return answer(400, { error: "body-not-allowed" });
-        return answer(200, {
-          installedVersion: RELEASE,
-          repository: "Phototonic/openchamber-progress",
-          ref: "main",
-          state: "unknown",
-          checkedAt: null,
-          stale: false,
-          diagnostic: "unavailable",
-          nextCheckAt: new Date(Date.now() + 3600000).toISOString()
-        });
-      }
-      if (url.pathname === "/v1/setup" || url.pathname.startsWith("/v1/setup/")) {
-        if (url.search)
-          return answer(404, { error: "not-found" });
-        if (!setup)
-          return answer(503, { error: "setup-unavailable" });
-        if (url.pathname === "/v1/setup") {
-          if (req.method !== "GET")
-            return answer(405, { error: "method-not-allowed" });
-          if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
-            return answer(400, { error: "body-not-allowed" });
-          return answer(200, setup.status(true));
-        }
-        const action = url.pathname.slice("/v1/setup/".length);
-        if (!["inspect", "install", "update", "disable", "enable", "remove-capture", "managed-inspect", "managed-configure", "managed-migrate", "managed-enable", "managed-disable"].includes(action))
-          return answer(404, { error: "not-found" });
-        if (req.method !== "POST")
-          return answer(405, { error: "method-not-allowed" });
-        let size = 0;
-        const chunks = [];
-        for await (const chunk of req) {
-          const b = Buffer.from(chunk);
-          size += b.length;
-          if (size > LIMITS.requestBytes) {
-            req.resume();
-            return answer(413, { error: "request-too-large" });
-          }
-          chunks.push(b);
-        }
-        let body;
-        try {
-          const text2 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-          body = text2 ? JSON.parse(text2) : {};
-        } catch {
-          throw new ProgressError("invalid");
-        }
-        migrationAction = action === "managed-migrate";
-        return answer(200, setup.run(action, body));
-      }
-      if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
-        return answer(400, { error: "body-not-allowed" });
-      if (url.pathname === "/health") {
-        if (req.method !== "GET")
-          return answer(405, { error: "method-not-allowed" });
-        if (url.search)
-          return answer(404, { error: "not-found" });
-        if (!setup && (!store || standaloneError))
-          return answer(503, { error: standaloneError ?? "storage" });
-        const snapshot2 = setup ? setup.health() : { state: "ready", ready: true, sqlite: true, diagnostics: [], subagentRuns: standaloneRuns };
-        const { subagentRuns, ...health } = snapshot2;
-        return answer(200, {
-          ok: true,
-          ...health,
-          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
-          protocolVersion: VERSION,
-          schemaVersion: VERSION,
-          runtime: { node: process.versions.node, bun: process.versions.bun ?? null }
-        });
-      }
-      const active = setup ? setup.current() : { store, error: unavailableCode };
-      const currentStore = active.store;
-      if (url.pathname === "/v1/capture/disable" || url.pathname === "/v1/capture/enable") {
-        if (req.method !== "POST")
-          return answer(405, { error: "method-not-allowed" });
-        if (url.search)
-          return answer(404, { error: "not-found" });
-        if (!currentStore)
-          return answer(503, { error: active.error ?? "storage" });
-        if (setup && url.pathname.endsWith("/enable")) {
-          setup.enableCapture();
-          return answer(200, { ok: true, captureEnabled: true });
-        }
-        currentStore.setEnabled(url.pathname.endsWith("/enable"));
-        return answer(200, { ok: true, captureEnabled: url.pathname.endsWith("/enable") });
-      }
-      if (req.method !== "GET")
-        return answer(405, { error: "method-not-allowed" });
-      const routes = { "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
-      routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
-      routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
-      routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
-      const allowed = routes[url.pathname];
-      if (!allowed || [...url.searchParams.keys()].some((k) => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1))
-        return answer(404, { error: "not-found" });
-      if (searchRoute && Buffer.byteLength(url.search) > SEARCH_LIMITS.queryBytes)
-        throw new ProgressError("invalid");
-      if (comparisonRoute && Buffer.byteLength(url.search) > CAPTURE_LIMITS.queryBytes)
-        throw new ProgressError("invalid");
-      if (graphRoute && Buffer.byteLength(url.search) > GRAPH_LIMITS.queryBytes)
-        throw new ProgressError("invalid");
-      const number = (key, fallback) => {
-        const v = url.searchParams.get(key);
-        if (v === null)
-          return fallback;
-        if (!/^\d{1,9}$/.test(v))
-          throw new ProgressError("invalid");
-        return Number(v);
-      };
-      const text = (key, required = false) => {
-        const v = url.searchParams.get(key) ?? undefined;
-        if (required && !v || v !== undefined && (key === "directory" ? v.length > 4096 || v.includes("\x00") : !identifier(v)))
-          throw new ProgressError("invalid");
-        return v;
-      };
-      if (!currentStore)
-        return answer(503, { error: active.error ?? "storage" });
-      if (url.pathname === "/v1/search") {
-        const options = Object.fromEntries(url.searchParams);
-        if (url.searchParams.has("limit"))
-          options.limit = number("limit", 20);
-        return answer(200, currentStore.search(options));
-      }
-      if (url.pathname === "/v1/search-state") {
-        let keys;
-        try {
-          keys = JSON.parse(url.searchParams.get("keys") ?? "null");
-        } catch {
-          throw new ProgressError("invalid");
-        }
-        return answer(200, currentStore.searchState(text("storeId", true), keys));
-      }
-      if (url.pathname === "/v1/plans") {
-        const archived = url.searchParams.get("archived") ?? "exclude";
-        if (archived !== "exclude" && archived !== "only")
-          throw new ProgressError("invalid");
-        return answer(200, currentStore.list({ cursor: number("cursor", 0), limit: number("limit", 20), source: text("source"), session: text("session"), directory: text("directory"), archived }));
-      }
-      const source = text("source", true);
-      const plan = text("plan", true);
-      if (graphRoute) {
-        const pin = (key, min) => {
-          const v = url.searchParams.get(key);
-          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < min)
-            throw new ProgressError("invalid");
-          return Number(v);
-        };
-        return answer(200, currentStore.planGraph({ storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan, revision: pin("revision", 1), cleanupRev: pin("cleanupRev", 0) }));
-      }
-      if (comparisonRoute) {
-        const integer3 = (key, min) => {
-          const value = url.searchParams.get(key);
-          if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
-            throw new ProgressError("invalid");
-          return Number(value);
-        };
-        const r = { storeId: text("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan, cleanupRev: integer3("cleanupRev", 0) };
-        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer3("before", 1), integer3("after", 1)));
-      }
-      if (digestRoute) {
-        const revision = (key, minimum) => {
-          const v = url.searchParams.get(key);
-          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < minimum)
-            throw new ProgressError("invalid");
-          return Number(v);
-        };
-        return answer(200, currentStore.changeDigest({ storeId: text("storeId", true), source, plan, to: revision("to", 1), cleanupRev: revision("cleanupRev", 0), ...url.searchParams.has("after") ? { after: revision("after", 1) } : {} }));
-      }
-      if (url.pathname === "/v1/plan") {
-        const detail = currentStore.detail(source, plan, number("cursor", 0));
-        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail) });
-      }
-      if (url.pathname === "/v1/document")
-        return answer(200, currentStore.document(source, plan, number("cursor", 0), url.searchParams.has("capture") ? number("capture", 0) : undefined));
-      return answer(200, currentStore.history(source, plan, number("cursor", 0), number("limit", 20)));
-    } catch (e) {
-      const lastAction = migrationAction ? setup?.lastMigrationFailure() : undefined;
-      const diagnostic = lastAction ? { lastAction } : {};
-      const platformCode = platformErrorCode(e);
-      if (platformCode)
-        return answer(503, { error: platformCode, ...diagnostic });
-      if (e instanceof ManagedBindingError)
-        return answer(409, { error: e.code, ...diagnostic });
-      if (e instanceof SetupError)
-        return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code, ...diagnostic });
-      const error = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
-        return answer(409, { error: error.code });
-      return answer(error.code === "invalid" ? 400 : error.code === "not-found" ? 404 : 503, { error: error.code, ...diagnostic });
-    }
-  });
-  server.requestTimeout = 5000;
-  server.headersTimeout = 5000;
-  return server;
-}
+// service/request-worker.ts
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+import { randomBytes, randomUUID as randomUUID8, timingSafeEqual } from "node:crypto";
 
 // service/setup-controller.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync9, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync4, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
-import path10 from "node:path";
+import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync10, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync4, closeSync as closeSync5, openSync as openSync5 } from "node:fs";
+import path11 from "node:path";
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // setup/managed-migration.ts
@@ -6510,7 +6193,7 @@ function readManagedStepJournal(env) {
     const file = migrationFile(env), root = path8.dirname(file);
     if (!lstatSync7(root, { throwIfNoEntry: false }))
       return;
-    if (lstatSync7(path8.join(root, ".ownership.json")).nlink !== 1)
+    if (lstatSync7(path8.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink !== 1)
       throw new SetupError("managed-binding-invalid");
     const names = readdirSync2(root);
     if (names.includes(".configuration-lock"))
@@ -6726,6 +6409,80 @@ function suggestions(context2) {
   return { configRoot, dataRoot, storeRoot: dataRoot && storeValue && storeValue.length <= 4096 ? { value: storeValue, state: dataRoot.state } : null };
 }
 
+// service/writer-fence.ts
+import { closeSync as closeSync4, fstatSync, lstatSync as lstatSync9, openSync as openSync4, readSync as readSync2, constants } from "node:fs";
+import path10 from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { createServer } from "node:net";
+function routingDatabase(file) {
+  let fd;
+  try {
+    const before = lstatSync9(file, { throwIfNoEntry: false });
+    if (!before?.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MANAGED_STEP_LIMITS.journalBytes)
+      return;
+    fd = openSync4(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino || opened.size > MANAGED_STEP_LIMITS.journalBytes)
+      return;
+    const bytes = Buffer.alloc(opened.size + 1);
+    const length = readSync2(fd, bytes, 0, bytes.length, 0);
+    if (length !== opened.size)
+      return;
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)))?.database;
+    if (typeof value === "string" && value.length <= 4096 && !value.includes("\x00") && path10.isAbsolute(value) && path10.basename(value) === "progress.sqlite")
+      return value;
+  } catch {} finally {
+    if (fd !== undefined)
+      closeSync4(fd);
+  }
+}
+function setupWriterTargets(env, database) {
+  const dataRoot = path10.join(env.XDG_DATA_HOME ?? path10.join(env.HOME ?? homedir3(), ".local/share"), "opencode");
+  const root = path10.join(dataRoot, "agent-progress-managed");
+  const databases = [routingDatabase(path10.join(root, "migration.json")), routingDatabase(path10.join(root, "progress-binding.json")), database].filter((v) => !!v);
+  if (!databases.length)
+    databases.push(path10.join(dataRoot, "openchamber-progress", "progress.sqlite"));
+  return [...new Set([writerTarget("scope", dataRoot), ...databases.map((file) => writerTarget("store", path10.dirname(file)))])];
+}
+async function acquireWriterSlots(targets, connection = (socket) => socket.destroy(), lateError) {
+  const locks = [];
+  const release = async () => {
+    await Promise.all(locks.map((lock) => new Promise((resolve) => lock.close(() => resolve()))));
+  };
+  try {
+    for (const port of [...new Set(targets.map(writerTargetPort))].sort((a, b) => a - b)) {
+      const lock = createServer(connection);
+      locks.push(lock);
+      await new Promise((resolve, reject) => {
+        let listening = false;
+        lock.on("error", (error) => {
+          if (listening) {
+            lateError?.();
+            return;
+          }
+          reject(Object.assign(new Error("writer-refused"), { code: error.code === "EADDRINUSE" ? "managed-step-port-busy" : "managed-step-unsettled" }));
+        });
+        lock.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+          listening = true;
+          resolve();
+        });
+      });
+    }
+    return release;
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+async function withSetupWriter(run, targets) {
+  const release = await acquireWriterSlots(targets);
+  try {
+    return withPlatformWriterTargets(targets, run);
+  } finally {
+    await release();
+  }
+}
+
 // service/setup-controller.ts
 class SetupController {
   store;
@@ -6747,10 +6504,40 @@ class SetupController {
   expectationPending = true;
   lastAction;
   migrationStage = "managed-state-create";
+  worker;
+  workerEntry;
+  workerHealth;
+  get managed() {
+    return !!this.managedEnv;
+  }
+  writerTargets(body) {
+    const root = body?.storeRoot;
+    const database = typeof root === "string" && path11.isAbsolute(root) ? path11.join(root, "progress.sqlite") : this.binding?.database;
+    return this.managedEnv ? setupWriterTargets(this.managedEnv, database) : [
+      writerTarget("scope", path11.dirname(this.bindingFile)),
+      ...database ? [writerTarget("store", path11.dirname(database))] : []
+    ];
+  }
+  async request(request, startedAt = process.hrtime.bigint()) {
+    if (!this.managedEnv)
+      throw new SetupError("managed-service-required");
+    this.worker ??= new SetupRequestWorker(this.workerEntry);
+    const reply = await this.worker.run(this.managedEnv, this.readonlyPayload(), request.action === "status" || request.action === "capture" ? { ...request, descriptor: this.expectedDescriptor } : request, startedAt);
+    if (reply.ok && reply.descriptor)
+      this.expectedDescriptor = reply.descriptor;
+    if (request.action === "status") {
+      if (reply.ok && reply.health)
+        this.workerHealth = reply.health;
+      else if (!reply.ok)
+        this.workerHealth = { state: "refused", ready: false, sqlite: false, diagnostics: [reply.code], subagentRuns: false };
+    }
+    return reply;
+  }
   lastMigrationFailure() {
     return this.lastAction ? { ...this.lastAction } : undefined;
   }
-  constructor(privateFile, readonlyPayload, _legacyDefault, suggestionContext) {
+  constructor(privateFile, readonlyPayload, _legacyDefault, suggestionContext, workerEntry = new URL("./main.ts", import.meta.url)) {
+    this.workerEntry = workerEntry;
     this.readonlyPayload = readonlyPayload;
     this.suggestionContext = suggestionContext;
     if (typeof privateFile !== "string") {
@@ -6759,7 +6546,7 @@ class SetupController {
       return;
     }
     this.bindingFile = privateFile;
-    if (lstatSync9(privateFile, { throwIfNoEntry: false })) {
+    if (lstatSync10(privateFile, { throwIfNoEntry: false })) {
       try {
         this.binding = readBinding(privateFile);
         this.expectedDescriptor = digest(readFileSync5(privateFile));
@@ -6775,7 +6562,12 @@ class SetupController {
     this.refresh();
     return { store: this.store, error: this.fixedError?.code ?? this.error, configured: !!this.binding };
   }
+  async currentForRequest() {
+    return this.managedEnv && this.expectationPending ? withSetupWriter(() => this.current(), this.writerTargets()) : this.current();
+  }
   health() {
+    if (this.workerHealth)
+      return { ...this.workerHealth, diagnostics: [...this.workerHealth.diagnostics] };
     const diagnostics = this.managedDiagnostic ? [this.managedDiagnostic] : this.store ? [] : this.securityUnavailable ? ["windows-security-unavailable"] : this.binding || !this.canPersist ? [this.fixedError?.code ?? this.error] : [];
     return {
       state: !this.checked ? "starting" : this.store ? "ready" : diagnostics.length ? "refused" : "unconfigured",
@@ -6820,6 +6612,7 @@ class SetupController {
     this.securityUnavailable = e instanceof PlatformError && e.code === "windows-security-unavailable";
   }
   refresh() {
+    this.workerHealth = undefined;
     platformSecurityScope(() => this.refreshInner());
     if (this.managedEnv && this.store && this.binding && this.expectationPending) {
       this.expectationPending = false;
@@ -6869,7 +6662,7 @@ class SetupController {
   }
   targets() {
     const b = this.binding;
-    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path10.dirname(b.database), confirmed: true } : undefined;
+    return b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path11.dirname(b.database), confirmed: true } : undefined;
   }
   status(includeSuggestions = false) {
     if (this.managedEnv)
@@ -6940,6 +6733,7 @@ class SetupController {
     }
     if (!targets.confirmed)
       throw new SetupError("confirmation-required");
+    requirePlatformStoreFence(path11.join(targets.storeRoot, "progress.sqlite"));
     if (["disable", "enable", "remove-capture"].includes(action)) {
       const current = this.targets();
       if (!current || !(windows ? platformSecurityScope(() => sameWindowsDirectory(current.configRoot, targets.configRoot) && sameWindowsDirectory(current.dataRoot, targets.dataRoot) && sameWindowsDirectory(current.storeRoot, targets.storeRoot)) : current.configRoot === targets.configRoot && current.dataRoot === targets.dataRoot && current.storeRoot === targets.storeRoot))
@@ -6948,7 +6742,7 @@ class SetupController {
     if (action === "install" || action === "update") {
       this.validateDescriptor();
       lifecycle("inspect", targets);
-      const database = path10.join(targets.storeRoot, "progress.sqlite");
+      const database = path11.join(targets.storeRoot, "progress.sqlite");
       if (existsSync5(database)) {
         const probe = new Store(database, { readOnly: true });
         try {
@@ -6960,7 +6754,7 @@ class SetupController {
     }
     const result = lifecycle(action, targets, action === "install" || action === "update" ? this.readonlyPayload() : undefined);
     if (action === "install" || action === "update") {
-      const b = readBinding(path10.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
+      const b = readBinding(path11.join(targets.configRoot, "plugins/agent-progress/progress-binding.json"));
       try {
         this.persist(b);
         this.load(b);
@@ -7009,6 +6803,7 @@ class SetupController {
     this.store.setEnabled(true);
   }
   establishExpectation(b) {
+    requirePlatformStoreFence(b.database);
     const payload = this.readonlyPayload();
     const fingerprint = activationFingerprint({ ...b, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance));
     const prior = readManagedExpectation(b);
@@ -7116,7 +6911,7 @@ class SetupController {
       throw new ProgressError("source-unverified");
     if (storeRoot !== undefined && managedPath(storeRoot) !== targets.storeRoot)
       throw new SetupError("managed-selection-conflict");
-    const file = managedBindingFile(this.managedEnv), stat = lstatSync9(b.database), descriptor = lstatSync9(file);
+    const file = managedBindingFile(this.managedEnv), stat = lstatSync10(b.database), descriptor = lstatSync10(file);
     const expected = digest(JSON.stringify({
       nonce: this.reviewNonce,
       controlOnly: true,
@@ -7140,19 +6935,19 @@ class SetupController {
     if (this.expectedDescriptor !== null && (!b || digest(readFileSync5(file)) !== this.expectedDescriptor))
       throw new ManagedBindingError("managed-binding-modified");
     const retained = b ?? record2?.binding ?? legacy?.binding;
-    const selected = managedPath(storeRoot ?? (retained ? path10.dirname(retained.database) : path10.join(roots.dataRoot, "openchamber-progress")), true);
-    if ([roots.configRoot, roots.dataRoot, path10.dirname(file)].includes(selected))
+    const selected = managedPath(storeRoot ?? (retained ? path11.dirname(retained.database) : path11.join(roots.dataRoot, "openchamber-progress")), true);
+    if ([roots.configRoot, roots.dataRoot, path11.dirname(file)].includes(selected))
       throw new SetupError("managed-selection-conflict");
     const targets = { ...roots, storeRoot: selected, confirmed: true };
-    if (retained && path10.dirname(retained.database) !== selected)
+    if (retained && path11.dirname(retained.database) !== selected)
       throw new SetupError(legacy || record2 ? "managed-migration-conflict" : "managed-selection-conflict");
     if (!legacy)
       lifecycle("inspect", targets);
-    if (lstatSync9(selected, { throwIfNoEntry: false }) && !isOwned(selected))
+    if (lstatSync10(selected, { throwIfNoEntry: false }) && !isOwned(selected))
       throw new SetupError("store-permissions");
     let storeId = null, sourceId = null, sources = [], enabled = null;
-    const database = path10.join(selected, "progress.sqlite");
-    if (lstatSync9(database, { throwIfNoEntry: false })) {
+    const database = path11.join(selected, "progress.sqlite");
+    if (lstatSync10(database, { throwIfNoEntry: false })) {
       const store = new Store(database, { readOnly: true });
       try {
         store.subagentRunStorage();
@@ -7172,7 +6967,7 @@ class SetupController {
     } else if (b)
       throw new ProgressError("storage");
     const identity2 = (p) => {
-      const s = lstatSync9(p, { throwIfNoEntry: false });
+      const s = lstatSync10(p, { throwIfNoEntry: false });
       return s ? [s.dev, s.ino, s.mode, s.uid] : null;
     };
     const expected = digest(JSON.stringify({
@@ -7209,6 +7004,7 @@ class SetupController {
       throw new SetupError("confirmation-required");
     if (r.expected !== candidate2.review.expected)
       throw new SetupError("managed-review-stale");
+    requirePlatformStoreFence(path11.join(candidate2.targets.storeRoot, "progress.sqlite"));
     if (action === "managed-migrate")
       return this.migrate(candidate2);
     if (!["managed-configure", "managed-enable", "managed-disable"].includes(action))
@@ -7225,11 +7021,11 @@ class SetupController {
     if (candidate2.binding)
       return { ...this.managedStatus(), action };
     const file = createManagedBindingDirectory(this.managedEnv);
-    const lock = path10.join(path10.dirname(file), ".configuration-lock");
+    const lock = path11.join(path11.dirname(file), ".configuration-lock");
     let locked = false, failed = false;
     try {
       try {
-        closeSync4(openSync4(lock, "wx", 384));
+        closeSync5(openSync5(lock, "wx", 384));
         locked = true;
       } catch (e) {
         if (e.code === "EEXIST")
@@ -7242,11 +7038,11 @@ class SetupController {
       if (latest.review.expected !== candidate2.review.expected)
         throw new SetupError("managed-review-stale");
       const { targets } = candidate2;
-      if (!lstatSync9(targets.storeRoot, { throwIfNoEntry: false }))
+      if (!lstatSync10(targets.storeRoot, { throwIfNoEntry: false }))
         privateDirectory(targets.storeRoot, true);
       if (!isOwned(targets.storeRoot) || !privatePaths([targets.storeRoot]))
         throw new SetupError("store-permissions");
-      const store = new Store(path10.join(targets.storeRoot, "progress.sqlite"), { create: true });
+      const store = new Store(path11.join(targets.storeRoot, "progress.sqlite"), { create: true });
       let b, storeFailed = false;
       try {
         store.subagentRunStorage();
@@ -7276,7 +7072,7 @@ class SetupController {
       if (locked)
         try {
           unlinkSync4(lock);
-          syncDirectory(path10.dirname(file));
+          syncDirectory(path11.dirname(file));
         } catch (e) {
           if (!failed)
             throw e;
@@ -7295,19 +7091,19 @@ class SetupController {
     const retained = prior?.binding ?? legacy.binding;
     if (legacy && candidate2.binding?.installId === legacy.binding.installId)
       throw new SetupError("managed-migration-conflict");
-    if (candidate2.binding && !sameMigrationTarget(candidate2.binding, retained) || path10.dirname(retained.database) !== candidate2.targets.storeRoot)
+    if (candidate2.binding && !sameMigrationTarget(candidate2.binding, retained) || path11.dirname(retained.database) !== candidate2.targets.storeRoot)
       throw new SetupError("managed-migration-conflict");
     if (legacy && (!sameMigrationTarget(legacy.binding, retained) || prior && legacy.binding.installId !== prior.legacyInstallId))
       throw new SetupError("managed-migration-conflict");
     if (!legacy && (!prior || prior.phase === "pending" && !removalRecorded(prior)))
       throw new SetupError("managed-migration-pending");
     this.migrationStage = "managed-state-create";
-    const file = createManagedBindingDirectory(env), lock = path10.join(path10.dirname(file), ".configuration-lock");
+    const file = createManagedBindingDirectory(env), lock = path11.join(path11.dirname(file), ".configuration-lock");
     let locked = false, failed = false;
     try {
       this.migrationStage = "lock";
       try {
-        closeSync4(openSync4(lock, "wx", 384));
+        closeSync5(openSync5(lock, "wx", 384));
         locked = true;
       } catch (e) {
         if (e.code === "EEXIST")
@@ -7361,7 +7157,7 @@ class SetupController {
       if (locked)
         try {
           unlinkSync4(lock);
-          syncDirectory(path10.dirname(file));
+          syncDirectory(path11.dirname(file));
         } catch (e) {
           if (!failed) {
             this.migrationStage = "lock";
@@ -7380,12 +7176,12 @@ class SetupController {
   validateDescriptorInner() {
     if (!this.canPersist)
       throw new SetupError("service-binding-collision");
-    const parent = path10.dirname(this.bindingFile);
-    if (!lstatSync9(parent).isDirectory() || !windows && realpathSync8(parent) !== parent)
+    const parent = path11.dirname(this.bindingFile);
+    if (!lstatSync10(parent).isDirectory() || !windows && realpathSync8(parent) !== parent)
       throw new SetupError("service-binding-collision");
     if (windows && (!sameWindowsDirectory(windowsPath(parent), parent) || !privatePaths([parent])))
       throw new SetupError("service-binding-collision");
-    const stat = lstatSync9(this.bindingFile, { throwIfNoEntry: false });
+    const stat = lstatSync10(this.bindingFile, { throwIfNoEntry: false });
     if (stat) {
       if (windows && (!sameWindowsObject(windowsPath(this.bindingFile), this.bindingFile) || !privatePaths([this.bindingFile])))
         throw new SetupError("service-binding-modified");
@@ -7401,7 +7197,7 @@ class SetupController {
     writeFileSync3(file, text2, { mode: 384, flag: "wx" });
     syncFile(file);
     renameSync3(file, this.bindingFile);
-    syncDirectory(path10.dirname(file));
+    syncDirectory(path11.dirname(file));
     this.expectedDescriptor = digest(text2);
   }
 }
@@ -7415,13 +7211,34 @@ function migrationActionCode(e) {
   return typeof code === "string" && MANAGED_ACTION_CODES.includes(code) ? code : storageError(e).code;
 }
 
-// service/request-worker.ts
-import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+// setup/managed-inspection.ts
+import { lstatSync as lstatSync11, readFileSync as readFileSync6, readdirSync as readdirSync3 } from "node:fs";
+import path12 from "node:path";
+import { randomUUID as randomUUID7 } from "node:crypto";
+
+// setup/managed-diagnostic.ts
+class ManagedStepFailure extends Error {
+  code;
+  stage;
+  journal;
+  constructor(error, stage, journal) {
+    const code = managedDiagnostic(error);
+    super(code);
+    this.code = code;
+    this.stage = stage;
+    this.journal = journal;
+  }
+}
+function managedDiagnostic(error) {
+  const code = error?.code;
+  if (code === "installation-changed")
+    return "managed-migration-conflict";
+  if (code === "payload-invalid")
+    return "managed-step-unsupported";
+  return typeof code === "string" && [...MANAGED_ACTION_CODES, ...MANAGED_STEP_CODES].includes(code) ? code : platformErrorCode(error) ?? storageError(error).code;
+}
 
 // setup/managed-inspection.ts
-import { lstatSync as lstatSync10, readFileSync as readFileSync6, readdirSync as readdirSync3 } from "node:fs";
-import path11 from "node:path";
-import { randomUUID as randomUUID7 } from "node:crypto";
 function need4(value, code = "managed-review-stale") {
   if (!value)
     throw new SetupError(code);
@@ -7434,15 +7251,15 @@ function batch(paths) {
     windowsPaths(unique, true);
 }
 function snapshot2(file) {
-  const s = lstatSync10(file, { bigint: true });
+  const s = lstatSync11(file, { bigint: true });
   return [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":");
 }
 function claim(file) {
   managedPath(file, true);
-  const s = lstatSync10(file, { bigint: true, throwIfNoEntry: false });
+  const s = lstatSync11(file, { bigint: true, throwIfNoEntry: false });
   if (!s)
     return { path: file, kind: "absent", object: null, digest: null };
-  need4(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path11.dirname(file), file]), "managed-migration-conflict");
+  need4(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path12.dirname(file), file]), "managed-migration-conflict");
   if (s.size > BigInt(MANAGED_STEP_LIMITS.journalBytes))
     throw new SetupError("managed-step-limit");
   const before = snapshot2(file), hash4 = digest(readFileSync6(file));
@@ -7450,16 +7267,16 @@ function claim(file) {
   return { path: file, kind: "file", object: { device: String(s.dev), inode: String(s.ino), birthNs: String(s.birthtimeNs) }, digest: hash4 };
 }
 function basePaths(roots) {
-  const root = path11.join(roots.dataRoot, "agent-progress-managed");
-  return [roots.configRoot, roots.dataRoot, root, path11.join(root, ".ownership.json"), path11.join(root, "progress-binding.json"), path11.join(root, "migration.json")];
+  const root = path12.join(roots.dataRoot, "agent-progress-managed");
+  return [roots.configRoot, roots.dataRoot, root, path12.join(root, ".ownership.json"), path12.join(root, "progress-binding.json"), path12.join(root, "migration.json")];
 }
 function storePaths(binding) {
   return [
-    path11.dirname(binding.database),
+    path12.dirname(binding.database),
     binding.database,
     ...["-journal", "-wal", "-shm"].map((s) => binding.database + s),
     managedExpectationFile(binding),
-    path11.join(path11.dirname(binding.database), "installation-history.jsonl")
+    path12.join(path12.dirname(binding.database), "installation-history.jsonl")
   ];
 }
 function paths(session) {
@@ -7470,19 +7287,19 @@ function paths(session) {
   ];
 }
 function container(env) {
-  const file = managedBindingFile(env), root = path11.dirname(file);
-  if (lstatSync10(root, { throwIfNoEntry: false })) {
+  const file = managedBindingFile(env), root = path12.dirname(file);
+  if (lstatSync11(root, { throwIfNoEntry: false })) {
     const names = readdirSync3(root);
     need4(!names.includes(".configuration-lock"), "managed-configuration-busy");
     need4(!names.some((n) => n.startsWith("migration.json.stage-") || n.startsWith("progress-binding.json.stage-")), "managed-migration-conflict");
-    need4(lstatSync10(path11.join(root, ".ownership.json")).nlink === 1, "managed-binding-invalid");
+    need4(lstatSync11(path12.join(root, ".ownership.json"), { throwIfNoEntry: false })?.nlink === 1, "managed-binding-invalid");
   }
   return file;
 }
 function sameDiscovery(env, session) {
   need4(canonical(managedSourceRoots(env)) === canonical(session.roots));
   for (const root of Object.values(session.roots))
-    need4(lstatSync10(root).isDirectory() && isOwned(root), "path-unverified");
+    need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
   need4(canonical(claim(container(env))) === canonical(session.selection));
   need4(canonical(claim(migrationFile(env))) === canonical(session.record));
 }
@@ -7510,7 +7327,7 @@ function validateCandidate(session, payload) {
 }
 function reviewFor(session, observed) {
   const journal = session.candidate;
-  const s = lstatSync10(journal.database, { bigint: true });
+  const s = lstatSync11(journal.database, { bigint: true });
   const expected = digest(canonical({
     nonce: session.nonce,
     targetDigest: managedTargetDigest(journal),
@@ -7521,7 +7338,7 @@ function reviewFor(session, observed) {
     database: { device: String(s.dev), inode: String(s.ino), birthNs: String(s.birthtimeNs) },
     capture: observed.state
   }));
-  return { expected, targets: { ...session.roots, storeRoot: path11.dirname(journal.database) }, storeId: journal.storeId, sourceId: journal.source.id };
+  return { expected, targets: { ...session.roots, storeRoot: path12.dirname(journal.database) }, storeId: journal.storeId, sourceId: journal.source.id };
 }
 function validateManagedInspectionReview(env, payload, session) {
   return platformSecurityScope(() => {
@@ -7540,154 +7357,166 @@ function validateManagedInspectionReview(env, payload, session) {
   });
 }
 function inspectManagedStep(env, payload, prior, storeRoot) {
-  return platformSecurityScope(() => {
-    let session;
-    if (!prior) {
-      const roots = managedSourceRoots(env);
-      batch(basePaths(roots));
-      for (const root of Object.values(roots))
-        need4(lstatSync10(root).isDirectory() && isOwned(root), "path-unverified");
-      const file = container(env);
-      session = {
-        nonce: randomUUID7(),
-        cursor: randomUUID7(),
-        stage: 1,
-        roots,
-        selection: claim(file),
-        record: claim(migrationFile(env)),
-        ...storeRoot !== undefined ? { storeRoot: managedPath(storeRoot, true) } : {}
-      };
-      return { session, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: session.cursor } };
-    }
-    session = structuredClone(prior);
-    need4(session.stage > 0 && session.stage < MANAGED_INSPECTION_STEPS.length, "managed-inspection-expired");
-    batch(paths(session));
-    sameDiscovery(env, session);
-    const stage = MANAGED_INSPECTION_STEPS[session.stage];
-    if (stage === "managed-state") {
-      const selected = readManagedBinding(env);
-      if (selected)
-        session.binding = selected;
-      if (session.record.kind !== "absent") {
-        const raw = JSON.parse(readFileSync6(session.record.path, "utf8"));
-        if (raw?.migration?.format === 2)
-          session.operation = readManagedStepJournal(env);
-        else if (raw?.migration?.format === 1)
-          session.prior = readMigration(env);
-        else
-          throw new SetupError("managed-journal-unsupported");
-      }
-      const retained = session.operation ?? session.prior?.binding;
-      need4(!selected || !retained || canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
-      need4(session.prior?.phase !== "complete", "managed-step-conflict");
-      if (retained && session.storeRoot !== undefined)
-        need4(session.storeRoot === path11.dirname(retained.database), "managed-selection-conflict");
-    } else if (stage === "legacy-discovery") {
-      if (session.operation)
-        session.candidate = structuredClone(session.operation);
-      else {
-        const legacy = path11.join(session.roots.configRoot, "plugins", "agent-progress");
-        managedPath(legacy, true);
-        if (lstatSync10(legacy, { throwIfNoEntry: false })) {
-          session.discovered = discoverMigrationPaths(session.roots);
-          if (session.binding)
-            need4(session.binding.installId !== session.discovered.binding.installId && session.binding.database === session.discovered.binding.database && session.binding.storeId === session.discovered.binding.storeId && canonical(session.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
-          if (session.storeRoot !== undefined)
-            need4(session.storeRoot === path11.dirname(session.discovered.binding.database), "managed-selection-conflict");
-          if (session.prior)
-            need4(session.prior.legacyInstallId === session.discovered.binding.installId && session.prior.binding.database === session.discovered.binding.database && session.prior.binding.storeId === session.discovered.binding.storeId && canonical(session.prior.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
-        } else
-          need4(session.prior, "managed-migration-required");
-      }
-      if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
-        throw new SetupError("managed-step-limit");
-    } else if (stage === "legacy-releases") {
-      if (session.candidate)
-        validateCandidate(session, payload);
-      else {
-        const discovered = session.discovered;
-        let evidence;
-        if (discovered) {
-          const current = discoverMigrationPaths(session.roots);
-          need4(canonical(current) === canonical(discovered));
-          evidence = migrationEvidence({ ...session.roots, storeRoot: path11.dirname(discovered.binding.database), confirmed: true });
-          need4(evidence.legacy.ownership === discovered.ownership);
-        }
-        const binding = session.prior?.binding ?? session.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
-        const receipt = !evidence && session.prior ? readRemovalReceipt(session.prior) : undefined;
-        need4(evidence || receipt, "managed-migration-conflict");
-        const legacy = evidence?.legacy ?? {
-          kind: "removal-receipt",
-          ownership: null,
-          ownershipDigest: null,
-          claims: [{ path: path11.join(session.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }],
-          receipt
+  let stage = "roots", known;
+  try {
+    return platformSecurityScope(() => {
+      let session;
+      if (!prior) {
+        const roots = managedSourceRoots(env);
+        batch(basePaths(roots));
+        for (const root of Object.values(roots))
+          need4(lstatSync11(root).isDirectory() && isOwned(root), "path-unverified");
+        const file = container(env);
+        session = {
+          nonce: randomUUID7(),
+          cursor: randomUUID7(),
+          stage: 1,
+          roots,
+          selection: claim(file),
+          record: claim(migrationFile(env)),
+          ...storeRoot !== undefined ? { storeRoot: managedPath(storeRoot, true) } : {}
         };
-        const plan = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name) => ({ name, batch: 0 }));
-        session.candidate = { ...binding, migration: {
-          format: 2,
-          product: "openchamber-agent-progress-managed",
-          phase: evidence ? "pending" : "removed",
-          legacyInstallId: session.prior?.legacyInstallId ?? evidence.binding.installId,
-          operationId: session.nonce,
-          sequence: 1,
-          state: "pending",
-          step: plan[1],
-          lastCompleted: plan[0],
-          consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan)) },
-          expectation: expectation(binding, payload),
-          plan,
-          legacy,
-          captureRenewals: [],
-          intent: null,
-          receipt: null,
-          capture: { state: "unknown", observedAt: null },
-          diagnostic: null
-        } };
-        session.candidate.migration.consent.targetDigest = managedTargetDigest(session.candidate);
+        return { session, progress: null, inspection: { state: "incomplete", stage: "roots", cursor: session.cursor } };
+      }
+      session = structuredClone(prior);
+      need4(session.stage > 0 && session.stage < MANAGED_INSPECTION_STEPS.length, "managed-inspection-expired");
+      stage = MANAGED_INSPECTION_STEPS[session.stage];
+      batch(paths(session));
+      sameDiscovery(env, session);
+      known = session.operation;
+      if (stage === "managed-state") {
+        const selected = readManagedBinding(env);
+        if (selected)
+          session.binding = selected;
+        if (session.record.kind !== "absent") {
+          let raw;
+          try {
+            raw = JSON.parse(readFileSync6(session.record.path, "utf8"));
+          } catch {
+            throw new SetupError("managed-journal-unsupported");
+          }
+          if (raw?.migration?.format === 2) {
+            session.operation = readManagedStepJournal(env);
+            known = session.operation;
+          } else if (raw?.migration?.format === 1)
+            session.prior = readMigration(env);
+          else
+            throw new SetupError("managed-journal-unsupported");
+        }
+        const retained = session.operation ?? session.prior?.binding;
+        need4(!selected || !retained || canonical(selected) === canonical(managedJournalBinding(retained)), "managed-migration-conflict");
+        need4(session.prior?.phase !== "complete", "managed-step-conflict");
+        if (retained && session.storeRoot !== undefined)
+          need4(session.storeRoot === path12.dirname(retained.database), "managed-selection-conflict");
+      } else if (stage === "legacy-discovery") {
+        if (session.operation)
+          session.candidate = structuredClone(session.operation);
+        else {
+          const legacy = path12.join(session.roots.configRoot, "plugins", "agent-progress");
+          managedPath(legacy, true);
+          if (lstatSync11(legacy, { throwIfNoEntry: false })) {
+            session.discovered = discoverMigrationPaths(session.roots);
+            if (session.binding)
+              need4(session.binding.installId !== session.discovered.binding.installId && session.binding.database === session.discovered.binding.database && session.binding.storeId === session.discovered.binding.storeId && canonical(session.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
+            if (session.storeRoot !== undefined)
+              need4(session.storeRoot === path12.dirname(session.discovered.binding.database), "managed-selection-conflict");
+            if (session.prior)
+              need4(session.prior.legacyInstallId === session.discovered.binding.installId && session.prior.binding.database === session.discovered.binding.database && session.prior.binding.storeId === session.discovered.binding.storeId && canonical(session.prior.binding.source) === canonical(session.discovered.binding.source), "managed-migration-conflict");
+          } else
+            need4(session.prior, "managed-migration-required");
+        }
         if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
           throw new SetupError("managed-step-limit");
+      } else if (stage === "legacy-releases") {
+        if (session.candidate)
+          validateCandidate(session, payload);
+        else {
+          const discovered = session.discovered;
+          let evidence;
+          if (discovered) {
+            const current = discoverMigrationPaths(session.roots);
+            need4(canonical(current) === canonical(discovered));
+            evidence = migrationEvidence({ ...session.roots, storeRoot: path12.dirname(discovered.binding.database), confirmed: true });
+            need4(evidence.legacy.ownership === discovered.ownership);
+          }
+          const binding = session.prior?.binding ?? session.binding ?? { ...evidence.binding, installId: `managed-${digest(JSON.stringify([evidence.binding.storeId, evidence.binding.source]))}`, version: payload.version };
+          const receipt = !evidence && session.prior ? readRemovalReceipt(session.prior) : undefined;
+          need4(evidence || receipt, "managed-migration-conflict");
+          const legacy = evidence?.legacy ?? {
+            kind: "removal-receipt",
+            ownership: null,
+            ownershipDigest: null,
+            claims: [{ path: path12.join(session.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }],
+            receipt
+          };
+          const plan = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name) => ({ name, batch: 0 }));
+          session.candidate = { ...binding, migration: {
+            format: 2,
+            product: "openchamber-agent-progress-managed",
+            phase: evidence ? "pending" : "removed",
+            legacyInstallId: session.prior?.legacyInstallId ?? evidence.binding.installId,
+            operationId: session.nonce,
+            sequence: 1,
+            state: "pending",
+            step: plan[1],
+            lastCompleted: plan[0],
+            consent: { reviewDigest: "0".repeat(64), targetDigest: "0".repeat(64), planDigest: digest(canonical(plan)) },
+            expectation: expectation(binding, payload),
+            plan,
+            legacy,
+            captureRenewals: [],
+            intent: null,
+            receipt: null,
+            capture: { state: "unknown", observedAt: null },
+            diagnostic: null
+          } };
+          session.candidate.migration.consent.targetDigest = managedTargetDigest(session.candidate);
+          if (new Set(paths(session)).size > MANAGED_STEP_LIMITS.claimPaths)
+            throw new SetupError("managed-step-limit");
+        }
+      } else if (stage === "store") {
+        validateCandidate(session, payload);
+        capture2(session.candidate);
+      } else if (stage === "review") {
+        const observed = validateCandidate(session, payload);
+        session.review = reviewFor(session, observed);
+        session.stage++;
+        session.cursor = randomUUID7();
+        return {
+          session,
+          inspection: { state: "complete", stage: "review", cursor: null, review: session.review },
+          progress: session.operation ? managedJournalProgress(session.operation, observed) : null
+        };
       }
-    } else if (stage === "store") {
-      validateCandidate(session, payload);
-      capture2(session.candidate);
-    } else if (stage === "review") {
-      const observed = validateCandidate(session, payload);
-      session.review = reviewFor(session, observed);
       session.stage++;
       session.cursor = randomUUID7();
-      return {
-        session,
-        inspection: { state: "complete", stage: "review", cursor: null, review: session.review },
-        progress: session.operation ? managedJournalProgress(session.operation, observed) : null
-      };
-    }
-    session.stage++;
-    session.cursor = randomUUID7();
-    return { session, progress: session.operation ? managedJournalProgress(session.operation) : null, inspection: { state: "incomplete", stage, cursor: session.cursor } };
-  });
+      return { session, progress: session.operation ? managedJournalProgress(session.operation) : null, inspection: { state: "incomplete", stage, cursor: session.cursor } };
+    });
+  } catch (error) {
+    throw new ManagedStepFailure(error, stage, known);
+  }
 }
 
 // setup/managed-step-engine.ts
-import path13 from "node:path";
+import path14 from "node:path";
 
 // setup/managed-step-effects.ts
-import { lstatSync as lstatSync11, readFileSync as readFileSync7, readdirSync as readdirSync4 } from "node:fs";
-import path12 from "node:path";
+import { lstatSync as lstatSync12, readFileSync as readFileSync7, readdirSync as readdirSync4 } from "node:fs";
+import path13 from "node:path";
 function need5(value, code = "managed-step-conflict") {
   if (!value)
     throw new SetupError(code);
 }
 function snapshot3(file) {
-  const s = lstatSync11(file, { bigint: true });
+  const s = lstatSync12(file, { bigint: true });
   return [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":");
 }
 function fileClaim(file) {
   managedPath(file, true);
-  const s = lstatSync11(file, { bigint: true, throwIfNoEntry: false });
+  const s = lstatSync12(file, { bigint: true, throwIfNoEntry: false });
   if (!s)
     return { path: file, kind: "absent", object: null, digest: null };
-  need5(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path12.dirname(file), file]), "managed-migration-conflict");
+  need5(s.isFile() && !s.isSymbolicLink() && s.nlink === 1n && privatePaths([path13.dirname(file), file]), "managed-migration-conflict");
   need5(s.size <= BigInt(MANAGED_STEP_LIMITS.journalBytes), "managed-step-limit");
   const before = [s.dev, s.ino, s.birthtimeNs, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.nlink].join(":"), hash4 = digest(readFileSync7(file));
   need5(before === snapshot3(file), "managed-migration-conflict");
@@ -7720,7 +7549,7 @@ function validateManagedStepTarget(env, payload, journal) {
     need5(payload.plugin && payload.guidance && payload.version === m.expectation.version && activationFingerprint({ ...binding, version: payload.version }, Buffer.from(payload.plugin), Buffer.from(payload.guidance)) === m.expectation.fingerprint, "managed-review-stale");
     const selector = managedBindingFile(env), expectedFile = managedExpectationFile(journal);
     for (const file of [selector, expectedFile]) {
-      need5(!readdirSync4(path12.dirname(file)).some((n) => n.startsWith(path12.basename(file) + ".stage-")), "managed-migration-conflict");
+      need5(!readdirSync4(path13.dirname(file)).some((n) => n.startsWith(path13.basename(file) + ".stage-")), "managed-migration-conflict");
       fileClaim(file);
     }
     const selected = readManagedBinding(env), expected = readManagedExpectation(journal);
@@ -7798,7 +7627,7 @@ function managedStepEffectCommitted(env, payload, journal) {
     else if (m.step.name === "remove-selector" || m.step.name === "remove-discovery") {
       const layout = validateMigrationRemoval(journal), file = layout.file(m.step);
       need5(file && layout.intentFor(file));
-      committed = !lstatSync11(file, { throwIfNoEntry: false });
+      committed = !lstatSync12(file, { throwIfNoEntry: false });
     } else {
       need5(m.intent.before.length === 0 && m.intent.after.length === 0);
       committed = m.step.name === "reconcile" || capture3.state === (m.step.name === "enable" ? "on" : "off");
@@ -7852,15 +7681,15 @@ function applyManagedStepEffect(env, payload, journal, freshCapture = false) {
 // setup/managed-step-engine.ts
 function observeManagedStep(env, operationId) {
   return platformSecurityScope(() => {
-    const roots = managedSourceRoots(env), root = path13.join(roots.dataRoot, "agent-progress-managed");
+    const roots = managedSourceRoots(env), root = path14.join(roots.dataRoot, "agent-progress-managed");
     if (windows)
       windowsPaths([
         roots.configRoot,
         roots.dataRoot,
         root,
-        path13.join(root, ".ownership.json"),
-        path13.join(root, "migration.json"),
-        path13.join(root, "progress-binding.json")
+        path14.join(root, ".ownership.json"),
+        path14.join(root, "migration.json"),
+        path14.join(root, "progress-binding.json")
       ], true);
     const journal = readManagedStepJournal(env);
     if (operationId && journal?.migration.operationId !== operationId)
@@ -7874,7 +7703,7 @@ function replayBegin(env, request) {
     throw new SetupError("managed-inspection-expired");
   const m = journal.migration, receipt = m.receipt;
   if (m.operationId !== request.operationId || m.sequence !== 1 || !receipt || receipt.expectedSequence !== 0 || receipt.outcome !== "applied" || receipt.requestDigest !== managedRequestDigest(request, journal))
-    throw new SetupError("managed-step-conflict");
+    throw new ManagedStepFailure(new SetupError("managed-step-conflict"), "prepare", journal);
   return { disposition: "replayed", progress: managedJournalProgress(journal), journal };
 }
 function beginManagedStep(env, payload, request, budget, session) {
@@ -7894,6 +7723,7 @@ function beginManagedStep(env, payload, request, budget, session) {
   if (reviewed.operation)
     return replayBegin(env, request);
   const next = reviewed.candidate, m = next.migration;
+  requirePlatformStoreFence(next.database);
   m.operationId = request.operationId;
   m.consent.reviewDigest = request.expected;
   m.receipt = { requestDigest: managedRequestDigest(request, next), expectedSequence: 0, sequence: 1, step: m.lastCompleted, outcome: "applied" };
@@ -7929,7 +7759,6 @@ function loadOperation(env, request, hint) {
       windowsPaths(managedJournalPaths(known), true);
     const current = readManagedStepJournal(env);
     need6(current && current.migration.operationId === request.operationId, "not-found");
-    need6(canonical(current) === canonical(known));
     return current;
   });
 }
@@ -7949,16 +7778,27 @@ function replay(request, journal) {
     return;
   return result(journal, "replayed", unknownCapture, receipt.outcome === "failed" ? journal.migration.diagnostic : null);
 }
-function diagnostic(error, journal) {
-  const code = error?.code;
-  return { stage: journal.migration.step?.name ?? "journal", code: code && [...MANAGED_STEP_CODES, ...MANAGED_ACTION_CODES].includes(code) ? code : "managed-step-unsettled" };
+function diagnostic(error, journal, uncertain = false) {
+  const code = managedDiagnostic(error);
+  return { stage: journal.migration.step?.name ?? "journal", code: uncertain && code === "storage" ? "managed-step-unsettled" : code };
 }
 function advanceManagedStep(env, payload, request, budget, hint) {
+  let current;
+  try {
+    return advance(env, payload, request, budget, hint, (journal) => {
+      current = journal;
+    });
+  } catch (error) {
+    throw new ManagedStepFailure(error, request.step.name, current);
+  }
+}
+function advance(env, payload, request, budget, hint, remember) {
   requirePlatformWriteBoundary();
   let capture3 = unknownCapture;
   let claims2, evidence;
   const prior = platformSecurityScope(() => {
     const journal = loadOperation(env, request, hint);
+    remember(journal);
     if (!replay(request, journal)) {
       const m2 = journal.migration;
       need6(request.expectedSequence === m2.sequence && sameManagedStep(request.step, m2.step) && ["pending", "running"].includes(m2.state));
@@ -7975,6 +7815,7 @@ function advanceManagedStep(env, payload, request, budget, hint) {
   const repeated = replay(request, prior);
   if (repeated)
     return repeated;
+  requirePlatformStoreFence(prior.database);
   const m = prior.migration;
   need6(request.expectedSequence === m.sequence && sameManagedStep(request.step, m.step) && ["pending", "running"].includes(m.state));
   const renewal = renewalFor(request, prior), requestDigest = managedRequestDigest(request, prior, renewal);
@@ -8024,9 +7865,9 @@ function advanceManagedStep(env, payload, request, budget, hint) {
           else if (current && canonical(current) === canonical(prior))
             return result(prior, "refused", unknownCapture, diagnostic(error, prior));
           else
-            return result(running, "refused", unknownCapture, diagnostic(error, running));
+            return result(running, "refused", unknownCapture, diagnostic(error, running, true));
         } catch {
-          return result(running, "refused", unknownCapture, diagnostic(error, running));
+          return result(running, "refused", unknownCapture, diagnostic(error, running, true));
         }
         throw error;
       }
@@ -8053,7 +7894,7 @@ function advanceManagedStep(env, payload, request, budget, hint) {
     });
     return result(next, "applied", capture3);
   } catch (error) {
-    const failure = diagnostic(error, running);
+    const failure = diagnostic(error, running, published);
     if (!published)
       return result(prior, "refused", unknownCapture, failure);
     const failed = structuredClone(running), f = failed.migration;
@@ -8066,15 +7907,26 @@ function advanceManagedStep(env, payload, request, budget, hint) {
       budget.require(2, 6000);
       writeManagedStepJournal(env, failed, running);
       return result(failed, "refused", unknownCapture, failure);
-    } catch {
-      return result(running, "refused", unknownCapture, failure);
+    } catch (settlement) {
+      return result(running, "refused", unknownCapture, diagnostic(settlement, running, true));
     }
   }
 }
 function controlManagedStep(env, payload, request, budget, hint, session) {
+  let current;
+  try {
+    return control(env, payload, request, budget, hint, session, (journal) => {
+      current = journal;
+    });
+  } catch (error) {
+    throw new ManagedStepFailure(error, request.action === "resume" && request.review ? request.review.step : "lock", current);
+  }
+}
+function control(env, payload, request, budget, hint, session, remember) {
   requirePlatformWriteBoundary();
   const admitted = platformSecurityScope(() => {
     const journal = loadOperation(env, request, hint);
+    remember(journal);
     return { journal, capture: replay(request, journal) ? unknownCapture : validateManagedStepTarget(env, payload, journal) };
   });
   const prior = admitted.journal;
@@ -8082,6 +7934,7 @@ function controlManagedStep(env, payload, request, budget, hint, session) {
   const repeated = replay(request, prior);
   if (repeated)
     return repeated;
+  requirePlatformStoreFence(prior.database);
   const m = prior.migration;
   need6(request.expectedSequence === m.sequence);
   const allowed = request.action === "pause" ? ["pending", "failed", "running"] : request.action === "abandon" ? ["pending", "failed", "running", "paused"] : ["pending", "paused", "failed", "abandoned", "running"];
@@ -8117,13 +7970,186 @@ function controlManagedStep(env, payload, request, budget, hint, session) {
   return result(next, "applied", capture3);
 }
 
+// setup/managed-observation.ts
+import { lstatSync as lstatSync13, readFileSync as readFileSync8 } from "node:fs";
+import path15 from "node:path";
+function selected(env, expectedDescriptor) {
+  const binding = readManagedBinding(env), descriptor = binding ? digest(readFileSync8(managedBindingFile(env))) : null;
+  if (expectedDescriptor && descriptor !== expectedDescriptor)
+    throw new ManagedBindingError("managed-binding-modified");
+  return { binding, descriptor };
+}
+function selection(env, expectedDescriptor) {
+  const roots = managedSourceRoots(env), root = path15.join(roots.dataRoot, "agent-progress-managed");
+  if (windows)
+    windowsPaths([
+      root,
+      path15.join(root, ".ownership.json"),
+      path15.join(root, "progress-binding.json"),
+      path15.join(root, "migration.json"),
+      path15.join(roots.configRoot, "plugins", "agent-progress")
+    ], true);
+  const { binding, descriptor } = selected(env, expectedDescriptor), file = migrationFile(env), stat = lstatSync13(file, { throwIfNoEntry: false });
+  let journal, prior;
+  if (stat) {
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+      throw new SetupError("managed-binding-invalid");
+    if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
+      throw new SetupError("managed-step-limit");
+    let format;
+    try {
+      format = JSON.parse(readFileSync8(file, "utf8"))?.migration?.format;
+    } catch {
+      throw new SetupError("managed-journal-unsupported");
+    }
+    if (format === 2)
+      journal = readManagedStepJournal(env);
+    else if (format === 1)
+      prior = readMigration(env);
+    else
+      throw new SetupError("managed-journal-unsupported");
+  }
+  const retained = journal ? managedJournalBinding(journal) : prior?.binding;
+  if (binding && retained && canonical(binding) !== canonical(retained))
+    throw new SetupError("managed-selection-conflict");
+  const legacy = !!lstatSync13(path15.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
+  return { binding, descriptor, journal, prior, legacy };
+}
+function storePaths2(binding) {
+  if (windows)
+    windowsPaths([path15.dirname(binding.database), binding.database, ...["-journal", "-wal", "-shm"].map((s) => binding.database + s), managedExpectationFile(binding)], true);
+}
+function observeManagedSetup(env, expectedDescriptor) {
+  try {
+    return readSetup(env, expectedDescriptor);
+  } catch (error) {
+    const status = {
+      configured: false,
+      verified: false,
+      installed: false,
+      captureEnabled: null,
+      targets: null,
+      version: null,
+      activation: "unknown",
+      separateLifecycle: false,
+      historyRetained: true,
+      diagnostics: [managedDiagnostic(error)],
+      delivery: { kind: "managed", revision: 1, managedMigrationSteps: 1, configuration: "invalid", migration: "unavailable", mode: "unknown", observation: "unknown", expectedVersion: null }
+    };
+    return { status, descriptor: undefined, journal: undefined, subagentRuns: false };
+  }
+}
+function readSetup(env, expectedDescriptor) {
+  return platformSecurityScope(() => {
+    const { binding: b, descriptor, journal, prior, legacy } = selection(env, expectedDescriptor);
+    const retained = b ?? journal ?? prior?.binding;
+    const base = {
+      configured: !!b,
+      verified: false,
+      installed: false,
+      captureEnabled: null,
+      targets: b ? { configRoot: b.source.configRoot, dataRoot: b.source.dataRoot, storeRoot: path15.dirname(b.database) } : null,
+      version: null,
+      activation: "unknown",
+      separateLifecycle: false,
+      historyRetained: true,
+      diagnostics: [],
+      delivery: {
+        kind: "managed",
+        revision: 1,
+        managedMigrationSteps: 1,
+        configuration: b ? "configured" : "unconfigured",
+        migration: journal ? journal.migration.state === "complete" ? legacy ? "conflict" : "complete" : "pending" : prior ? prior.phase === "complete" ? legacy ? "conflict" : "complete" : "pending" : legacy ? "available" : "none",
+        mode: "unknown",
+        observation: "unknown",
+        expectedVersion: null
+      }
+    };
+    if (journal)
+      base.delivery.migrationProgress = managedJournalProgress(journal);
+    if (!retained)
+      return { status: base, descriptor, journal, subagentRuns: false };
+    storePaths2(retained);
+    const store = new Store(retained.database, { readOnly: true });
+    try {
+      verifyStore(store, retained);
+      const runs = store.subagentRunStorage();
+      base.captureEnabled = store.list({ limit: 1 }).captureEnabled;
+      if (journal)
+        base.delivery.migrationProgress = managedJournalProgress(journal, { state: base.captureEnabled ? "on" : "off", observedAt: new Date().toISOString() });
+      if (b) {
+        base.verified = b.source.verified;
+        base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
+        const expected = readManagedExpectation(b);
+        if (expected) {
+          base.version = expected.version;
+          base.delivery.expectedVersion = expected.version;
+          const loaded = store.loadedFingerprint(b.source.id, b.installId);
+          base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
+        }
+      }
+      return { status: base, descriptor, journal, subagentRuns: !!b && ["current", "previous"].includes(runs) };
+    } finally {
+      store.close();
+    }
+  });
+}
+function controlManagedCapture(env, enabled, expectedDescriptor) {
+  requirePlatformWriteBoundary();
+  let store, descriptor = null;
+  try {
+    platformSecurityScope(() => {
+      const current = enabled ? selection(env, expectedDescriptor) : { ...selected(env, expectedDescriptor), journal: undefined, prior: undefined, legacy: false };
+      const { binding, journal, prior, legacy } = current;
+      descriptor = current.descriptor;
+      if (!binding)
+        throw new SetupError("binding");
+      requirePlatformStoreFence(binding.database);
+      if (!binding.source.verified)
+        throw new SetupError("source-unverified");
+      if (enabled && (legacy || (journal ? journal.migration.state !== "complete" : prior ? prior.phase !== "complete" : false)))
+        throw new SetupError("managed-migration-required");
+      storePaths2(binding);
+      store = new Store(binding.database);
+      verifyStore(store, binding);
+      store.subagentRunStorage();
+    });
+    requirePlatformWriteBoundary();
+    store.setEnabled(enabled);
+    return { value: { ok: true, captureEnabled: enabled }, descriptor };
+  } finally {
+    store?.close();
+  }
+}
+
 // service/request-worker.ts
 function isSetupRequestWorker() {
   return !isMainThread && workerData?.kind === "agent-progress-setup-request";
 }
-function diagnostic2(error) {
-  const code = error?.code;
-  return typeof code === "string" && [...MANAGED_ACTION_CODES, ...MANAGED_STEP_CODES].includes(code) ? code : platformErrorCode(error) ?? storageError(error).code;
+var diagnostic2 = managedDiagnostic;
+function correlatedManagedReply(request, value) {
+  try {
+    if (!value || value.version !== 1 || !["applied", "replayed", "observed", "refused"].includes(value.disposition))
+      return false;
+    const p = value.progress;
+    if ("operationId" in request && request.operationId && p && p.operationId !== request.operationId)
+      return false;
+    if (value.disposition === "refused")
+      return !!value.error;
+    if (request.action === "inspect" || request.action === "status")
+      return value.disposition === "observed" && value.error === null && !(request.action === "status" && request.operationId && !p);
+    if (!p || !["applied", "replayed"].includes(value.disposition) || p.sequence !== (request.action === "begin" ? 1 : request.expectedSequence + 1))
+      return false;
+    if (value.error)
+      return value.disposition === "replayed" && p.state === "failed" && request.action === "advance" && sameManagedStep(p.step, request.step);
+    if (request.action === "begin")
+      return sameManagedStep(p.lastCompleted, { name: "prepare", batch: 0 });
+    if (request.action === "advance")
+      return sameManagedStep(p.lastCompleted, request.step);
+    return p.state === (request.action === "resume" ? "pending" : request.action === "pause" ? "paused" : "abandoned");
+  } catch {
+    return false;
+  }
 }
 function runSetupRequestWorker() {
   if (!isSetupRequestWorker() || !parentPort)
@@ -8134,6 +8160,9 @@ function runSetupRequestWorker() {
   let value, code;
   let inspection;
   let journal;
+  let refusal;
+  let health;
+  let descriptor;
   try {
     value = withPlatformRequestBudget(budget, () => {
       setup = new SetupController({ env: input.env }, () => input.payload);
@@ -8196,8 +8225,19 @@ function runSetupRequestWorker() {
       }
       if (request.action === "health")
         return setup.health();
-      if (request.action === "status")
-        return setup.status();
+      if (request.action === "status") {
+        const observed = observeManagedSetup(input.env, request.descriptor);
+        journal = observed.journal;
+        descriptor = observed.descriptor;
+        const ready = observed.status.configured && observed.status.verified;
+        health = { state: ready ? "ready" : observed.status.diagnostics.length ? "refused" : "unconfigured", ready, sqlite: ready, diagnostics: observed.status.diagnostics, subagentRuns: observed.subagentRuns };
+        return observed.status;
+      }
+      if (request.action === "capture") {
+        const observed = controlManagedCapture(input.env, request.enabled, request.descriptor);
+        descriptor = observed.descriptor;
+        return observed.value;
+      }
       if (request.action === "run")
         return setup.run(request.name, request.body);
       throw Object.assign(new Error("managed-step-unsupported"), { code: "managed-step-unsupported" });
@@ -8205,6 +8245,20 @@ function runSetupRequestWorker() {
     budget.require();
   } catch (error) {
     code = diagnostic2(error);
+    if (input.request.action === "managed-step") {
+      const parsed = managedStepRequest(input.request.body);
+      const current = error instanceof ManagedStepFailure ? error.journal : journal;
+      const sameTarget = current && parsed && ("operationId" in parsed ? parsed.operationId === current.migration.operationId : parsed.action === "inspect" || parsed.action === "status");
+      const stage = error instanceof ManagedStepFailure ? error.stage : parsed?.action === "advance" ? parsed.step.name : parsed?.action === "begin" ? "prepare" : parsed?.action === "inspect" ? "roots" : "journal";
+      refusal = {
+        version: 1,
+        disposition: "refused",
+        inspection: null,
+        progress: sameTarget ? managedJournalProgress(current) : null,
+        error: { stage, code },
+        accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs }
+      };
+    }
   } finally {
     try {
       setup?.close();
@@ -8213,12 +8267,601 @@ function runSetupRequestWorker() {
     }
   }
   const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
-  const result2 = code ? { ok: false, code, accounting } : { ok: true, value, accounting };
+  const result2 = code ? { ok: false, code, accounting, ...refusal ? { refusal: { ...refusal, accounting } } : {} } : { ok: true, value, accounting, ...health ? { health } : {}, ...descriptor !== undefined ? { descriptor } : {} };
   if (Buffer.byteLength(JSON.stringify(result2)) > MANAGED_STEP_LIMITS.responseBytes || inspection && Buffer.byteLength(JSON.stringify(inspection)) > MANAGED_STEP_LIMITS.journalBytes || journal && Buffer.byteLength(JSON.stringify(journal)) > MANAGED_STEP_LIMITS.journalBytes)
     parentPort.postMessage({ requestId: input.requestId, result: { ok: false, code: "managed-step-limit", accounting } });
   else
     parentPort.postMessage({ requestId: input.requestId, result: result2, ...!code && inspection ? { inspection } : {}, ...!code && journal ? { journal } : {} });
   parentPort.close();
+}
+
+class SetupRequestWorker {
+  active = false;
+  entry;
+  inspection;
+  journal;
+  constructor(entry2) {
+    this.entry = entry2;
+  }
+  get busy() {
+    return this.active;
+  }
+  run(env, payload, request, startedAt = process.hrtime.bigint()) {
+    const budget = new PlatformRequestBudget(startedAt);
+    const refused = (code) => ({ ok: false, code, accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs } });
+    if (this.active)
+      return Promise.resolve(refused("managed-step-unsettled"));
+    try {
+      budget.require();
+    } catch (error) {
+      return Promise.resolve(refused(diagnostic2(error)));
+    }
+    this.active = true;
+    const context2 = digest(canonical({ env, payload })), requestId = randomUUID8();
+    const saved = this.inspection?.context === context2 ? this.inspection.session : undefined;
+    const journal = this.journal?.context === context2 ? this.journal.value : undefined;
+    let targets;
+    try {
+      targets = setupWriterTargets(env, journal?.database ?? saved?.candidate?.database);
+    } catch (error) {
+      this.active = false;
+      return Promise.resolve(refused(diagnostic2(error)));
+    }
+    const consumesInspection = request.action === "managed-step" && managedStepRequest(request.body)?.action !== "status";
+    if (this.inspection?.context !== context2 || consumesInspection)
+      this.inspection = undefined;
+    this.journal = undefined;
+    return new Promise((resolve) => {
+      let settled = false, result2;
+      let nextInspection;
+      let nextJournal;
+      const finish = (reply) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(reply);
+        }
+      };
+      const remaining = Math.max(0, MANAGED_STEP_LIMITS.responseMs - budget.elapsedMs);
+      const timer = setTimeout(() => finish(refused("managed-step-deadline")), remaining);
+      const fence = { port: writerTargetPort(targets[0]), nonce: randomBytes(32).toString("hex"), targets };
+      const expected = Buffer.from(fence.nonce + `
+`);
+      const sockets = new Set;
+      const connection = (socket) => {
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+        socket.setTimeout(1000, () => socket.destroy());
+        let bytes = Buffer.alloc(0);
+        socket.on("error", () => socket.destroy());
+        socket.on("data", (chunk) => {
+          bytes = Buffer.concat([bytes, chunk]);
+          if (bytes.length > expected.length) {
+            socket.destroy();
+            return;
+          }
+          if (bytes.length !== expected.length)
+            return;
+          let admitted = false;
+          try {
+            budget.require();
+            admitted = timingSafeEqual(bytes, expected);
+          } catch {}
+          socket.end(admitted ? `ok
+` : `no
+`);
+        });
+      };
+      acquireWriterSlots(targets, connection, () => {
+        result2 = refused("managed-step-unsettled");
+        finish(result2);
+      }).then((unlock) => {
+        const release = (reply) => {
+          for (const socket of sockets)
+            socket.destroy();
+          unlock().then(() => {
+            this.active = false;
+            finish(reply);
+          });
+        };
+        let worker;
+        try {
+          budget.require();
+          worker = new Worker(this.entry, { workerData: {
+            kind: "agent-progress-setup-request",
+            requestId,
+            env,
+            payload,
+            request,
+            startedAt,
+            counter: budget.counter.buffer,
+            fence,
+            ...saved && consumesInspection ? { inspection: saved } : {},
+            ...journal ? { journal } : {}
+          } });
+        } catch (error) {
+          release(refused(diagnostic2(error)));
+          return;
+        }
+        worker.on("message", (message) => {
+          if (!message || message.requestId !== requestId || result2 || !message.result || typeof message.result.ok !== "boolean") {
+            result2 = refused("managed-step-unsettled");
+            nextInspection = undefined;
+            nextJournal = undefined;
+            return;
+          }
+          result2 = message.result;
+          nextInspection = message.inspection;
+          nextJournal = message.journal;
+          if (result2.ok && request.action === "managed-step") {
+            const parsed = managedStepRequest(request.body);
+            if (!parsed || !correlatedManagedReply(parsed, result2.value)) {
+              result2 = refused("managed-step-unsettled");
+              nextInspection = undefined;
+              nextJournal = undefined;
+            }
+          }
+        });
+        worker.once("error", () => {
+          result2 = refused("managed-step-unsettled");
+        });
+        worker.once("exit", (exitCode) => {
+          if (exitCode !== 0 || !result2)
+            release(refused("managed-step-unsettled"));
+          else if (budget.elapsedMs >= MANAGED_STEP_LIMITS.responseMs)
+            release(refused("managed-step-deadline"));
+          else {
+            if (!settled && result2.ok && nextInspection && request.action === "managed-step")
+              this.inspection = { context: context2, session: nextInspection };
+            if (!settled && result2.ok && nextJournal && (request.action === "managed-step" || request.action === "status"))
+              this.journal = { context: context2, value: nextJournal };
+            const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
+            release({
+              ...result2,
+              ...result2.ok && request.action === "managed-step" ? { value: { ...result2.value, accounting } } : {},
+              ...!result2.ok && result2.refusal ? { refusal: { ...result2.refusal, accounting } } : {},
+              accounting
+            });
+          }
+        });
+      }, (error) => {
+        this.active = false;
+        finish(refused(diagnostic2(error)));
+      });
+    });
+  }
+}
+
+// service/server.ts
+function managedStepHttpStatus(code) {
+  if (code === "invalid" || code === "confirmation-required" || code === "targets-unverified")
+    return 400;
+  if (code === "not-found")
+    return 404;
+  if ([
+    "managed-step-conflict",
+    "managed-step-unsupported",
+    "managed-step-limit",
+    "managed-journal-unsupported",
+    "managed-inspection-expired",
+    "managed-review-stale",
+    "managed-selection-conflict",
+    "managed-source-conflict",
+    "managed-migration-required",
+    "managed-migration-conflict",
+    "managed-migration-pending",
+    "managed-binding-invalid",
+    "managed-binding-modified",
+    "ownership-invalid",
+    "modified-owned-files",
+    "foreign-files",
+    "collision",
+    "schema",
+    "binding",
+    "source-unverified"
+  ].includes(code))
+    return 409;
+  return 503;
+}
+function createProgressServer(store, token, unavailableCode, setup) {
+  if (!token)
+    throw new ProgressError("binding");
+  const expected = Buffer.from(`Bearer ${token}`);
+  let standaloneRuns = false, standaloneError = unavailableCode;
+  if (!setup && store)
+    try {
+      standaloneRuns = ["current", "previous"].includes(store.subagentRunStorage());
+    } catch (e) {
+      standaloneError = storageError(e).code;
+    }
+  const server = http.createServer({ maxHeaderSize: 32 * 1024 }, async (req, res) => {
+    function answer(status, body) {
+      let text2 = JSON.stringify(body);
+      if (Buffer.byteLength(text2) > LIMITS.responseBytes) {
+        status = 413;
+        text2 = JSON.stringify({ error: "response-too-large" });
+      }
+      res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      res.end(text2);
+    }
+    const supplied = Buffer.from(req.headers.authorization ?? "");
+    if (supplied.length !== expected.length || !timingSafeEqual2(supplied, expected))
+      return answer(401, { error: "unauthorized" });
+    const admittedAt = process.hrtime.bigint();
+    let stepRoute = false, stepStage = "journal";
+    const stepRefusal = (code, accounting = { securitySpawns: 0, elapsedMs: Number(process.hrtime.bigint() - admittedAt) / 1e6 }) => answer(managedStepHttpStatus(code), { version: 1, disposition: "refused", inspection: null, progress: null, error: { stage: stepStage, code }, accounting });
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, migrationAction = false;
+    try {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      mentionRoute = url.pathname === MENTIONS_SEARCH_PATH || url.pathname === MENTIONS_RESOLVE_PATH;
+      if (mentionRoute) {
+        if (url.origin !== "http://127.0.0.1")
+          return answer(404, { error: "not-found" });
+        if (req.method !== "POST")
+          return answer(405, { error: "method-not-allowed" });
+        if (url.search)
+          throw new ProgressError("invalid");
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+          const b = Buffer.from(chunk);
+          size += b.length;
+          if (size > LIMITS.requestBytes) {
+            req.resume();
+            return answer(413, { error: "request-too-large" });
+          }
+          chunks.push(b);
+        }
+        let text3;
+        try {
+          text3 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        const search = url.pathname === MENTIONS_SEARCH_PATH, body = mentionBody(text3, search ? "search" : "resolve");
+        const active2 = setup ? await setup.currentForRequest() : { store, error: unavailableCode };
+        if (!active2.store)
+          return answer(503, { error: active2.error ?? "storage" });
+        const alive = () => !req.aborted && !req.socket.destroyed && !res.destroyed;
+        let held = active2.store;
+        const acquire = () => {
+          const s = held ?? (setup ? setup.current().store : store);
+          held = undefined;
+          if (!s)
+            throw new ProgressError("storage");
+          return s;
+        };
+        return answer(200, search ? searchMentions(active2.store, body.query, body.directory, alive) : await resolveMention(acquire, body.id, alive));
+      }
+      graphRoute = url.pathname === "/v1/plan-graph";
+      if (graphRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
+      runsRoute = ["/v1/subagent-runs", "/v1/subagent-runs/reconcile", "/v1/subagent-runs/dismiss-loss"].includes(url.pathname);
+      if (runsRoute) {
+        if (url.origin !== "http://127.0.0.1")
+          return answer(404, { error: "not-found" });
+        const active2 = setup ? await setup.currentForRequest() : { store, error: unavailableCode };
+        if (!active2.store)
+          return answer(503, { error: active2.error ?? "storage" });
+        if (url.pathname !== "/v1/subagent-runs") {
+          if (req.method !== "POST")
+            return answer(405, { error: "method-not-allowed" });
+          if (url.search)
+            return answer(404, { error: "not-found" });
+          let size = 0;
+          const chunks = [];
+          for await (const chunk of req) {
+            const b = Buffer.from(chunk);
+            size += b.length;
+            if (size > RUN_LIMITS.queryBytes) {
+              req.resume();
+              return answer(413, { error: "request-too-large" });
+            }
+            chunks.push(b);
+          }
+          let text3;
+          try {
+            text3 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+          } catch {
+            throw new ProgressError("invalid");
+          }
+          return answer(200, url.pathname.endsWith("/dismiss-loss") ? active2.store.dismissRunLoss(parseDismissLossBody(text3)) : active2.store.requestRunReconciliation(parseReconcileBody(text3)));
+        }
+        if (req.method !== "GET")
+          return answer(405, { error: "method-not-allowed" });
+        if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
+          return answer(400, { error: "body-not-allowed" });
+        const allowed2 = ["storeId", "binding", "source", "root", "plan", "cleanupRev", "view", "cursor"];
+        if ([...url.searchParams.keys()].some((k) => !allowed2.includes(k) || url.searchParams.getAll(k).length !== 1))
+          return answer(404, { error: "not-found" });
+        if (Buffer.byteLength(url.search) > RUN_LIMITS.queryBytes)
+          throw new ProgressError("invalid");
+        const r = Object.fromEntries(url.searchParams);
+        r.binding = parseCaptureBinding(url.searchParams.get("binding"));
+        if (url.searchParams.has("cleanupRev")) {
+          const v = url.searchParams.get("cleanupRev");
+          if (!/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)))
+            throw new ProgressError("invalid");
+          r.cleanupRev = Number(v);
+        }
+        return answer(200, active2.store.subagentRuns(r));
+      }
+      comparisonRoute = ["/v1/document-captures", "/v1/document-comparison"].includes(url.pathname);
+      if (comparisonRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
+      digestRoute = url.pathname === "/v1/change-digest";
+      searchRoute = url.pathname === "/v1/search" || url.pathname === "/v1/search-state";
+      if (url.origin !== "http://127.0.0.1")
+        return answer(404, { error: "not-found" });
+      if (searchRoute && req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
+      cleanupRoute = ["/v1/plan/archive", "/v1/plan/restore", "/v1/plan/delete"].includes(url.pathname);
+      if (cleanupRoute) {
+        if (req.method !== "POST")
+          return answer(405, { error: "method-not-allowed" });
+        if (url.search)
+          return answer(404, { error: "not-found" });
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+          const b = Buffer.from(chunk);
+          size += b.length;
+          if (size > LIMITS.requestBytes) {
+            req.resume();
+            return answer(413, { error: "request-too-large" });
+          }
+          chunks.push(b);
+        }
+        let body;
+        try {
+          body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        const action = url.pathname.endsWith("/archive") ? "archive" : url.pathname.endsWith("/restore") ? "restore" : "delete";
+        const request = parseCleanup(action, body);
+        const active2 = setup ? await setup.currentForRequest() : { store, error: unavailableCode };
+        if (!active2.store)
+          return answer(503, { error: active2.error ?? "storage" });
+        return answer(200, active2.store.cleanup(action, request));
+      }
+      if (url.pathname === "/v1/extension-update") {
+        if (req.method !== "GET")
+          return answer(405, { error: "method-not-allowed" });
+        if (url.search)
+          return answer(404, { error: "not-found" });
+        if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
+          return answer(400, { error: "body-not-allowed" });
+        return answer(200, {
+          installedVersion: RELEASE,
+          repository: "Phototonic/openchamber-progress",
+          ref: "main",
+          state: "unknown",
+          checkedAt: null,
+          stale: false,
+          diagnostic: "unavailable",
+          nextCheckAt: new Date(Date.now() + 3600000).toISOString()
+        });
+      }
+      if (url.pathname === "/v1/setup" || url.pathname.startsWith("/v1/setup/")) {
+        if (url.search)
+          return answer(404, { error: "not-found" });
+        if (!setup)
+          return answer(503, { error: "setup-unavailable" });
+        if (url.pathname === "/v1/setup") {
+          if (req.method !== "GET")
+            return answer(405, { error: "method-not-allowed" });
+          if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
+            return answer(400, { error: "body-not-allowed" });
+          if (!setup.managed)
+            return answer(200, setup.status(true));
+          const reply = await setup.request({ action: "status" }, admittedAt);
+          return reply.ok ? answer(200, reply.value) : answer(managedStepHttpStatus(reply.code), { error: reply.code });
+        }
+        const action = url.pathname.slice("/v1/setup/".length);
+        if (!["inspect", "install", "update", "disable", "enable", "remove-capture", "managed-inspect", "managed-configure", "managed-migrate", "managed-enable", "managed-disable", "managed-step"].includes(action))
+          return answer(404, { error: "not-found" });
+        if (req.method !== "POST")
+          return answer(405, { error: "method-not-allowed" });
+        if (action === "managed-migrate" || action === "managed-inspect") {
+          req.resume();
+          return answer(409, { error: "managed-action-required" });
+        }
+        stepRoute = url.pathname === MANAGED_STEP_ROUTE;
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+          const b = Buffer.from(chunk);
+          size += b.length;
+          if (size > (stepRoute ? MANAGED_STEP_LIMITS.requestBytes : LIMITS.requestBytes)) {
+            req.resume();
+            return answer(413, { error: "request-too-large" });
+          }
+          chunks.push(b);
+        }
+        let body;
+        try {
+          const text3 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+          body = text3 ? JSON.parse(text3) : {};
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        if (stepRoute) {
+          const parsed = managedStepRequest(body);
+          if (!parsed)
+            return stepRefusal("invalid");
+          stepStage = parsed.action === "begin" ? "prepare" : parsed.action === "advance" ? parsed.step.name : parsed.action === "inspect" ? "roots" : parsed.action === "status" ? "journal" : "lock";
+          const reply = await setup.request({ action: "managed-step", body: parsed }, admittedAt);
+          if (!reply.ok) {
+            if (reply.refusal)
+              return answer(managedStepHttpStatus(reply.code), reply.refusal);
+            if (reply.code === "managed-step-port-busy" || reply.code === "managed-step-unsettled")
+              stepStage = "lock";
+            return stepRefusal(reply.code, reply.accounting);
+          }
+          const value = reply.value;
+          return answer(value.error ? managedStepHttpStatus(value.error.code) : 200, value);
+        }
+        migrationAction = action === "managed-migrate";
+        return answer(200, await withSetupWriter(() => setup.run(action, body), setup.writerTargets(body)));
+      }
+      if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])
+        return answer(400, { error: "body-not-allowed" });
+      if (url.pathname === "/health") {
+        if (req.method !== "GET")
+          return answer(405, { error: "method-not-allowed" });
+        if (url.search)
+          return answer(404, { error: "not-found" });
+        if (!setup && (!store || standaloneError))
+          return answer(503, { error: standaloneError ?? "storage" });
+        const snapshot4 = setup ? setup.health() : { state: "ready", ready: true, sqlite: true, diagnostics: [], subagentRuns: standaloneRuns };
+        const { subagentRuns, ...health } = snapshot4;
+        return answer(200, {
+          ok: true,
+          ...health,
+          ...setup?.managed ? { managedMigrationSteps: 1 } : {},
+          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
+          protocolVersion: VERSION,
+          schemaVersion: VERSION,
+          runtime: { node: process.versions.node, bun: process.versions.bun ?? null }
+        });
+      }
+      if (url.pathname === "/v1/capture/disable" || url.pathname === "/v1/capture/enable") {
+        if (req.method !== "POST")
+          return answer(405, { error: "method-not-allowed" });
+        if (url.search)
+          return answer(404, { error: "not-found" });
+        const enabled = url.pathname.endsWith("/enable");
+        if (setup?.managed) {
+          const reply = await setup.request({ action: "capture", enabled }, admittedAt);
+          return reply.ok ? answer(200, reply.value) : answer(managedStepHttpStatus(reply.code), { error: reply.code });
+        }
+        return await withSetupWriter(() => {
+          const active2 = setup ? setup.current() : { store, error: unavailableCode };
+          if (!active2.store)
+            return answer(503, { error: active2.error ?? "storage" });
+          if (setup && enabled)
+            setup.enableCapture();
+          else
+            active2.store.setEnabled(enabled);
+          return answer(200, { ok: true, captureEnabled: enabled });
+        }, setup ? setup.writerTargets() : store ? [writerTarget("store", path16.dirname(store.file))] : []);
+      }
+      const active = setup ? await setup.currentForRequest() : { store, error: unavailableCode };
+      const currentStore = active.store;
+      if (req.method !== "GET")
+        return answer(405, { error: "method-not-allowed" });
+      const routes = { "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
+      routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
+      routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
+      routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
+      const allowed = routes[url.pathname];
+      if (!allowed || [...url.searchParams.keys()].some((k) => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1))
+        return answer(404, { error: "not-found" });
+      if (searchRoute && Buffer.byteLength(url.search) > SEARCH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (comparisonRoute && Buffer.byteLength(url.search) > CAPTURE_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      if (graphRoute && Buffer.byteLength(url.search) > GRAPH_LIMITS.queryBytes)
+        throw new ProgressError("invalid");
+      const number = (key, fallback) => {
+        const v = url.searchParams.get(key);
+        if (v === null)
+          return fallback;
+        if (!/^\d{1,9}$/.test(v))
+          throw new ProgressError("invalid");
+        return Number(v);
+      };
+      const text2 = (key, required = false) => {
+        const v = url.searchParams.get(key) ?? undefined;
+        if (required && !v || v !== undefined && (key === "directory" ? v.length > 4096 || v.includes("\x00") : !identifier(v)))
+          throw new ProgressError("invalid");
+        return v;
+      };
+      if (!currentStore)
+        return answer(503, { error: active.error ?? "storage" });
+      if (url.pathname === "/v1/search") {
+        const options = Object.fromEntries(url.searchParams);
+        if (url.searchParams.has("limit"))
+          options.limit = number("limit", 20);
+        return answer(200, currentStore.search(options));
+      }
+      if (url.pathname === "/v1/search-state") {
+        let keys2;
+        try {
+          keys2 = JSON.parse(url.searchParams.get("keys") ?? "null");
+        } catch {
+          throw new ProgressError("invalid");
+        }
+        return answer(200, currentStore.searchState(text2("storeId", true), keys2));
+      }
+      if (url.pathname === "/v1/plans") {
+        const archived = url.searchParams.get("archived") ?? "exclude";
+        if (archived !== "exclude" && archived !== "only")
+          throw new ProgressError("invalid");
+        return answer(200, currentStore.list({ cursor: number("cursor", 0), limit: number("limit", 20), source: text2("source"), session: text2("session"), directory: text2("directory"), archived }));
+      }
+      const source = text2("source", true);
+      const plan = text2("plan", true);
+      if (graphRoute) {
+        const pin = (key, min) => {
+          const v = url.searchParams.get(key);
+          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < min)
+            throw new ProgressError("invalid");
+          return Number(v);
+        };
+        return answer(200, currentStore.planGraph({ storeId: text2("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan, revision: pin("revision", 1), cleanupRev: pin("cleanupRev", 0) }));
+      }
+      if (comparisonRoute) {
+        const integer4 = (key, min) => {
+          const value = url.searchParams.get(key);
+          if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
+            throw new ProgressError("invalid");
+          return Number(value);
+        };
+        const r = { storeId: text2("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan, cleanupRev: integer4("cleanupRev", 0) };
+        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer4("before", 1), integer4("after", 1)));
+      }
+      if (digestRoute) {
+        const revision = (key, minimum) => {
+          const v = url.searchParams.get(key);
+          if (v === null || !/^\d{1,16}$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < minimum)
+            throw new ProgressError("invalid");
+          return Number(v);
+        };
+        return answer(200, currentStore.changeDigest({ storeId: text2("storeId", true), source, plan, to: revision("to", 1), cleanupRev: revision("cleanupRev", 0), ...url.searchParams.has("after") ? { after: revision("after", 1) } : {} }));
+      }
+      if (url.pathname === "/v1/plan") {
+        const detail = currentStore.detail(source, plan, number("cursor", 0));
+        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail) });
+      }
+      if (url.pathname === "/v1/document")
+        return answer(200, currentStore.document(source, plan, number("cursor", 0), url.searchParams.has("capture") ? number("capture", 0) : undefined));
+      return answer(200, currentStore.history(source, plan, number("cursor", 0), number("limit", 20)));
+    } catch (e) {
+      if (stepRoute)
+        return stepRefusal(managedDiagnostic(e));
+      const workerCode = managedDiagnostic(e);
+      if (workerCode === "managed-step-port-busy" || workerCode === "managed-step-unsettled")
+        return answer(503, { error: workerCode });
+      const lastAction = migrationAction ? setup?.lastMigrationFailure() : undefined;
+      const diagnostic3 = lastAction ? { lastAction } : {};
+      const platformCode = platformErrorCode(e);
+      if (platformCode)
+        return answer(503, { error: platformCode, ...diagnostic3 });
+      if (e instanceof ManagedBindingError)
+        return answer(409, { error: e.code, ...diagnostic3 });
+      if (e instanceof SetupError)
+        return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code, ...diagnostic3 });
+      const error = e instanceof ProgressError ? e : storageError(e);
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
+        return answer(409, { error: error.code });
+      return answer(error.code === "invalid" ? 400 : error.code === "not-found" ? 404 : 503, { error: error.code, ...diagnostic3 });
+    }
+  });
+  server.requestTimeout = 5000;
+  server.headersTimeout = 5000;
+  return server;
 }
 
 // service/main.ts
@@ -8231,7 +8874,7 @@ if (isSetupRequestWorker()) {
     const token = process.env.OPENCHAMBER_SERVICE_TOKEN;
     if (!Number.isInteger(port) || port < 1 || port > 65535 || !token)
       throw new Error;
-    setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync8(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync8(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync8(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }));
+    setup = new SetupController({ env: process.env }, () => ({ plugin: readFileSync9(new URL("../companion/index.js", import.meta.url), "utf8"), guidance: readFileSync9(new URL("../companion/SKILL.md", import.meta.url), "utf8"), removal: readFileSync9(new URL("../setup/main.js", import.meta.url), "utf8"), version: RELEASE }), undefined, undefined, new URL(import.meta.url));
     const server = createProgressServer(undefined, token, undefined, setup);
     server.on("error", () => {
       setup?.close();

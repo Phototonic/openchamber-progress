@@ -9,7 +9,9 @@ import { activationFingerprint } from '../shared/activation.ts';
 import { lifecycle, normalizeTargets, SetupError, type Targets, type Payload, type Action } from '../setup/lifecycle.ts';
 import {legacyMigration,readMigration,writeMigration,sameMigrationTarget,removalRecorded,migrationError,type MigrationRecord} from '../setup/managed-migration.ts';
 import { setupSuggestions, type HostPathContext } from './suggestions.ts';
-import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject } from '../shared/platform.ts';
+import { windows, windowsPath, privatePaths, privateDirectory, isOwned, platformSecurityScope, syncFile, syncDirectory, PlatformError, platformErrorCode, sameWindowsDirectory, sameWindowsObject,writerTarget,requirePlatformStoreFence } from '../shared/platform.ts';
+import {SetupRequestWorker,withSetupWriter,type SetupWorkerRequest,type SetupWorkerHealth} from './request-worker.ts';
+import {setupWriterTargets} from './writer-fence.ts';
 
 type ManagedCandidate={review:ManagedReview;binding?:Binding;targets:Targets;record?:MigrationRecord;legacy?:ReturnType<typeof legacyMigration>};
 
@@ -31,8 +33,33 @@ export class SetupController {
   private expectationPending = true;
   private lastAction?: SetupRead['lastAction'];
   private migrationStage: ManagedActionStage = 'managed-state-create';
+  private worker?:SetupRequestWorker;
+  private readonly workerEntry:URL;
+  private workerHealth?:SetupWorkerHealth;
+  get managed(){return !!this.managedEnv;}
+  writerTargets(body?:unknown):string[] {
+    const root=(body as {storeRoot?:unknown}|undefined)?.storeRoot;
+    const database=typeof root==='string'&&path.isAbsolute(root)?path.join(root,'progress.sqlite'):this.binding?.database;
+    return this.managedEnv?setupWriterTargets(this.managedEnv,database):[writerTarget('scope',path.dirname(this.bindingFile)),
+      ...(database?[writerTarget('store',path.dirname(database))]:[])];
+  }
+  /** HTTP uses this boundary, never a synchronous managed status/migration. */
+  async request(request:SetupWorkerRequest,startedAt=process.hrtime.bigint()) {
+    if(!this.managedEnv)throw new SetupError('managed-service-required');
+    this.worker??=new SetupRequestWorker(this.workerEntry);
+    const reply=await this.worker.run(this.managedEnv,this.readonlyPayload(),
+      request.action==='status'||request.action==='capture'?{...request,descriptor:this.expectedDescriptor}:request,startedAt);
+    if(reply.ok&&reply.descriptor)this.expectedDescriptor=reply.descriptor;
+    if(request.action==='status'){
+      if(reply.ok&&reply.health)this.workerHealth=reply.health;
+      else if(!reply.ok)this.workerHealth={state:'refused',ready:false,sqlite:false,diagnostics:[reply.code],subagentRuns:false};
+    }
+    return reply;
+  }
   lastMigrationFailure() { return this.lastAction?{...this.lastAction}:undefined; }
-  constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext) {
+  constructor(privateFile: string | { env: NodeJS.ProcessEnv }, readonlyPayload: () => Payload, _legacyDefault?:string, suggestionContext?:HostPathContext,
+    workerEntry:URL=new URL('./main.ts',import.meta.url)) {
+    this.workerEntry=workerEntry;
     this.readonlyPayload=readonlyPayload;this.suggestionContext=suggestionContext;
     if(typeof privateFile !== 'string') {
       // Listening and host liveness must not wait on cold security helpers. No
@@ -49,8 +76,15 @@ export class SetupController {
   }
   private readonly bindingFile: string;
   current() { this.refresh();return {store:this.store,error:this.fixedError?.code??this.error,configured:!!this.binding}; }
+  /** The first managed data admission may publish the package expectation.
+   * Coordinate that existing write with migration/capture; subsequent reads
+   * cannot publish it and retain their ordinary synchronous admission path. */
+  async currentForRequest() {
+    return this.managedEnv&&this.expectationPending?withSetupWriter(()=>this.current(),this.writerTargets()):this.current();
+  }
   /** Last admission observation only. This snapshot grants no filesystem authority. */
   health() {
+    if(this.workerHealth)return {...this.workerHealth,diagnostics:[...this.workerHealth.diagnostics]};
     const diagnostics=this.managedDiagnostic?[this.managedDiagnostic]:this.store?[]:
       this.securityUnavailable?['windows-security-unavailable']:this.binding||!this.canPersist?[this.fixedError?.code??this.error]:[];
     return {state:!this.checked?'starting':this.store?'ready':diagnostics.length?'refused':'unconfigured',
@@ -67,6 +101,7 @@ export class SetupController {
   }
   private recordError(e:unknown) {this.error=storageError(e).code;this.fixedError=e instanceof ManagedBindingError||platformErrorCode(e)?e as ManagedBindingError|PlatformError:undefined;this.securityUnavailable=e instanceof PlatformError&&e.code==='windows-security-unavailable';}
   private refresh() {
+    this.workerHealth=undefined;
     platformSecurityScope(()=>this.refreshInner());
     // Once per admitted package generation, outside read-only security scopes.
     // Failure remains an unknown expectation, not an authorization or a retry loop.
@@ -138,6 +173,7 @@ export class SetupController {
       return {configured:!!this.binding,verified:targets.confirmed,installed:info.installed,captureEnabled:null,targets:{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot},version:info.version,activation:'unknown',separateLifecycle:true,historyRetained:true,diagnostics:info.diagnostics,recovery:info.recovery,action};
     }
     if(!targets.confirmed)throw new SetupError('confirmation-required');
+    requirePlatformStoreFence(path.join(targets.storeRoot,'progress.sqlite'));
     if(['disable','enable','remove-capture'].includes(action)) {
       const current=this.targets();if(!current||!(windows?platformSecurityScope(()=>sameWindowsDirectory(current.configRoot,targets.configRoot)&&sameWindowsDirectory(current.dataRoot,targets.dataRoot)&&sameWindowsDirectory(current.storeRoot,targets.storeRoot)):current.configRoot===targets.configRoot&&current.dataRoot===targets.dataRoot&&current.storeRoot===targets.storeRoot))throw new SetupError('ownership-invalid');
     }
@@ -183,6 +219,7 @@ export class SetupController {
     this.store.setEnabled(true);
   }
   private establishExpectation(b:Binding) {
+    requirePlatformStoreFence(b.database);
     const payload=this.readonlyPayload();
     const fingerprint=activationFingerprint({...b,version:payload.version},Buffer.from(payload.plugin),Buffer.from(payload.guidance));
     const prior=readManagedExpectation(b);
@@ -315,6 +352,7 @@ export class SetupController {
     }
     if(r.confirmed!==true)throw new SetupError('confirmation-required');
     if(r.expected!==candidate.review.expected)throw new SetupError('managed-review-stale');
+    requirePlatformStoreFence(path.join(candidate.targets.storeRoot,'progress.sqlite'));
     if(action==='managed-migrate')return this.migrate(candidate);
     if(!['managed-configure','managed-enable','managed-disable'].includes(action))throw new ProgressError('invalid');
     if(action!=='managed-disable'&&!['none','complete'].includes(this.managedMigration(candidate.targets)))throw new SetupError('managed-migration-required');

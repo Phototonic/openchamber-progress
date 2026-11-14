@@ -6,7 +6,7 @@ import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
-import {lifecycle,migrationEvidence} from '../../setup/lifecycle.ts';
+import {lifecycle,migrationEvidence,SetupError} from '../../setup/lifecycle.ts';
 import {createManagedBindingDirectory,managedBindingFile,managedExpectationFile} from '../../shared/managed-binding.ts';
 import {readManagedStepJournal,migrationFile,writeMigration} from '../../setup/managed-migration.ts';
 import {inspectManagedStep,type ManagedInspectionSession} from '../../setup/managed-inspection.ts';
@@ -220,6 +220,20 @@ for(const exhausted of ['spawns','time'] as const)test(`advance reserves ${exhau
     const reply=withPlatformRequestBudget(budget,()=>advanceManagedStep(f.env,payload,f.request(),budget,f.journal()));
     assert.equal(reply.disposition,'refused');assert.equal(reply.error!.code,exhausted==='spawns'?'managed-step-budget':'managed-step-deadline');
     assert.deepEqual(fs.readFileSync(migrationFile(f.env)),before);assert.equal(fs.existsSync(managedExpectationFile(f.journal())),false);
+  }finally{f.cleanup();}
+});
+
+test('failed settlement surfaces a journal conflict instead of swallowing it as the effect error',t=>{
+  const f=fixture();try{
+    f.until('disable');const rename=fs.renameSync,file=migrationFile(f.env);
+    const capture=t.mock.method(Store.prototype,'setEnabled',()=>{throw new Error('synthetic effect failure');});
+    const checkpoint=t.mock.method(fs,'renameSync',((from:any,to:any)=>{
+      if(String(to)===file&&JSON.parse(fs.readFileSync(from,'utf8')).migration.state==='failed')throw new SetupError('managed-step-conflict');
+      return rename(from,to);
+    }) as typeof fs.renameSync);syncBuiltinESMExports();
+    try{const reply=f.advance();assert.equal(reply.disposition,'refused');assert.equal(reply.error!.code,'managed-step-conflict');assert.equal(reply.progress.worker,'unsettled');}
+    finally{capture.mock.restore();checkpoint.mock.restore();syncBuiltinESMExports();}
+    assert.equal(f.journal().migration.state,'running');assert.equal(f.capture(),true);
   }finally{f.cleanup();}
 });
 

@@ -1,14 +1,14 @@
 import path from 'node:path';
 import {SetupError,type Payload} from './lifecycle.ts';
 import {managedSourceRoots,createManagedBindingDirectory} from '../shared/managed-binding.ts';
-import {platformSecurityScope,windows,windowsPaths,requirePlatformWriteBoundary,type PlatformRequestBudget} from '../shared/platform.ts';
+import {platformSecurityScope,windows,windowsPaths,requirePlatformWriteBoundary,requirePlatformStoreFence,type PlatformRequestBudget} from '../shared/platform.ts';
 import {managedJournalProgress,managedRequestDigest,parseManagedStepJournal,sameManagedStep,type ManagedStepJournal,type ManagedCaptureRenewal} from './managed-step-journal.ts';
 import {readManagedStepJournal,writeManagedStepJournal,upgradeManagedStepJournal,publishManagedStepIntent,managedJournalPaths} from './managed-migration.ts';
 import {validateManagedInspectionReview,type ManagedInspectionSession} from './managed-inspection.ts';
-import {MANAGED_STEP_CODES,type ManagedStepRequest,type ManagedStepProgress,type ManagedStepDiagnostic,type ManagedCaptureObservation} from '../shared/managed-steps.ts';
-import {MANAGED_ACTION_CODES} from '../shared/progress.ts';
+import {type ManagedStepRequest,type ManagedStepProgress,type ManagedStepDiagnostic,type ManagedCaptureObservation} from '../shared/managed-steps.ts';
 import {canonical} from '../shared/store.ts';
 import {validateManagedStepTarget,managedStepEffectClaims,managedStepEffectCommitted,applyManagedStepEffect} from './managed-step-effects.ts';
+import {managedDiagnostic,ManagedStepFailure} from './managed-diagnostic.ts';
 
 /** Bounded observation only. It does not admit a Store, infer capture, scan
  * legacy payloads, repair metadata or resume an interrupted operation. */
@@ -29,7 +29,7 @@ function replayBegin(env:NodeJS.ProcessEnv,request:Extract<ManagedStepRequest,{a
   if(!journal)throw new SetupError('managed-inspection-expired');
   const m=journal.migration,receipt=m.receipt;
   if(m.operationId!==request.operationId||m.sequence!==1||!receipt||receipt.expectedSequence!==0||receipt.outcome!=='applied'||
-    receipt.requestDigest!==managedRequestDigest(request,journal))throw new SetupError('managed-step-conflict');
+    receipt.requestDigest!==managedRequestDigest(request,journal))throw new ManagedStepFailure(new SetupError('managed-step-conflict'),'prepare',journal);
   // The receipt is durable; a service restart need not recover an in-memory
   // review nonce. Never repeat prepare or replay its old capture observation.
   return {disposition:'replayed',progress:managedJournalProgress(journal),journal};
@@ -52,6 +52,7 @@ export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:E
   }
   if(reviewed.operation)return replayBegin(env,request);
   const next=reviewed.candidate,m=next.migration;
+  requirePlatformStoreFence(next.database);
   m.operationId=request.operationId;m.consent.reviewDigest=request.expected;
   m.receipt={requestDigest:managedRequestDigest(request,next),expectedSequence:0,sequence:1,step:m.lastCompleted,outcome:'applied'};
   parseManagedStepJournal(JSON.stringify(next));
@@ -94,7 +95,10 @@ function loadOperation(env:NodeJS.ProcessEnv,request:MutationRequest,hint?:Manag
   return platformSecurityScope(()=>{
     if(windows)windowsPaths(managedJournalPaths(known),true);
     const current=readManagedStepJournal(env);need(current&&current.migration.operationId===request.operationId,'not-found');
-    need(canonical(current)===canonical(known));return current;
+    // The hint only supplies prebatch paths. Another process may have advanced
+    // the same journal; use the freshly read record, never reject valid work or
+    // authorize it from the hint. Target validation batches any newly read paths.
+    return current;
   });
 }
 function renewalFor(request:MutationRequest,journal:ManagedStepJournal):ManagedCaptureRenewal|undefined {
@@ -110,20 +114,27 @@ function replay(request:MutationRequest,journal:ManagedStepJournal):ManagedMutat
   if(receipt.requestDigest!==managedRequestDigest(request,journal,renewalFor(request,journal)))return;
   return result(journal,'replayed',unknownCapture,receipt.outcome==='failed'?journal.migration.diagnostic:null);
 }
-function diagnostic(error:unknown,journal:ManagedStepJournal):ManagedStepDiagnostic {
-  const code=(error as {code?:string})?.code;
-  return {stage:journal.migration.step?.name??'journal',code:code&&[...MANAGED_STEP_CODES,...MANAGED_ACTION_CODES].includes(code)?code:'managed-step-unsettled'};
+function diagnostic(error:unknown,journal:ManagedStepJournal,uncertain=false):ManagedStepDiagnostic {
+  const code=managedDiagnostic(error);
+  return {stage:journal.migration.step?.name??'journal',code:uncertain&&code==='storage'?'managed-step-unsettled':code};
 }
 
 /** Caller holds the cross-process request fence. One advance, no looping into
  * the next step. Retry reconciles intent; capture ambiguity needs fresh review. */
 export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedStepRequest,{action:'advance'}>,
   budget:PlatformRequestBudget,hint?:ManagedStepJournal):ManagedMutationResult {
+  let current:ManagedStepJournal|undefined;
+  try{return advance(env,payload,request,budget,hint,journal=>{current=journal;});}
+  catch(error){throw new ManagedStepFailure(error,request.step.name,current);}
+}
+function advance(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedStepRequest,{action:'advance'}>,
+  budget:PlatformRequestBudget,hint:ManagedStepJournal|undefined,remember:(journal:ManagedStepJournal)=>void):ManagedMutationResult {
   requirePlatformWriteBoundary();
   let capture:ManagedCaptureObservation=unknownCapture;
   let claims:ReturnType<typeof managedStepEffectClaims>|undefined,evidence:ReturnType<typeof managedStepEffectCommitted>|undefined;
   const prior=platformSecurityScope(()=>{
     const journal=loadOperation(env,request,hint);
+    remember(journal);
     // Receipt replay never needs old payloads/legacy discovery or writes. The
     // projection honestly uses unknown rather than historical capture-on.
     if(!replay(request,journal)){
@@ -135,6 +146,7 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
     return journal;
   });
   const repeated=replay(request,prior);if(repeated)return repeated;
+  requirePlatformStoreFence(prior.database);
   const m=prior.migration;
   need(request.expectedSequence===m.sequence&&sameManagedStep(request.step,m.step)&&['pending','running'].includes(m.state));
   const renewal=renewalFor(request,prior),requestDigest=managedRequestDigest(request,prior,renewal);
@@ -168,8 +180,8 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
           const current=platformSecurityScope(()=>{if(windows)windowsPaths(managedJournalPaths(running),true);return readManagedStepJournal(env);});
           if(current&&canonical(current)===canonical(running))published=true;
           else if(current&&canonical(current)===canonical(prior))return result(prior,'refused',unknownCapture,diagnostic(error,prior));
-          else return result(running,'refused',unknownCapture,diagnostic(error,running));
-        }catch{return result(running,'refused',unknownCapture,diagnostic(error,running));}
+          else return result(running,'refused',unknownCapture,diagnostic(error,running,true));
+        }catch{return result(running,'refused',unknownCapture,diagnostic(error,running,true));}
         throw error;
       }
     }
@@ -189,7 +201,7 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
     });
     return result(next,'applied',capture);
   }catch(error){
-    const failure=diagnostic(error,running);
+    const failure=diagnostic(error,running,published);
     if(!published)return result(prior,'refused',unknownCapture,failure);
     const failed=structuredClone(running),f=failed.migration;
     f.sequence++;f.state='failed';f.capture=unknownCapture;f.diagnostic=failure;
@@ -200,7 +212,7 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
       // exact current bytes and legal immutable-target evolution.
       budget.require(2,6_000);writeManagedStepJournal(env,failed,running);
       return result(failed,'refused',unknownCapture,failure);
-    }catch{return result(running,'refused',unknownCapture,failure);}
+    }catch(settlement){return result(running,'refused',unknownCapture,diagnostic(settlement,running,true));}
   }
 }
 
@@ -208,13 +220,21 @@ export function advanceManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request
  * no worker is still active; elapsed time alone never authorizes these writes. */
 export function controlManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedStepRequest,{action:'pause'|'abandon'|'resume'}>,
   budget:PlatformRequestBudget,hint?:ManagedStepJournal,session?:ManagedInspectionSession):ManagedMutationResult {
+  let current:ManagedStepJournal|undefined;
+  try{return control(env,payload,request,budget,hint,session,journal=>{current=journal;});}
+  catch(error){throw new ManagedStepFailure(error,request.action==='resume'&&request.review?request.review.step:'lock',current);}
+}
+function control(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedStepRequest,{action:'pause'|'abandon'|'resume'}>,
+  budget:PlatformRequestBudget,hint:ManagedStepJournal|undefined,session:ManagedInspectionSession|undefined,remember:(journal:ManagedStepJournal)=>void):ManagedMutationResult {
   requirePlatformWriteBoundary();
   const admitted=platformSecurityScope(()=>{
     const journal=loadOperation(env,request,hint);
+    remember(journal);
     return {journal,capture:replay(request,journal)?unknownCapture:validateManagedStepTarget(env,payload,journal)};
   });
   const prior=admitted.journal;let capture=admitted.capture;
   const repeated=replay(request,prior);if(repeated)return repeated;
+  requirePlatformStoreFence(prior.database);
   const m=prior.migration;
   need(request.expectedSequence===m.sequence);
   const allowed=request.action==='pause'?['pending','failed','running']:request.action==='abandon'?['pending','failed','running','paused']:['pending','paused','failed','abandoned','running'];

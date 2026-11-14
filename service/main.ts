@@ -13,7 +13,7 @@ let setup: SetupController | undefined;
 try {
   const port=Number(process.env.OPENCHAMBER_SERVICE_PORT);const token=process.env.OPENCHAMBER_SERVICE_TOKEN;
   if(!Number.isInteger(port)||port<1||port>65535||!token)throw new Error();
-  setup=new SetupController({env:process.env},()=>({plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8'),guidance:readFileSync(new URL('../companion/SKILL.md',import.meta.url),'utf8'),removal:readFileSync(new URL('../setup/main.js',import.meta.url),'utf8'),version:RELEASE}));
+  setup=new SetupController({env:process.env},()=>({plugin:readFileSync(new URL('../companion/index.js',import.meta.url),'utf8'),guidance:readFileSync(new URL('../companion/SKILL.md',import.meta.url),'utf8'),removal:readFileSync(new URL('../setup/main.js',import.meta.url),'utf8'),version:RELEASE}),undefined,undefined,new URL(import.meta.url));
   const server=createProgressServer(undefined,token,undefined,setup);
   server.on('error',()=>{setup?.close();process.exitCode=1;});server.listen(port,'127.0.0.1');
   process.on('SIGTERM',()=>server.close(()=>{setup?.close();process.exit(0);}));

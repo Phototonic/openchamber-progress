@@ -95,7 +95,7 @@ test('expectation publication failure preserves enabled legacy discovery before 
   }finally{mock.mock.restore();syncBuiltinESMExports();f.cleanup();}
 });
 
-test('migration creation failures preserve fixed wire and last-action diagnostics without changing legacy state',async t=>{
+test('legacy controller creation failures preserve fixed diagnostics; HTTP no longer invokes that path',async t=>{
   for(const code of ['windows-security-unavailable','private-permissions','untrusted-message'] as const)await t.test(code,async t=>{
     const f=fixture();try{
       const review=f.review(),before=fs.readFileSync(path.join(f.legacyRoot,'.ownership.json'));
@@ -107,9 +107,10 @@ test('migration creation failures preserve fixed wire and last-action diagnostic
       const expected=code==='untrusted-message'?'storage':code;
       await http(f,async request=>{
         const response=await request('managed-migrate',{confirmed:true,expected:review.expected});
-        assert.equal(response.status,503);
-        assert.deepEqual(await response.json(),{error:expected,lastAction:{stage:'managed-state-create',code:expected}});
+        assert.equal(response.status,409);
+        assert.deepEqual(await response.json(),{error:'managed-action-required'});
       });
+      assert.throws(()=>f.setup.run('managed-migrate',{confirmed:true,expected:review.expected}));
       mock.mock.restore();syncBuiltinESMExports();
       assert.deepEqual(f.setup.status().lastAction,{stage:'managed-state-create',code:expected});
       assert.notEqual(f.setup.health().state,'starting','candidate/action attempts are checked observations');
@@ -193,7 +194,7 @@ async function http(f:ReturnType<typeof fixture>,run:(request:(action:string,bod
   }finally{await new Promise<void>(r=>server.close(()=>r()));}
 }
 
-test('one authenticated same-store switch keeps identities, reports, receipts and payloads, with no fabricated load',async()=>{
+test('retained legacy controller switch keeps identities; old HTTP migration refuses without effects',async()=>{
   const f=fixture();try{
     const oldIds={storeId:f.store.list().storeId,sourceId:f.legacy.source.id};
     const payloads=fs.readdirSync(path.join(f.targets.storeRoot,'payloads'));
@@ -201,11 +202,13 @@ test('one authenticated same-store switch keeps identities, reports, receipts an
     const r=f.review();assert.equal(r.targets.storeRoot,f.targets.storeRoot);
     await http(f,async request=>{
       assert.equal((await request('managed-migrate',{confirmed:true,expected:r.expected},false)).status,401);
-      assert.equal((await request('managed-migrate',{expected:r.expected})).status,400);
+      assert.equal((await request('managed-migrate',{expected:r.expected})).status,409);
       assert.equal(f.store.list().captureEnabled,true);assert.ok(fs.existsSync(f.legacyRoot));
-      const response=await request('managed-migrate',{confirmed:true,expected:r.expected});assert.equal(response.status,200);
-      const result=await response.json();assert.equal(result.delivery.migration,'complete');assert.equal(result.delivery.observation,'not-observed');assert.equal(result.captureEnabled,true);
-      assert.equal(result.reportingIdentity.storeId,oldIds.storeId);assert.equal(result.reportingIdentity.sourceId,oldIds.sourceId);
+      const response=await request('managed-migrate',{confirmed:true,expected:r.expected});assert.equal(response.status,409);
+      assert.deepEqual(await response.json(),{error:'managed-action-required'});
+      assert.equal(f.store.list().captureEnabled,true);assert.ok(fs.existsSync(f.legacyRoot));
+      const result=f.setup.run('managed-migrate',{confirmed:true,expected:r.expected});assert.equal(result.delivery!.migration,'complete');assert.equal(result.delivery!.observation,'not-observed');assert.equal(result.captureEnabled,true);
+      assert.equal(result.reportingIdentity!.storeId,oldIds.storeId);assert.equal(result.reportingIdentity!.sourceId,oldIds.sourceId);
       assert.equal((await request('managed-migrate',{confirmed:true,expected:r.expected})).status,409,'old consent does not replay removal');
     });
     const selected=readManagedBinding(f.env)!;assert.notEqual(selected.installId,f.legacy.installId);
@@ -261,8 +264,8 @@ test('confirmed managed capture-off survives modified legacy ownership without a
     const control=new Store(selected.database);try{
       assert.equal(f.setup.status().delivery!.migration,'conflict');
       await http(f,async request=>{
-        const response=await request('managed-inspect',{});assert.equal(response.status,200);
-        const review=(await response.json()).delivery.review;
+        const response=await request('managed-inspect',{});assert.equal(response.status,409);assert.deepEqual(await response.json(),{error:'managed-action-required'});
+        const review=f.setup.run('managed-inspect',{}).delivery!.review!;
         assert.equal((await request('managed-disable',{expected:review.expected})).status,400);
         assert.equal(control.list().captureEnabled,true);
         for(const action of ['managed-enable','managed-migrate'])assert.equal((await request(action,{confirmed:true,expected:review.expected})).status,409);
@@ -282,7 +285,7 @@ test('migration inspection preserves operational diagnostics instead of claiming
       const original=Store.prototype.subagentRunStorage;
       t.mock.method(Store.prototype,'subagentRunStorage',function(this:Store){if(this.file===f.legacy.database)throw code==='windows-security-unavailable'?new PlatformError(code):new ProgressError(code);return original.call(this);});
       const status=f.setup.status();assert.equal(status.delivery!.migration,'unavailable');assert.ok(status.diagnostics.includes(code));
-      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,503);assert.deepEqual(await r.json(),{error:code});});
+      await http(f,async request=>{const r=await request('managed-inspect',{});assert.equal(r.status,409);assert.deepEqual(await r.json(),{error:'managed-action-required'});});
       assert.equal(f.store.list().captureEnabled,true);assert.equal(fs.existsSync(f.legacyRoot),phase==='legacy');
       assert.equal(fs.existsSync(managedBindingFile(f.env)),phase==='record');
     }finally{t.mock.restoreAll();f.cleanup();}

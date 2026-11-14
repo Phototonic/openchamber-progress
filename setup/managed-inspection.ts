@@ -11,6 +11,7 @@ import type {ManagedReview} from '../shared/progress.ts';
 import {SetupError,discoverMigrationPaths,migrationEvidence,validateMigrationRemoval,type Payload} from './lifecycle.ts';
 import {migrationFile,readMigration,readManagedStepJournal,readRemovalReceipt,managedJournalPaths,type MigrationRecord} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,managedTargetDigest,type ManagedStepJournal,type ManagedPathClaim} from './managed-step-journal.ts';
+import {ManagedStepFailure} from './managed-diagnostic.ts';
 
 /** Private supervisor/worker state. NEVER accept this object from an HTTP body.
  * Paths and hashes are discovery claims only, not reusable security verdicts. */
@@ -73,7 +74,7 @@ function container(env:NodeJS.ProcessEnv) {
     const names=readdirSync(root);
     need(!names.includes('.configuration-lock'),'managed-configuration-busy');
     need(!names.some(n=>n.startsWith('migration.json.stage-')||n.startsWith('progress-binding.json.stage-')),'managed-migration-conflict');
-    need(lstatSync(path.join(root,'.ownership.json')).nlink===1,'managed-binding-invalid');
+    need(lstatSync(path.join(root,'.ownership.json'),{throwIfNoEntry:false})?.nlink===1,'managed-binding-invalid');
   }
   return file;
 }
@@ -125,7 +126,8 @@ export function validateManagedInspectionReview(env:NodeJS.ProcessEnv,payload:Pa
 /** Exactly one read-only stage. The supervisor supplies prior state, never the
  * caller. Every stage gets a new opaque cursor and a fresh security scope. */
 export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedInspectionSession,storeRoot?:string):ManagedInspectionResult {
-  return platformSecurityScope(()=>{
+  let stage:typeof MANAGED_INSPECTION_STEPS[number]='roots',known:ManagedStepJournal|undefined;
+  try{return platformSecurityScope(()=>{
     let session:ManagedInspectionSession;
     if(!prior){
       const roots=managedSourceRoots(env);batch(basePaths(roots));
@@ -137,14 +139,17 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
     }
     session=structuredClone(prior);
     need(session.stage>0&&session.stage<MANAGED_INSPECTION_STEPS.length,'managed-inspection-expired');
+    stage=MANAGED_INSPECTION_STEPS[session.stage]!;
     batch(paths(session));sameDiscovery(env,session);
-    const stage=MANAGED_INSPECTION_STEPS[session.stage]!;
+    known=session.operation;
     if(stage==='managed-state'){
       const selected=readManagedBinding(env);
       if(selected)session.binding=selected;
       if(session.record.kind!=='absent'){
-        const raw=JSON.parse(readFileSync(session.record.path,'utf8'));
-        if(raw?.migration?.format===2)session.operation=readManagedStepJournal(env);
+        let raw: {migration?:{format?:unknown}};
+        try{raw=JSON.parse(readFileSync(session.record.path,'utf8'));}
+        catch{throw new SetupError('managed-journal-unsupported');}
+        if(raw?.migration?.format===2){session.operation=readManagedStepJournal(env);known=session.operation;}
         else if(raw?.migration?.format===1)session.prior=readMigration(env);
         else throw new SetupError('managed-journal-unsupported');
       }
@@ -209,5 +214,5 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
     }
     session.stage++;session.cursor=randomUUID();
     return {session,progress:session.operation?managedJournalProgress(session.operation):null,inspection:{state:'incomplete',stage,cursor:session.cursor}};
-  });
+  });}catch(error){throw new ManagedStepFailure(error,stage,known);}
 }

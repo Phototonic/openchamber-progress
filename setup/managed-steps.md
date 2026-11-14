@@ -1,10 +1,9 @@
 # Bounded managed migration contract
 
 This is the version-1 wire / format-2 journal contract for the step engine and
-Setup client. It is **not an implemented endpoint or native performance result**.
-The engine, client parsers/rendering and native acceptance must land together
-before advertising support. Existing runtime behavior is unchanged by these
-declarations. Release integration updates the public setup/backend/UI guides.
+Setup client. The backend endpoint and bounded HTTP workers are implemented;
+portable query accounting is **not a native performance result**. Client rendering
+and native acceptance remain separate release-integration gates.
 
 ## Owners and invariants
 
@@ -25,6 +24,17 @@ declarations. Release integration updates the public setup/backend/UI guides.
   time. New locking must be crash-releasing or positively reconciled; a timestamp
   or expired lease alone never permits a second writer. Retained legacy
   `.configuration-lock` remains a refusal, not automatic cleanup.
+- Coordinate discovery and shared Store writers with separate deterministic
+  loopback slots, not one machine-wide port. The UTF-8 keys are
+  `scope:<canonical data root>` and `store:<canonical Store root>`: native realpath
+  of the existing ancestor plus missing components, lowercased on Windows. Port
+  = 49152 + (first four SHA-256 bytes as unsigned big-endian modulo 4096).
+  Acquire sorted/deduplicated ports without waiting; release all on any refusal.
+  Same-target writers therefore fence, unrelated targets normally do not; hash
+  collisions remain `managed-step-port-busy`, never alternate-port takeover.
+  Bounded metadata may route a slot but grants no authority: fresh mutation
+  admission must match its Store to the held key. Retain the per-request nonce
+  and account-scoped Windows mutex/late-child barrier.
 
 Blast radius is Setup transport/status, worker admission, private managed state,
 legacy discovery and Store capture control. No progress schema or identity
@@ -92,6 +102,9 @@ sequence/target/review, unsupported format/version and ownership conflicts are
 failure is not rollback. Unknown operation status is 404, never another target's
 progress. Ordinary authentication/method/body-limit failures keep existing HTTP
 handling and do not require this envelope.
+Non-null `error` overrides `disposition`, including a `replayed` failed receipt;
+clients must render that reply as failed, not continue the success path. A worker
+crash is treated as effect uncertainty and requires explicit observation/recovery.
 
 Old-shaped `/v1/setup/managed-migrate` returns exactly HTTP 409
 `{"error":"managed-action-required"}` with **zero security spawns and migration
@@ -292,6 +305,9 @@ future/reordered step or stale competing sequence refuses. Earlier receipts need
 not be retained: an old request after another control/effect settled is stale.
 If intent remains after resume, the new current-step request reconciles the old
 effect before replacing the intent. It never assumes absence means success.
+The retained intent's evidence may be evaluated as running in a read-only
+projection after resume; actual effects still require reading back the exact
+published running intent under fresh validation.
 Replayed capture observations are freshly read or unknown, not the old reply's on
 value. In particular, an uncertain enable with no durable completion evidence
 and an off bit cannot distinguish nonexecution from later user disable: refuse

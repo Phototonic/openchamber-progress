@@ -93,8 +93,10 @@ test('authenticated reviewed configuration creates only private managed state an
     assert.equal((await request('managed-inspect',{},false)).status,401);
     assert.equal((await request('managed-configure',{})).status,400);assert.deepEqual(tree(f.root),before);
     assert.equal((await request('managed-configure',{confirmed:true,expected:'a'.repeat(64)})).status,409);assert.deepEqual(tree(f.root),before);
-    const inspected=await(await request('managed-inspect',{})).json() as SetupRead;
-    const expected=inspected.delivery!.review!.expected;
+    const refused=await request('managed-inspect',{});assert.equal(refused.status,409);assert.deepEqual(await refused.json(),{error:'managed-action-required'});
+    // Exercise the retained configuration owner with an explicitly obtained
+    // internal review; unnegotiated HTTP inspection is deliberately retired.
+    const expected=review(f).expected;
     const result=await request('managed-configure',{confirmed:true,expected});assert.equal(result.status,200);
     const status=await result.json();assert.equal(status.configured,true);assert.equal(status.installed,false);assert.equal(status.separateLifecycle,false);
     assert.equal(status.delivery.configuration,'configured');assert.equal(status.delivery.mode,'unknown');assert.equal(status.delivery.observation,'not-observed');
@@ -106,9 +108,9 @@ test('authenticated reviewed configuration creates only private managed state an
     assert.equal((await request('managed-configure',{confirmed:true,expected})).status,409,'duplicate old confirmation is stale');
     const store=new Store(b.database);
     try{store.apply({op:'start',plan:'P-managed',oid:'start',rev:0,title:'Retained report',items:[]},{sourceId:b.source.id,sessionId:'M',agent:'build',directory:'/fixture',parentId:null,ancestry:[],verifiedSource:true});}finally{store.close();}
-    let r=await(await request('managed-inspect',{})).json();
-    assert.equal((await request('managed-disable',{confirmed:true,expected:r.delivery.review.expected})).status,200);
-    r=await(await request('managed-inspect',{})).json();assert.equal((await request('managed-enable',{confirmed:true,expected:r.delivery.review.expected})).status,200);
+    let r=review(f);
+    assert.equal((await request('managed-disable',{confirmed:true,expected:r.expected})).status,200);
+    r=review(f);assert.equal((await request('managed-enable',{confirmed:true,expected:r.expected})).status,200);
     const plans=await(await request('/v1/plans')).json();assert.equal(plans.storeId,b.storeId);assert.equal(plans.data[0].revision,1);
     assert.equal(plans.data[0].sourceId,b.source.id);
     assert.equal((await request('install',f.targets)).status,409,'production managed controller does not install global capture');
