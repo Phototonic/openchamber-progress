@@ -1,10 +1,11 @@
-// Waiting-delegation QA (lane I2) in an isolated headless Chromium with real CDP pointer/keyboard/touch
+// Waiting-delegation QA in an isolated headless Chromium with real CDP pointer/keyboard/touch
 // input. A synthetic SDK shell loads the three guests (source-built with --source, else the tracked
 // bundles) and relays their requests to a SYNTHETIC in-process service shaped by the frozen overlay
 // contract (shared/delegation-view.ts): health capability, a delegation token per list row and the
 // overlay on the first detail page. It is not the service lane's projection, not native-host proof
 // and not physical-phone certification: simulated device hints and touch emulation only.
-// Usage: node --experimental-strip-types tests/browser/delegation-intent-qa.ts [--source] [--chromium <path>] --artifacts <dir>
+// --real-service instead uses createProgressServer with an isolated synthetic Store.
+// Usage: node --experimental-strip-types tests/browser/delegation-intent-qa.ts [--source] [--real-service] [--chromium <path>] --artifacts <dir>
 //   writes results.json (checks), requests.json (bounded request metadata) and screenshots.
 import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import { spawn } from 'node:child_process';
@@ -16,11 +17,16 @@ import type { GuestRequest } from '@openchamber/sdk';
 import type { Item, PlanSummary } from '../../shared/progress.ts';
 import { createGuestAssets } from './source-guests.ts';
 import { HEALTH, S, SRC, envelope, planPage, plansPage, summary } from './fixtures.ts';
+import { makeFixture } from '../backend/subagent-test-support.ts';
+import { createProgressServer } from '../../service/server.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
 if (!artifacts) throw new Error('usage: delegation-intent-qa.ts [--source] [--chromium <path>] --artifacts <dir>');
 mkdirSync(artifacts, { recursive: true });
+const real = process.argv.includes('--real-service') ? await makeFixture() : null;
+const service = real ? createProgressServer(real.store, 'synthetic-rendered-token') : null;
+if (service) await new Promise<void>(resolve => service.listen(0, '127.0.0.1', resolve));
 
 function findChromium() {
   const explicit = arg('--chromium') ?? process.env.CHROMIUM_PATH;
@@ -43,6 +49,10 @@ const ITEMS: Item[] = [
   { id: 'task-c', title: 'Run the release checks', kind: 'task', status: 'working' },
   { id: 'task-d', title: 'Choose the archive format', kind: 'task', status: 'done' },
 ];
+if (real) {
+  real.store.apply({ op: 'revise', plan: 'plan-alpha', oid: 'rendered-items', rev: 1, title: 'Export pipeline', items: ITEMS }, real.actor());
+  real.declare(real.request({ assign: ['task-a', 'task-b'] }));
+}
 const plan = (): PlanSummary => ({
   ...summary('plan-alpha', ITEMS, { title: 'Export pipeline', sessionId: S.M, revision: REVISION, structuralRevision: 2, cleanup: { state: 'visible', revision: 0 } } as Partial<PlanSummary>),
   ...(mode === 'unsupported' ? {} : { delegationToken: `token-${mode === 'mismatch' ? 'list-only' : mode}` }),
@@ -78,15 +88,16 @@ function serve(q: GuestRequest): { status: number; body: unknown } {
 const LIGHT = { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' };
 const DARK = { ...LIGHT, background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
 const FRAMES = ['page', 'panel', 'status'] as const;
-const PROJECT = { id: 'alpha', name: 'Alpha', directory: '/fixture/Alpha' };
-const SESSIONS = [{ id: S.M, title: 'Export session', parentId: null, projectId: PROJECT.id, directory: PROJECT.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }];
+const PROJECT = { id: 'alpha', name: 'Alpha', directory: real ? '/synthetic/alpha' : '/fixture/Alpha' };
+const coordinator = real ? 'A' : S.M;
+const SESSIONS = [{ id: coordinator, title: 'Export session', parentId: null, projectId: PROJECT.id, directory: PROJECT.directory, createdAt: 1, updatedAt: 2, archivedAt: null, worktree: null, activity: 'idle', outcome: null, items: [] }];
 const shellScript = `
 const light=${JSON.stringify(LIGHT)},dark=${JSON.stringify(DARK)};
 const frames=${JSON.stringify(FRAMES)},frame=f=>document.querySelector('iframe[data-frame="'+f+'"]');
 const send=(f,m)=>frame(f)?.contentWindow?.postMessage({channel:'openchamber.sdk',v:1,...m},'*');
 const project=${JSON.stringify(PROJECT)},sessions=${JSON.stringify(SESSIONS)};
 window.frame=frame;
-window.qa={session:null,locale:'en',mode:'light',device:null,requests:[],messages:[],storage:new Map()};
+window.qa={session:null,locale:'en',mode:'light',device:null,requests:[],responses:[],messages:[],storage:new Map()};
 const theme=()=>({mode:qa.mode,tokens:qa.mode==='dark'?dark:light});
 const ready=f=>send(f,{type:'ready',payload:{theme:theme(),locale:qa.locale,directory:project.directory,session:qa.session?{id:qa.session}:null,surface:f,connection:{connected:true,account:'account-example'},settings:{},item:null,...(qa.device?{device:qa.device}:{})}});
 qa.context=id=>{qa.session=id;for(const f of frames){ready(f);send(f,{type:'directory',payload:{directory:project.directory}});send(f,{type:'session',payload:{session:id?{id}:null}})}};
@@ -104,7 +115,9 @@ addEventListener('message',async e=>{
  else if(m.type==='storage'){const q=m.payload,k=f+':'+q.key;if(q.op==='set')qa.storage.set(k,q.value);if(q.op==='delete')qa.storage.delete(k);result({storage:true,op:q.op,found:qa.storage.has(k),value:qa.storage.get(k),...(q.op==='keys'?{keys:[]}:{})})}
  else if(m.type==='service-request'){
   const q=m.payload;qa.requests.push({frame:f,method:q.method,path:q.path,intent:q.query?.delegationIntent??null,cursor:q.query?.cursor??null,plan:q.query?.plan??null,at:performance.now()});
-  const r=await fetch('/service',{method:'POST',body:JSON.stringify(q)});result(await r.json());
+   const r=await fetch('/service',{method:'POST',body:JSON.stringify(q)}),reply=await r.json();
+   const body=JSON.parse(reply.body),state=body.delegationIntent?.result?.disposition?.state;
+   if(state)qa.responses.push({frame:f,state});result(reply);
  }else if(m.id)result();
 });
 `;
@@ -119,7 +132,13 @@ const server: Server = createServer(async (req, res) => {
     if (asset) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); res.end(asset); return; }
     if (url.pathname === '/service' && req.method === 'POST') {
       let body = ''; for await (const part of req) body += part;
-      const r = serve(JSON.parse(body));
+      const q = JSON.parse(body) as GuestRequest;
+      const r = service ? await (async () => {
+        const url = new URL(q.path, `http://127.0.0.1:${(service.address() as { port: number }).port}`);
+        for (const [key, value] of Object.entries(q.query ?? {})) url.searchParams.set(key, String(value));
+        const reply = await fetch(url, { method: q.method, headers: { authorization: 'Bearer synthetic-rendered-token' } });
+        return { status: reply.status, body: await reply.json() };
+      })() : serve(q);
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
     }
     res.statusCode = url.pathname === '/favicon.ico' ? 204 : 404; res.end();
@@ -241,7 +260,70 @@ try {
 
   await waitTop(`window.qa&&frame('panel').contentDocument?.querySelector('[data-testid="progress-root"]')`, 'shell ready', 30_000);
   await evaluate(`qa.theme('light');true`);
-  await evaluate(`qa.context(${javascriptLiteral(S.M)});true`);
+  await evaluate(`qa.context(${javascriptLiteral(coordinator)});true`);
+
+  if (real) {
+    const dispatchKey = { source: real.source.id, parent: 'A', message: 'rendered-message', call: 'rendered-call' };
+    const state = async (expected: string, hook?: string) => {
+      await wait('panel', `d.querySelector('${ART}')?.dataset.delegation===${javascriptLiteral(expected)}`, expected);
+      if (hook) await wait('panel', `d.querySelectorAll('${ART} [data-testid="${hook}"]').length===2`, hook);
+    };
+    await show(['panel', 'status'], 400);
+    await state('waiting', 'delegation-pending');
+    check('real:pending-declared-tasks-only', same((await notes('panel')).map(n => n.task), ['task-a', 'task-b']));
+    const before = real.plan();
+    await tabTo('panel', `${ART} li[data-testid="item-task-a"] summary`); await key('Enter');
+    await wait('panel', `d.querySelector('[data-testid="delegation-fact-task-a"]')`, 'keyboard expands pending facts');
+    check('real:pending-explains-no-work-started', await guest<boolean>('panel', `return d.querySelector('[data-testid="delegation-fact-task-a"]').textContent.includes('No work has started')`));
+    await shot('panel', 'real-pending', ART);
+    real.store.beforeRun(dispatchKey, real.actor(), 'subagent', {}, 1000);
+    await waitTop(`qa.responses.some(q=>q.frame==='panel'&&q.state==='reserved')`, 'reservation detail response');
+    await state('waiting', 'delegation-pending');
+    check('real:reserved-still-waiting', (await notes('panel')).every(n => n.intent === 'waiting'));
+    await shot('panel', 'real-reserved', ART);
+    real.store.afterRun(dispatchKey, 0, undefined, 'unconfirmed');
+    await state('refused', 'delegation-refused');
+    // Facts remain in the DOM while collapsed; use the actual disclosure state.
+    if (!(await guest<boolean>('panel', `return d.querySelector('${ART} li[data-testid="item-task-a"] details').open`))) await click('panel', `${ART} li[data-testid="item-task-a"] summary`);
+    await wait('panel', `d.querySelector('${ART} li[data-testid="item-task-a"] details')?.open`, 'refusal facts expanded');
+    check('real:refused-reason-and-recovery', await guest<boolean>('panel', `const t=d.querySelector('[data-testid="delegation-fact-task-a"]').textContent;return t.includes('Not applied:')&&t.includes('link the task to a session')`));
+    check('real:display-only-before-binding', same(real.plan(), before));
+    await shot('panel', 'real-refused', ART);
+    real.declare(real.request({ oid: 'cancel-next', assign: ['task-a', 'task-b'] }));
+    real.declare(real.request({ oid: 'cancel', assign: [] }));
+    await state('clear');
+    check('real:cancelled-no-note', (await notes('panel')).length === 0);
+    await shot('panel', 'real-cancelled', ART);
+    real.declare(real.request({ oid: 'bind-next', assign: ['task-a', 'task-b'] }));
+    await state('waiting', 'delegation-pending');
+    const boundKey = { ...dispatchKey, message: 'bound-message', call: 'bound-call' };
+    real.store.beforeRun(boundKey, real.actor(), 'subagent', {}, 2000);
+    real.store.afterRun(boundKey, 0, real.actor('C1'), 'returned');
+    await state('clear');
+    check('real:bound-no-note-and-assigned', (await notes('panel')).length === 0 && real.plan().items.filter(i => ['task-a','task-b'].includes(i.id)).every(i => i.assigneeSessionId === 'C1'));
+    await shot('panel', 'real-bound', ART);
+    await show(['page'], 1200);
+    await wait('page', `d.querySelector('[data-testid="plan-row-plan-alpha"]')`, 'board real list');
+    await click('page', '[data-testid="plan-row-plan-alpha"]');
+    await wait('page', `d.querySelector('${ART}')?.dataset.delegation==='clear'`, 'board bound');
+    check('real:board-bound-no-note', (await notes('page')).length === 0);
+    await shot('page', 'real-board-bound', '[data-testid="plan-detail"]');
+    // A fresh declaration on the remaining unassigned task exercises the board and narrow rail.
+    real.declare(real.request({ oid: 'phone-next', assign: ['task-c'] }));
+    await wait('page', `d.querySelector('${ART} [data-testid="delegation-pending"]')`, 'board pending');
+    check('real:board-pending', same((await notes('page')).map(n => n.task), ['task-c']));
+    await shot('page', 'real-board-pending', '[data-testid="plan-detail"]');
+    await evaluate(`qa.phone(true);true`); await show(['panel'], 390);
+    await wait('panel', `d.querySelector('${ART} [data-testid="delegation-pending"]')`, 'narrow pending');
+    check('real:narrow-no-overflow', (await noOverflow('panel')).ok);
+    await shot('panel', 'real-phone-pending', ART);
+    // The real service advertises the existing roster reconciliation capability; each
+    // frame may perform its documented automatic reconcile, independently of task notes.
+    check('real:notes-add-no-writes-and-status-no-opt-in', (await requests()).every(q =>
+      (q.method === 'GET' || q.method === 'POST' && q.path === '/v1/subagent-runs/reconcile') && (q.frame !== 'status' || q.intent === null)));
+    check('real:all-five-service-dispositions-observed', await evaluate<boolean>(`['pending','reserved','refused','bound','cancelled'].every(state=>qa.responses.some(q=>q.frame==='panel'&&q.state===state))`));
+    check('real:no-console-errors', c.errors.length === 0, c.errors);
+  } else {
 
   // ---------------------------------------------------------------- rail: pending (desktop width)
   await show(['panel', 'status'], 400);
@@ -349,6 +431,7 @@ try {
   const old = (await requests()).filter((q) => q.frame === 'panel').slice(-4);
   check('I2:older-service-never-sent-extension-no-note', (await notes('panel')).length === 0 && old.length > 0 && old.every((q) => q.intent === null), old);
   check('I2:no-console-errors', c.errors.length === 0, c.errors);
+  }
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
 } finally {
@@ -358,8 +441,10 @@ try {
   await new Promise((r) => setTimeout(r, 300));
   server.close(); server.closeAllConnections();
   assets.dispose();
+  service?.close(); service?.closeAllConnections();
+  await real?.dispose();
   rmSync(profile, { recursive: true, force: true });
-  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: 'synthetic contract fixture (not the service lane projection)', device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
+  writeFileSync(join(artifacts, 'results.json'), JSON.stringify({ browser: browserVersion, guests: assets.source ? 'source-built (disposable)' : 'tracked bundles', service: real ? 'actual createProgressServer with synthetic Store' : 'synthetic contract fixture (not the service lane projection)', device: 'simulated ready.device and CDP touch emulation; not physical certification', failure, results, shots }, null, 2));
   writeFileSync(join(artifacts, 'requests.json'), JSON.stringify(requestLog.slice(-400), null, 1));
   console.log(JSON.stringify({ pass: !failure && results.every((r) => r.pass), checks: results.length, failure, shots: shots.length }));
   if (failure || !results.every((r) => r.pass)) process.exitCode = 1;

@@ -12,6 +12,18 @@ import { currentIntent } from '../../ui/shared/intent.ts';
 import { summarize, type PlanDetail, type PlanView } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, envelope, planPage, plansPage, summary } from './fixtures.ts';
+import { fixture } from '../backend/subagent-test-support.ts';
+import { delegationView } from '../../service/delegation-view.ts';
+
+test('actual service cancellation with an empty assignment clears the UI overlay', async () => fixture(async f => {
+  f.declare();
+  f.declare(f.request({ oid: 'cancel', assign: [] }));
+  const detail = f.store.detail(f.source.id, 'plan-alpha');
+  const overlay = delegationView(f.store, detail, detail.plan).view;
+  assert(overlay?.result.availability === 'ready');
+  assert.equal(overlay.result.disposition.state, 'cancelled');
+  assert.deepEqual(parsePlanPage(JSON.stringify({ ...detail, delegationIntent: overlay })).intent, { token: overlay.token, state: 'clear' });
+}));
 
 test('delegation overlay requires its exact observed capability', () => {
   for (const value of [undefined, null, true, 0, 2, '1', {}]) assert.equal(supportsDelegationIntent(value), false);

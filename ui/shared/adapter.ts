@@ -72,10 +72,11 @@ const REFUSALS: Record<string, IntentRefusal> = {
   assignment: 'assignment', 'source-unverified': 'unverified', unverified: 'unverified', 'incomplete-proof': 'unverified', 'missing-proof': 'unverified', budget: 'unverified',
 };
 const UNAVAILABLE = new Set(['budget', 'legacy', 'unverified', 'invalid', 'capture-unavailable']);
-function intentDeclaration(v: unknown, revision: number, dispatched: boolean | null) {
+function intentDeclaration(v: unknown, revision: number, dispatched: boolean | null, cancelled = false) {
   check(isRec(v) && intentId(v.oid) && intentId(v.coordinatorSessionId) && isInt(v.declaredRevision) && v.declaredRevision >= 1 && v.declaredRevision <= revision, 'unreadable declaration');
   const ids = v.taskIds;
-  check(Array.isArray(ids) && ids.length >= 1 && ids.length <= DELEGATION_VIEW_LIMITS.tasks && ids.every(intentId) && new Set(ids).size === ids.length, 'unreadable declared tasks');
+  // Cancellation is itself an empty assignment declaration, not a waiting task set.
+  check(Array.isArray(ids) && (cancelled || ids.length >= 1) && ids.length <= DELEGATION_VIEW_LIMITS.tasks && ids.every(intentId) && new Set(ids).size === ids.length, 'unreadable declared tasks');
   const d = v.dispatch;
   check(d === null || (isRec(d) && (d.tool === 'subagent' || d.tool === 'task') && intentId(d.messageId) && intentId(d.callId)), 'unreadable dispatch');
   // Pending has no dispatch yet; reserved names the dispatch it waits on (never child authority).
@@ -111,7 +112,7 @@ export function parseIntent(v: unknown, envelope: EnvelopeView, plan: PlanView):
         check(intentId(d.childSessionId) && isInt(d.boundRevision) && d.boundRevision >= 1 && d.boundRevision <= plan.revision, 'unreadable binding');
         return { token, state: 'clear' };
       case 'cancelled': case 'invalidated':
-        intentDeclaration(d.declaration, plan.revision, null); reason(d.reason);
+        intentDeclaration(d.declaration, plan.revision, null, d.state === 'cancelled'); reason(d.reason);
         return { token, state: 'clear' };
       case 'refused':
         check(d.recovery === 'redeclare-or-link', 'unknown recovery');
