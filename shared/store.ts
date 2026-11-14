@@ -4,6 +4,7 @@ import { identifier, type PlanGraphRequest, type PlanGraphRead } from './progres
 import * as runs from './subagent-runs.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
+import { delegationRevision } from './delegation-validation.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
@@ -111,12 +112,16 @@ export class Store {
       const stored=this.db.prepare('SELECT CASE WHEN length(CAST(actor AS BLOB))<=16384 THEN actor END AS actor FROM sessions WHERE source=? AND id=?').get(i.caller.sourceId,i.caller.sessionId);need(typeof stored?.actor==='string','binding');
       const actor=JSON.parse(stored.actor) as Actor;need(actor.sourceId===i.caller.sourceId&&actor.sessionId===i.caller.sessionId,'binding');
       const at=this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch!);need(Number.isSafeInteger(at?.at),'corrupt');
-      const receipt=this.applyMutation({op:'link',plan:i.request.plan,oid:i.bindOid,rev:i.request.rev,child:child.sessionId,assign:i.request.assign},actor,undefined,child,{generation:this.delegationControl().generation,messageId:key.message,callId:key.call,observedAt:new Date(Number(at!.at)).toISOString()});this.db.exec('RELEASE run_binding');runs.settleIntent(this.db,i,receipt);
+      // Preserve declaration/replay identity. Only the derived link may use the
+      // current revision after complete transaction-local irrelevance proof.
+      const rev=delegationRevision(this.db,this.readBinding,i);
+      const receipt=this.applyMutation({op:'link',plan:i.request.plan,oid:i.bindOid,rev,child:child.sessionId,assign:i.request.assign},actor,undefined,child,{generation:this.delegationControl().generation,messageId:key.message,callId:key.call,observedAt:new Date(Number(at!.at)).toISOString()});this.db.exec('RELEASE run_binding');runs.settleIntent(this.db,i,receipt);
     }
     catch(e){this.db.exec('ROLLBACK TO run_binding; RELEASE run_binding');runs.settleIntent(this.db,i,undefined,storageError(e).code);}
   }); }
   private runControlInTransaction(generation:number){const c=runs.runControl(this.db);return c.enabled&&c.generation===generation;}
   declareDelegation(value:unknown,actor:Actor) {const r=parseRequest(value);need(r.op==='delegate');return this.transaction(true,()=>runs.declareIntent(this.db,r,actor,()=>this.validateDeclarationMutation(r,actor)));}
+  delegationRefusals(sourceId:string,sessionId:string) {return this.transaction(false,()=>runs.delegationRefusals(this.db,this.readBinding,sourceId,sessionId));}
   handoff(value:unknown,actor:Actor,now=Date.now(),epoch?:number,capture?:Capture) {
     const r=parseReportRequest(value);need(r.op==='handoff');need(this.readBinding.verified&&this.readBinding.sourceId===actor.sourceId,'source-unverified');
     const result=this.transaction(true,()=>{

@@ -4,6 +4,8 @@ import type { SessionHooks } from '@opencode/plugin/effect/session';
 import path from 'node:path';
 import { identifier } from '../shared/progress.ts';
 import type { ResumeRead, ResumeRequest, ResumeSelection } from '../shared/progress-resume.ts';
+import type { DelegationRefusals } from '../shared/subagent-runs.ts';
+import { PARALLEL_DELEGATION_HINT } from './delegation.ts';
 
 const REPORT_TOOL = 'agent_progress_report';
 export const ACTIVATION_GUIDANCE = `# Agent progress (companion)
@@ -12,10 +14,10 @@ Tracker updates are not Agent Progress reports. For tracked plan work, explicitl
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
 For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
 Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
-For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
+For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. ${PARALLEL_DELEGATION_HINT} IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
 const PLAN_OBSERVATION = 'A possible plan document was written or revised, possibly by a delegated child.';
 export const DISPATCH_OBSERVATION = 'A dispatch ran.';
-const DISPATCH_HINT = 'If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. Do not repeat reports or declarations that are already current.';
+const DISPATCH_HINT = `If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. ${PARALLEL_DELEGATION_HINT} Do not repeat reports or declarations that are already current.`;
 export const TRACKER_OBSERVATION = 'A tracker update was observed.';
 const HINT_CONDITION = 'If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.';
 export const ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
@@ -95,9 +97,49 @@ type SessionID = Parameters<Plugin.Context['session']['get']>[0]['sessionID'];
 export interface ResumeActivation {
   storeId: string;
   read: ResumeRead;
+  refusals?: (sessionID:string)=>DelegationRefusals;
   identity: (sessionID: SessionID, alive: () => boolean, signal: AbortSignal) => Promise<Pick<ResumeRequest, 'sourceId' | 'sessionId' | 'parentId' | 'ancestry'>>;
   /** Monotonic clock injection for deadline tests; never persisted. */
   now?: () => number;
+}
+
+const REFUSAL_REASONS:Record<string,string>={
+  'relevant-change':'the declared tasks changed',
+  conflict:'the plan changed and retained history could not prove those changes irrelevant to the declared tasks',
+  'structural-change':'the plan structure changed',
+  closed:'the plan was closed or archived',
+  assignment:'the tasks or native child no longer met assignment requirements',
+  'source-unverified':'the source could not be verified',
+  unverified:'the dispatch or child identity could not be verified',
+  binding:'the dispatch or child identity could not be verified',
+  'dispatch-unconfirmed':'the reserved dispatch did not return a verified child',
+  'incomplete-proof':'the retained proof was incomplete',
+  'missing-proof':'required retained proof was missing',
+  budget:'the proof exceeded its bounded lookup budget',
+  disabled:'capture was disabled or its generation changed',
+  'capture-disabled':'capture was disabled or its generation changed',
+  'not-found':'the plan or required evidence was unavailable',
+};
+/** Fixed prose plus validated IDs only; no task titles, document or tool text. */
+export function delegationRefusalText(selection:DelegationRefusals):string {
+  if(!selection.refusals.length)return selection.complete?'':'Additional refusal evidence may be unavailable or omitted.';
+  const header='## Delegation not applied';
+  const recovery='Read current state. To recover, re-declare at the current revision before a new dispatch, or explicitly link the verified returned child session to its tasks. A refusal grants no assignment and changes no task status.';
+  const lines:string[]=[];let omitted=!selection.complete;
+  for(const refusal of selection.refusals.slice(0,3)){
+    const d=refusal.declaration;let tasks=d.taskIds.slice();
+    const prefix=`- Plan ${JSON.stringify(refusal.plan)}, declaration ${JSON.stringify(d.oid)} at revision ${d.declaredRevision}`;
+    let line='';
+    do {
+      line=`${prefix}; tasks ${JSON.stringify(tasks)}${tasks.length<d.taskIds.length?' (additional task IDs omitted)':''}: not applied because ${REFUSAL_REASONS[refusal.reason]??'binding could not be safely verified'}.`;
+      if(Buffer.byteLength([header,...lines,line,recovery,'Additional refusal evidence may be unavailable or omitted.'].join('\n'))<=4096)break;
+      tasks=tasks.slice(0,-1);
+    }while(tasks.length);
+    if(!tasks.length){omitted=true;break;}
+    lines.push(line);
+  }
+  omitted ||= lines.length<selection.refusals.length;
+  return [header,...lines,recovery,...(omitted?['Additional refusal evidence may be unavailable or omitted.']:[])].join('\n');
 }
 
 function resumeText(selection: ResumeSelection, assignedOnly = false): string {
@@ -126,8 +168,8 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
   const pending = new Map<string, number>(); // max128 source/session reason bitsets
   const recent = new Set<string>(); // max256 qualifying source/session/message/call IDs
   const owned = Symbol('agent-progress-section');
-  function section(hint: number, capsule = '') {
-    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${hintText(hint)}` : '') + (capsule ? `\n\n${capsule}` : '') };
+  function section(hint: number, capsule = '', refusal = '') {
+    const part = { type: 'text' as const, text: ACTIVATION_GUIDANCE + (hint ? `\n\n${hintText(hint)}` : '') + (capsule ? `\n\n${capsule}` : '') + (refusal ? `\n\n${refusal}` : '') };
     Object.defineProperty(part, owned, { value: { hint } });
     return part;
   }
@@ -280,10 +322,16 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
           finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
         }
         if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) { removeOwned(); return; }
+        let refusal='';
+        try {
+          const selection=recovery?.refusals?.(event.sessionID);
+          if(selection?.sourceId===source.id&&selection.sessionId===event.sessionID)refusal=delegationRefusalText(selection);
+        } catch { /* Optional bounded receipt read never enables a report or blocks guidance. */ }
+        if(disposed||!control()||epoch!==disableEpoch||!source.verified||!Object.prototype.hasOwnProperty.call(event.tools,REPORT_TOOL)){removeOwned();return;}
         const existing = event.system.findIndex(part => Object.prototype.hasOwnProperty.call(part, owned));
-        if (existing !== -1) { if (capsule) event.system[existing] = section((event.system[existing] as any)[owned].hint, capsule); return; }
+        if (existing !== -1) { event.system[existing] = section((event.system[existing] as any)[owned].hint, capsule, refusal); return; }
         const hint = pending.get(sessionKey) ?? 0;
-        event.system.push(section(hint, capsule));
+        event.system.push(section(hint, capsule, refusal));
         pending.delete(sessionKey); // consume on delivery, not on a report receipt
       } catch { pending.delete(key(event.sessionID)); try { removeOwned(); } catch { /* malformed/immutable host context */ } }
     };

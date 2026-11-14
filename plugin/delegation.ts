@@ -3,6 +3,8 @@ import type { Store } from '../shared/store.ts';
 import type { Actor } from '../shared/progress.ts';
 import { createRunCapture } from './subagent-runs.ts';
 
+export const PARALLEL_DELEGATION_HINT='Only one delegation can be pending per coordinator. For parallel sub-agents, dispatch first, then link each returned child session to its tasks; or delegate one at a time and wait for binding before declaring the next.';
+
 /** Durable next-dispatch authority and passive capture share one hook/event owner.
  * Call IDs, not assistant-message census or elapsed time, reserve intent. */
 export async function registerDelegation(ctx:Plugin.Context,options:{store:Store;sourceId:string;identity(id:string,alive:()=>boolean,signal:AbortSignal):Promise<Actor>;now?:()=>number;alive?:()=>boolean}) {

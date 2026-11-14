@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { identifier, requireProgress as need, type Actor, type Request, type HandoffRequest, type Receipt } from './progress.ts';
+import { identifier, ProgressError, requireProgress as need, type Actor, type Request, type HandoffRequest, type Receipt } from './progress.ts';
+import { DELEGATION_VIEW_LIMITS, type DelegationDeclaration } from './delegation-view.ts';
 import { cleanupInstalled, cleanupState } from './cleanup.ts';
 import { canonical } from './canonical.ts';
 
@@ -313,15 +314,20 @@ export function activeIntent(db:DatabaseSync,source:string,parent:string):Durabl
   if(!r)return null;need(typeof r.payload==='string','corrupt');return {...JSON.parse(r.payload),dispatch:r.dispatch} as DurableIntent;
 }
 function intentDisposition(db:DatabaseSync,i:DurableIntent,state:'pending'|'reserved'|'retired'|'bound',reason?:string,dispatch?:string,receipt?:Receipt) {
-  const reply={plan:i.request.plan,rev:i.request.rev,delegation:{state,memoryOnly:false,lostOnRestart:false,requires:'supported-next-delegation',...(dispatch?{dispatchId:dispatch}:{}),...(reason?{reason}:{}),...(receipt?{receipt}:{})}};
+  const run=dispatch?db.prepare('SELECT message,call,child FROM runs_rows WHERE id=? AND source=? AND parent=?').get(dispatch,i.caller.sourceId,i.caller.sessionId):undefined;
+  const declaration:DelegationDeclaration={oid:i.request.oid!,coordinatorSessionId:i.caller.sessionId,declaredRevision:i.request.rev!,taskIds:[...i.request.assign!],dispatch:run?{tool:'subagent',messageId:String(run.message),callId:String(run.call)}:null};
+  // Additive receipt metadata only: keep legacy state/reason, request hash and
+  // the exact run DDL/public row untouched. Older writers can still retire it.
+  const reply={plan:i.request.plan,rev:i.request.rev,delegation:{state,memoryOnly:false,lostOnRestart:false,requires:'supported-next-delegation',sourceId:i.caller.sourceId,declaration,...(dispatch?{dispatchId:dispatch}:{}),...(reason?{reason}:{}),...(state==='retired'&&reason!=='cancelled'?{recovery:'redeclare-or-link'}:{}),...(receipt?{receipt,childSessionId:run?.child}:{})}};
   db.prepare('UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?').run(JSON.stringify(reply),i.caller.sourceId,i.request.plan,i.request.oid!);return reply;
 }
+export class PendingDelegationError extends ProgressError { constructor(){super('conflict');} }
 export function declareIntent(db:DatabaseSync,r:Request,actor:Actor,validate:()=>void) {
   const c=runControl(db);need(c.enabled,'disabled');const payloadHash=hash([r,actor.sourceId,actor.sessionId]);
   const old=db.prepare('SELECT payload_hash,receipt FROM receipts WHERE source=? AND plan=? AND oid=?').get(actor.sourceId,r.plan,r.oid!);
   if(old){need(old.payload_hash===payloadHash,'operation-reused');return JSON.parse(String(old.receipt));}
   validate();const current=activeIntent(db,actor.sourceId,actor.sessionId);
-  if(r.assign!.length)need(!current,'conflict');
+  if(r.assign!.length&&current)throw new PendingDelegationError();
   else if(current){intentDisposition(db,current,'retired','cancelled',current.dispatch??undefined);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=?').run(actor.sourceId,actor.sessionId);}
   need(!r.assign!.length||Number(db.prepare('SELECT count(*) AS n FROM runs_intents').get()!.n)<RUN_LIMITS.intents,'busy');
   const i:DurableIntent={request:r,caller:{sourceId:actor.sourceId,sessionId:actor.sessionId},generation:c.generation,bindOid:`binding-${randomUUID()}`,dispatch:null};
@@ -332,6 +338,61 @@ export function declareIntent(db:DatabaseSync,r:Request,actor:Actor,validate:()=
 export function reservedIntent(db:DatabaseSync,k:DispatchKey):DurableIntent|null {const i=activeIntent(db,k.source,k.parent);return i?.dispatch===keyId(k)?i:null;}
 export function settleIntent(db:DatabaseSync,i:DurableIntent,receipt?:Receipt,reason?:string) {
   intentDisposition(db,i,receipt?'bound':'retired',reason,i.dispatch??undefined,receipt);db.prepare('DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?').run(i.caller.sourceId,i.caller.sessionId,i.dispatch!);
+}
+export interface DelegationRefusal {
+  plan:string; declaration:DelegationDeclaration; reason:string; recovery:'redeclare-or-link';
+}
+export interface DelegationRefusals {
+  sourceId:string; sessionId:string; complete:boolean; refusals:DelegationRefusal[];
+}
+/** Bounded receipt window, never an authority check or an intent mutation. Old
+ * receipts without exact declaration identity are unavailable, not guessed.
+ * Current plan assignments can suppress recovered refusals, never grant authority.
+ * No scan of run payloads, prompts or titles is needed. */
+export function delegationRefusals(db:DatabaseSync,binding:RunBinding,sourceId:string,sessionId:string):DelegationRefusals {
+  need(identifier(sourceId)&&identifier(sessionId));
+  const result:DelegationRefusals={sourceId,sessionId,complete:true,refusals:[]};
+  if(!binding.verified||binding.sourceId!==sourceId||db.prepare('SELECT verified FROM sources WHERE id=?').get(sourceId)?.verified!==1||!runControl(db).enabled){result.complete=false;return result;}
+  const rows=db.prepare('SELECT plan,oid,length(CAST(receipt AS BLOB)) AS bytes,CASE WHEN length(CAST(receipt AS BLOB))<=16384 THEN receipt END AS receipt FROM receipts WHERE source=? ORDER BY rowid DESC LIMIT ?').all(sourceId,DELEGATION_VIEW_LIMITS.receipts+1);
+  result.complete=rows.length<=DELEGATION_VIEW_LIMITS.receipts;
+  let bytes=0;
+  const seen=new Set<string>();
+  for(const row of rows.slice(0,DELEGATION_VIEW_LIMITS.receipts)){
+    bytes+=Number(row.bytes);if(bytes>DELEGATION_VIEW_LIMITS.inputBytes){result.complete=false;break;}
+    if(typeof row.receipt!=='string'){result.complete=false;seen.add(String(row.plan));continue;}
+    let r:any;try{r=JSON.parse(row.receipt);}catch{result.complete=false;seen.add(String(row.plan));continue;}
+    const d=r?.delegation;if(!d)continue;
+    // A malformed newer declaration also supersedes older evidence. Do not
+    // resurrect an old refusal just because the latest metadata is unreadable.
+    if(seen.has(String(row.plan)))continue;seen.add(String(row.plan));
+    const a=d.declaration;
+    if(!a){result.complete=false;continue;}
+    if(d.sourceId!==sourceId||a.coordinatorSessionId!==sessionId)continue;
+    if(!identifier(row.plan)||r.plan!==row.plan||a.oid!==row.oid||!identifier(a.oid)||!Number.isSafeInteger(a.declaredRevision)||a.declaredRevision<1||r.rev!==a.declaredRevision||!Array.isArray(a.taskIds)||a.taskIds.length>DELEGATION_VIEW_LIMITS.tasks||!a.taskIds.every(identifier)||new Set(a.taskIds).size!==a.taskIds.length||a.dispatch!==null&&(!a.dispatch||a.dispatch.tool!=='subagent'||!identifier(a.dispatch.messageId)||!identifier(a.dispatch.callId))){result.complete=false;continue;}
+    // Only the latest declaration per plan matters. A fresh pending/bound/cancel
+    // declaration must not resurrect an older refusal in coordinator guidance.
+    if(cleanupInstalled(db)&&['archived','deleted'].includes(String(cleanupState(db,sourceId,r.plan)?.state??'')))continue;
+    if(d.state!=='retired'||d.reason==='cancelled'||!a.taskIds.length)continue;
+    // Explicit links have no delegation receipt. Read the bounded current
+    // assignment instead; historical refusals and their exact retries stay intact.
+    const current=db.prepare('SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?').get(Math.max(0,DELEGATION_VIEW_LIMITS.inputBytes-bytes),sourceId,r.plan);
+    if(current){
+      bytes+=Number(current.bytes);
+      if(typeof current.snapshot!=='string')result.complete=false;
+      else try{
+        const p=JSON.parse(current.snapshot);
+        if(p.sourceId!==sourceId||p.id!==r.plan||p.sessionId!==sessionId||!Number.isSafeInteger(p.revision)||!Array.isArray(p.items)||!Array.isArray(p.links))result.complete=false;
+        else if(p.revision>a.declaredRevision&&a.taskIds.every((id:string)=>{
+          const item=p.items.find((i:any)=>i?.id===id);
+          return item?.kind==='task'&&identifier(item.assigneeSessionId)&&item.assigneeSessionId!==sessionId&&p.links.some((l:any)=>l?.sessionId===item.assigneeSessionId&&Array.isArray(l.itemIds)&&l.itemIds.includes(id));
+        }))continue;
+      }catch{result.complete=false;}
+    }
+    if(result.refusals.length===3){result.complete=false;continue;}
+    const reasons=['relevant-change','conflict','structural-change','closed','assignment','source-unverified','unverified','incomplete-proof','missing-proof','budget','dispatch-unconfirmed','binding','disabled','capture-disabled','not-found','storage','corrupt','schema','busy'];
+    result.refusals.push({plan:r.plan,declaration:{oid:a.oid,coordinatorSessionId:sessionId,declaredRevision:a.declaredRevision,taskIds:[...a.taskIds],dispatch:a.dispatch?{tool:'subagent',messageId:a.dispatch.messageId,callId:a.dispatch.callId}:null},reason:reasons.includes(d.reason)?d.reason:'unverified',recovery:'redeclare-or-link'});
+  }
+  return result;
 }
 function claimHash(r:HandoffRequest){return hash([r.outcome,r.summary]);}
 function claimFits(db:DatabaseSync,r:StoredRunRow,claim:NonNullable<RunRow['claimed']>,epochs=claimEpochs(db,r),start=provenStart(db,r)) {

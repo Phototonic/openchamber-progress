@@ -34,6 +34,11 @@ bun run typecheck
 bun run tsc --noEmit -p ui/tsconfig.json
 ```
 
+Released-writer delegation fixtures require the local `v1.3.0` tag. Run
+`git fetch origin tag v1.3.0` if it is missing; only those compatibility cases
+skip with a prerequisite diagnostic when the tag is unavailable. Full portable
+CI requires full history and tags, so these cases run there.
+
 Run the checks relevant to your change:
 
 ```sh

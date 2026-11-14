@@ -374,6 +374,11 @@ The handoff router accepts optional `taskUpdate:{plan,rev,changes}`. The Store's
 transaction-local task/claim/receipt path commits both components atomically with
 ordinary child authority, capture permission and lifecycle fences. Success returns
 `handoff` plus `taskReceipt`; the task contribution is direct, not a parent relay.
+The router reuses ordinary reporting's guarded native identity for combined
+handoffs, so an explicitly linked/bound child can report across directories,
+worktrees and projects with verified ancestry and current assignment. It does
+not require a second same-location identity lookup or relax same-source,
+revision, task scope, capture/document permission or automatic-binding checks.
 Bare handoffs remain claims only. Full-input receipt replay cannot upgrade a bare
 claim, reapply pruned task changes or infer success from an older claim hash.
 Conflicts remain visible and require an intentional fresh operation. See
@@ -1047,6 +1052,8 @@ the same Store and existing plan receipts. There is one pending/reserved intent
 per source/parent, with no TTL or restart re-arming. Database admission order
 reserves the first supported dispatch; result arrival order cannot steal it.
 Second nonempty declarations conflict; explicit cancellation precedes replacement.
+That conflict includes a fixed parallel-dispatch hint: dispatch then link each
+verified child, or declare sequentially and wait for binding before the next.
 
 Structured returned identity and complete native same-source/project/location
 immediate-child ancestry are required. Unsupported aliases and text results do
@@ -1059,13 +1066,33 @@ later proven child metadata may still enrich the retained row, not its assignmen
 All asynchronous identity work occurs outside transactions, with one-second
 guards and physical occupancy retained when a host ignores cancellation.
 Binding rechecks generation, plan visibility/lifecycle, original revision and
-task availability. `Store.applyMutation` is the existing private mutation owner;
+task availability. `shared/delegation-validation.ts` may admit a newer revision
+only while the Store transaction holds complete bounded snapshot/contribution
+proof of disjoint reports or positively identified disjoint single-child
+links/binds. Relevant, structural, ambiguous, missing or over-budget transitions
+refuse; it neither rewrites declaration identity nor generally rebases writes.
+`Store.applyMutation` is the existing private mutation owner;
 an internal savepoint commits link/provenance and durable disposition in the same
 transaction, or records a fixed refusal without losing the dispatch observation.
 Assignment is unioned with the child's current IDs. Status/reporters/counts/report
 time remain unchanged; explicit `link` and restricted-child task relay are intact.
 Capture toggles and plan closure/deletion fence intent even under old writers.
 Partial registrations dispose safely, and late disposed lookups cannot publish.
+
+Receipts retain additive declaration/source/dispatch identity and fixed refusal
+recovery metadata without changing schema or replay hashes. Activation admits at
+most 128 newest source receipts (16 KiB each) plus one overflow sentinel, emits
+at most three current-per-plan refusals and marks incomplete evidence. Newer
+declaration evidence suppresses old
+refusals, as do bounded current assignments covering all refused tasks through
+linked children at a later revision; archived/deleted plans and
+disabled/unverified contexts expose none.
+The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
+and explicitly marks omissions, including an empty incomplete result. It is
+advisory and read-only: recovery requires
+an intentional fresh declaration or verified explicit link, never an automatic
+report, assignment, permission grant or document capture. See
+[the delegation contract](contracts.md#declared-delegation-and-assignment-attribution-optional-v2-metadata).
 
 Run identity hashes use the same canonical JSON serialization as plan mutations;
 object property order does not distinguish declaration retries or read cursors.
