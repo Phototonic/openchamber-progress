@@ -137,7 +137,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!['inspect','install','update','disable','enable','remove-capture','managed-inspect','managed-configure','managed-migrate','managed-enable','managed-disable','managed-step'].includes(action))return answer(404,{error:'not-found'});
         if(req.method!=='POST')return answer(405,{error:'method-not-allowed'});
         // Refuse old monolithic input before discovery, body parsing or workers.
-        if(action==='managed-migrate'||action==='managed-inspect'){req.resume();return answer(409,{error:'managed-action-required'});}
+        if(action==='managed-migrate'){req.resume();return answer(409,{error:'managed-action-required'});}
         stepRoute=url.pathname===MANAGED_STEP_ROUTE;
         let size=0;const chunks:Buffer[]=[];
         for await(const chunk of req){const b=Buffer.from(chunk);size+=b.length;if(size>(stepRoute?MANAGED_STEP_LIMITS.requestBytes:LIMITS.requestBytes)){req.resume();return answer(413,{error:'request-too-large'});}chunks.push(b);}
@@ -152,6 +152,11 @@ export function createProgressServer(store: Store | undefined, token: string, un
           return answer(value.error?managedStepHttpStatus(value.error.code):200,value);
         }
         migrationAction=action==='managed-migrate';
+        // Fresh configuration retains the legacy single-request budget and
+        // controller nonce. Hold both writer slots throughout, including review
+        // validation, publication and cleanup; never bypass a running step.
+        if(action==='managed-inspect'||action==='managed-configure')
+          return answer(200,await withSetupWriter(()=>setup.runFreshManaged(action,body),setup.writerTargets(body)));
         return answer(200,await withSetupWriter(()=>setup.run(action as Action|ManagedSetupAction,body),setup.writerTargets(body)));
       }
       if (req.headers['content-length'] && req.headers['content-length'] !== '0' || req.headers['transfer-encoding']) return answer(400,{error:'body-not-allowed'});

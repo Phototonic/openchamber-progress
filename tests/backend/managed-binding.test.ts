@@ -93,10 +93,15 @@ test('authenticated reviewed configuration creates only private managed state an
     assert.equal((await request('managed-inspect',{},false)).status,401);
     assert.equal((await request('managed-configure',{})).status,400);assert.deepEqual(tree(f.root),before);
     assert.equal((await request('managed-configure',{confirmed:true,expected:'a'.repeat(64)})).status,409);assert.deepEqual(tree(f.root),before);
-    const refused=await request('managed-inspect',{});assert.equal(refused.status,409);assert.deepEqual(await refused.json(),{error:'managed-action-required'});
-    // Exercise the retained configuration owner with an explicitly obtained
-    // internal review; unnegotiated HTTP inspection is deliberately retired.
-    const expected=review(f).expected;
+    const inspected=await request('managed-inspect',{});assert.equal(inspected.status,200);
+    const expected=(await inspected.json()).delivery.review.expected;
+    assert.deepEqual(tree(f.root),before,'HTTP review is read-only');
+    const other=new SetupController({env:f.env},()=>payload);
+    try{await http({...f,setup:other},async second=>{
+      const stale=await second('managed-configure',{confirmed:true,expected});
+      assert.equal(stale.status,409);assert.deepEqual(await stale.json(),{error:'managed-review-stale'});
+      assert.deepEqual(tree(f.root),before,'another controller cannot reuse the review nonce');
+    });}finally{other.close();}
     const result=await request('managed-configure',{confirmed:true,expected});assert.equal(result.status,200);
     const status=await result.json();assert.equal(status.configured,true);assert.equal(status.installed,false);assert.equal(status.separateLifecycle,false);
     assert.equal(status.delivery.configuration,'configured');assert.equal(status.delivery.mode,'unknown');assert.equal(status.delivery.observation,'not-observed');

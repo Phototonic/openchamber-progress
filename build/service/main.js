@@ -6792,6 +6792,14 @@ class SetupController {
       this.activation = result.activation;
     return { ...this.status(), action };
   }
+  runFreshManaged(action, body) {
+    if (!this.managedEnv)
+      throw new SetupError("managed-service-required");
+    const result = this.runManaged(action, body, true);
+    this.lastAction = undefined;
+    delete result.lastAction;
+    return result;
+  }
   enableCapture() {
     if (!this.managedEnv) {
       this.run("enable", { confirmed: true });
@@ -6928,12 +6936,23 @@ class SetupController {
     }));
     return { review: { expected, targets, storeId: b.storeId, sourceId: b.source.id }, binding: b, targets };
   }
-  managedFullCandidate(storeRoot) {
+  managedFullCandidate(storeRoot, freshOnly) {
     this.checked = true;
-    return platformSecurityScope(() => this.managedFullCandidateInner(storeRoot));
+    return platformSecurityScope(() => this.managedFullCandidateInner(storeRoot, freshOnly));
   }
-  managedFullCandidateInner(storeRoot) {
-    const env = this.managedEnv, roots = managedSourceRoots(env), file = managedBindingFile(env), b = readManagedBinding(env);
+  managedFullCandidateInner(storeRoot, freshOnly) {
+    const env = this.managedEnv, roots = managedSourceRoots(env), file = managedBindingFile(env);
+    if (freshOnly) {
+      const legacy2 = lstatSync10(path11.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
+      const journal = lstatSync10(path11.join(path11.dirname(file), "migration.json"), { throwIfNoEntry: false });
+      if (journal || legacy2 && freshOnly === "inspect")
+        throw new SetupError("managed-action-required");
+      if (legacy2 && (!legacy2.isDirectory() || legacy2.isSymbolicLink() || lstatSync10(file, { throwIfNoEntry: false })))
+        throw new SetupError("managed-migration-conflict");
+      if (legacy2)
+        throw new SetupError("managed-action-required");
+    }
+    const b = readManagedBinding(env);
     const record2 = readMigration(env), legacy = legacyMigration(env);
     if (record2 && (b ? canonical(record2.binding) !== canonical(b) : record2.phase === "complete") || legacy && b && !sameMigrationTarget(legacy.binding, b) || legacy && record2 && !sameMigrationTarget(legacy.binding, record2.binding))
       throw new SetupError("managed-migration-conflict");
@@ -6991,13 +7010,13 @@ class SetupController {
     }));
     return { review: { expected, targets: { ...roots, storeRoot: selected }, storeId, sourceId }, binding: b, targets, record: record2, legacy };
   }
-  runManaged(action, body) {
+  runManaged(action, body, freshOnly = false) {
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new ProgressError("invalid");
     const r = body;
     if (!Object.keys(r).every((k) => ["storeRoot", "confirmed", "expected"].includes(k)) || r.storeRoot !== undefined && (typeof r.storeRoot !== "string" || !r.storeRoot.length || r.storeRoot.length > 4096) || r.confirmed !== undefined && typeof r.confirmed !== "boolean" || r.expected !== undefined && (typeof r.expected !== "string" || !/^[a-f0-9]{64}$/.test(r.expected)))
       throw new ProgressError("invalid");
-    const candidate2 = action === "managed-inspect" || action === "managed-disable" ? this.managedCandidate(r.storeRoot) : this.managedFullCandidate(r.storeRoot);
+    const candidate2 = freshOnly ? this.managedFullCandidate(r.storeRoot, action === "managed-inspect" ? "inspect" : "configure") : action === "managed-inspect" || action === "managed-disable" ? this.managedCandidate(r.storeRoot) : this.managedFullCandidate(r.storeRoot);
     if (action === "managed-inspect") {
       if (r.confirmed !== undefined || r.expected !== undefined)
         throw new ProgressError("invalid");
@@ -7039,7 +7058,7 @@ class SetupController {
       }
       if (readManagedBinding(this.managedEnv))
         throw new SetupError("managed-review-stale");
-      const latest = this.managedCandidate(r.storeRoot);
+      const latest = freshOnly ? this.managedFullCandidate(r.storeRoot, "configure") : this.managedCandidate(r.storeRoot);
       if (latest.review.expected !== candidate2.review.expected)
         throw new SetupError("managed-review-stale");
       const { targets } = candidate2;
@@ -8679,7 +8698,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
           return answer(404, { error: "not-found" });
         if (req.method !== "POST")
           return answer(405, { error: "method-not-allowed" });
-        if (action === "managed-migrate" || action === "managed-inspect") {
+        if (action === "managed-migrate") {
           req.resume();
           return answer(409, { error: "managed-action-required" });
         }
@@ -8719,6 +8738,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
           return answer(value.error ? managedStepHttpStatus(value.error.code) : 200, value);
         }
         migrationAction = action === "managed-migrate";
+        if (action === "managed-inspect" || action === "managed-configure")
+          return answer(200, await withSetupWriter(() => setup.runFreshManaged(action, body), setup.writerTargets(body)));
         return answer(200, await withSetupWriter(() => setup.run(action, body), setup.writerTargets(body)));
       }
       if (req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"])

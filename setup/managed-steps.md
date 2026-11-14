@@ -114,10 +114,43 @@ crash is treated as effect uncertainty and requires explicit observation/recover
 
 Old-shaped `/v1/setup/managed-migrate` returns exactly HTTP 409
 `{"error":"managed-action-required"}` with **zero security spawns and migration
-writes**, before candidate discovery. It is never a partial-success 200. Apply
-the same fast refusal to unnegotiated `managed-inspect`; retain independently
-bounded capture-off control. No unnegotiated fallback from the new client to the
-old route. Delivery revision stays 1; the new literal capability is independent.
+writes**, before candidate discovery. It is never a partial-success 200.
+`managed-inspect` and `managed-configure` remain supported for fresh configuration
+with no canonical legacy installation or migration journal. They retain the
+existing controller's nonce-bound review, explicit confirmation and fresh locked
+revalidation. Presence of legacy discovery or any journal refuses these routes
+with 409 `managed-action-required` before monolithic legacy inspection or writes;
+use negotiated step inspection instead. Legacy/journal inspection refusal is
+read-only, with at most six security launches and an eight-second undelayed
+acceptance budget; unlike migrate refusal it may perform bounded discovery checks.
+Without a journal, configuration with concurrent legacy discovery and a managed
+selection, or a non-directory/symlink legacy entry, refuses with 409
+`managed-migration-conflict`, not fresh-configuration authority. Inspection of
+that state still returns `managed-action-required` to direct clients to steps.
+Invalid managed metadata retains its precise ownership/path refusal.
+Retain independently bounded capture-off control. No unnegotiated fallback from
+the migration client to the old route. Delivery revision stays 1; the new literal
+capability is independent.
+
+### Fresh-configuration compatibility limit
+
+Fresh inspection/configuration is an explicit exception to the step-request
+budget and worker boundary in this release. It keeps the synchronous 1.3.0
+controller and security timeouts, holding the same target-derived scope **and**
+Store writer slots for the entire request, including publication and cleanup.
+A busy slot refuses before controller admission; fresh configuration cannot race
+a migration or capture worker. The fence releases on completion/failure, not on
+client disconnection. Partial bootstrap still has the existing recovery limits.
+
+Portable Windows-helper accounting measures 3 actual launches for empty-store
+inspection and 24 for successful fresh configuration, not a six-launch claim.
+At roughly 0.3 seconds per launch configuration may fit the 20-second host limit,
+but this is not a native latency guarantee. Slow PowerShell can exceed that limit
+and synchronous configuration can delay health. A timeout is not rollback:
+inspect state before explicitly retrying; never reset or repair it automatically.
+Linux/macOS do not launch PowerShell. The follow-up is a fresh plan variant on
+the step engine (`prepare`, `expectation`, `publish-binding`, `enable`, `reconcile`),
+not permission to weaken current authorization or silently split a confirmed call.
 
 ## Request budgets and measured-stage split
 
@@ -140,9 +173,10 @@ return unknown capture and `managed-step-unsettled`/deadline, retaining intent.
 Fence a late worker before any competing request can mutate. Termination is not
 proof of rollback; health must continue to answer without security queries.
 
-The following is a required allocation, not a claim that unmodified helpers fit.
+The following is a required allocation for step requests, not a claim that
+unmodified helpers fit.
 The original stage totals overlap semantic work; do not add them to infer a new
-total. All new requests, including status/replay/failure, remain capped at six.
+total. All step requests, including status/replay/failure, remain capped at six.
 
 | Old measured stage | New request unit | Security-spawn allocation |
 | --- | --- | --- |

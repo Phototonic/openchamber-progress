@@ -44,6 +44,26 @@ on supported Windows). Mutable state never lives in the extension code folder.
 After configuration, the next eligible native context/report boundary can activate
 a previously dormant companion; no global install or automatic restart is needed.
 
+Fresh setup (no legacy installation or migration journal) retains the existing
+`managed-inspect` → explicit confirmation → `managed-configure` HTTP flow and its
+nonce-bound review. The service holds the same scope and Store writer slots as
+migration/capture workers throughout configuration, including failure cleanup;
+busy setup activity refuses rather than racing another writer. Inspection writes
+no product state. A journal or legacy installation instead requires the migration
+step flow; configuring ambiguous legacy discovery alongside a managed selection
+refuses with `managed-migration-conflict`, never implicit fresh configuration.
+
+**Known Windows limit:** fresh configuration still uses the synchronous 1.3.0
+controller and its existing security-helper timeouts, not the six-launch step
+budget. Portable accounting measures 3 PowerShell launches for fresh inspection
+and 24 for configuration. Roughly 0.3 seconds per launch can fit the host's
+20-second request limit; very slow PowerShell can exceed it and delay health
+responses. This is not native latency certification. A failed/timed-out reply is
+not rollback: inspect current state before an explicit retry, without deleting
+metadata or relaxing permissions. Linux/macOS do not launch PowerShell. Moving
+fresh configuration to a separate fresh plan on the step engine remains follow-up
+work; the current UI intentionally keeps the existing fresh review/confirm flow.
+
 ## Reach and disable/removal
 
 | Delivery | Effect and limits |
@@ -96,8 +116,16 @@ manual disable. No worker continues automatically after restart.
 
 Authenticated health and Setup delivery advertise `managedMigrationSteps: 1`.
 Clients must negotiate it before using `/v1/setup/managed-step`. The old migrate
-and inspect URLs return 409 `managed-action-required` with no migration work;
-update the extension and service together rather than falling back to those URLs.
+URL always returns 409 `managed-action-required` with no security launches or
+migration work. The old inspect/configure URLs do the same no-write refusal when
+legacy discovery or any migration journal applies (configuration of ambiguous
+legacy plus managed selection without a journal returns `managed-migration-conflict`,
+while inspection still returns `managed-action-required`). Legacy/journal inspect
+refusal may perform bounded discovery checks, but no writes; its acceptance budget
+is at most six security launches and eight seconds on the undelayed runner. The
+old inspect/configure routes remain supported for fresh setup as described above;
+migration must never fall back to them. Invalid metadata retains its precise
+ownership/path refusal.
 Ordinary Setup reads are bounded and read-only; absent operation progress is
 omitted, not null. Ordinary capture enable/disable shares the writer fence.
 Portable HTTP tests and launch counts are not native Windows latency certification.
