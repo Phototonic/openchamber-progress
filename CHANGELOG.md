@@ -19,11 +19,11 @@ Progress reported by the sub-agents doing the work, and a direct way to open a s
 
 ### Changed
 
-- A dispatch without a plan now tells coordinators to start the plan and declare task assignments before dispatching, rather than treating dispatch activity as task progress (#96).
+- The advisory dispatch hint now tells coordinators to start a plan if none mirrors the work yet and to declare task assignments before the next dispatch. It remains advice only (#96).
 
 ### Fixed
 
-- A refused change naming a group or unknown item now returns a recovery hint: read the plan and report concrete task IDs (#94).
+- A refused `change` naming a group or unknown item now returns a recovery hint: `change` updates existing task IDs only; set group status or change structure with `revise` (#94).
 - The expanded Sessions panel has one heading rather than a duplicate heading, without removing participant or host-context details (#95).
 
 ## [1.2.0] - 2026-11-14
