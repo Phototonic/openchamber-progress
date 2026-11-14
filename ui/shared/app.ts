@@ -1004,7 +1004,7 @@ export function startView<U>(spec: ViewSpec<U>) {
             }
             if (cached.result.plan.delegationToken === token && JSON.stringify(cached.value.value.intent) === JSON.stringify(result.intent)) return;
             const detail = { ...cached.value.value, intent: result.intent };
-            details.set(p.key, { ...cached, requestedToken: cached.requestedToken === undefined ? undefined : token,
+            details.set(p.key, { ...cached, requestedToken: token,
               value: { state: 'ready', value: detail }, result: { ...cached.result, plan: { ...cached.result.plan, delegationToken: token }, detail } });
             bump();
             return;

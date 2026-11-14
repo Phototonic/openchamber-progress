@@ -359,7 +359,7 @@ export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sour
   try {
     const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
     if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
-    return { ok: true, envelope: first.envelope, plan: intent ? { ...first.plan, delegationToken: first.intent?.token ?? null } : first.plan, ...(intent ? { intent: first.intent } : {}) };
+    return { ok: true, envelope: first.envelope, plan: intent ? { ...first.plan, delegationToken: first.intent?.token } : first.plan, ...(intent ? { intent: first.intent } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }

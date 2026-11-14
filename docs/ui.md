@@ -652,7 +652,9 @@ re-reads detail even when progress revision did not change, keeping task rows
 painted. During board search, the same refresh cadence checks the open plan's
 first detail page with the overlay opted in, because search freshness does not
 carry a delegation token. At an unchanged progress/cleanup revision it updates
-only the token and overlay, retaining complete tasks and timing anchors. These
+only the token and overlay, retaining complete tasks and timing anchors. An absent
+overlay clears the note and remains token-free in both head and cached metadata;
+unchanged inbox polls need only the head, never redundant full-detail reads. These
 heads share the inbox's single-flight, coalescing and retired-reading guards;
 an overtaken head cannot overwrite newer detail. Detail must match the current
 list or open-plan head token and reply identity; legacy,

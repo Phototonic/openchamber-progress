@@ -17,6 +17,7 @@ import * as language from '../../ui/shared/language.ts';
 import * as sessionContext from '../../ui/shared/session-context.ts';
 import { EMPTY_LIVE } from '../../ui/shared/live.ts';
 import { currentIntent } from '../../ui/shared/intent.ts';
+import { readingRequest, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import type { PlanDetail, PlanView } from '../../ui/shared/model.ts';
 import { INTENT_CANCELLED, INTENT_PENDING, INTENT_REFUSED } from '../fixtures/attention-contracts.ts';
 import { HEALTH, SRC, planPage, plansPage, setupRead, summary } from './fixtures.ts';
@@ -30,7 +31,7 @@ const ITEMS = [{ id: 'task-a', title: 'Draft', kind: 'task' as const, status: 'p
 const overlay = (base: unknown) => { const v = structuredClone(base) as Rec; Object.assign(v, { storeId: 'store-1', source: SRC, sourceBinding: { sourceId: SRC, verified: true } }); return v; };
 type Ui = { n: number };
 
-function controller(surface: 'panel' | 'status' = 'panel', capable = true, searching = false) {
+function controller(surface: 'panel' | 'status' = 'panel', capable = true, searching = false, inbox = false) {
   const listeners: Record<string, (v?: any) => void> = {};
   const requests: GuestRequest[] = [];
   const el = (): any => ({ dataset: {}, children: [], append() {}, replaceChildren() {}, setAttribute() {}, querySelector: () => null, querySelectorAll: () => [], contains: () => false, getAnimations: () => [] });
@@ -73,6 +74,11 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
     },
   });
   let vc!: ViewContext<Ui>;
+  const reading: InboxReading = { token: 1, target: { storeId: 'store-1', source: SRC, plan: 'plan-alpha', task: 'task-a', revision: 3, cleanupRev: 0 }, task: 'Draft', planTitle: 'Plan alpha', coordinator: 'A', group: 'needs-you', rowKey: 'task-a' };
+  const inboxPlan = (c: ViewContext<Ui>) => {
+    const request = readingRequest(reading);
+    return readingRequest(reading, null, c.detailPlan(request));
+  };
   const spec: ViewSpec<Ui> = {
     surface, maxSessionSubscriptions: 2, initialUi: () => ({ n: 0 }),
     scope: ({ session }) => session ? { session: session.id } : null,
@@ -84,10 +90,15 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
       refreshDetails: (c: ViewContext<Ui>) => c.read?.plans.slice(0, 1) ?? [],
       reading: (c: ViewContext<Ui>) => ({ plan: c.read?.plans[0]?.key ?? '', scope: `search:${c.ui.n}` }),
     } : {}),
+    ...(inbox ? {
+      wantDetails: (c: ViewContext<Ui>) => [inboxPlan(c)],
+      refreshDetails: (c: ViewContext<Ui>) => [inboxPlan(c)],
+      reading: () => ({ plan: `${SRC}/plan-alpha`, scope: 'inbox:1' }),
+    } : {}),
     paint: (_root, c) => { vc = c; },
   };
   exports.startView(spec);
-  const listed = (): PlanView => vc.read!.plans[0];
+  const listed = (): PlanView => inbox ? inboxPlan(vc) : vc.read!.plans[0];
   return {
     state, requests,
     ready: () => listeners.ready({ session: { id: 'A' }, directory: null, connection: { account: 'example' }, locale: 'en', surface }),
@@ -102,6 +113,44 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
     leave: () => vc.setUi({ n: vc.ui.n + 1 }),
   };
 }
+
+test('an inbox reading with token-free metadata and no overlay uses only one head per unchanged poll', async () => {
+  const c = controller('panel', true, false, true);
+  try {
+    c.state.token = ''; c.state.overlay = null;
+    c.ready(); await settle();
+    assert.equal(c.detail?.state, 'ready');
+    assert.equal(c.plan.delegationToken, undefined);
+    const detail = (c.detail as { value: PlanDetail }).value;
+    for (let i = 0; i < 3; i++) {
+      const reads = c.reads();
+      await c.poll();
+      assert.equal(c.reads(), reads + 1, 'one head, no redundant full-detail refreshes');
+      assert.equal(c.intent?.state, 'absent');
+      assert.equal((c.detail as { value: PlanDetail }).value.items, detail.items);
+    }
+  } finally { c.stop(); }
+});
+
+test('an inbox head clears a missing overlay without rereading token-free detail', async () => {
+  const c = controller('panel', true, false, true);
+  try {
+    c.state.token = ''; // Detail metadata has no token; only the head's overlay can supply it.
+    c.ready(); await settle();
+    await c.poll();
+    assert.equal(c.intent?.state, 'waiting');
+    const detail = (c.detail as { value: PlanDetail }).value;
+    c.state.overlay = null;
+    for (let i = 0; i < 2; i++) {
+      const reads = c.reads();
+      await c.poll();
+      assert.equal(c.reads(), reads + 1, 'overlay retirement and unchanged polls need only a head');
+      assert.equal(c.intent?.state, 'absent');
+      assert.equal(c.intent?.tasks.size, 0);
+      assert.equal((c.detail as { value: PlanDetail }).value.items, detail.items);
+    }
+  } finally { c.stop(); }
+});
 
 test('search cadence clears a same-revision cancellation without rereading the list or replacing tasks', async () => {
   const c = controller('panel', true, true);
