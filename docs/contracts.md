@@ -2025,6 +2025,16 @@ Private receipt bookkeeping reuses existing owners without changing schema 2,
 run format 2 or the public claim shape. Cleanup/older writers may remove evidence;
 ambiguity refuses, rather than guessing that the task component committed.
 
+The additive ordinary `receipts_source_oid ON receipts(source, oid)` index
+narrows this replay lookup without changing receipt data, hashes, authority or
+protocol/base schema **2**. Store creation and companion activation install it
+transactionally and idempotently. Ordinary opens only validate it if present;
+read-only access and setup inspection never install or repair it. An incompatible
+object using the owned name fails closed with `schema`. Unmodified 1.3.0 readers
+and writers remain compatible, and downgrade retains the index. The existing
+exact `runs_*` and `cleanup_*` namespace checks remain unchanged. See the
+[backend index contract](backend.md#receipt-lookup-index).
+
 Assignment guidance is delivered only on a naturally occurring eligible context
 after verified binding, under current source/ancestry/assignment checks. Its
 bounded assigned-only brief is read-only, at most 4 KiB, and qualifies the shown

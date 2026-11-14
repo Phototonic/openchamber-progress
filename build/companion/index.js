@@ -26308,6 +26308,26 @@ function finishRecovery(db, j, state) {
     db.prepare("DELETE FROM runs_recovery_work WHERE source=? AND root=?").run(j.source, j.root);
 }
 
+// shared/receipt-index.ts
+var name = "receipts_source_oid";
+function receiptIndexInstalled(db) {
+  const objects = db.prepare("SELECT type,name,tbl_name FROM main.sqlite_master WHERE name=? COLLATE NOCASE").all(name);
+  if (!objects.length)
+    return false;
+  requireProgress(objects.length === 1 && objects[0].type === "index" && objects[0].name === name && objects[0].tbl_name === "receipts", "schema");
+  const index2 = db.prepare("PRAGMA main.index_list('receipts')").all().find((r) => r.name === name);
+  requireProgress(index2?.unique === 0 && index2.partial === 0 && index2.origin === "c", "schema");
+  const keys4 = db.prepare("PRAGMA main.index_xinfo('receipts_source_oid')").all().filter((r) => r.key === 1);
+  requireProgress(keys4.length === 2 && keys4.every((key, i) => key.seqno === i && Number(key.cid) >= 0 && key.name === ["source", "oid"][i] && key.desc === 0 && key.coll === "BINARY"), "schema");
+  return true;
+}
+function installReceiptIndex(db) {
+  if (receiptIndexInstalled(db))
+    return;
+  db.exec("CREATE INDEX receipts_source_oid ON receipts(source, oid)");
+  receiptIndexInstalled(db);
+}
+
 // shared/assignment-binding.ts
 function currentBinding(value3, plan, itemId) {
   if (!value3 || typeof value3 !== "object" || Array.isArray(value3))
@@ -27284,6 +27304,7 @@ class Store {
         try {
           this.db.exec(SCHEMA);
           this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
+          installReceiptIndex(this.db);
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -27293,6 +27314,7 @@ class Store {
         requireProgress(version === VERSION, "schema");
       requireProgress(this.db.prepare("PRAGMA table_info(meta)").all().some((r) => r.name === "product"), "corrupt");
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
+      this.transaction(false, () => receiptIndexInstalled(this.db));
     } catch (e) {
       this.db?.close();
       if (e instanceof PlatformError2)
@@ -27306,7 +27328,10 @@ class Store {
     this.db.close();
   }
   installSubagentRuns() {
-    return this.transaction(true, () => installRuns(this.db));
+    return this.transaction(true, () => {
+      installReceiptIndex(this.db);
+      installRuns(this.db);
+    });
   }
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
@@ -28726,10 +28751,10 @@ function proxyReason(event) {
 function possiblePath(value3) {
   if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
     return false;
-  const name = path7.basename(value3).toLowerCase();
-  if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
+  const name2 = path7.basename(value3).toLowerCase();
+  if (!/\.(md|markdown)$/.test(name2) || /^(readme|todo)\.(md|markdown)$/.test(name2))
     return false;
-  return /^plan\.(md|markdown)$/.test(name) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+  return /^plan\.(md|markdown)$/.test(name2) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
 }
 function planPath(value3, directory) {
   const relative = path7.relative(directory, path7.resolve(directory, value3));
