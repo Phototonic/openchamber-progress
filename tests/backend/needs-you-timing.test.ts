@@ -6,9 +6,67 @@ import { createProgressServer } from '../../service/server.ts';
 import { BLOCKER_LIMITS, type Request, type Envelope, type PlanRead } from '../../shared/progress.ts';
 import { productionFixture } from '../fixtures/production.ts';
 import { attentionItems } from '../fixtures/needs-you.ts';
+import { needsYou } from '../../service/needs-you.ts';
 
 const at=(minute:number)=>new Date(Date.UTC(2026,0,1,0,minute));
 const single=[{id:'decision',title:'Choose format',kind:'task' as const,status:'blocked' as const}];
+
+test('inbox timing shares history work across displayed plans; compact reads do no history work', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: at(0) });
+  const f = productionFixture();
+  try {
+    f.store.bindReads(f.source.id, true);
+    for (const plan of ['plan-alpha','plan-beta']) {
+      f.store.apply({ op: 'start', plan, oid: `start-${plan}`, rev: 0, title: 'Reported wait', items: single }, f.actor);
+      for (let rev = 1; rev <= 128; rev++) {
+        t.mock.timers.setTime(at(rev).getTime());
+        f.store.apply({ op: 'change', plan, oid: `change-${plan}-${rev}`, rev, changes: [{ id: 'decision', status: 'blocked', blocker: { category: 'decision', reason: 'Edited reason' } }] }, f.actor);
+      }
+      t.mock.timers.setTime(at(0).getTime());
+    }
+    t.mock.timers.setTime(at(1000).getTime());
+    const original = f.store.db.prepare.bind(f.store.db); let visits = 0, bytes = 0;
+    f.store.db.prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (sql.includes('AS bytes,CASE') && sql.includes('FROM revisions')) {
+        const get = statement.get.bind(statement);
+        statement.get = ((...args: any[]) => { visits++; const row = get(...args); if (row?.snapshot) bytes += Buffer.byteLength(String(row.snapshot)); return row; }) as typeof statement.get;
+      }
+      return statement;
+    }) as typeof f.store.db.prepare;
+    const request = { storeId: f.store.list().storeId, binding: { sourceId: f.source.id, verified: true }, source: f.source.id };
+    const compact = needsYou(f.store, request); assert.equal(visits, 0); assert(compact.rows.every(row => !row.timing));
+    const timed = needsYou(f.store, { ...request, timing: true });
+    assert.equal(visits, 128); assert(bytes <= BLOCKER_LIMITS.inputBytes);
+    assert.deepEqual(timed.rows[0].timing, { readAt: at(1000).toISOString(), since: at(1).toISOString(), kind: 'lower-bound' });
+    assert.equal(timed.rows[1].timing, undefined, 'exhausted shared budget is unavailable, not zero');
+    const detail = f.store.detail(f.source.id, 'plan-beta'); visits = 0;
+    assert.equal(blockedTiming(f.store, detail, at(1000)).items.decision.kind, 'lower-bound'); assert.equal(visits, 128, 'legacy caller retains its full per-plan budget');
+    const budget = { snapshotVisits: 1, inputBytes: BLOCKER_LIMITS.inputBytes };
+    f.store.db.exec('BEGIN');
+    try {
+      assert.equal(blockedTiming(f.store, detail, at(1000), { budget, transaction: 'caller' }).items.decision.kind, 'lower-bound');
+      assert.equal(budget.snapshotVisits, 0); assert(budget.inputBytes < BLOCKER_LIMITS.inputBytes);
+      assert.deepEqual(blockedTiming(f.store, detail, at(1000), { budget, transaction: 'caller' }).items, {});
+      f.store.db.exec('COMMIT'); // helper must leave caller-owned transaction open, including no-data path
+    } catch (e) { f.store.db.exec('ROLLBACK'); throw e; }
+  } finally { f.cleanup(); }
+});
+
+test('inbox timing is exact from blocked creation, unavailable for missing history, and read-only', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: at(0) });
+  const f = productionFixture();
+  try {
+    f.store.bindReads(f.source.id, true);
+    f.store.apply({ op: 'start', plan: 'P', oid: 'start', rev: 0, title: 'Blocked creation', items: single }, f.actor);
+    const request = { storeId: f.store.list().storeId, binding: { sourceId: f.source.id, verified: true }, source: f.source.id, timing: true };
+    const timed = needsYou(f.store, request, at(5)); assert.deepEqual(timed.rows[0].timing, { readAt: at(5).toISOString(), since: at(0).toISOString(), kind: 'exact' });
+    const before = f.store.db.prepare('SELECT * FROM plans').all();
+    f.store.db.prepare('DELETE FROM contributions').run(); f.store.db.prepare('DELETE FROM revisions').run();
+    assert.equal(needsYou(f.store, request, at(5)).rows[0].timing, undefined);
+    assert.deepEqual(f.store.db.prepare('SELECT * FROM plans').all(), before);
+  } finally { f.cleanup(); }
+});
 async function http(f:ReturnType<typeof productionFixture>){
   const server=createProgressServer(f.store,'fixture-only');server.listen(0,'127.0.0.1');await once(server,'listening');
   const read=async(plan='P-attention',cursor=0)=>{const r=await fetch(`http://127.0.0.1:${(server.address() as {port:number}).port}/v1/plan?source=source-fixture&plan=${plan}&cursor=${cursor}`,{headers:{authorization:'Bearer fixture-only'}});assert.equal(r.status,200);return await r.json() as Envelope & PlanRead;};
