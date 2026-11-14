@@ -19,6 +19,7 @@ import { parseCleanup } from '../shared/cleanup.ts';
 import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/progress.ts';
 import { needsYou } from './needs-you.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../shared/needs-you.ts';
+import { delegationView } from './delegation-view.ts';
 
 /** Only fixed read/control routes. No store path, token or SQL from request bodies. */
 export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
@@ -32,9 +33,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
     }
     const supplied = Buffer.from(req.headers.authorization ?? '');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied,expected)) return answer(401,{error:'unauthorized'});
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false, delegationRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
+      delegationRoute=url.searchParams.has('delegationIntent');
       mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
       if(mentionRoute){
         if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
@@ -134,6 +136,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
       routes['/v1/needs-you']=['storeId','binding','source','cursor','limit','timing'];
       routes['/v1/plans'].push('needsYou');
+      routes['/v1/plans'].push('delegationIntent');
+      routes['/v1/plan'].push('delegationIntent');
       routes['/v1/search-state'].push('needsYou');
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
@@ -144,6 +148,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(graphRoute && Buffer.byteLength(url.search)>GRAPH_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(inboxRoute && Buffer.byteLength(url.search)>NEEDS_YOU_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(url.searchParams.has('needsYou') && url.searchParams.get('needsYou')!=='1')throw new ProgressError('invalid');
+      if(url.searchParams.has('delegationIntent') && url.searchParams.get('delegationIntent')!=='1')throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if (url.pathname === '/health') {
@@ -152,7 +157,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         // routes, diagnostics here) instead of a host-level service failure.
         if (currentStore) {
           const runs=currentStore.subagentRunStorage();
-          return answer(200,{ok:true,ready:true,sqlite:true,planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
+          return answer(200,{ok:true,ready:true,sqlite:true,planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(runs==='current'||runs==='previous'?{subagentRuns:1}:{}),protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         }
         if (setup) return answer(200,{ok:true,ready:false,sqlite:false,protocolVersion:VERSION,schemaVersion:VERSION,diagnostics:setup.status().diagnostics,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
         return answer(503,{error:active.error??'storage'});
@@ -185,7 +190,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
         const cursor=number('cursor',0);
         if(url.searchParams.has('needsYou')&&cursor!==0)throw new ProgressError('invalid');
         const list=currentStore.list({cursor,limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived});
-        return answer(200,{...list,...summary(list)});
+        const data=url.searchParams.has('delegationIntent')?list.data.map(plan=>({...plan,delegationToken:delegationView(currentStore,list,plan).token})):list.data;
+        return answer(200,{...list,data,...summary(list)});
       }
       const source = text('source',true)!; const plan = text('plan',true)!;
       if (graphRoute) {
@@ -202,8 +208,11 @@ export function createProgressServer(store: Store | undefined, token: string, un
         return answer(200,currentStore.changeDigest({storeId:text('storeId',true)!,source,plan,to:revision('to',1),cleanupRev:revision('cleanupRev',0),...(url.searchParams.has('after')?{after:revision('after',1)}:{})}));
       }
       if (url.pathname === '/v1/plan') {
-        const detail=currentStore.detail(source,plan,number('cursor',0));
-        return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail)});
+        const cursor=number('cursor',0);
+        if(url.searchParams.has('delegationIntent')&&cursor!==0)throw new ProgressError('invalid');
+        const detail=currentStore.detail(source,plan,cursor);
+        const overlay=url.searchParams.has('delegationIntent')?delegationView(currentStore,detail,detail.plan).view:undefined;
+        return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail),...(overlay?{delegationIntent:overlay}:{})});
       }
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
@@ -211,7 +220,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute||delegationRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
