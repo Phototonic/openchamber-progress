@@ -24563,8 +24563,14 @@ function parseReportRequest(value3) {
   validRequest(value3 && typeof value3 === "object" && !Array.isArray(value3), "request");
   if (value3.op === "handoff") {
     const r2 = value3;
-    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome"].includes(k)) && identifier2(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
-    return { op: "handoff", oid: r2.oid, summary: r2.summary, outcome: r2.outcome };
+    requireProgress(Object.keys(r2).every((k) => ["op", "oid", "summary", "outcome", "taskUpdate"].includes(k)) && identifier2(r2.oid) && typeof r2.summary === "string" && r2.summary.trim().length > 0 && r2.summary.length <= 200 && !/[\u0000\r\n\u2028\u2029]/.test(r2.summary) && ["done", "partial", "blocked"].includes(r2.outcome) && Buffer.byteLength(JSON.stringify(r2)) <= LIMITS.requestBytes);
+    if (Object.hasOwn(r2, "taskUpdate")) {
+      const t = r2.taskUpdate;
+      requireProgress(t && typeof t === "object" && !Array.isArray(t) && Object.keys(t).every((k) => ["plan", "rev", "changes"].includes(k)));
+      const change = parseRequest({ op: "change", oid: r2.oid, ...t });
+      requireProgress(new Set(change.changes.map((c) => c.id)).size === change.changes.length);
+    }
+    return JSON.parse(JSON.stringify(r2));
   }
   const r = value3;
   const fields = {
@@ -24644,13 +24650,14 @@ var REPORT_SCHEMA = {
   additionalProperties: false,
   required: ["op"],
   properties: {
-    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish", "handoff"], description: "Plan operations require plan; mutations require oid/rev. Handoff is plan-free: only op, oid, summary and outcome done/partial/blocked. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid." },
+    op: { type: "string", enum: ["start", "read", "change", "revise", "stage", "commit", "link", "delegate", "bind", "finish", "handoff"], description: "Plan operations require plan; mutations require oid/rev. Handoff takes op, oid, summary, outcome done/partial/blocked and optional taskUpdate; no top-level plan/rev. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid." },
     plan: { type: "string", description: "Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax." },
     oid: { type: "string", description: "Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input." },
     rev: { type: "integer", minimum: 0, description: "Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev." },
     title: { type: "string", description: "Required for start: nonempty plan title, at most 256 characters." },
     items: { type: "array", maxItems: 50, description: "Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.", items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" }, kind: { enum: ["task", "group"] }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, parentId: { type: "string" }, dependencies: { type: "array", items: { type: "string" } }, blocker: BLOCKER_SCHEMA }, required: ["id", "title", "kind"], additionalProperties: false } },
     changes: { type: "array", maxItems: 50, items: { type: "object", properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, blocker: BLOCKER_SCHEMA }, required: ["id", "status"], additionalProperties: false } },
+    taskUpdate: { type: "object", additionalProperties: false, required: ["plan", "rev", "changes"], description: "Handoff only: optional explicit atomic assigned-task update. Fresh read required; outcome never selects task status. Identical full-input retries only.", properties: { plan: { type: "string" }, rev: { type: "integer", minimum: 0 }, changes: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", additionalProperties: false, required: ["id", "status"], properties: { id: { type: "string" }, status: { enum: ["pending", "working", "blocked", "done", "skipped"] }, blocker: BLOCKER_SCHEMA } } } } },
     child: { type: "string" },
     assign: { type: "array", items: { type: "string" } },
     attributed: { type: "string" },
@@ -25409,6 +25416,9 @@ function reassociateClaims(db, source, child) {
     if (owners.length === 1)
       attachClaim(db, owners[0]);
   }
+}
+function knownHandoff(db, source, child, oid) {
+  return !!(db.prepare("SELECT 1 FROM runs_claims WHERE source=? AND child=? AND oid=?").get(source, child, oid) ?? db.prepare("SELECT 1 FROM runs_retired WHERE source=? AND child=? AND oid=?").get(source, child, oid) ?? db.prepare("SELECT 1 FROM runs_rows WHERE source=? AND child=? AND (json_extract(payload,'$.claimed.oid')=? OR json_extract(payload,'$._retiredClaim[0]')=?) LIMIT 1").get(source, child, oid, oid));
 }
 function handoff(db, r, actor, now3, epoch = observationEpoch(db)) {
   requireProgress(runControl(db).enabled, "disabled");
@@ -27135,11 +27145,47 @@ class Store {
     requireProgress(r.op === "delegate");
     return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
   }
-  handoff(value3, actor, now3 = Date.now(), epoch) {
+  handoff(value3, actor, now3 = Date.now(), epoch, capture) {
     const r = parseReportRequest(value3);
     requireProgress(r.op === "handoff");
     requireProgress(this.readBinding.verified && this.readBinding.sourceId === actor.sourceId, "source-unverified");
-    const result3 = this.transaction(true, () => handoff(this.db, r, actor, now3, epoch));
+    const result3 = this.transaction(true, () => {
+      requireProgress(runControl(this.db).enabled, "disabled");
+      if (r.taskUpdate) {
+        const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, r.taskUpdate.plan) : undefined;
+        requireProgress(cleanup2?.state !== "deleted", "not-found");
+        requireProgress(cleanup2?.state !== "archived", "closed");
+      }
+      const old = this.db.prepare("SELECT plan,payload_hash,receipt FROM receipts WHERE source=? AND oid=? AND json_extract(receipt,'$._handoffChild')=? LIMIT 1").get(actor.sourceId, r.oid, actor.sessionId);
+      const hash4 = digest(canonical({ request: r, session: actor.sessionId, source: actor.sourceId }));
+      if (old) {
+        requireProgress(old.payload_hash === hash4, "operation-reused");
+        const cleanup2 = cleanupInstalled(this.db) ? cleanupState(this.db, actor.sourceId, String(old.plan)) : undefined;
+        requireProgress(cleanup2?.state !== "deleted", "not-found");
+        requireProgress(cleanup2?.state !== "archived", "closed");
+        requireProgress(knownHandoff(this.db, actor.sourceId, actor.sessionId, r.oid), "not-found");
+        const claim2 = handoff(this.db, r, actor, now3, epoch);
+        if ("error" in claim2)
+          return claim2;
+        const { _handoffChild, ...receipt2 } = JSON.parse(String(old.receipt));
+        return receipt2;
+      }
+      if (!r.taskUpdate)
+        return handoff(this.db, r, actor, now3, epoch);
+      requireProgress(!knownHandoff(this.db, actor.sourceId, actor.sessionId, r.oid), "operation-reused");
+      const t = r.taskUpdate;
+      requireProgress(!this.db.prepare("SELECT 1 FROM receipts WHERE source=? AND plan=? AND oid=?").get(actor.sourceId, t.plan, r.oid), "operation-reused");
+      const previous = this.raw(actor.sourceId, t.plan);
+      requireProgress(previous, "not-found");
+      requireProgress(previous.sessionId !== actor.sessionId, "assignment");
+      const taskReceipt = this.applyMutation({ op: "change", oid: r.oid, ...t }, actor, capture);
+      const claim = handoff(this.db, r, actor, now3, epoch);
+      if ("error" in claim)
+        requireProgress(false, claim.error);
+      const receipt = { ...claim, taskReceipt };
+      this.db.prepare("UPDATE receipts SET payload_hash=?,receipt=? WHERE source=? AND plan=? AND oid=?").run(hash4, JSON.stringify({ ...receipt, _handoffChild: actor.sessionId }), actor.sourceId, t.plan, r.oid);
+      return receipt;
+    });
     if ("error" in result3)
       requireProgress(false, result3.error);
     return result3;
@@ -28061,7 +28107,8 @@ Keep your canonical planner. If not already reported, deliberately mirror action
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
 For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
+For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
 var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
 var DISPATCH_OBSERVATION = "A dispatch ran.";
 var TRACKER_OBSERVATION = "A tracker update was observed.";
@@ -28130,14 +28177,15 @@ function successfulPath(event) {
   } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
     return event.input.path;
 }
-function resumeText(selection) {
+function resumeText(selection, assignedOnly = false) {
   let candidates = selection.candidates.slice(0, 3);
   let omitted = selection.omitted || selection.candidates.length > 3;
   while (candidates.length) {
     const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
     const text = [
-      unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
+      assignedOnly ? "## Assigned task reporting — current recorded scope" : unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
       "Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.",
+      ...assignedOnly ? ["Report actual working changes; report blocked with a safe reason and next action when known; report done only for your assigned work. Use fresh operation IDs and the revision from a fresh read. Never alter structure, siblings or plan lifecycle. An optional handoff taskUpdate explicitly commits final statuses with the claim; outcome alone changes no tasks. Repeated guidance needs no report."] : [],
       ...unconfirmed ? ["Read and confirm a target before reporting."] : [],
       ...selection.incomplete || omitted ? ["Additional eligible candidates may exist; discovery or output is incomplete."] : [],
       "Progress source IDs below are namespace metadata, not the tool’s document-path source argument.",
@@ -28317,12 +28365,13 @@ ${capsule}` : "") };
           return;
         }
         let capsule = "";
-        if (armed && recovery && recoveryAvailable && !lookupBusy && compactions.get(sessionKey) === attempt) {
+        const assignedOnly = !armed && !!caller.parentID;
+        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
           const controller = new AbortController;
           held = controller;
           const now3 = recovery.now ?? (() => performance.now());
           const deadline = now3() + 1000;
-          const alive = () => !controller.signal.aborted && !disposed && recoveryAvailable && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
+          const alive = () => !controller.signal.aborted && !disposed && (assignedOnly || recoveryAvailable) && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
           let timer;
           lookupBusy = true;
           const lookup2 = (async () => {
@@ -28349,7 +28398,7 @@ ${capsule}` : "") };
             if (identity4 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity4.sourceId === source.id && identity4.sessionId === event.sessionID) {
               const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity4.sourceId, sessionId: identity4.sessionId, parentId: identity4.parentId, ancestry: identity4.ancestry });
               if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
-                capsule = resumeText(selection);
+                capsule = resumeText(assignedOnly ? { ...selection, candidates: selection.candidates.filter((p) => p.scope === "assigned") } : selection, assignedOnly);
             }
           } catch {} finally {
             if (timer !== undefined)
@@ -29011,7 +29060,11 @@ async function setupCompanion(ctx, read, managed) {
             if (r.op === "handoff") {
               const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive, signal: abort.signal, sameScope: true });
               guard();
-              return { content: JSON.stringify(current.handoff(r, child2, observedAt, observedEpoch)) };
+              const previous2 = r.taskUpdate ? current.get(child2.sourceId, r.taskUpdate.plan) : undefined;
+              const reference2 = previous2?.document.path;
+              const capture2 = reference2 ? await captureDocument(reference2, child2.directory, (resource) => ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] }), { ...previous2.document, canonicalPath: previous2.boundCanonicalPath }) : undefined;
+              guard();
+              return { content: JSON.stringify(current.handoff(r, child2, observedAt, observedEpoch, capture2)) };
             }
             if (r.op === "read") {
               const view = current.detail(actor.sourceId, r.plan, r.page ?? 0);
@@ -29073,8 +29126,8 @@ Valid start with a prerequisite (replace synthetic IDs, title and items with the
 {"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
-Coordinator may use op=delegate with plan, oid, expected rev and assign task IDs (max50). Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions.
-A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. Handoff accepts no plan, rev, child, attributed identity or source. It is a child-authored claim, not acceptance or task progress; host completion is independent and absence is normal. Identical retries use the same oid; another claim for that execution conflicts. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
+For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
+A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. No top-level plan/rev, child, attributed identity or source is accepted. Optional taskUpdate:{plan,rev,changes} atomically commits explicit changes for 1–50 unique currently assigned tasks with the claim, returning taskReceipt. Read current state first; report actual working, blocked with safe reason/nextAction when known, and final done/blocked changes. Never change siblings, structure or plan lifecycle. Bare handoff is claim-only; outcome never selects task status or acceptance. Host completion is independent and absence is normal. Identical full-input retries use the same oid; altered reuse or another claim for that execution conflicts. Older tools reject taskUpdate; inspect state before deliberately using separate reports, never strip fields automatically. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 Conditional native dispatch/tracker hints ask only whether meaningful canonical state remains unreported. They are not report receipts, assignments or evidence of work start, review, approval or completion; already-current state needs no mutation.

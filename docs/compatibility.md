@@ -1210,3 +1210,31 @@ durable next-dispatch intent. Slim pre-acknowledgement resume refusal remains a
 reported unsupported result, not a text-parsed child or successful execution.
 Controlled faults and actual native events are distinguished in evidence. The
 default combined fixture still includes its independently owned UI checks.
+
+## Assigned-child reporting and session entry compatibility
+
+The current report tool accepts an optional explicit `handoff.taskUpdate` and
+returns `taskReceipt` alongside the authored claim. Older companions reject the
+unknown field without changing tasks; never strip it and claim atomic success.
+After checking current state and capability, deliberate separate `change` and
+bare `handoff` operations remain possible, but are not atomic. Ordinary task
+contributions and bare claims remain readable with schema/protocol 2 and run
+format 2. Legacy or pruned claim evidence cannot prove a combined task commit.
+Rollback must retain reports/receipts/claims and revert matching source, manifest
+and generated entries together, without down-migration or deleting child reports.
+
+Assigned-task guidance is after-binding only. A single-turn child may finish
+without direct progress, and scripted-provider acceptance is not proof of model
+compliance or guaranteed first-execution participation. Restricted tools and
+unverified ancestry/source still refuse authority.
+
+The session action uses the existing open-mode panel item contract on OpenChamber
+>=2.7.1 / SDK 2.7.0, without a new capability or background entry. It pins the
+clicked session after source/location verification; ordinary opening restores
+current-session scope when the host actually supplies no item. The isolated
+2.7.1 host retained its previous item on ordinary toolbar reopening, so that
+restoration journey is not accepted on this host; see the UI guide's reopening
+limitation. Optional host agent/resource titles are informational,
+not task authority. Workflows navigation is omitted because this SDK exposes no
+supported destination/availability contract. Linux web evidence does not certify
+desktop, relay, macOS or Windows; see the isolated test records for actual coverage.

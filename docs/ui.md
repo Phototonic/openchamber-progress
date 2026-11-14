@@ -364,6 +364,45 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 **Visible focus (all surfaces).** Kit buttons and triggers whose own focus mark is only the hover tint get an inset host focus-token outline: the task-view buttons, Clear task filters, Open progress, Set up, Try again in failure/stale banners and the rail plan picker (Work Status and participant pickers already had one). App controls keep their existing rings.
 
+## Native session entry and optional host context
+
+The session menu's **Open Agent Progress** action opens the existing panel for
+the clicked session, including an inactive session while another chat is visible.
+The initial ready item and later `onItem` updates use the same context owner.
+The action's explicit session/directory must match current host coverage and the
+verified service source binding. Titles, similar paths and same-spelled IDs in
+another source cannot substitute for that identity. Loading, missing/unavailable
+session, ambiguous location, denied access and incomplete/failed reads are explicit
+states, never a fallback to the visible chat or a certified empty result.
+
+The clicked scope stays pinned through chat changes. A new valid action replaces
+it; an explicit ordinary panel opening without an item restores current-session
+behavior. Runtime/account/source changes retire old responses; project/worktree
+moves require revalidation. Multiple eligible plans use the existing picker and
+selection indications; a complete empty result says no plan for that session.
+Board browsing and filters remain independent. No compose/send/status request,
+background frame, cross-frame selection or guessed page URL is used for opening.
+Both existing background insertion actions keep their established behavior.
+
+**Host reopening limitation:** an isolated OpenChamber 2.7.1 check found that
+closing and reopening the existing panel retains its previous action item.
+That does not deliver the ordinary no-item transition above: the panel remains
+pinned. Do not assume closing it restored current-session scope. A different
+session's **Open Agent Progress** action supplies a new explicit target.
+
+Session details may show **Host-reported agent** (up to 80 code units) and up to
+five **Host-linked issue/change** titles (up to 200 each), with a more-links
+qualification. These are bounded literal host context, not assignment, task
+authority, completion or workflow selection. Missing data is ordinary; malformed
+optional data is omitted without invalidating session identity. No URLs are
+fetched or made executable and no new polling/cache is introduced. Extension
+explanations and accessible names support English/Russian; native action labels
+are host-owned fixed text.
+
+There is no **Open Workflows** action: SDK 2.7.0 supplies no supported Workflows
+destination or availability contract. `openSurface(string)` does not establish
+one. A future verified public navigation API would require a separate change.
+
 ## Shared primitives (`primitives.ts`)
 
 Presentation-only building blocks for all three surfaces. They read nothing, store nothing, start no timer and hold no reading state; an owning view supplies counts, labels and callbacks. Status marks, segmented bars, state chips, ⓘ disclosures, ⋯ plan-actions menus and compact warnings are integrated into the Progress reading.

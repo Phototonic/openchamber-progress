@@ -79,7 +79,7 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guest('page','document.querySelector("[data-testid=setup-section]")?.open'),Boolean,'configured Setup disclosure open');
       await wait(()=>guest('page','!!document.querySelector("[data-testid=setup-disable]")'),Boolean,'configured Setup facts');await shot('configured');
     };
-    const selectSession=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText===${literal(title)})`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText===${literal(title)}&&!!document.querySelector('[data-chat-column="main"] [contenteditable="true"]')`),Boolean,'session chat selected');};
+    const selectSession=async(title:string)=>{await click(`[...document.querySelectorAll('[data-session-row-main]')].find(e=>e.innerText.includes(${literal(title)}))`);await wait(()=>evaluate(`document.querySelector('[data-session-row-box][aria-current="page"]')?.innerText.includes(${literal(title)})&&!!document.querySelector('[data-chat-column="main"] [contenteditable="true"]')`),Boolean,'session chat selected');};
     const warning=async()=>{await openBoard();if(!await guest('page','document.querySelector("[data-testid=setup-section]")?.open'))await guestClick('page','[data-testid="setup-section"] > summary');await wait(()=>guest('page','!!document.querySelector("[data-testid=managed-integrity-warning]")'),Boolean,'visible integrity warning');await shot('warning');};
     const setupShot=async(name:string,selector:string)=>{
       // Setup observations are deliberately not polled. After test-side external

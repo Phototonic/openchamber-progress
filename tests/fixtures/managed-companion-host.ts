@@ -14,6 +14,7 @@ import { Store } from '../../shared/store.ts';
 import { lifecycle } from '../../setup/lifecycle.ts';
 import { managedBrowser } from '../browser/managed-companion-qa.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
+import { reportingSessionsJourney } from './reporting-sessions-journey.ts';
 
 const arg=(name:string)=>{const i=process.argv.indexOf(name);return i<0?undefined:process.argv[i+1];};
 const hostModule=arg('--host-module'),binary=arg('--opencode-binary'),chromium=arg('--chromium'),artifacts=arg('--artifacts');
@@ -51,6 +52,9 @@ if(arg('--server-worker')) {
     const build=spawnSync('bun',['build','tests/fixtures/managed-companion-observer.ts','--target=node','--format=esm',`--outfile=${observer}/index.js`],{encoding:'utf8',timeout:30000});assert.equal(build.status,0,'fixture observer build');
     fs.writeFileSync(`${observer}/package.json`,JSON.stringify({name:'synthetic-managed-observer',type:'module',exports:{'.':'./index.js'}}));
     fs.writeFileSync(`${root}/sdk.mjs`,'export function createManagedFixture(){return {}}\n');fs.writeFileSync(`${root}/events.jsonl`,'');
+    if(process.argv.includes('--subagent-reporting-sessions')){
+      fs.writeFileSync(`${root}/jobs.json`,'{}');
+    }
     fs.writeFileSync(`${root}/project/docs/plans/synthetic.md`,'# Managed acceptance\nTwo synthetic tasks.\n');
     // Fixture workspace metadata only; no extension registration or binding is pre-seeded.
     for(const dir of [`${root}/home/.config/openchamber`,`${root}/config/openchamber`]){fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(`${dir}/settings.json`,JSON.stringify({projects:[{id:'fixture-project',path:`${root}/project`,label:'Synthetic project',addedAt:1,lastOpenedAt:1}],activeProjectId:'fixture-project'}));}
@@ -72,6 +76,7 @@ if(arg('--server-worker')) {
     const remaining=owned.filter(pid=>fs.existsSync(`/proc/${pid}`));
     const checks=fs.existsSync(`${root}/checks.json`)?JSON.parse(fs.readFileSync(`${root}/checks.json`,'utf8')):[];
     write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false,zeroCredentials:checks.some((c:any)=>c.id==='no-credentials'&&c.pass),noRemoteProviderTransport:checks.some((c:any)=>c.id==='no-remote-provider-access'&&c.pass)});
+    if(fs.existsSync(`${root}/journey-stage.json`))fs.copyFileSync(`${root}/journey-stage.json`,`${output}/journey-stage.json`);
     fs.rmSync(root,{recursive:true,force:true});assert.equal(remaining.length,0,'owned process cleanup incomplete');
   }
 }else {
@@ -117,7 +122,14 @@ if(arg('--server-worker')) {
     phase='real-ui-install-approval';browser=await managedBrowser({chromium,root,artifacts:output,url});await browser.install(extension);await active();
     check('approval-before-configuration',(await service('/v1/setup')).body.delivery.configuration==='unconfigured'&&!fs.existsSync(managedBindingFile(env)));
     phase='real-ui-configuration';await browser.configure();const b=readManagedBinding(env);assert.ok(b);store=new Store(b.database);
-    if(process.argv.includes('--report-tool-preflight')) {
+    if(process.argv.includes('--subagent-reporting-sessions')) {
+      phase='subagent-reporting-sessions';
+      results.journey=await reportingSessionsJourney({root,binding:b,store,client,location,browser,api});
+      check('no-final-credentials',(await client.credential.list()).length===0);
+      check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));
+      check('no-browser-exceptions',browser.console().exceptions===0);
+      results.screenshots=browser.screenshots();results.pass=true;phase='complete';write('results',results);
+    } else if(process.argv.includes('--report-tool-preflight')) {
       phase='native-name-preflight';
       assert.equal(JSON.parse(fs.readFileSync(`${extension}/package.json`,'utf8')).openchamber.contributes.tools,undefined,'preflight must precede presentation contribution');
       const main=await session('Report row fixture');await browser.selectSession('Report row fixture');
