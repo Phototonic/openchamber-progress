@@ -25,6 +25,25 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
 
+test('optional device hints repaint through the existing owner without identity, visibility or read changes', async () => {
+  const c = controller();
+  try {
+    c.ready('A'); await settle();
+    assert.equal(c.vc.device, undefined); assert.equal(c.vc.env.device, undefined);
+    const requests = c.requests.length, identity = c.vc.identity, paints = c.paints.length;
+    const device: NonNullable<HostReadyContext['device']> = { formFactor: 'phone', pointer: 'coarse', insets: { top: 20, right: 0, bottom: 12, left: 0 }, keyboard: 280 };
+    c.listeners.ready({ ...c.vc.ctx, device }); await settle();
+    assert.deepEqual(c.vc.device, device); assert.deepEqual(c.vc.env.device, device);
+    assert.ok(c.paints.length > paints);
+    assert.equal(c.vc.identity, identity); assert.equal(c.requests.length, requests);
+    const current = c.paints.length;
+    c.listeners.ready({ ...c.vc.ctx, device: structuredClone(device) }); await settle();
+    assert.equal(c.paints.length, current, 'unchanged ready device hints do not repaint');
+    c.listeners.ready({ ...c.vc.ctx, device: undefined }); await settle();
+    assert.equal(c.vc.env.device, undefined); assert.equal(c.requests.length, requests);
+  } finally { c.stop(); }
+});
+
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
@@ -84,6 +103,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
       if (name === './source.ts') return source;
       // A confirmed delete retires review markers; without the advertised device feature it does nothing.
       if (name === './change-digest-checkpoint.ts') return checkpoint;

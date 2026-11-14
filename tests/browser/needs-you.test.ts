@@ -363,6 +363,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => h };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
       if (name === './source.ts') return source;
       if (name === './language.ts') return language;
       if (name === './session-context.ts') return sessionContext;

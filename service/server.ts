@@ -22,6 +22,8 @@ import { SEARCH_LIMITS, type SearchOptions, type SearchKey } from '../shared/pro
 import {MANAGED_STEP_ROUTE,MANAGED_STEP_LIMITS,managedStepRequest,type ManagedStepResponse,type ManagedStepDiagnostic} from '../shared/managed-steps.ts';
 import {withSetupWriter} from './request-worker.ts';
 import {managedDiagnostic} from '../setup/managed-diagnostic.ts';
+import { needsYou } from './needs-you.ts';
+import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../shared/needs-you.ts';
 
 export function managedStepHttpStatus(code:string):number {
   if(code==='invalid'||code==='confirmation-required'||code==='targets-unverified')return 400;
@@ -52,7 +54,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
     let stepRoute=false,stepStage:ManagedStepDiagnostic['stage']='journal';
     const stepRefusal=(code:string,accounting={securitySpawns:0,elapsedMs:Number(process.hrtime.bigint()-admittedAt)/1_000_000})=>
       answer(managedStepHttpStatus(code),{version:1,disposition:'refused',inspection:null,progress:null,error:{stage:stepStage,code},accounting} satisfies ManagedStepResponse);
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
       mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
@@ -72,6 +74,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         return answer(200,search?searchMentions(active.store,body.query as string,body.directory as string|null,alive):await resolveMention(acquire,body.id as string,alive));
       }
       graphRoute=url.pathname==='/v1/plan-graph';
+      inboxRoute=url.pathname==='/v1/needs-you'||url.searchParams.has('needsYou');
       if(graphRoute&&req.method!=='GET')return answer(405,{error:'method-not-allowed'});
       runsRoute=['/v1/subagent-runs','/v1/subagent-runs/reconcile','/v1/subagent-runs/dismiss-loss'].includes(url.pathname);
       if(runsRoute) {
@@ -167,7 +170,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
         const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
         const {subagentRuns,...health}=snapshot;
-        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
           protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       }
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
@@ -189,6 +192,9 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if (req.method !== 'GET') return answer(405,{error:'method-not-allowed'});
       const routes: Record<string,string[]> = { '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
+      routes['/v1/needs-you']=['storeId','binding','source','cursor','limit','timing'];
+      routes['/v1/plans'].push('needsYou','needsYouTiming');
+      routes['/v1/search-state'].push('needsYou','needsYouTiming');
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
       const allowed = routes[url.pathname];
@@ -196,9 +202,24 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(searchRoute && Buffer.byteLength(url.search)>SEARCH_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(comparisonRoute && Buffer.byteLength(url.search)>CAPTURE_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(graphRoute && Buffer.byteLength(url.search)>GRAPH_LIMITS.queryBytes)throw new ProgressError('invalid');
+      if(inboxRoute && Buffer.byteLength(url.search)>NEEDS_YOU_LIMITS.queryBytes)throw new ProgressError('invalid');
+      if(url.searchParams.has('needsYou') && url.searchParams.get('needsYou')!=='1')throw new ProgressError('invalid');
+      if(url.searchParams.has('needsYouTiming') && (url.searchParams.get('needsYouTiming')!=='1' || !url.searchParams.has('needsYou')))throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if(!currentStore)return answer(503,{error:active.error??'storage'});
+      if(url.pathname==='/v1/needs-you') {
+        const r:NeedsYouRequest={storeId:text('storeId',true)!,binding:parseCaptureBinding(url.searchParams.get('binding')),source:text('source',true)!};
+        if(url.searchParams.has('cursor'))r.cursor=url.searchParams.get('cursor')!;
+        if(url.searchParams.has('limit'))r.limit=number('limit',NEEDS_YOU_LIMITS.rows);
+        if(url.searchParams.has('timing')){const value=url.searchParams.get('timing');if(value!=='0'&&value!=='1')throw new ProgressError('invalid');r.timing=value==='1';}
+        return answer(200,needsYou(currentStore,r));
+      }
+      const summary = (value: {storeId:string;sourceBinding:NeedsYouRequest['binding']}) => {
+        if(!url.searchParams.has('needsYou'))return {};
+        if(!value.sourceBinding.verified||!value.sourceBinding.sourceId)return {};
+        return {needsYou:needsYou(currentStore,{storeId:value.storeId,binding:value.sourceBinding,source:value.sourceBinding.sourceId,timing:url.searchParams.has('needsYouTiming')})};
+      };
       if(url.pathname==='/v1/search') {
         const options=Object.fromEntries(url.searchParams) as SearchOptions;
         if(url.searchParams.has('limit'))options.limit=number('limit',20);
@@ -206,11 +227,15 @@ export function createProgressServer(store: Store | undefined, token: string, un
       }
       if(url.pathname==='/v1/search-state') {
         let keys:SearchKey[];try{keys=JSON.parse(url.searchParams.get('keys')??'null');}catch{throw new ProgressError('invalid');}
-        return answer(200,currentStore.searchState(text('storeId',true)!,keys));
+        const state=currentStore.searchState(text('storeId',true)!,keys);
+        return answer(200,{...state,...summary(state)});
       }
       if (url.pathname === '/v1/plans') {
         const archived=url.searchParams.get('archived')??'exclude';if(archived!=='exclude'&&archived!=='only')throw new ProgressError('invalid');
-        return answer(200,currentStore.list({cursor:number('cursor',0),limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived}));
+        const cursor=number('cursor',0);
+        if(url.searchParams.has('needsYou')&&cursor!==0)throw new ProgressError('invalid');
+        const list=currentStore.list({cursor,limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived});
+        return answer(200,{...list,...summary(list)});
       }
       const source = text('source',true)!; const plan = text('plan',true)!;
       if (graphRoute) {
@@ -241,7 +266,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
       if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });
