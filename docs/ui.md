@@ -381,7 +381,7 @@ Verification:
 
 - `tests/browser/phone-layout.test.ts` covers `applyDeviceHooks` (apply, idempotence, removal, malformed values) and the CSS scoping (coarse rules under the media query and the hint, Work Status and the map excluded, inset and keyboard variables).
 - `tests/browser/phone-layout-qa.ts --source --chromium <path> --artifacts <dir>` runs source-built rail and board guests in a synthetic SDK shell over a real disposable service, in an isolated headless Chromium with touch emulation at 390 × 844, landscape 844 × 390, 200% and 400% reflow and a desktop width, in light/dark and English/Russian with reduced motion. It checks no horizontal overflow, no target under 44 px outside the map, the safe-area and keyboard padding (including a 47 px top inset on rail and board, and the normal top padding when the top inset is 0), focus kept above the keyboard during a Tab walk, the landscape single column, unchanged request cadence with no writes, and that each guest's own host-ready path wrote the root hooks after every hint delivery (`results.json` reports `"deviceHooks": "host-ready"`).
-- `tests/browser/phone-map-qa.ts` (see Dependency map) and the phone pass of `needs-you-inbox-qa.ts` also check the root pointer hook written by the guests.
+- `tests/browser/phone-map-qa.ts` (see Dependency map) and the phone pass of `needs-you-inbox-qa.ts` also check the root pointer hook written by the guests; `phone-map-qa.ts` also checks the board's 47 px top inset with the map open.
 - These are emulation and synthetic-host checks, not physical-phone, native-host or relay acceptance.
 
 ## Native session entry and optional host context

@@ -159,6 +159,9 @@ try {
   // The phone layout's root hook comes from the same ready.device through the guest's own host-ready path.
   check('board-root-pointer-hook-host-ready', await guest('page', `return d.documentElement.getAttribute('${POINTER_HOOK}')==='coarse'`));
   facts.deviceHooks = 'host-ready';
+  // The same hint's 47 px top inset pads the board above the map (phone layout's top edge).
+  const boardTop = await guest<number>('page', `return parseFloat(getComputedStyle(d.querySelector('[data-testid="progress-root"]')).paddingTop)`);
+  check('board-top-inset-respected', boardTop === 47, { boardTop });
   check('board-no-horizontal-overflow', await noOverflow('page'));
   check('board-touch-action', await guest('page', `return getComputedStyle(d.querySelector('${viewport}')).touchAction==='none'`));
   check('board-44px-targets', (await smallTargets('page')).length === 0, await smallTargets('page'));
