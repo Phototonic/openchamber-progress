@@ -12,7 +12,8 @@ import { captureDocument } from './document.ts';
 import { ProgressStatus } from './status.ts';
 import { activationFingerprint } from '../shared/activation.ts';
 import { registerActivation } from './activation.ts';
-import { registerDelegation } from './delegation.ts';
+import { registerDelegation, PARALLEL_DELEGATION_HINT } from './delegation.ts';
+import { PendingDelegationError } from '../shared/subagent-runs.ts';
 import { sessionIdentity } from './identity.ts';
 
 export default Plugin.define({ id:'agent-progress', setup: ctx => setupCompanion(ctx, () => {
@@ -67,6 +68,7 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
         const control=store.db.prepare('SELECT enabled FROM meta WHERE singleton=1');
         deactivate=await registerActivation(ctx,b.source,()=>{try{guard();return control.get()?.enabled===1;}catch{return false;}},{
           storeId:b.storeId,read:request=>store!.resumePlans(request),
+          refusals:sessionID=>store!.delegationRefusals(b.source.id,sessionID),
           identity:(sessionID,alive,signal)=>identity(sessionID,'unknown',{alive,signal}),
         },callback=>{firstContext=callback;});check();
         delegation=await registerDelegation(ctx,{store,sourceId:b.source.id,
@@ -97,7 +99,9 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
             const current=store!;
             const observedAt=Date.now(),observedEpoch=r.op==='handoff'?delegation!.currentEpoch():undefined; const actor = await identity(caller.sessionID,caller.agent);guard();
            if(r.op==='handoff') {
-              const child=await sessionIdentity(ctx,b.source,caller.sessionID,caller.agent,{alive,signal:abort.signal,sameScope:true});guard();
+               // Explicit reporting follows verified native parentage across worktrees
+               // and projects. Same-scope proof remains required for automatic binding.
+               const child=actor;
               const previous=r.taskUpdate?current.get(child.sourceId,r.taskUpdate.plan):undefined;
               const reference=previous?.document.path;
               const capture=reference?await captureDocument(reference,child.directory,resource=>ctx.permission.assert({sessionID:caller.sessionID,agent:caller.agent,source:{type:'tool',messageID:caller.messageID,id:caller.id},action:'read',resources:[resource]}),{...previous!.document,canonicalPath:previous!.boundCanonicalPath}):undefined;
@@ -124,7 +128,7 @@ async function setupCompanion(ctx: Plugin.Context, read: () => Binding | undefin
           return {content:JSON.stringify(receipt)};
         } catch (e) {
           const error = e instanceof ProgressError ? e : storageError(e);
-          return {content:JSON.stringify({error:error.code,...(error.revision !== undefined ? {rev:error.revision} : {}),...(error.code === 'invalid' && error.hint ? {hint:error.hint} : {})})};
+          return {content:JSON.stringify({error:error.code,...(error.revision !== undefined ? {rev:error.revision} : {}),...(error.code === 'invalid' && error.hint ? {hint:error.hint} : {}),...(e instanceof PendingDelegationError?{hint:PARALLEL_DELEGATION_HINT}:{})})};
         }
       },
     });
@@ -147,7 +151,7 @@ Valid start with a prerequisite (replace synthetic IDs, title and items with the
 {"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
-For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
+For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. ${PARALLEL_DELEGATION_HINT} Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required for automatic binding; an unconfirmed reserved call consumes intent instead of transferring it. Binding can tolerate intervening unrelated reports or assignments only with complete retained proof; relevant changes or incomplete proof refuse. Read a refusal before deliberately re-declaring or explicitly linking. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
 A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. No top-level plan/rev, child, attributed identity or source is accepted. Optional taskUpdate:{plan,rev,changes} atomically commits explicit changes for 1–50 unique currently assigned tasks with the claim, returning taskReceipt. Read current state first; report actual working, blocked with safe reason/nextAction when known, and final done/blocked changes. Never change siblings, structure or plan lifecycle. Bare handoff is claim-only; outcome never selects task status or acceptance. Host completion is independent and absence is normal. Identical full-input retries use the same oid; altered reuse or another claim for that execution conflicts. Older tools reject taskUpdate; inspect state before deliberately using separate reports, never strip fields automatically. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
 
 const GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.

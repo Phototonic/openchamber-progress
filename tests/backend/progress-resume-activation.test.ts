@@ -9,6 +9,7 @@ import { registerActivation, ACTIVATION_GUIDANCE as BASE, ACTIVATION_HINT as HIN
 import { Store } from '../../shared/store.ts';
 import { activationContext as context, writeEvent } from '../fixtures/activation-production.ts';
 import { isolatedEnvironment, publishFixtureBinding } from '../fixtures/managed.ts';
+import { PARALLEL_DELEGATION_HINT } from '../../plugin/delegation.ts';
 
 function deferred() {
   let resolve!: () => void;
@@ -163,6 +164,23 @@ test('ordinary child contexts deliver only current verified assignments without 
   assert.equal(f.store.get(child.sourceId,'P-alpha').items[0].status,'pending');
 }));
 
+// Regression from the linked-child reproducer: explicit links need native
+// parentage, not a shared directory/project or a captured dispatch row.
+for (const scope of ['same', 'directory', 'project'] as const)
+test(`linked child combined handoff without delegate: ${scope}`, async()=>fixture(async f=>{
+  const original=f.info;
+  f.lookup=async(id:string)=>({...original(id),...(id==='ses_C'&&scope!=='same'?{location:{directory:'/synthetic/beta'},...(scope==='project'?{projectID:'beta'}:{})}:{})});
+  await f.report({op:'start',plan:'P-linked',oid:'start-linked',rev:0,title:'Synthetic',items:[{id:'I1',title:'Task',kind:'task'}]});
+  assert.equal((await f.report({op:'link',plan:'P-linked',oid:'link-child',rev:1,child:'ses_C',assign:['I1']})).rev,2);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM runs_rows').get().n,0);
+  const request={op:'handoff',oid:'linked-final',summary:'Synthetic result',outcome:'done',taskUpdate:{plan:'P-linked',rev:2,changes:[{id:'I1',status:'done'}]}};
+  const reply=await f.report(request,'ses_C');
+  assert.equal(reply.error,undefined);
+  assert.equal(reply.taskReceipt.rev,3);
+  assert.equal(f.store.get(f.binding.source.id,'P-linked').items[0].status,'done');
+  assert.deepEqual(await f.report(request,'ses_C'),reply);
+}));
+
 test('combined handoff retires after a held document permission',async()=>fixture(async f=>{
   const file=`${f.root}/project/plan.md`;fs.writeFileSync(file,'Synthetic plan');
   // The initial denied capture still binds the document, as ordinary reporting does.
@@ -173,6 +191,59 @@ test('combined handoff retires after a held document permission',async()=>fixtur
   const pending=f.report({op:'handoff',oid:'held-final',summary:'Synthetic',outcome:'done',taskUpdate:{plan:'P-bound',rev:2,changes:[{id:'I1',status:'done'}]}},'ses_C');
   await entered.promise;await f.dispose();release.resolve();const reply=await pending;
   assert.ok(reply.error);assert.equal(f.store.get(child.sourceId,'P-bound').revision,2);
+}));
+
+for(const fault of ['missing-parent','wrong-parent-id','unrelated-parent','cycle','sibling','stale','source'] as const)
+test(`cross-project combined handoff preserves authority and atomicity: ${fault}`,async()=>fixture(async f=>{
+  const info=f.info;
+  f.lookup=async(id:string)=>({...info(id),...(id==='ses_C'?{location:{directory:'/synthetic/beta'},projectID:'beta'}:{})});
+  await f.report({op:'start',plan:'P-linked',oid:'start',rev:0,title:'Synthetic',items:['I1','I2'].map(id=>({id,title:id,kind:'task'}))});
+  assert.equal((await f.report({op:'link',plan:'P-linked',oid:'link',rev:1,child:'ses_C',assign:['I1']})).rev,2);
+  const good=f.lookup;
+  f.lookup=async(id:string)=>{
+    if(id==='ses_M'&&fault==='missing-parent')throw Error('Synthetic missing parent');
+    const s=await good(id);
+    if(id==='ses_M'&&fault==='wrong-parent-id')s.id='ses_other';
+    if(id==='ses_C'&&fault==='unrelated-parent')s.parentID='ses_other';
+    if(id==='ses_M'&&fault==='cycle')s.parentID='ses_C';
+    return s;
+  };
+  if(fault==='source')f.store.db.exec('UPDATE sources SET verified=0');
+  const before=f.store.db.prepare('SELECT (SELECT count(*) FROM revisions) revisions,(SELECT count(*) FROM receipts) receipts,(SELECT count(*) FROM contributions) contributions,(SELECT count(*) FROM runs_claims) claims').get();
+  const reply=await f.report({op:'handoff',oid:'refused-final',summary:'Synthetic result',outcome:'done',taskUpdate:{plan:'P-linked',rev:fault==='stale'?1:2,changes:[{id:fault==='sibling'?'I2':'I1',status:'done'}]}},'ses_C');
+  assert.equal(reply.error,fault==='stale'?'conflict':fault==='source'?'source-unverified':'assignment');
+  assert.deepEqual(f.store.db.prepare('SELECT (SELECT count(*) FROM revisions) revisions,(SELECT count(*) FROM receipts) receipts,(SELECT count(*) FROM contributions) contributions,(SELECT count(*) FROM runs_claims) claims').get(),before);
+  assert.equal(f.store.get(f.binding.source.id,'P-linked').items[0].status,'pending');
+}));
+
+test('pending delegation conflict carries the parallel recipe without replacing intent',async()=>fixture(async f=>{
+  f.seed();
+  const first={op:'delegate',plan:'P-alpha',oid:'first',rev:1,assign:['I1']};
+  assert.equal((await f.report(first)).delegation.state,'pending');
+  assert.deepEqual(await f.report({...first,oid:'second'}),{error:'conflict',hint:PARALLEL_DELEGATION_HINT});
+  assert.equal((await f.report(first)).delegation.state,'pending');
+  assert.deepEqual(await f.report({...first,oid:'stale',rev:0}),{error:'conflict',rev:1},'unrelated revision conflicts do not claim a pending-intent cause');
+  assert.ok(parts(await f.next())[0].text.includes(PARALLEL_DELEGATION_HINT));
+}));
+
+test('durable refusal is delivered on the next eligible coordinator context only, without a report',async()=>fixture(async f=>{
+  f.seed();
+  await f.report({op:'delegate',plan:'P-alpha',oid:'refused-declaration',rev:1,assign:['I1']});
+  const actor={sourceId:f.binding.source.id,sessionId:'ses_M',parentId:null,ancestry:[],agent:'synthetic',directory:'/fixture/project',verifiedSource:true};
+  const key={source:actor.sourceId,parent:actor.sessionId,message:'message',call:'reserved-call'};
+  f.store.beforeRun(key,actor,'subagent',{},1000);
+  f.store.apply({op:'change',plan:'P-alpha',oid:'target-touch',rev:1,changes:[{id:'I1',status:'working'}]},actor);
+  f.store.afterRun(key,0,{...actor,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M']},'returned');
+  const before=f.store.get(actor.sourceId,'P-alpha');
+  const absent=parts(await f.next('ses_sibling'))[0].text;assert.ok(!absent.includes('## Delegation not applied'));
+  assert.equal(parts(await f.next('ses_M',false)).length,0);
+  const context=await f.next();const text=parts(context)[0].text;
+  assert.match(text,/Plan "P-alpha", declaration "refused-declaration" at revision 1; tasks \["I1"\]: not applied because/);
+  assert.match(text,/re-declare at the current revision/);assert.match(text,/explicitly link/);
+  assert.deepEqual(f.store.get(actor.sourceId,'P-alpha'),before);
+  await f.report({op:'delegate',plan:'P-alpha',oid:'new-declaration',rev:2,assign:['I1']});
+  await f.context(context);assert.ok(!parts(context)[0].text.includes('## Delegation not applied'),'reused context removes obsolete refusal');
+  f.store.setEnabled(false);assert.equal(parts(await f.next()).length,0);
 }));
 
 test('V1/V2 pinned 2.1.4 adapter transports paired compaction and production current Store pointer', { timeout: 10000 }, async () => {

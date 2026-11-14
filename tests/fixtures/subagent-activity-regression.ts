@@ -41,6 +41,11 @@ export async function runNativeRegression() {
         const socket = display && (path.isAbsolute(display) ? display : process.env.XDG_RUNTIME_DIR && path.join(process.env.XDG_RUNTIME_DIR, display));
         if(!backendOnly)assert.ok(socket && fs.statSync(socket).isSocket(), 'authorized Wayland transport required');
         const env: Record<string, string> = { PATH: '/usr/bin:/bin', HOME: `${root}/home`, XDG_CONFIG_HOME: `${root}/config`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`, XDG_STATE_HOME: `${root}/state`, XDG_RUNTIME_DIR: `${root}/runtime`, TMPDIR: `${root}/tmp`, OPENCODE_BINARY: binary, ...(!backendOnly&&socket?{ACTIVITY_WAYLAND_SOCKET:socket}:{}) };
+        // Actual disposable Git worktree, not a forged Actor.directory.
+        const git=(args:string[])=>{const r=spawnSync('git',args,{cwd:`${root}/Alpha`,env:{...env,GIT_CONFIG_NOSYSTEM:'1'},encoding:'utf8'});assert.equal(r.status,0,'synthetic worktree preparation');};
+        git(['init','-b','synthetic']);
+        git(['-c','user.name=Synthetic Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Synthetic fixture root']);
+        git(['worktree','add','--detach',`${root}/Alpha-worktree`]);
         const version: ReturnType<typeof spawnSync> = spawnSync(binary, ['--version'], { env, encoding: 'utf8' });
         assert.equal(version.status, 0); result.runtime = requireRuntimeVersion('opencode', version.stdout.toString());
         if(backendOnly)env.SUBAGENT_ACTIVITY_BACKEND_ONLY='1';
