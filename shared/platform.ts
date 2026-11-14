@@ -27,9 +27,14 @@ export function writerTarget(kind:'scope'|'store',value:string):string {
   const canonical=path.join(realpathSync.native(current),...missing);
   return `${kind}:${process.platform==='win32'?canonical.toLowerCase():canonical}`;
 }
-/** Dynamic/private range; hash collisions are conservative busy refusals. */
+// Below default Linux/macOS/Windows ephemeral client ranges, excluding common
+// service/game ports. This routing choice never authorizes an existing listener.
+const writerPortDenylist=new Set([25565,26000,...Array.from({length:16},(_,i)=>27015+i),27036,27037,28015,28016,28017,28960]);
+/** Stable routing; hash/denylist collisions remain conservative busy refusals. */
 export function writerTargetPort(target:string):number {
-  return 49152+createHash('sha256').update(target).digest().readUInt32BE(0)%4096;
+  let offset=createHash('sha256').update(target).digest().readUInt32BE(0)%4000;
+  while(writerPortDenylist.has(25000+offset))offset=(offset+1)%4000;
+  return 25000+offset;
 }
 const cache = new Map<string, { snapshot: string; result: Security }>();
 const reparseCache = new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();

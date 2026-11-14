@@ -6,8 +6,10 @@ import {pathToFileURL} from 'node:url';
 import {once} from 'node:events';
 import {fork} from 'node:child_process';
 import {createServer} from 'node:net';
+import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {SetupRequestWorker,correlatedManagedReply} from '../../service/request-worker.ts';
+import {SetupController} from '../../service/setup-controller.ts';
 import {lifecycle} from '../../setup/lifecycle.ts';
 import type {ManagedStepResponse} from '../../shared/managed-steps.ts';
 import {managedStepFixtures} from '../fixtures/managed-steps.ts';
@@ -15,6 +17,19 @@ import {setupWriterTargets,acquireWriterSlots} from '../../service/writer-fence.
 import {writerTarget,writerTargetPort,PlatformRequestBudget,withPlatformRequestBudget,requirePlatformStoreFence} from '../../shared/platform.ts';
 
 const payload={plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'};
+test('derived writer ports avoid default ephemeral ranges and common service ports',()=>{
+  const denied=new Set([25565,26000,...Array.from({length:16},(_,i)=>27015+i),27036,27037,28015,28016,28017,28960]);
+  let skipped=0;
+  for(let i=0;i<10000;i++){
+    const identity=`${i%2?'scope':'store'}:/synthetic/target-${i}`,port=writerTargetPort(identity);
+    assert.ok(port>=25000&&port<=28999);assert.ok(port<32768);assert.equal(denied.has(port),false);
+    let expected=25000+createHash('sha256').update(identity).digest().readUInt32BE(0)%4000;
+    if(denied.has(expected))skipped++;
+    while(denied.has(expected))expected=25000+(expected-25000+1)%4000;
+    assert.equal(port,expected,'skip forward deterministically without changing target identity');
+  }
+  assert.ok(skipped>0,'synthetic identities exercise denylist collisions');
+});
 test('settled replies correlate operation, following sequence and named step; error overrides replay',()=>{
   const fixtures=managedStepFixtures(),request=fixtures.requests.renewedAdvance,reply=fixtures.replies.renewedEnabled;
   assert.equal(correlatedManagedReply(request,reply),true);
@@ -30,6 +45,20 @@ function fixture(){
   for(const dir of Object.values(env))mkdirSync(dir,{mode:0o700});
   return {root,env};
 }
+
+test('bounded Setup and capture do not load migration payload; migration still requires it',async()=>{
+  const {root,env}=fixture();let loads=0;
+  const setup=new SetupController({env},()=>{loads++;throw Object.assign(new Error('synthetic missing payload'),{code:'ENOENT'});});
+  try{
+    const status=await setup.request({action:'status'});
+    assert.ok(status.ok);assert.equal((status.value as {configured:boolean}).configured,false);
+    const capture=await setup.request({action:'capture',enabled:false});
+    assert.equal(capture.ok,false);if(!capture.ok)assert.equal(capture.code,'binding');
+    assert.equal(loads,0);
+    await assert.rejects(setup.request({action:'managed-step',body:{version:1,action:'inspect'}}),{code:'ENOENT'});
+    assert.equal(loads,1);
+  }finally{setup.close();rmSync(root,{recursive:true,force:true});}
+});
 
 for(const [name,entry] of [
   ['source',new URL('../../service/main.ts',import.meta.url)],
@@ -207,6 +236,7 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
       assert.equal(existsSync(path.join(dataRoot,'agent-progress-managed')),false,'read-only inspection never creates the managed container');
       const status=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'status'}});
       assert.ok(status.ok);assert.equal((status.value as ManagedStepResponse).progress,null);
+      assert.ok((await worker.run(env,undefined,{action:'status'})).ok,'payload-free Setup retains completed review');
       const begin={version:1,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected};
       const prepared=await worker.run(env,payload,{action:'managed-step',body:begin});
       if(!prepared.ok)assert.fail(prepared.code);
@@ -223,6 +253,7 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
         assert.equal((reply.value as ManagedStepResponse).disposition,'applied');progress=(reply.value as ManagedStepResponse).progress!;
       }
       while(progress.state!=='complete'){
+        assert.ok((await worker.run(env,undefined,{action:'status'})).ok,'payload-free Setup refreshes journal hints');
         const request={version:1,action:'advance',operationId:begin.operationId,expectedSequence:progress.sequence,step:progress.step};
         const reply=await worker.run(env,payload,{action:'managed-step',body:request});
         if(!reply.ok)assert.fail(reply.code);

@@ -428,15 +428,27 @@ also acquires the shared slot; subsequent read-only admissions cannot publish it
 Worker status/capture preserve the controller's selected-descriptor pin without
 returning that private digest over HTTP. A successful bounded Setup read updates
 health's last-admission snapshot, not a reusable Store handle or ACL verdict.
+Ordinary Setup status and capture control do not load bundled migration payloads.
+Payload-free reads retain inspection consent without refreshing it; the next
+inspection/effect still compares its package-bound context. Journal hints bind
+the discovery environment and are freshly validated, never treated as consent.
+If selection validates but subsequent Store checks refuse, Setup retains the
+configured targets and descriptor pin, with verification false, capture unknown
+and a fixed diagnostic. It neither invents progress nor admits reporting identity.
 
 The stable key is UTF-8 `scope:<canonical data root>` or
 `store:<canonical Store root>`. Resolve the existing ancestor with native realpath,
 append missing path components, and lowercase on Windows. This canonicalization
 is for coordination only; it never permits an otherwise unsafe alias/reparse path.
-The port is 49152 plus the first four SHA-256 digest bytes interpreted unsigned
-big-endian, modulo 4096. Slots bind only loopback. The mutex remains account-scoped
+The initial port is 25000 plus the first four SHA-256 digest bytes interpreted
+unsigned big-endian, modulo 4000. Step forward deterministically, wrapping within
+25000–28999, past the fixed denylist: 25565, 26000, 27015–27030 (including
+27017–27019), 27036–27037, 28015–28017 and 28960. This stays below the default
+ephemeral client-port ranges on Linux, macOS and Windows, avoiding collisions with
+ordinary outgoing connections; custom OS ranges and other listeners can still
+collide. Slots bind only loopback. The mutex remains account-scoped
 as a conservative Windows late-child barrier, not a substitute for these slots.
-A bind/hash collision returns
+A bind/hash/denylist-remapping collision returns
 `managed-step-port-busy` without launching a worker or querying security. This
 does not identify the listener or authorize connecting to/stopping it. A Windows
 writer-mutex timeout instead returns `managed-step-unsettled`; neither failure

@@ -28,10 +28,16 @@ and native acceptance remain separate release-integration gates.
   loopback slots, not one machine-wide port. The UTF-8 keys are
   `scope:<canonical data root>` and `store:<canonical Store root>`: native realpath
   of the existing ancestor plus missing components, lowercased on Windows. Port
-  = 49152 + (first four SHA-256 bytes as unsigned big-endian modulo 4096).
+  = 25000 + (first four SHA-256 bytes as unsigned big-endian modulo 4000).
+  Step forward deterministically, wrapping within 25000–28999, past 25565,
+  26000, 27015–27030 (including 27017–27019), 27036–27037, 28015–28017 and 28960.
+  This avoids default Linux/macOS/Windows ephemeral client ports and common
+  service/game ports; custom client ranges and other listeners can still collide.
   Acquire sorted/deduplicated ports without waiting; release all on any refusal.
   Same-target writers therefore fence, unrelated targets normally do not; hash
-  collisions remain `managed-step-port-busy`, never alternate-port takeover.
+  or denylist-remapping collisions remain `managed-step-port-busy`, never
+  alternate-port takeover. Let other setup activity finish before retrying; if
+  busy persists, check for another program or custom client range using the port.
   Bounded metadata may route a slot but grants no authority: fresh mutation
   admission must match its Store to the held key. Retain the per-request nonce
   and account-scoped Windows mutex/late-child barrier.

@@ -31,7 +31,7 @@ interface SetupWorkerInput {
   kind:'agent-progress-setup-request';
   requestId:string;
   env:NodeJS.ProcessEnv;
-  payload:Payload;
+  payload:Payload|undefined;
   request:SetupWorkerRequest;
   startedAt:bigint;
   counter:SharedArrayBuffer;
@@ -77,15 +77,16 @@ export function runSetupRequestWorker():void {
   let refusal:ManagedStepResponse|undefined;
   let health:SetupWorkerHealth|undefined;
   let descriptor:string|null|undefined;
+  const payload=()=>{if(!input.payload)throw Object.assign(new Error('invalid'),{code:'managed-step-unsupported'});return input.payload;};
   try {
     value=withPlatformRequestBudget(budget,()=>{
-      setup=new SetupController({env:input.env},()=>input.payload);
+      setup=new SetupController({env:input.env},payload);
       const request=input.request;
       if(request.action==='managed-step'){
         const parsed=managedStepRequest(request.body);
         if(!parsed)throw Object.assign(new Error('invalid'),{code:'invalid'});
         if(parsed.action==='begin'){
-          const begun=beginManagedStep(input.env,input.payload,parsed,budget,input.inspection);
+          const begun=beginManagedStep(input.env,payload(),parsed,budget,input.inspection);
           journal=begun.journal;
           return {version:1,disposition:begun.disposition,progress:begun.progress,inspection:null,error:null,
             accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
@@ -97,8 +98,8 @@ export function runSetupRequestWorker():void {
         }
         if(parsed.action==='advance'||parsed.action==='pause'||parsed.action==='abandon'||parsed.action==='resume'){
           const hint=input.journal??input.inspection?.operation;
-          const changed=parsed.action==='advance'?advanceManagedStep(input.env,input.payload,parsed,budget,hint):
-            controlManagedStep(input.env,input.payload,parsed,budget,hint,input.inspection);
+          const changed=parsed.action==='advance'?advanceManagedStep(input.env,payload(),parsed,budget,hint):
+            controlManagedStep(input.env,payload(),parsed,budget,hint,input.inspection);
           journal=changed.journal;
           return {version:1,disposition:changed.disposition,progress:changed.progress,inspection:null,error:changed.error,
             accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
@@ -106,7 +107,7 @@ export function runSetupRequestWorker():void {
         if(parsed.action!=='inspect')throw Object.assign(new Error('managed-step-unsupported'),{code:'managed-step-unsupported'});
         if(parsed.cursor&&(!input.inspection||input.inspection.cursor!==parsed.cursor))
           throw Object.assign(new Error('managed-inspection-expired'),{code:'managed-inspection-expired'});
-        const inspected=inspectManagedStep(input.env,input.payload,parsed.cursor?input.inspection:undefined,parsed.storeRoot);
+        const inspected=inspectManagedStep(input.env,payload(),parsed.cursor?input.inspection:undefined,parsed.storeRoot);
         inspection=inspected.session;
         journal=inspection.operation;
         return {version:1,disposition:'observed',inspection:inspected.inspection,progress:inspected.progress,error:null,
@@ -154,29 +155,31 @@ export function runSetupRequestWorker():void {
 export class SetupRequestWorker {
   private active=false;
   private readonly entry:URL;
-  private inspection?:{context:string;session:ManagedInspectionSession};
+  private inspection?:{scope:string;context:string;session:ManagedInspectionSession};
   private journal?:{context:string;value:ManagedStepJournal};
   constructor(entry:URL) {this.entry=entry;}
   get busy(){return this.active;}
-  run(env:NodeJS.ProcessEnv,payload:Payload,request:SetupWorkerRequest,startedAt=process.hrtime.bigint()):Promise<SetupWorkerResult> {
+  run(env:NodeJS.ProcessEnv,payload:Payload|undefined,request:SetupWorkerRequest,startedAt=process.hrtime.bigint()):Promise<SetupWorkerResult> {
     const budget=new PlatformRequestBudget(startedAt);
     const refused=(code:string):SetupWorkerResult=>({ok:false,code,accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
     if(this.active)return Promise.resolve(refused('managed-step-unsettled'));
     try{budget.require();}catch(error){return Promise.resolve(refused(diagnostic(error)));}
     this.active=true;
-    const context=digest(canonical({env,payload})),requestId=randomUUID();
+    const scope=digest(canonical(env)),context=digest(canonical({env,payload:payload??null})),requestId=randomUUID();
     const saved=this.inspection?.context===context?this.inspection.session:undefined;
-    const journal=this.journal?.context===context?this.journal.value:undefined;
+    const journal=this.journal?.context===scope?this.journal.value:undefined;
     let targets:string[];
     try{targets=setupWriterTargets(env,journal?.database??saved?.candidate?.database);}
     catch(error){this.active=false;return Promise.resolve(refused(diagnostic(error)));}
     const consumesInspection=request.action==='managed-step'&&managedStepRequest(request.body)?.action!=='status';
     // A continuation is single-use, including a failure/deadline. New inspection
     // replaces it. Unrelated requests do not refresh or export its authority.
-    if(this.inspection?.context!==context||consumesInspection)this.inspection=undefined;
+    if(this.inspection?.scope!==scope||payload!==undefined&&this.inspection?.context!==context||consumesInspection)this.inspection=undefined;
     // Optimization claims are consumed on every request. A failed/late worker
     // cannot install stale claims for a later mutation; explicit status restores
-    // them read-only. Every accepted hint is freshly validated by the engine.
+    // them read-only. Journal hints bind discovery, not package consent; every
+    // accepted hint is freshly validated by the engine. Payload-free Setup reads
+    // neither discard inspection consent nor refresh its package-bound context.
     this.journal=undefined;
     return new Promise(resolve=>{
       let settled=false,result:SetupWorkerResult|undefined;
@@ -233,8 +236,8 @@ export class SetupRequestWorker {
           if(exitCode!==0||!result)release(refused('managed-step-unsettled'));
           else if(budget.elapsedMs>=MANAGED_STEP_LIMITS.responseMs)release(refused('managed-step-deadline'));
           else {
-            if(!settled&&result.ok&&nextInspection&&request.action==='managed-step')this.inspection={context,session:nextInspection};
-            if(!settled&&result.ok&&nextJournal&&(request.action==='managed-step'||request.action==='status'))this.journal={context,value:nextJournal};
+            if(!settled&&result.ok&&nextInspection&&request.action==='managed-step')this.inspection={scope,context,session:nextInspection};
+            if(!settled&&result.ok&&nextJournal&&(request.action==='managed-step'||request.action==='status'))this.journal={context:scope,value:nextJournal};
             const accounting={securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs};
             release({...result,...(result.ok&&request.action==='managed-step'?{value:{...result.value as ManagedStepResponse,accounting}}:{}),
               ...(!result.ok&&result.refusal?{refusal:{...result.refusal,accounting}}:{}),accounting});

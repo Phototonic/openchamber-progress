@@ -68,13 +68,18 @@ completion is not guaranteed.** Never automatically restart a real instance.
 
 The bounded setup worker derives loopback TCP coordination ports from the
 canonical discovery data root and Store root, rather than reserving one port for
-all profiles/users. Each key hashes to a port in **49152–53247** (see the backend
-guide for the stable derivation). Writers to the same discovery target or shared
+all profiles/users. Each key hashes to a port in **25000–28999**, below the default
+Linux, macOS and Windows ephemeral client-port ranges. The stable derivation is
+25000 plus the first four SHA-256 digest bytes as unsigned big-endian modulo 4000.
+Skip forward (wrapping within the range) over 25565, 26000, 27015–27030 (including
+27017–27019), 27036–27037, 28015–28017 and 28960 to avoid common service/game ports.
+Writers to the same discovery target or shared
 Store serialize; unrelated targets can proceed independently. No progress data is
 exposed on these ports. Hash collisions or an unrelated listener fail closed as
 `managed-step-port-busy`: **The coordination port for this setup target is busy.
-Let other setup activity finish, then retry. If it stays busy, check for another
-program using the port.** The service never identifies/stops another listener,
+Let other setup activity finish, then retry. If it stays busy, check whether
+another program or a custom client-port range uses the coordination port.**
+The service never identifies/stops another listener,
 switches ports to evade contention, or removes a lock to force progress.
 The managed step HTTP route uses this worker boundary. Read-only inspection
 continues discovery across separate worker

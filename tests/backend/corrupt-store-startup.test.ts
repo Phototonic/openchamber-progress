@@ -95,9 +95,11 @@ test('packaged corrupt-store startup becomes ready, answers fixed corrupt 503s a
     const detail=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`);assert.equal(detail.status,503);assert.deepEqual(await detail.json(),{error:'corrupt'});
     const history=await running.request(`/v1/history?source=${f.actor.sourceId}&plan=P1`);assert.equal(history.status,503);assert.deepEqual(await history.json(),{error:'corrupt'});
 
-    const setup=await running.request('/v1/setup');assert.equal(setup.status,200);const state=await setup.json() as {configured:boolean;captureEnabled:null;diagnostics:string[];targets:unknown};
+    const setup=await running.request('/v1/setup');assert.equal(setup.status,200);const state=await setup.json();
     assert.equal(state.configured,true);assert.equal(state.captureEnabled,null);assert.ok(state.diagnostics.includes('corrupt'));assert.equal(fixedCodes(state.diagnostics),true);
     assert.deepEqual(state.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
+    assert.equal(state.verified,false);assert.equal(state.delivery.configuration,'configured');assert.equal(Object.hasOwn(state.delivery,'migrationProgress'),false);
+    assert.equal(Object.hasOwn(state,'reportingIdentity'),false);
 
     // The damaged store itself is never opened for writing or rewritten.
     assert.deepEqual(readFileSync(f.database),broken);
@@ -125,7 +127,7 @@ test('packaged service admits recorded epoch-bearing format 1 without migrating 
   const running=await serve(f);
   try{
     await running.start();
-    await running.request('/v1/plans');
+    const admission=await running.request('/v1/plans');assert.equal(admission.status,200,JSON.stringify(await admission.json()));
     const response=await running.request('/health');const health=await response.json();
     t.diagnostic(`format-1 health ${response.status} ${JSON.stringify(health)}`);
     assert.equal(response.status,200);assert.equal(health.ready,true);assert.equal(health.sqlite,true);assert.equal(health.subagentRuns,1);
@@ -193,6 +195,9 @@ for(const kind of ['base schema','run format'] as const)test(`packaged future ${
     const diagnostics=(await(await running.request('/health')).json()).diagnostics as string[];assert.ok(diagnostics.includes('schema'));assert.equal(fixedCodes(diagnostics),true);
     for(const reply of replies){assert.equal(reply.status,503);assert.deepEqual(reply.body,{error:'schema'});}
     assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.captureEnabled,null);assert.ok(state.diagnostics.includes('schema'));
+    assert.equal(state.verified,false);assert.equal(state.delivery.configuration,'configured');assert.equal(Object.hasOwn(state.delivery,'migrationProgress'),false);
+    assert.equal(Object.hasOwn(state,'reportingIdentity'),false);
+    assert.deepEqual(state.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
     assert.equal((await running.request('/health')).status,200);
     assert.deepEqual(readFileSync(f.database),future);
   }finally{await running.stop();f.clean();}

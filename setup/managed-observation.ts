@@ -63,20 +63,28 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null) {
         mode:'unknown',observation:'unknown',expectedVersion:null}};
     if(journal)base.delivery!.migrationProgress=managedJournalProgress(journal);
     if(!retained)return {status:base,descriptor,journal,subagentRuns:false};
-    storePaths(retained);
-    const store=new Store(retained.database,{readOnly:true});
+    // Selection is independently validated. A refused Store must not erase it
+    // or promote partial observations into capture/identity authority.
+    const unavailable=structuredClone(base);
     try{
-      verifyStore(store,retained);const runs=store.subagentRunStorage();
-      base.captureEnabled=store.list({limit:1}).captureEnabled;
-      if(journal)base.delivery!.migrationProgress=managedJournalProgress(journal,{state:base.captureEnabled?'on':'off',observedAt:new Date().toISOString()});
-      if(b){
-        base.verified=b.source.verified;base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
-        const expected=readManagedExpectation(b);
-        if(expected){base.version=expected.version;base.delivery!.expectedVersion=expected.version;
-          const loaded=store.loadedFingerprint(b.source.id,b.installId);base.delivery!.observation=loaded===null?'not-observed':loaded===expected.fingerprint?'matching':'different';}
-      }
-      return {status:base,descriptor,journal,subagentRuns:!!b&&['current','previous'].includes(runs)};
-    }finally{store.close();}
+      storePaths(retained);
+      const store=new Store(retained.database,{readOnly:true});
+      try{
+        verifyStore(store,retained);const runs=store.subagentRunStorage();
+        base.captureEnabled=store.list({limit:1}).captureEnabled;
+        if(journal)base.delivery!.migrationProgress=managedJournalProgress(journal,{state:base.captureEnabled?'on':'off',observedAt:new Date().toISOString()});
+        if(b){
+          base.verified=b.source.verified;base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};
+          const expected=readManagedExpectation(b);
+          if(expected){base.version=expected.version;base.delivery!.expectedVersion=expected.version;
+            const loaded=store.loadedFingerprint(b.source.id,b.installId);base.delivery!.observation=loaded===null?'not-observed':loaded===expected.fingerprint?'matching':'different';}
+        }
+        return {status:base,descriptor,journal,subagentRuns:!!b&&['current','previous'].includes(runs)};
+      }finally{store.close();}
+    }catch(error){
+      unavailable.diagnostics=[managedDiagnostic(error)];
+      return {status:unavailable,descriptor,journal,subagentRuns:false};
+    }
   });
 }
 

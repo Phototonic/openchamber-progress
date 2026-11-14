@@ -671,8 +671,12 @@ function writerTarget(kind, value) {
   const canonical = path.join(realpathSync.native(current), ...missing);
   return `${kind}:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
 }
+var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
 function writerTargetPort(target) {
-  return 49152 + createHash("sha256").update(target).digest().readUInt32BE(0) % 4096;
+  let offset = createHash("sha256").update(target).digest().readUInt32BE(0) % 4000;
+  while (writerPortDenylist.has(25000 + offset))
+    offset = (offset + 1) % 4000;
+  return 25000 + offset;
 }
 var cache = new Map;
 var reparseCache = new Map;
@@ -6522,7 +6526,8 @@ class SetupController {
     if (!this.managedEnv)
       throw new SetupError("managed-service-required");
     this.worker ??= new SetupRequestWorker(this.workerEntry);
-    const reply = await this.worker.run(this.managedEnv, this.readonlyPayload(), request.action === "status" || request.action === "capture" ? { ...request, descriptor: this.expectedDescriptor } : request, startedAt);
+    const payload = request.action === "status" || request.action === "capture" || request.action === "health" ? undefined : this.readonlyPayload();
+    const reply = await this.worker.run(this.managedEnv, payload, request.action === "status" || request.action === "capture" ? { ...request, descriptor: this.expectedDescriptor } : request, startedAt);
     if (reply.ok && reply.descriptor)
       this.expectedDescriptor = reply.descriptor;
     if (request.action === "status") {
@@ -8069,28 +8074,34 @@ function readSetup(env, expectedDescriptor) {
       base.delivery.migrationProgress = managedJournalProgress(journal);
     if (!retained)
       return { status: base, descriptor, journal, subagentRuns: false };
-    storePaths2(retained);
-    const store = new Store(retained.database, { readOnly: true });
+    const unavailable = structuredClone(base);
     try {
-      verifyStore(store, retained);
-      const runs = store.subagentRunStorage();
-      base.captureEnabled = store.list({ limit: 1 }).captureEnabled;
-      if (journal)
-        base.delivery.migrationProgress = managedJournalProgress(journal, { state: base.captureEnabled ? "on" : "off", observedAt: new Date().toISOString() });
-      if (b) {
-        base.verified = b.source.verified;
-        base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
-        const expected = readManagedExpectation(b);
-        if (expected) {
-          base.version = expected.version;
-          base.delivery.expectedVersion = expected.version;
-          const loaded = store.loadedFingerprint(b.source.id, b.installId);
-          base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
+      storePaths2(retained);
+      const store = new Store(retained.database, { readOnly: true });
+      try {
+        verifyStore(store, retained);
+        const runs = store.subagentRunStorage();
+        base.captureEnabled = store.list({ limit: 1 }).captureEnabled;
+        if (journal)
+          base.delivery.migrationProgress = managedJournalProgress(journal, { state: base.captureEnabled ? "on" : "off", observedAt: new Date().toISOString() });
+        if (b) {
+          base.verified = b.source.verified;
+          base.reportingIdentity = { storeId: b.storeId, sourceId: b.source.id, verified: b.source.verified };
+          const expected = readManagedExpectation(b);
+          if (expected) {
+            base.version = expected.version;
+            base.delivery.expectedVersion = expected.version;
+            const loaded = store.loadedFingerprint(b.source.id, b.installId);
+            base.delivery.observation = loaded === null ? "not-observed" : loaded === expected.fingerprint ? "matching" : "different";
+          }
         }
+        return { status: base, descriptor, journal, subagentRuns: !!b && ["current", "previous"].includes(runs) };
+      } finally {
+        store.close();
       }
-      return { status: base, descriptor, journal, subagentRuns: !!b && ["current", "previous"].includes(runs) };
-    } finally {
-      store.close();
+    } catch (error) {
+      unavailable.diagnostics = [managedDiagnostic(error)];
+      return { status: unavailable, descriptor, journal, subagentRuns: false };
     }
   });
 }
@@ -8163,16 +8174,21 @@ function runSetupRequestWorker() {
   let refusal;
   let health;
   let descriptor;
+  const payload = () => {
+    if (!input.payload)
+      throw Object.assign(new Error("invalid"), { code: "managed-step-unsupported" });
+    return input.payload;
+  };
   try {
     value = withPlatformRequestBudget(budget, () => {
-      setup = new SetupController({ env: input.env }, () => input.payload);
+      setup = new SetupController({ env: input.env }, payload);
       const request = input.request;
       if (request.action === "managed-step") {
         const parsed = managedStepRequest(request.body);
         if (!parsed)
           throw Object.assign(new Error("invalid"), { code: "invalid" });
         if (parsed.action === "begin") {
-          const begun = beginManagedStep(input.env, input.payload, parsed, budget, input.inspection);
+          const begun = beginManagedStep(input.env, payload(), parsed, budget, input.inspection);
           journal = begun.journal;
           return {
             version: 1,
@@ -8196,7 +8212,7 @@ function runSetupRequestWorker() {
         }
         if (parsed.action === "advance" || parsed.action === "pause" || parsed.action === "abandon" || parsed.action === "resume") {
           const hint = input.journal ?? input.inspection?.operation;
-          const changed = parsed.action === "advance" ? advanceManagedStep(input.env, input.payload, parsed, budget, hint) : controlManagedStep(input.env, input.payload, parsed, budget, hint, input.inspection);
+          const changed = parsed.action === "advance" ? advanceManagedStep(input.env, payload(), parsed, budget, hint) : controlManagedStep(input.env, payload(), parsed, budget, hint, input.inspection);
           journal = changed.journal;
           return {
             version: 1,
@@ -8211,7 +8227,7 @@ function runSetupRequestWorker() {
           throw Object.assign(new Error("managed-step-unsupported"), { code: "managed-step-unsupported" });
         if (parsed.cursor && (!input.inspection || input.inspection.cursor !== parsed.cursor))
           throw Object.assign(new Error("managed-inspection-expired"), { code: "managed-inspection-expired" });
-        const inspected = inspectManagedStep(input.env, input.payload, parsed.cursor ? input.inspection : undefined, parsed.storeRoot);
+        const inspected = inspectManagedStep(input.env, payload(), parsed.cursor ? input.inspection : undefined, parsed.storeRoot);
         inspection = inspected.session;
         journal = inspection.operation;
         return {
@@ -8297,9 +8313,9 @@ class SetupRequestWorker {
       return Promise.resolve(refused(diagnostic2(error)));
     }
     this.active = true;
-    const context2 = digest(canonical({ env, payload })), requestId = randomUUID8();
+    const scope2 = digest(canonical(env)), context2 = digest(canonical({ env, payload: payload ?? null })), requestId = randomUUID8();
     const saved = this.inspection?.context === context2 ? this.inspection.session : undefined;
-    const journal = this.journal?.context === context2 ? this.journal.value : undefined;
+    const journal = this.journal?.context === scope2 ? this.journal.value : undefined;
     let targets;
     try {
       targets = setupWriterTargets(env, journal?.database ?? saved?.candidate?.database);
@@ -8308,7 +8324,7 @@ class SetupRequestWorker {
       return Promise.resolve(refused(diagnostic2(error)));
     }
     const consumesInspection = request.action === "managed-step" && managedStepRequest(request.body)?.action !== "status";
-    if (this.inspection?.context !== context2 || consumesInspection)
+    if (this.inspection?.scope !== scope2 || payload !== undefined && this.inspection?.context !== context2 || consumesInspection)
       this.inspection = undefined;
     this.journal = undefined;
     return new Promise((resolve) => {
@@ -8412,9 +8428,9 @@ class SetupRequestWorker {
             release(refused("managed-step-deadline"));
           else {
             if (!settled && result2.ok && nextInspection && request.action === "managed-step")
-              this.inspection = { context: context2, session: nextInspection };
+              this.inspection = { scope: scope2, context: context2, session: nextInspection };
             if (!settled && result2.ok && nextJournal && (request.action === "managed-step" || request.action === "status"))
-              this.journal = { context: context2, value: nextJournal };
+              this.journal = { context: scope2, value: nextJournal };
             const accounting = { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs };
             release({
               ...result2,

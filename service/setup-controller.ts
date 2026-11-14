@@ -47,7 +47,8 @@ export class SetupController {
   async request(request:SetupWorkerRequest,startedAt=process.hrtime.bigint()) {
     if(!this.managedEnv)throw new SetupError('managed-service-required');
     this.worker??=new SetupRequestWorker(this.workerEntry);
-    const reply=await this.worker.run(this.managedEnv,this.readonlyPayload(),
+    const payload=request.action==='status'||request.action==='capture'||request.action==='health'?undefined:this.readonlyPayload();
+    const reply=await this.worker.run(this.managedEnv,payload,
       request.action==='status'||request.action==='capture'?{...request,descriptor:this.expectedDescriptor}:request,startedAt);
     if(reply.ok&&reply.descriptor)this.expectedDescriptor=reply.descriptor;
     if(request.action==='status'){

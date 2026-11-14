@@ -24248,6 +24248,7 @@ class PlatformError2 extends Error {
     this.reason = reason;
   }
 }
+var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
 var cache2 = new Map;
 var reparseCache = new Map;
 var scope3 = 0;
