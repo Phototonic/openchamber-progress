@@ -11,7 +11,8 @@ Keep your canonical planner. If not already reported, deliberately mirror action
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
 For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
 For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.`;
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
+For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
 const PLAN_OBSERVATION = 'A possible plan document was written or revised, possibly by a delegated child.';
 export const DISPATCH_OBSERVATION = 'A dispatch ran.';
 export const TRACKER_OBSERVATION = 'A tracker update was observed.';
@@ -98,14 +99,15 @@ export interface ResumeActivation {
   now?: () => number;
 }
 
-function resumeText(selection: ResumeSelection): string {
+function resumeText(selection: ResumeSelection, assignedOnly = false): string {
   let candidates = selection.candidates.slice(0, 3);
   let omitted = selection.omitted || selection.candidates.length > 3;
   while (candidates.length) {
     const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
     const text = [
-      unconfirmed ? '## Progress resume — unconfirmed candidates' : '## Progress resume — recorded pointer',
+      assignedOnly ? '## Assigned task reporting — current recorded scope' : unconfirmed ? '## Progress resume — unconfirmed candidates' : '## Progress resume — recorded pointer',
       'Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.',
+      ...(assignedOnly ? ['Report actual working changes; report blocked with a safe reason and next action when known; report done only for your assigned work. Use fresh operation IDs and the revision from a fresh read. Never alter structure, siblings or plan lifecycle. An optional handoff taskUpdate explicitly commits final statuses with the claim; outcome alone changes no tasks. Repeated guidance needs no report.'] : []),
       ...(unconfirmed ? ['Read and confirm a target before reporting.'] : []),
       ...(selection.incomplete || omitted ? ['Additional eligible candidates may exist; discovery or output is incomplete.'] : []),
       'Progress source IDs below are namespace metadata, not the tool’s document-path source argument.',
@@ -246,11 +248,14 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
         if (disposed || epoch !== disableEpoch) { removeOwned(); return; }
         if (!caller || !control()) { pending.delete(sessionKey); removeOwned(); return; }
         let capsule = '';
-        if (armed && recovery && recoveryAvailable && !lookupBusy && compactions.get(sessionKey) === attempt) {
+        // Ordinary coordinators do not scan plans. Children reuse the bounded,
+        // read-only identity/projection owner on naturally occurring contexts.
+        const assignedOnly = !armed && !!caller.parentID;
+        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
           const controller = new AbortController(); held = controller;
           const now = recovery.now ?? (() => performance.now());
           const deadline = now() + 1000;
-          const alive = () => !controller.signal.aborted && !disposed && recoveryAvailable && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now() < deadline;
+          const alive = () => !controller.signal.aborted && !disposed && (assignedOnly || recoveryAvailable) && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now() < deadline;
           let timer: ReturnType<typeof setTimeout> | undefined;
           lookupBusy = true;
           const lookup = (async () => {
@@ -268,7 +273,7 @@ export async function registerActivation(ctx: Plugin.Context, source: { id: stri
             })]);
             if (identity && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity.sourceId === source.id && identity.sessionId === event.sessionID) {
               const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity.sourceId, sessionId: identity.sessionId, parentId: identity.parentId, ancestry: identity.ancestry });
-              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID) capsule = resumeText(selection);
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID) capsule = resumeText(assignedOnly ? {...selection,candidates:selection.candidates.filter(p=>p.scope==='assigned')} : selection, assignedOnly);
             }
           } catch { /* optional recovery faults preserve eligible base guidance */ }
           finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }

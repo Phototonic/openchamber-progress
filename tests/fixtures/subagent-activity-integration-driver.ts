@@ -193,6 +193,44 @@ try {
   await wait(async()=>{try{await client.agent.list({location},{signal:AbortSignal.timeout(1000)});return records().filter(e=>e.type==='registered').length>registered;}catch{return false;}},'native-reload-ready');
   await prompt(a.id,[spawnCall('after-restart')]);await wait(async()=>(await detail()).plan.revision===5,'native-restart-intent-binds');
   assert.equal((await detail()).items.data[3].assignmentBinding.callId,'after-restart');assert.deepEqual(facts(await detail()),facts(initial));report.checks.nativeRestartDurableIntentAndProgressUnchanged=true;
+  stage='assigned-child-reporting';
+  const reportingPlan='reporting-demo';
+  const reportingDetail=()=>store.detail('source-alpha',reportingPlan);
+  await reportTool({op:'start',plan:reportingPlan,oid:'reporting-start',rev:0,title:'Synthetic reporting',items:['task-a','task-b','task-c'].map(id=>({id,title:id,kind:'task'}))});
+  const directChildren:string[]=[];
+  for(const [index,task] of ['task-a','task-b'].entries()){
+    const rev=reportingDetail().plan.revision,call=`assigned-reporter-${index}`;
+    await reportTool({op:'delegate',plan:reportingPlan,oid:`declare-reporter-${index}`,rev,assign:[task]});
+    jobs.firstReportingCall={id:`pre-binding-${index}`,tool:'agent_progress_report',input:{op:'change',plan:reportingPlan,oid:`early-${index}`,rev,changes:[{id:task,status:'working'}]}};
+    await prompt(a.id,[spawnCall(call,{agent:'reporting-worker'})]);
+    delete jobs.firstReportingCall;
+    await wait(()=>reportingDetail().plan.revision===rev+1,'reporting-binding');
+    assert.equal(records().find(e=>e.type==='report-reply'&&e.callID===`pre-binding-${index}`)?.error,'assignment');
+    const child=childFor(call);assert.ok(child);directChildren.push(child);
+    assert.equal(reportingDetail().items.data.find(i=>i.id===task)!.status,'pending','pre-binding first execution fabricates no task report');
+  }
+  const invokeChild=async(child:string,input:any,id:string,error?:string)=>{
+    await prompt(child,[{id,tool:'agent_progress_report',input}]);
+    const reply=records().filter(e=>e.type==='report-reply'&&e.callID===id).at(-1);assert.ok(reply?.parsed);assert.equal(reply.error,error);
+    if(input.op==='handoff'&&!error){assert.equal(reply.handoff,true);assert.equal(reply.taskRev,input.taskUpdate.rev+1);}
+  };
+  for(const [index,child] of directChildren.entries()){
+    const task=index===0?'task-a':'task-b';
+    const rev=reportingDetail().plan.revision;
+    await invokeChild(child,{op:'read',plan:reportingPlan},`direct-read-${index}`);
+    assert.ok(records().some(e=>e.type==='dispatch'&&e.sessionID===child&&e.calls?.includes(`direct-read-${index}`)&&e.assignedBrief));
+    await invokeChild(child,{op:'change',plan:reportingPlan,oid:`working-${index}`,rev,changes:[{id:task,status:'working'}]},`direct-working-${index}`);
+    assert.equal(reportingDetail().items.data.find(i=>i.id===task)!.status,'working');
+    await invokeChild(child,{op:'change',plan:reportingPlan,oid:`unassigned-${index}`,rev:rev+1,changes:[{id:'task-c',status:'done'}]},`refuse-unassigned-${index}`,'assignment');
+    await invokeChild(child,{op:'change',plan:reportingPlan,oid:`stale-${index}`,rev,changes:[{id:task,status:'done'}]},`refuse-stale-${index}`,'conflict');
+    const final={op:'handoff',oid:`combined-${index}`,summary:'Synthetic explicit final report',outcome:index===0?'done':'partial',taskUpdate:{plan:reportingPlan,rev:rev+1,changes:[{id:task,status:index===0?'done':'blocked',...(index===1?{blocker:{reason:'Needs a format decision',nextAction:'Choose a format'}}:{})}]}};
+    await invokeChild(child,final,`direct-final-${index}`);
+    await invokeChild(child,final,`direct-retry-${index}`);
+    assert.equal(reportingDetail().plan.revision,rev+2);
+  }
+  const reported=reportingDetail();assert.deepEqual(reported.items.data.map(i=>i.status),['done','blocked','pending']);
+  assert.ok(reported.contributions.data.filter(c=>c.itemIds.length).every(c=>c.mode==='direct'&&directChildren.includes(c.reporterSessionId)&&c.attributedSessionId===c.reporterSessionId));
+  report.checks.postBindingDirectWorkingDoneBlocked=true;report.checks.postBindingBriefAtOutgoingBoundary=true;report.checks.combinedReplayNoExtraRevision=true;report.checks.preBindingNoProgress=true;report.checks.unassignedAndStaleRefused=true;
   report.pass = !report.nativeUI?.defects?.length;
   if (!report.pass) report.failure = { stage: 'native-production-views', kind: 'production-ui-defect' };
 } catch (e) {

@@ -87,7 +87,7 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     event: { subscribe: ({ signal }: any) => { if (options.unsupported === 'subscribe') throw new Error('synthetic unavailable subscription'); if (options.unsupported === 'stream') return { async *[Symbol.asyncIterator]() { throw new Error('synthetic stream failure'); } }; return subscribe(signal); } },
     tool: { hook: hook('tool'), transform: async (callback: any) => callback({ namespace() {}, add(v: any) { tools.set('agent_progress_report', v); } }), list: async () => [...tools].map(([id, v]) => ({ id, ...v })) },
     skill: { transform: async (callback: any) => callback({ add() {} }) },
-    permission: { assert: async () => { throw new Error('Recovery must not capture'); } },
+    permission: { assert: async () => { if(f.permission)return f.permission();throw new Error('Recovery must not capture'); } },
     rpc: { register: async () => {} },
   };
   f.tick = (amount = 1) => clock += amount;
@@ -148,6 +148,32 @@ async function fixture(run: (f: any) => Promise<void>, options: { adapter?: bool
     wallClock.mock.restore();
   }
 }
+
+test('ordinary child contexts deliver only current verified assignments without compaction or automatic reports',async()=>fixture(async f=>{
+  f.seed();const child={sourceId:f.binding.source.id,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M'],agent:'synthetic',directory:'/fixture/project',verifiedSource:true};
+  const parent={...child,sessionId:'ses_M',parentId:null,ancestry:[]};
+  const text=(c:any)=>parts(c)[0]?.text??'';
+  assert.equal(text(await f.next('ses_C')).includes('last-known revision'),false);
+  f.store.apply({op:'link',plan:'P-alpha',oid:'assign-child',rev:1,child:'ses_C',assign:['I1']},parent,undefined,child);
+  const c=await f.next('ses_C');assert.ok(text(c).includes('Assigned-only scope: ["I1"]'));
+  assert.ok(text(c).includes('last-known revision 2'));assert.equal(f.store.get(child.sourceId,'P-alpha').revision,2);
+  assert.equal(parts(await f.next('ses_C',false)).length,0);
+  f.store.apply({op:'link',plan:'P-alpha',oid:'unlink-child',rev:2,child:'ses_C',assign:[]},parent,undefined,child);
+  await f.context(c);assert.equal(text(c).includes('Assigned-only scope:'),false);
+  assert.equal(f.store.get(child.sourceId,'P-alpha').items[0].status,'pending');
+}));
+
+test('combined handoff retires after a held document permission',async()=>fixture(async f=>{
+  const file=`${f.root}/project/plan.md`;fs.writeFileSync(file,'Synthetic plan');
+  // The initial denied capture still binds the document, as ordinary reporting does.
+  await f.report({op:'start',plan:'P-bound',oid:'start-bound',rev:0,title:'Synthetic',source:file,items:[{id:'I1',title:'Task',kind:'task'}]});
+  const child={sourceId:f.binding.source.id,sessionId:'ses_C',parentId:'ses_M',ancestry:['ses_M'],agent:'synthetic',directory:`${f.root}/project`,verifiedSource:true};
+  f.store.apply({op:'link',plan:'P-bound',oid:'link-bound',rev:1,child:'ses_C',assign:['I1']},{...child,sessionId:'ses_M',parentId:null,ancestry:[]}, {path:file,state:'denied',checkedAt:new Date().toISOString()},child);
+  const entered=deferred(),release=deferred();f.permission=async()=>{entered.resolve();await release.promise;};
+  const pending=f.report({op:'handoff',oid:'held-final',summary:'Synthetic',outcome:'done',taskUpdate:{plan:'P-bound',rev:2,changes:[{id:'I1',status:'done'}]}},'ses_C');
+  await entered.promise;await f.dispose();release.resolve();const reply=await pending;
+  assert.ok(reply.error);assert.equal(f.store.get(child.sourceId,'P-bound').revision,2);
+}));
 
 test('V1/V2 pinned 2.1.4 adapter transports paired compaction and production current Store pointer', { timeout: 10000 }, async () => {
   for (const order of ['start-first', 'hook-first']) await fixture(async f => {
