@@ -14,7 +14,8 @@ import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips,
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
-import type { DeviceView } from './model.ts';
+import type { DeviceView, IntentRefusal } from './model.ts';
+import { currentIntent, type CurrentIntent } from './intent.ts';
 
 /** P1 applies these to the document element from Env.device; CSS remains responsive without hints.
  * Content/map owners consume the same attributes/variables, never introduce another layout owner.
@@ -25,7 +26,7 @@ export const PHONE_LAYOUT_HOOKS = Object.freeze({
   safeLeft: '--ap-safe-left', keyboard: '--ap-keyboard-height',
 });
 export const ATTENTION_HOOKS = Object.freeze({
-  inbox: 'needs-you-inbox', count: 'needs-you-count', alsoBlocked: 'also-blocked', pending: 'delegation-pending',
+  inbox: 'needs-you-inbox', count: 'needs-you-count', alsoBlocked: 'also-blocked', pending: 'delegation-pending', refused: 'delegation-refused',
 });
 
 // Keys are the existing English copy; only these fixed messages are translated, never user text.
@@ -132,6 +133,15 @@ const RUSSIAN = {
   ' (verified)': ' (проверен)', ' (not verified)': ' (не проверен)', 'None': 'Нет', 'Recorded source': 'Записанный источник', 'Capture': 'Сбор', 'On': 'Включён', 'Off': 'Выключен', 'Coverage': 'Охват',
   'Loading progress': 'Загрузка прогресса', 'Setup is needed': 'Нужна настройка', 'Progress loaded again': 'Прогресс снова загружен',
   'Showing progress from {time}': 'Показан прогресс на {time}', '{failure}. This may be out of date.': '{failure}. Данные могут быть устаревшими.', 'Last refresh error': 'Ошибка последнего обновления',
+  'Next sub-agent will take this': 'Следующий субагент возьмёт эту задачу', 'Sub-agent handoff refused': 'Передача субагенту отклонена', 'Sub-agent handoff': 'Передача субагенту',
+  'Waiting for the next sub-agent the coordinator starts. No work has started, and no sub-agent is assigned yet.': 'Ждёт следующего субагента, которого запустит координатор. Работа не начата, субагент пока не назначен.',
+  'Not applied: the plan changed after the handoff was planned.': 'Не применена: план изменился после того, как передачу запланировали.',
+  'Not applied: the plan’s task structure changed.': 'Не применена: изменилась структура задач плана.',
+  'Not applied: the plan was closed.': 'Не применена: план закрыт.',
+  'Not applied: the task’s assignment changed.': 'Не применена: изменилось назначение задачи.',
+  'Not applied: the change couldn’t be checked.': 'Не применена: изменения не удалось проверить.',
+  'Not applied: the progress service refused it.': 'Не применена: сервис прогресса её отклонил.',
+  'The coordinator can plan the handoff again for the current plan, or link the task to a session.': 'Координатор может снова запланировать передачу для текущего плана или связать задачу с сессией.',
 } as const;
 type CopyKey = keyof typeof RUSSIAN;
 const COPY: Record<InterfaceLanguage, Record<CopyKey, string>> = {
@@ -789,6 +799,8 @@ interface Paint {
   who: Attribution | null;
   label: (id: string) => string;
   trusted: boolean;
+  /** Waiting-delegation notes of this paint (intent.ts); display only. Absent: none. */
+  intent?: CurrentIntent;
 }
 
 /** Group titles: guidance for an active plan's complete valid detail, reported statuses otherwise. */
@@ -1013,6 +1025,14 @@ function rowFacts(p: Paint, row: ProgressRow) {
     add(say('Reported wait', locale), wait, wait.textContent ?? '', `needs-you-wait-${item.id}`);
   }
   if (item.status === 'working') { const e = elapsedLabel(p.plan, item, p.detail, p.env); if (e) { testid(e, `task-elapsed-${item.id}`); add(say('Reported working', locale), e, e.textContent ?? ''); } }
+  const intent = p.intent?.tasks.get(item.id);
+  if (intent) {
+    const lines = intent.state === 'waiting' ? [say('Waiting for the next sub-agent the coordinator starts. No work has started, and no sub-agent is assigned yet.', locale)]
+      : [say(REFUSAL_COPY[intent.reason], locale), say('The coordinator can plan the handoff again for the current plan, or link the task to a session.', locale)];
+    const holder = el('span', 'ap-intent-fact');
+    for (const line of lines) holder.append(el('span', '', line));
+    add(say('Sub-agent handoff', locale), holder, lines.join(' '), `delegation-fact-${item.id}`).dataset.intent = intent.state;
+  }
   // Needs first: every recorded prerequisite in recorded order, including done ones.
   const prereqs = prerequisitesOf(p, item);
   const needsTerm = el('span', 'ap-rfacts-term');
@@ -1127,6 +1147,27 @@ function copyBox(p: Paint, item: ItemView, text: [string, string][]) {
   return holder;
 }
 
+const REFUSAL_COPY: Record<IntentRefusal, CopyKey> = {
+  changed: 'Not applied: the plan changed after the handoff was planned.', structure: 'Not applied: the plan’s task structure changed.',
+  closed: 'Not applied: the plan was closed.', assignment: 'Not applied: the task’s assignment changed.',
+  unverified: 'Not applied: the change couldn’t be checked.', other: 'Not applied: the progress service refused it.',
+};
+
+/**
+ * The faint waiting-delegation line under a task title, part of the row's summary (so a collapsed
+ * row reads it with the title). Display only: never a status, assignment, activity or control.
+ */
+function intentNote(p: Paint, itemId: string) {
+  const intent = p.intent?.tasks.get(itemId);
+  if (!intent) return null;
+  const waiting = intent.state === 'waiting';
+  const line = testid(el('span', 'ap-intent'), waiting ? ATTENTION_HOOKS.pending : ATTENTION_HOOKS.refused);
+  line.dataset.intent = intent.state;
+  if (!waiting) { line.dataset.reason = intent.reason; line.append(icon('warning')); }
+  line.append(el('span', 'ap-intent-text', say(waiting ? 'Next sub-agent will take this' : 'Sub-agent handoff refused', p.env.locale)));
+  return line;
+}
+
 /** One canonical task row: `li[item-ID]` (the programmatic target) and its expandable facts. */
 function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null): HTMLLIElement {
   const { item } = row;
@@ -1151,6 +1192,8 @@ function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null
   if (meta) end.append(meta);
   end.append(icon('chevron-down'));
   summary.append(end);
+  const note = intentNote(p, item.id);
+  if (note) summary.append(note);
   // The facts exist only while the row is open: a collapsed row (and its focused canonical `li`)
   // reads as its line alone (status, title, time/wait/readiness word), never the expanded facts or
   // their ⓘ explanations. Built fresh on open (this paint's controls), removed on close.
@@ -1469,7 +1512,9 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
       unlocks: derived?.state === 'valid' ? new Map([...derived.tasks].map(([id, t]) => [id, t.unlocksNext])) : null,
       who: reading && index ? { filter: reading.participant, index } : null,
       label: recordedLabel(plan, env), trusted: trustedSource(plan, env),
+      intent: currentIntent(plan, ready),
     };
+    root.dataset.delegation = paint.intent!.state;
   }
   const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
   root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));

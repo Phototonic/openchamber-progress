@@ -7,8 +7,9 @@ import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRequest } from '../../shared/needs-you.ts';
+import { DELEGATION_VIEW_LIMITS, supportsDelegationIntent } from '../../shared/delegation-view.ts';
 import type {
-  InboxRowView, InboxWindowView,
+  InboxRowView, InboxWindowView, IntentRefusal, IntentView,
   AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
@@ -56,7 +57,70 @@ export function parseHealth(body: string): HealthView & { planComposerHandoff?: 
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
-  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}) };
+  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+}
+
+/**
+ * Waiting-delegation overlay (shared/delegation-view.ts). `delegationIntent=1` is sent on list
+ * pages and the first detail page only when health advertises it; older services never see it.
+ */
+export const delegationQuery = (asked: boolean): Record<string, string> => (asked ? { delegationIntent: '1' } : {});
+const tokenText = (v: unknown): v is string => isStr(v) && v.length > 0 && !v.includes('\0') && new TextEncoder().encode(v).length <= DELEGATION_VIEW_LIMITS.tokenBytes;
+const intentId = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= DELEGATION_VIEW_LIMITS.identifierCodeUnits && !v.includes('\0');
+const REFUSALS: Record<string, IntentRefusal> = {
+  'relevant-change': 'changed', conflict: 'changed', 'structural-change': 'structure', closed: 'closed',
+  assignment: 'assignment', 'source-unverified': 'unverified', unverified: 'unverified', 'incomplete-proof': 'unverified', 'missing-proof': 'unverified', budget: 'unverified',
+};
+const UNAVAILABLE = new Set(['budget', 'legacy', 'unverified', 'invalid', 'capture-unavailable']);
+function intentDeclaration(v: unknown, revision: number, dispatched: boolean | null) {
+  check(isRec(v) && intentId(v.oid) && intentId(v.coordinatorSessionId) && isInt(v.declaredRevision) && v.declaredRevision >= 1 && v.declaredRevision <= revision, 'unreadable declaration');
+  const ids = v.taskIds;
+  check(Array.isArray(ids) && ids.length >= 1 && ids.length <= DELEGATION_VIEW_LIMITS.tasks && ids.every(intentId) && new Set(ids).size === ids.length, 'unreadable declared tasks');
+  const d = v.dispatch;
+  check(d === null || (isRec(d) && (d.tool === 'subagent' || d.tool === 'task') && intentId(d.messageId) && intentId(d.callId)), 'unreadable dispatch');
+  // Pending has no dispatch yet; reserved names the dispatch it waits on (never child authority).
+  if (dispatched !== null) check(dispatched === (d !== null), 'dispatch disagrees with state');
+  return [...ids as string[]];
+}
+/**
+ * One detail overlay, re-validated against the reply it rides on (store, binding, plan identity,
+ * revision, structure and cleanup). Never throws: doubt is `unknown`, which paints nothing, so an
+ * optional overlay cannot fail the detail read or turn into a guess.
+ */
+export function parseIntent(v: unknown, envelope: EnvelopeView, plan: PlanView): IntentView {
+  const token = isRec(v) && tokenText(v.token) ? v.token : null;
+  try {
+    check(isRec(v) && token !== null && v.protocolVersion === SUPPORTED_PROTOCOL && v.schemaVersion === SUPPORTED_SCHEMA && v.delegationIntent === 1, 'unreadable overlay');
+    const b = v.sourceBinding, c = v.cleanup;
+    check(envelope.binding.verified && v.storeId === envelope.storeId && isRec(b) && b.verified === true && b.sourceId === envelope.binding.sourceId && v.source === plan.sourceId && v.source === b.sourceId, 'overlay for another store or binding');
+    check(v.plan === plan.id && v.revision === plan.revision && v.structuralRevision === plan.structuralRevision && isRec(c) && c.state === 'visible' && c.revision === (plan.cleanup?.revision ?? 0) && plan.cleanup?.state !== 'archived', 'overlay for another plan state');
+    check(isIso(v.readAt), 'overlay has no read time');
+    const r = v.result;
+    check(isRec(r), 'overlay has no result');
+    if (r.availability === 'unavailable') { check(r.complete === false && UNAVAILABLE.has(String(r.reason)) && !('disposition' in r), 'unreadable unavailability'); return { token, state: 'unknown' }; }
+    check(r.availability === 'ready' && r.complete === true && isRec(r.disposition), 'unreadable disposition');
+    const d = r.disposition;
+    const reason = (x: unknown) => { check(isStr(x) && x.trim().length > 0 && x.length <= DELEGATION_VIEW_LIMITS.reasonCodeUnits && !x.includes('\0'), 'unreadable reason'); return x; };
+    switch (d.state) {
+      case 'none': return { token, state: 'clear' };
+      case 'pending': case 'reserved':
+        check(d.eligible === true, 'ineligible waiting intent');
+        return { token, state: 'waiting', taskIds: intentDeclaration(d.declaration, plan.revision, d.state === 'reserved') };
+      case 'bound':
+        intentDeclaration(d.declaration, plan.revision, true);
+        check(intentId(d.childSessionId) && isInt(d.boundRevision) && d.boundRevision >= 1 && d.boundRevision <= plan.revision, 'unreadable binding');
+        return { token, state: 'clear' };
+      case 'cancelled': case 'invalidated':
+        intentDeclaration(d.declaration, plan.revision, null); reason(d.reason);
+        return { token, state: 'clear' };
+      case 'refused':
+        check(d.recovery === 'redeclare-or-link', 'unknown recovery');
+        return { token, state: 'refused', taskIds: intentDeclaration(d.declaration, plan.revision, null), reason: REFUSALS[reason(d.reason)] ?? 'other' };
+      default: return { token, state: 'unknown' };
+    }
+  } catch {
+    return { token, state: 'unknown' };
+  }
 }
 
 /**
@@ -252,6 +316,8 @@ function parseSummary(v: unknown): PlanView {
     working: Array.isArray(v.working) ? v.working.filter(isStr) : [],
     document: parseDocumentRef(v.document),
     ...(v.cleanup === undefined ? {} : { cleanup: v.cleanup as PlanView['cleanup'] }),
+    // Optional overlay identity: an unreadable token never fails the list, it just matches nothing.
+    ...(v.delegationToken === undefined ? {} : { delegationToken: tokenText(v.delegationToken) ? v.delegationToken : null }),
   };
 }
 
@@ -387,9 +453,11 @@ export function parsePlanPage(body: string) {
   const v: unknown = JSON.parse(body);
   check(isRec(v), 'Plan reply is not an object.');
   const plan = parseSummary(v.plan);
+  const envelope = parseEnvelope(v);
   return {
-    envelope: parseEnvelope(v),
+    envelope,
     plan,
+    intent: v.delegationIntent === undefined ? undefined : parseIntent(v.delegationIntent, envelope, plan),
     items: page(v.items, (x) => parseItem(x, plan.id, plan.revision, plan.ownerSessionId), 'Plan items'),
     contributions: page(v.contributions, (x) => parseContribution(x, plan.id), 'Plan contributions'),
     links: (Array.isArray(v.links) ? v.links : []).map((l) => {
