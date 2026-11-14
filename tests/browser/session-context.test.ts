@@ -28,7 +28,7 @@ async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r 
 type Ui = { sessionFilter: string; archived: boolean; selected: string | null };
 /** Execute the actual shared controller. DOM/layout and SDK mount mechanics are
  * deliberately minimal here; current-bundle browser QA owns those boundaries. */
-function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void, paintHook?: (vc: ViewContext<Ui>) => void) {
+function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => void, paintHook?: (vc: ViewContext<Ui>, root: any) => void) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
   const storageCalls: string[] = [];
@@ -121,7 +121,7 @@ function controller(board = false, beforeUiChange?: (previous: Ui, next: Ui) => 
         querySelectorAll: () => [], matches: () => false,
         focus() { focusCalls++; document.activeElement = this; },
       };
-      vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc); },
+      vc = value; paints.push(vc.read?.plans[0]?.id ?? null); paintHook?.(vc, _root); },
   };
   exports.startView(spec);
   return { requests, paints, contexts, listeners, infoPaints, languageStorage, storageCalls,
@@ -170,6 +170,106 @@ test('native Progress ready/onItem/onSession ordering pins an inactive explicit 
       assert.ok(c.requests.every(q => q.method === 'GET' && ['/health', '/v1/plans', '/v1/plan', '/v1/setup'].includes(q.path)), 'no compose/send/status/Workflows or mutation requests');
     } finally { c.stop(); }
   }
+});
+
+test('explicit local reset shows the current session, retires a held pinned read and survives same-item replay', async () => {
+  const c = controller(), held = deferred<GuestRequestResult>(); let holdA = false;
+  c.intercept((q, next) => q.path === '/v1/plans' && q.query?.session === 'A' && holdA ? (holdA = false, held.promise) : next());
+  try {
+    c.live(actionLive(['A', 'B', 'C'])); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+    assert.equal(c.vc.session?.id, 'A'); assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
+    assert.equal(typeof c.vc.progressReset, 'function', 'pinned scope offers the reset');
+    holdA = true; c.vc.retry(); await settle();
+    const storage = c.storageCalls.length;
+    c.vc.progressReset!(); await settle();
+    assert.equal(c.vc.progressAction, false); assert.equal(c.vc.progressReset, undefined);
+    assert.equal(c.vc.session?.id, 'B', 'ordinary current-session scope'); assert.deepEqual(c.vc.read?.plans, []);
+    const mark = c.requests.length;
+    held.resolve(response(plansPage([row], 'retired-next', { storeId: 'retired-store' }))); await settle();
+    assert.equal(c.requests.slice(mark).some(q => q.query?.cursor === 'retired-next'), false, 'held pinned read cannot continue');
+    assert.notEqual(c.vc.read?.storeId, 'retired-store'); assert.deepEqual(c.vc.read?.plans, []);
+    // The retained host item keeps arriving: onItem, a ready snapshot with a locale/theme update.
+    c.listeners.item(progressAction()); await settle();
+    c.ready('B', '/fixture/Alpha', 'fixture', { locale: 'ru', supported: false }, progressAction()); await settle();
+    assert.equal(c.vc.session?.id, 'B'); assert.equal(c.vc.progressAction, false); assert.equal(c.vc.env.locale, 'ru');
+    assert.equal(c.requests.slice(mark).some(q => q.query?.session === 'A'), false, 'same retained item does not re-pin this frame');
+    // Ordinary rules: the chat moves the scope; visibility neither pins nor unpins.
+    c.listeners.session({ id: 'C' }); await settle(); assert.equal(c.vc.session?.id, 'C');
+    c.visibility('hidden'); c.visibility('visible'); await settle(); assert.equal(c.vc.session?.id, 'C'); assert.equal(c.vc.progressAction, false);
+    assert.ok(c.storageCalls.slice(storage).every(k => k === 'interface-language.v1'), 'reset writes no host storage');
+    assert.ok(c.requests.every(q => q.method === 'GET'), 'no progress mutation, compose or navigation request');
+    // A different valid target starts normal validation again.
+    c.listeners.item(progressAction('B')); await settle();
+    assert.equal(c.vc.progressAction, true); assert.equal(c.vc.session?.id, 'B');
+  } finally { held.resolve(response(plansPage([]))); c.stop(); }
+});
+
+test('a host-cleared item ends the reset episode; a later delivery of the same target pins again', async () => {
+  const c = controller();
+  try {
+    c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+    c.vc.progressReset!(); await settle(); assert.equal(c.vc.session?.id, 'B');
+    c.listeners.item(null); await settle();
+    assert.equal(c.vc.progressAction, false); assert.equal(c.vc.session?.id, 'B');
+    c.listeners.item(progressAction()); await settle();
+    assert.equal(c.vc.progressAction, true); assert.equal(c.vc.session?.id, 'A'); assert.equal(c.vc.read?.plans[0]?.id, 'P-A');
+  } finally { c.stop(); }
+});
+
+test('reset leaves unavailable, checking, invalid and no-current-session pins without reading the pinned target', async () => {
+  for (const mode of ['unavailable', 'checking', 'invalid', 'no-session']) {
+    const c = controller();
+    try {
+      if (mode !== 'checking') c.live(actionLive(mode === 'unavailable' ? ['B'] : ['A', 'B']));
+      c.ready(mode === 'no-session' ? null : 'B', '/fixture/Alpha', 'fixture', undefined, mode === 'invalid' ? { ...progressAction(), action: 'unknown' } : progressAction());
+      await settle();
+      assert.equal(c.vc.progressAction, true, mode); assert.equal(typeof c.vc.progressReset, 'function', mode);
+      if (mode !== 'no-session') assert.equal(c.vc.progressContext, mode, mode);
+      const mark = c.requests.length;
+      c.vc.progressReset!(); await settle();
+      assert.equal(c.vc.progressAction, false, mode); assert.equal(c.vc.progressContext, null, mode);
+      assert.equal(c.requests.slice(mark).some(q => q.query?.session === 'A'), false, `${mode}: no pinned read is needed`);
+      if (mode === 'no-session') {
+        assert.equal(c.vc.session, null); assert.equal(c.vc.read, null, 'ordinary no-session state, no substitute');
+        assert.equal(c.requests.slice(mark).some(q => q.path === '/v1/plans'), false);
+      } else { assert.equal(c.vc.session?.id, 'B', mode); assert.deepEqual(c.vc.read?.plans, [], mode); }
+    } finally { c.stop(); }
+  }
+});
+
+test('a reset handle from an earlier pin cannot reset a newer target or an ordinary view', async () => {
+  const c = controller();
+  try {
+    c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+    const old = c.vc;
+    c.listeners.item(progressAction('B')); await settle();
+    old.progressReset!(); await settle();
+    assert.equal(c.vc.progressAction, true, 'newer target stays pinned'); assert.equal(c.vc.session?.id, 'B');
+    const pinnedB = c.vc; pinnedB.progressReset!(); await settle();
+    c.listeners.session({ id: 'A' }); await settle(); assert.equal(c.vc.session?.id, 'A');
+    pinnedB.progressReset!(); await settle();
+    assert.equal(c.vc.progressAction, false); assert.equal(c.vc.session?.id, 'A', 'a used handle is inert');
+  } finally { c.stop(); }
+});
+
+test('focus on the reset control is handed to the resulting ordinary heading once the control disappears', async () => {
+  let focused = 0, painted = false;
+  const c = controller(false, undefined, (vc, root) => {
+    if (vc.progressAction) return;
+    painted = true;
+    delete root.control; // the reset control is gone from the ordinary paint
+    root.heading = { dataset: { testid: 'empty-state' }, isConnected: true, getBoundingClientRect: () => ({ top: 0, bottom: -1 }), scrollIntoView() {}, focus() { focused++; } };
+  });
+  try {
+    c.live(actionLive()); c.ready('B', '/fixture/Alpha', 'fixture', undefined, progressAction()); await settle();
+    painted = false;
+    c.setFocus(true, 'control');
+    c.vc.handoff({ heading: (root: any) => root.heading ?? null });
+    c.vc.progressReset!(); await settle();
+    assert.equal(painted, true); assert.equal(focused, 1, 'the context transition keeps this activation’s hand-off');
+    c.vc.retry(); await settle();
+    assert.equal(focused, 1, 'ordinary refreshes do not take focus again');
+  } finally { c.stop(); }
 });
 
 test('native manifest action adds no payload or capability and leaves both background actions unchanged', () => {

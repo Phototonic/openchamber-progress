@@ -85,6 +85,12 @@ export interface ViewContext<U> {
   /** Native session action validation; null for ordinary opening or a verified target. */
   progressContext?: ProgressContextState | null;
   progressAction?: boolean;
+  /**
+   * Panel only, while a session action pins the scope: return to the host's current session in this
+   * frame. A pending hand-off requested just before it survives the transition; replays of the same
+   * delivered item are then ignored until the host delivers a different or cleared item.
+   */
+  progressReset?: () => void;
   health: HealthView | null;
   /** Data for the current scope only (null while that scope is loading or not configured). */
   read: StoreRead | null;
@@ -444,6 +450,8 @@ export function startView<U>(spec: ViewSpec<U>) {
   let hostSession: SessionSnapshot | null = null;
   let hostDirectory: string | null = null;
   let item: ProgressItem = { kind: 'ordinary' };
+  /** Delivered item the user explicitly reset away from in this frame; never stored. */
+  let resetItem: string | null = null;
   let itemBeforeReady = false;
   const targetState = () => item.kind === 'invalid' ? 'invalid' as const : item.kind === 'target' ? progressTargetState(item.target, live.snapshot) : null;
   let health: HealthView | null = null;
@@ -1004,6 +1012,7 @@ export function startView<U>(spec: ViewSpec<U>) {
     const confirmation = cleanup.target;
     const partGeneration = cacheGeneration;
     const canReadPart = () => !disposed && partGeneration === cacheGeneration && currentScope() !== null && readScope === scopeKey(currentScope());
+    const pinned = item.kind !== 'ordinary' ? JSON.stringify(item) : null;
     const env: Env = {
       locale: language.snapshot().language, now: Date.now(), mono: performance.now(), live: live.snapshot,
       boundSource: read && read.binding.verified ? read.binding.sourceId : null,
@@ -1013,7 +1022,7 @@ export function startView<U>(spec: ViewSpec<U>) {
       openSession: (id) => { void host.openSession(id).catch(() => host.toast({ kind: 'error', message: APP_COPY[language.snapshot().language].sessionFailed }).catch(() => {})); },
     };
     return {
-      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
+      host, ctx: ctx!, session, directory, progressContext: targetState(), progressAction: item.kind !== 'ordinary', progressReset: pinned ? () => resetProgress(pinned) : undefined, health, read: readScope === scopeKey(currentScope()) ? read : null, failure, lastGoodAt, live: live.snapshot, env, ui,
       language: { ...language.snapshot(), choose: (preference) => {
         languageFocus = !!mount!.querySelector('[data-testid="interface-language"]')?.contains(document.activeElement);
         localLanguageAction = true;
@@ -1407,9 +1416,28 @@ export function startView<U>(spec: ViewSpec<U>) {
   const applyItem = (value: unknown) => {
     if (spec.surface !== 'panel') return;
     const next = progressItem(value);
-    if (JSON.stringify(next) === JSON.stringify(item)) return;
+    const key = JSON.stringify(next);
+    if (resetItem !== null) {
+      // The host may keep re-delivering the item the user reset away from (ready snapshots,
+      // theme updates, an ordinary reopen). Only a different or cleared item ends the reset.
+      if (key === resetItem) return;
+      resetItem = null;
+    }
+    if (key === JSON.stringify(item)) return;
     item = next;
-    if (!ctx) return;
+    if (ctx) changeItem();
+  };
+  /** Explicit local return to the host's current session: frame-local, no host or store write. */
+  const resetProgress = (pinned: string) => {
+    if (disposed || !ctx || spec.surface !== 'panel' || item.kind === 'ordinary' || JSON.stringify(item) !== pinned) return;
+    resetItem = pinned;
+    item = { kind: 'ordinary' };
+    // The context transition cancels hand-offs; keep the one this activation just requested.
+    const requested = handoff;
+    changeItem();
+    handoff = requested;
+  };
+  const changeItem = () => {
     // Even ordinary → action for the same ID is a new authority/selection boundary.
     gate.retire(); resetCaches(); clearReading(); ui = spec.initialUi();
     read = null; readScope = ''; readSig = ''; failure = null; lastGoodAt = null;

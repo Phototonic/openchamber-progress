@@ -62,7 +62,7 @@ function fixture() {
       mountBanner: (root: Element, o: any) => root.append(o.title, o.body), mountSpinner: (root: Element, o: any) => root.append(o.label),
       mountBadge: (root: Element, o: any) => root.append(o.label),
       mountSelect: (root: Element, o: any) => { selects.push(o); const b = new Element('button'); b.className = 'oc-sdk-trigger'; b.setAttribute('aria-label', o.label); root.append(b); } },
-  }, '\nexports.copyBox = copyBox; exports.rowFacts = rowFacts; exports.participantSelect = participantSelect;');
+  }, '\nexports.copyBox = copyBox; exports.rowFacts = rowFacts; exports.participantSelect = participantSelect; exports.sessionsPanel = sessionsPanel;');
   return { components, primitives, resolve, writes, selects };
 }
 
@@ -96,6 +96,31 @@ test('session details show bounded host context as literal localized text only f
     assert.equal(section.textContent.includes('https:'), false);
     assert.equal(c.peopleBlock(plan, null, env, true).textContent.includes(metadata.agent!), false, 'compact session row stays compact');
     assert.equal(c.peopleBlock({ ...plan, sourceId: 'foreign' }, null, env).textContent.includes(metadata.agent!), false, 'same-ID foreign session never borrows host context');
+  }
+});
+
+test('expanded Sessions panel has one localized heading and keeps every participant and host fact', () => {
+  const { components: c } = fixture();
+  const metadata = live.hostWorkContext({ agent: 'Host agent', links: [{ title: 'Linked issue', kind: 'issue', url: 'https://example.invalid/issue', linkedAt: 1 }] });
+  const session = { id: 'A', title: 'Host title', directory: '/fixture/Alpha', projectId: 'project', activity: 'idle', ...metadata };
+  const snapshot = { ...live.EMPTY_LIVE, projectsState: 'ready', sessions: new Map([['project', { state: 'ready', records: [session] }]]) };
+  const plan = { key: 'source/plan', sourceId: 'source', directory: '/fixture/Alpha', ownerSessionId: 'A' };
+  const detail = { links: [], items: [{ id: 't', kind: 'task', assigneeSessionId: 'C' }], contributions: [{ attributedSessionId: 'C', mode: 'parent-relay' }] };
+  const walk = (n: Element | string, out: Element[] = []): Element[] => { if (n instanceof Element) { out.push(n); n.children.forEach(child => walk(child, out)); } return out; };
+  for (const locale of ['en', 'ru'] as const) {
+    const env = { locale, boundSource: 'source', live: snapshot, mono: 0 };
+    const box = c.sessionsPanel({ plan, detail, env });
+    const all = walk(box);
+    const headings = all.filter(n => /^h[1-6]$/.test(n.tagName));
+    const title = locale === 'ru' ? 'Сессии' : 'Sessions';
+    assert.equal(headings.length, 1, `${locale}: one section heading`);
+    assert.equal(headings[0].textContent, title); assert.equal(box.getAttribute('aria-label'), title);
+    assert.equal(box.dataset.testid, 'plan-panel-sessions');
+    assert.ok(all.some(n => n.dataset.testid === 'plan-panel-sessions-close'), 'close control unchanged');
+    const people = all.filter(n => n.dataset.testid?.startsWith('contributor-')).map(n => n.dataset.testid);
+    assert.deepEqual(people, ['contributor-A', 'contributor-C'], 'every participant row kept');
+    const text = box.textContent;
+    for (const fact of locale === 'ru' ? ['Основная сессия', 'Дочерняя сессия', 'Назначено: 1', 'Агент по данным хоста: Host agent', 'Задача, связанная в хосте: Linked issue'] : ['Main session', 'Child session', '1 assigned', 'reports relayed by the main session', 'Host-reported agent: Host agent', 'Host-linked issue: Linked issue']) assert.ok(text.includes(fact), `${locale}: ${fact}`);
   }
 });
 

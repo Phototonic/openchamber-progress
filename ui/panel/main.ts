@@ -1,6 +1,6 @@
 import { RECENT_SCOPES, startView, type ViewContext } from '../shared/app.ts';
 import { RecentMemory } from '../shared/refresh.ts';
-import { detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, retryRead, staleBlock, testid } from '../shared/components.ts';
+import { button, detailsBlock, el, emptyBlock, failureBlock, failureFacts, info, languageBlock, loadingBlock, planDetail, planPicker, recordedLabel, recoveredHeading, retryRead, staleBlock, testid } from '../shared/components.ts';
 import { lifecycleLabel, summarize, type PlanView } from '../shared/model.ts';
 import { resolveLanguage, type InterfaceLanguage } from '../shared/i18n.ts';
 import { contextListScope, contextScope, pickPlan, projectsFor } from '../shared/scope.ts';
@@ -98,6 +98,7 @@ startView<Ui>({
     const mapShown = vc.ui.presentation === 'map' && !!shown && !!session;
     railMap.sync(vc, shown && session ? shown : null, `rail:${session}`, mapShown);
     root.append(el('h1', 'ap-sr', t.heading));
+    if (vc.progressAction) root.append(pinnedScope(vc, language));
     if (vc.progressContext) {
       const text = {
         en: { checking: 'Checking the selected session’s location and access…', invalid: 'This Progress action has no valid session context.', unavailable: 'The selected session is unavailable here. Its current location and access could not be verified.' },
@@ -110,7 +111,6 @@ startView<Ui>({
       root.append(languageBlock(vc.language, env.locale));
       return;
     }
-    if (vc.progressAction && session) root.append(testid(el('p', 'ap-note', `${language === 'ru' ? 'Прогресс выбранной сессии' : 'Progress for selected session'}: ${sessionLabel(session, vc.live, language)}`), 'session-action-scope'));
     const notice = cleanupNotice(vc); if (notice) root.append(notice);
     if (!read) {
       if (vc.progressAction && failure?.code === 'ACTION_CONTEXT') root.append(testid(el('p', 'ap-note', language === 'ru'
@@ -193,6 +193,29 @@ startView<Ui>({
     root.append(languageBlock(vc.language, env.locale));
   },
 });
+
+const scopeCopy = {
+  en: { label: 'Progress for selected session', reset: 'Show current session', done: 'Showing the current session' },
+  ru: { label: 'Прогресс выбранной сессии', reset: 'Показать текущую сессию', done: 'Показана текущая сессия' },
+} satisfies Record<InterfaceLanguage, Record<string, string>>;
+
+/**
+ * The pinned scope of a session action, with its explicit local way back (also while the target is
+ * checking, unavailable or invalid). Focus that was on the reset goes to the resulting state's heading.
+ */
+function pinnedScope(vc: ViewContext<Ui>, language: InterfaceLanguage) {
+  const copy = scopeCopy[language];
+  const line = testid(el('div', 'ap-row ap-note'), 'session-action-scope');
+  if (vc.session) line.append(el('span', '', `${copy.label}: ${sessionLabel(vc.session.id, vc.live, language)}`));
+  if (vc.progressReset) {
+    const reset = vc.progressReset;
+    button(line, 'session-action-reset', copy.reset, () => {
+      vc.handoff({ heading: (root) => recoveredHeading(root) ?? root.querySelector<HTMLElement>('[role="alert"] button'), notice: (_heading, locale = language) => scopeCopy[locale].done });
+      reset();
+    }, 'ghost');
+  }
+  return line;
+}
 
 function current(vc: ViewContext<Ui>) {
   if (!vc.read) return null;
