@@ -7,7 +7,7 @@ import { INBOX_WINDOW, INBOX_PARTIAL, INBOX_EMPTY } from '../fixtures/attention-
 import { parseNeedsYouWindow, parseHealth } from '../../ui/shared/adapter.ts';
 import { readList, readNeedsYou, readSearchState, type ServiceHost } from '../../ui/shared/source.ts';
 import { InboxController, inboxRequest } from '../../ui/shared/inbox.ts';
-import { checkReading, inboxSummary, readingRequest, type InboxReading } from '../../ui/shared/inbox-view.ts';
+import { checkReading, inboxSummary, readingRequest, ReadingFocus, type InboxReading } from '../../ui/shared/inbox-view.ts';
 import type { InboxWindowView, PlanDetail } from '../../ui/shared/model.ts';
 import type { GuestRequest, GuestRequestResult } from '@openchamber/sdk';
 import { HEALTH, SRC, OTHER_SRC, envelope, plansPage, summary } from './fixtures.ts';
@@ -282,4 +282,28 @@ test('opening a row revalidates the current plan and task before any reveal; not
   const gone = checkReading(reading, detail([{ id: 'task-a', title: 'Group', kind: 'group', status: 'pending' }]), { ...plan, lifecycle: 'completed' }, ctx, 'en');
   assert.ok(gone.kind === 'ready' && !gone.reveal && gone.notice === '“Task task-a” is no longer in this plan. The plan stays open to read. This plan is no longer active.');
   assert.equal(checkReading(reading, detail([], 4), plan, ctx, 'en').kind, 'loading', 'detail ahead of its plan metadata waits');
+});
+
+test('data-only cache resets never repeat the reading task reveal or focus', () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { hasFocus: () => true } });
+  try {
+    const r = { token: 9, target: { task: 'task-a' } } as InboxReading;
+    const plan = { id: 'plan-alpha', sourceId: SRC } as import('../../ui/shared/model.ts').PlanView;
+    const article = { dataset: { testid: 'plan-plan-alpha', source: SRC }, querySelector: () => ({}) };
+    const root = { querySelectorAll: () => [article] } as unknown as HTMLElement;
+    const focus = new ReadingFocus();
+    let reveals = 0;
+    const paint = () => focus.afterPaint(root, r, { kind: 'ready', plan, reveal: true, notice: null, message: 'Task' }, () => { reveals++; });
+    paint();
+    focus.reset('reset');
+    paint();
+    assert.equal(reveals, 1, 'recovery of the surviving reading must not steal focus again');
+    r.token++;
+    paint();
+    assert.equal(reveals, 2, 'a genuinely new reading still reveals its task');
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
 });

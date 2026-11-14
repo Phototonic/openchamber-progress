@@ -954,13 +954,21 @@ export function startView<U>(spec: ViewSpec<U>) {
     cleanupFocus = result.ok ? 'cleanup-notice' : 'cleanup-error'; versions.ui++; versions.data++; schedule(); retry();
   }
 
+  const headReads = new Map<string, { reading: string; queued: boolean; current: () => boolean }>();
   function refreshDetails(refresh: number) {
     if (!read || !spec.refreshDetails || document.visibilityState === 'hidden') return;
     const generation = cacheGeneration, id = identity;
     for (const p of spec.refreshDetails(context())) {
-      const current = () => !disposed && refresh === gate.current && generation === cacheGeneration && id === identity && document.visibilityState !== 'hidden' && !!spec.refreshDetails?.(context()).some(n => n.key === p.key);
+      // A plan key alone cannot distinguish leaving and reopening the same inbox task.
+      const readingKey = () => JSON.stringify(spec.reading?.(context()) ?? null);
+      const key = readingKey(), bound = reading;
+      const current = () => !disposed && refresh === gate.current && generation === cacheGeneration && id === identity && readingKey() === key && (!bound || reading === bound) && document.visibilityState !== 'hidden' && !!spec.refreshDetails?.(context()).some(n => n.key === p.key);
+      const previous = headReads.get(p.key);
+      if (previous?.reading === key && previous.current()) { previous.queued = true; continue; }
+      const pending = { reading: key, queued: false, current };
+      headReads.set(p.key, pending);
       void readPlanHead(guardedHost(current), p).then(result => {
-        if (!current()) return;
+        if (!current() || headReads.get(p.key) !== pending || pending.queued) return;
         const sameIdentity = result.ok && result.envelope.storeId === read?.storeId && result.envelope.binding.sourceId === read.binding.sourceId && result.envelope.binding.verified === read.binding.verified;
         if (result.ok && sameIdentity) {
           // Unchanged heads leave the detail, its timing anchors and DOM untouched.
@@ -970,6 +978,12 @@ export function startView<U>(spec: ViewSpec<U>) {
           details.set(p.key, { revision: p.revision, requested: p.revision, cleanup: p.cleanup?.revision ?? 0, requestedCleanup: p.cleanup?.revision ?? 0, captureEnabled: read?.captureEnabled, generation, listRead: listReads, value: { state: 'error', failure } });
           bump();
         }
+      }).finally(() => {
+        if (headReads.get(p.key) !== pending) return;
+        headReads.delete(p.key);
+        // One follow-up for any number of refreshes that overtook this reply. The
+        // overtaken result is never painted, including failures such as store busy.
+        if (pending.queued && current()) refreshDetails(refresh);
       });
     }
   }

@@ -98,7 +98,7 @@ startView<Ui>({
   },
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return railMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); inboxFocus?.reset(); } railMap.retire(reason); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); inboxFocus?.reset(reason); } railMap.retire(reason); },
   afterPaint: (root, vc) => {
     railMap.afterPaint(root, vc, vc.ui.inbox ? null : current(vc), listSwitch);
     inboxFocus?.afterPaint(root, vc.ui.inbox, inboxCheck, revealCurrentTask);

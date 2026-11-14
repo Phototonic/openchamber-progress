@@ -675,7 +675,11 @@ you** (or Also blocked), reveals the canonical task, and focuses it. It does not
 approve, resolve, settle, reassign or open another host session. The reading is
 pinned to observed identity. On the existing successful refresh cadence, its
 current plan head rechecks existence, revision and cleanup independently of
-inbox membership; changed heads re-read detail, unchanged heads retain it. Removed or
+inbox membership; changed heads re-read detail, unchanged heads retain it. Head
+reads are single-flight per reading identity (including its opening token), with
+one coalesced follow-up; retired or superseded replies never replace current detail.
+Data-only cache resets retain that reading's reveal-once token, so recovery never
+re-reveals or refocuses its task. Removed or
 no-longer-blocked work is explained. **Back to session progress** returns focus to
 the opener when available, reopening Also blocked before focusing its row,
 otherwise the inbox heading. Board reading occupies

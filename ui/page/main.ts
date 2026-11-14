@@ -272,7 +272,7 @@ startView<Ui>({
   freshness: (vc) => (isSearching(vc) && search.freshKeys().length ? (service) => search.revalidate(service, vc.health?.needsYouInbox === 1 ? { demand: 'rows', mono: () => performance.now() } : undefined) : null),
   // An unsettled map re-pins its graph on the existing refresh cadence (no extra poller); no hook without a shown map.
   get refreshed() { return boardMap.refreshed; },
-  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); inboxFocus?.reset(); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
+  retire: (reason) => { if (reason !== 'hidden') { viewChoice.reset(); resetBoard(); inboxFocus?.reset(reason); } captures.retire(); reporting.retire(); boardMap.retire(reason); if (reason === 'reset') search.retire(); else if (reason === 'hidden') search.hidden(); else search.dispose(); },
   // Search run + selection, also for plans outside the loaded list: a change retires their part reads.
   partsKey: (vc) => (isSearching(vc) ? JSON.stringify([vc.ui.search!.key, vc.ui.selected]) : null),
   // While searching, part caches hold the selection and the few results opened just before it.

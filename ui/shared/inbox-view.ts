@@ -413,7 +413,12 @@ export class ReadingFocus {
   private opened = 0;
   opening(r: InboxReading) { this.opened = r.token; }
   leaving(r: InboxReading) { this.back = r.rowKey; }
-  reset() { this.revealed = 0; this.back = null; this.opened = 0; }
+  reset(reason: 'reset' | 'hidden' | 'dispose' = 'dispose') {
+    // Data caches can be retired while the same reading survives. Recovery must
+    // not reveal its task again or steal focus from the reader's current control.
+    if (reason === 'reset') return;
+    this.revealed = 0; this.back = null; this.opened = 0;
+  }
   afterPaint(root: HTMLElement, r: InboxReading | null, check: ReadingCheck | null, reveal: (article: HTMLElement, plan: PlanView, item: string, message: string) => void) {
     const owns = document.hasFocus?.() ?? true;
     if (!r) {

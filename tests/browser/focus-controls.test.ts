@@ -310,7 +310,7 @@ function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promi
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>((r) => setImmediate(r)); }
 
 type Ui = { selected: string | null };
-function controller(options: { surface?: 'panel' | 'status' } = {}) {
+function controller(options: { surface?: 'panel' | 'status'; heads?: boolean } = {}) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
   const timers: number[] = [];
@@ -369,7 +369,8 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
     surface: options.surface ?? 'panel', maxSessionSubscriptions: 2, initialUi: () => ({ selected: null }),
     scope: ({ session }) => (session ? { session: session.id } : null),
     wantProjects: () => [], wantDetails: (c) => c.read?.plans.slice(0, 1) ?? [],
-    reading: (c) => { const p = c.read?.plans[0]; return p && c.session ? { plan: p.key, scope: `rail:${c.session.id}` } : null; },
+    refreshDetails: options.heads ? (c) => c.read?.plans.slice(0, 1) ?? [] : undefined,
+    reading: (c) => { const p = c.read?.plans[0]; return p && c.session ? { plan: p.key, scope: `rail:${c.session.id}:${c.ui.selected ?? ''}` } : null; },
     paint: (_root, value) => { vc = value; paints++; observed.push(shownDetail(value)); },
   };
   /** What every paint could show: a ready detail only for the plan's own revision (the surfaces' rule). */
@@ -392,6 +393,32 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
   };
 }
 const status = (vc: ViewContext<Ui>) => vc.reading?.status ?? null;
+
+test('inbox heads coalesce held refreshes and reject a retired same-plan reading', async () => {
+  const c = controller({ heads: true });
+  c.ready(SA); await settle();
+  const original = c.route;
+  const held = deferred<GuestRequestResult>();
+  let heads = 0;
+  c.setRoute(q => { heads++; return heads === 1 ? held.promise : original(q); });
+  c.retry(); await settle();
+  c.retry(); await settle();
+  assert.equal(heads, 1, 'the second refresh must wait for the held head');
+  held.resolve(reply({ error: 'busy' }, 503)); await settle();
+  assert.equal(heads, 2, 'one coalesced current refresh follows the retired reply');
+  assert.equal(c.observed.at(-1)?.state, 'ready', 'the superseded busy reply cannot replace ready detail');
+  assert.ok(c.observed.every(p => p.state !== 'error'));
+
+  const retired = deferred<GuestRequestResult>();
+  c.setRoute(() => retired.promise);
+  c.retry(); await settle();
+  c.vc.setUi({ selected: 'new-inbox-token' }); await settle();
+  c.setRoute(original);
+  c.retry(); await settle();
+  retired.resolve(reply({ error: 'busy' }, 503)); await settle();
+  assert.equal(c.observed.at(-1)?.state, 'ready', 'same plan key under another reading token rejects the old reply');
+  c.stop();
+});
 
 test('reading identity: filters survive repaint, polls and a directory move; session, store and account changes reset them', async () => {
   const c = controller();
