@@ -166,14 +166,87 @@ Receipt-proven format-1 removal uses the shorter frozen plan defined below; it
 never invents missing removal batches or replays already completed removal.
 
 `prepare` creates only owned private managed metadata and the initial format-2
-journal; no capture, expectation, loader or selector effect. Publish the initial
-marker+journal as a complete owned container, using a privately staged container
-and positively verified no-clobber publication/recovery. The engine must make
-pre-publication interruptions restartable too: no empty unmarked final directory,
-silent adoption of foreign staging or deletion by age. Bootstrap creation is not
-permission to relax checks or expose a format-1 guard. Only fully published
-prepare releases the next step. Existing managed directories/format-1 records
-require same-target validation rather than replacement of foreign bytes.
+journal; no capture, expectation, loader or selector effect. Bootstrap uses the
+claim protocol below, not an atomic directory rename: ordinary POSIX rename can
+replace an existing empty directory. Only a fully published, freshly validated
+prepare checkpoint releases the next step. Existing managed directories/format-1
+records require same-target validation rather than replacement of foreign bytes.
+
+### Claimed no-clobber bootstrap
+
+This is an exception to requiring a complete marked final directory throughout
+bootstrap, **not** an exception to ownership, privacy or no-clobber checks. An
+empty or incompletely published final directory is allowed only while a matching
+owned bootstrap claim exists in its parent. It grants no companion admission,
+Store selection or capture authority. The public wire and format-2 journal stay
+unchanged; the claim is private bootstrap evidence, not a second migration journal.
+
+Under the discovery-target writer fence, and after fresh same-target validation:
+
+1. Publish a private, current-account-owned bootstrap claim in the parent using
+   exclusive file publication (`wx`/`O_EXCL`, or the existing file-level staged
+   no-clobber link pattern). It binds the operation, target identity and intended
+   final directory. Complete claim bytes and their durability must be established
+   before creating the final directory. The claim must also retain enough of the
+   original confirmed request/prepare evidence to recognize an identical retry
+   after restart; a new process cannot depend on the expired inspection cursor.
+   Unknown, partial, foreign or mismatched claims refuse; never overwrite them.
+2. Create the final directory with exclusive, non-recursive `mkdir`, which fails
+   on `EEXIST` and never replaces another directory. An `EEXIST` in this creation
+   attempt is a conflict, **not** permission to enter the recovery branch. In
+   particular, a competing empty directory appearing after claim publication
+   must remain untouched.
+3. Establish privacy for the newly created directory and freshly validate its
+   ownership, identity and path safety before publishing any contents. Existing
+   foreign/permissive directories are never repaired. A creation helper must not
+   silently turn its existing-directory success into proof of exclusive creation.
+4. Publish the exact managed marker, then the initial format-2 journal, with
+   no-clobber file publication and the existing flush rules. Validate existing
+   bytes instead of replacing them during recovery. The journal must match the
+   claim's operation, target, consent and initial prepare checkpoint. The generic
+   marker alone does not identify an operation; its enclosing matching claim and
+   the freshly validated target supply that association.
+5. After fresh verification of the complete marker/journal pair, remove only the
+   verified matching claim and flush its parent. A lost reply or failed claim
+   cleanup is not permission to repeat prepare's effects or advance another step.
+
+On an explicit identical retry after interruption, a matching claim plus an
+absent final directory permits another exclusive creation attempt. A matching
+claim plus an existing final directory permits recovery only after positively
+verifying that it is an owned, private, real directory, with no reparse/link
+anomaly, containing nothing or only the exact validated marker and/or initial
+journal for this operation. Fresh target/consent checks still apply. Unknown
+entries, changed identities/bytes, ambiguous staging and foreign claims refuse.
+Do not delete by age, adopt an unclaimed directory, or remove foreign bytes.
+
+| Durable state at interruption | Explicit retry behavior |
+| --- | --- |
+| No published claim; final directory absent | Revalidate the review/retained request evidence, then publish a new claim; no migration effect has occurred. |
+| Incomplete, foreign or mismatched claim | Refuse without directory creation, repair or deletion. |
+| Matching claim; final directory absent | Freshly validate, then retry exclusive directory creation. |
+| Matching claim; newly created final directory empty | Recover only if its ownership, privacy, real-directory identity and path safety are positively validated; otherwise refuse, without repair. |
+| Matching claim; exact marker only | Revalidate the target and marker; publish only the missing journal. |
+| Matching claim; exact initial journal only | Validate its full operation/target/consent binding; publish only the missing marker. This is defensive reconciliation, not the normal publication order. |
+| Matching claim; exact marker and initial journal | Verify the complete checkpoint, remove the matching claim, and return the settled prepare receipt without repeating effects. |
+| No claim; complete managed directory/journal | Use ordinary same-target journal validation and receipt replay. Existing format-1 state uses its separate validated upgrade path. |
+| No claim; empty, partial or foreign final directory | Refuse; absence of a claim is not recovery authority. |
+| Matching claim; foreign file, wrong journal, unsafe directory or ambiguous staging | Refuse, preserving all evidence and foreign bytes. |
+
+Every claim, directory, publication and cleanup check belongs to this request's
+six-spawn allowance; bootstrap does not gain an out-of-band warming or repair
+budget. End security scopes at each mutation as elsewhere. Crash tests must cover
+both sides of each publication/effect boundary, including before/after claim
+publication, exclusive creation, privacy establishment, marker, journal and claim
+removal, plus the competing-empty-directory case in step 2. File-level staging
+interruption also needs proof; merely calling an existing helper is not evidence
+that its retained temporary links are safely recoverable.
+
+This uses the documented trusted-same-account-process assumption in
+`docs/setup.md`; it does not claim protection against coordinated hostile
+same-account filesystem races. Writer fencing still covers competing legitimate
+processes. No native code, external helper, age-based lock cleanup or format-1
+bootstrap guard is introduced. Windows retains its documented process-recovery
+rather than POSIX directory-fsync/power-loss namespace guarantee.
 
 `expectation` verifies package bytes and publishes only the scoped expectation.
 `disable` follows full fresh legacy ownership and identity checks, publishes its
