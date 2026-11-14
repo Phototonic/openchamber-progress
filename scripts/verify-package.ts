@@ -7,7 +7,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { parseManifestJson } from '@openchamber/sdk/schemas';
-import { VERSION } from '../shared/progress.ts';
+import { VERSION,MANAGED_ACTION_CODES } from '../shared/progress.ts';
+import {MANAGED_STEP_CODES,MANAGED_INSPECTION_STEPS,type ManagedStepRequest,type ManagedStepResponse} from '../shared/managed-steps.ts';
+import {randomUUID} from 'node:crypto';
 import { Store, digest } from '../shared/store.ts';
 import { readBinding } from '../shared/binding.ts';
 import { managedBindingFile } from '../shared/managed-binding.ts';
@@ -40,16 +42,39 @@ async function verifyPackage() {
   const root=mkdtempSync('/tmp/opencode/agent-progress-package-'),env=isolatedEnvironment(root);
   const extension=path.resolve(`build/artifacts/agent-progress-extension-${RELEASE}`),companion=path.resolve(`build/artifacts/agent-progress-companion-${RELEASE}`);
   let service:ReturnType<typeof spawn>|undefined;
+  let phase='package contents',lastHttpStatus:number|null=null,lastHttpCode:string|null=null;
   const run=(args:string[],extra:NodeJS.ProcessEnv={})=>{const r=spawnSync(process.execPath,args,{env:{...env,...extra},encoding:'utf8',timeout:30000});assert.equal(r.status,0,r.stdout+r.stderr);return r.stdout.trim();};
   const stop=async()=>{if(service&&service.exitCode===null&&!service.signalCode){const exit=once(service,'exit');service.kill('SIGTERM');const timer=setTimeout(()=>service?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}service=undefined;};
   const launch=async(folder:string,fixtureEnv:NodeJS.ProcessEnv)=>{
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
     service=spawn(process.execPath,[path.join(folder,'build/service/main.js')],{env:{...fixtureEnv,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'package-fixture-only'},cwd:root,stdio:'ignore'});
-    const request=(route:string,body?:unknown)=>fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(3000)});
+    const request=async(route:string,body?:unknown)=>{
+      const r=await fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
+      lastHttpStatus=r.status;const value=await r.clone().json(),code=typeof value.error==='string'?value.error:value.error?.code;
+      lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found'].includes(code)?code:code?'unrecognized-code':null;
+      return r;
+    };
     for(const deadline=Date.now()+7000;;){assert.equal(service.exitCode,null,'owned service exited');try{if((await request('/health')).ok)break;}catch{}assert.ok(Date.now()<deadline,'service readiness');await new Promise(r=>setTimeout(r,25));}
     const json=async(route:string)=>{const r=await request(route);assert.equal(r.status,200);return r.json();};
     const action=async(name:string,storeRoot?:string)=>{const r=await request('/v1/setup/managed-inspect',storeRoot?{storeRoot}:{});assert.equal(r.status,200);const reviewed=await r.json();return request(`/v1/setup/${name}`,{...(storeRoot?{storeRoot}:{}),confirmed:true,expected:reviewed.delivery.review.expected});};
-    return {request,json,action};
+    const step=async(body:ManagedStepRequest)=>{
+      const response=await request('/v1/setup/managed-step',body),value=await response.json() as ManagedStepResponse;
+      assert.equal(value.version,1);assert.ok(value.accounting.securitySpawns<=6);assert.equal(response.status===200,value.error===null);
+      return {status:response.status,value};
+    };
+    const inspectMigration=async()=>{
+      let cursor:string|undefined;
+      for(const stage of MANAGED_INSPECTION_STEPS){
+        phase=`migration inspection ${stage}`;
+        const r=await step({version:1,action:'inspect',...(cursor?{cursor}:{})});
+        if(r.status!==200)return r;
+        assert.equal(r.value.inspection?.stage,stage);
+        if(r.value.inspection?.state==='complete')return r;
+        assert.equal(r.value.inspection?.state,'incomplete');cursor=r.value.inspection!.cursor!;
+      }
+      throw new Error('package migration inspection did not complete');
+    };
+    return {request,json,action,step,inspectMigration};
   };
   try {
     for(const [artifact,kind] of [[extension,'extension'],[companion,'companion']] as const){
@@ -65,11 +90,11 @@ async function verifyPackage() {
     assert.equal(manifest.openchamber.contributes.panel.id,'agent-progress-probe');
     for(const surface of ['ui/panel','ui/status','ui/page','background']){assert.match(readFileSync(`${extension}/${surface}/index.html`,'utf8'),/src=["'](?:\.\/)?main\.js["']/);assert.doesNotMatch(readFileSync(`${extension}/${surface}/main.js`,'utf8'),/^\s*(?:import\s|export\s)/m);}
     const inventory=path.resolve(`build/artifacts/entries-${RELEASE}.sha256`),before=readFileSync(inventory,'utf8');run(['--experimental-strip-types',path.resolve('scripts/package.ts')]);assert.equal(readFileSync(inventory,'utf8'),before);
-    console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
+    phase='live packaged HTTP verification';console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-live-package.ts'),extension]));
 
     for(const dir of ['config/opencode','data/opencode'])mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
     const unrelated=`${root}/config/opencode/opencode.json`;writeFileSync(unrelated,'{"fixture":"unrelated configuration"}\n',{mode:0o600});const original=readFileSync(unrelated);
-    let api=await launch(extension,env);
+    phase='fresh managed configuration';let api=await launch(extension,env);
     assert.equal((await api.json('/v1/setup')).delivery.configuration,'unconfigured');
     const tree=[snapshot(`${root}/config`),snapshot(`${root}/data`)];
     const inspected=await api.request('/v1/setup/managed-inspect',{});assert.equal(inspected.status,200);
@@ -83,8 +108,9 @@ async function verifyPackage() {
     console.log(run(['--experimental-strip-types',path.resolve('tests/fixtures/managed-report.ts'),extension,root]));
     const reports=await api.json('/v1/plans');assert.equal(reports.storeId,b.storeId);assert.equal(reports.data[0].id,'managed-packaged');
     assert.equal((await api.json('/v1/setup')).delivery.observation,'matching');
-    assert.equal((await api.action('managed-disable')).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,false);
-    assert.equal((await api.action('managed-enable')).status,200);
+    phase='managed capture controls';
+    assert.equal((await api.request('/v1/capture/disable',{})).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,false);
+    assert.equal((await api.request('/v1/capture/enable',{})).status,200);assert.equal((await api.json('/v1/plans')).captureEnabled,true);
     await stop();const replacement=`${root}/replacement`;cpSync(extension,replacement,{recursive:true});api=await launch(replacement,env);
     assert.equal((await api.json('/v1/plans')).storeId,b.storeId);assert.equal((await api.json('/v1/setup')).configured,true);
     for(const kind of ['permissions','corrupt'] as const){
@@ -100,7 +126,7 @@ async function verifyPackage() {
     await stop();rmSync(replacement,{recursive:true});const retained=new Store(b.database,{readOnly:true});try{assert.equal(retained.get(b.source.id,'managed-packaged')!.revision,2);}finally{retained.close();}
 
     // The standalone archive is retained legacy/recovery support, not the normal install path.
-    const legacyRoot=`${root}/legacy`,legacyEnv=isolatedEnvironment(legacyRoot);for(const dir of ['config/opencode','data/opencode'])mkdirSync(`${legacyRoot}/${dir}`,{recursive:true,mode:0o700});
+    phase='legacy recovery archive';const legacyRoot=`${root}/legacy`,legacyEnv=isolatedEnvironment(legacyRoot);for(const dir of ['config/opencode','data/opencode'])mkdirSync(`${legacyRoot}/${dir}`,{recursive:true,mode:0o700});
     const flags=[`--config-root=${legacyRoot}/config/opencode`,`--data-root=${legacyRoot}/data/opencode`,`--store-root=${legacyRoot}/store`,'--confirm=true'];
     const cli=`${root}/companion/build/setup/main.js`,legacyRun=(args:string[])=>run(args,legacyEnv);
     assert.equal(JSON.parse(legacyRun([cli,'dry-run',...flags])).writes,false);assert.equal(existsSync(`${legacyRoot}/store/progress.sqlite`),false);
@@ -115,13 +141,28 @@ async function verifyPackage() {
     const payloadFile=path.join(path.dirname(old.database),'payloads',selection.active,'index.js');
     for(const file of [ownership,payloadFile]){
       const bytes=readFileSync(file),historyFile=path.join(path.dirname(old.database),'installation-history.jsonl'),historyBytes=readFileSync(historyFile);writeFileSync(file,'modified fixture');
-      try{assert.equal((await api.request('/v1/setup/managed-inspect',{})).status,409);assert.equal((await api.json('/v1/setup')).delivery.migration,'conflict');assert.equal(existsSync(managedBindingFile(legacyEnv)),false);assert.equal(readFileSync(file,'utf8'),'modified fixture');}
+      try{
+        const refused=await api.inspectMigration();assert.equal(refused.status,409);assert.equal(refused.value.disposition,'refused');assert.ok(refused.value.error,'full inspection must diagnose changed legacy bytes');
+        // Bounded ordinary status is a discovery observation, not a second full
+        // ownership scan. Only complete step inspection can release consent.
+        assert.notEqual(refused.value.inspection?.state,'complete');assert.equal(existsSync(managedBindingFile(legacyEnv)),false);assert.equal(readFileSync(file,'utf8'),'modified fixture');
+      }
       finally{writeFileSync(file,bytes);}
       assert.deepEqual(readFileSync(historyFile),historyBytes);
       const unchanged=new Store(old.database,{readOnly:true});try{assert.equal(unchanged.history(old.source.id,'packaged').data.length,revisions);assert.equal(unchanged.list().captureEnabled,true);}finally{unchanged.close();}
     }
-    assert.equal((await api.request('/v1/setup/managed-migrate',{confirmed:false})).status,400);
-    assert.equal((await api.action('managed-migrate')).status,200);
+    phase='legacy compatibility refusal';
+    const compatibility=await api.request('/v1/setup/managed-migrate',{confirmed:false});assert.equal(compatibility.status,409);assert.deepEqual(await compatibility.json(),{error:'managed-action-required'});
+    const inspectedMigration=await api.inspectMigration();assert.equal(inspectedMigration.status,200);assert.equal(inspectedMigration.value.inspection?.state,'complete');
+    const operationId=randomUUID();phase='migration prepare';
+    const begun=await api.step({version:1,action:'begin',operationId,confirmed:true,expected:inspectedMigration.value.inspection!.review!.expected});assert.equal(begun.status,200);
+    let progress=begun.value.progress!;assert.equal(progress.sequence,1);
+    for(let i=0;progress.state!=='complete'&&i<32;i++){
+      const previous=progress;phase=`migration ${progress.step!.name}`;
+      const advanced=await api.step({version:1,action:'advance',operationId,expectedSequence:progress.sequence,step:progress.step!});assert.equal(advanced.status,200);
+      progress=advanced.value.progress!;assert.equal(progress.sequence,previous.sequence+1);assert.deepEqual(progress.lastCompleted,previous.step);
+    }
+    assert.equal(progress.state,'complete');assert.equal(progress.capture.state,'on');assert.equal((await api.json('/v1/setup')).delivery.migration,'complete');
     const migrated=readBinding(managedBindingFile(legacyEnv));assert.equal(migrated.storeId,old.storeId);assert.equal(migrated.source.id,old.source.id);assert.equal(existsSync(legacyPackage),false);
     const kept=new Store(migrated.database,{readOnly:true});try{assert.equal(kept.history(old.source.id,'packaged').data.length,revisions);}finally{kept.close();}
     await stop();assert.deepEqual(readFileSync(unrelated),original);
@@ -138,6 +179,7 @@ async function verifyPackage() {
     console.log(JSON.stringify({managedPluginFolder:true,folderZipParity:true,consumerBuild:false,entryInventoryDeterministic:true,packagedReadOnlyInspection:true,explicitConfiguration:true,globalInstallRefused:true,managedReport:true,extensionReplacementRetainsIdentity:true,storeRecovery:true,legacyRecoveryArchive:true,fullOwnershipMigration:true,historyRetained:true,version:RELEASE}));
     if(process.env.AGENT_PROGRESS_HOST_MODULE)console.log(run(['--experimental-strip-types',path.resolve('scripts/verify-host-package.ts'),extension],{AGENT_PROGRESS_HOST_MODULE:process.env.AGENT_PROGRESS_HOST_MODULE}));
     else console.log(JSON.stringify({actualHostInstaller:'not-run; explicit isolated host module required'}));
-  }finally{await stop();rmSync(root,{recursive:true,force:true});}
+  }catch(error){console.error(JSON.stringify({packageVerificationFailedAt:phase,lastHttpStatus,lastHttpCode}));throw error;}
+  finally{await stop();rmSync(root,{recursive:true,force:true});}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await verifyPackage();
