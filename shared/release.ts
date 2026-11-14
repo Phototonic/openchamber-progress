@@ -1,2 +1,2 @@
 /** Package release is independent of the frozen protocol/schema version. */
-export const RELEASE = '1.2.0';
+export const RELEASE = '1.3.0';

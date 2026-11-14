@@ -5070,7 +5070,7 @@ function blockedTiming(store, detail, now = new Date) {
 }
 
 // shared/release.ts
-var RELEASE = "1.2.0";
+var RELEASE = "1.3.0";
 
 // service/server.ts
 function createProgressServer(store, token, unavailableCode, setup) {
