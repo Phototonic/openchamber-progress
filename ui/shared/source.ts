@@ -11,7 +11,10 @@ import {
   ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
+  NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow,
 } from './adapter.ts';
+import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
+import type { InboxWindowView } from './model.ts';
 import type { DigestRequest, DigestView, ContributionView, DocumentBody, HealthView, HistoryEntry, ItemView, PlanDetail, PlanView, SearchKeyView, SearchRequest, SearchStateView, SearchWindowView, SetupTargets, SetupView, StoreRead } from './model.ts';
 
 export interface ServiceHost {
@@ -68,8 +71,19 @@ async function call(host: ServiceHost, path: string, q?: Record<string, string>,
 
 export interface ListScope { session?: string | null; directory?: string | null; archived?: 'exclude' | 'only' }
 
+/**
+ * The optional first Needs you window of a list read. `unsupported`: the service does not advertise
+ * the capability (never an empty inbox); `unverified`: no verified binding to pin it to; `missing`:
+ * asked but not supplied; `invalid`: supplied but refused. Only `ready` carries rows or counts.
+ */
+export type InboxFirst =
+  | { state: 'unsupported' | 'unverified' | 'missing' | 'invalid' }
+  | { state: 'ready'; window: InboxWindowView };
+/** `count`: the compact count only (no history timing); `rows`: displayed rows with timing. */
+export type InboxDemand = 'count' | 'rows';
+
 export type ListResult =
-  | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead }
+  | { ok: true; health: ReturnType<typeof parseHealth>; read: StoreRead; inbox?: InboxFirst }
   | { ok: true; health: ReturnType<typeof parseHealth>; read: null } // service up, not configured: a setup state, not an empty success
   | { ok: false; failure: ReadFailure };
 
@@ -78,7 +92,7 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
 });
 
 /** Null checks health only; {} deliberately reads the unfiltered history board. */
-export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES): Promise<ListResult> {
+export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }): Promise<ListResult> {
   try {
     const health = parseHealth(await call(host, ROUTES.health));
     if (!health.ready) {
@@ -96,7 +110,11 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
     // An older service cannot establish an empty archive; never send it the new query.
     if (scope.archived === 'only' && !health.planCleanup) return { ok: true, health, read: null };
     const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null, archived: health.planCleanup ? scope.archived ?? 'exclude' : null };
-    const first = parsePlansPage(await call(host, ROUTES.plans, query(base)));
+    // Older services ignore nothing silently: the extension is requested only when advertised.
+    const askInbox = !!inbox && health.needsYouInbox === 1;
+    const firstBody = await call(host, ROUTES.plans, { ...query(base), ...(askInbox ? needsYouListQuery(inbox!.demand === 'rows') : {}) });
+    const receivedAt = inbox?.mono() ?? 0;
+    const first = parsePlansPage(firstBody);
     const plans = [...first.data];
     let cursor = first.nextCursor;
     for (let pages = 1; cursor && pages < maxPages; pages++) {
@@ -112,9 +130,39 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
       }
       cursor = next.nextCursor;
     }
-    return { ok: true, health, read: toRead(first.envelope, plans, Boolean(cursor)) };
+    const read = toRead(first.envelope, plans, Boolean(cursor));
+    return { ok: true, health, read, ...(inbox ? { inbox: firstInbox(askInbox, firstBody, read, inbox.demand === 'rows', receivedAt) } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error) };
+  }
+}
+
+/** The optional summary never fails the ordinary list read it rides on. */
+function firstInbox(asked: boolean, body: string, read: StoreRead, timing: boolean, receivedAt: number): InboxFirst {
+  if (!asked) return { state: 'unsupported' };
+  if (!read.binding.verified || !read.binding.sourceId) return { state: 'unverified' };
+  let value: unknown;
+  try { value = (JSON.parse(body) as Record<string, unknown>).needsYou; } catch { return { state: 'invalid' }; }
+  if (value === undefined || value === null) return { state: 'missing' };
+  try { return { state: 'ready', window: parseNeedsYouWindow(value, read, null, timing, receivedAt) }; } catch { return { state: 'invalid' }; }
+}
+
+export type InboxWindowResult = { ok: true; window: InboxWindowView } | { ok: false; failure: ReadFailure; status: number | null };
+
+/**
+ * One explicit continuation window (GET /v1/needs-you), pinned to the observed store and verified
+ * binding and to the counts already shown. 409 means the pinned traversal moved: restart, never
+ * retry the cursor. No retry, fallback or follow-up page here.
+ */
+export async function readNeedsYou(host: ServiceHost, request: NeedsYouRequest, previous: InboxWindowView['counts'] | null, mono: () => number = () => performance.now()): Promise<InboxWindowResult> {
+  try {
+    const r = { ...request, binding: { ...request.binding } };
+    const body = await call(host, NEEDS_YOU_ROUTE, needsYouQuery(r));
+    const receivedAt = mono();
+    if (body.length > NEEDS_YOU_LIMITS.responseBytes || new TextEncoder().encode(body).length > NEEDS_YOU_LIMITS.responseBytes) throw new ContractError('The inbox reply exceeds its limit.');
+    return { ok: true, window: parseNeedsYouWindow(JSON.parse(body), { storeId: r.storeId, binding: r.binding }, previous, r.timing === true, receivedAt) };
+  } catch (error) {
+    return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }
 }
 

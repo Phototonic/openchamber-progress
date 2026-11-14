@@ -64,6 +64,7 @@ function frame(svc: SearchProxy, surface: 'page' | 'panel' | 'status' = 'page', 
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
       if (name === './source.ts') return source;
       if (name === './summary.ts') return summaries;
       if (name === './cleanup.ts') return cleanup;

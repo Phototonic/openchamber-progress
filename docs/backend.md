@@ -1,5 +1,38 @@
 # Production backend v2
 
+## Needs you inbox
+
+`service/needs-you.ts` owns the read-only source-wide projection of visible active
+plans' explicitly blocked tasks. `service/server.ts` advertises `needsYouInbox:1`,
+serves authenticated body-free `/v1/needs-you`, and attaches the first window to
+opted-in first list pages and search freshness reads. Displayed rows opt into
+`needsYouTiming=1`; Work Status counts do not. Existing list filters never narrow
+the inbox. See [the wire contract](contracts.md#needs-you-inbox-revision-1-additive-v2-read).
+
+The reader uses the current verified store/source binding and existing snapshots,
+not source-root discovery or new durable storage. A transaction walks bounded
+plan-ID keyset candidates, validating snapshots before emitting tasks in stored
+order. Decision/review annotations enter Needs you; other, absent and unreadable
+categories remain Also blocked. Unknown categories never become decisions.
+All prose is validated, bounded reported text, not permission or inference.
+
+Bounds are 64 plan slots, 8 MiB input, 50 rows and 256 KiB output per window.
+Displayed-row timing reuses `blockedTiming` inside the caller's transaction with
+one shared 128-visit/8 MiB history budget. Count-only reads perform no history scan.
+The cursor carries cumulative counts/gaps and a pinned mid-plan position. A changed
+pinned record returns 409; consumers restart rather than merging revisions.
+Clean exhaustion supports exact observed counts; partial or gapped coverage only
+supports known minima. No global count, polling worker, server cursor or migration.
+
+`needs-you-inbox.test.ts`, `needs-you-service.test.ts` and
+`needs-you-timing.test.ts` cover bounds, classification, identity, HTTP admission,
+continuation, timing and read-only behavior. The rendered integration driver is
+`tests/browser/needs-you-inbox-qa.ts --source --real-service --artifacts <dir>`:
+three source-built guests, real HTTP service and disposable synthetic SQLite
+store, with a synthetic SDK host and an explicitly stripped older-capability
+seam. It exercises real bounded continuation, cumulative counts and a real 409
+restart as well as keyboard/pointer reading. Not native-host certification.
+
 ## Deterministic large-plan QA fixture
 
 `tests/fixtures/large-plan.ts` provides `large-plan-v1`, a synthetic input sequence,
@@ -1057,9 +1090,9 @@ Capture toggles and plan closure/deletion fence intent even under old writers.
 Partial registrations dispose safely, and late disposed lookups cannot publish.
 
 Receipts retain additive declaration/source/dispatch identity and fixed refusal
-recovery metadata without changing schema or replay hashes. Activation reads at
-most 128 newest source receipts (16 KiB each), emits at most three current-per-plan
-refusals and marks incomplete evidence. Newer declaration evidence suppresses old
+recovery metadata without changing schema or replay hashes. Activation admits at
+most 128 newest source receipts (16 KiB each) plus one overflow sentinel, emits
+at most three current-per-plan refusals and marks incomplete evidence. Newer declaration evidence suppresses old
 refusals; archived/deleted plans and disabled/unverified contexts expose none.
 The refreshed coordinator context section is capped at 4 KiB, uses fixed reasons
 and explicitly marks omissions. It is advisory and read-only: recovery requires

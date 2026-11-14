@@ -6,7 +6,9 @@ import { BLOCKER_LIMITS, LIMITS, identifier, type PlanGraphRequest, type PlanGra
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
+import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRequest } from '../../shared/needs-you.ts';
 import type {
+  InboxRowView, InboxWindowView,
   AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
@@ -54,7 +56,93 @@ export function parseHealth(body: string): HealthView & { planComposerHandoff?: 
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
-  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
+  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}) };
+}
+
+/**
+ * Needs you inbox read revision 1 (shared/needs-you.ts). The list extension asks for the first
+ * window on a first list page only (`needsYou=1`; displayed rows add `needsYouTiming=1`); explicit
+ * continuation uses GET /v1/needs-you pinned to the observed store and binding.
+ */
+export const NEEDS_YOU_ROUTE = '/v1/needs-you';
+export const needsYouListQuery = (timing: boolean) => ({ needsYou: '1', ...(timing ? { needsYouTiming: '1' } : {}) });
+export function needsYouQuery(r: NeedsYouRequest) {
+  return query({ storeId: r.storeId, binding: JSON.stringify(r.binding), source: r.source, cursor: r.cursor, limit: r.limit, timing: r.timing ? 1 : null })!;
+}
+const INBOX_KEYS = new Set(['category', 'reason', 'nextAction', 'reportedRevision', 'reportedAt', 'reporterSessionId', 'attributedSessionId', 'mode', 'validAtRevision']);
+const PERSON_FACING: readonly string[] = ['decision', 'review'];
+function inboxBlocker(v: unknown, revision: number): InboxRowView['blocker'] {
+  check(isRec(v) && (v.state === 'reported' || v.state === 'absent' || v.state === 'invalid'), 'An inbox row has unreadable blocker details.');
+  if (v.state !== 'reported') { check(Object.keys(v).length === 1, 'An inbox row carries text for unusable details.'); return { state: v.state }; }
+  const a = v.annotation;
+  check(isRec(a) && Object.keys(a).every((k) => INBOX_KEYS.has(k)), 'An inbox row has unreadable reported details.');
+  const category = a.category === undefined ? null : a.category === 'unclassified' ? 'unclassified' : (BLOCKER_CATEGORIES as readonly unknown[]).includes(a.category) ? a.category as BlockerCategory : undefined;
+  check(category !== undefined && (a.reason === undefined || blockerText(a.reason)) && (a.nextAction === undefined || blockerText(a.nextAction))
+    && a.validAtRevision === revision && isInt(a.reportedRevision) && a.reportedRevision >= 1 && a.reportedRevision <= revision && isoInstant(a.reportedAt)
+    && identifier(a.reporterSessionId) && identifier(a.attributedSessionId)
+    && (a.mode === 'direct' ? a.reporterSessionId === a.attributedSessionId : a.mode === 'parent-relay' && a.reporterSessionId !== a.attributedSessionId), 'An inbox row has invalid reported details.');
+  return { state: 'reported', category, reason: (a.reason as string | undefined) ?? null, nextAction: (a.nextAction as string | undefined) ?? null };
+}
+function inboxRow(v: unknown, sourceId: string, timing: boolean, readAt: number, receivedAt: number): InboxRowView {
+  check(isRec(v) && isStr(v.source) && isStr(v.plan) && isStr(v.planTitle) && identifier(v.coordinatorSessionId), 'An inbox row has no plan identity.');
+  // Equal plan/task IDs elsewhere never leak in: only the verified bound source is eligible.
+  check(v.source === sourceId, 'An inbox row is outside the verified source.');
+  check(isRevision(v.revision) && isInt(v.structuralRevision) && v.structuralRevision >= 0 && isRec(v.cleanup) && v.cleanup.state === 'visible' && isCount(v.cleanup.revision), `Inbox plan ${v.plan} has no current revision or is not visible.`);
+  const t = v.task;
+  check(isRec(t) && isStr(t.id) && t.id.length > 0 && isStr(t.title) && t.kind === 'task' && t.status === 'blocked', `Inbox plan ${v.plan} has a row that is not a blocked task.`);
+  check(Array.isArray(v.ancestors) && v.ancestors.length <= NEEDS_YOU_LIMITS.ancestors && v.ancestors.every((x) => isRec(x) && isStr(x.id) && isStr(x.title)) && isCount(v.omittedAncestors), `Inbox plan ${v.plan} has unreadable context.`);
+  check(v.group === 'needs-you' || v.group === 'also-blocked', `Inbox plan ${v.plan} has an unknown group.`);
+  const blocker = inboxBlocker(v.blocker, v.revision as number);
+  // Only valid current decision/review details are person-facing; everything else is Also blocked.
+  const personFacing = blocker.state === 'reported' && PERSON_FACING.includes(String(blocker.category));
+  check(personFacing === (v.group === 'needs-you'), `Inbox plan ${v.plan} groups a task against its reported category.`);
+  let wait: InboxRowView['wait'] = null;
+  // Unrequested waiting times (compact count) are ignored, not trusted or refused.
+  if (timing && v.timing !== undefined) {
+    const w = v.timing;
+    check(isRec(w) && (w.kind === 'exact' || w.kind === 'lower-bound') && isIso(w.since) && isIso(w.readAt) && Date.parse(w.readAt as string) === readAt && Date.parse(w.since as string) <= readAt, `Inbox plan ${v.plan} has unreadable waiting time.`);
+    wait = { kind: w.kind as 'exact' | 'lower-bound', since: w.since as string, elapsedAtRead: readAt - Date.parse(w.since as string), receivedAt };
+  }
+  return {
+    rowKey: JSON.stringify([v.source, v.plan, t.id]), planKey: `${v.source}/${v.plan}`, source: v.source, plan: v.plan, planTitle: v.planTitle,
+    revision: v.revision as number, structuralRevision: v.structuralRevision as number, cleanupRev: v.cleanup.revision as number, coordinatorSessionId: v.coordinatorSessionId as string,
+    task: { id: t.id, title: t.title }, ancestors: (v.ancestors as Rec[]).map((x) => ({ id: x.id as string, title: x.title as string })), omittedAncestors: v.omittedAncestors as number,
+    group: v.group, blocker, wait,
+  };
+}
+/**
+ * One inbox window, validated against the observed store and verified binding. `previous`: the
+ * cumulative counts before this window (null for a first window), so counts must grow by exactly
+ * this window's rows. Complete means exhausted, no cursor and no gap; never a partial zero.
+ */
+export function parseNeedsYouWindow(v: unknown, expect: { storeId: string; binding: { sourceId: string | null; verified: boolean } }, previous: InboxWindowView['counts'] | null, timing: boolean, receivedAt: number): InboxWindowView {
+  check(isRec(v), 'The inbox reply is not an object.');
+  versions(v);
+  check(v.needsYouInbox === 1, 'The inbox reply has another contract revision.');
+  const b = v.sourceBinding;
+  check(expect.binding.verified && isStr(expect.binding.sourceId) && v.storeId === expect.storeId && isRec(b) && b.verified === true && b.sourceId === expect.binding.sourceId, 'The inbox answered for another store or binding.');
+  const sourceId = expect.binding.sourceId as string;
+  check(isIso(v.readAt) && typeof v.captureEnabled === 'boolean', 'The inbox reply has no read time.');
+  const readAt = Date.parse(v.readAt as string);
+  check(Array.isArray(v.rows) && v.rows.length <= NEEDS_YOU_LIMITS.rows, 'The inbox reply has too many rows.');
+  const rows = v.rows.map((r) => inboxRow(r, sourceId, timing, readAt, receivedAt));
+  check(new Set(rows.map((r) => r.rowKey)).size === rows.length, 'The inbox reply lists a task twice.');
+  const counts = v.counts, c = v.coverage;
+  check(isRec(counts) && isCount(counts.needsYou) && isCount(counts.alsoBlocked), 'The inbox reply has unreadable counts.');
+  const base = previous ?? { needsYou: 0, alsoBlocked: 0 };
+  const own = { needsYou: rows.filter((r) => r.group === 'needs-you').length, alsoBlocked: rows.filter((r) => r.group === 'also-blocked').length };
+  check(counts.needsYou === base.needsYou + own.needsYou && counts.alsoBlocked === base.alsoBlocked + own.alsoBlocked, 'The inbox counts disagree with its rows.');
+  check((v.nextCursor === null || (isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= NEEDS_YOU_LIMITS.cursorBytes)), 'The inbox reply has an unreadable continuation.');
+  check(isRec(c) && c.kind === 'observed-current' && typeof c.complete === 'boolean' && typeof c.exhausted === 'boolean' && typeof c.gapped === 'boolean' && isCount(c.skippedRecords)
+    && Array.isArray(c.reasons) && c.reasons.every((r) => r === 'invalid-snapshot' || r === 'oversized-snapshot'), 'The inbox reply has unreadable coverage.');
+  check(c.exhausted === (v.nextCursor === null) && (c.gapped || c.skippedRecords === 0), 'The inbox coverage disagrees with its continuation.');
+  // Complete is never inferred from a partial or gapped traversal.
+  check(!c.complete || (c.exhausted && !c.gapped), 'The inbox claims completeness without full coverage.');
+  return {
+    storeId: v.storeId as string, sourceId, captureEnabled: v.captureEnabled as boolean, readAt: v.readAt as string, timing,
+    rows, counts: { needsYou: counts.needsYou, alsoBlocked: counts.alsoBlocked }, nextCursor: v.nextCursor as string | null,
+    coverage: { complete: c.complete as boolean, exhausted: c.exhausted as boolean, gapped: c.gapped as boolean, skippedRecords: c.skippedRecords as number },
+  };
 }
 
 export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {

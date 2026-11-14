@@ -75,13 +75,13 @@ const RUSSIAN = {
   'No reported blockers in the last successful read. This may be out of date.': 'В последнем успешном чтении блокировок нет. Данные могут быть устаревшими.',
   'No reported blockers were recorded. Capture is off, so newer reports aren’t recorded.': 'Блокировки не записаны. Сбор отключён, новые отчёты не записываются.',
   'two tasks share an ID': 'две задачи имеют один ID', 'a task lists itself as a prerequisite': 'задача указывает себя как предпосылку', 'some tasks list each other as prerequisites': 'задачи указывают друг друга как предпосылки',
-  'Now': 'Сейчас', 'Reported working': 'По отчёту в работе', 'Needs you': 'Требует внимания', 'Up next': 'Далее', 'Pending': 'Ожидает', 'Done': 'Выполнено', 'Skipped': 'Пропущено',
-  'in progress': 'в работе', 'needs you': 'требует внимания', 'blocked': 'заблокировано', 'ready': 'готово', 'waiting': 'ожидает предпосылок', 'pending': 'ожидает', 'done': 'выполнено', 'skipped': 'пропущено',
+  'Now': 'Сейчас', 'Reported working': 'По отчёту в работе', 'Up next': 'Далее', 'Pending': 'Ожидает', 'Done': 'Выполнено', 'Skipped': 'Пропущено',
+  'in progress': 'в работе', 'blocked': 'заблокировано', 'ready': 'готово', 'waiting': 'ожидает предпосылок', 'pending': 'ожидает', 'done': 'выполнено', 'skipped': 'пропущено',
   'Ready to start': 'Готова к началу', 'Waiting on prerequisites': 'Ожидает предпосылок',
   'Filter tasks by state': 'Фильтр задач по состоянию', 'About these counts': 'Об этих количествах',
   'Counts cover every task in this plan, whatever filter is shown.': 'Количество учитывает все задачи плана независимо от фильтра.',
   'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.': 'Готовность и ожидание определяются только записанными предпосылками. Другие предпосылки могут быть не записаны; «Предпосылки не записаны» не означает их отсутствия. Готовность не является разрешением начать.',
-  'Needs you lists tasks reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person.': '«Требует внимания» показывает задачи, отмеченные как заблокированные. Они остаются здесь до нового отчёта агента; ожидание может относиться к другой сессии или человеку.',
+  'Blocked lists every task reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person. Needs you shows only reported decision and review waits.': '«Заблокировано» показывает все задачи, отмеченные как заблокированные. Они остаются здесь до нового отчёта агента; ожидание может относиться к другой сессии или человеку. «Нужно ваше участие» показывает только ожидающие решения и проверки.',
   'Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.': 'Количество учитывает все задачи плана независимо от фильтра. Это последние записанные статусы; для закрытого плана или нечитаемых предпосылок советы о готовности и ожидании не даются.',
   'Readiness is unavailable for this report: {reason}. The tasks are shown as reported.': 'Готовность для этого отчёта недоступна: {reason}. Задачи показаны как записано.',
   'Last reported readiness. It may be out of date and isn’t a current recommendation.': 'Последняя записанная готовность. Она может быть устаревшей и не является текущей рекомендацией.',
@@ -794,7 +794,8 @@ interface Paint {
 /** Group titles: guidance for an active plan's complete valid detail, reported statuses otherwise. */
 const GROUP_TITLE: Record<ProgressSection, [guided: CopyKey, reported: CopyKey]> = {
   now: ['Now', 'Reported working'],
-  'needs-you': ['Needs you', 'Reported blocked'],
+  // Every reported blocker; only decision/review waits are Needs you (the source-wide inbox).
+  'needs-you': ['Blocked', 'Reported blocked'],
   'up-next': ['Up next', 'Pending'],
   done: ['Done', 'Done'],
   skipped: ['Skipped', 'Skipped'],
@@ -804,7 +805,7 @@ const GROUP_TITLE: Record<ProgressSection, [guided: CopyKey, reported: CopyKey]>
 const CHIP_WORD: [ProgressState, CopyKey, CopyKey][] = [
   // [state, guided word, reported word]
   ['working', 'in progress', 'in progress'],
-  ['blocked', 'needs you', 'blocked'],
+  ['blocked', 'blocked', 'blocked'],
   ['ready', 'ready', 'ready'],
   ['waiting', 'waiting', 'waiting'],
   ['pending', 'pending', 'pending'],
@@ -882,7 +883,7 @@ function stateChipRow(p: Paint) {
   row.append(group);
   // The explanation follows the last chip in the same wrapping flow.
   group.append(info(`${p.plan.key}|counts`, say('About these counts', p.env.locale), (proj.guidance
-    ? ['Counts cover every task in this plan, whatever filter is shown.', 'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.', 'Needs you lists tasks reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person.'] as const
+    ? ['Counts cover every task in this plan, whatever filter is shown.', 'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.', 'Blocked lists every task reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person. Needs you shows only reported decision and review waits.'] as const
     : ['Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.'] as const).map(key => say(key, p.env.locale))));
   return row;
 }
@@ -911,7 +912,7 @@ function filterLine(p: Paint) {
   Object.assign(line.dataset, { rows: String(tasks), matching: String(proj.matching), retained: String(proj.retained), context: String(proj.context), hidden: String(proj.hidden) });
   if (!proj.filtered || !reading) return line;
   const parts: string[] = [];
-  if (reading.state) parts.push(`${say(proj.guidance && reading.state === 'blocked' ? 'Needs you' : STATE_WORD[reading.state], p.env.locale)}${(proj.counts.get(reading.state) ?? 0) === 0 ? say(' (no tasks have this state now)', p.env.locale) : ''}`);
+  if (reading.state) parts.push(`${say(STATE_WORD[reading.state], p.env.locale)}${(proj.counts.get(reading.state) ?? 0) === 0 ? say(' (no tasks have this state now)', p.env.locale) : ''}`);
   if (reading.status === 'unfinished') parts.push(say('Unfinished', p.env.locale));
   if (reading.participant.kind !== 'all' && p.who) parts.push(reading.participant.kind === 'none' ? say('No participant recorded', p.env.locale) : say('Participant {name}', p.env.locale, { name: participantText(reading.participant, p.label, p.env.locale) }));
   const text = el('span', 'ap-filter-text', say('{filter}: {matching} of {tasks}', p.env.locale, { filter: parts.join(' · '), matching: proj.matching, tasks: taskCount(tasks, p.env.locale) }));
