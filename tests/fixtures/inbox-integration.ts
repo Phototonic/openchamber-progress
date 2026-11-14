@@ -37,6 +37,23 @@ export async function inboxIntegration(source: string, plans: { id: string; titl
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   return {
+    capture(enabled: boolean) { f.store.setEnabled(enabled); },
+    cleanup(planId: string, action: 'archive' | 'delete') {
+      const plan = plans.find(p => p.id === planId)!;
+      if (f.store.get(source, planId)!.lifecycle === 'active') {
+        apply(plan, { op: 'change', changes: f.store.get(source, planId)!.items.filter(i => i.kind === 'task').map(i => ({ id: i.id, status: 'done' })) });
+        apply(plan, { op: 'finish', outcome: 'finished' });
+      }
+      const current = f.store.detail(source, planId);
+      f.store.cleanup(action, { storeId: current.storeId, source, plan: planId, rev: current.plan.revision, cleanupRev: current.plan.cleanup?.revision ?? 0, oid: `inbox-cleanup-${++oid}`, ...(action === 'delete' ? { confirmed: true } : {}) });
+    },
+    resolvePlan(planId: string, resolved: boolean) {
+      const plan = plans.find(p => p.id === planId)!;
+      apply(plan, { op: 'revise', items: resolved ? plan.items.map(i => {
+        const { blocker, ...item } = i;
+        return { ...item, status: 'done' };
+      }) : plan.items });
+    },
     partial() {
       // 51 blocked rows in one plan leave a revision-pinned mid-plan cursor at the real 50-row bound.
       const items = [...alpha.items, ...Array.from({ length: 49 }, (_, n): BlockerItemInput => ({ id: `filler-${n}`, title: 'Additional reported wait', kind: 'task', status: 'blocked' }))];

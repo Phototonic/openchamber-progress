@@ -94,7 +94,14 @@ test('HTTP refuses unauthorized, malformed, duplicate, body and stale identity r
         let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk); res.on('end', () => resolve({ status: res.statusCode!, value: JSON.parse(text) }));
       }); req.on('error', reject); req.end('x');
     }); refused(bodyReply, 400, 'body-not-allowed');
-    f.store.bindReads(f.alpha.id, false); refused(await f.get(path), 409, 'conflict'); refused(await f.get('/v1/plans?needsYou=1'), 409, 'conflict');
+    f.store.bindReads(f.alpha.id, false); refused(await f.get(path), 409, 'conflict');
+    for (const route of ['/v1/plans', `/v1/search-state?${new URLSearchParams({ storeId: f.storeId, keys: JSON.stringify([{ source: f.alpha.id, plan: 'absent' }]) })}`]) {
+      const plain = await f.get(route);
+      const extended = await f.get(route + (route.includes('?') ? '&' : '?') + 'needsYou=1&needsYouTiming=1');
+      assert.equal(extended.status, 200, 'optional unverified inbox must not fail its ordinary read');
+      assert.equal(extended.value.needsYou, undefined);
+      assert.deepEqual(extended.value, plain.value);
+    }
     f.store.bindReads(f.alpha.id, true); f.store.db.exec('PRAGMA user_version=3'); refused(await f.get(path), 503, 'schema'); f.store.db.exec('PRAGMA user_version=2');
   } finally { await f.close(); }
 });

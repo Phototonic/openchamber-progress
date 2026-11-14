@@ -39,7 +39,7 @@ export interface InboxPanel {
 
 const rowSignature = (r: InboxRowView) => [r.rowKey, r.revision, r.structuralRevision, r.cleanupRev, r.planTitle, r.task.title, r.group, r.blocker, r.ancestors, r.omittedAncestors, r.wait ? [r.wait.kind, r.wait.since] : null];
 /** Presentation identity of a window: read time and receipt anchors are excluded on purpose. */
-const windowSignature = (w: InboxWindowView) => JSON.stringify([w.storeId, w.sourceId, w.captureEnabled, w.timing, w.rows.map(rowSignature), w.counts, w.nextCursor !== null, w.coverage]);
+const windowSignature = (w: InboxWindowView) => JSON.stringify([w.storeId, w.sourceId, w.captureEnabled, w.timing, w.rows.map(rowSignature), w.counts, w.nextCursor, w.coverage]);
 const firstSignature = (f: InboxFirst) => (f.state === 'ready' ? `ready:${windowSignature(f.window)}` : f.state);
 
 interface InboxDeps {

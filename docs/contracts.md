@@ -796,6 +796,9 @@ Displayed rows add `needsYouTiming=1`; it requires `needsYou=1`, and no other va
 is accepted. Compact counts omit timing. Normal list/freshness scope and fields
 are unchanged; the inbox is source-wide, independent of session, directory,
 archive-list or search filters. List continuation cannot request the extension.
+An unverified or absent source binding omits this optional window without failing
+the ordinary list/freshness response; consumers report the inbox unavailable.
+The directly pinned `/v1/needs-you` route still refuses an unverified binding.
 
 `NeedsYouWindow` in `shared/needs-you.ts` contains the version/capability, observed
 store and verified binding, `readAt`, `captureEnabled`, `rows`, cumulative

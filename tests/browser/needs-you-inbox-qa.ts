@@ -71,6 +71,7 @@ const real = process.argv.includes('--real-service') ? await inboxIntegration(SR
   }))],
 }))) : null;
 let conflictNext = false;
+let failLists = false;
 const realReplies: { path: string; status: number; rows?: number; counts?: unknown; complete?: boolean }[] = [];
 const personFacing = (b: Blocked) => b.category === 'decision' || b.category === 'review';
 const visibleBlocked = (p: Fixture) => p.blocked.filter((b) => mode !== 'empty' || !personFacing(b));
@@ -180,7 +181,7 @@ const server: Server = createServer(async (req, res) => {
       if (real && conflictNext && q.path === '/v1/needs-you') { conflictNext = false; real.conflict(); }
       // Unsupported mode is an explicit older-service seam; ordinary reads use the real service.
       if (real && mode === 'unsupported' && q.path !== '/health') { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
-      const r = real ? await real.request(q) : serve(q);
+      const r = failLists && q.path === '/v1/plans' ? { status: 503, body: { error: 'busy' } } : real ? await real.request(q) : serve(q);
       if (real && mode === 'unsupported' && q.path === '/health') delete (r.body as Record<string, unknown>).needsYouInbox;
       if (real) { const b = r.body as any, w = q.path === '/v1/needs-you' ? b : b.needsYou; realReplies.push({ path: q.path, status: r.status, ...(w?.rows ? { rows: w.rows.length, counts: w.counts, complete: w.coverage.complete } : {}) }); }
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
@@ -264,7 +265,7 @@ try {
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k === ' ' ? 'Space' : k, windowsVirtualKeyCode: codes[k] ?? 0, modifiers, ...text });
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: k === ' ' ? 'Space' : k, windowsVirtualKeyCode: codes[k] ?? 0, modifiers });
   };
-  const point = (f: string, selector: string) => evaluate<[number, number] | null>(`(()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});fr.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect();return [o.x+r.x+Math.min(16,r.width/2),o.y+r.y+Math.min(10,r.height/2)]})()`);
+  const point = (f: string, selector: string) => evaluate<[number, number] | null>(`(async()=>{const fr=frame('${f}'),n=fr.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)return null;n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=fr.getBoundingClientRect();window.scrollBy(0,b.y+a.y-innerHeight/2);await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const r=n.getBoundingClientRect(),o=fr.getBoundingClientRect(),x=o.x+r.x+Math.min(16,r.width/2),y=o.y+r.y+Math.min(10,r.height/2);if(!n.isConnected||x<0||x>=innerWidth||y<0||y>=innerHeight||document.elementFromPoint(x,y)!==fr||!n.contains(fr.contentDocument.elementFromPoint(x-o.x,y-o.y)))throw new Error('Pointer target is not exposed: '+${javascriptLiteral(selector)});return [x,y]})()`);
   const click = async (f: string, selector: string) => {
     const p = await point(f, selector);
     if (!p) throw new Error(`missing ${selector} in ${f}`);
@@ -349,6 +350,13 @@ try {
   const msgs = await evaluate<any[]>(`qa.messages.slice(${msgMark}).map(m=>m.type)`);
   check('I1:reading-is-read-only', after.every((q) => q.method === 'GET') && after.some((q) => q.path === '/v1/plan' && q.plan === 'plan-beta') && !msgs.includes('open-session') && !msgs.includes('open-surface'), { paths: after.map((q) => `${q.method} ${q.path}`), msgs });
   await shot('panel', 'reading', '[data-testid="progress-root"]');
+  if (real) {
+    real.resolvePlan('plan-beta', true);
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reading-status"]')?.textContent.includes('no longer blocked')`, 'open reading follows task leaving inbox', 12_000);
+    check('regression:open-reading-follows-task-leaving-inbox', await guest<boolean>('panel', `return d.querySelector('[data-testid="item-task-d"]')?.dataset.status==='done' || d.querySelector('[data-testid="needs-you-reading-status"]').textContent.includes('now done')`));
+    real.resolvePlan('plan-beta', false);
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready' && !d.querySelector('[data-testid="needs-you-reading-status"]').textContent.includes('no longer blocked')`, 'reading follows restored blocker');
+  }
   await tabTo('panel', '[data-testid="needs-you-back"]');
   await key('Enter');
   await wait('panel', `d.activeElement?.closest('[data-testid="needs-you-row"]')?.dataset.task==='task-d'`, 'focus back on the opened row');
@@ -361,6 +369,13 @@ try {
   const also = await guest<any>('panel', `return [...d.querySelectorAll('[data-testid="also-blocked"] [data-testid="needs-you-row"]')].map(n=>n.dataset.task+':'+n.querySelector('[data-testid="needs-you-category"]').textContent)`);
   check('I1:also-blocked-honest-labels', same(also, ['task-e:Wait category: Dependency', 'task-f:Wait category: No details reported', 'task-g:Wait category: External', 'task-h:Wait category: Category unknown']), also);
   await shot('panel', 'also-blocked', INBOX);
+  await tabTo('panel', '[data-testid="also-blocked"] [data-task="task-e"] .ap-inbox-open');
+  await key('Enter');
+  await wait('panel', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready'`, 'Also blocked reading');
+  await tabTo('panel', '[data-testid="needs-you-back"]');
+  await key('Enter');
+  await wait('panel', `d.activeElement?.closest('[data-testid="needs-you-row"]')?.dataset.task==='task-e'`, 'Back restores focus inside reopened Also blocked');
+  check('regression:also-blocked-back-restores-visible-focus', await guest<boolean>('panel', `return d.querySelector('[data-testid="also-blocked"]').open && d.activeElement.getClientRects().length>0`));
 
   // ---------------------------------------------------------------- cadence: no extra polling
   const idle = (await requests()).length;
@@ -416,6 +431,24 @@ try {
   await click('page', '[data-testid="needs-you-back"]');
   await wait('page', `d.querySelector('[data-testid="plan-list"]')&&d.activeElement?.closest('[data-testid="needs-you-row"]')?.dataset.task==='task-a'`, 'board back with focus on row');
 
+  if (real) {
+    await click('page', '#ap-search-q');
+    await c.send('Input.insertText', { text: 'Export' });
+    await key('Enter');
+    await wait('page', `d.querySelector('[data-testid="search-results"]')`, 'submitted board search');
+    const searchMark = (await requests()).length;
+    real.resolvePlan('plan-beta', true);
+    await wait('page', `d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.count==='2'`, 'inbox refresh during board search', 12_000);
+    const searchRequests = (await requests()).slice(searchMark).filter(q => q.frame === 'page');
+    check('regression:search-cadence-adopts-inbox', searchRequests.some(q => q.path === '/v1/search-state' && q.needsYou === '1') && !searchRequests.some(q => q.path === '/v1/plans'), searchRequests.map(q => ({ path: q.path, needsYou: q.needsYou })));
+    real.resolvePlan('plan-beta', false);
+    await wait('page', `d.querySelector('${INBOX} [data-testid="needs-you-count"]')?.dataset.count==='3'`, 'next search cycle restores count');
+    await shot('page', 'search-inbox', '[data-testid="progress-root"]');
+    // Context reset leaves the submitted search without a host navigation action.
+    await evaluate(`qa.context(${javascriptLiteral(S.U)});true`);
+    await evaluate(`qa.context(${javascriptLiteral(S.M)});true`);
+  }
+
   // ---------------------------------------------------------------- partial coverage and continuation
   mode = 'partial';
   real?.partial();
@@ -431,16 +464,18 @@ try {
   check('I1:continuation-coarse-target-44px', !moreHeight.coarse || moreHeight.h >= 44, moreHeight);
   const more = (await requests()).length;
   if (real) {
+    const firstRevision = await guest<number>('panel', `return Number(d.querySelector('[data-testid="needs-you-row"][data-task="task-a"]').dataset.revision)`);
     conflictNext = true;
     await click('panel', '[data-testid="needs-you-more"] button');
     await wait('panel', `d.querySelector('[data-testid="needs-you-restarted"]')`, 'real 409 restart');
     check('integration:409-restarts-without-splicing', realReplies.some(r => r.path === '/v1/needs-you' && r.status === 409));
     await shot('panel', 'restart', INBOX);
     // The normal list poll brings the changed first window; no automatic continuation.
-    await waitTop(`qa.requests.filter(q=>q.frame==='panel'&&q.path==='/v1/plans').length>${await evaluate<number>(`qa.requests.filter(q=>q.frame==='panel'&&q.path==='/v1/plans').length`)}`, 'fresh first window after conflict');
+    await wait('panel', `Number(d.querySelector('[data-testid="needs-you-row"][data-task="task-a"]')?.dataset.revision)>${firstRevision}`, 'changed first window adopted after conflict');
     await wait('panel', `d.querySelector('[data-testid="needs-you-more"] button:not(:disabled)')`, 'continuation after restart');
   }
-  await click('panel', '[data-testid="needs-you-more"] button');
+  await tabTo('panel', '[data-testid="needs-you-more"] button');
+  await key('Enter');
   await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`, 'continuation completes');
   const cont = (await requests()).slice(more).filter((q) => q.path === '/v1/needs-you');
   const finalRows = await rowIds('panel');
@@ -456,12 +491,56 @@ try {
   check('I1:complete-empty-says-nothing-needs-you', empty.text === 'Nothing needs you right now.' && empty.also === '4' && empty.count === '0', empty);
   await shot('panel', 'empty', INBOX);
 
+  if (real) {
+    await evaluate(`qa.context('ses_fixture_no_plan');true`);
+    await show(['status'], 400);
+    await wait('status', `d.querySelector('[data-testid="empty-state"]') && d.querySelector('[data-testid="needs-you-line"]')`, 'source-wide line without featured plan');
+    real.capture(false);
+    await wait('status', `d.querySelector('[data-testid="needs-you-line"] [data-testid="needs-you-capture-off"]')`, 'capture-off source-wide qualifier');
+    check('regression:status-capture-off-without-featured-plan', await guest<boolean>('status', `return !d.querySelector('.ap-status-plan') && d.querySelector('[data-testid="needs-you-capture-off"]').textContent.includes('Capture is off')`));
+    failLists = true;
+    await wait('status', `d.querySelector('[data-testid="needs-you-line"] [data-testid="needs-you-stale"]')`, 'stale source-wide qualifier');
+    check('regression:status-stale-without-featured-plan', await guest<boolean>('status', `return d.querySelector('[data-testid="needs-you-stale"]').textContent.includes('out of date')`));
+    await shot('status', 'status-stale-capture-off', '[data-testid="progress-root"]');
+    failLists = false; real.capture(true);
+    await evaluate(`qa.context(${javascriptLiteral(S.M)});true`);
+    await show(['panel', 'status'], 400);
+    await wait('panel', `!d.querySelector('[data-testid="needs-you-capture-off"],[data-testid="needs-you-stale"]') && d.querySelector('[data-testid="also-blocked"] [data-task="task-e"]')`, 'current Also blocked target after capture recovery');
+    if (!(await guest<boolean>('panel', `return d.querySelector('[data-testid="also-blocked"]').open`))) await click('panel', '[data-testid="also-blocked"] > summary');
+    await wait('panel', `d.querySelector('[data-testid="also-blocked"] [data-task="task-e"] .ap-inbox-open')?.getClientRects().length>0`, 'cleanup opener visible');
+    await tabTo('panel', '[data-testid="also-blocked"] [data-task="task-e"] .ap-inbox-open');
+    await key('Enter');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready'`, 'cleanup reading');
+    await show(['panel', 'page'], 600);
+    await wait('page', `!d.querySelector('[data-testid="needs-you-capture-off"],[data-testid="needs-you-stale"]') && d.querySelector('[data-testid="also-blocked"] [data-task="task-e"]')`, 'current board cleanup opener');
+    if (!(await guest<boolean>('page', `return d.querySelector('[data-testid="also-blocked"]').open`))) await click('page', '[data-testid="also-blocked"] > summary');
+    await tabTo('page', '[data-testid="also-blocked"] [data-task="task-e"] .ap-inbox-open');
+    await key('Enter');
+    await wait('page', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='ready'`, 'board cleanup reading');
+    real.cleanup('plan-beta', 'archive');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reading-status"]')?.textContent.includes('archived')`, 'reading follows archive after leaving inbox', 12_000);
+    check('regression:reading-follows-cleanup-outside-inbox', true);
+    await wait('page', `d.querySelector('[data-testid="needs-you-reading-status"]')?.textContent.includes('archived')`, 'board retains reading across list eviction', 12_000);
+    check('regression:board-reading-survives-list-eviction', true);
+    real.cleanup('plan-beta', 'delete');
+    await wait('panel', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='gone'`, 'reading follows deletion outside inbox', 12_000);
+    check('regression:reading-follows-deletion-outside-inbox', true);
+    await wait('page', `d.querySelector('[data-testid="needs-you-reading"]')?.dataset.check==='gone'`, 'board reading follows deletion', 12_000);
+    check('regression:board-reading-follows-deletion', true);
+    await shot('panel', 'reading-gone', '[data-testid="progress-root"]');
+    await click('panel', '[data-testid="needs-you-back"]');
+    await click('page', '[data-testid="needs-you-back"]');
+    await show(['panel', 'status'], 400);
+  }
+
   // ---------------------------------------------------------------- unsupported service
   mode = 'unsupported';
-  const uMark = (await requests()).length;
   await wait('panel', `d.querySelector('[data-testid="needs-you-unavailable"]')`, 'unsupported note', 15_000);
   await wait('status', `!d.querySelector('[data-testid="needs-you-line"]')`, 'status without line');
-  await new Promise((r) => setTimeout(r, 3_500));
+  // Both frames have now observed the older capability. A request begun under the preceding
+  // health result may legitimately have carried the extension during the mode transition.
+  const uMark = (await requests()).length;
+  await waitTop(`['panel','status'].every(f=>qa.requests.slice(${uMark}).some(q=>q.frame===f&&q.path==='/v1/plans'))`, 'next older-service list cycle');
   const uReqs = (await requests()).slice(uMark).filter((q) => q.path === '/v1/plans');
   const unsupported = await guest<string>('panel', `return d.querySelector('[data-testid="needs-you-unavailable"]').textContent`);
   check('I1:unsupported-not-an-empty-inbox', unsupported === 'Needs you isn’t available with this progress service version.' && !(await guest<boolean>('panel', `return !!d.querySelector('[data-testid="needs-you-count"],[data-testid="needs-you-empty"]')`)), unsupported);
