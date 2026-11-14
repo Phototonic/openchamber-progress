@@ -8,6 +8,8 @@ serves authenticated body-free `/v1/needs-you`, and attaches the first window to
 opted-in first list pages and search freshness reads. Displayed rows opt into
 `needsYouTiming=1`; Work Status counts do not. Existing list filters never narrow
 the inbox. See [the wire contract](contracts.md#needs-you-inbox-revision-1-additive-v2-read).
+Unverified bindings omit the optional first window, preserving the ordinary
+list/freshness response; the directly pinned inbox route still returns 409.
 
 The reader uses the current verified store/source binding and existing snapshots,
 not source-root discovery or new durable storage. A transaction walks bounded

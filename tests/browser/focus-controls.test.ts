@@ -310,13 +310,14 @@ function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promi
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>((r) => setImmediate(r)); }
 
 type Ui = { selected: string | null };
-function controller(options: { surface?: 'panel' | 'status' } = {}) {
+function controller(options: { surface?: 'panel' | 'status'; heads?: boolean } = {}) {
   const listeners: Record<string, (value?: any) => void> = {};
   const requests: GuestRequest[] = [];
   const timers: number[] = [];
   /** Planned timer callbacks (fake clock): `poll()` fires the latest planned list poll. */
   const planned: { fn: () => void; ms: number }[] = [];
   let readStarts = 0;
+  let headRead = async (result: source.PlanHeadResult) => result;
   let liveChanged: (() => void) | null = null;
   let liveInstance: { snapshot: unknown } | null = null;
   const node = () => ({ dataset: {} as Record<string, string>, firstElementChild: null as any, querySelector: () => null, querySelectorAll: () => [], getAnimations: () => [], setAttribute() {}, append() {}, replaceChildren(child: any) { this.firstElementChild = child; } });
@@ -351,7 +352,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       // Controller detail-read starts are counted apart from the pages (and internal restarts) they request.
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; layout lane owns it
-      if (name === './source.ts') return { ...source, readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
+      if (name === './source.ts') return { ...source, readPlanHead: async (...args: Parameters<typeof source.readPlanHead>) => headRead(await source.readPlanHead(...args)), readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
       if (name === './cleanup.ts') return cleanup;
       if (name === './language.ts') return language;
       if (name === './session-context.ts') return sessionContext;
@@ -369,7 +370,8 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
     surface: options.surface ?? 'panel', maxSessionSubscriptions: 2, initialUi: () => ({ selected: null }),
     scope: ({ session }) => (session ? { session: session.id } : null),
     wantProjects: () => [], wantDetails: (c) => c.read?.plans.slice(0, 1) ?? [],
-    reading: (c) => { const p = c.read?.plans[0]; return p && c.session ? { plan: p.key, scope: `rail:${c.session.id}` } : null; },
+    refreshDetails: options.heads ? (c) => c.read?.plans.slice(0, 1) ?? [] : undefined,
+    reading: (c) => { const p = c.read?.plans[0]; return p && c.session ? { plan: p.key, scope: `rail:${c.session.id}:${c.ui.selected ?? ''}` } : null; },
     paint: (_root, value) => { vc = value; paints++; observed.push(shownDetail(value)); },
   };
   /** What every paint could show: a ready detail only for the plan's own revision (the surfaces' rule). */
@@ -378,6 +380,7 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
   exports.startView(spec);
   return {
     requests, timers, state, observed, get vc() { return vc; }, get paints() { return paints; }, get maxInFlight() { return maxInFlight; }, get readStarts() { return readStarts; },
+    setHeadRead: (fn: typeof headRead) => { headRead = fn; },
     /** Fires the latest planned list poll, as the fake clock reaching it. */
     poll: () => { const t = [...planned].reverse().find((x) => x.ms === 3000 || x.ms === 8000); t?.fn(); },
     /** A live-workspace change (new snapshot): repaints without new data. */
@@ -392,6 +395,82 @@ function controller(options: { surface?: 'panel' | 'status' } = {}) {
   };
 }
 const status = (vc: ViewContext<Ui>) => vc.reading?.status ?? null;
+
+test('inbox heads coalesce held refreshes and reject a retired same-plan reading', async () => {
+  const c = controller({ heads: true });
+  c.ready(SA); await settle();
+  const original = c.route;
+  const held = deferred<GuestRequestResult>();
+  let heads = 0;
+  c.setRoute(q => { heads++; return heads === 1 ? held.promise : original(q); });
+  c.retry(); await settle();
+  c.retry(); await settle();
+  assert.equal(heads, 1, 'the second refresh must wait for the held head');
+  held.resolve(reply({ error: 'busy' }, 503)); await settle();
+  assert.equal(heads, 2, 'one coalesced current refresh follows the retired reply');
+  assert.equal(c.observed.at(-1)?.state, 'ready', 'the superseded busy reply cannot replace ready detail');
+  assert.ok(c.observed.every(p => p.state !== 'error'));
+
+  const retired = deferred<GuestRequestResult>();
+  c.setRoute(() => retired.promise);
+  c.retry(); await settle();
+  c.vc.setUi({ selected: 'new-inbox-token' }); await settle();
+  c.setRoute(original);
+  c.retry(); await settle();
+  retired.resolve(reply({ error: 'busy' }, 503)); await settle();
+  assert.equal(c.observed.at(-1)?.state, 'ready', 'same plan key under another reading token rejects the old reply');
+  c.stop();
+});
+
+test('inbox slow heads advance detail even when every head outlasts the poll interval', async () => {
+  const c = controller({ heads: true });
+  try {
+    c.ready(SA); await settle();
+    c.state.listRevision = 5; // The opened plan is no longer discoverable through list/inbox updates.
+    const held: ReturnType<typeof deferred<void>>[] = [];
+    c.setHeadRead(async response => {
+      const release = deferred<void>(); held.push(release);
+      await release.promise;
+      return response;
+    });
+    c.state.revision = 6;
+    c.poll(); await settle();
+    for (let i = 0; i < 4; i++) {
+      assert.equal(held.length, i + 1, 'one head in flight');
+      c.poll(); await settle(); // Every response is overtaken by another successful poll.
+      held[i].resolve(); await settle();
+      assert.equal(c.observed.at(-1)?.cached, 6, 'a current successful slow head advances the cached detail');
+      assert.equal(held.length, i + 2, 'the coalesced follow-up is retained');
+    }
+  } finally { c.stop(); }
+});
+
+test('inbox old successful heads cannot replace newer detail success or failure, or a new account', async () => {
+  for (const outcome of ['success', 'failure', 'account'] as const) {
+    const c = controller({ heads: true });
+    const held = deferred<void>();
+    try {
+      c.ready(SA); await settle();
+      let started = false;
+      c.setHeadRead(async result => {
+        if (!started) { started = true; await held.promise; }
+        return result;
+      });
+      c.poll(); await settle();
+      assert.ok(started);
+      c.state.revision = 6;
+      if (outcome === 'failure') c.setRoute(() => reply({ error: 'busy' }, 503));
+      if (outcome === 'account') c.ready(SA, 'replacement-account');
+      else c.poll();
+      await settle();
+      const newer = c.observed.at(-1)!;
+      assert.equal(newer.state, outcome === 'failure' ? 'error' : 'ready');
+      if (outcome !== 'failure') assert.equal(newer.cached, 6);
+      held.resolve(); await settle();
+      assert.deepEqual(c.observed.at(-1), newer, `${outcome}: old success cannot revive or roll back detail`);
+    } finally { held.resolve(); c.stop(); }
+  }
+});
 
 test('reading identity: filters survive repaint, polls and a directory move; session, store and account changes reset them', async () => {
   const c = controller();

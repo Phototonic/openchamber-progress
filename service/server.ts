@@ -172,7 +172,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       }
       const summary = (value: {storeId:string;sourceBinding:NeedsYouRequest['binding']}) => {
         if(!url.searchParams.has('needsYou'))return {};
-        if(!value.sourceBinding.verified||!value.sourceBinding.sourceId)throw new ProgressError('conflict');
+        if(!value.sourceBinding.verified||!value.sourceBinding.sourceId)return {};
         return {needsYou:needsYou(currentStore,{storeId:value.storeId,binding:value.sourceBinding,source:value.sourceBinding.sourceId,timing:url.searchParams.has('needsYouTiming')})};
       };
       if(url.pathname==='/v1/search') {

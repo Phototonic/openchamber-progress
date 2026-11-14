@@ -71,7 +71,7 @@ startView<Ui>({
       return;
     }
     // Source-wide and independent of the featured plan: first, so it is never displaced.
-    const inbox = vc.inbox?.model ? statusInboxLine(vc.inbox.model, env.locale, () => openRail(vc)) : null;
+    const inbox = vc.inbox?.model ? statusInboxLine(vc.inbox.model, env.locale, () => openRail(vc), failure ? vc.lastGoodAt : null) : null;
     if (inbox) root.append(inbox);
     const scope = contextScope(read.plans, vc.session?.id, vc.directory);
     const generation = enter(vc);
