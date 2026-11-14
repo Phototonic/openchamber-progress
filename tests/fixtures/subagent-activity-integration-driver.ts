@@ -10,6 +10,7 @@ import { Store } from '../../shared/store.ts';
 import { createProgressServer } from '../../service/server.ts';
 import { nativeProductionViews } from '../browser/subagent-activity-native.ts';
 import { nativeDelegationReporting } from './subagent-activity-delegation.ts';
+import { nativeAtomicFinish } from './subagent-activity-finish.ts';
 
 const root = process.argv[2], mode = process.argv[4];
 assert.match(root, /^\/tmp\/opencode\/subagent-activity-[A-Za-z0-9]+$/);
@@ -234,6 +235,7 @@ try {
   report.checks.postBindingDirectWorkingDoneBlocked=true;report.checks.postBindingBriefAtOutgoingBoundary=true;report.checks.combinedReplayNoExtraRevision=true;report.checks.preBindingNoProgress=true;report.checks.unassignedAndStaleRefused=true;
   stage='native-delegation-reporting';
   if(mode==='builtin')await nativeDelegationReporting({root,client,store,coordinator:a.id,jobs,records,prompt,reportTool,spawnCall,childFor,wait,checks:report.checks,stage:value=>{stage=value;}});
+  await nativeAtomicFinish({store,coordinator:a.id,records,prompt,checks:report.checks,stage:value=>{stage=value;}});
   report.pass = !report.nativeUI?.defects?.length;
   if (!report.pass) report.failure = { stage: 'native-production-views', kind: 'production-ui-defect' };
 } catch (e) {
