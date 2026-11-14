@@ -47,7 +47,7 @@ export function applyDeviceHooks(root: HTMLElement, device: DeviceView | undefin
 
 const H = PHONE_LAYOUT_HOOKS;
 const safe = (side: 'top' | 'right' | 'bottom' | 'left', hook: string) => `var(${hook},env(safe-area-inset-${side},0px))`;
-const SAFE_L = safe('left', H.safeLeft), SAFE_R = safe('right', H.safeRight), SAFE_B = safe('bottom', H.safeBottom);
+const SAFE_T = safe('top', H.safeTop), SAFE_L = safe('left', H.safeLeft), SAFE_R = safe('right', H.safeRight), SAFE_B = safe('bottom', H.safeBottom);
 const KEYBOARD = `var(${H.keyboard},0px)`;
 const T = `${PHONE_TARGET_PX}px`;
 /** Panel and page only; Work Status keeps its compact, auto-height card. */
@@ -79,10 +79,10 @@ const scoped = (prefix: string) => COARSE_RULES.trim().split('\n').map((rule) =>
 export const PHONE_CSS = `
 /* Phone layout (phone-layout.ts). Desktop without hints is unchanged: every inset/keyboard term is 0. */
 html${SURFACES}{scroll-padding-bottom:calc(${SAFE_B} + ${KEYBOARD})}
-.ap[data-surface="panel"]{padding-left:max(14px,${SAFE_L});padding-right:max(14px,${SAFE_R});padding-bottom:calc(16px + ${SAFE_B} + ${KEYBOARD})}
-.ap[data-surface="page"]{padding-left:max(22px,${SAFE_L});padding-right:max(22px,${SAFE_R});padding-bottom:calc(22px + ${SAFE_B} + ${KEYBOARD})}
+.ap[data-surface="panel"]{padding-top:max(14px,${SAFE_T});padding-left:max(14px,${SAFE_L});padding-right:max(14px,${SAFE_R});padding-bottom:calc(16px + ${SAFE_B} + ${KEYBOARD})}
+.ap[data-surface="page"]{padding-top:max(18px,${SAFE_T});padding-left:max(22px,${SAFE_L});padding-right:max(22px,${SAFE_R});padding-bottom:calc(22px + ${SAFE_B} + ${KEYBOARD})}
 @media(max-width:${PHONE_MAX_WIDTH_PX}px){
-.ap[data-surface="page"]{padding-top:12px;padding-left:max(12px,${SAFE_L});padding-right:max(12px,${SAFE_R});gap:14px}
+.ap[data-surface="page"]{padding-top:max(12px,${SAFE_T});padding-left:max(12px,${SAFE_L});padding-right:max(12px,${SAFE_R});gap:14px}
 .ap[data-surface="page"] .ap-detail{padding:12px}
 .ap[data-surface="page"] .ap-board{gap:14px}
 /* Current/Archived wrap (Russian, 200% zoom) instead of widening the board */

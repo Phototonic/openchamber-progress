@@ -32,12 +32,16 @@ const PHONE = { formFactor: 'phone', pointer: 'coarse', insets: { top: 47, right
 const HOOKS = ['data-device-form-factor', 'data-device-pointer'];
 const VARS = ['--ap-safe-top', '--ap-safe-right', '--ap-safe-bottom', '--ap-safe-left', '--ap-keyboard-height'];
 
-const fx = await startPhoneShell({ source });
-const browser = await launchChromium(chromiumPath(arg('--chromium')));
+// Both startups sit inside the try so a missing or failing Chromium still stops the shell.
+let fx: Awaited<ReturnType<typeof startPhoneShell>> | undefined;
+let browser: Awaited<ReturnType<typeof launchChromium>> | undefined;
 let failure: string | null = null;
 let deviceHooks: 'host-ready' | null = null;
 let deliveries = 0;
 try {
+  const chrome = chromiumPath(arg('--chromium'));
+  fx = await startPhoneShell({ source });
+  browser = await launchChromium(chrome);
   const c = browser.page;
   await c.send('Runtime.enable'); await c.send('Page.enable');
   await c.send('Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -239,8 +243,10 @@ try {
   for (const f of ['panel', 'page']) {
     await show(f);
     if (f === 'panel') await listPanel(); else await boardDetail();
-    const pad = await guest<any>(f, `const s=w.getComputedStyle(d.querySelector('[data-testid="progress-root"]')),hs=w.getComputedStyle(d.documentElement);return {bottom:parseFloat(s.paddingBottom),scroll:parseFloat(hs.scrollPaddingBottom)}`);
+    const pad = await guest<any>(f, `w.scrollTo(0,0);const root=d.querySelector('[data-testid="progress-root"]'),s=w.getComputedStyle(root),hs=w.getComputedStyle(d.documentElement);return {top:parseFloat(s.paddingTop),first:root.firstElementChild.getBoundingClientRect().top,bottom:parseFloat(s.paddingBottom),scroll:parseFloat(hs.scrollPaddingBottom)}`);
     check(`${f}-keyboard:padding-clears-keyboard`, pad.bottom >= 300 + 34 && pad.scroll === 334, pad);
+    // The host's 47 px top inset replaces the normal 14/12 px top padding; first content starts below it.
+    check(`${f}-insets:top-inset-respected`, pad.top === 47 && pad.first >= 47, pad);
     // The last essential control can be scrolled above the occluded band.
     const last = await guest<any>(f, `w.scrollTo(0,d.documentElement.scrollHeight);const n=d.querySelector('[data-testid="interface-language"] button,[data-testid="interface-language"]');const r=n.getBoundingClientRect();return {bottom:r.bottom,limit:w.innerHeight-334}`);
     check(`${f}-keyboard:last-control-above-keyboard`, last.bottom <= last.limit, last);
@@ -262,8 +268,9 @@ try {
   await device({ formFactor: 'phone', pointer: 'coarse', insets: { top: 0, right: 0, bottom: 21, left: 47 }, keyboard: 0 });
   await show('page'); await boardDetail();
   await layout('page', 'board-landscape');
-  const land = await guest<any>('page', `const g=w.getComputedStyle(d.querySelector('.ap-board')).gridTemplateColumns.split(' ').length,root=w.getComputedStyle(d.querySelector('[data-testid="progress-root"]'));return {columns:g,left:parseFloat(root.paddingLeft),sticky:w.getComputedStyle(d.querySelector('.ap-plan-list')).position}`);
-  check('board-landscape:phone-single-column-and-inset', land.columns === 1 && land.left >= 47 && land.sticky === 'static', land);
+  const land = await guest<any>('page', `const g=w.getComputedStyle(d.querySelector('.ap-board')).gridTemplateColumns.split(' ').length,root=w.getComputedStyle(d.querySelector('[data-testid="progress-root"]'));return {columns:g,left:parseFloat(root.paddingLeft),top:parseFloat(root.paddingTop),sticky:w.getComputedStyle(d.querySelector('.ap-plan-list')).position}`);
+  // No top inset in landscape: the wide board keeps its normal 18 px top padding.
+  check('board-landscape:phone-single-column-and-inset', land.columns === 1 && land.left >= 47 && land.top === 18 && land.sticky === 'static', land);
   await shot('board-landscape');
   await device(undefined);
   check('device:absent-again-clears-hooks', Object.values(await hooks('page')).every((v) => v === null), await hooks('page'));
@@ -334,14 +341,14 @@ try {
   const summary = {
     passed: failure === null && results.every((r) => r.pass), failure,
     evidenceClass: 'synthetic SDK shell + real disposable service, real Chromium touch/viewport emulation',
-    guests: source ? 'source-built temporary bundles' : 'tracked bundles', browser: browser.version,
+    guests: source ? 'source-built temporary bundles' : 'tracked bundles', browser: browser?.version ?? null,
     deviceHooks: deviceHooks ?? 'not-reached',
     deviceHooksNote: deviceHooks === 'host-ready' ? 'Root hooks written by each guest\'s own host-ready path (applyDeviceHooks) from the shell\'s synthetic ready.device; checked after every delivery.' : undefined,
     physicalPhone: false, nativeHost: false,
     results, screenshots: shots,
   };
   writeFileSync(join(artifacts, 'results.json'), JSON.stringify(summary, null, 2));
-  await browser.stop(); await fx.stop();
+  try { await browser?.stop(); } finally { await fx?.stop(); }
   console.log(JSON.stringify({ passed: summary.passed, failure, checks: results.length, deviceHooks: summary.deviceHooks }, null, 2));
   if (!summary.passed) process.exitCode = 1;
 }

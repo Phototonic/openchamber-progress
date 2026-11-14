@@ -64,6 +64,9 @@ test('phone CSS ships in the shared stylesheet, scoped away from Work Status and
   }
   assert.ok(PHONE_CSS.includes(`min-height:${PHONE_TARGET_PX}px`));
   // Every inset/keyboard term falls back to env() or 0, so desktop without hints is unchanged.
-  for (const hook of [PHONE_LAYOUT_HOOKS.safeLeft, PHONE_LAYOUT_HOOKS.safeRight, PHONE_LAYOUT_HOOKS.safeBottom]) assert.ok(PHONE_CSS.includes(`var(${hook},env(safe-area-inset-`), hook);
+  for (const hook of [PHONE_LAYOUT_HOOKS.safeTop, PHONE_LAYOUT_HOOKS.safeLeft, PHONE_LAYOUT_HOOKS.safeRight, PHONE_LAYOUT_HOOKS.safeBottom]) assert.ok(PHONE_CSS.includes(`var(${hook},env(safe-area-inset-`), hook);
   assert.ok(PHONE_CSS.includes(`var(${PHONE_LAYOUT_HOOKS.keyboard},0px)`));
+  // Top edge: the larger of the normal padding and the top inset, on the rail, the board and the narrow board.
+  const top = `var(${PHONE_LAYOUT_HOOKS.safeTop},env(safe-area-inset-top,0px))`;
+  for (const normal of [14, 18, 12]) assert.ok(PHONE_CSS.includes(`padding-top:max(${normal}px,${top})`), `top ${normal}`);
 });
