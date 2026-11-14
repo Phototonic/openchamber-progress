@@ -360,6 +360,19 @@ measures six launches for the complete record-removal request, including both
 journal writes and the fresh check between rmdir and append. These owners still
 need engine integration and do not make the old monolithic route resumable.
 
+The format-1 upgrade writer accepts only an explicitly reviewed initial prepare
+checkpoint for the same binding and legacy identity. It freshly validates either
+the complete intact legacy claims or the same-file retained removal receipt; a
+coarse removed phase alone is insufficient. Receipt-proven removal freezes the
+five-step prepare/expectation/publish-binding/enable/reconcile plan, with unknown
+capture, and repeats no disable, deletion or history append. Intact discovery
+retains the full plan even if the old coarse phase says removed. The only upgrade
+effect replaces the old journal atomically. Complete old records, different
+selectors, retained stages/locks and unsupported records refuse. Engine consent,
+fencing and lost-begin-reply handling still need integration; this writer never
+runs automatically on startup. Portable tests measure three security launches
+for admission plus upgrade/checkpoint, not native Windows latency.
+
 `readRemovalReceipt` returns the specific same-install history event and a freshly
 validated native file claim for format-1 recovery. It refuses remaining discovery,
 wrong Store/source identity, replacement, aliases and lost/changed receipt text.

@@ -160,6 +160,13 @@ alone does not prove completion. Replaced history, duplicate events or partial
 history lines refuse without repair. This helper does not change the recovery
 limits of the currently exposed monolithic migration route.
 
+The format-1 upgrade helper likewise requires explicit same-target consent from
+the future step driver. It preserves the original binding and legacy identity.
+Only a freshly verified removal receipt plus absent discovery allows the shorter
+plan; the old phase alone does not. Upgrade itself changes only the private
+journal, not capture, selectors or history. Once upgraded, retain format 2 on
+rollback: an older service must refuse it rather than discard or down-convert it.
+
 If bootstrap is refused, stop submitting migration actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no
 configuration or migration worker is active, then arrange separately authorized

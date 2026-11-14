@@ -1,11 +1,11 @@
 import {lstatSync,readFileSync,readdirSync} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
-import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile} from '../shared/managed-binding.ts';
+import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile,readManagedBinding} from '../shared/managed-binding.ts';
 import {privatePaths,platformSecurityScope,isOwned,PlatformError,requirePlatformWriteBoundary,windows,windowsPaths} from '../shared/platform.ts';
 import {Store,canonical,storageError,digest} from '../shared/store.ts';
 import {ProgressError} from '../shared/progress.ts';
-import {SetupError,migrationBinding,type Targets} from './lifecycle.ts';
+import {SetupError,migrationBinding,validateMigrationRemoval,type Targets} from './lifecycle.ts';
 import {parseManagedStepJournal,managedJournalBinding,sameManagedStep,type ManagedPathClaim,type ManagedStepJournal} from './managed-step-journal.ts';
 import {MANAGED_STEP_LIMITS,MANAGED_OPERATION_TRANSITIONS} from '../shared/managed-steps.ts';
 
@@ -245,6 +245,53 @@ export function validatePublishedManagedIntent(env:NodeJS.ProcessEnv,expected:Ma
     throw new SetupError('managed-step-unsettled');
 }
 
+function validateInitialManagedCheckpoint(journal:ManagedStepJournal):void {
+  const m=journal.migration;
+  if(m.sequence!==1||m.state!=='pending'||m.intent!==null||m.captureRenewals.length||
+    !sameManagedStep(m.lastCompleted,{name:'prepare',batch:0})||!m.receipt||m.receipt.expectedSequence!==0||
+    m.receipt.outcome!=='applied'||!sameManagedStep(m.receipt.step,m.lastCompleted))throw new SetupError('managed-step-conflict');
+}
+
+/** Confirmed prepare for a retained format-1 pending/removed record. This is not
+ * automatic startup conversion or consent: the engine first validates a fresh
+ * complete same-target review and holds the shared writer fence. It preserves
+ * the exact binding and legacy identity, and rechecks the owner evidence here.
+ * The sole effect is atomic replacement with the initial format-2 checkpoint. */
+export function upgradeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected:MigrationRecord):void {
+  requirePlatformWriteBoundary();
+  const checked=parseManagedStepJournal(JSON.stringify(next)),m=checked.migration;
+  validateInitialManagedCheckpoint(checked);
+  if(expected.phase==='complete'||canonical(managedJournalBinding(checked))!==canonical(expected.binding)||
+    m.legacyInstallId!==expected.legacyInstallId||m.capture.state!=='unknown')throw new SetupError('managed-step-conflict');
+  const file=platformSecurityScope(()=>{
+    if(windows)windowsPaths(managedJournalPaths(checked),true);
+    // Reuse the strict journal reader's container refusals even though its
+    // format-2 parser cannot be used until after the upgrade.
+    const file=migrationFile(env),root=path.dirname(file),names=readdirSync(root);
+    if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
+    if(names.some(name=>name.startsWith('migration.json.stage-')))throw new SetupError('managed-migration-conflict');
+    if(![file,path.join(root,'.ownership.json')].every(p=>{const s=lstatSync(p);return s.isFile()&&!s.isSymbolicLink()&&s.nlink===1;}))
+      throw new SetupError('managed-binding-invalid');
+    if(lstatSync(file).size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+    const prior=readMigration(env),selected=readManagedBinding(env);
+    if(!prior||canonical(prior)!==canonical(expected)||selected&&canonical(selected)!==canonical(expected.binding))
+      throw new SetupError('managed-step-conflict');
+    if(m.legacy.kind==='manifest'){
+      // A coarse removed phase with intact discovery is not deletion evidence.
+      // Start the full plan; retain only what the owner can actually prove.
+      validateMigrationRemoval(checked);
+    }else{
+      const legacy=path.join(checked.source.configRoot,'plugins','agent-progress');
+      if(canonical(m.legacy.claims)!==canonical([{path:legacy,kind:'absent',object:null,digest:null}])||
+        !readRemovalReceipt(prior,m.legacy.receipt))throw new SetupError('managed-migration-conflict');
+    }
+    return file;
+  });
+  requirePlatformWriteBoundary();publishPrivateJson(file,checked,true);
+  const written=platformSecurityScope(()=>{if(windows)windowsPaths(managedJournalPaths(checked),true);return readManagedStepJournal(env);});
+  if(!written||canonical(written)!==canonical(checked))throw new SetupError('managed-step-unsettled');
+}
+
 function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected?:ManagedStepJournal,validate?:()=>void):void {
   requirePlatformWriteBoundary();
   // Parse serialized bytes before touching product state (also enforces limits).
@@ -255,12 +302,7 @@ function publishManagedJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,exp
     const current=readManagedStepJournal(env);
     if(expected? !current||canonical(current)!==canonical(expected):!!current)throw new SetupError('managed-step-conflict');
     if(current)validateManagedJournalChange(current,checked);
-    else {
-      const m=checked.migration;
-      if(m.sequence!==1||m.state!=='pending'||m.intent!==null||m.captureRenewals.length||
-        !sameManagedStep(m.lastCompleted,{name:'prepare',batch:0})||!m.receipt||m.receipt.expectedSequence!==0||
-        m.receipt.outcome!=='applied'||!sameManagedStep(m.receipt.step,m.lastCompleted))throw new SetupError('managed-step-conflict');
-    }
+    else validateInitialManagedCheckpoint(checked);
     const file=migrationFile(env),root=path.dirname(file);
     if(!lstatSync(root,{throwIfNoEntry:false})?.isDirectory()||!privatePaths([root]))throw new SetupError('managed-binding-invalid');
     const roots=managedSourceRoots(env);
