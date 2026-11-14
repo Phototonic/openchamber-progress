@@ -59,14 +59,20 @@ test('registered report provides safe recovery hints and executable start help w
     // A change that names a group or an unknown ID refuses with a constant recovery hint and no revision.
     const grouped={op:'start',plan:'grouped-plan',oid:'grouped-start',rev:0,title:'Grouped',items:[{id:'G',title:'Group',kind:'group',status:'working'},{id:'t',title:'Task',kind:'task',parentId:'G'}]};
     assert.equal((await call(grouped)).rev,1);
-    for(const id of ['G','PRIVATE_MISSING_SENTINEL']){
-      const reply=await call({op:'change',plan:'grouped-plan',oid:`grouped-${id.length}`,rev:1,changes:[{id:'t',status:'done'},{id,status:'done'}]});
+    for(const op of ['change','finish'])for(const id of ['G','PRIVATE_MISSING_SENTINEL']){
+      const reply=await call({op,plan:'grouped-plan',oid:`grouped-${op}-${id.length}`,rev:1,...(op==='finish'?{outcome:'finished'}:{}),changes:[{id:'t',status:'done'},{id,status:'done'}]});
       assert.equal(reply.error,'invalid');assert.match(reply.hint,/existing task IDs only.*revise/);assert.ok(reply.hint.length<=256);
       assert.doesNotMatch(JSON.stringify(reply),/PRIVATE_/);
     }
     assert.equal((await call({op:'read',plan:'grouped-plan'})).rev,1,'refused changes advance nothing, including valid task entries in the same batch');
     const revised=await call({op:'revise',plan:'grouped-plan',oid:'grouped-revise',rev:1,items:[{id:'G',title:'Group',kind:'group',status:'done'},{id:'t',title:'Task',kind:'task',parentId:'G',status:'done'}]});
     assert.equal(revised.rev,2,'revise sets a group status');
+    const final={op:'finish',plan:'grouped-plan',oid:'atomic-finish',rev:2,outcome:'finished',changes:[{id:'t',status:'done'}]};
+    assert.deepEqual(await call({...final,rev:1}),{error:'conflict',rev:2});
+    const finished=await call(final);assert.deepEqual(finished,{plan:'grouped-plan',rev:3,structuralRev:2,changed:['t']});
+    assert.deepEqual(await call(final),finished);
+    assert.deepEqual(await call({...final,changes:[{id:'t',status:'skipped'}]}),{error:'operation-reused'});
+    assert.equal((await call({op:'read',plan:'grouped-plan'})).lifecycle,'finished');
     assert.equal(view().data.length,2);
 
     // Every advertised example is executable; help must not omit hidden start prerequisites.

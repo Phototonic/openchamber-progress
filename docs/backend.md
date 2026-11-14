@@ -356,6 +356,18 @@ plans refuse. Successful finish requires at least one non-skipped task and none
 remaining. Cancel/fail preserve unfinished work. Reopen is explicit; staged chunks
 on a closed plan require reopen on staging and commit but do not reopen alone.
 
+Coordinator `finish` may include 1–50 unique existing task `changes`, validated
+through the ordinary change path. The existing transaction applies those explicit
+statuses before validating the requested outcome, then saves the direct
+contribution, receipt and closure together in one ordinary revision (no structural
+revision increment). Any refusal rolls back both components. Receipt `changed`
+and contribution item IDs retain the changed tasks. Full-input idempotent replay
+returns the original receipt; altered reuse refuses and conflicts expose the
+current revision, never silently rebasing. Groups and unknown IDs keep the
+ordinary task-ID recovery hint. Omission retains ordinary finish behavior;
+children cannot finish or relay a finish. No schema, receipt format or protocol
+version changes. See [atomic coordinator finish](contracts.md#atomic-coordinator-finish).
+
 Moving a session preserves plan identity and contributions. Each report refreshes
 authoritative location metadata without changing the bound document path. If the
 document stays in the old worktree, it remains the source; a relocated document
