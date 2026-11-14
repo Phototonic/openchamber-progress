@@ -1,12 +1,13 @@
-import {lstatSync,readFileSync} from 'node:fs';
+import {lstatSync,readFileSync,readdirSync} from 'node:fs';
 import path from 'node:path';
 import {readBinding,type Binding,verifyStore} from '../shared/binding.ts';
-import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError} from '../shared/managed-binding.ts';
-import {privatePaths,platformSecurityScope,isOwned,PlatformError} from '../shared/platform.ts';
+import {managedBindingFile,managedSourceRoots,managedPath,publishPrivateJson,ManagedBindingError,managedExpectationFile} from '../shared/managed-binding.ts';
+import {privatePaths,platformSecurityScope,isOwned,PlatformError,requirePlatformWriteBoundary,windows,windowsPaths} from '../shared/platform.ts';
 import {Store,canonical,storageError,digest} from '../shared/store.ts';
 import {ProgressError} from '../shared/progress.ts';
 import {SetupError,migrationBinding,type Targets} from './lifecycle.ts';
-import type {ManagedPathClaim} from './managed-step-journal.ts';
+import {parseManagedStepJournal,managedJournalBinding,sameManagedStep,type ManagedPathClaim,type ManagedStepJournal} from './managed-step-journal.ts';
+import {MANAGED_STEP_LIMITS,MANAGED_OPERATION_TRANSITIONS} from '../shared/managed-steps.ts';
 
 export interface MigrationRecord {
   binding:Binding;
@@ -121,4 +122,132 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
     // an ACL verdict or a requirement that unrelated history stop growing.
     return {history:{path:file,kind:'file',object,digest:digest(bytes)},entry};
   });
+}
+
+function journalSnapshot(file:string) {
+  const s=lstatSync(file,{bigint:true});
+  return [s.dev,s.ino,s.birthtimeNs,s.size,s.mtimeNs,s.ctimeNs,s.mode,s.nlink].join(':');
+}
+/** Known paths are claims, including fixed names that may not exist yet. A fresh
+ * batch checks them and their ancestors before any existing owner reads them. */
+export function managedJournalPaths(journal:ManagedStepJournal):string[] {
+  const root=path.join(journal.source.dataRoot,'agent-progress-managed'),m=journal.migration;
+  const paths=[...new Set([journal.source.configRoot,journal.source.dataRoot,path.dirname(journal.database),journal.database,
+    ...['-journal','-wal','-shm'].map(s=>journal.database+s),root,path.join(root,'.ownership.json'),path.join(root,'progress-binding.json'),path.join(root,'migration.json'),
+    managedExpectationFile(journal),path.join(path.dirname(journal.database),'installation-history.jsonl'),
+    ...m.legacy.claims.map(c=>c.path),...(m.legacy.kind==='removal-receipt'?[m.legacy.receipt.history.path]:[]),
+    ...(m.intent?[...m.intent.before,...m.intent.after].map(c=>c.path):[])])];
+  if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+  return paths;
+}
+/** Journal observation, not Store admission. This reader validates the private
+ * envelope/roots and consistency only; each engine effect must freshly validate
+ * its complete claims, lifecycle ownership and actual Store/source/schema. */
+export function readManagedStepJournal(env:NodeJS.ProcessEnv):ManagedStepJournal|undefined {
+  return platformSecurityScope(()=>{
+    const file=migrationFile(env),root=path.dirname(file);
+    if(!lstatSync(root,{throwIfNoEntry:false}))return;
+    if(lstatSync(path.join(root,'.ownership.json')).nlink!==1)throw new SetupError('managed-binding-invalid');
+    // Never sweep interrupted publication or a retained old configuration lock.
+    const names=readdirSync(root);
+    if(names.includes('.configuration-lock'))throw new SetupError('managed-configuration-busy');
+    if(names.some(name=>name.startsWith('migration.json.stage-')))throw new SetupError('managed-migration-conflict');
+    const stat=lstatSync(file,{throwIfNoEntry:false});if(!stat)return;
+    managedPath(file);
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||!privatePaths([root,file]))throw new SetupError('managed-migration-conflict');
+    if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
+    const before=journalSnapshot(file),journal=parseManagedStepJournal(readFileSync(file));
+    // Retain the existing Binding owner's native path/identity checks, including
+    // actual roots. Parsing the saved claims does not replace those checks.
+    const binding=readBinding(file),roots=managedSourceRoots(env);
+    if(canonical(managedJournalBinding(binding))!==canonical(managedJournalBinding(journal))||
+      journal.source.configRoot!==roots.configRoot||journal.source.dataRoot!==roots.dataRoot||
+      [roots.configRoot,roots.dataRoot,root].includes(path.dirname(journal.database))||
+      ![roots.configRoot,roots.dataRoot].every(p=>lstatSync(p).isDirectory()&&isOwned(p))||
+      before!==journalSnapshot(file))throw new SetupError('managed-migration-conflict');
+    return journal;
+  });
+}
+
+/** Guard journal evolution as well as its syntax. This is not a writer lock or
+ * authorization: callers hold the request fence and separately validate effects. */
+export function validateManagedJournalChange(prior:ManagedStepJournal,next:ManagedStepJournal):void {
+  const fail=()=>{throw new SetupError('managed-step-conflict');};
+  const a=prior.migration,b=next.migration;
+  if(a.operationId!==b.operationId||canonical(managedJournalBinding(prior))!==canonical(managedJournalBinding(next))||
+    canonical(a.consent)!==canonical(b.consent)||canonical(a.expectation)!==canonical(b.expectation)||
+    canonical(a.legacy)!==canonical(b.legacy)||canonical(a.plan)!==canonical(b.plan)||a.legacyInstallId!==b.legacyInstallId)fail();
+  if(a.state==='complete') {if(canonical(prior)!==canonical(next))fail();return;}
+  if(b.sequence!==a.sequence&&b.sequence!==a.sequence+1)fail();
+  if(b.sequence===a.sequence+1&&b.state===a.state&&a.state!=='pending')fail();
+  if(b.state!==a.state&&!(MANAGED_OPERATION_TRANSITIONS[a.state] as readonly string[]).includes(b.state))fail();
+  if(b.captureRenewals.length<a.captureRenewals.length||b.captureRenewals.length>a.captureRenewals.length+1||
+    canonical(b.captureRenewals.slice(0,a.captureRenewals.length))!==canonical(a.captureRenewals))fail();
+  const added=b.captureRenewals.length>a.captureRenewals.length;
+  if(added){
+    const renewal=b.captureRenewals.at(-1)!;
+    if(b.sequence!==a.sequence+1||b.state!=='pending'||renewal.sequence!==b.sequence||!a.intent||
+      canonical(renewal.priorIntent)!==canonical(a.intent)||canonical(b.intent)!==canonical(a.intent)||
+      !sameManagedStep(a.step,b.step)||!sameManagedStep(a.lastCompleted,b.lastCompleted))fail();
+  }
+  if(b.sequence===a.sequence){
+    // The only unsequenced write is intent publication/reconciliation. It may
+    // never move the plan, erase evidence, settle a receipt or stop the worker.
+    if(b.state!=='running'||!b.intent||!sameManagedStep(a.step,b.step)||!sameManagedStep(a.lastCompleted,b.lastCompleted)||
+      b.phase!==a.phase||canonical(b.receipt)!==canonical(a.receipt)||added)fail();
+    if(a.intent&&canonical(a.intent)!==canonical(b.intent)){
+      const renewal=a.captureRenewals.at(-1);
+      if(!renewal||canonical(renewal.priorIntent)!==canonical(a.intent)||b.intent!.captureReviewSequence!==renewal.sequence||
+        b.intent!.expectedSequence!==a.sequence||b.intent!.requestDigest===a.intent.requestDigest)fail();
+    }else if(!a.intent&&b.intent!.expectedSequence!==a.sequence)fail();
+    return;
+  }
+  if(!b.receipt||b.receipt.expectedSequence!==a.sequence||b.receipt.sequence!==b.sequence)fail();
+  if(!sameManagedStep(a.lastCompleted,b.lastCompleted)){
+    // Only completion of the durable current intent advances the immutable plan.
+    if(a.state!=='running'||!a.intent||!sameManagedStep(a.step,b.lastCompleted)||b.intent!==null||
+      !['pending','complete'].includes(b.state)||b.receipt!.outcome!=='applied'||
+      a.intent.expectedSequence===a.sequence&&b.receipt!.requestDigest!==a.intent.requestDigest||
+      !sameManagedStep(b.receipt!.step,a.step)||added)fail();
+  }else{
+    // Controls and failed settlements retain the unresolved intent verbatim.
+    if(!sameManagedStep(a.step,b.step)||b.phase!==a.phase||canonical(a.intent)!==canonical(b.intent)||
+      !['pending','paused','abandoned','failed'].includes(b.state))fail();
+    if(b.state==='failed'&&b.receipt!.outcome!=='failed'||b.state!=='failed'&&b.receipt!.outcome!=='applied')fail();
+  }
+}
+
+/** Existing private-file publication only: never create/adopt a directory here.
+ * The engine invokes unchanged createManagedBindingDirectory for prepare first.
+ * expected is a compare-before-publication claim, not authority or an OS lock. */
+export function writeManagedStepJournal(env:NodeJS.ProcessEnv,next:ManagedStepJournal,expected?:ManagedStepJournal,validate?:()=>void):void {
+  requirePlatformWriteBoundary();
+  // Parse serialized bytes before touching product state (also enforces limits).
+  const checked=parseManagedStepJournal(JSON.stringify(next));
+  const known=managedJournalPaths(checked);
+  const file=platformSecurityScope(()=>{
+    if(windows)windowsPaths(known,true);
+    const current=readManagedStepJournal(env);
+    if(expected? !current||canonical(current)!==canonical(expected):!!current)throw new SetupError('managed-step-conflict');
+    if(current)validateManagedJournalChange(current,checked);
+    else {
+      const m=checked.migration;
+      if(m.sequence!==1||m.state!=='pending'||m.intent!==null||m.captureRenewals.length||
+        !sameManagedStep(m.lastCompleted,{name:'prepare',batch:0})||!m.receipt||m.receipt.expectedSequence!==0||
+        m.receipt.outcome!=='applied'||!sameManagedStep(m.receipt.step,m.lastCompleted))throw new SetupError('managed-step-conflict');
+    }
+    const file=migrationFile(env),root=path.dirname(file);
+    if(!lstatSync(root,{throwIfNoEntry:false})?.isDirectory()||!privatePaths([root]))throw new SetupError('managed-binding-invalid');
+    const roots=managedSourceRoots(env);
+    if(checked.source.configRoot!==roots.configRoot||checked.source.dataRoot!==roots.dataRoot||
+      [roots.configRoot,roots.dataRoot,root].includes(path.dirname(checked.database)))throw new SetupError('managed-migration-conflict');
+    // Engine-supplied lifecycle/Store verification shares only this fresh read
+    // batch. It is never run under the effect's earlier security scope.
+    validate?.();
+    return file;
+  });
+  requirePlatformWriteBoundary();
+  publishPrivateJson(file,checked,!!expected);
+  const written=platformSecurityScope(()=>{if(windows)windowsPaths(known,true);return readManagedStepJournal(env);});
+  if(!written||canonical(written)!==canonical(checked))throw new SetupError('managed-step-unsettled');
 }

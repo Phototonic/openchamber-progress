@@ -64,6 +64,19 @@ completion is not guaranteed.** Never automatically restart a real instance.
 
 ## Legacy migration and recovery
 
+### Setup coordination port
+
+The bounded setup worker uses loopback TCP port **47329** to coordinate writers
+across service processes. It does not expose progress data on that port. A port
+collision is reported as `managed-step-port-busy`: **Another program is using
+the port Agent Progress uses to coordinate setup; close it and retry.** An active
+setup request in another service can also hold the port; let that request settle
+first. The service does not identify, terminate or take over the other listener,
+choose an alternate coordination port, or remove a lock to force progress.
+The worker foundation is not yet connected to the migration HTTP routes.
+
+### Existing migration flow
+
 For at least one release, Setup supports a single confirmed **Switch to
 extension-managed capture** for a fully validated canonical legacy installation.
 A folder name alone is not ownership. Inspection validates its complete ownership

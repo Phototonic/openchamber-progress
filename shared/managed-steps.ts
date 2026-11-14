@@ -44,6 +44,7 @@ export const MANAGED_STEP_CODES = [
   'managed-step-deadline', 'managed-step-budget', 'managed-step-conflict',
   'managed-step-unsupported', 'managed-step-limit', 'managed-step-unsettled',
   'managed-journal-unsupported', 'managed-inspection-expired',
+  'managed-step-port-busy',
 ] as const;
 export type ManagedStepCode = typeof MANAGED_STEP_CODES[number];
 export interface ManagedStepDiagnostic {

@@ -126,7 +126,7 @@ process.send(result,()=>process.disconnect());\n`,{mode:0o600});
     const exited=once(child,'exit');
     try {
       const [reply]=await once(child,'message',{signal:AbortSignal.timeout(5000)});
-      assert.equal(reply.ok,false);assert.equal(reply.code,'managed-step-unsettled');
+      assert.equal(reply.ok,false);assert.equal(reply.code,'managed-step-port-busy');
       assert.equal(reply.accounting.securitySpawns,0);
       await exited;
     } finally {if(child.exitCode===null){child.kill('SIGTERM');await exited;}}
@@ -142,7 +142,7 @@ test('an unrelated listener is a refusal and is never taken over',{skip:process.
   try {
     const worker=new SetupRequestWorker(new URL('../../service/main.ts',import.meta.url));
     const result=await worker.run(env,payload,{action:'health'});
-    assert.equal(result.ok,false);if(!result.ok)assert.equal(result.code,'managed-step-unsettled');
+    assert.equal(result.ok,false);if(!result.ok)assert.equal(result.code,'managed-step-port-busy');
     assert.equal(result.accounting.securitySpawns,0);assert.equal(listener.listening,true);
     assert.equal(worker.busy,false);
   }finally{await new Promise<void>(resolve=>listener.close(()=>resolve()));rmSync(root,{recursive:true,force:true});}

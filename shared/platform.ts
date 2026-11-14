@@ -59,7 +59,12 @@ let requestBudget:PlatformRequestBudget|undefined;
 export function withPlatformRequestBudget<T>(budget:PlatformRequestBudget,run:()=>T):T {
   if(requestBudget||scope)throw new PlatformError('managed-step-conflict');
   budget.require();requestBudget=budget;cache.clear();reparseCache.clear();
-  try{return run();}finally{requestBudget=undefined;cache.clear();reparseCache.clear();}
+  try{
+    const result=run();
+    if(result!==null&&(typeof result==='object'||typeof result==='function')&&typeof (result as {then?:unknown}).then==='function')
+      throw new PlatformError('managed-step-conflict');
+    return result;
+  }finally{requestBudget=undefined;cache.clear();reparseCache.clear();}
 }
 /** Cache only one synchronous operation, and only unchanged object snapshots. */
 export function platformSecurityScope<T>(run: () => T): T {
@@ -70,6 +75,12 @@ export function beginPlatformSecurityScope():()=>void {
   if (!scope) {cache.clear();reparseCache.clear();}
   scope++;
   return ()=>{if (!--scope) {cache.clear();reparseCache.clear();}};
+}
+/** A mutation owner must end the actual scope, not merely a nested wrapper.
+ * Refuse misuse rather than clearing an enclosing reader's authority silently. */
+export function requirePlatformWriteBoundary():void {
+  if(scope)throw new PlatformError('managed-step-conflict');
+  requestBudget?.require();
 }
 
 /** Windows PowerShell can expand inherited module paths during startup. */
@@ -104,6 +115,7 @@ ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
 $writerMutex = $null
 $writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -115,7 +127,7 @@ try {
     $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
     try { $writerOwned = $writerMutex.WaitOne(15000) }
     catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { throw 'writer-unsettled' }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
     $client = [Net.Sockets.TcpClient]::new()
     try {
       $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
@@ -174,7 +186,7 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
 finally {
   if ($writerOwned) { $writerMutex.ReleaseMutex() }
   if ($null -ne $writerMutex) { $writerMutex.Dispose() }
@@ -231,6 +243,11 @@ export function windowsSecurityQuery(paths: string[], create: string[] = [], spa
   if (!requestBudget && firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
   requestBudget?.require();
   if(requestBudget&&(child.error as NodeJS.ErrnoException|undefined)?.code==='ETIMEDOUT')throw new PlatformError('managed-step-deadline','timeout');
+  if(requestBudget?.writerFence&&!child.error&&child.status!==0){
+    let failure:unknown;try{failure=JSON.parse(child.stdout.replace(/^\uFEFF/,''));}catch{/* Never expose raw child text. */}
+    if(failure&&typeof failure==='object'&&Object.keys(failure).length===1&&(failure as {error?:unknown}).error==='managed-step-unsettled')
+      throw new PlatformError('managed-step-unsettled','exit');
+  }
   if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable',child.error?(child.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'timeout':'spawn':'exit');
   let results: Security[];
   try { results = JSON.parse(child.stdout.replace(/^\uFEFF/,'')); } catch { throw new PlatformError('windows-security-unavailable'); }

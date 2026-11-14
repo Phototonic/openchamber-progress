@@ -315,6 +315,37 @@ is introduced. All mutating paths, including ordinary capture controls, must use
 the same boundary when the engine is integrated; an in-process busy flag alone
 is not sufficient. Native Windows late-child fencing remains a separate gate.
 
+The fixed writer slot is TCP `127.0.0.1:47329`. A bind collision returns
+`managed-step-port-busy` without launching a worker or querying security. This
+does not identify the listener or authorize connecting to/stopping it. A Windows
+writer-mutex timeout instead returns `managed-step-unsettled`; neither failure
+is a successful effect or a rollback. The synchronous request-budget wrapper
+rejects thenable callbacks rather than silently ending accounting before work.
+
+The format-2 journal foundation now provides bounded strict parsing, canonical
+target/request digests, consistency/transition validation and private no-clobber
+publication with compare-before-replacement. Reads reject unsupported state,
+foreign scope, hard links, retained publication stages and old configuration
+locks. Writes refuse an enclosing security scope so post-write validation cannot
+reuse its ACL cache. These helpers do **not** admit a Store or authorize a saved
+claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
+Cold progress projection reports capture as unknown unless supplied a fresh
+observation. Neither these helpers nor their tests constitute an integrated step
+engine, and the capability remains unadvertised until integration is complete.
+
+The lifecycle owner exposes a one-file removal foundation, using the frozen
+original manifest and native claims. Every request validates the remaining full
+owned set, retained releases and actual Store/source. Missing files are accepted
+only at previously completed positions or for the exact current removal intent;
+a replacement object, foreign entry, changed release, alias or on capture bit
+refuses. The manifest is last, immutable payloads/history are not removed, and
+the owner changes neither capture nor the journal. After an unlink it returns
+unknown capture; completion publication must freshly validate the remaining set.
+Portable tests cover each of the six discovery files interrupted before/after
+unlink and the complete admission/intent/effect/checkpoint query accounting.
+Empty-directory removal and idempotent history recording still need their engine
+integration; these helpers do not make the old monolithic route resumable.
+
 `readRemovalReceipt` returns the specific same-install history event and a freshly
 validated native file claim for format-1 recovery. It refuses remaining discovery,
 wrong Store/source identity, replacement, aliases and lost/changed receipt text.

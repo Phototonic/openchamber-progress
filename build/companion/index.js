@@ -24301,6 +24301,7 @@ ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
 $writerMutex = $null
 $writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -24312,7 +24313,7 @@ try {
     $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
     try { $writerOwned = $writerMutex.WaitOne(15000) }
     catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { throw 'writer-unsettled' }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
     $client = [Net.Sockets.TcpClient]::new()
     try {
       $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
@@ -24371,7 +24372,7 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
 finally {
   if ($writerOwned) { $writerMutex.ReleaseMutex() }
   if ($null -ne $writerMutex) { $writerMutex.Dispose() }
@@ -24432,6 +24433,14 @@ function windowsSecurityQuery(paths, create2 = [], spawn = spawnSync) {
   requestBudget?.require();
   if (requestBudget && child.error?.code === "ETIMEDOUT")
     throw new PlatformError2("managed-step-deadline", "timeout");
+  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
+    let failure;
+    try {
+      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+    } catch {}
+    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
+      throw new PlatformError2("managed-step-unsettled", "exit");
+  }
   if (child.error || child.status !== 0)
     throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results2;

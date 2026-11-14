@@ -560,7 +560,8 @@ var MANAGED_STEP_CODES = [
   "managed-step-limit",
   "managed-step-unsettled",
   "managed-journal-unsupported",
-  "managed-inspection-expired"
+  "managed-inspection-expired",
+  "managed-step-port-busy"
 ];
 
 // shared/platform.ts
@@ -625,7 +626,10 @@ function withPlatformRequestBudget(budget, run) {
   cache.clear();
   reparseCache.clear();
   try {
-    return run();
+    const result = run();
+    if (result !== null && (typeof result === "object" || typeof result === "function") && typeof result.then === "function")
+      throw new PlatformError("managed-step-conflict");
+    return result;
   } finally {
     requestBudget = undefined;
     cache.clear();
@@ -681,6 +685,7 @@ ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
 $writerMutex = $null
 $writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -692,7 +697,7 @@ try {
     $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
     try { $writerOwned = $writerMutex.WaitOne(15000) }
     catch [Threading.AbandonedMutexException] { $writerOwned = $true }
-    if (-not $writerOwned) { throw 'writer-unsettled' }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
     $client = [Net.Sockets.TcpClient]::new()
     try {
       $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
@@ -751,7 +756,7 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
 finally {
   if ($writerOwned) { $writerMutex.ReleaseMutex() }
   if ($null -ne $writerMutex) { $writerMutex.Dispose() }
@@ -812,6 +817,14 @@ function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
   requestBudget?.require();
   if (requestBudget && child.error?.code === "ETIMEDOUT")
     throw new PlatformError("managed-step-deadline", "timeout");
+  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
+    let failure;
+    try {
+      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+    } catch {}
+    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
+      throw new PlatformError("managed-step-unsettled", "exit");
+  }
   if (child.error || child.status !== 0)
     throw new PlatformError("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results;
@@ -4528,7 +4541,7 @@ function javascriptLiteral(value) {
 
 // setup/lifecycle.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync } from "node:fs";
+import { existsSync as existsSync4, lstatSync as lstatSync5, realpathSync as realpathSync5, mkdirSync as mkdirSync2, readFileSync as readFileSync2, readdirSync, writeFileSync, renameSync, rmSync, rmdirSync, appendFileSync, unlinkSync as unlinkSync2 } from "node:fs";
 import path5 from "node:path";
 
 // shared/binding.ts
@@ -4584,7 +4597,6 @@ function normalizeTargets(targets) {
   };
   return { ...targets, configRoot: trim(targets.configRoot), dataRoot: trim(targets.dataRoot), storeRoot: trim(targets.storeRoot) };
 }
-
 class SetupError extends Error {
   code;
   constructor(code) {
@@ -4959,7 +4971,7 @@ function lifecycleInner(action, targets, payload, testBoundary) {
 }
 
 // shared/managed-binding.ts
-import { lstatSync as lstatSync6, realpathSync as realpathSync6, readFileSync as readFileSync3, writeFileSync as writeFileSync2, linkSync, unlinkSync as unlinkSync2, renameSync as renameSync2 } from "node:fs";
+import { lstatSync as lstatSync6, realpathSync as realpathSync6, readFileSync as readFileSync3, writeFileSync as writeFileSync2, linkSync, unlinkSync as unlinkSync3, renameSync as renameSync2 } from "node:fs";
 import path6 from "node:path";
 import { homedir } from "node:os";
 import { randomUUID as randomUUID5 } from "node:crypto";
@@ -5070,7 +5082,7 @@ function publishPrivateJson(file, value, replace = false) {
       renameSync2(stage, file);
     else {
       linkSync(stage, file);
-      unlinkSync2(stage);
+      unlinkSync3(stage);
     }
     syncDirectory(path6.dirname(file));
   } catch (e) {
@@ -5079,7 +5091,7 @@ function publishPrivateJson(file, value, replace = false) {
   } finally {
     try {
       if (lstatSync6(stage, { throwIfNoEntry: false }))
-        unlinkSync2(stage);
+        unlinkSync3(stage);
     } catch (e) {
       if (!failed)
         throw e;
@@ -5632,12 +5644,12 @@ function createProgressServer(store, token, unavailableCode, setup) {
 }
 
 // service/setup-controller.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync9, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync3, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync5, realpathSync as realpathSync8, lstatSync as lstatSync9, writeFileSync as writeFileSync3, renameSync as renameSync3, unlinkSync as unlinkSync4, closeSync as closeSync4, openSync as openSync4 } from "node:fs";
 import path9 from "node:path";
 import { randomUUID as randomUUID6 } from "node:crypto";
 
 // setup/managed-migration.ts
-import { lstatSync as lstatSync7, readFileSync as readFileSync4 } from "node:fs";
+import { lstatSync as lstatSync7, readFileSync as readFileSync4, readdirSync as readdirSync2 } from "node:fs";
 import path7 from "node:path";
 function migrationFile(env) {
   return path7.join(path7.dirname(managedBindingFile(env)), "migration.json");
@@ -6319,7 +6331,7 @@ class SetupController {
     } finally {
       if (locked)
         try {
-          unlinkSync3(lock);
+          unlinkSync4(lock);
           syncDirectory(path9.dirname(file));
         } catch (e) {
           if (!failed)
@@ -6404,7 +6416,7 @@ class SetupController {
     } finally {
       if (locked)
         try {
-          unlinkSync3(lock);
+          unlinkSync4(lock);
           syncDirectory(path9.dirname(file));
         } catch (e) {
           if (!failed) {

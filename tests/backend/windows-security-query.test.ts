@@ -73,6 +73,33 @@ test('failed process starts consume the request allowance without enabling retri
   assert.equal(budget.securitySpawns,1);assert.equal(calls.length,1);
 });
 
+test('synchronous budget refuses promises and custom thenables instead of silently ending early',async t=>{
+  const {PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[]);
+  for(const value of [Promise.resolve(null),{then(){throw new Error('must not assimilate');}}]){
+    assert.throws(()=>withPlatformRequestBudget(new PlatformRequestBudget(),()=>value),{code:'managed-step-conflict'});
+  }
+  assert.equal(withPlatformRequestBudget(new PlatformRequestBudget(),()=>42),42,'failure releases the local budget');
+});
+
+test('fenced mutex timeout retains its precise unsettled diagnostic without retry',async t=>{
+  const failure={...success(),status:1,stdout:'{"error":"managed-step-unsettled"}'};
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,[failure]);
+  const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:47329,nonce:'a'.repeat(64)});
+  assert.throws(()=>withPlatformRequestBudget(budget,query),{code:'managed-step-unsettled',reason:'exit'});
+  assert.equal(calls.length,1);assert.equal(budget.securitySpawns,1);
+  assert.match(calls[0]![1][4]!,/\$failureCode = 'managed-step-unsettled'; throw 'writer-unsettled'/);
+});
+
+test('mutex diagnostic accepts only the exact allowlisted fenced-child failure',async t=>{
+  const attempts=['{"error":"private raw text"}','{"error":"managed-step-unsettled","details":"private"}'].map(stdout=>({...success(),status:1,stdout}));
+  const {query,calls,PlatformRequestBudget,withPlatformRequestBudget}=await run(t,attempts);
+  for(const _ of attempts){
+    const budget=new PlatformRequestBudget(process.hrtime.bigint(),new SharedArrayBuffer(4),{port:47329,nonce:'a'.repeat(64)});
+    assert.throws(()=>withPlatformRequestBudget(budget,query),{code:'windows-security-unavailable'});
+  }
+  assert.equal(calls.length,2);
+});
+
 test('first security query retries a timeout once with identical inputs and a 30-second bound', async t => {
   const { query, calls, PlatformError } = await run(t, [timeout(), success(), timeout()]);
   assert.deepEqual(query(), result);

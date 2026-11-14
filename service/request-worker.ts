@@ -108,9 +108,9 @@ export class SetupRequestWorker {
         for(const socket of sockets)socket.destroy();
         lock.close(()=>{this.active=false;finish(reply);});
       };
-      lock.once('error',()=>{
+      lock.once('error',(error:NodeJS.ErrnoException)=>{
         if(launched){result=refused('managed-step-unsettled');finish(result);}
-        else{this.active=false;finish(refused('managed-step-unsettled'));}
+        else{this.active=false;finish(refused(error.code==='EADDRINUSE'?'managed-step-port-busy':'managed-step-unsettled'));}
       });
       lock.listen({host:'127.0.0.1',port:fence.port,exclusive:true},()=>{
         let worker:Worker;
