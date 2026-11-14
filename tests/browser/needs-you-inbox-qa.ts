@@ -75,6 +75,7 @@ let conflictNext = false;
 let failLists = false;
 // Labelled transport seam to inspect rechecking while the actual service read is held.
 let continuationGate: Promise<void> | null = null;
+let failContinuations = false;
 const realReplies: { path: string; status: number; rows?: number; counts?: unknown; complete?: boolean }[] = [];
 const personFacing = (b: Blocked) => b.category === 'decision' || b.category === 'review';
 const visibleBlocked = (p: Fixture) => p.blocked.filter((b) => mode !== 'empty' || !personFacing(b));
@@ -185,7 +186,7 @@ const server: Server = createServer(async (req, res) => {
       if (real && conflictNext && q.path === '/v1/needs-you') { conflictNext = false; real.conflict(); }
       // Unsupported mode is an explicit older-service seam; all supported reads use the real service.
       if (real && mode === 'unsupported' && q.path !== '/health') { delete q.query?.needsYou; delete q.query?.needsYouTiming; }
-      const r = failLists && q.path === '/v1/plans' ? { status: 503, body: { error: 'busy' } } : real ? await real.request(q) : serve(q);
+      const r = (failLists && q.path === '/v1/plans') || (failContinuations && q.path === '/v1/needs-you') ? { status: 503, body: { error: 'busy' } } : real ? await real.request(q) : serve(q);
       if (real && mode === 'unsupported' && q.path === '/health') delete (r.body as Record<string, unknown>).needsYouInbox;
       if (real) { const b = r.body as any, w = q.path === '/v1/needs-you' ? b : b.needsYou; realReplies.push({ path: q.path, status: r.status, ...(w?.rows ? { rows: w.rows.length, counts: w.counts, complete: w.coverage.complete } : {}) }); }
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: r.status, body: JSON.stringify(r.body) })); return;
@@ -478,12 +479,24 @@ try {
     await wait('panel', `Number(d.querySelector('[data-testid="needs-you-row"][data-task="task-a"]')?.dataset.revision)>${firstRevision}`, 'changed first window adopted after conflict');
     await wait('panel', `d.querySelector('[data-testid="needs-you-more"] button:not(:disabled)')`, 'continuation after restart');
   }
-  await tabTo('panel', '[data-testid="needs-you-more"] button');
-  await key('Enter');
+  let releaseAppend: (() => void) | undefined;
+  if (real) continuationGate = new Promise<void>(resolve => { releaseAppend = resolve; });
+  try {
+    await tabTo('panel', '[data-testid="needs-you-more"] button');
+    await key('Enter');
+    if (real) {
+      await wait('panel', `d.querySelector('[data-testid="needs-you-rechecking"]')`, 'ordinary refresh during requested continuation', 12_000);
+      check('regression:refresh-preserves-requested-continuation', await guest<boolean>('panel', `return !d.querySelector('[data-testid="needs-you-restarted"],[data-testid="needs-you-more-failed"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`) && (await requests()).slice(more).filter(q => q.frame === 'panel' && q.path === '/v1/needs-you').length === 2);
+    }
+  } finally { continuationGate = null; releaseAppend?.(); }
+  if (real) {
+    await wait('panel', `d.querySelector('${INBOX} [data-task="task-d"]')`, 'requested page survives refresh');
+    check('regression:requested-page-counts-stay-partial-until-rechecked', await guest<boolean>('panel', `return d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`));
+  }
   await wait('panel', `d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true'`, 'continuation completes');
   const cont = (await requests()).slice(more).filter((q) => q.path === '/v1/needs-you');
   const finalRows = await rowIds('panel');
-  check('I1:continuation-explicit-pinned-and-merged', cont.length === (real ? 2 : 1) && (real ? !!cont.at(-1)?.cursor : cont[0].cursor === 'qa-c1') && cont.at(-1)?.timing === '1' && same(finalRows, ['task-a', 'task-b', 'task-d']), { cont, finalRows });
+  check('I1:continuation-explicit-pinned-and-merged', cont.length === (real ? 3 : 1) && (real ? !!cont.at(-1)?.cursor : cont[0].cursor === 'qa-c1') && cont.at(-1)?.timing === '1' && same(finalRows, ['task-a', 'task-b', 'task-d']), { cont, finalRows });
   if (real) check('integration:cumulative-counts-at-real-bound', realReplies.some(r => r.path === '/v1/needs-you' && r.complete && same(r.counts, { needsYou: 3, alsoBlocked: 53 })));
   if (real) {
     // Only a later plan changes: the first 50-row window and its mid-plan cursor stay fixed.
@@ -500,6 +513,14 @@ try {
     check('regression:unchanged-first-window-rechecks-later-plan', (await requests()).slice(beforeRecheck).some(q => q.frame === 'panel' && q.path === '/v1/needs-you'));
     await shot('panel', 'later-page-resolved', INBOX);
     real.resolvePlan('plan-beta', false);
+    failContinuations = true;
+    try {
+      await wait('panel', `d.querySelector('[data-testid="needs-you-more-failed"]')`, 'failed recheck visible', 12_000);
+      check('regression:failed-recheck-shows-error-and-waits', await guest<boolean>('panel', `return d.querySelector('[data-testid="needs-you-more-failed"]').textContent==='More plans couldn’t be checked right now.' && !!d.querySelector('[data-testid="needs-you-recheck-waiting"]') && !d.querySelector('[data-testid="needs-you-rechecking"],[data-testid="needs-you-more"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='false'`));
+      await shot('panel', 'failed-recheck', INBOX);
+    } finally { failContinuations = false; }
+    await wait('panel', `!d.querySelector('[data-testid="needs-you-more-failed"],[data-testid="needs-you-recheck-waiting"]') && d.querySelector('[data-testid="needs-you-count"]')?.dataset.exact==='true' && d.querySelector('${INBOX} [data-task="task-d"]')`, 'next refresh recovers failed recheck', 12_000);
+    check('regression:failed-recheck-recovers-on-refresh', true);
   }
 
   // ---------------------------------------------------------------- complete empty first group

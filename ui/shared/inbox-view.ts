@@ -42,6 +42,7 @@ export const INBOX_COPY = {
     more: 'Check more plans', moreLoading: 'Checking more plans…', moreFailed: 'More plans couldn’t be checked right now.', retry: 'Try again',
     restarted: 'The list changed while loading, so it started again from the top.',
     rechecking: 'Rechecking loaded plans. Later rows may be out of date; counts include only the first checked window until this finishes.',
+    recheckWaiting: 'Waiting for the next refresh to recheck loaded plans. Later rows may be out of date; counts include only the first checked window.',
     showMore: (n: number) => `Show ${n} more`, showFewer: 'Show fewer',
     also: (n: number, exact: boolean) => `Also blocked · ${exact ? n : `${n}+`}`,
     alsoNote: 'Other reported blockers, including dependencies, outside parties and unspecified reasons.',
@@ -94,6 +95,7 @@ export const INBOX_COPY = {
     more: 'Проверить другие планы', moreLoading: 'Проверяем другие планы…', moreFailed: 'Сейчас не удалось проверить другие планы.', retry: 'Попробовать снова',
     restarted: 'Список изменился во время загрузки, поэтому он начат заново.',
     rechecking: 'Повторно проверяем загруженные планы. Дальние строки могут быть устаревшими; до завершения счётчики учитывают только первое проверенное окно.',
+    recheckWaiting: 'Ждём следующего обновления, чтобы повторно проверить загруженные планы. Дальние строки могут быть устаревшими; счётчики учитывают только первое проверенное окно.',
     showMore: (n: number) => `Показать ещё ${num(n, 'ru')}`, showFewer: 'Свернуть',
     also: (n: number, exact: boolean) => `Также заблокировано · ${exact ? num(n, 'ru') : `${num(n, 'ru')}+`}`,
     alsoNote: 'Другие указанные блокировки: зависимости, внешние стороны и неуказанные причины.',
@@ -283,6 +285,10 @@ export function inboxSection(panel: InboxPanel, env: Env, options: { open: (row:
   if (!m.captureEnabled) notes.append(testid(warningLine(t.capture, 'info', 'p'), 'needs-you-capture-off'));
   if (m.restarted) notes.append(testid(warningLine(t.restarted, 'info', 'p'), 'needs-you-restarted'));
   if (m.rechecking) notes.append(testid(warningLine(t.rechecking, 'info', 'p'), 'needs-you-rechecking'));
+  if (m.moreFailed) {
+    notes.append(testid(warningLine(t.moreFailed, 'warning', 'p'), 'needs-you-more-failed'));
+    if (!m.canContinue) notes.append(testid(warningLine(t.recheckWaiting, 'info', 'p'), 'needs-you-recheck-waiting'));
+  }
   if (m.gapped) notes.append(testid(warningLine(t.gapped, 'warning', 'p'), 'needs-you-gapped'));
   if (notes.childNodes.length) box.append(notes);
   if (!m.needsYou.length) {
@@ -306,7 +312,6 @@ export function inboxSection(panel: InboxPanel, env: Env, options: { open: (row:
   if (!m.complete && m.needsYou.length && !m.gapped) box.append(testid(el('p', 'ap-note', t.partial), 'needs-you-partial'));
   if (m.canContinue) {
     const row = testid(el('div', 'ap-row ap-inbox-continue'), 'needs-you-continue');
-    if (m.moreFailed) row.append(testid(warningLine(t.moreFailed, 'warning', 'span'), 'needs-you-more-failed'));
     button(row, 'needs-you-more', m.loadingMore ? t.moreLoading : m.moreFailed ? t.retry : t.more, panel.more, 'outline', m.loadingMore);
     if (m.loadingMore) { const s = el('span', 'ap-sr', t.moreLoading); s.setAttribute('role', 'status'); row.append(s); }
     box.append(row);
