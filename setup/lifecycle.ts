@@ -185,6 +185,30 @@ export function migrationEvidence(targets:Targets):{binding:Binding;legacy:Extra
       plan:migrationRemovalPlan(selectors.length)};
   });
 }
+/** Read-only path discovery, not ownership or removal authority. Read the fixed
+ * descriptor/manifest first; never obtain arbitrary paths from caller claims.
+ * A later request must recheck these bytes before following the discovered set. */
+export function discoverMigrationPaths(targets:Pick<Targets,'configRoot'|'dataRoot'>) {
+  return platformSecurityScope(()=>{
+    const root=path.join(targets.configRoot,'plugins','agent-progress');
+    const manifestFile=path.join(root,'.ownership.json'),descriptor=path.join(root,'progress-binding.json');
+    const fixed=[targets.configRoot,targets.dataRoot,root,manifestFile,descriptor];
+    if(windows)windowsPaths(fixed);
+    for(const file of [manifestFile,descriptor]){
+      safe(file);const s=lstatSync(file);
+      need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1&&s.size<=MANAGED_STEP_LIMITS.journalBytes&&privatePaths([root,file]),'ownership-invalid');
+    }
+    const before=migrationSnapshot(manifestFile),ownership=readFileSync(manifestFile,'utf8'),manifest=migrationOwnership(ownership);
+    need(before===migrationSnapshot(manifestFile),'installation-changed');
+    const binding=readBinding(descriptor);
+    need(binding.source.verified&&binding.installId===manifest.installId&&binding.source.configRoot===targets.configRoot&&
+      binding.source.dataRoot===targets.dataRoot,'ownership-invalid');
+    const selectors=windows?readdirSync(root).filter(n=>/^\.agent-progress-activation-[a-f0-9-]{36}$/.test(n)).map(n=>path.join(root,n)).sort():[];
+    const paths=migrationOwnedPaths({...targets,storeRoot:path.dirname(binding.database),confirmed:true},manifest,selectors);
+    if(paths.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
+    return {binding,ownership,paths};
+  });
+}
 function migrationRemovalPlan(selectors:number):ManagedStepRef[] {
   return [{name:'prepare',batch:0},{name:'expectation',batch:0},{name:'disable',batch:0},
     ...Array.from({length:selectors},(_,batch)=>({name:'remove-selector' as const,batch})),

@@ -1,31 +1,37 @@
 import {Worker,isMainThread,parentPort,workerData} from 'node:worker_threads';
 import {createServer,type Socket} from 'node:net';
-import {randomBytes,timingSafeEqual} from 'node:crypto';
+import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {SetupController} from './setup-controller.ts';
 import {PlatformRequestBudget,withPlatformRequestBudget,platformErrorCode} from '../shared/platform.ts';
-import {MANAGED_STEP_CODES,MANAGED_STEP_LIMITS,type ManagedStepAccounting} from '../shared/managed-steps.ts';
+import {MANAGED_STEP_CODES,MANAGED_STEP_LIMITS,managedStepRequest,type ManagedStepAccounting,type ManagedStepResponse} from '../shared/managed-steps.ts';
 import {MANAGED_ACTION_CODES,type ManagedSetupAction} from '../shared/progress.ts';
-import {storageError} from '../shared/store.ts';
+import {storageError,canonical,digest} from '../shared/store.ts';
 import type {Payload,Action} from '../setup/lifecycle.ts';
+import {inspectManagedStep,type ManagedInspectionSession} from '../setup/managed-inspection.ts';
 
 /** Private service/worker transport, never an HTTP request or client-selected entry.
  * All mutation paths must use the same writer boundary and perform their fresh
  * validation before any effect. The busy flag alone is NOT the writer fence. */
 export type SetupWorkerRequest =
   | {action:'health'|'status'}
+  | {action:'managed-step';body:unknown}
   | {action:'run';name:Action|ManagedSetupAction;body:unknown};
 export type SetupWorkerResult =
   | {ok:true;value:unknown;accounting:ManagedStepAccounting}
   | {ok:false;code:string;accounting:ManagedStepAccounting};
 interface SetupWorkerInput {
   kind:'agent-progress-setup-request';
+  requestId:string;
   env:NodeJS.ProcessEnv;
   payload:Payload;
   request:SetupWorkerRequest;
   startedAt:bigint;
   counter:SharedArrayBuffer;
   fence:{port:number;nonce:string};
+  inspection?:ManagedInspectionSession;
 }
+/** Private fields travel only through workerData/parentPort, never HTTP. */
+type SetupWorkerMessage={requestId:string;result:SetupWorkerResult;inspection?:ManagedInspectionSession};
 
 export function isSetupRequestWorker():boolean {
   return !isMainThread&&workerData?.kind==='agent-progress-setup-request';
@@ -42,10 +48,22 @@ export function runSetupRequestWorker():void {
   const budget=new PlatformRequestBudget(input.startedAt,input.counter,input.fence);
   let setup:SetupController|undefined;
   let value:unknown,code:string|undefined;
+  let inspection:ManagedInspectionSession|undefined;
   try {
     value=withPlatformRequestBudget(budget,()=>{
       setup=new SetupController({env:input.env},()=>input.payload);
       const request=input.request;
+      if(request.action==='managed-step'){
+        const parsed=managedStepRequest(request.body);
+        if(!parsed)throw Object.assign(new Error('invalid'),{code:'invalid'});
+        if(parsed.action!=='inspect')throw Object.assign(new Error('managed-step-unsupported'),{code:'managed-step-unsupported'});
+        if(parsed.cursor&&(!input.inspection||input.inspection.cursor!==parsed.cursor))
+          throw Object.assign(new Error('managed-inspection-expired'),{code:'managed-inspection-expired'});
+        const inspected=inspectManagedStep(input.env,input.payload,parsed.cursor?input.inspection:undefined,parsed.storeRoot);
+        inspection=inspected.session;
+        return {version:1,disposition:'observed',inspection:inspected.inspection,progress:inspected.progress,error:null,
+          accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+      }
       if(request.action==='health')return setup.health();
       if(request.action==='status')return setup.status();
       if(request.action==='run')return setup.run(request.name,request.body);
@@ -57,9 +75,10 @@ export function runSetupRequestWorker():void {
   const accounting={securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs};
   const result:SetupWorkerResult=code?{ok:false,code,accounting}:{ok:true,value,accounting};
   // Never emit exception messages, private worker input or paths on failure.
-  if(Buffer.byteLength(JSON.stringify(result))>MANAGED_STEP_LIMITS.responseBytes)
-    parentPort.postMessage({ok:false,code:'managed-step-limit',accounting} satisfies SetupWorkerResult);
-  else parentPort.postMessage(result);
+  if(Buffer.byteLength(JSON.stringify(result))>MANAGED_STEP_LIMITS.responseBytes||
+    inspection&&Buffer.byteLength(JSON.stringify(inspection))>MANAGED_STEP_LIMITS.journalBytes)
+    parentPort.postMessage({requestId:input.requestId,result:{ok:false,code:'managed-step-limit',accounting}} satisfies SetupWorkerMessage);
+  else parentPort.postMessage({requestId:input.requestId,result,...(!code&&inspection?{inspection}:{})} satisfies SetupWorkerMessage);
   parentPort.close();
 }
 
@@ -70,6 +89,7 @@ export function runSetupRequestWorker():void {
 export class SetupRequestWorker {
   private active=false;
   private readonly entry:URL;
+  private inspection?:{context:string;session:ManagedInspectionSession};
   constructor(entry:URL) {this.entry=entry;}
   get busy(){return this.active;}
   run(env:NodeJS.ProcessEnv,payload:Payload,request:SetupWorkerRequest,startedAt=process.hrtime.bigint()):Promise<SetupWorkerResult> {
@@ -78,8 +98,14 @@ export class SetupRequestWorker {
     if(this.active)return Promise.resolve(refused('managed-step-unsettled'));
     try{budget.require();}catch(error){return Promise.resolve(refused(diagnostic(error)));}
     this.active=true;
+    const context=digest(canonical({env,payload})),requestId=randomUUID();
+    const saved=this.inspection?.context===context?this.inspection.session:undefined;
+    // A continuation is single-use, including a failure/deadline. New inspection
+    // replaces it. Unrelated requests do not refresh or export its authority.
+    if(this.inspection?.context!==context||request.action==='managed-step')this.inspection=undefined;
     return new Promise(resolve=>{
       let settled=false,launched=false,result:SetupWorkerResult|undefined;
+      let nextInspection:ManagedInspectionSession|undefined;
       const finish=(reply:SetupWorkerResult)=>{if(!settled){settled=true;clearTimeout(timer);resolve(reply);}};
       const remaining=Math.max(0,MANAGED_STEP_LIMITS.responseMs-budget.elapsedMs);
       const timer=setTimeout(()=>finish(refused('managed-step-deadline')),remaining);
@@ -116,19 +142,26 @@ export class SetupRequestWorker {
         let worker:Worker;
         try {
           budget.require();
-          worker=new Worker(this.entry,{workerData:{kind:'agent-progress-setup-request',env,payload,request,
-            startedAt,counter:budget.counter.buffer,fence} satisfies SetupWorkerInput});
+          worker=new Worker(this.entry,{workerData:{kind:'agent-progress-setup-request',requestId,env,payload,request,
+            startedAt,counter:budget.counter.buffer,fence,...(saved&&request.action==='managed-step'?{inspection:saved}:{})} satisfies SetupWorkerInput});
           launched=true;
         } catch(error) {release(refused(diagnostic(error)));return;}
-        worker.on('message',(message:SetupWorkerResult)=>{
+        worker.on('message',(message:SetupWorkerMessage)=>{
           // A received message alone is not worker settlement. Wait for exit.
-          if(message&&typeof message==='object'&&typeof message.ok==='boolean')result=message;
+          if(!message||message.requestId!==requestId||result||!message.result||typeof message.result.ok!=='boolean'){
+            result=refused('managed-step-unsettled');nextInspection=undefined;return;
+          }
+          result=message.result;nextInspection=message.inspection;
         });
         worker.once('error',()=>{result=refused('managed-step-unsettled');});
         worker.once('exit',exitCode=>{
           if(exitCode!==0||!result)release(refused('managed-step-unsettled'));
           else if(budget.elapsedMs>=MANAGED_STEP_LIMITS.responseMs)release(refused('managed-step-deadline'));
-          else release({...result,accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
+          else {
+            if(!settled&&result.ok&&nextInspection&&request.action==='managed-step')this.inspection={context,session:nextInspection};
+            const accounting={securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs};
+            release({...result,...(result.ok&&request.action==='managed-step'?{value:{...result.value as ManagedStepResponse,accounting}}:{}),accounting});
+          }
         });
       });
     });

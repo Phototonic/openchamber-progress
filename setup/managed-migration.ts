@@ -103,6 +103,7 @@ export function readRemovalReceipt(record:MigrationRecord,retained?:ManagedRemov
     const file=managedPath(path.join(path.dirname(b.database),'installation-history.jsonl'));
     const before=lstatSync(file,{bigint:true});
     if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||!privatePaths([path.dirname(file),file]))conflict();
+    if(before.size>BigInt(MANAGED_STEP_LIMITS.journalBytes))throw new SetupError('managed-step-limit');
     const object={device:String(before.dev),inode:String(before.ino),birthNs:String(before.birthtimeNs)};
     if(retained&&(retained.history.path!==file||retained.history.kind!=='file'||
       canonical(retained.history.object)!==canonical(object)))conflict();

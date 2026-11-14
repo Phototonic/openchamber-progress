@@ -8,6 +8,8 @@ import {fork} from 'node:child_process';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
 import {SetupRequestWorker} from '../../service/request-worker.ts';
+import {lifecycle} from '../../setup/lifecycle.ts';
+import type {ManagedStepResponse} from '../../shared/managed-steps.ts';
 
 const payload={plugin:'// Synthetic',guidance:'Synthetic',removal:'// Synthetic',version:'1.3.0'};
 function fixture(){
@@ -63,8 +65,8 @@ test('supervisor refuses overlap and uses shared attempt accounting',{skip:proce
   const {root,env}=fixture();
   try {
     const entry=path.join(root,'held-worker.mjs');
-    writeFileSync(entry,`import {parentPort} from 'node:worker_threads';
-parentPort.postMessage({ok:true,value:'synthetic',accounting:{securitySpawns:99,elapsedMs:99}});
+    writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
+parentPort.postMessage({requestId:workerData.requestId,result:{ok:true,value:'synthetic',accounting:{securitySpawns:99,elapsedMs:99}}});
 setTimeout(()=>parentPort.close(),50);\n`,{mode:0o600});
     const worker=new SetupRequestWorker(pathToFileURL(entry));
     const first=worker.run(env,payload,{action:'health'});
@@ -82,7 +84,7 @@ test('response deadline does not clear busy or admit another request while the w
   const workerFile=path.join(root,'gated-worker.mjs');
   writeFileSync(workerFile,`import {parentPort,workerData} from 'node:worker_threads';
 import {existsSync} from 'node:fs';
-parentPort.postMessage({ok:true,value:'not-settled',accounting:{securitySpawns:0,elapsedMs:0}});
+parentPort.postMessage({requestId:workerData.requestId,result:{ok:true,value:'not-settled',accounting:{securitySpawns:0,elapsedMs:0}}});
 const poll=setInterval(()=>{if(existsSync(workerData.env.GATE)){clearInterval(poll);parentPort.close();}},10);
 setTimeout(()=>{clearInterval(poll);parentPort.close();},5000).unref();\n`,{mode:0o600});
   const worker=new SetupRequestWorker(pathToFileURL(workerFile));
@@ -108,7 +110,7 @@ test('writer admission is exclusive across two processes, not only one superviso
   writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
 import {existsSync,writeFileSync} from 'node:fs';
 writeFileSync(workerData.env.READY,'ready',{mode:0o600});
-parentPort.postMessage({ok:true,value:null,accounting:{securitySpawns:0,elapsedMs:0}});
+parentPort.postMessage({requestId:workerData.requestId,result:{ok:true,value:null,accounting:{securitySpawns:0,elapsedMs:0}}});
 const poll=setInterval(()=>{if(existsSync(workerData.env.GATE)){clearInterval(poll);parentPort.close();}},10);
 setTimeout(()=>{clearInterval(poll);parentPort.close();},10000).unref();\n`,{mode:0o600});
   writeFileSync(driver,`const {SetupRequestWorker}=await import(process.env.HELPER);
@@ -146,4 +148,55 @@ test('an unrelated listener is a refusal and is never taken over',{skip:process.
     assert.equal(result.accounting.securitySpawns,0);assert.equal(listener.listening,true);
     assert.equal(worker.busy,false);
   }finally{await new Promise<void>(resolve=>listener.close(()=>resolve()));rmSync(root,{recursive:true,force:true});}
+});
+
+for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta.url)],['built',new URL('../../build/service/main.js',import.meta.url)]] as const){
+  test(`${name} supervisor carries private inspection claims between fresh workers`,{skip:process.platform==='win32'},async()=>{
+    const {root,env}=fixture();
+    try{
+      const configRoot=path.join(env.XDG_CONFIG_HOME,'opencode'),dataRoot=path.join(env.XDG_DATA_HOME,'opencode');
+      for(const p of [configRoot,dataRoot])mkdirSync(p,{mode:0o700});
+      lifecycle('install',{configRoot,dataRoot,storeRoot:path.join(root,'store'),confirmed:true},{...payload,version:'1.1.1'});
+      const worker=new SetupRequestWorker(entry);
+      let cursor:string|undefined;
+      for(const stage of ['roots','managed-state','legacy-discovery','legacy-releases','store','review']){
+        const reply=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',...(cursor?{cursor}:{})}});
+        if(!reply.ok)assert.fail(reply.code);
+        const value=reply.value as ManagedStepResponse;
+        assert.deepEqual(value.accounting,reply.accounting,'wire accounting includes worker settlement');
+        assert.equal(value.inspection!.stage,stage);
+        assert.deepEqual(Object.keys(reply).sort(),['accounting','ok','value']);
+        assert.ok(!JSON.stringify(reply).includes('ownershipDigest'),'private ownership bytes/claims cannot leak through the public response');
+        cursor=value.inspection!.cursor??undefined;
+        assert.equal(worker.busy,false);
+      }
+      assert.equal(existsSync(path.join(dataRoot,'agent-progress-managed')),false,'read-only inspection never creates the managed container');
+      const first=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect'}});
+      assert.ok(first.ok);cursor=(first.value as ManagedStepResponse).inspection!.cursor!;
+      const continued=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor}});
+      assert.ok(continued.ok);
+      const replay=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor}});
+      assert.equal(replay.ok,false);if(!replay.ok)assert.equal(replay.code,'managed-inspection-expired');
+      const fresh=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect'}});
+      assert.ok(fresh.ok);cursor=(fresh.value as ManagedStepResponse).inspection!.cursor!;
+      const restarted=new SetupRequestWorker(entry);
+      const expired=await restarted.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor}});
+      assert.equal(expired.ok,false);if(!expired.ok)assert.equal(expired.code,'managed-inspection-expired');
+      const changed=await worker.run(env,{...payload,plugin:'// different package'}, {action:'managed-step',body:{version:1,action:'inspect',cursor}});
+      assert.equal(changed.ok,false);if(!changed.ok)assert.equal(changed.code,'managed-inspection-expired');
+      const forged=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'inspect',cursor,inspection:{stage:5}}});
+      assert.equal(forged.ok,false);
+    }finally{rmSync(root,{recursive:true,force:true});}
+  });
+}
+
+for(const kind of ['mismatched','duplicate'] as const)test(`supervisor refuses ${kind} worker replies`,{skip:process.platform==='win32'},async()=>{
+  const {root,env}=fixture();try{
+    const entry=path.join(root,'invalid-reply.mjs');
+    writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
+const message={requestId:${kind==='mismatched'?"'another-request'":'workerData.requestId'},result:{ok:true,value:null,accounting:{securitySpawns:0,elapsedMs:0}}};
+parentPort.postMessage(message);${kind==='duplicate'?'parentPort.postMessage(message);':''}parentPort.close();\n`,{mode:0o600});
+    const reply=await new SetupRequestWorker(pathToFileURL(entry)).run(env,payload,{action:'health'});
+    assert.equal(reply.ok,false);if(!reply.ok)assert.equal(reply.code,'managed-step-unsettled');
+  }finally{rmSync(root,{recursive:true,force:true});}
 });

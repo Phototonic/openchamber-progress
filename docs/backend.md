@@ -301,6 +301,27 @@ response deadline. A deadline reply never clears busy or terminates a worker as
 if its effects rolled back; settlement waits for worker exit. Callers must reserve
 their remaining validation/checkpoint work before admitting each effect.
 
+The inspection foundation now splits roots, managed state, legacy path discovery,
+retained releases, Store validation and review into six read-only requests. The
+lifecycle owner discovers fixed manifest/descriptor bytes before release paths;
+later stages reread that discovery before full ownership validation. No inspection
+creates managed metadata, changes capture or initializes a Store. The complete
+review binds package bytes, target/plan, native database identity and capture bit.
+For an interrupted operation it also binds the operation's sequence, full intent
+and capture decision. Mutation admission must revalidate the review afresh.
+
+Each short-lived worker receives discovery claims only from its supervisor, never
+from caller fields. The supervisor retains one private inspection session scoped
+to its environment and payload, consumes continuation cursors once, and accepts
+state only after a matching single reply and successful worker exit before the
+deadline. A fresh inspection replaces it; restart or a changed environment/package
+expires it. Private manifest/journal claims never enter the public result. The
+inspection review is not a durable action receipt or a substitute for fresh ACL
+checks. Begin/resume consumption and HTTP integration remain separate engine work.
+Portable launch accounting measures at most four queries per inspection stage
+for intact, format-1 and receipt-proven fixtures, and one for fresh complete-review
+admission. This is not native timing or the full slow-machine migration gate.
+
 The supervisor acquires one conservative product-wide loopback writer slot for
 each request, covering different discovery scopes sharing a Store. Contention or
 an unrelated listener is a refusal, not a takeover. Windows security children

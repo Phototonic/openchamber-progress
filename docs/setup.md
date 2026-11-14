@@ -74,6 +74,11 @@ setup request in another service can also hold the port; let that request settle
 first. The service does not identify, terminate or take over the other listener,
 choose an alternate coordination port, or remove a lock to force progress.
 The worker foundation is not yet connected to the migration HTTP routes.
+Its read-only inspection foundation can continue discovery across separate worker
+requests without creating product files or changing capture. An unfinished review
+expires on service restart or package/environment change and requires fresh
+inspection. This is not yet the public step migration flow; it does not change the
+existing Setup behavior below or advertise step support.
 
 ### Existing migration flow
 
