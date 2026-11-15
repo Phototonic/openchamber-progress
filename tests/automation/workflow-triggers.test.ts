@@ -18,7 +18,8 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
   ] as const) {
     const source = readFileSync(new URL(`../../.github/workflows/${workflow}.yml`, import.meta.url), 'utf8');
     assert.match(source, /push:\n    branches: \[main, dev\]/);
-    assert.match(source, /pull_request:\n    branches: \[main, dev\]/);
+    // Pull requests run whatever branch they target, so stacked PRs are checked too.
+    assert.match(source, /^  pull_request:\n  push:\n/m);
     const gate = source.split('\n  gate:\n')[1]?.split(/\n  [\w-]+:\n/)[0];
     assert.ok(gate);
     assert.match(gate, /run: \$\{\{ steps.decide.outputs.run \}\}/);
