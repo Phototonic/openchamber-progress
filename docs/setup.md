@@ -53,6 +53,11 @@ database starts with capture off; only the later reviewed enable step turns it o
 Reconnecting valid retained storage reuses its identities, history and capture
 setting, with no enable/disable step. A matching verified source is reused;
 otherwise the review discloses a new source registered only after expectation.
+Reconnecting a retained matching source may replace an older expectation for the
+same Store/source/install identity with the explicitly reviewed package. Its
+expectation step freezes and compares the prior bytes before atomic replacement.
+Foreign or invalid metadata still refuses. Once that step completes, changed
+expectation bytes or package consent refuse rather than being silently refreshed.
 
 The card shows real steps and on/off/unknown capture, not a percentage. Pause or
 Stop waits for the active request and retains work, without undoing it. Reopening

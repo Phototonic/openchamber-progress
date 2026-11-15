@@ -8563,7 +8563,8 @@ function validateManagedStepTarget(env, payload, journal, created) {
         if (!completed(journal, "enable") && m.step?.name !== "enable")
           need5(capture3.state !== "on", "managed-step-unsettled");
       }
-      if (expected)
+      const reconnect = m.fresh.storeMode === "retain" && m.fresh.sourceMode === "reuse" && !completed(journal, "expectation");
+      if (expected && !reconnect)
         need5(canonical(expected) === canonical(expectation2(journal)), "managed-review-stale");
       if (selected)
         need5(completed(journal, "publish-binding") || m.intent?.step.name === "publish-binding", "managed-selection-conflict");

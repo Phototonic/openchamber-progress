@@ -11,9 +11,9 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
 import {nativeService} from '../fixtures/windows-service-driver.ts';
 import {lifecycle,migrationEvidence} from '../../setup/lifecycle.ts';
-import {createManagedBindingDirectory} from '../../shared/managed-binding.ts';
+import {createManagedBindingDirectory,readManagedExpectation,writeManagedExpectation} from '../../shared/managed-binding.ts';
 import {writeMigration,readManagedStepJournal,readManagedFreshStepJournal,migrationFile} from '../../setup/managed-migration.ts';
-import {Store} from '../../shared/store.ts';
+import {Store,digest} from '../../shared/store.ts';
 import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress,ManagedFreshStepRequest,ManagedFreshStepResponse,ManagedFreshStepProgress,ManagedSetupStepRequest} from '../../shared/managed-steps.ts';
 import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/shared/setup-steps.ts';
 import {parseSetup} from '../../ui/shared/adapter.ts';
@@ -206,6 +206,36 @@ for(const kind of ['default','custom','retained-new','retained-reuse'] as const)
     const disabled=await f.http('/v1/capture/disable',{});assert.equal(disabled.status,200);assert.equal(f.capture(),false);
     assert.equal((await f.control('resume',p)).status,409);assert.equal(f.capture(),false);
     t.diagnostic(JSON.stringify({kind,requests:f.counts}));
+  }finally{await f.close();}
+});
+
+test('fresh retained-source reconnection replaces only its older same-install expectation',async()=>{
+  const f=await freshHttpFixture('retained-reuse',false);try{
+    const store=new Store(f.database),state=store.list();store.close();
+    const source=state.sources.find(s=>s.configRoot===f.targets.configRoot)!;
+    const binding={protocolVersion:2 as const,schemaVersion:2 as const,version:payload.version,database:f.database,storeId:state.storeId,source,
+      installId:`managed-${digest(JSON.stringify([state.storeId,source]))}`};
+    const old={format:1 as const,storeId:binding.storeId,sourceId:source.id,installId:binding.installId,version:'1.1.1',fingerprint:'a'.repeat(64)};
+    writeManagedExpectation(binding,old);
+    const review=await f.inspect();assert.equal(review.sourceMode,'reuse');assert.equal(review.packageVersion,payload.version);
+    assert.deepEqual(readManagedExpectation(binding),old,'inspection is read-only');
+    let r=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected});
+    assert.equal(r.status,200,JSON.stringify(r.body.error));let p=r.body.progress!;
+    assert.deepEqual(readManagedExpectation(binding),old,'begin does not replace the expectation');
+    while(p.state!=='complete'){
+      r=await f.advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;
+    }
+    const expected=readManagedExpectation(binding)!;assert.equal(expected.version,payload.version);assert.notEqual(expected.fingerprint,old.fingerprint);
+    const after=new Store(f.database);try{assert.deepEqual(after.list().sources,state.sources);assert.equal(after.list().storeId,state.storeId);assert.equal(after.list().captureEnabled,false);}finally{after.close();}
+    // Once checkpointed, even same-identity old bytes cannot be substituted.
+    const changed=await freshHttpFixture('retained-reuse',false);try{
+      let q=(await changed.begin()).body.progress!;q=(await changed.advance(q)).body.progress!;
+      const journal=readManagedFreshStepJournal(changed.env)!;
+      const bytes=fs.readFileSync(migrationFile(changed.env));
+      writeManagedExpectation(journal,{...readManagedExpectation(journal)!,version:old.version,fingerprint:old.fingerprint});
+      const refused=await changed.advance(q);assert.equal(refused.status,409);assert.equal(refused.body.error!.code,'managed-review-stale');
+      assert.deepEqual(fs.readFileSync(migrationFile(changed.env)),bytes);
+    }finally{await changed.close();}
   }finally{await f.close();}
 });
 

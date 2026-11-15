@@ -85,7 +85,11 @@ export function validateManagedStepTarget(env:NodeJS.ProcessEnv,payload:Payload,
         // manual disable is allowed, including on complete/reconcile replay.
         if(!completed(journal,'enable')&&m.step?.name!=='enable')need(capture.state!=='on','managed-step-unsettled');
       }
-      if(expected)need(canonical(expected)===canonical(expectation(journal)),'managed-review-stale');
+      // Reconnection explicitly reviews this package for the retained source.
+      // The reader already requires the same Store/source/install identity; the
+      // expectation intent freezes its prior bytes before atomic replacement.
+      const reconnect=m.fresh.storeMode==='retain'&&m.fresh.sourceMode==='reuse'&&!completed(journal,'expectation');
+      if(expected&&!reconnect)need(canonical(expected)===canonical(expectation(journal)),'managed-review-stale');
       if(selected)need(completed(journal,'publish-binding')||m.intent?.step.name==='publish-binding','managed-selection-conflict');
     }else if(m.legacy.kind==='manifest'){
       capture=validateMigrationRemoval(journal as ManagedStepJournal).capture;
