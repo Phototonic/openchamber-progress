@@ -16,7 +16,7 @@ Windows startup and stepwise legacy migration, a source-wide Needs you inbox, an
 
 ### Changed
 
-- Phone rail/board layouts, safe-area and keyboard accommodation, coarse-pointer controls and tap/pan/pinch dependency-map navigation (#104). Rail and board mobile contributions are enabled; owner-operated physical-phone acceptance is deferred to the live release, not claimed from emulation.
+- Phone rail/board layouts, safe-area and keyboard accommodation, coarse-pointer controls and tap/pan/pinch dependency-map navigation (#104). Rail and board mobile contributions are enabled so they appear in OpenChamber on phones (#112); owner-operated physical-phone acceptance is deferred to the live release, not claimed from emulation.
 - Pending delegations survive unrelated task reports only with complete bounded evidence; relevant changes still refuse binding. Combined handoff reports support other worktrees (#103).
 - Waiting delegations show “Next sub-agent will take this”; identifiable refusal reasons are exposed without granting authority or changing task status (#107).
 - Handoff receipt lookups use a transactionally installed `(source, oid)` index without changing logical schema or replay semantics (#106).
@@ -27,6 +27,7 @@ Windows startup and stepwise legacy migration, a source-wide Needs you inbox, an
 ### Fixed
 
 - Windows cold service health avoids blocking security discovery; legacy migration runs through bounded, freshly validated Setup steps with durable pause/resume, honest capture state and precise diagnostics (#101, fixes #99). Fresh configuration remains on the older synchronous path; moving it to the step engine is follow-up work.
+- Concurrent identical Setup reads share one in-flight status run, deadline and spawn budget; starting-phase admission tolerates only the transient unsettled response before its single health reread, avoiding a startup 503 without weakening mutation overlap refusal (#113).
 
 ## [1.3.0] - 2026-11-14
 
