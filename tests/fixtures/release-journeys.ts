@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import type { reportingSessionsJourney } from './reporting-sessions-journey.ts';
 
-export async function release140Journey(o:Parameters<typeof reportingSessionsJourney>[0]) {
+export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourney>[0]) {
   const {root,binding,store,client,location,browser}=o;
   const {wait,openRail,openBoard,guestClick,holdNextServiceReply,send,evaluate}=browser.nativeControls;
   const checks:string[]=[];

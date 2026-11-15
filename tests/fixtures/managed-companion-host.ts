@@ -15,7 +15,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { managedBrowser } from '../browser/managed-companion-qa.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
 import { reportingSessionsJourney } from './reporting-sessions-journey.ts';
-import { release140Journey } from './release-140-journey.ts';
+import { releaseJourneys } from './release-journeys.ts';
 
 const arg=(name:string)=>{const i=process.argv.indexOf(name);return i<0?undefined:process.argv[i+1];};
 const hostModule=arg('--host-module'),binary=arg('--opencode-binary'),chromium=arg('--chromium'),artifacts=arg('--artifacts');
@@ -53,7 +53,7 @@ if(arg('--server-worker')) {
     const build=spawnSync('bun',['build','tests/fixtures/managed-companion-observer.ts','--target=node','--format=esm',`--outfile=${observer}/index.js`],{encoding:'utf8',timeout:30000});assert.equal(build.status,0,'fixture observer build');
     fs.writeFileSync(`${observer}/package.json`,JSON.stringify({name:'synthetic-managed-observer',type:'module',exports:{'.':'./index.js'}}));
     fs.writeFileSync(`${root}/sdk.mjs`,'export function createManagedFixture(){return {}}\n');fs.writeFileSync(`${root}/events.jsonl`,'');
-    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-140')){
+    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-journeys')){
       fs.writeFileSync(`${root}/jobs.json`,'{}');
     }
     fs.writeFileSync(`${root}/project/docs/plans/synthetic.md`,'# Managed acceptance\nTwo synthetic tasks.\n');
@@ -130,10 +130,10 @@ if(arg('--server-worker')) {
     check('setup-status-available',initialSetup.status===200&&!!initialSetup.body.delivery);
     check('approval-before-configuration',initialSetup.body.delivery.configuration==='unconfigured'&&!fs.existsSync(managedBindingFile(env)));
     phase='real-ui-configuration';await browser.configure();const b=readManagedBinding(env);assert.ok(b);store=new Store(b.database);
-    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-140')) {
+    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-journeys')) {
       phase='subagent-reporting-sessions';
       results.journey=await reportingSessionsJourney({root,binding:b,store,client,location,browser,api});
-      if(process.argv.includes('--release-140'))results.release140=await release140Journey({root,binding:b,store,client,location,browser,api});
+      if(process.argv.includes('--release-journeys'))results.releaseJourneys=await releaseJourneys({root,binding:b,store,client,location,browser,api});
       check('no-final-credentials',(await client.credential.list()).length===0);
       check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));
       check('no-browser-exceptions',browser.console().exceptions===0);
