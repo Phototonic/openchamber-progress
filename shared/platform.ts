@@ -191,6 +191,7 @@ try {
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
+      if ($request.exclusive -and [IO.Directory]::Exists($target)) { throw 'creation-conflict' }
       if (-not [IO.Directory]::Exists($target)) {
         $security = [Security.AccessControl.DirectorySecurity]::new()
         $security.SetOwner($user)
@@ -259,7 +260,7 @@ function reparsePaths(paths:string[],parents:Set<string>) {
 }
 let securityQueryAttempted = false;
 /** Injectable process boundary; production callers always use the built-in spawn. */
-export function windowsSecurityQuery(paths: string[], create: string[] = [], spawn: (command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string> = spawnSync): Security[] {
+export function windowsSecurityQuery(paths: string[], create: string[] = [], spawn: (command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string> = spawnSync, exclusive=false): Security[] {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot)) throw new PlatformError('windows-security-unavailable');
   // Do not inherit profile, module, proxy, Node or PowerShell startup overrides.
@@ -270,7 +271,7 @@ export function windowsSecurityQuery(paths: string[], create: string[] = [], spa
   // Pin startup hints too; the trusted script resets the effective path and
   // imports only the built-in utility module by its absolute system path.
   env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
-  const input = JSON.stringify({ paths, create, ...(requestBudget?.writerFence?{fence:requestBudget.writerFence}:{}) });
+  const input = JSON.stringify({ paths, create, ...(exclusive?{exclusive:true}:{}), ...(requestBudget?.writerFence?{fence:requestBudget.writerFence}:{}) });
   const firstQuery = !securityQueryAttempted;
   const run = () => {
     const timeout=requestBudget?requestBudget.launch():firstQuery?30000:10000;
@@ -379,7 +380,26 @@ export function privatePaths(files: string[]) {
     const s=lstatSync(file);return !s.isSymbolicLink()&&s.uid===process.getuid?.()&&(s.mode&0o777)===(s.isDirectory()?0o700:0o600);
   });
 }
-export function privateDirectory(file: string, recursive=false) {
+export function privateDirectory(file: string, recursive=false, creation?:{exclusive:true;validate:()=>void}) {
+  if(creation){
+    requirePlatformWriteBoundary();
+    if(recursive||creation.exclusive!==true||typeof creation.validate!=='function')throw new PlatformError('managed-step-conflict');
+    const target=platformSecurityScope(()=>{
+      creation.validate();
+      const target=windows?windowsPath(file,true):file,parent=path.dirname(target);
+      if(!path.isAbsolute(target)||path.resolve(target)!==target||!lstatSync(parent).isDirectory()||
+        (!windows&&realpathSync(parent)!==parent)||lstatSync(target,{throwIfNoEntry:false}))throw new PlatformError('path-unverified');
+      return target;
+    });
+    // The real preflight scope has ended. Never carry its ACL cache over creation.
+    requirePlatformWriteBoundary();
+    if(windows){
+      const [result]=windowsSecurityQuery([target],[target],undefined,true);
+      if(!result?.owned||!result.private||result.reparse||result.unsafeParent)throw new PlatformError('private-permissions');
+    }else mkdirSync(target,{mode:0o700});
+    syncDirectory(path.dirname(target));
+    return;
+  }
   if (!windows) { mkdirSync(file,{recursive,mode:0o700}); return; }
   platformSecurityScope(()=>{
     const target=windowsPath(file,true);
