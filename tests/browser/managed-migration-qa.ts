@@ -1,4 +1,4 @@
-// Rendered Setup QA for the step-by-step managed switch. Builds the page guest from current source
+// Rendered Setup QA for the step-by-step managed switch and fresh setup. Builds the page guest from current source
 // into a disposable folder (tracked bundles are never touched), serves it in a loopback synthetic SDK
 // shell whose service replies come from the synthetic step responder (managed-migration-engine.ts),
 // and drives a fresh headless Chromium with real CDP pointer/keyboard input. Presentation evidence
@@ -12,8 +12,8 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import type { ManagedStepProgress } from '../../shared/managed-steps.ts';
-import { stepEngine } from './managed-migration-engine.ts';
-import { managedReview,managedStepFixtures } from '../fixtures/managed-steps.ts';
+import { freshEngine, stepEngine, type FreshOptions } from './managed-migration-engine.ts';
+import { managedStepFixtures } from '../fixtures/managed-steps.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -58,17 +58,36 @@ const shell = `<!doctype html><html><head><meta charset="utf-8"><meta name="view
 // ---- Synthetic service ----
 let engine = stepEngine({ inspectPages: 2 });
 let capable = true;
-let fresh = false, freshConfigured = false;
+// Fresh setup: no legacy files. The version-2 responder answers only when the service advertises
+// managedFreshSteps; old single-request fresh routes refuse like the new Windows service and are
+// recorded, because the step client must never use them.
+let fresh = false, freshCapable = true;
+let freshEng = freshEngine({ inspectPages: 2 });
+const oldRoutes: string[] = [];
 let captureControl: boolean | null = null;
-const log: { method: string; path: string; action?: string; at: number }[] = [];
+let freshRefusal: string | null = null;
+const log: { method: string; path: string; action?: string; version?: number; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
-  const p = engine.progress;
-  const migration = fresh ? 'none' : !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
+  if (fresh) {
+    const p = freshEng.observeSetup(), done = p?.state === 'complete';
+    const published=!!p&&p.plan.findIndex(s=>s.name===p.lastCompleted?.name)>=p.plan.findIndex(s=>s.name==='publish-binding');
+    // Coarse status stays conservative for older clients: a fresh journal reads pending/complete.
+    return {
+      configured: published, verified: published, installed: false, captureEnabled: captureControl ?? (!p ? null : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
+      targets: published ? freshEng.review.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
+      delivery: { kind: 'managed', revision: 1, planKind:'fresh', configuration: published ? 'configured' : 'unconfigured', migration: !p ? 'none' : done ? 'complete' : 'pending', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0',
+        managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}) },
+      ...(freshRefusal?{diagnostics:[freshRefusal],captureEnabled:null,
+        delivery:{kind:'managed',revision:1,planKind:'fresh',configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null,managedMigrationSteps:1,managedFreshSteps:1}}:{}),
+    };
+  }
+  const p = engine.observeSetup();
+  const migration = !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
   return {
-    configured: freshConfigured, verified: freshConfigured, installed: false, captureEnabled: captureControl ?? (fresh ? freshConfigured : !p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
-    targets: freshConfigured ? managedReview.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
-    delivery: { kind: 'managed', revision: 1, configuration: freshConfigured ? 'configured' : 'unconfigured', migration, mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', ...(capable ? { managedMigrationSteps: 1 } : {}), ...(capable && p ? { migrationProgress: p } : {}) },
+    configured: false, verified: false, installed: false, captureEnabled: captureControl ?? (!p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
+    targets: null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
+    delivery: { kind: 'managed', revision: 1, configuration: 'unconfigured', migration, mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', ...(capable ? { managedMigrationSteps: 1 } : {}), ...(capable && p ? { migrationProgress: p } : {}) },
   };
 }
 const server = createServer(async (req, res) => {
@@ -89,20 +108,18 @@ const server = createServer(async (req, res) => {
         captureControl = q.path.endsWith('/enable');
         return json(200, { ok: true, captureEnabled: captureControl });
       }
-      if (fresh && q.path === '/v1/setup/managed-inspect') {
-        const read = setupRead();
-        return json(200, { ...read, delivery: { ...read.delivery, review: managedReview } });
-      }
-      if (fresh && q.path === '/v1/setup/managed-configure') {
-        const body = JSON.parse(q.body ?? '{}');
-        if (body.confirmed !== true || body.expected !== managedReview.expected || body.storeRoot !== managedReview.targets.storeRoot) return json(409, { error: 'managed-review-stale' });
-        freshConfigured = true;
-        return json(200, setupRead());
+      if (fresh && (q.path === '/v1/setup/managed-inspect' || q.path === '/v1/setup/managed-configure')) {
+        oldRoutes.push(q.path);
+        return json(409, { error: 'managed-action-required' });
       }
       if (q.path === '/v1/setup/managed-step') {
         if (!capable) return json(404, { error: 'not-found' });
-        entry.action = JSON.parse(q.body ?? '{}').action;
-        const result = await engine.request(q.body ?? '{}');
+        const sent = JSON.parse(q.body ?? '{}');
+        entry.action = sent.action; entry.version = sent.version;
+        // Version 2 reaches the fresh responder only when advertised; it records any shape violation.
+        if (fresh && sent.version !== 2) oldRoutes.push('version-1-step');
+        if (sent.version === 2 && !(fresh && freshCapable)) return json(404, { error: 'not-found' });
+        const result = await (sent.version === 2 ? freshEng : engine).request(q.body ?? '{}');
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(result === 'drop' ? { drop: true } : result));
         return;
@@ -389,37 +406,238 @@ try {
   check('failure:chinese-fits-390', (await fits()).ok, await fits());
   await shot('failure-zh-CN');
 
-  // 8. Fresh setup still uses inspect → review → explicit configure, not migration steps.
+  // 8. Fresh setup (no legacy files) on a fresh-capable service: the same step driver and card over
+  // wire version 2, never the old single-request fresh routes. Phone width in EN/RU/zh-CN, retained
+  // reconnection, capability mismatch, then desktop keyboard use.
   fresh = true;
-  for (const locale of ['en', 'ru', 'zh-CN'] as const) {
-    freshConfigured = false;
-    await open(locale, locale === 'en' ? 'light' : 'dark', locale === 'en' ? 1280 : 390, locale === 'en' ? 900 : 844);
-    check(`fresh-${locale}:opening-is-read-only`, !log.some(l => l.method === 'POST'));
+  let freshViolations = 0;
+  const openFresh = async (locale: 'en' | 'ru' | 'zh-CN', mode: 'light' | 'dark', width: number, height: number, options: FreshOptions = {}, configure: (e: ReturnType<typeof freshEngine>) => void = () => {}) => {
+    freshViolations += freshEng.violations.length;
+    captureControl = null; freshRefusal=null; freshEng = freshEngine({ inspectPages: 2, ...options }); configure(freshEng); log.length = 0;
+    await open(locale, mode, width, height, undefined, true);
+  };
+  const freshPosts = () => log.filter(l => l.method === 'POST');
+  const freshCard = (attr: string) => card(attr);
+  const startFresh = async () => {
     await click('[data-testid="setup-inspect"] button');
-    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-configure"]')`, 'fresh review');
-    check(`fresh-${locale}:inspect-only-before-confirm`, log.filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/setup/managed-inspect');
-    await shot(`fresh-review-${locale}`);
+    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'fresh review');
+  };
+  /** Text that is cut off inside the Setup panel: overflowing buttons, or hidden/ellipsis overflow on text. */
+  const clipped = () => guest<{ ok: boolean; offenders: string[] }>(`const win=frame().contentWindow;const bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();if(r.width<=2||r.height<=2||!e.checkVisibility())return false;const cs=win.getComputedStyle(e);const text=[...e.childNodes].some(n=>n.nodeType===3&&n.textContent.trim());const cut=/(hidden|clip)/.test(cs.overflowX)||cs.textOverflow==='ellipsis';return (e.tagName==='BUTTON'||(text&&cut))&&e.scrollWidth>e.clientWidth+1}).slice(0,5).map(e=>e.closest('[data-testid]')?.dataset.testid||e.className||e.tagName);return {ok:!bad.length,offenders:bad}`);
+  const fitsAll = async () => { const a = await fits(), b = await clipped(); return { ok: a.ok && b.ok, overflow: a.overflow, offenders: a.offenders, clipped: b.offenders }; };
+  const FRESH = {
+    en: { step: 'Step 3 of 8: Creating the progress store', paused: 'Setup paused', complete: 'Setup finished', partial: 'Setup kept the partial folder.' },
+    ru: { step: 'Шаг 3 из 8: Создание хранилища прогресса', paused: 'Настройка приостановлена', complete: 'Настройка завершена', partial: 'Настройка сохранила частично созданную папку.' },
+    'zh-CN': { step: '第 3 步，共 8 步：创建进度存储', paused: '设置已暂停', complete: '设置已完成', partial: '设置已保留未完成的文件夹' },
+  } as const;
+  const pauseHeld = async (release: () => void) => {
+    await click('[data-testid="setup-migration-pause"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-confirm-pause"]')`, 'fresh pause confirmation');
+    await click('[data-testid="setup-migration-confirm"] button');
+    release();
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="paused"]')`, 'fresh paused');
+  };
+  const waitComplete = (what: string) => wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="complete"]')`, what);
+
+  for (const [L, mode] of [['en', 'light'], ['ru', 'dark'], ['zh-CN', 'light']] as const) {
+    // Review → running creation → pause after the store exists (capture off) → resume → complete.
+    await openFresh(L, mode, 390, 844);
+    check(`fresh-${L}:opening-is-read-only`, freshPosts().length === 0);
+    await startFresh();
+    check(`fresh-${L}:review-uses-version-2-inspection-only`, freshPosts().length === 2 && freshPosts().every(l => l.path === '/v1/setup/managed-step' && l.version === 2 && l.action === 'inspect'), freshPosts());
+    check(`fresh-${L}:review-focus-cancel`, await focused() === 'setup-cancel', await focused());
+    check(`fresh-${L}:review-shows-frozen-plan`, await guest(`return [...d.querySelectorAll('[data-testid="setup-fresh-plan"] li')].map(li=>li.dataset.testid.replace('setup-fresh-plan-','')).join()`) === freshEng.plan.map(s => s.name).join());
+    check(`fresh-${L}:review-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-review-${L}`);
+    let release = freshEng.hold(5); // inspect×2, begin, store-directory, then hold create-store
     await confirmByKeyboard();
-    await wait(`d.querySelector('[data-testid="setup-notice"]')&&d.querySelector('[data-testid="setup-panel"][data-phase="configured"]')`, 'fresh configured');
-    check(`fresh-${locale}:configure-once-no-steps`, stepCalls() === 0 && log.filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/setup/managed-inspect,/v1/setup/managed-configure' && freshConfigured);
-    check(`fresh-${locale}:fits`, (await fits()).ok, await fits());
-    await shot(`fresh-configured-${locale}`);
-    const controlAt=log.length;
-    await click('[data-testid="setup-disable"] button');
-    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-disable"]')`,'capture confirmation');
-    check(`capture-${locale}:review-is-local`,!log.slice(controlAt).some(l=>l.method==='POST'));
-    await click('[data-testid="setup-confirm"] button');
-    check(`capture-${locale}:ack-required`,!log.slice(controlAt).some(l=>l.path.startsWith('/v1/capture/')));
-    await shot(`capture-review-${locale}`);
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-driving="true"][data-step="create-store"]')`, 'running creation');
+    check(`fresh-${L}:running-focus-on-pause`, await focused() === 'setup-migration-pause', await focused());
+    check(`fresh-${L}:running-step-of-own-plan`, await guest(`return d.querySelector('[data-testid="setup-migration-step"]').textContent`) === FRESH[L].step, await guest(`return d.querySelector('[data-testid="setup-migration-step"]').textContent`));
+    check(`fresh-${L}:running-unknown-before-store`, await guest(`const w=d.querySelector('[data-testid="setup-migration-capture-warning"]');return !!w&&w.dataset.capture==='unknown'&&w.checkVisibility()`));
+    check(`fresh-${L}:running-says-creation`, await guest(`return !!d.querySelector('[data-testid="setup-fresh-mode"]')?.checkVisibility()`));
+    check(`fresh-${L}:running-no-percentage`, await guest(`return !/%/.test(d.querySelector('[data-testid="setup-migration-progress"]').textContent)&&!d.querySelector('[data-testid="setup-migration-progress"] progress,[data-testid="setup-migration-progress"] [role="progressbar"]')`));
+    check(`fresh-${L}:running-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-running-${L}`);
+    await pauseHeld(release);
+    check(`fresh-${L}:pause-after-settle`, freshPosts().slice(-2).map(l => `${l.version}:${l.action}`).join() === '2:advance,2:pause', freshPosts().slice(-2));
+    check(`fresh-${L}:paused-off-after-creation`, await freshCard('data-capture') === 'off' && await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()`));
+    check(`fresh-${L}:paused-title`, await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === FRESH[L].paused);
+    check(`fresh-${L}:paused-resume-focused`, await focused() === 'setup-migration-resume', await focused());
+    // Unknown while creating, then off once the store exists: each new warning is announced once.
+    check(`fresh-${L}:warnings-announced-once-each`, await alerts('setup-migration-capture-warning') === 2, await alerts('setup-migration-capture-warning'));
+    check(`fresh-${L}:paused-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-paused-off-${L}`);
+    if (L === 'en') await idle('fresh-paused:no-polling');
+    await click('[data-testid="setup-migration-resume"] button');
+    await waitComplete('fresh resumed to completion');
+    check(`fresh-${L}:complete-each-step-once`, freshEng.requests.filter(r => r.action === 'advance').length === freshEng.plan.length - 1 && freshEng.progress?.capture.state === 'on');
+    check(`fresh-${L}:complete-no-warning`, await guest(`return !d.querySelector('[data-testid="setup-migration-capture-warning"]')`) && await guest(`return d.querySelector('[data-testid="setup-migration-heading"]').textContent`) === FRESH[L].complete);
+    await wait(`d.querySelector('[data-testid="setup-panel"][data-phase="configured"]')`, 'fresh configured status');
+    check(`fresh-${L}:complete-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-complete-${L}`);
+
+    // Failure while creating the store: fixed stage/code, kept-files note, Resume recovers.
+    await openFresh(L, mode, 390, 844, {}, e => e.faults.fail.add('create-store:0'));
+    await startFresh(); await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-migration-failure"]')`, 'fresh failure');
+    const failed = await guest(`const f=d.querySelector('[data-testid="setup-migration-failure"]');return {stage:f.dataset.stage,code:f.dataset.code,partial:d.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??''}`);
+    check(`fresh-${L}:failure-stage-code`, failed.stage === 'create-store' && failed.code === 'managed-step-deadline' && failed.partial.includes(FRESH[L].partial), failed);
+    check(`fresh-${L}:failure-announced-once`, await alerts('setup-migration-failure') === 1, await alerts('setup-migration-failure'));
+    check(`fresh-${L}:failure-focus-on-resume`, await focused() === 'setup-migration-resume', await focused());
+    check(`fresh-${L}:failure-no-retry`, freshEng.requests.filter(r => r.action === 'advance').length === 2);
+    check(`fresh-${L}:failure-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-failure-${L}`);
+    const resumeAt = freshEng.requests.length;
+    await click('[data-testid="setup-migration-resume"] button');
+    await waitComplete('fresh failure recovered');
+    check(`fresh-${L}:recovery-resume-then-reconciling-advance`, freshEng.requests.slice(resumeAt, resumeAt + 2).map(r => r.action === 'advance' ? `advance:${r.step.name}` : r.action).join() === 'resume,advance:create-store');
+    await shot(`fresh-recovered-${L}`);
+
+    // Paused before any store exists: capture is unknown, not off.
+    await openFresh(L, mode, 390, 844);
+    await startFresh(); release = freshEng.hold(4);
     await confirmByKeyboard();
-    await wait(`d.querySelector('[data-testid="setup-enable"]')`,'capture off observed');
-    await click('[data-testid="setup-enable"] button');
-    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-enable"]')`,'enable confirmation');
-    await confirmByKeyboard();
-    await wait(`d.querySelector('[data-testid="setup-disable"]')`,'capture on observed');
-    check(`capture-${locale}:one-bodyless-route-per-confirmation`,log.slice(controlAt).filter(l=>l.method==='POST').map(l=>l.path).join()==='/v1/capture/disable,/v1/capture/enable'&&captureControl===true);
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="store-directory"]')`, 'running folder creation');
+    await pauseHeld(release);
+    check(`fresh-${L}:paused-unknown-before-store`, await freshCard('data-capture') === 'unknown' && await guest(`const w=d.querySelector('[data-testid="setup-migration-capture-warning"]');return w.dataset.capture==='unknown'&&w.checkVisibility()`));
+    check(`fresh-${L}:paused-unknown-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-paused-unknown-${L}`);
+    // A refusal from ordinary status overrides even this frame's cached Resume
+    // card. There is no inferred operation authority in the presentation hint.
+    freshRefusal='managed-migration-conflict';
+    freshEng.faults.portBusy=true;
+    await click('[data-testid="setup-migration-resume"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-unavailable"]')`,'refusal supersedes cached progress');
+    check(`fresh-${L}:refusal-overrides-cached-resume`,await guest(`return !d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-migration-resume"]')`));
+    // Reopening also verifies a cold client has the same manual-diagnosis view.
+    await open(L,mode,390,844,undefined,true);
+    await wait(`d.querySelector('[data-testid="setup-migration-unavailable"]')`,'fresh refused partial status');
+    const refused=await guest(`const p=d.querySelector('[data-testid="setup-panel"]');return {text:p.textContent,recovery:[...p.querySelectorAll('.ap-doc-warn')].map(n=>n.textContent).join(' '),partial:p.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??'',resume:!!p.querySelector('[data-testid="setup-migration-resume"],[data-testid="setup-migrate"],[data-testid="setup-enable"]')}`);
+    // General delivery guidance can discuss toggling a plugin. Only recovery
+    // copy must not describe this fresh setup as a legacy switch.
+    // Status has no usable progress/resource checkpoint: retain manual diagnosis,
+    // but do not claim a store folder exists from the family hint alone.
+    check(`fresh-${L}:refusal-no-folder-claim-resume-or-codes`,!refused.resume&&!refused.partial&&!refused.text.includes(FRESH[L].partial)&&!/managed-/.test(refused.text)&&!/switch|migrat|перенос|переход|切换|迁移/i.test(refused.recovery),refused);
+    check(`fresh-${L}:refusal-fits-390`,(await fitsAll()).ok,await fitsAll());
+    await shot(`fresh-refused-partial-${L}`);
+    freshRefusal=null;
   }
-  fresh = false; freshConfigured = false;
+
+  // Retained store reconnection keeps its own capture setting (off) and never enables it.
+  for (const [L, mode, source] of [['en', 'light', 'reuse'], ['zh-CN', 'dark', 'create']] as const) {
+    await openFresh(L, mode, 390, 844, { storeMode: 'retain', sourceMode: source, retainedCapture: 'off' });
+    await startFresh();
+    check(`fresh-retained-${L}:review-reconnects`, await guest(`const c=d.querySelector('[data-testid="setup-review"]');return c.dataset.storeMode==='retain'&&!c.querySelector('[data-testid="setup-fresh-plan-create-store"],[data-testid="setup-fresh-plan-enable"]')`));
+    check(`fresh-retained-${L}:review-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-retained-review-${L}`);
+    const release = freshEng.hold(source === 'reuse' ? 5 : 6); // hold publish-binding
+    await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="publish-binding"]')`, 'retained running');
+    await pauseHeld(release);
+    check(`fresh-retained-${L}:paused-off-kept`, await freshCard('data-capture') === 'off' && await freshCard('data-store-mode') === 'retain');
+    check(`fresh-retained-${L}:paused-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-retained-paused-off-${L}`);
+    await click('[data-testid="setup-migration-resume"] button');
+    await waitComplete('retained complete');
+    await wait(`d.querySelector('[data-testid="setup-panel"][data-phase="configured"]')&&d.querySelector('[data-testid="setup-enable"]')`, 'retained configured with capture off');
+    check(`fresh-retained-${L}:capture-preserved`, freshEng.progress?.capture.state === 'off' && !freshEng.requests.some(r => r.action === 'advance' && r.step.name === 'enable') && await freshCard('data-capture') === 'off' && !!(await guest(`return d.querySelector('[data-testid="setup-fresh-kept"]')?.checkVisibility()`)));
+    check(`fresh-retained-${L}:complete-fits-390`, (await fitsAll()).ok, await fitsAll());
+    await shot(`fresh-retained-complete-${L}`);
+  }
+
+  // Bodyless capture controls stay available after fresh completion (unchanged negotiated behaviour).
+  await openFresh('en', 'light', 390, 844);
+  await startFresh(); await confirmByKeyboard();
+  await waitComplete('fresh complete before capture controls');
+  await wait(`d.querySelector('[data-testid="setup-disable"]')`, 'capture on after fresh setup');
+  const controlAt = log.length;
+  await click('[data-testid="setup-disable"] button');
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-disable"]')`, 'capture confirmation');
+  check('fresh-capture:review-is-local', !log.slice(controlAt).some(l => l.method === 'POST'));
+  await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-enable"]')`, 'capture off observed');
+  check('fresh-capture:bodyless-disable', log.slice(controlAt).filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/capture/disable' && captureControl === false);
+
+  // Capability mismatch: a service without managedFreshSteps gets update-together guidance, no requests.
+  freshCapable = false;
+  for (const L of ['en', 'ru', 'zh-CN'] as const) {
+    await openFresh(L, 'light', 390, 844);
+    await wait(`d.querySelector('[data-testid="setup-fresh-unsupported"]')`, 'fresh unsupported guidance');
+    check(`fresh-unsupported-${L}:no-review-control`, await guest(`return !d.querySelector('[data-testid="setup-inspect"],[data-testid="setup-storeRoot"]')`));
+    check(`fresh-unsupported-${L}:fits-390`, (await fitsAll()).ok, await fitsAll());
+    await guest(`d.querySelector('[data-testid="setup-fresh-unsupported"]').scrollIntoView({block:'center'});return true`);
+    await frames(); const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(artifacts, `fresh-unsupported-${L}.png`), Buffer.from(r.data, 'base64')); shots.push(`fresh-unsupported-${L}.png`);
+  }
+  await idle('fresh-unsupported:no-requests');
+  check('fresh-unsupported:no-post', freshPosts().length === 0, freshPosts());
+  freshCapable = true;
+
+  // Desktop keyboard: Enter starts the review, Escape cancels to the opener, Space/Enter confirm,
+  // Pause confirmation by keyboard, then a reopened frame shows progress without running it.
+  await openFresh('en', 'light', 1280, 900);
+  await guest(`d.querySelector('[data-testid="setup-inspect"] button').focus();return true`); await key('Enter');
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'keyboard review');
+  check('fresh-desktop:review-focus-cancel', await focused() === 'setup-cancel', await focused());
+  await key('Escape');
+  await wait(`!d.querySelector('[data-testid="setup-review"]')`, 'escape cancels review');
+  check('fresh-desktop:escape-returns-to-opener', await focused() === 'setup-inspect' && !freshEng.requests.some(r => r.action === 'begin'), await focused());
+  await key('Enter');
+  await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-fresh"]')`, 'keyboard review again');
+  await shot('fresh-desktop-review');
+  let held = freshEng.hold(7); // inspect×4, begin, store-directory, then hold create-store
+  await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="create-store"]')`, 'desktop running');
+  check('fresh-desktop:running-focus-on-pause', await focused() === 'setup-migration-pause', await focused());
+  await key('Enter');
+  await wait(`d.querySelector('[data-testid="setup-migration-confirm-pause"]')`, 'keyboard pause confirmation');
+  check('fresh-desktop:keep-going-focused', await focused() === 'setup-migration-cancel', await focused());
+  await key('Escape');
+  await wait(`!d.querySelector('[data-testid="setup-migration-confirm-pause"]')`, 'escape keeps going');
+  check('fresh-desktop:escape-returns-to-pause', await focused() === 'setup-migration-pause', await focused());
+  await shot('fresh-desktop-running');
+  const sentBeforeClose = freshEng.requests.length;
+  await open('en', 'light', 1280, 900, undefined, true); // reloading closes the view mid-step
+  held(); await sleep(400);
+  check('fresh-desktop:close-no-continuation', freshEng.requests.length === sentBeforeClose, { before: sentBeforeClose, now: freshEng.requests.length });
+  await open('en', 'light', 1280, 900, undefined, true); // reopen after the step in flight settled
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="pending"]')`, 'reopened fresh progress');
+  check('fresh-desktop:reopen-sends-nothing', freshEng.requests.length === sentBeforeClose && !!(await guest(`return !!d.querySelector('[data-testid="setup-migration-continue"]')`)));
+  check('fresh-desktop:reopen-keeps-off-warning', await freshCard('data-capture') === 'off' && await guest(`return d.querySelector('[data-testid="setup-migration-capture-warning"]').checkVisibility()`));
+  await shot('fresh-desktop-reopened');
+  await guest(`d.querySelector('[data-testid="setup-migration-continue"] button').focus();return true`); await key('Enter');
+  await waitComplete('desktop continue completes');
+  check('fresh-desktop:explicit-continue-completes', freshEng.requests[sentBeforeClose]?.action === 'advance' && freshEng.progress?.state === 'complete');
+  await shot('fresh-desktop-complete');
+
+  // A real visibility event retires a held fresh reply; reopening needs explicit Continue.
+  await openFresh('en', 'dark', 1280, 900);
+  await startFresh(); held = freshEng.hold(4); await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="store-directory"]')`, 'held folder step');
+  await guest(`Object.defineProperty(d,'visibilityState',{configurable:true,value:'hidden'});d.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(d,'visibilityState',{configurable:true,value:'visible'});d.dispatchEvent(new Event('visibilitychange'));return true`);
+  held();
+  await wait(`d.querySelector('[data-testid="setup-migration-continue"]')`, 'fresh hide/show continue');
+  check('fresh-hide-show:held-reply-retired', freshEng.requests.filter(r => r.action === 'advance').length === 1);
+  await shot('fresh-hide-show-continue');
+
+  // An uncertain enable needs a fresh capture decision for exactly that enable.
+  await openFresh('en', 'dark', 1280, 900, {}, e => { e.faults.unsettledEnable = true; });
+  await startFresh(); await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-review-capture"]')`, 'fresh capture decision needed');
+  check('fresh-review:needs-decision', await freshCard('data-recovery') === 'review' && await freshCard('data-capture') === 'off');
+  check('fresh-review:unfinished-has-no-ordinary-enable', await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='configured'&&!d.querySelector('[data-testid="setup-enable"]')`));
+  await click('[data-testid="setup-migration-review-capture"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-capture-review"][data-family="fresh"]')`, 'fresh capture review');
+  check('fresh-review:focus-cancel', await focused() === 'setup-cancel', await focused());
+  await shot('fresh-capture-review-desktop');
+  await confirmByKeyboard();
+  await waitComplete('fresh complete after capture decision');
+  const reviewed = freshEng.requests.find(r => r.action === 'resume');
+  check('fresh-review:reviewed-resume-payload', !!reviewed && 'review' in reviewed && reviewed.version === 2 && reviewed.review?.step === 'enable', reviewed);
+
+  freshViolations += freshEng.violations.length;
+  check('fresh:no-old-routes-version-1-or-shape-violations', oldRoutes.length === 0 && freshViolations === 0, { oldRoutes, freshViolations });
+  fresh = false;
 
   // 9. Older service: no capability → existing flow, zero step requests.
   capable = false;

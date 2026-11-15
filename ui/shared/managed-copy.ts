@@ -262,8 +262,190 @@ const stepsZh: typeof stepsEn = {
 const stepCatalogs: Record<InterfaceLanguage, typeof stepsEn> = { en: stepsEn, ru: stepsRu, 'zh-CN': stepsZh };
 export const managedStepCopy = (locale = 'en') => stepCatalogs[resolveLanguage('auto', locale)];
 
-export function managedErrorText(code:string, locale='en'): string | null {
-  const steps=managedStepCopy(locale).errors;
+/** Fresh setup copy (wire version 2). It never says "switch" or "migration" and names creation or
+ * reconnection honestly. Shared step wording (status lines, codes) comes from the step copy above. */
+type CaptureWords = { on: string; off: string; unknown: string };
+type Warning = { title: string; body: string };
+const freshEn = {
+  stages: {
+    prepare: 'Preparing setup', 'store-directory': 'Creating the store folder', 'create-store': 'Creating the progress store',
+    expectation: 'Checking the bundled companion', 'register-source': 'Registering this OpenCode source',
+    'publish-binding': 'Connecting the progress store', enable: 'Turning on capture', reconcile: 'Final check',
+    roots: 'Finding OpenCode folders', 'managed-state': 'Reading setup records', 'legacy-discovery': 'Checking for an old installation',
+    store: 'Checking the progress store', review: 'Preparing the review', journal: 'Reading the setup record', lock: 'Waiting for another setup action',
+  } as Record<string,string>,
+  titles: { running: 'Setting up capture', pending: 'Setup not finished', paused: 'Setup paused', abandoned: 'Setup stopped', failed: 'Setup step failed', interrupted: 'Setup interrupted', active: 'A step is still running', review: 'Capture decision needed', complete: 'Setup finished' },
+  checking: (stage:string|null) => stage ? `Checking this computer: ${stage}…` : 'Checking this computer…',
+  continue: 'Continue setup', resume: 'Resume setup', pause: 'Pause setup', abandon: 'Stop setup',
+  pauseTitle: 'Pause setup?', pauseBody: 'Setup finishes the step in progress, then stops. Nothing is undone. You can resume setup later.',
+  abandonTitle: 'Stop setup?', abandonBody: 'Setup stops here. Nothing is undone, and finished steps stay finished. You can resume setup later.',
+  stepwise: 'Setup runs one step at a time. You can pause between steps; pausing does not undo finished steps. If a step is interrupted, Setup keeps what it made and checks it before doing more. It never deletes files to try again.',
+  captureEnable: (state:string) => `Setup could not confirm whether the last step turned capture on. Capture is now ${state}. Continuing turns capture on. If capture was turned off on purpose after that step, this overrides it.`,
+  errors: {
+    'managed-step-conflict': 'Setup moved on elsewhere, for example in another window. Check the status before continuing.',
+    'managed-step-limit': 'Setup found more files than it can check safely. Nothing was changed.',
+    'managed-journal-unsupported': 'The setup record was made by a different version. Update the extension and service together. Nothing was changed.',
+    'managed-migration-required': 'Setup is unfinished, so continue or resume it before turning capture on.',
+    'managed-migration-conflict': 'The setup folders changed or contain conflicting files. Stop here and arrange manual diagnosis.',
+    'managed-binding-invalid': 'The partial setup record cannot be used safely. Stop here and arrange manual diagnosis.',
+    'foreign-files': 'The setup folder contains files Setup cannot safely use. Stop here and arrange manual diagnosis.',
+    corrupt: 'The partial progress store is damaged. Stop here and arrange manual diagnosis.',
+    schema: 'The progress store format is not supported by this build. Use a compatible extension and service.',
+    storage: 'Setup cannot read the progress store. Stop here and arrange manual diagnosis.',
+  } as Record<string,string>,
+  partial: 'Setup kept the partial folder. It will not delete, reuse or repair it on its own.',
+  invalid: 'The partial setup cannot be used safely.',
+  unavailable: 'Setup cannot safely continue. Stop here and arrange manual diagnosis.',
+  conflict: 'The setup folders contain conflicting state. Stop here and arrange manual diagnosis.',
+  reviewTitle: { create: 'Set up a new progress store', retain: 'Reconnect your progress store' },
+  effect: {
+    create: 'Setup creates a new private progress store, registers this OpenCode source and connects them. The store starts with capture off; the last steps turn it on.',
+    'retain-create': 'Setup reconnects your existing progress store and registers this OpenCode source in it. History, other sources and the capture setting stay as they are.',
+    'retain-reuse': 'Setup reconnects your existing progress store and the source it already has for these folders. History and the capture setting stay as they are.',
+  },
+  mode: { create: 'Setup is creating a new private progress store for this OpenCode source.', retain: 'Setup is reconnecting your existing progress store. Its history and capture setting are kept.' },
+  rows: { store: 'Progress store', source: 'OpenCode source', version: 'Companion version', capture: 'Capture', plan: 'Steps' },
+  storeValue: { create: 'New', retain: 'Existing, kept as is' },
+  sourceValue: { create: 'New, registered by Setup', reuse: 'Existing, reused' },
+  captureValue: { create: 'Off at first, turned on in the last steps', retain: (state:string) => `Kept as is (now ${state})` },
+  warn: {
+    create: { off: { title: 'Capture is off', body: 'The new progress store starts with capture off. Agents do not record progress until the last setup steps turn it on.' },
+      unknown: { title: 'Capture is not confirmed', body: 'The new progress store is not ready yet, so Setup cannot confirm that agents record progress. Finish setup to create the store and turn capture on.' } } as Record<'off'|'unknown',Warning>,
+    retain: { off: { title: 'Capture is off', body: 'Your existing store has capture off, and Setup keeps it that way. Turn capture on under Setup after reconnecting if you want agents to record progress.' },
+      unknown: { title: 'Capture is not confirmed', body: 'Setup cannot confirm the capture setting of your existing store right now. Setup does not change it.' } } as Record<'off'|'unknown',Warning>,
+  },
+  stays: {
+    create: { on: 'Capture stays on.', off: 'Capture stays off until you finish setup.', unknown: 'Capture is not turned on until you finish setup.' } as CaptureWords,
+    retain: { on: 'Capture stays on.', off: 'Capture stays off. Setup does not change it.', unknown: 'Setup does not change capture.' } as CaptureWords,
+  },
+  unsupported: 'This service cannot set up capture step by step. Update the extension and service together. Nothing was changed.',
+  complete: 'Setup finished. A matching managed companion load is still a separate observation.',
+};
+const freshRu: typeof freshEn = {
+  stages: {
+    prepare: 'Подготовка настройки', 'store-directory': 'Создание папки хранилища', 'create-store': 'Создание хранилища прогресса',
+    expectation: 'Проверка комплектного компаньона', 'register-source': 'Регистрация этого источника OpenCode',
+    'publish-binding': 'Подключение хранилища прогресса', enable: 'Включение записи', reconcile: 'Итоговая проверка',
+    roots: 'Поиск папок OpenCode', 'managed-state': 'Чтение записей настройки', 'legacy-discovery': 'Проверка старой установки',
+    store: 'Проверка хранилища прогресса', review: 'Подготовка проверки', journal: 'Чтение записи настройки', lock: 'Ожидание другой операции настройки',
+  },
+  titles: { running: 'Настройка записи', pending: 'Настройка не завершена', paused: 'Настройка приостановлена', abandoned: 'Настройка остановлена', failed: 'Шаг настройки не выполнен', interrupted: 'Настройка прервана', active: 'Шаг ещё выполняется', review: 'Нужно решение о записи', complete: 'Настройка завершена' },
+  checking: (stage) => stage ? `Проверка этого компьютера: ${stage}…` : 'Проверка этого компьютера…',
+  continue: 'Продолжить настройку', resume: 'Возобновить настройку', pause: 'Приостановить настройку', abandon: 'Остановить настройку',
+  pauseTitle: 'Приостановить настройку?', pauseBody: 'Настройка завершит текущий шаг и остановится. Ничего не отменяется. Возобновить настройку можно позже.',
+  abandonTitle: 'Остановить настройку?', abandonBody: 'Настройка остановится здесь. Ничего не отменяется, выполненные шаги остаются выполненными. Возобновить настройку можно позже.',
+  stepwise: 'Настройка выполняется по шагам. Между шагами её можно приостановить; пауза не отменяет выполненные шаги. Если шаг прервётся, настройка сохранит уже созданное и проверит его, прежде чем продолжить. Файлы для повторной попытки не удаляются.',
+  captureEnable: (state) => `Настройка не смогла подтвердить, включил ли последний шаг запись. Сейчас запись: ${state}. Продолжение включит запись. Если после этого шага запись выключили намеренно, это решение будет отменено.`,
+  errors: {
+    'managed-step-conflict': 'Настройка продвинулась в другом месте, например в другом окне. Проверьте состояние, прежде чем продолжать.',
+    'managed-step-limit': 'Настройка нашла больше файлов, чем может безопасно проверить. Ничего не изменено.',
+    'managed-journal-unsupported': 'Запись настройки создана другой версией. Обновите расширение и сервис вместе. Ничего не изменено.',
+    'managed-migration-required': 'Настройка не завершена. Продолжите или возобновите её, прежде чем включать запись.',
+    'managed-migration-conflict': 'Папки настройки изменились или содержат конфликтующие файлы. Остановитесь и организуйте ручную диагностику.',
+    'managed-binding-invalid': 'Запись частичной настройки нельзя безопасно использовать. Остановитесь и организуйте ручную диагностику.',
+    'foreign-files': 'В папке настройки есть файлы, которые нельзя безопасно использовать. Остановитесь и организуйте ручную диагностику.',
+    corrupt: 'Частично созданное хранилище прогресса повреждено. Остановитесь и организуйте ручную диагностику.',
+    schema: 'Эта сборка не поддерживает формат хранилища. Используйте совместимые версии расширения и сервиса.',
+    storage: 'Настройка не может прочитать хранилище прогресса. Остановитесь и организуйте ручную диагностику.',
+  },
+  partial: 'Настройка сохранила частично созданную папку. Она не будет сама удалять, повторно использовать или исправлять её.',
+  invalid: 'Частичную настройку нельзя безопасно использовать.',
+  unavailable: 'Нельзя безопасно продолжить настройку. Остановитесь и организуйте ручную диагностику.',
+  conflict: 'В папках настройки обнаружено конфликтующее состояние. Остановитесь и организуйте ручную диагностику.',
+  reviewTitle: { create: 'Создать новое хранилище прогресса', retain: 'Снова подключить ваше хранилище прогресса' },
+  effect: {
+    create: 'Настройка создаст новое приватное хранилище прогресса, зарегистрирует этот источник OpenCode и свяжет их. Хранилище создаётся с выключенной записью; последние шаги включают её.',
+    'retain-create': 'Настройка снова подключит ваше хранилище прогресса и зарегистрирует в нём этот источник OpenCode. История, другие источники и настройка записи не меняются.',
+    'retain-reuse': 'Настройка снова подключит ваше хранилище прогресса и уже имеющийся в нём источник для этих папок. История и настройка записи не меняются.',
+  },
+  mode: { create: 'Настройка создаёт новое приватное хранилище прогресса для этого источника OpenCode.', retain: 'Настройка снова подключает ваше хранилище прогресса. Его история и настройка записи сохраняются.' },
+  rows: { store: 'Хранилище прогресса', source: 'Источник OpenCode', version: 'Версия компаньона', capture: 'Запись', plan: 'Шаги' },
+  storeValue: { create: 'Новое', retain: 'Существующее, без изменений' },
+  sourceValue: { create: 'Новый, будет зарегистрирован', reuse: 'Существующий, используется снова' },
+  captureValue: { create: 'Сначала выключена, включается на последних шагах', retain: (state) => `Не меняется (сейчас: ${state})` },
+  warn: {
+    create: { off: { title: 'Запись выключена', body: 'Новое хранилище создаётся с выключенной записью. Агенты не записывают прогресс, пока последние шаги настройки не включат её.' },
+      unknown: { title: 'Запись не подтверждена', body: 'Новое хранилище ещё не готово, поэтому настройка не может подтвердить, что агенты записывают прогресс. Завершите настройку, чтобы создать хранилище и включить запись.' } },
+    retain: { off: { title: 'Запись выключена', body: 'В вашем хранилище запись выключена, и настройка это не меняет. Включите запись в настройке после подключения, если хотите, чтобы агенты записывали прогресс.' },
+      unknown: { title: 'Запись не подтверждена', body: 'Настройка сейчас не может подтвердить, включена ли запись в вашем хранилище. Настройка это не меняет.' } },
+  },
+  stays: {
+    create: { on: 'Запись останется включённой.', off: 'Запись останется выключенной до завершения настройки.', unknown: 'Запись не будет включена до завершения настройки.' },
+    retain: { on: 'Запись останется включённой.', off: 'Запись останется выключенной. Настройка её не меняет.', unknown: 'Настройка не меняет запись.' },
+  },
+  unsupported: 'Этот сервис не поддерживает пошаговую настройку записи. Обновите расширение и сервис вместе. Ничего не изменено.',
+  complete: 'Настройка завершена. Соответствующая управляемая загрузка компаньона проверяется отдельно.',
+};
+const freshZh: typeof freshEn = {
+  stages: {
+    prepare: '准备设置', 'store-directory': '创建存储文件夹', 'create-store': '创建进度存储',
+    expectation: '检查附带的 companion', 'register-source': '注册此 OpenCode 来源',
+    'publish-binding': '连接进度存储', enable: '开启采集', reconcile: '最终检查',
+    roots: '查找 OpenCode 文件夹', 'managed-state': '读取设置记录', 'legacy-discovery': '检查旧版安装',
+    store: '检查进度存储', review: '准备审阅', journal: '读取设置进度记录', lock: '等待其他设置操作',
+  },
+  titles: { running: '正在设置采集', pending: '设置尚未完成', paused: '设置已暂停', abandoned: '设置已停止', failed: '设置步骤失败', interrupted: '设置已中断', active: '步骤仍在运行', review: '需要决定采集设置', complete: '设置已完成' },
+  checking: (stage) => stage ? `正在检查此计算机：${stage}…` : '正在检查此计算机…',
+  continue: '继续设置', resume: '恢复设置', pause: '暂停设置', abandon: '停止设置',
+  pauseTitle: '暂停设置？', pauseBody: '设置将在完成当前步骤后停止，不会撤销任何更改。你可以稍后恢复设置。',
+  abandonTitle: '停止设置？', abandonBody: '设置将在此停止，不会撤销任何更改，已完成的步骤仍然保留。你可以稍后恢复设置。',
+  stepwise: '设置按步骤执行。你可以在步骤之间暂停；暂停不会撤销已完成的步骤。如果某个步骤中断，设置会保留已创建的内容，并在继续前先检查。设置不会为了重试而删除文件。',
+  captureEnable: (state) => `设置无法确认上一步是否已开启采集。采集当前为${state}。继续将开启采集。如果你在该步骤后主动关闭了采集，此操作会覆盖该决定。`,
+  errors: {
+    'managed-step-conflict': '设置已在其他位置推进，例如另一个窗口。请先检查状态再继续。',
+    'managed-step-limit': '设置发现的文件数量超出可安全检查的范围。未做任何更改。',
+    'managed-journal-unsupported': '设置记录由不同版本创建。请同时更新扩展和服务。未做任何更改。',
+    'managed-migration-required': '设置尚未完成。请先继续或恢复设置，再开启采集。',
+    'managed-migration-conflict': '设置文件夹已更改或包含冲突文件。请在此停止并安排手动诊断。',
+    'managed-binding-invalid': '无法安全使用未完成的设置记录。请在此停止并安排手动诊断。',
+    'foreign-files': '设置文件夹包含无法安全使用的文件。请在此停止并安排手动诊断。',
+    corrupt: '未完成的进度存储已损坏。请在此停止并安排手动诊断。',
+    schema: '此版本不支持该进度存储格式。请使用兼容的扩展和服务。',
+    storage: '设置无法读取进度存储。请在此停止并安排手动诊断。',
+  },
+  partial: '设置已保留未完成的文件夹，不会自行删除、复用或修复它。',
+  invalid: '无法安全使用未完成的设置。',
+  unavailable: '无法安全地继续设置。请在此停止并安排手动诊断。',
+  conflict: '设置文件夹中存在冲突状态。请在此停止并安排手动诊断。',
+  reviewTitle: { create: '设置新的进度存储', retain: '重新连接你的进度存储' },
+  effect: {
+    create: '设置将创建新的私有进度存储，注册此 OpenCode 来源并将二者连接。新存储创建时采集为关闭，最后的步骤会开启采集。',
+    'retain-create': '设置将重新连接你现有的进度存储，并在其中注册此 OpenCode 来源。历史、其他来源和采集设置保持不变。',
+    'retain-reuse': '设置将重新连接你现有的进度存储，以及其中这些文件夹已有的来源。历史和采集设置保持不变。',
+  },
+  mode: { create: '设置正在为此 OpenCode 来源创建新的私有进度存储。', retain: '设置正在重新连接你现有的进度存储，其历史和采集设置会保留。' },
+  rows: { store: '进度存储', source: 'OpenCode 来源', version: 'companion 版本', capture: '采集', plan: '步骤' },
+  storeValue: { create: '新建', retain: '现有，保持不变' },
+  sourceValue: { create: '新建，由设置注册', reuse: '现有，继续使用' },
+  captureValue: { create: '起初关闭，最后的步骤开启', retain: (state) => `保持不变（当前：${state}）` },
+  warn: {
+    create: { off: { title: '采集已关闭', body: '新进度存储创建时采集为关闭。在设置的最后步骤开启采集前，智能体不会记录进度。' },
+      unknown: { title: '采集尚未确认', body: '新进度存储尚未就绪，因此设置无法确认智能体是否在记录进度。请完成设置以创建存储并开启采集。' } },
+    retain: { off: { title: '采集已关闭', body: '你现有存储的采集为关闭，设置不会更改。如需智能体记录进度，请在重新连接后于设置中开启采集。' },
+      unknown: { title: '采集尚未确认', body: '设置目前无法确认你现有存储的采集设置。设置不会更改它。' } },
+  },
+  stays: {
+    create: { on: '采集将保持开启。', off: '采集将保持关闭，直到设置完成。', unknown: '设置完成前不会开启采集。' },
+    retain: { on: '采集将保持开启。', off: '采集将保持关闭，设置不会更改。', unknown: '设置不会更改采集。' },
+  },
+  unsupported: '此服务不支持分步设置采集。请同时更新扩展和服务。未做任何更改。',
+  complete: '设置已完成。匹配的受管 companion 加载仍是一项单独的观察。',
+};
+const freshCatalogs: Record<InterfaceLanguage, typeof freshEn> = { en: freshEn, ru: freshRu, 'zh-CN': freshZh };
+export const managedFreshCopy = (locale = 'en') => freshCatalogs[resolveLanguage('auto', locale)];
+
+/** Step copy for one family: fresh replaces journey wording; stage and code fallbacks stay shared. */
+export function managedFamilyStepCopy(family: 'migration' | 'fresh', locale = 'en'): typeof stepsEn {
+  const steps = managedStepCopy(locale);
+  if (family === 'migration') return steps;
+  const f = managedFreshCopy(locale);
+  return { ...steps, titles: f.titles, checking: f.checking, continue: f.continue, resume: f.resume, pause: f.pause, abandon: f.abandon,
+    pauseTitle: f.pauseTitle, pauseBody: f.pauseBody, abandonTitle: f.abandonTitle, abandonBody: f.abandonBody, stepwise: f.stepwise,
+    captureEnable: f.captureEnable, stages: { ...steps.stages, ...f.stages }, errors: { ...steps.errors, ...f.errors } };
+}
+
+export function managedErrorText(code:string, locale='en', family: 'migration' | 'fresh' = 'migration'): string | null {
+  const steps=managedFamilyStepCopy(family,locale).errors;
   if (Object.hasOwn(steps,code)) return steps[code];
   const text=managedCopy(locale);
   const errors: Record<string,string> = {

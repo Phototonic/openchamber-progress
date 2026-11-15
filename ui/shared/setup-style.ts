@@ -11,6 +11,10 @@ export const SETUP_CSS = `
 .ap-migration-confirm{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--oc-border);border-radius:var(--oc-radius,8px);background:var(--oc-bg)}
 .ap-migration-confirm .ap-setup-title{font-size:13px;margin:0}
 .ap-migration .oc-sdk-banner{min-width:0}
+.ap-fresh-plan{display:flex;flex-direction:column;gap:2px}
+.ap-fresh-steps{list-style:decimal;padding-left:1.6em;font-size:12px;overflow-wrap:anywhere}
+.ap-fresh-steps li::marker{color:var(--oc-muted)}
+.ap-fresh-facts dd{overflow-wrap:anywhere}
 `;
 export function ensureSetupStyle() {
   if (typeof document === 'undefined' || document.getElementById('ap-setup-style')) return;

@@ -44,25 +44,32 @@ on supported Windows). Mutable state never lives in the extension code folder.
 After configuration, the next eligible native context/report boundary can activate
 a previously dormant companion; no global install or automatic restart is needed.
 
-Fresh setup (no legacy installation or migration journal) retains the existing
-`managed-inspect` → explicit confirmation → `managed-configure` HTTP flow and its
-nonce-bound review. The service holds the same scope and Store writer slots as
-migration/capture workers throughout configuration, including failure cleanup;
-busy setup activity refuses rather than racing another writer. Inspection writes
-no product state. A journal or legacy installation instead requires the migration
-step flow; configuring ambiguous legacy discovery alongside a managed selection
-refuses with `managed-migration-conflict`, never implicit fresh configuration.
+Fresh setup now runs in short, resumable steps on every supported platform.
+Choose the default or a custom private store, inspect the folders and frozen plan,
+acknowledge the review, then confirm. Inspection and cancellation write nothing.
+New storage is prepared, its folder/database created separately, the companion
+expectation published, the source registered and the binding selected. The new
+database starts with capture off; only the later reviewed enable step turns it on.
+Reconnecting valid retained storage reuses its identities, history and capture
+setting, with no enable/disable step. A matching verified source is reused;
+otherwise the review discloses a new source registered only after expectation.
+Reconnecting a retained matching source may replace an older expectation for the
+same Store/source/install identity with the explicitly reviewed package. Its
+expectation step freezes and compares the prior bytes before atomic replacement.
+Foreign or invalid metadata still refuses. Once that step completes, changed
+expectation bytes or package consent refuse rather than being silently refreshed.
 
-**Known Windows limit:** fresh configuration still uses the synchronous 1.3.0
-controller and its existing security-helper timeouts, not the six-launch step
-budget. Portable accounting measures 3 PowerShell launches for fresh inspection
-and 24 for configuration. Roughly 0.3 seconds per launch can fit the host's
-20-second request limit; very slow PowerShell can exceed it and delay health
-responses. This is not native latency certification. A failed/timed-out reply is
-not rollback: inspect current state before an explicit retry, without deleting
-metadata or relaxing permissions. Linux/macOS do not launch PowerShell. Moving
-fresh configuration to a separate fresh plan on the step engine remains follow-up
-work; the current UI intentionally keeps the existing fresh review/confirm flow.
+The card shows real steps and on/off/unknown capture, not a percentage. Pause or
+Stop waits for the active request and retains work, without undoing it. Reopening
+requires explicit continuation. Before storage exists, capture is unknown, not off.
+Each request has at most six security launches, a 17-second work deadline and an
+18-second response deadline below the host's 20-second limit. Health remains cheap
+while workers run. Portable counters measure six launches for prepare, folder and
+database creation and five for each later effect. Native Windows timing and
+successful 2.5-second-helper journeys remain CI acceptance gates, not claims
+inferred from Linux tests. Persistently slower helpers can still refuse within the
+budget; a timeout is not rollback and never permits deleting metadata or changing
+permissions to force a retry. Linux/macOS do not launch PowerShell.
 
 The service's five-second HTTP `requestTimeout`/`headersTimeout` bounds receiving
 request bytes, not executing a fully received Setup request. It produces HTTP 408,
@@ -122,16 +129,22 @@ decision that cannot be proven requires a fresh review, and that review authoriz
 only one new capture intent. Retrying a settled enable never overrides a later
 manual disable. No worker continues automatically after restart.
 
-Authenticated health and Setup delivery advertise `managedMigrationSteps: 1`.
-Clients must negotiate it before using `/v1/setup/managed-step`. The old migrate
+Authenticated health and Setup delivery advertise independent
+`managedMigrationSteps: 1` and `managedFreshSteps: 1` capabilities. The existing
+`/v1/setup/managed-step` route uses wire 1 for migration and wire 2 for fresh setup.
+An absent fresh capability shows update-together guidance, with no old-route
+fallback. The old migrate
 URL always returns 409 `managed-action-required` with no security launches or
-migration work. The old inspect/configure URLs do the same no-write refusal when
+migration work. On Windows the old inspect/configure URLs always refuse with that
+exact 409 object before body parsing, workers, security queries or product writes.
+On Linux/macOS these compatibility routes do the same no-write refusal when
 legacy discovery or any migration journal applies (configuration of ambiguous
 legacy plus managed selection without a journal returns `managed-migration-conflict`,
 while inspection still returns `managed-action-required`). Legacy/journal inspect
 refusal uses local presence hints before security queries, with no writes; its acceptance budget
 is at most six security launches and eight seconds on the undelayed runner. The
-old inspect/configure routes remain supported for fresh setup as described above;
+old inspect/configure routes remain supported only on Linux/macOS for no-legacy,
+no-journal fresh setup under the existing nonce-bound review and writer fence;
 migration must never fall back to them. A presence hint authorizes only refusal:
 it neither validates nor reads the journal/legacy contents. An absent or unreadable
 hint still runs the full fresh path, ACL and ownership checks, including canonical
@@ -249,7 +262,38 @@ plan; the old phase alone does not. Upgrade itself changes only the private
 journal, not capture, selectors or history. Once upgraded, retain format 2 on
 rollback: an older service must refuse it rather than discard or down-convert it.
 
-If bootstrap is refused, stop submitting migration actions, retain the files and
+Fresh operations retain format-3 journals at the same private location. A folder
+created without its completion checkpoint, an incomplete database, orphan sidecars
+or ambiguous publication links remain refused and retained; privacy/emptiness alone
+never permits adoption or repair. A committed database can reconcile only against
+its exact creation intent, frozen identity, supported schema and initial off state.
+Creation reconciliation also requires absent sidecars, even when the database
+exists; this does not forbid normal WAL sidecars after its creation checkpoint.
+If Store observation fails on an unfinished format-3 operation with no database
+creation checkpoint, ordinary status reports unavailable for manual diagnosis,
+without a Resume action. Checkpointed and complete operations instead retain their
+pending or complete progress with unknown capture and the read diagnostic attached.
+Status retains the fresh-setup presentation family even when no usable progress can
+be shown. Any partial folder is retained, never deleted, reused or repaired to force
+continuation. A damaged expectation is a state conflict
+(`managed-migration-conflict`), not a storage outage.
+Fresh refusal banners and diagnostics use localized setup wording, not migration
+copy. Fixed last-action stage and bounded error codes appear alongside plain-language
+guidance, not instead of it. The kept-partial-folder note appears once, only when
+unfinished fresh progress includes a completed store-folder or database creation;
+a stage name, invalid bootstrap marker or presentation hint alone cannot claim a
+store folder exists. The ordinary Turn on capture action is not offered during
+unfinished fresh setup; continue or resume that operation instead. It remains
+available after verified completion with capture off.
+Rollback must retain format 3, stores, bindings, expectations and history. Older
+journal readers refuse format 3, including complete records; use a fresh-capable
+build for recovery, never down-convert or restore a global loader.
+Creation-only sole-source and initial capture-off checks apply while fresh work is
+unfinished, not after terminal completion. A completed store may serve other
+sources; Setup still verifies its selected source, Store identity, schema, private
+objects and actual capture setting.
+
+If bootstrap is refused, stop submitting setup actions, retain the files and
 record only the fixed diagnostic stage/code for support. Establish that no
 configuration or migration worker is active, then arrange separately authorized
 manual inspection and recovery of the specific partial metadata. Do not clear the
@@ -444,7 +488,7 @@ PowerShell 5.1/.NET, not a new executable/compiler/module. Fixed profile-free,
 noninteractive scripts receive UTF-8 JSON through stdin; paths are not executable
 command text. Missing/blocked PowerShell is a fixed privacy/setup failure.
 
-Outside the migration step engine, the first security query per loaded
+Outside the setup step engine, the first security query per loaded
 service/companion has a 30-second attempt and
 one identical retry only on timeout (up to 60 seconds configured wait). Later
 queries have one 10-second attempt. Termination/OS overhead is additional; these
@@ -459,7 +503,7 @@ The host's liveness deadline is separate from these security-helper budgets.
 OpenChamber 2.7.1 also limits both the guest bridge and service proxy to **20 seconds**
 per request (`packages/sdk/src/contract.ts:499`, `host.ts:607-618`, and
 `packages/web/server/lib/guests/service.js:725,832,855-856` at tag `v2.7.1`).
-Migration now runs as separate inspection pages and confirmed steps, with at most
+Migration and fresh setup run as separate inspection pages and confirmed steps, with at most
 **six actual PowerShell starts per request**, including failures, replay, checks,
 publication and cleanup. The 17-second work and 18-second response deadlines sit
 below the host limit; the undelayed runner gates each request at eight seconds.
@@ -472,8 +516,12 @@ request boundary. A blocked helper fails closed, never skips a check to meet the
 deadline, and step mode does not inherit the cold-query retry. Workers retain
 their fence until exit; timeout is not rollback. The portable HTTP fixture counts
 real helper-launch calls at a substituted OS boundary, not legacy file reads or
-native NTFS security. Fresh inspect/configure is the documented exception above:
-3 and 24 launches respectively, with its synchronous slow-PowerShell limit.
+native NTFS security. Fresh inspection pages measure 1 each (retained roots can
+take 2); prepare, store-directory and create-store measure 6 each; later effects
+measure 5; settled replay 1, controls normally 3, Setup status 3 before binding and
+4 afterwards. All failure/settlement attempts remain within 6. The old non-Windows
+compatibility controller remains synchronous; its historical Windows accounting
+was 3/24, not the current Windows path.
 Measured portable manifest/selector journeys use 1, 1, 4, 1, 1, 1 launches for
 the six inspection pages, 6 for prepare, 5 per ordinary advance/removal batch,
 6 for recording removal, 1 for a successful replay, 3 per pause/stop/resume,

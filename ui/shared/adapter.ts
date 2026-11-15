@@ -4,7 +4,7 @@
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
 import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
-import { parseManagedStepProgress } from './setup-steps.ts';
+import { parseManagedFreshStepProgress, parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRequest } from '../../shared/needs-you.ts';
@@ -728,6 +728,13 @@ export function parseSetup(body: string): SetupView {
   const hasProgress = managed && Object.hasOwn(d, 'migrationProgress');
   const progress = hasProgress ? parseManagedStepProgress(d.migrationProgress) : undefined;
   check(!hasProgress || (steps && !!progress), 'Setup migration progress is unreadable.');
+  // Fresh steps are a separate literal capability with their own version-2 progress, read the same way.
+  // One journal location holds one operation, so both projections at once are unreadable too.
+  const fresh = managed && d.managedFreshSteps === 1;
+  const hasFreshProgress = managed && Object.hasOwn(d, 'freshProgress');
+  const freshProgress = hasFreshProgress ? parseManagedFreshStepProgress(d.freshProgress) : undefined;
+  check(!hasFreshProgress || (fresh && !!freshProgress), 'Setup fresh progress is unreadable.');
+  check(!(hasProgress && hasFreshProgress), 'Setup progress is ambiguous.');
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -743,7 +750,7 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}), ...(fresh ? {managedFreshSteps:1} : {}), ...(freshProgress ? {freshProgress} : {}), ...(d.planKind==='fresh'?{planKind:'fresh'}:{}) } as SetupView['delivery'] } : {}),
     ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),

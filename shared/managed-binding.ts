@@ -120,7 +120,10 @@ function readManagedExpectationInner(binding: Binding): ManagedExpectation | und
   if (!lstatSync(file, { throwIfNoEntry: false })) return undefined;
   managedPath(file);
   const stat = lstatSync(file); need(stat.isFile() && !stat.isSymbolicLink() && privatePaths([path.dirname(file), file]));
-  const e = JSON.parse(readFileSync(file, 'utf8')) as ManagedExpectation;
+  const bytes = readFileSync(file, 'utf8');
+  let e: ManagedExpectation;
+  try { e = JSON.parse(bytes) as ManagedExpectation; }
+  catch { throw new ManagedBindingError('managed-migration-conflict'); }
   need(e.format === 1 && e.storeId === binding.storeId && e.sourceId === binding.source.id && e.installId === binding.installId &&
     typeof e.version === 'string' && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(e.version) && /^[a-f0-9]{64}$/.test(e.fingerprint));
   return e;

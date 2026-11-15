@@ -30,10 +30,16 @@ try{
   const wait=async(condition:string,label:string)=>{const ok=await evaluate(`(async()=>{const end=performance.now()+20000;while(performance.now()<end){try{const w=frame('page').contentWindow,d=w.document;if(${condition})return true}catch{}await new Promise(r=>setTimeout(r,25))}return false})()`);if(!ok)throw Error('Timed out: '+label);};
   const check=(id:string,pass:boolean,facts?:unknown)=>{results.push({id,pass,...(facts===undefined?{}:{facts})});if(!pass)throw Error('Failed: '+id);};
   const key=async(k:string)=>{const code:Record<string,number>={Enter:13,Tab:9,ArrowDown:40,ArrowUp:38,Escape:27,Home:36,Space:32};const key=k==='Space'?' ':k;await send('Input.dispatchKeyEvent',{type:'keyDown',key,code:k,windowsVirtualKeyCode:code[k]??0,...(k==='Enter'?{text:'\r'}:k==='Space'?{text:' '}:{})});await send('Input.dispatchKeyEvent',{type:'keyUp',key,code:k,windowsVirtualKeyCode:code[k]??0});};
-  const click=async(selector:string)=>{const xy=await evaluate(`(()=>{const f=frame('page'),n=f.contentDocument.querySelector(${javascriptLiteral(selector)});if(!n)throw Error(${javascriptLiteral('Missing control: '+selector)});n.scrollIntoView({block:'center'});const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return [a.x+b.x+Math.min(16,a.width/2),a.y+b.y+Math.min(10,a.height/2)]})()`);for(const type of ['mouseMoved','mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:xy[0],y:xy[1],button:'left',clickCount:1});};
-  const focus=async(selector:string)=>guest(`d.querySelector(${javascriptLiteral(selector)}).focus();return true`);
+  const click=async(selector:string)=>{
+    const xy=await evaluate(`(async()=>{const end=performance.now()+20000;let prior='';while(performance.now()<end){const f=frame('page'),d=f.contentDocument,n=d.querySelector(${javascriptLiteral(selector)});if(n){n.scrollIntoView({block:'center'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const a=n.getBoundingClientRect(),b=f.getBoundingClientRect(),x=a.x+a.width/2,y=a.y+a.height/2,hit=d.elementFromPoint(x,y),p=[x+b.x,y+b.y],same=JSON.stringify(p)===prior;prior=JSON.stringify(p);if(n.isConnected&&same&&a.width&&a.height&&(hit===n||n.contains(hit))&&document.elementFromPoint(p[0],p[1])===f)return p}else await new Promise(r=>requestAnimationFrame(r))}throw Error(${javascriptLiteral('Not actionable: '+selector)})})()`);
+    for(const type of ['mouseMoved','mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:xy[0],y:xy[1],button:'left',clickCount:1});
+  };
+  const focus=async(selector:string)=>guest(`w.focus();d.querySelector(${javascriptLiteral(selector)}).focus();return new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)))`);
   await send('Runtime.enable');await send('Page.enable');await send('Network.enable');await send('Emulation.setFocusEmulationEnabled',{enabled:true});
-  await send('Page.navigate',{url:`http://127.0.0.1:${fx.port}/`});await wait(`!!d.querySelector('[data-testid="reporting-health-toggle"] button')`,'health control');await evaluate(`qa.show(['page'],1100);true`);
+  await send('Page.navigate',{url:`http://127.0.0.1:${fx.port}/`});await evaluate(`qa.show(['page'],1100);true`);
+  // The first complete list adopts the service's Store/source identity and retires
+  // earlier reporting observations. Start the interaction only in that reading.
+  await wait(`!!d.querySelector('article[data-testid^="plan-"]')&&!d.querySelector('[data-testid="state-loading"]')&&!!d.querySelector('[data-testid="reporting-health-toggle"] button')`,'adopted initial reading');
   await focus('[data-testid="reporting-health-toggle"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="reporting-support-preview"]')`,'observations');
   check('secondary-placement',await guest(`return !!d.querySelector('.ap-footer [data-testid="reporting-health"]')`));
   check('details-collapsed-by-default',await guest(`return !d.querySelector('[data-testid="reporting-explanations"]').open&&!d.querySelector('[data-testid="reporting-support"]').open`));
@@ -90,34 +96,22 @@ try{
     const clip=await evaluate(`(()=>{const f=frame(${javascriptLiteral(surface)}),n=f.contentDocument.querySelector('[data-testid="setup-panel"]')||f.contentDocument.querySelector('[data-testid="managed-integrity-warning"]');const a=n.getBoundingClientRect(),b=f.getBoundingClientRect();return {x:Math.max(0,Math.floor(window.scrollX+b.left+a.left)),y:Math.max(0,Math.floor(window.scrollY+b.top+a.top)),width:Math.ceil(a.width),height:Math.ceil(a.height),scale:1}})()`);
     const image=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip});writeFileSync(join(output,name+'.png'),Buffer.from(image.data,'base64'));
   };
-  await evaluate(`qa.show(['page'],360);true`);await reload();
+  await evaluate(`qa.freshSetup=true;qa.show(['page'],360);true`);await reload();
   await guest(`const input=d.querySelector('[data-testid="setup-storeRoot"] input');input.value='/fixture/custom-store';input.dispatchEvent(new w.Event('input',{bubbles:true}));return true`);
   await click('[data-testid="setup-inspect"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'configure review');
-  check('review-needs-consent',await guest(`return d.querySelector('[data-testid="setup-confirm"] button').disabled&&d.querySelector('[data-testid="setup-review"]').textContent.includes('/fixture/custom-store')`));
+  check('review-needs-consent',await guest(`return d.querySelector('[data-testid="setup-confirm"] button').getAttribute('aria-disabled')==='true'&&d.querySelector('[data-testid="setup-review"]').textContent.includes('/fixture/custom-store')`));
   await wait(`d.activeElement?.closest('[data-testid="setup-cancel"]')`,'cancel initial focus');await key('Escape');await wait(`!!d.querySelector('[data-testid="setup-inspect"]')`,'cancelled review');
   check('cancel-keeps-custom-store',await guest(`return d.querySelector('[data-testid="setup-storeRoot"] input').value==='/fixture/custom-store'&&!!d.activeElement?.closest('[data-testid="setup-inspect"]')`));
-  check('cancel-does-not-mutate',await evaluate(`qa.managedRequests.every(q=>q.action==='setup'||q.action==='managed-inspect')`));
-  await evaluate(`qa.fail=[{path:'/v1/setup/managed-inspect',status:409,code:'managed-review-stale',once:true}];true`);await click('[data-testid="setup-inspect"] button');await wait(`!!d.querySelector('[data-testid="setup-error"]')`,'inspect failure');check('failed-inspect-keeps-custom-store',await guest(`return d.querySelector('[data-testid="setup-storeRoot"] input').value==='/fixture/custom-store'&&!d.querySelector('[data-testid="setup-review"]')`));
+  check('cancel-does-not-mutate',fx.freshSetup.engine.requests.every(q=>q.action==='inspect'));
+  await evaluate(`qa.fail=[{path:'/v1/setup/managed-step',status:409,code:'managed-review-stale',once:true}];true`);await click('[data-testid="setup-inspect"] button');await wait(`!!d.querySelector('[data-testid="setup-migration-failure"]')`,'inspect failure');check('failed-inspect-keeps-custom-store',await guest(`return d.querySelector('[data-testid="setup-storeRoot"] input').value==='/fixture/custom-store'&&!d.querySelector('[data-testid="setup-review"]')`));
   await shotSetup('managed-setup-phone-en');
-  await click('[data-testid="setup-inspect"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'fresh configuration consent');await focus('[data-testid="setup-ack"] [role="checkbox"]');await key('Space');await wait(`!d.querySelector('[data-testid="setup-confirm"] button').disabled`,'configuration acknowledged');await focus('[data-testid="setup-confirm"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="setup-disable"]')`,'configuration accepted');
-  check('confirmed-configuration-keeps-custom-store',await evaluate(`qa.managedRequests.filter(q=>q.action==='managed-configure').length===1&&qa.managed.targets.storeRoot==='/fixture/custom-store'&&qa.managed.delivery.observation==='not-observed'`));await shotSetup('managed-configured-phone-en');
-  await evaluate(`qa.managed.delivery.migration='available';qa.locale='ru';qa.show(['page'],600);true`);await reload();
-  await click('[data-testid="setup-migrate"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'migration review');
-  await focus('[data-testid="setup-cancel"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="setup-migrate"]')`,'migration cancelled');check('migration-cancellation-has-no-mutation',await evaluate(`qa.managedRequests.every(q=>q.action!=='managed-migrate')`));await click('[data-testid="setup-migrate"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'migration reviewed again');
-  check('russian-switch-disclosure',await guest(`const t=d.querySelector('[data-testid="setup-review"]').textContent;return t.includes('Перейти на запись')&&t.includes('OPENCODE_CONFIG')&&t.includes('История')`));
-  await shotSetup('managed-migration-rail-ru');
-  await focus('[data-testid="setup-ack"] [role="checkbox"]');await key('Space');
-  await wait(`!d.querySelector('[data-testid="setup-confirm"] button').disabled`,'keyboard consent');check('keyboard-consent',true);
-  await evaluate(`qa.partial=true;true`);await focus('[data-testid="setup-confirm"] button');await key('Enter');
-  await wait(`!!d.querySelector('[data-testid="setup-error"]')&&!!d.querySelector('[data-testid="setup-recovery"]')`,'partial migration');
-  check('partial-switch-focus-return',await guest(`return !!d.activeElement?.closest('[data-testid="setup-migrate"]')`));
-  check('partial-never-auto-retries',await evaluate(`qa.managedRequests.filter(q=>q.action==='managed-migrate').length===1&&qa.managed.captureEnabled===false`));
-  await shotSetup('managed-migration-pending-ru');
-  await click('[data-testid="setup-migrate"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'retry review');await click('[data-testid="setup-ack"] [role="checkbox"]');await focus('[data-testid="setup-confirm"] button');await key('Enter');
-  await wait(`!!d.querySelector('[data-testid="setup-enable"]')||!!d.querySelector('[data-testid="setup-disable"]')`,'switch completed');
-  check('completed-switch-focus-fallback',await guest(`return d.activeElement?.getAttribute('data-testid')==='setup-status-heading'`));
-  check('confirmed-switch-request',await evaluate(`qa.managedRequests.filter(q=>q.action==='managed-migrate').every(q=>q.body.confirmed===true&&q.body.expected==='a'.repeat(64)&&!('configRoot' in q.body))`));
-  await evaluate(`qa.managed.delivery.observation='different';qa.locale='en';qa.show(['page'],360);true`);await reload();
+  await click('[data-testid="setup-inspect"] button');await wait(`!!d.querySelector('[data-testid="setup-review"]')`,'fresh configuration consent');await focus('[data-testid="setup-ack"] [role="checkbox"]');await key('Space');await wait(`d.querySelector('[data-testid="setup-confirm"] button').getAttribute('aria-disabled')==='false'`,'configuration acknowledged');await focus('[data-testid="setup-confirm"] button');await key('Enter');await wait(`!!d.querySelector('[data-testid="setup-migration-progress"][data-family="fresh"][data-state="complete"]')`,'fresh steps complete');
+  check('confirmed-configuration-keeps-custom-store',fx.freshSetup.engine.requests.filter(q=>q.action==='begin').length===1&&fx.freshSetup.engine.review.targets.storeRoot==='/fixture/custom-store');
+  check('fresh-uses-only-versioned-steps',fx.freshSetup.requests.every(q=>q.path==='/v1/setup'||q.path==='/v1/setup/managed-step'&&q.version===2));
+  await shotSetup('managed-configured-phone-en');
+  // Old monolithic migration simulations are superseded by managed-migration-qa.ts's step journeys.
+  // Keep independent reporting/control presentation checks on an explicit synthetic snapshot.
+  await evaluate(`qa.freshSetup=false;qa.managed.configured=true;qa.managed.verified=true;qa.managed.delivery.configuration='configured';qa.managed.captureEnabled=true;qa.managed.targets={configRoot:'/fixture/config',dataRoot:'/fixture/data',storeRoot:'/fixture/custom-store'};qa.managed.delivery.observation='different';qa.locale='en';qa.show(['page'],360);true`);await reload();
   check('warning-does-not-disable-capture-control',await guest(`return !!d.querySelector('[data-testid="managed-integrity-warning"]')&&!d.querySelector('[data-testid="setup-disable"] button').disabled`));await shotSetup('managed-warning-phone-en');
   for(const [locale,width]of [['en',1100],['ru',360]]as const){
     await evaluate(`qa.locale=${javascriptLiteral(locale)};qa.show(['page'],${width});qa.managed.delivery.migration='conflict';qa.managed.captureEnabled=true;true`);await reload();
@@ -139,14 +133,16 @@ try{
   await evaluate(`qa.managed.diagnostics=[];qa.managed.delivery.migration='none';true`);
   await evaluate(`qa.managed.delivery.revision=99;true`);await reload();check('future-delivery-unsupported',await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='unsupported'&&!d.querySelector('[data-testid="setup-migrate"]')&&!d.querySelector('[data-testid="setup-inspect"]')`));
   await evaluate(`qa.savedDelivery=qa.managed.delivery;delete qa.managed.delivery;true`);await reload();check('legacy-service-has-no-managed-or-global-actions',await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='unsupported'&&!d.querySelector('[data-testid="setup-panel"] button')`));await evaluate(`qa.managed.delivery=qa.savedDelivery;true`);
-  await evaluate(`qa.managed.delivery.revision=1;qa.managed.delivery.migration='available';qa.locale='ru';qa.context('M');qa.show(['panel'],360);qa.reload('panel');true`);
-  await wait(`!!frame('panel').contentDocument.querySelector('[data-testid="setup-migrate"]')`,'actual rail migration');
+  const railSeq=await evaluate<number>(`qa.managed.delivery.revision=1;qa.managed.delivery.migration='none';qa.locale='ru';qa.context('M');qa.show(['panel'],360);qa.reload('panel')`);
+  await wait(`qa.loaded.panel===${railSeq}&&!!frame('panel').contentDocument.querySelector('[data-testid="setup-panel"]')`,'actual rail setup');
   check('rail-phone-reflow',await evaluate(`(()=>{const w=frame('panel').contentWindow;return w.document.documentElement.scrollWidth<=w.innerWidth})()`));await shotSetup('managed-migration-panel360-ru','panel');
-  await evaluate(`qa.show(['page'],360);qa.managed.configured=false;qa.managed.delivery.configuration='unconfigured';qa.managed.delivery.migration='none';qa.managed.targets=null;qa.locale='en';true`);await reload();
-  await evaluate(`qa.holds.push({path:'/v1/setup/managed-inspect',tag:'managed-late',frame:'page'});true`);await click('[data-testid="setup-inspect"] button');await wait(`qa.held.some(h=>h.tag==='managed-late')`,'held managed review');
-  await evaluate(`qa.account='account-other';qa.ready('page');true`);await wait(`!d.querySelector('[data-testid="setup-review"]')&&!!d.querySelector('[data-testid="setup-inspect"]')&&d.querySelector('[data-testid="setup-panel"]').getAttribute('aria-busy')==='false'`,'new account setup');const beforeLate=await evaluate<number>(`qa.managedRequests.length`);await evaluate(`qa.release('managed-late');true`);await wait(`qa.managedRequests.length>${beforeLate}`,'retired response triggers fresh setup inspection');
+  fx.freshSetup.engine.progress=null;
+  await evaluate(`qa.freshSetup=true;qa.show(['page'],360);qa.locale='en';true`);await reload();
+  await evaluate(`qa.holds.push({path:'/v1/setup/managed-step',tag:'managed-late',frame:'page'});true`);await click('[data-testid="setup-inspect"] button');await wait(`qa.held.some(h=>h.tag==='managed-late')`,'held managed review');
+  await evaluate(`qa.account='account-other';qa.ready('page');true`);await wait(`!d.querySelector('[data-testid="setup-review"]')&&!!d.querySelector('[data-testid="setup-inspect"]')`,'new account setup');const beforeLate=fx.freshSetup.engine.requests.length;await evaluate(`qa.release('managed-late');true`);
   await wait(`!d.querySelector('[data-testid="setup-panel"]')?.getAttribute('aria-busy')||d.querySelector('[data-testid="setup-panel"]').getAttribute('aria-busy')==='false'`,'late review retired');
   check('late-managed-review-cannot-cross-account',await guest(`return !d.querySelector('[data-testid="setup-review"]')&&!d.querySelector('[data-testid="setup-error"]')`));
+  check('retired-inspection-does-not-continue',fx.freshSetup.engine.requests.length===beforeLate);
   check('no-runtime-errors',runtimeErrors===0);
 }catch(error){failure=error instanceof Error?error.message:String(error);process.exitCode=1;if(diagnose)writeFileSync(join(output,'failure-state.json'),JSON.stringify(await diagnose().catch(()=>null),null,2));}
 finally{writeFileSync(join(output,'results.json'),JSON.stringify({scope:'synthetic SDK shell, current guest bundles and disposable HTTP stores',results,failure},null,2));ws?.close();chrome.kill('SIGTERM');await fx.stop();await new Promise(r=>setTimeout(r,200));rmSync(profile,{recursive:true,force:true});}
