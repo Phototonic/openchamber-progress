@@ -524,7 +524,7 @@ export class Store {
         }
       }
       let changed: string[] | undefined;
-      if (r.op === 'change') {
+      if (r.op === 'change' || r.op === 'finish' && r.changes) {
         const attributed = r.attributed ?? actor.sessionId;
         if (r.attributed) need(coordinator && r.attributed !== actor.sessionId,'assignment');
         if (!coordinator || r.attributed) {

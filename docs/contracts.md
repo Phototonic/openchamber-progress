@@ -1659,13 +1659,42 @@ or imply execution enforcement. This is guidance, not a new data contract.
 - link: child/assign item IDs; empty assign unlinks. Parent structure/finish only;
   children may change assigned tasks only. Relays explicitly name attributed child.
 - bind: source path/confirm?; source path stays bound across directory moves.
-- finish: outcome finished/cancelled/failed. Finished requires actionable work and
-  no unresolved tasks; all-skipped/empty cannot imply success. Late writes refuse;
+- finish: outcome finished/cancelled/failed, optional changes[{id,status,blocker?}].
+  Finished requires actionable work and no unresolved tasks after explicit changes;
+  all-skipped/empty cannot imply success. Late writes refuse;
   intentional continuation requires coordinator revise/commit with reopen=true.
 
 Same oid+same caller/session+same semantic input returns the ORIGINAL receipt;
 altered reuse refuses, stale rev returns current rev. Batches are all-or-none.
 Ancestry is authoritative or unknown, never guessed. History retained by default.
+
+### Atomic coordinator finish
+
+Coordinator `finish` optionally accepts `changes`: 1–50 unique existing task IDs,
+with the same status/blocker validation as `change`. It cannot alter structure,
+accept group IDs, create unknown tasks or relay an attributed child's finish.
+Group and unknown-ID refusals retain the safe task-ID recovery hint: read current
+task IDs rather than retrying a title, group or invented ID. Assigned children
+cannot finish a plan.
+
+At the expected revision, explicit task changes, their direct contribution,
+receipt and requested outcome commit together in the existing Store transaction.
+Success advances the ordinary revision once, not the structural revision; the
+receipt's `changed` and contribution item IDs identify the explicit changes.
+A refusal applies neither the task changes nor the outcome. `finished` requires
+nonzero actionable work and no unresolved tasks after applying the changes.
+Empty/all-skipped work cannot finish successfully. `cancelled` and `failed`
+preserve explicitly reported unfinished statuses under the existing close and
+blocker-history rules. No outcome infers a task status; omitting `changes`
+preserves ordinary finish behavior.
+
+Read fresh state and use a new operation ID for new input. An identical full-input
+retry with the same operation ID returns the original receipt without another
+write. Altered reuse, including changed or omitted `changes`, refuses. Revision
+conflicts expose the current revision: read and deliberately decide the next
+report, never silently rebase. Older tools reject combined finish input; inspect
+state before deliberately issuing separate reports, never silently remove the
+`changes` field. This adds no schema or protocol version change.
 
 ### Item identity and structural revisions
 

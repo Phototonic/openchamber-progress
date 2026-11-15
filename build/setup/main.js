@@ -397,7 +397,7 @@ function parseReportRequest(value) {
     link: ["child", "assign"],
     delegate: ["assign"],
     bind: ["source", "confirm"],
-    finish: ["outcome"]
+    finish: ["outcome", "changes"]
   };
   validRequest(Object.hasOwn(fields, r.op), "op");
   validRequest(identifier(r.plan), "plan");
@@ -3766,7 +3766,7 @@ class Store {
         }
       }
       let changed;
-      if (r.op === "change") {
+      if (r.op === "change" || r.op === "finish" && r.changes) {
         const attributed = r.attributed ?? actor.sessionId;
         if (r.attributed)
           requireProgress(coordinator && r.attributed !== actor.sessionId, "assignment");

@@ -50,6 +50,26 @@ restricted-child tool policies; an explicit parent relay labels both identities.
 Unlinked work remains independent. Finish/cancel/fail explicitly; never derive
 completion from turn outcomes, idle state or report age.
 
+Coordinator `finish` optionally accepts `changes` for 1–50 unique existing task
+IDs with ordinary status/blocker validation. At the expected revision, explicit
+task changes, their direct contribution, receipt and outcome commit atomically
+in one ordinary revision; structural revision does not advance. A refusal applies
+neither component. Groups and unknown IDs retain the task-ID recovery hint: read
+current task IDs rather than guessing. Assigned children cannot finish or relay
+a finish.
+
+`outcome:"finished"` still requires nonzero actionable work and no unresolved
+tasks after the changes. Empty/all-skipped work cannot finish successfully.
+Cancelled/failed outcomes retain explicitly reported unfinished statuses under
+the existing close/blocker-history rules. No outcome infers a task status.
+Omitted `changes` keep ordinary finish behavior. Use a fresh read and operation
+ID for new input. An identical full-input retry with the same operation ID returns
+the original receipt; altered input (including changed or omitted `changes`)
+refuses. Conflicts expose the current revision: read and deliberately decide the
+next report, never silently rebase. Older tools reject combined finish input;
+inspect state before deliberately issuing separate reports, never silently
+remove `changes`.
+
 For known assigned work, read the plan and declare before the next supported
 `subagent` dispatch. Include plan/task IDs and the reporting expectation in the
 assignment; those IDs alone grant no authority. Use `op=delegate` with
