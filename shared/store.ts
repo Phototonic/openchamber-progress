@@ -118,7 +118,9 @@ export class Store {
       need(![file,...sidecars].some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
       return storeObject(stat);
     });
-    requirePlatformWriteBoundary();
+    // The final preflight may have spent the earlier engine reservation. Leave
+    // room for new-object admission and the journal's validation/readback.
+    requirePlatformWriteBoundary(3,8_500);
     const fd=openSync(file,'wx',0o600);
     try{
       const reserved=storeObject(fstatSync(fd,{bigint:true}));

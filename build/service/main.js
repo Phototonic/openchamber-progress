@@ -808,10 +808,10 @@ function beginPlatformSecurityScope() {
     }
   };
 }
-function requirePlatformWriteBoundary() {
+function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
   if (scope)
     throw new PlatformError("managed-step-conflict");
-  requestBudget?.require();
+  requestBudget?.require(spawns, headroomMs);
 }
 function requirePlatformStoreFence(database) {
   requestBudget?.require();
@@ -1111,7 +1111,7 @@ function privateDirectory(file, recursive = false, creation) {
         throw new PlatformError("path-unverified");
       return target2;
     });
-    requirePlatformWriteBoundary();
+    requirePlatformWriteBoundary(3, 8500);
     if (windows) {
       const [result] = windowsSecurityQuery([target], [target], undefined, true);
       if (!result?.owned || !result.private || result.reparse || result.unsafeParent)
@@ -4244,7 +4244,7 @@ class Store {
       requireProgress(![file, ...sidecars].some((p) => lstatSync3(p, { throwIfNoEntry: false })), "binding");
       return storeObject(stat);
     });
-    requirePlatformWriteBoundary();
+    requirePlatformWriteBoundary(3, 8500);
     const fd = openSync3(file, "wx", 384);
     try {
       const reserved = storeObject(fstatSync(fd, { bigint: true }));

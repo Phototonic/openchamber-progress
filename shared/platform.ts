@@ -112,9 +112,9 @@ export function beginPlatformSecurityScope():()=>void {
 }
 /** A mutation owner must end the actual scope, not merely a nested wrapper.
  * Refuse misuse rather than clearing an enclosing reader's authority silently. */
-export function requirePlatformWriteBoundary():void {
+export function requirePlatformWriteBoundary(spawns=0,headroomMs=0):void {
   if(scope)throw new PlatformError('managed-step-conflict');
-  requestBudget?.require();
+  requestBudget?.require(spawns,headroomMs);
 }
 /** A pre-dispatch metadata read may route locks, but never grant authority. The
  * fresh owner must bind its actual Store to an acquired slot before any effect. */
@@ -392,7 +392,8 @@ export function privateDirectory(file: string, recursive=false, creation?:{exclu
       return target;
     });
     // The real preflight scope has ended. Never carry its ACL cache over creation.
-    requirePlatformWriteBoundary();
+    // Recheck after slow preflight: creation plus checkpoint validation/readback.
+    requirePlatformWriteBoundary(3,8_500);
     if(windows){
       const [result]=windowsSecurityQuery([target],[target],undefined,true);
       if(!result?.owned||!result.private||result.reparse||result.unsafeParent)throw new PlatformError('private-permissions');

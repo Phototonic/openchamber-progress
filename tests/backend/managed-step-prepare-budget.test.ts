@@ -35,12 +35,13 @@ test('existing managed bootstrap fits six launches with fresh known-path batches
     const paths:string[]=[];
     function discover(file:string){paths.push(file);if(fs.lstatSync(file).isDirectory())for(const name of fs.readdirSync(file))discover(path.join(file,name));}
     discover(env.HOME);
-    let spawns=0;
+    let spawns=0,afterSpawn:()=>void=()=>{};
     t.mock.method(cp,'spawnSync',((command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
       assert.equal(path.basename(command),'powershell.exe');
       spawns++;
       const request=JSON.parse(String(options.input)) as {paths:string[];create:string[]};
       for(const dir of request.create)fs.mkdirSync(dir,{mode:0o700});
+      afterSpawn();
       return {pid:1,output:[],stdout:JSON.stringify(request.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
     }) as unknown as typeof cp.spawnSync);
     syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
@@ -103,6 +104,36 @@ test('existing managed bootstrap fits six launches with fresh known-path batches
       assert.ok(freshCounts[name]!<=6,`${name} needs a technical amendment: ${freshCounts[name]} actual launches`);
     }
     t.diagnostic(JSON.stringify({freshCreationSecuritySpawns:freshCounts}));
+
+    // Advance the deadline at the actual spawn seam, without wall-clock sleeps.
+    // A slow final preflight must not strand an uncheckpointed directory or DB.
+    let now=process.hrtime.bigint();
+    const clock=t.mock.method(process.hrtime,'bigint',()=>now);
+    try{
+      for(const name of ['create-store','store-directory'] as const){
+        const parent=path.join(env.HOME,`slow-${name}`),file=path.join(parent,'progress.sqlite');
+        if(name==='create-store')fs.mkdirSync(parent,{mode:0o700});
+        const target=name==='store-directory'?parent:file;
+        const validate=()=>{platform.windowsPaths([...known,parent,file,...['-journal','-wal','-shm'].map(s=>file+s)],true);};
+        const create=()=>{if(name==='store-directory')platform.privateDirectory(parent,false,{exclusive:true,validate});
+          else {const store=Store.createFresh(file,{storeId:'slow-store',validate});store.close();}};
+        const run=(slow:boolean)=>{
+          const budget=new platform.PlatformRequestBudget();
+          afterSpawn=()=>{now+=BigInt(slow&&budget.securitySpawns===3?6_000:2_500)*1_000_000n;};
+          return platform.withPlatformRequestBudget(budget,()=>{
+            platform.platformSecurityScope(validate); // request admission
+            platform.platformSecurityScope(validate); // intent publication admission
+            create(); // final preflight is the slower third launch
+            platform.platformSecurityScope(validate); // completion admission
+            platform.platformSecurityScope(validate); // completion readback
+            assert.equal(budget.securitySpawns,6);
+          });
+        };
+        assert.throws(()=>run(true),{code:'managed-step-deadline'});
+        assert.equal(fs.existsSync(target),false,`${name} must refuse before exclusive creation`);
+        run(false);assert.equal(fs.existsSync(target),true,'a new bounded request safely retries absent storage');
+      }
+    }finally{afterSpawn=()=>{};clock.mock.restore();}
   } finally {
     t.mock.restoreAll();syncBuiltinESMExports();
     if(originalSystemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=originalSystemRoot;

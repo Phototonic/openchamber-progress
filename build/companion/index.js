@@ -24288,10 +24288,10 @@ function beginPlatformSecurityScope() {
     }
   };
 }
-function requirePlatformWriteBoundary() {
+function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
   if (scope3)
     throw new PlatformError2("managed-step-conflict");
-  requestBudget?.require();
+  requestBudget?.require(spawns, headroomMs);
 }
 function requirePlatformStoreFence(database) {
   requestBudget?.require();
@@ -27472,7 +27472,7 @@ class Store {
       requireProgress(![file, ...sidecars].some((p) => lstatSync5(p, { throwIfNoEntry: false })), "binding");
       return storeObject(stat);
     });
-    requirePlatformWriteBoundary();
+    requirePlatformWriteBoundary(3, 8500);
     const fd = openSync3(file, "wx", 384);
     try {
       const reserved = storeObject(fstatSync(fd, { bigint: true }));

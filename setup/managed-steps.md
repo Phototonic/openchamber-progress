@@ -56,6 +56,11 @@ the reserved file/object/ancestors before initialization. The initial schema
 transaction installs the frozen ID, capture **off**, schema 2 and receipt index.
 It registers no source. Ordinary constructor defaults/partial-file refusals stay
 unchanged. Failed/partial files are retained, never reopened for initialization.
+Immediately before either exclusive creation, after the final read-only preflight,
+the helper rechecks room for three launches and 8.5 seconds: creation/new-object
+admission plus checkpoint validation and readback, at 2.5 seconds each with one
+second headroom. Slow preflight can therefore refuse while the target is still
+absent and safely retryable; the earlier engine reservation alone is insufficient.
 
 The platform lane extends `privateDirectory(file, false, {exclusive: true,
 validate})`. Mandatory validation shares its read-only path preflight; that actual
