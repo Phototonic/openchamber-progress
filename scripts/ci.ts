@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, mkdirSync, existsSync, copyFileSync, writeFi
 import { createHash } from 'node:crypto';
 import { eligibility, assetNames, validateReleaseNotes } from './release.ts';
 import { verifyCompanionEntry } from './companion-entry.ts';
+import { backendTestCommands } from './ci-backend.ts';
 
 // Refuse before reading entries or starting checks: local archives are never disposable.
 if (existsSync('build/artifacts') && readdirSync('build/artifacts').length > 0) {
@@ -32,7 +33,7 @@ console.log(`Native-only tests NOT RUN: ${excluded.join(', ')}`);
 run('bun',['run','typecheck']);
 run('./node_modules/.bin/tsc',['-p','ui/tsconfig.json','--noEmit']);
 const tests = (dir:string) => readdirSync(dir).filter(f=>f.endsWith('.test.ts')).sort().map(f=>`${dir}/${f}`);
-run('node',['--experimental-strip-types','--test',...tests('tests/backend').filter(f=>!excluded.includes(f.split('/').at(-1)!))]);
+for (const args of backendTestCommands(tests('tests/backend').filter(f=>!excluded.includes(f.split('/').at(-1)!)))) run('node',args);
 run('node',['--experimental-strip-types','--test',...tests('tests/browser'),...tests('tests/automation')]);
 run('bun',['run','build:backend']);
 run('bun',['run','bundle:guest','background/main.ts','background/main.js']);

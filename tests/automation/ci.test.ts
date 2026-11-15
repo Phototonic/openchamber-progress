@@ -4,6 +4,23 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { backendTestCommands } from '../../scripts/ci-backend.ts';
+
+test('portable backend groups isolate coordination ports without omitting or repeating tests',()=>{
+  const files=readdirSync('tests/backend').filter(f=>f.endsWith('.test.ts')).map(f=>`tests/backend/${f}`);
+  const [parallel,serial]=backendTestCommands(files);
+  assert.deepEqual(parallel.slice(0,2),['--experimental-strip-types','--test']);
+  assert.deepEqual(serial.slice(0,3),['--experimental-strip-types','--test','--test-concurrency=1']);
+  assert.deepEqual([...parallel.slice(2),...serial.slice(3)].sort(),files.sort());
+  assert.deepEqual(serial.slice(3).map(f=>f.split('/').at(-1)).sort(),[
+    'corrupt-store-startup.test.ts','managed-binding.test.ts','managed-health.test.ts',
+    'managed-migration.test.ts','managed-request-worker.test.ts','managed-step-http.test.ts',
+    'production-service.test.ts','service-lifecycle.test.ts','setup-paths.test.ts',
+    'setup-suggestions.test.ts','windows-service.test.ts',
+  ]);
+  const source=readFileSync('scripts/ci.ts','utf8');
+  assert.match(source,/for \(const args of backendTestCommands\([^\n]+\)\) run\('node',args\)/);
+});
 
 test('actual portable CLI refuses nonfresh artifacts before entry reads or checks, preserving archives',()=>{
   const root=mkdtempSync(join(tmpdir(),'portable-ci-archives-'));

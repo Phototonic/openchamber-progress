@@ -37,15 +37,15 @@ test('configured unreadable store reports storage failure without losing configu
     assert.doesNotThrow(()=>setup.run('update',f.targets));
   });}finally{chmodSync(f.store.file,0o600);f.cleanup();}
 });
-test('configured unreadable store recovers without restart on health, setup and reads',async()=>{
-  for(const route of ['/health','/v1/setup','/v1/plans']) {
+test('configured unreadable store recovers without restart on setup and reads, then updates liveness',async()=>{
+  for(const route of ['/v1/setup','/v1/plans']) {
     const f=configured();chmodSync(f.store.file,0o000);const setup=new SetupController(f.binding,payload);
     try {await serve(setup,async get=>{
       await get(route);chmodSync(f.store.file,0o600);
       const response=await get(route);assert.equal(response.status,200,route);const body=await response.json();
-      if(route==='/health')assert.equal(body.ready,true,route);
-      else if(route==='/v1/setup'){assert.equal(body.configured,true);assert.equal(body.captureEnabled,true);assert.ok(!body.diagnostics.includes('storage'));}
+      if(route==='/v1/setup'){assert.equal(body.configured,true);assert.equal(body.captureEnabled,true);assert.ok(!body.diagnostics.includes('storage'));}
       else {assert.equal(body.data[0].id,'P1');assert.equal(body.storeId,f.store.list().storeId);}
+      assert.equal((await(await get('/health')).json()).ready,true);
     });}finally{chmodSync(f.store.file,0o600);f.cleanup();}
   }
 });

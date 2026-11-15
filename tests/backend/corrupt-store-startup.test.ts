@@ -85,7 +85,9 @@ test('packaged corrupt-store startup becomes ready, answers fixed corrupt 503s a
   const broken=Buffer.from(good);broken.write('not-a-sqlite-file',0);writeFileSync(f.database,broken);
   const running=await serve(f);
   try {
-    const health=await running.start();
+    const first=await running.start();assert.equal(first.state,'starting');assert.equal(first.ready,false);
+    await running.request('/v1/plans');
+    const health=await(await running.request('/health')).json();
     assert.equal(health.ok,true);assert.equal(health.ready,false);assert.equal(health.sqlite,false);
     const diagnostics=health.diagnostics as string[];assert.ok(diagnostics.includes('corrupt'));assert.equal(fixedCodes(diagnostics),true);
 
@@ -93,15 +95,18 @@ test('packaged corrupt-store startup becomes ready, answers fixed corrupt 503s a
     const detail=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`);assert.equal(detail.status,503);assert.deepEqual(await detail.json(),{error:'corrupt'});
     const history=await running.request(`/v1/history?source=${f.actor.sourceId}&plan=P1`);assert.equal(history.status,503);assert.deepEqual(await history.json(),{error:'corrupt'});
 
-    const setup=await running.request('/v1/setup');assert.equal(setup.status,200);const state=await setup.json() as {configured:boolean;captureEnabled:null;diagnostics:string[];targets:unknown};
+    const setup=await running.request('/v1/setup');assert.equal(setup.status,200);const state=await setup.json();
     assert.equal(state.configured,true);assert.equal(state.captureEnabled,null);assert.ok(state.diagnostics.includes('corrupt'));assert.equal(fixedCodes(state.diagnostics),true);
     assert.deepEqual(state.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
+    assert.equal(state.verified,false);assert.equal(state.delivery.configuration,'configured');assert.equal(Object.hasOwn(state.delivery,'migrationProgress'),false);
+    assert.equal(Object.hasOwn(state,'reportingIdentity'),false);
 
     // The damaged store itself is never opened for writing or rewritten.
     assert.deepEqual(readFileSync(f.database),broken);
 
     // Restoring the file recovers in place: same process, last-good data readable.
     writeFileSync(f.database,good);
+    await running.request('/v1/plans');
     const recovered=await running.request('/health');assert.equal(recovered.status,200);assert.equal(((await recovered.json()) as {ready:boolean}).ready,true);
     const list=await running.request('/v1/plans');assert.equal(list.status,200);const envelope=await list.json() as {storeId:string;data:{id:string}[]};
     assert.equal(envelope.data.length,1);assert.equal(envelope.data[0]!.id,'P1');
@@ -122,6 +127,7 @@ test('packaged service admits recorded epoch-bearing format 1 without migrating 
   const running=await serve(f);
   try{
     await running.start();
+    const admission=await running.request('/v1/plans');assert.equal(admission.status,200,JSON.stringify(await admission.json()));
     const response=await running.request('/health');const health=await response.json();
     t.diagnostic(`format-1 health ${response.status} ${JSON.stringify(health)}`);
     assert.equal(response.status,200);assert.equal(health.ready,true);assert.equal(health.sqlite,true);assert.equal(health.subagentRuns,1);
@@ -185,9 +191,13 @@ for(const kind of ['base schema','run format'] as const)test(`packaged future ${
     t.diagnostic(`setup ${setup.status} ${JSON.stringify({...state,targets:'fixture targets'})}`);
     assert.equal(healthResponse.status,200);
     assert.equal(health.ok,true);assert.equal(health.ready,false);assert.equal(health.sqlite,false);
-    const diagnostics=health.diagnostics as string[];assert.ok(diagnostics.includes('schema'));assert.equal(fixedCodes(diagnostics),true);
+    assert.equal(health.state,'starting');
+    const diagnostics=(await(await running.request('/health')).json()).diagnostics as string[];assert.ok(diagnostics.includes('schema'));assert.equal(fixedCodes(diagnostics),true);
     for(const reply of replies){assert.equal(reply.status,503);assert.deepEqual(reply.body,{error:'schema'});}
     assert.equal(setup.status,200);assert.equal(state.configured,true);assert.equal(state.captureEnabled,null);assert.ok(state.diagnostics.includes('schema'));
+    assert.equal(state.verified,false);assert.equal(state.delivery.configuration,'configured');assert.equal(Object.hasOwn(state.delivery,'migrationProgress'),false);
+    assert.equal(Object.hasOwn(state,'reportingIdentity'),false);
+    assert.deepEqual(state.targets,{configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,storeRoot:f.targets.storeRoot});
     assert.equal((await running.request('/health')).status,200);
     assert.deepEqual(readFileSync(f.database),future);
   }finally{await running.stop();f.clean();}
@@ -224,6 +234,7 @@ test('epochless format 1 keeps compiled service, setup and plans available witho
   const running=await serve(f);
   try{
     await running.start();
+    await running.request('/v1/plans');
     const health=await running.request('/health'),healthBody=await health.json();
     const setup=await running.request('/v1/setup'),state=await setup.json();
     const plan=await running.request(`/v1/plan?source=${f.actor.sourceId}&plan=P1`),detail=await plan.json();
@@ -256,6 +267,7 @@ for(const action of ['update','install'] as const)test(`packaged ${action} accep
     if(action==='update'){
       const activated=spawnSync(process.execPath,['--experimental-strip-types',path.resolve('tests/fixtures/activation.ts'),`${f.targets.configRoot}/plugins/agent-progress/index.js`],{env:f.env,encoding:'utf8',timeout:10000});
       assert.equal(activated.status,0,activated.stderr);
+      await running.request('/v1/plans');
       const health=await running.request('/health');assert.equal(health.status,200);assert.equal((await health.json()).subagentRuns,1);
       const store=new Store(f.database);try{assert.equal(store.subagentRunStorage(),'current');}finally{store.close();}
     }
@@ -365,11 +377,14 @@ test('packaged unreadable store startup stays ready and answers fixed storage 50
   const f=fixture();f.seed();chmodSync(f.database,0o000);
   const running=await serve(f);
   try {
-    const health=await running.start();
+    const first=await running.start();assert.equal(first.state,'starting');assert.equal(first.ready,false);
+    await running.request('/v1/plans');
+    const health=await(await running.request('/health')).json();
     assert.equal(health.ok,true);assert.equal(health.ready,false);assert.equal(health.sqlite,false);
     const diagnostics=health.diagnostics as string[];assert.ok(diagnostics.includes('storage'));assert.equal(fixedCodes(diagnostics),true);
     const plans=await running.request('/v1/plans');assert.equal(plans.status,503);assert.deepEqual(await plans.json(),{error:'storage'});
     chmodSync(f.database,0o600);
+    await running.request('/v1/plans');
     const recovered=await running.request('/health');assert.equal(recovered.status,200);assert.equal(((await recovered.json()) as {ready:boolean}).ready,true);
   }finally{chmodSync(f.database,0o600);await running.stop();f.clean();}
 });
@@ -385,10 +400,12 @@ test('configured busy store keeps health ready with fixed busy 503s and recovers
     const get=async(route:string)=>fetch(`${url}${route}`,{headers:{authorization:'Bearer fixture-only'},signal:AbortSignal.timeout(15000)});
     assert.equal(((await (await get('/health')).json()) as {ready:boolean}).ready,true);
     hold.exec('BEGIN EXCLUSIVE');
+    await get('/v1/plans');
     const health=await get('/health');assert.equal(health.status,200);const body=await health.json() as {ok:boolean;ready:boolean;sqlite:boolean;diagnostics:string[]};
     assert.equal(body.ok,true);assert.equal(body.ready,false);assert.equal(body.sqlite,false);assert.ok(body.diagnostics.includes('busy'));assert.equal(fixedCodes(body.diagnostics),true);
     const plans=await get('/v1/plans');assert.equal(plans.status,503);assert.deepEqual(await plans.json(),{error:'busy'});
     hold.exec('COMMIT');hold.close();
+    await get('/v1/plans');
     const recovered=await get('/health');assert.equal(recovered.status,200);assert.equal(((await recovered.json()) as {ready:boolean}).ready,true);
     const list=await get('/v1/plans');assert.equal(list.status,200);assert.equal(((await list.json()) as {data:{id:string}[]}).data[0]!.id,'P1');
   }finally{try{hold.close();}catch{}await new Promise<void>(resolve=>server.close(()=>resolve()));setup.close();f.clean();}

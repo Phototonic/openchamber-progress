@@ -1,6 +1,8 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
+import { MANAGED_STEP_LIMITS } from './managed-steps.ts';
 
 export const windows = process.platform === 'win32';
 export class PlatformError extends Error {
@@ -8,10 +10,96 @@ export class PlatformError extends Error {
   readonly reason?: 'timeout'|'spawn'|'exit';
   constructor(code: string, reason?: 'timeout'|'spawn'|'exit') { super(code); this.code = code; this.reason = reason; }
 }
+/** Public diagnostics are fixed codes, never arbitrary exception text. */
+export function platformErrorCode(error: unknown) {
+  const codes = ['windows-security-unavailable','private-permissions','path-unverified','unsafe-parent','symlink-escape'] as const;
+  return error instanceof PlatformError ? codes.find(code=>code===error.code) : undefined;
+}
 type Security = { owned: boolean; private: boolean; reparse: boolean; unsafeParent: boolean };
+/** Coordination identity only, not path/ACL authority. Resolve existing aliases
+ * for the lock key; the ordinary owners still refuse unsafe paths before work. */
+export function writerTarget(kind:'scope'|'store',value:string):string {
+  let current=path.resolve(value);const missing:string[]=[];
+  while(!lstatSync(current,{throwIfNoEntry:false})){
+    const parent=path.dirname(current);if(parent===current)break;
+    missing.unshift(path.basename(current));current=parent;
+  }
+  const canonical=path.join(realpathSync.native(current),...missing);
+  return `${kind}:${process.platform==='win32'?canonical.toLowerCase():canonical}`;
+}
+// Below default Linux/macOS/Windows ephemeral client ranges, excluding common
+// service/game ports. This routing choice never authorizes an existing listener.
+const writerPortDenylist=new Set([25565,26000,...Array.from({length:16},(_,i)=>27015+i),27036,27037,28015,28016,28017,28960]);
+/** Stable routing; hash/denylist collisions remain conservative busy refusals. */
+export function writerTargetPort(target:string):number {
+  let offset=createHash('sha256').update(target).digest().readUInt32BE(0)%4000;
+  while(writerPortDenylist.has(25000+offset))offset=(offset+1)%4000;
+  return 25000+offset;
+}
 const cache = new Map<string, { snapshot: string; result: Security }>();
 const reparseCache = new Map<string,{identity:string;reparse:boolean;unsafeParent:boolean}>();
 let scope = 0;
+/** A worker-local request boundary, never a cached security verdict. The shared
+ * counter lets its supervisor report actual attempts even after a lost reply.
+ * Monotonic nanoseconds use the same clock in service and worker threads. */
+export class PlatformRequestBudget {
+  readonly counter: Int32Array<SharedArrayBuffer>;
+  readonly startedAt: bigint;
+  readonly deadline: bigint;
+  readonly writerFence?:{port:number;nonce:string;targets?:string[]};
+  constructor(startedAt = process.hrtime.bigint(), counter = new SharedArrayBuffer(4),writerFence?:{port:number;nonce:string;targets?:string[]}) {
+    if(counter.byteLength!==4)throw new PlatformError('managed-step-budget');
+    this.counter=new Int32Array(counter);this.startedAt=startedAt;
+    this.deadline=startedAt+BigInt(MANAGED_STEP_LIMITS.workMs)*1_000_000n;
+    this.writerFence=writerFence;
+  }
+  get securitySpawns(){return Atomics.load(this.counter,0);}
+  get elapsedMs(){return Math.max(0,Number(process.hrtime.bigint()-this.startedAt)/1_000_000);}
+  /** Reserve before admitting effects. Reservation does not consume attempts. */
+  require(spawns=0,headroomMs=0) {
+    if(!Number.isSafeInteger(spawns)||spawns<0||!Number.isFinite(headroomMs)||headroomMs<0||
+      this.securitySpawns<0||this.securitySpawns+spawns>MANAGED_STEP_LIMITS.securitySpawns)
+      throw new PlatformError('managed-step-budget');
+    if(Number(this.deadline-process.hrtime.bigint())/1_000_000<=headroomMs)
+      throw new PlatformError('managed-step-deadline');
+  }
+  /** Charge before the OS call, including a failed/throwing process launch. */
+  launch() {
+    this.require(1,1_000);
+    // There is one worker, but CAS also prevents accidental shared-counter
+    // consumers from exceeding the ceiling rather than discovering it later.
+    const before=this.securitySpawns;
+    if(before>=MANAGED_STEP_LIMITS.securitySpawns||Atomics.compareExchange(this.counter,0,before,before+1)!==before)
+      throw new PlatformError('managed-step-budget');
+    return Math.max(1,Math.floor(Number(this.deadline-process.hrtime.bigint())/1_000_000-1_000));
+  }
+}
+let requestBudget:PlatformRequestBudget|undefined;
+let writerTargets:string[]|undefined;
+/** Synchronous legacy writers share target binding without inheriting the new
+ * step budget. The outer HTTP owner holds these slots until this call returns. */
+export function withPlatformWriterTargets<T>(targets:string[],run:()=>T):T {
+  if(writerTargets)throw new PlatformError('managed-step-conflict');
+  writerTargets=targets;
+  try{
+    const result=run();
+    if(result!==null&&(typeof result==='object'||typeof result==='function')&&typeof (result as {then?:unknown}).then==='function')
+      throw new PlatformError('managed-step-conflict');
+    return result;
+  }finally{writerTargets=undefined;}
+}
+/** Synchronous request work only. Awaiting or resetting a nested budget is not
+ * supported; no caller may hide an outer security scope across requests. */
+export function withPlatformRequestBudget<T>(budget:PlatformRequestBudget,run:()=>T):T {
+  if(requestBudget||scope)throw new PlatformError('managed-step-conflict');
+  budget.require();requestBudget=budget;cache.clear();reparseCache.clear();
+  try{
+    const result=run();
+    if(result!==null&&(typeof result==='object'||typeof result==='function')&&typeof (result as {then?:unknown}).then==='function')
+      throw new PlatformError('managed-step-conflict');
+    return result;
+  }finally{requestBudget=undefined;cache.clear();reparseCache.clear();}
+}
 /** Cache only one synchronous operation, and only unchanged object snapshots. */
 export function platformSecurityScope<T>(run: () => T): T {
   const finish=beginPlatformSecurityScope();
@@ -21,6 +109,20 @@ export function beginPlatformSecurityScope():()=>void {
   if (!scope) {cache.clear();reparseCache.clear();}
   scope++;
   return ()=>{if (!--scope) {cache.clear();reparseCache.clear();}};
+}
+/** A mutation owner must end the actual scope, not merely a nested wrapper.
+ * Refuse misuse rather than clearing an enclosing reader's authority silently. */
+export function requirePlatformWriteBoundary():void {
+  if(scope)throw new PlatformError('managed-step-conflict');
+  requestBudget?.require();
+}
+/** A pre-dispatch metadata read may route locks, but never grant authority. The
+ * fresh owner must bind its actual Store to an acquired slot before any effect. */
+export function requirePlatformStoreFence(database:string):void {
+  requestBudget?.require();
+  const targets=requestBudget?.writerFence?requestBudget.writerFence.targets??[]:writerTargets;
+  if(targets&&!targets.includes(writerTarget('store',path.dirname(database))))
+    throw new PlatformError('managed-step-conflict');
 }
 
 /** Windows PowerShell can expand inherited module paths during startup. */
@@ -53,9 +155,39 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
+$writerMutex = $null
+$writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
+    # The main service holds the TCP writer slot until its Node worker exits.
+    # This account-scoped mutex additionally fences a security child that might
+    # outlive that service. Obtain it BEFORE checking the current slot nonce.
+    # Every new writer's first fresh query crosses this barrier before effects.
+    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
+    try { $writerOwned = $writerMutex.WaitOne(15000) }
+    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
+      $client.Connect('127.0.0.1', [int]$request.fence.port)
+      $stream = $client.GetStream()
+      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
+      $stream.Write($bytes, 0, $bytes.Length)
+      $reply = [byte[]]::new(3); $offset = 0
+      while ($offset -lt 3) {
+        $count = $stream.Read($reply, $offset, 3 - $offset)
+        if ($count -le 0) { throw 'writer-unsettled' }
+        $offset += $count
+      }
+      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
+    } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
+  }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
@@ -98,7 +230,11 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
+finally {
+  if ($writerOwned) { $writerMutex.ReleaseMutex() }
+  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
+}
 `;
 
 function snapshot(file: string) {
@@ -134,17 +270,28 @@ export function windowsSecurityQuery(paths: string[], create: string[] = [], spa
   // Pin startup hints too; the trusted script resets the effective path and
   // imports only the built-in utility module by its absolute system path.
   env.PSModulePath=path.join(systemRoot,'System32','WindowsPowerShell','v1.0','Modules');
-  const input = JSON.stringify({ paths, create });
+  const input = JSON.stringify({ paths, create, ...(requestBudget?.writerFence?{fence:requestBudget.writerFence}:{}) });
   const firstQuery = !securityQueryAttempted;
-  const run = () => spawn(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
-    ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
-    { input, encoding:'utf8', env, windowsHide:true, shell:false, timeout:firstQuery?30000:10000, maxBuffer:1024*1024 });
+  const run = () => {
+    const timeout=requestBudget?requestBudget.launch():firstQuery?30000:10000;
+    try{return spawn(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
+      ['-NoLogo','-NoProfile','-NonInteractive','-Command',securityScript],
+      { input, encoding:'utf8', env, windowsHide:true, shell:false, timeout, maxBuffer:1024*1024 });
+    }finally{securityQueryAttempted=true;}
+  };
   // Only the process's first query gets cold-start headroom and one retry.
   // Consume that budget even on failure; steady-state calls stay bounded at 10s.
   // Existing creation targets are only inspected, never repaired, on a retry.
   let child: SpawnSyncReturns<string>;
-  try { child = run(); } finally { securityQueryAttempted = true; }
-  if (firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
+  child = run();
+  if (!requestBudget && firstQuery && (child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') child = run();
+  requestBudget?.require();
+  if(requestBudget&&(child.error as NodeJS.ErrnoException|undefined)?.code==='ETIMEDOUT')throw new PlatformError('managed-step-deadline','timeout');
+  if(requestBudget?.writerFence&&!child.error&&child.status!==0){
+    let failure:unknown;try{failure=JSON.parse(child.stdout.replace(/^\uFEFF/,''));}catch{/* Never expose raw child text. */}
+    if(failure&&typeof failure==='object'&&Object.keys(failure).length===1&&(failure as {error?:unknown}).error==='managed-step-unsettled')
+      throw new PlatformError('managed-step-unsettled','exit');
+  }
   if (child.error || child.status !== 0) throw new PlatformError('windows-security-unavailable',child.error?(child.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'timeout':'spawn':'exit');
   let results: Security[];
   try { results = JSON.parse(child.stdout.replace(/^\uFEFF/,'')); } catch { throw new PlatformError('windows-security-unavailable'); }

@@ -310,6 +310,11 @@ test('managed setup accepts only the supported discriminator and a complete revi
   await setupCall(host,'managed-inspect',targets);
   await setupCall(host,'managed-migrate',targets,true,delivery.review.expected);
   assert.deepEqual(host.calls.map(q=>JSON.parse(String(q.body))),[{storeRoot:targets.storeRoot},{storeRoot:targets.storeRoot,confirmed:true,expected:delivery.review.expected}]);
+  await setupCall(host,'managed-disable',targets,true,delivery.review.expected);
+  await setupCall(host,'managed-enable',targets,true,delivery.review.expected);
+  assert.deepEqual(host.calls.slice(-2).map(q=>[q.path,JSON.parse(String(q.body))]),['disable','enable'].map(action=>[
+    `/v1/setup/managed-${action}`,{storeRoot:targets.storeRoot,confirmed:true,expected:delivery.review.expected},
+  ]),'services without the capability keep nonce-bound capture controls');
 });
 
 test('setup suggestions: parsed per field, malformed reads as unknown, configured replies ignore hints', () => {

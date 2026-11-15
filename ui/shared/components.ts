@@ -14,6 +14,21 @@ import { icon, infoDisclosure, planActions, segmentedBar, stateChip, stateChips,
 import { progressProjection, type ProgressProjection, type ProgressRow, type ProgressSection } from './progress-projection.ts';
 import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
+import type { DeviceView, IntentRefusal } from './model.ts';
+import { currentIntent, type CurrentIntent } from './intent.ts';
+
+/** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
+ * device hints; CSS remains responsive without hints.
+ * Content/map owners consume the same attributes/variables, never introduce another layout owner.
+ */
+export const PHONE_LAYOUT_HOOKS = Object.freeze({
+  formFactor: 'data-device-form-factor', pointer: 'data-device-pointer',
+  safeTop: '--ap-safe-top', safeRight: '--ap-safe-right', safeBottom: '--ap-safe-bottom',
+  safeLeft: '--ap-safe-left', keyboard: '--ap-keyboard-height',
+});
+export const ATTENTION_HOOKS = Object.freeze({
+  inbox: 'needs-you-inbox', count: 'needs-you-count', alsoBlocked: 'also-blocked', pending: 'delegation-pending', refused: 'delegation-refused',
+});
 
 // Keys are the existing English copy; only these fixed messages are translated, never user text.
 const RUSSIAN = {
@@ -62,13 +77,13 @@ const RUSSIAN = {
   'No reported blockers in the last successful read. This may be out of date.': 'В последнем успешном чтении блокировок нет. Данные могут быть устаревшими.',
   'No reported blockers were recorded. Capture is off, so newer reports aren’t recorded.': 'Блокировки не записаны. Сбор отключён, новые отчёты не записываются.',
   'two tasks share an ID': 'две задачи имеют один ID', 'a task lists itself as a prerequisite': 'задача указывает себя как предпосылку', 'some tasks list each other as prerequisites': 'задачи указывают друг друга как предпосылки',
-  'Now': 'Сейчас', 'Reported working': 'По отчёту в работе', 'Needs you': 'Требует внимания', 'Up next': 'Далее', 'Pending': 'Ожидает', 'Done': 'Выполнено', 'Skipped': 'Пропущено',
-  'in progress': 'в работе', 'needs you': 'требует внимания', 'blocked': 'заблокировано', 'ready': 'готово', 'waiting': 'ожидает предпосылок', 'pending': 'ожидает', 'done': 'выполнено', 'skipped': 'пропущено',
+  'Now': 'Сейчас', 'Reported working': 'По отчёту в работе', 'Up next': 'Далее', 'Pending': 'Ожидает', 'Done': 'Выполнено', 'Skipped': 'Пропущено',
+  'in progress': 'в работе', 'blocked': 'заблокировано', 'ready': 'готово', 'waiting': 'ожидает предпосылок', 'pending': 'ожидает', 'done': 'выполнено', 'skipped': 'пропущено',
   'Ready to start': 'Готова к началу', 'Waiting on prerequisites': 'Ожидает предпосылок',
   'Filter tasks by state': 'Фильтр задач по состоянию', 'About these counts': 'Об этих количествах',
   'Counts cover every task in this plan, whatever filter is shown.': 'Количество учитывает все задачи плана независимо от фильтра.',
   'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.': 'Готовность и ожидание определяются только записанными предпосылками. Другие предпосылки могут быть не записаны; «Предпосылки не записаны» не означает их отсутствия. Готовность не является разрешением начать.',
-  'Needs you lists tasks reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person.': '«Требует внимания» показывает задачи, отмеченные как заблокированные. Они остаются здесь до нового отчёта агента; ожидание может относиться к другой сессии или человеку.',
+  'Blocked lists every task reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person. Needs you shows only reported decision and review waits.': '«Заблокировано» показывает все задачи, отмеченные как заблокированные. Они остаются здесь до нового отчёта агента; ожидание может относиться к другой сессии или человеку. «Нужно ваше участие» показывает только ожидающие решения и проверки.',
   'Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.': 'Количество учитывает все задачи плана независимо от фильтра. Это последние записанные статусы; для закрытого плана или нечитаемых предпосылок советы о готовности и ожидании не даются.',
   'Readiness is unavailable for this report: {reason}. The tasks are shown as reported.': 'Готовность для этого отчёта недоступна: {reason}. Задачи показаны как записано.',
   'Last reported readiness. It may be out of date and isn’t a current recommendation.': 'Последняя записанная готовность. Она может быть устаревшей и не является текущей рекомендацией.',
@@ -119,6 +134,15 @@ const RUSSIAN = {
   ' (verified)': ' (проверен)', ' (not verified)': ' (не проверен)', 'None': 'Нет', 'Recorded source': 'Записанный источник', 'Capture': 'Сбор', 'On': 'Включён', 'Off': 'Выключен', 'Coverage': 'Охват',
   'Loading progress': 'Загрузка прогресса', 'Setup is needed': 'Нужна настройка', 'Progress loaded again': 'Прогресс снова загружен',
   'Showing progress from {time}': 'Показан прогресс на {time}', '{failure}. This may be out of date.': '{failure}. Данные могут быть устаревшими.', 'Last refresh error': 'Ошибка последнего обновления',
+  'Next sub-agent will take this': 'Следующий субагент возьмёт эту задачу', 'Sub-agent handoff refused': 'Передача субагенту отклонена', 'Sub-agent handoff': 'Передача субагенту',
+  'Waiting for the next sub-agent the coordinator starts. No work has started, and no sub-agent is assigned yet.': 'Ждёт следующего субагента, которого запустит координатор. Работа не начата, субагент пока не назначен.',
+  'Not applied: the plan changed after the handoff was planned.': 'Не применена: план изменился после того, как передачу запланировали.',
+  'Not applied: the plan’s task structure changed.': 'Не применена: изменилась структура задач плана.',
+  'Not applied: the plan was closed.': 'Не применена: план закрыт.',
+  'Not applied: the task’s assignment changed.': 'Не применена: изменилось назначение задачи.',
+  'Not applied: the change couldn’t be checked.': 'Не применена: изменения не удалось проверить.',
+  'Not applied: the progress service refused it.': 'Не применена: сервис прогресса её отклонил.',
+  'The coordinator can plan the handoff again for the current plan, or link the task to a session.': 'Координатор может снова запланировать передачу для текущего плана или связать задачу с сессией.',
 } as const;
 type CopyKey = keyof typeof RUSSIAN;
 const CHINESE: Record<CopyKey, string> = {
@@ -246,6 +270,7 @@ const taskCount = (n: number, locale: InterfaceLanguage) => countText(n, 'task',
 const moreSessions = (n: number, locale: InterfaceLanguage) => countText(n, 'more', locale);
 
 export interface Env {
+  device?: DeviceView;
   locale: InterfaceLanguage;
   now: number;
   /** Monotonic time of this paint (performance.now), for elapsed labels. */
@@ -888,12 +913,15 @@ interface Paint {
   who: Attribution | null;
   label: (id: string) => string;
   trusted: boolean;
+  /** Waiting-delegation notes of this paint (intent.ts); display only. Absent: none. */
+  intent?: CurrentIntent;
 }
 
 /** Group titles: guidance for an active plan's complete valid detail, reported statuses otherwise. */
 const GROUP_TITLE: Record<ProgressSection, [guided: CopyKey, reported: CopyKey]> = {
   now: ['Now', 'Reported working'],
-  'needs-you': ['Needs you', 'Reported blocked'],
+  // Every reported blocker; only decision/review waits are Needs you (the source-wide inbox).
+  'needs-you': ['Blocked', 'Reported blocked'],
   'up-next': ['Up next', 'Pending'],
   done: ['Done', 'Done'],
   skipped: ['Skipped', 'Skipped'],
@@ -903,7 +931,7 @@ const GROUP_TITLE: Record<ProgressSection, [guided: CopyKey, reported: CopyKey]>
 const CHIP_WORD: [ProgressState, CopyKey, CopyKey][] = [
   // [state, guided word, reported word]
   ['working', 'in progress', 'in progress'],
-  ['blocked', 'needs you', 'blocked'],
+  ['blocked', 'blocked', 'blocked'],
   ['ready', 'ready', 'ready'],
   ['waiting', 'waiting', 'waiting'],
   ['pending', 'pending', 'pending'],
@@ -981,7 +1009,7 @@ function stateChipRow(p: Paint) {
   row.append(group);
   // The explanation follows the last chip in the same wrapping flow.
   group.append(info(`${p.plan.key}|counts`, say('About these counts', p.env.locale), (proj.guidance
-    ? ['Counts cover every task in this plan, whatever filter is shown.', 'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.', 'Needs you lists tasks reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person.'] as const
+    ? ['Counts cover every task in this plan, whatever filter is shown.', 'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.', 'Blocked lists every task reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person. Needs you shows only reported decision and review waits.'] as const
     : ['Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.'] as const).map(key => say(key, p.env.locale))));
   return row;
 }
@@ -1010,7 +1038,7 @@ function filterLine(p: Paint) {
   Object.assign(line.dataset, { rows: String(tasks), matching: String(proj.matching), retained: String(proj.retained), context: String(proj.context), hidden: String(proj.hidden) });
   if (!proj.filtered || !reading) return line;
   const parts: string[] = [];
-  if (reading.state) parts.push(`${say(proj.guidance && reading.state === 'blocked' ? 'Needs you' : STATE_WORD[reading.state], p.env.locale)}${(proj.counts.get(reading.state) ?? 0) === 0 ? say(' (no tasks have this state now)', p.env.locale) : ''}`);
+  if (reading.state) parts.push(`${say(STATE_WORD[reading.state], p.env.locale)}${(proj.counts.get(reading.state) ?? 0) === 0 ? say(' (no tasks have this state now)', p.env.locale) : ''}`);
   if (reading.status === 'unfinished') parts.push(say('Unfinished', p.env.locale));
   if (reading.participant.kind !== 'all' && p.who) parts.push(reading.participant.kind === 'none' ? say('No participant recorded', p.env.locale) : say('Participant {name}', p.env.locale, { name: participantText(reading.participant, p.label, p.env.locale) }));
   const text = el('span', 'ap-filter-text', say('{filter}: {matching} of {tasks}', p.env.locale, { filter: parts.join(' · '), matching: proj.matching, tasks: taskCount(tasks, p.env.locale) }));
@@ -1111,6 +1139,14 @@ function rowFacts(p: Paint, row: ProgressRow) {
     add(say('Reported wait', locale), wait, wait.textContent ?? '', `needs-you-wait-${item.id}`);
   }
   if (item.status === 'working') { const e = elapsedLabel(p.plan, item, p.detail, p.env); if (e) { testid(e, `task-elapsed-${item.id}`); add(say('Reported working', locale), e, e.textContent ?? ''); } }
+  const intent = p.intent?.tasks.get(item.id);
+  if (intent) {
+    const lines = intent.state === 'waiting' ? [say('Waiting for the next sub-agent the coordinator starts. No work has started, and no sub-agent is assigned yet.', locale)]
+      : [say(REFUSAL_COPY[intent.reason], locale), say('The coordinator can plan the handoff again for the current plan, or link the task to a session.', locale)];
+    const holder = el('span', 'ap-intent-fact');
+    for (const line of lines) holder.append(el('span', '', line));
+    add(say('Sub-agent handoff', locale), holder, lines.join(' '), `delegation-fact-${item.id}`).dataset.intent = intent.state;
+  }
   // Needs first: every recorded prerequisite in recorded order, including done ones.
   const prereqs = prerequisitesOf(p, item);
   const needsTerm = el('span', 'ap-rfacts-term');
@@ -1225,6 +1261,27 @@ function copyBox(p: Paint, item: ItemView, text: [string, string][]) {
   return holder;
 }
 
+const REFUSAL_COPY: Record<IntentRefusal, CopyKey> = {
+  changed: 'Not applied: the plan changed after the handoff was planned.', structure: 'Not applied: the plan’s task structure changed.',
+  closed: 'Not applied: the plan was closed.', assignment: 'Not applied: the task’s assignment changed.',
+  unverified: 'Not applied: the change couldn’t be checked.', other: 'Not applied: the progress service refused it.',
+};
+
+/**
+ * The faint waiting-delegation line under a task title, part of the row's summary (so a collapsed
+ * row reads it with the title). Display only: never a status, assignment, activity or control.
+ */
+function intentNote(p: Paint, itemId: string) {
+  const intent = p.intent?.tasks.get(itemId);
+  if (!intent) return null;
+  const waiting = intent.state === 'waiting';
+  const line = testid(el('span', 'ap-intent'), waiting ? ATTENTION_HOOKS.pending : ATTENTION_HOOKS.refused);
+  line.dataset.intent = intent.state;
+  if (!waiting) { line.dataset.reason = intent.reason; line.append(icon('warning')); }
+  line.append(el('span', 'ap-intent-text', say(waiting ? 'Next sub-agent will take this' : 'Sub-agent handoff refused', p.env.locale)));
+  return line;
+}
+
 /** One canonical task row: `li[item-ID]` (the programmatic target) and its expandable facts. */
 function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null): HTMLLIElement {
   const { item } = row;
@@ -1249,6 +1306,8 @@ function taskRow(p: Paint, row: ProgressRow, children: HTMLElement | null = null
   if (meta) end.append(meta);
   end.append(icon('chevron-down'));
   summary.append(end);
+  const note = intentNote(p, item.id);
+  if (note) summary.append(note);
   // The facts exist only while the row is open: a collapsed row (and its focused canonical `li`)
   // reads as its line alone (status, title, time/wait/readiness word), never the expanded facts or
   // their ⓘ explanations. Built fresh on open (this paint's controls), removed on close.
@@ -1567,7 +1626,9 @@ export function planDetail(plan: PlanView, env: Env, hooks: DetailHooks, options
       unlocks: derived?.state === 'valid' ? new Map([...derived.tasks].map(([id, t]) => [id, t.unlocksNext])) : null,
       who: reading && index ? { filter: reading.participant, index } : null,
       label: recordedLabel(plan, env), trusted: trustedSource(plan, env),
+      intent: currentIntent(plan, ready),
     };
+    root.dataset.delegation = paint.intent!.state;
   }
   const menu = planMenu(paint, plan, hooks, options.document, options.actions ?? [], { reading }, env.locale);
   root.append(planHeader(plan, env, options.heading, { picker: options.picker, actions: menu, info: options.info }));

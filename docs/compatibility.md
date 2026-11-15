@@ -431,6 +431,70 @@ SDK upgrade nor a task-named event family may auto-enable capture.
 
 ## Native Windows verification
 
+### Managed startup and released migration regression gate
+
+The fix for [#99](https://github.com/Phototonic/openchamber-progress/issues/99)
+keeps construction and health free of security queries and moves legacy migration
+to negotiated, explicitly confirmed steps. Each migration request admits at most
+six PowerShell launches, with 17-second work and 18-second response deadlines
+under the host's 20-second boundary. The UI preserves progress and capture
+warnings, stops on failures (including failed replays), and offers explicit
+pause, resume, status and reviewed capture recovery. Portable fixtures and
+rendered synthetic-shell QA do not certify native Windows latency or ACLs.
+
+**Known fresh-configure limit:** no-legacy setup retains the existing nonce-bound
+inspect/configure flow under the same writer fences. Portable helper accounting
+measures 3 inspection launches and 24 configuration launches. The synchronous
+configuration path can still exceed the host limit with very slow PowerShell and
+delay health. Timeout does not undo partial changes: inspect before explicitly
+retrying, without deleting recovery records or changing permissions. Follow-up
+work is a separate fresh-configuration plan on the step engine, not a relaxation
+of validation or consent. See [Setup](setup.md#install-review-confirm) for recovery
+and scope; native Windows results for this revision remain pending CI.
+
+The `Windows setup, storage and capture` CI job retains the existing native
+platform suite and adds `tests/backend/windows-service.test.ts`, in the same
+provisioned non-admin account. `Fetch released Windows migration fixture` fetches
+`v1.1.1`; the test uses that tag's emitted lifecycle/Store and actual payloads,
+not a reconstruction using current installer code. No host, profile, model,
+administrator product operation or runtime dependency download is used.
+
+The test launches a fresh child using the unmodified built service, synthetic
+HOME and XDG folders with spaces/Unicode, and an intact legacy
+installation but no managed selector. A test-only preload records security-query
+and legacy-read counts over IPC. Before listen and first health must both have
+zero queries/legacy reads. First health must finish within 1.25 seconds and total
+startup within 12 seconds. These margins are below OpenChamber **v2.7.1**
+[`packages/web/server/lib/guests/service.js`](https://github.com/openchamber/openchamber/blob/v2.7.1/packages/web/server/lib/guests/service.js):
+15-second startup deadline, 1.5-second authenticated health polls, 200 ms between
+polls. The SDK 2.7.0 Setup proxy has a separate 20-second request limit; native
+inspection, diagnostic status and migration timings are checked against it.
+
+Authenticated inspection pages and confirmed migration steps must preserve
+Store/source identity, seeded schema-2 history/run storage and retained releases,
+remove only verified legacy discovery, and enable capture on completion. Each
+request, including replay, stays within six launches and eight seconds on the
+undelayed runner. A second journey adds 2.5 seconds per helper, still below the
+20-second host boundary. Both exercise concurrent health and pause/reopen/resume
+before and after capture is off. Injected timeout/private-creation refusals and
+a worker that outlives its response must retain precise stage/code and fences,
+not authorize a competing writer. Fresh children also exercise selected and invalid
+hard-linked state: health never admits it, a real read refuses it, and legitimate
+restoration permits a fresh read. The existing Windows suite retains explicit-XDG,
+canonical-alias, ACL mutation, foreign-owner and unsafe-ancestor coverage.
+
+`Upload sanitized Windows migration trace` uploads `windows-migration-trace` even
+when tests fail. Its JSONL contains only fixed stages, error **classes** (platform,
+filesystem, storage, setup, test or timeout), allowlisted codes, timings, security
+query/legacy-read counts, marker/lock/expectation/record/selector booleans,
+capture-enabled and migration-phase observations. Fixed harness codes distinguish
+assertion/request/proxy-budget failures from product refusals. It contains no raw
+logs, paths, SIDs, auth, commands or database content. Expected injected failures
+and the final state are recorded. This gate is prepared for the native runner;
+Linux checks alone do **not** establish that it passes or identify a reporter's
+particular Windows syscall failure. A passing run is not Windows desktop host
+installation or managed companion-delivery certification.
+
 The native implementation adds no separate binary or compilation requirement for
 users. It uses the existing bundled JavaScript, ordinary Windows file identity
 checks, and Windows PowerShell 5.1/public .NET APIs for ownership and private ACLs.
@@ -1210,6 +1274,30 @@ durable next-dispatch intent. Slim pre-acknowledgement resume refusal remains a
 reported unsupported result, not a text-parsed child or successful execution.
 Controlled faults and actual native events are distinguished in evidence. The
 default combined fixture still includes its independently owned UI checks.
+
+## Receipt lookup index mixed-version compatibility
+
+The additive ordinary `receipts_source_oid ON receipts(source, oid)` index is
+compatible with unmodified 1.3.0 readers and writers. Protocol/base schema stay
+**2**; no receipt, snapshot or replay format changes. New store creation installs
+it, and companion activation adds it transactionally to existing stores. Ordinary
+opens validate an existing index without DDL and accept an absent one; reads and
+setup inspection do not install it. Owned-name collisions fail closed rather
+than being repaired. Exact `runs_*` and `cleanup_*` checks are unchanged.
+
+Downgrade keeps the index. Older writers, including connections opened before
+activation, maintain it through SQLite; newer activation reuses it. The isolated
+compatibility fixture loads the unmodified `v1.3.0` Store and covers creation,
+already-open writes, combined handoff replay, a downgraded reopen, read-only
+access, archive/restore/delete and reactivation. This does not override the
+separate restrictions for incompatible run formats.
+
+At both 1,000 and 50,000 synthetic receipts, `EXPLAIN QUERY PLAN` selects both
+`source` and `oid` through the new index rather than just the source prefix.
+The repeated-operation fixture admits three candidates (zero for an absent
+operation); its residual child predicate examines no more than that range at
+either history size. Timings are diagnostic, not a latency guarantee. See the
+[backend index contract](backend.md#receipt-lookup-index).
 
 ## Assigned-child reporting and session entry compatibility
 

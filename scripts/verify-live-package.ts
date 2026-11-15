@@ -13,6 +13,8 @@ import {readBinding} from '../shared/binding.ts';
 import {RELEASE} from '../shared/release.ts';
 import { managedBindingFile } from '../shared/managed-binding.ts';
 import { isolatedEnvironment } from '../tests/fixtures/managed.ts';
+import {MANAGED_ACTION_CODES} from '../shared/progress.ts';
+import {MANAGED_STEP_CODES} from '../shared/managed-steps.ts';
 
 const extension=path.resolve(process.argv[2]!);assert.ok(process.argv[2]);
 const manifest=JSON.parse(readFileSync(`${extension}/package.json`,'utf8'));
@@ -25,6 +27,7 @@ writeFileSync(attempts,'');
 let results:Record<string,unknown>|undefined;
 let child:ReturnType<typeof spawn>|undefined;
 let phase='readiness';
+let lastHttpStatus:number|null=null,lastHttpCode:string|null=null;
 try{
   const preload=`${root}/preload.mjs`;
   writeFileSync(preload,`// TEST ONLY: block outbound clients; native entry unchanged.\nimport fs from 'node:fs';import http from 'node:http';import https from 'node:https';import net from 'node:net';import {syncBuiltinESMExports} from 'node:module';\nconst blocked=()=>{fs.appendFileSync(${javascriptLiteral(attempts)},'attempt\\n');throw Error('fixture forbids outbound transport');};globalThis.fetch=blocked;http.request=http.get=https.request=https.get=net.connect=net.createConnection=blocked;syncBuiltinESMExports();\n`);
@@ -33,7 +36,12 @@ try{
   child=spawn(process.execPath,['--import',preload,entry],{cwd:root,env:{...env,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'native-package-fixture-only'},stdio:['ignore','pipe','pipe']});
   let stderr='';child.stderr!.on('data',b=>stderr+=b);
   const base=`http://127.0.0.1:${port}`,headers={authorization:'Bearer native-package-fixture-only','content-type':'application/json'};
-  const request=(route:string,body?:unknown)=>fetch(base+route,{method:body===undefined?'GET':'POST',headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(5000)});
+  const request=async(route:string,body?:unknown)=>{
+    const r=await fetch(base+route,{method:body===undefined?'GET':'POST',headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(5000)});
+    lastHttpStatus=r.status;const value=await r.clone().json(),code=typeof value.error==='string'?value.error:value.error?.code;
+    lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found'].includes(code)?code:code?'unrecognized-code':null;
+    return r;
+  };
   const json=async(route:string)=>{const r=await request(route);assert.equal(r.status,200);return r.json();};
   let ready=false;const deadline=Date.now()+5000;
   while(Date.now()<deadline){assert.equal(child.exitCode,null,stderr);try{if((await request('/health')).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,25));}assert.equal(ready,true,stderr);
@@ -53,7 +61,8 @@ try{
   assert.equal(readFileSync(attempts,'utf8'),'');
   const targets={configRoot:`${root}/config/opencode`,dataRoot:`${root}/data/opencode`,storeRoot:`${root}/store`,confirmed:true};
   phase='fixture managed configuration';
-  const review=await(await request('/v1/setup/managed-inspect',{storeRoot:targets.storeRoot})).json();
+  const inspected=await request('/v1/setup/managed-inspect',{storeRoot:targets.storeRoot});assert.equal(inspected.status,200,'fresh managed inspection must succeed');
+  const review=await inspected.json();assert.ok(review.delivery?.review?.expected,'fresh configuration requires a complete review');
   const installed=await request('/v1/setup/managed-configure',{storeRoot:targets.storeRoot,confirmed:true,expected:review.delivery.review.expected});assert.equal(installed.status,200);assert.equal((await installed.json()).version,RELEASE);
   const b=readBinding(selector),store=new Store(b.database),actor={sourceId:b.source.id,sessionId:'packaged-timing',agent:'build',directory:'/fixture/native-package',parentId:null,ancestry:[],verifiedSource:true};
   const past=Date.now()-4*3600000;let exact:string;
@@ -82,7 +91,7 @@ try{
   assert.equal((await detail('exact')).timing.items.I1.kind,'exact');
   assert.equal(hash(),originalHash,'native production entry was never rewritten');
   results={nativePackagedEntrySha256:originalHash,entryUnmodified:true,testOnlyExternalPreload:true,outboundTransportAttempts:0,unconfiguredUnavailable:true,concurrentCompatibilityReads:true,configuredStoreFailureIndependent:true,timing:['exact-neutral-working','lower-bound','unknown-missing-history','groups-excluded'],protocolVersion:2,schemaVersion:2};
-}catch(error){console.error(JSON.stringify({nativePackageVerificationFailedAt:phase}));throw error;}finally{
+}catch(error){console.error(JSON.stringify({nativePackageVerificationFailedAt:phase,lastHttpStatus,lastHttpCode}));throw error;}finally{
   if(child&&child.exitCode===null&&!child.signalCode){const exit=once(child,'exit');child.kill('SIGTERM');const timer=setTimeout(()=>child?.kill('SIGKILL'),3000);try{await exit;}finally{clearTimeout(timer);}}
   try{assert.equal(readFileSync(attempts,'utf8'),'','zero outbound attempts through shutdown');}finally{rmSync(root,{recursive:true,force:true});}
 }

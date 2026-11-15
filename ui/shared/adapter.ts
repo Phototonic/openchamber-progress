@@ -2,11 +2,15 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
-import { BLOCKER_LIMITS, LIMITS, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
+import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
+import { parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
+import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRequest } from '../../shared/needs-you.ts';
+import { DELEGATION_VIEW_LIMITS, supportsDelegationIntent } from '../../shared/delegation-view.ts';
 import type {
+  InboxRowView, InboxWindowView, IntentRefusal, IntentView,
   AssignmentBindingView, BlockerCategory, BlockerView, ContributionView, DigestEvents, DigestFacet, DigestFacts, DigestReason, DigestReference, DigestRequest, DigestTask, DigestView, DocumentRefView, DocumentState, HealthView, HistoryEntry, ItemStatus, ItemView, Lifecycle, PlanView, SetupView, SourceView,
   SearchGap, SearchHitView, SearchKeyView, SearchPlanView, SearchRequest, SearchStateView, SearchWindowView,
 } from './model.ts';
@@ -48,13 +52,164 @@ function versions(v: Rec) {
   }
 }
 
-export function parseHealth(body: string): HealthView & { planComposerHandoff?: 1 } {
+export function parseHealth(body: string): HealthView & { planComposerHandoff?: 1; state?: 'starting' | 'unconfigured' | 'ready' | 'refused' } {
   const v: unknown = JSON.parse(body);
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
-  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}) };
+  const state = v.state === 'starting' || v.state === 'unconfigured' || v.state === 'ready' || v.state === 'refused' ? v.state : undefined;
+  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+}
+
+/**
+ * Waiting-delegation overlay (shared/delegation-view.ts). `delegationIntent=1` is sent on list
+ * pages and the first detail page only when health advertises it; older services never see it.
+ */
+export const delegationQuery = (asked: boolean): Record<string, string> => (asked ? { delegationIntent: '1' } : {});
+const tokenText = (v: unknown): v is string => isStr(v) && v.length > 0 && !v.includes('\0') && new TextEncoder().encode(v).length <= DELEGATION_VIEW_LIMITS.tokenBytes;
+const intentId = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= DELEGATION_VIEW_LIMITS.identifierCodeUnits && !v.includes('\0');
+const REFUSALS: Record<string, IntentRefusal> = {
+  'relevant-change': 'changed', conflict: 'changed', 'structural-change': 'structure', closed: 'closed',
+  assignment: 'assignment', 'source-unverified': 'unverified', unverified: 'unverified', 'incomplete-proof': 'unverified', 'missing-proof': 'unverified', budget: 'unverified',
+};
+const UNAVAILABLE = new Set(['budget', 'legacy', 'unverified', 'invalid', 'capture-unavailable']);
+function intentDeclaration(v: unknown, revision: number, dispatched: boolean | null, cancelled = false) {
+  check(isRec(v) && intentId(v.oid) && intentId(v.coordinatorSessionId) && isInt(v.declaredRevision) && v.declaredRevision >= 1 && v.declaredRevision <= revision, 'unreadable declaration');
+  const ids = v.taskIds;
+  // Cancellation is itself an empty assignment declaration, not a waiting task set.
+  check(Array.isArray(ids) && (cancelled || ids.length >= 1) && ids.length <= DELEGATION_VIEW_LIMITS.tasks && ids.every(intentId) && new Set(ids).size === ids.length, 'unreadable declared tasks');
+  const d = v.dispatch;
+  check(d === null || (isRec(d) && (d.tool === 'subagent' || d.tool === 'task') && intentId(d.messageId) && intentId(d.callId)), 'unreadable dispatch');
+  // Pending has no dispatch yet; reserved names the dispatch it waits on (never child authority).
+  if (dispatched !== null) check(dispatched === (d !== null), 'dispatch disagrees with state');
+  return [...ids as string[]];
+}
+/**
+ * One detail overlay, re-validated against the reply it rides on (store, binding, plan identity,
+ * revision, structure and cleanup). Never throws: doubt is `unknown`, which paints nothing, so an
+ * optional overlay cannot fail the detail read or turn into a guess.
+ */
+export function parseIntent(v: unknown, envelope: EnvelopeView, plan: PlanView): IntentView {
+  const token = isRec(v) && tokenText(v.token) ? v.token : null;
+  try {
+    check(isRec(v) && token !== null && v.protocolVersion === SUPPORTED_PROTOCOL && v.schemaVersion === SUPPORTED_SCHEMA && v.delegationIntent === 1, 'unreadable overlay');
+    const b = v.sourceBinding, c = v.cleanup;
+    check(envelope.binding.verified && v.storeId === envelope.storeId && isRec(b) && b.verified === true && b.sourceId === envelope.binding.sourceId && v.source === plan.sourceId && v.source === b.sourceId, 'overlay for another store or binding');
+    check(v.plan === plan.id && v.revision === plan.revision && v.structuralRevision === plan.structuralRevision && isRec(c) && c.state === 'visible' && c.revision === (plan.cleanup?.revision ?? 0) && plan.cleanup?.state !== 'archived', 'overlay for another plan state');
+    check(isIso(v.readAt), 'overlay has no read time');
+    const r = v.result;
+    check(isRec(r), 'overlay has no result');
+    if (r.availability === 'unavailable') { check(r.complete === false && UNAVAILABLE.has(String(r.reason)) && !('disposition' in r), 'unreadable unavailability'); return { token, state: 'unknown' }; }
+    check(r.availability === 'ready' && r.complete === true && isRec(r.disposition), 'unreadable disposition');
+    const d = r.disposition;
+    const reason = (x: unknown) => { check(isStr(x) && x.trim().length > 0 && x.length <= DELEGATION_VIEW_LIMITS.reasonCodeUnits && !x.includes('\0'), 'unreadable reason'); return x; };
+    switch (d.state) {
+      case 'none': return { token, state: 'clear' };
+      case 'pending': case 'reserved':
+        check(d.eligible === true, 'ineligible waiting intent');
+        return { token, state: 'waiting', taskIds: intentDeclaration(d.declaration, plan.revision, d.state === 'reserved') };
+      case 'bound':
+        intentDeclaration(d.declaration, plan.revision, true);
+        check(intentId(d.childSessionId) && isInt(d.boundRevision) && d.boundRevision >= 1 && d.boundRevision <= plan.revision, 'unreadable binding');
+        return { token, state: 'clear' };
+      case 'cancelled': case 'invalidated':
+        intentDeclaration(d.declaration, plan.revision, null, d.state === 'cancelled'); reason(d.reason);
+        return { token, state: 'clear' };
+      case 'refused':
+        check(d.recovery === 'redeclare-or-link', 'unknown recovery');
+        return { token, state: 'refused', taskIds: intentDeclaration(d.declaration, plan.revision, null), reason: REFUSALS[reason(d.reason)] ?? 'other' };
+      default: return { token, state: 'unknown' };
+    }
+  } catch {
+    return { token, state: 'unknown' };
+  }
+}
+
+/**
+ * Needs you inbox read revision 1 (shared/needs-you.ts). The list extension asks for the first
+ * window on a first list page only (`needsYou=1`; displayed rows add `needsYouTiming=1`); explicit
+ * continuation uses GET /v1/needs-you pinned to the observed store and binding.
+ */
+export const NEEDS_YOU_ROUTE = '/v1/needs-you';
+export const needsYouListQuery = (timing: boolean) => ({ needsYou: '1', ...(timing ? { needsYouTiming: '1' } : {}) });
+export function needsYouQuery(r: NeedsYouRequest) {
+  return query({ storeId: r.storeId, binding: JSON.stringify(r.binding), source: r.source, cursor: r.cursor, limit: r.limit, timing: r.timing ? 1 : null })!;
+}
+const INBOX_KEYS = new Set(['category', 'reason', 'nextAction', 'reportedRevision', 'reportedAt', 'reporterSessionId', 'attributedSessionId', 'mode', 'validAtRevision']);
+const PERSON_FACING: readonly string[] = ['decision', 'review'];
+function inboxBlocker(v: unknown, revision: number): InboxRowView['blocker'] {
+  check(isRec(v) && (v.state === 'reported' || v.state === 'absent' || v.state === 'invalid'), 'An inbox row has unreadable blocker details.');
+  if (v.state !== 'reported') { check(Object.keys(v).length === 1, 'An inbox row carries text for unusable details.'); return { state: v.state }; }
+  const a = v.annotation;
+  check(isRec(a) && Object.keys(a).every((k) => INBOX_KEYS.has(k)), 'An inbox row has unreadable reported details.');
+  const category = a.category === undefined ? null : a.category === 'unclassified' ? 'unclassified' : (BLOCKER_CATEGORIES as readonly unknown[]).includes(a.category) ? a.category as BlockerCategory : undefined;
+  check(category !== undefined && (a.reason === undefined || blockerText(a.reason)) && (a.nextAction === undefined || blockerText(a.nextAction))
+    && a.validAtRevision === revision && isInt(a.reportedRevision) && a.reportedRevision >= 1 && a.reportedRevision <= revision && isoInstant(a.reportedAt)
+    && identifier(a.reporterSessionId) && identifier(a.attributedSessionId)
+    && (a.mode === 'direct' ? a.reporterSessionId === a.attributedSessionId : a.mode === 'parent-relay' && a.reporterSessionId !== a.attributedSessionId), 'An inbox row has invalid reported details.');
+  return { state: 'reported', category, reason: (a.reason as string | undefined) ?? null, nextAction: (a.nextAction as string | undefined) ?? null };
+}
+function inboxRow(v: unknown, sourceId: string, timing: boolean, readAt: number, receivedAt: number): InboxRowView {
+  check(isRec(v) && isStr(v.source) && isStr(v.plan) && isStr(v.planTitle) && identifier(v.coordinatorSessionId), 'An inbox row has no plan identity.');
+  // Equal plan/task IDs elsewhere never leak in: only the verified bound source is eligible.
+  check(v.source === sourceId, 'An inbox row is outside the verified source.');
+  check(isRevision(v.revision) && isInt(v.structuralRevision) && v.structuralRevision >= 0 && isRec(v.cleanup) && v.cleanup.state === 'visible' && isCount(v.cleanup.revision), `Inbox plan ${v.plan} has no current revision or is not visible.`);
+  const t = v.task;
+  check(isRec(t) && isStr(t.id) && t.id.length > 0 && isStr(t.title) && t.kind === 'task' && t.status === 'blocked', `Inbox plan ${v.plan} has a row that is not a blocked task.`);
+  check(Array.isArray(v.ancestors) && v.ancestors.length <= NEEDS_YOU_LIMITS.ancestors && v.ancestors.every((x) => isRec(x) && isStr(x.id) && isStr(x.title)) && isCount(v.omittedAncestors), `Inbox plan ${v.plan} has unreadable context.`);
+  check(v.group === 'needs-you' || v.group === 'also-blocked', `Inbox plan ${v.plan} has an unknown group.`);
+  const blocker = inboxBlocker(v.blocker, v.revision as number);
+  // Only valid current decision/review details are person-facing; everything else is Also blocked.
+  const personFacing = blocker.state === 'reported' && PERSON_FACING.includes(String(blocker.category));
+  check(personFacing === (v.group === 'needs-you'), `Inbox plan ${v.plan} groups a task against its reported category.`);
+  let wait: InboxRowView['wait'] = null;
+  // Unrequested waiting times (compact count) are ignored, not trusted or refused.
+  if (timing && v.timing !== undefined) {
+    const w = v.timing;
+    check(isRec(w) && (w.kind === 'exact' || w.kind === 'lower-bound') && isIso(w.since) && isIso(w.readAt) && Date.parse(w.readAt as string) === readAt && Date.parse(w.since as string) <= readAt, `Inbox plan ${v.plan} has unreadable waiting time.`);
+    wait = { kind: w.kind as 'exact' | 'lower-bound', since: w.since as string, elapsedAtRead: readAt - Date.parse(w.since as string), receivedAt };
+  }
+  return {
+    rowKey: JSON.stringify([v.source, v.plan, t.id]), planKey: `${v.source}/${v.plan}`, source: v.source, plan: v.plan, planTitle: v.planTitle,
+    revision: v.revision as number, structuralRevision: v.structuralRevision as number, cleanupRev: v.cleanup.revision as number, coordinatorSessionId: v.coordinatorSessionId as string,
+    task: { id: t.id, title: t.title }, ancestors: (v.ancestors as Rec[]).map((x) => ({ id: x.id as string, title: x.title as string })), omittedAncestors: v.omittedAncestors as number,
+    group: v.group, blocker, wait,
+  };
+}
+/**
+ * One inbox window, validated against the observed store and verified binding. `previous`: the
+ * cumulative counts before this window (null for a first window), so counts must grow by exactly
+ * this window's rows. Complete means exhausted, no cursor and no gap; never a partial zero.
+ */
+export function parseNeedsYouWindow(v: unknown, expect: { storeId: string; binding: { sourceId: string | null; verified: boolean } }, previous: InboxWindowView['counts'] | null, timing: boolean, receivedAt: number): InboxWindowView {
+  check(isRec(v), 'The inbox reply is not an object.');
+  versions(v);
+  check(v.needsYouInbox === 1, 'The inbox reply has another contract revision.');
+  const b = v.sourceBinding;
+  check(expect.binding.verified && isStr(expect.binding.sourceId) && v.storeId === expect.storeId && isRec(b) && b.verified === true && b.sourceId === expect.binding.sourceId, 'The inbox answered for another store or binding.');
+  const sourceId = expect.binding.sourceId as string;
+  check(isIso(v.readAt) && typeof v.captureEnabled === 'boolean', 'The inbox reply has no read time.');
+  const readAt = Date.parse(v.readAt as string);
+  check(Array.isArray(v.rows) && v.rows.length <= NEEDS_YOU_LIMITS.rows, 'The inbox reply has too many rows.');
+  const rows = v.rows.map((r) => inboxRow(r, sourceId, timing, readAt, receivedAt));
+  check(new Set(rows.map((r) => r.rowKey)).size === rows.length, 'The inbox reply lists a task twice.');
+  const counts = v.counts, c = v.coverage;
+  check(isRec(counts) && isCount(counts.needsYou) && isCount(counts.alsoBlocked), 'The inbox reply has unreadable counts.');
+  const base = previous ?? { needsYou: 0, alsoBlocked: 0 };
+  const own = { needsYou: rows.filter((r) => r.group === 'needs-you').length, alsoBlocked: rows.filter((r) => r.group === 'also-blocked').length };
+  check(counts.needsYou === base.needsYou + own.needsYou && counts.alsoBlocked === base.alsoBlocked + own.alsoBlocked, 'The inbox counts disagree with its rows.');
+  check((v.nextCursor === null || (isStr(v.nextCursor) && v.nextCursor.length > 0 && v.nextCursor.length <= NEEDS_YOU_LIMITS.cursorBytes)), 'The inbox reply has an unreadable continuation.');
+  check(isRec(c) && c.kind === 'observed-current' && typeof c.complete === 'boolean' && typeof c.exhausted === 'boolean' && typeof c.gapped === 'boolean' && isCount(c.skippedRecords)
+    && Array.isArray(c.reasons) && c.reasons.every((r) => r === 'invalid-snapshot' || r === 'oversized-snapshot'), 'The inbox reply has unreadable coverage.');
+  check(c.exhausted === (v.nextCursor === null) && (c.gapped || c.skippedRecords === 0), 'The inbox coverage disagrees with its continuation.');
+  // Complete is never inferred from a partial or gapped traversal.
+  check(!c.complete || (c.exhausted && !c.gapped), 'The inbox claims completeness without full coverage.');
+  return {
+    storeId: v.storeId as string, sourceId, captureEnabled: v.captureEnabled as boolean, readAt: v.readAt as string, timing,
+    rows, counts: { needsYou: counts.needsYou, alsoBlocked: counts.alsoBlocked }, nextCursor: v.nextCursor as string | null,
+    coverage: { complete: c.complete as boolean, exhausted: c.exhausted as boolean, gapped: c.gapped as boolean, skippedRecords: c.skippedRecords as number },
+  };
 }
 
 export function captureQuery(r: CaptureRequest, extra: { cursor?: string; before?: number; after?: number } = {}) {
@@ -107,6 +262,16 @@ export function parseCaptureComparison(body: string, r: CaptureRequest, before: 
 /** Error body of a non-200 reply: `{error: fixed-code}`. */
 export function errorCode(body: string): string | null {
   try { const v: unknown = JSON.parse(body); return isRec(v) && isStr(v.error) ? v.error : null; } catch { return null; }
+}
+
+/** Optional diagnostics never carry raw exception text or paths into the UI. */
+export function parseLastAction(body: string): SetupView['lastAction'] {
+  try {
+    const v: unknown = JSON.parse(body);
+    const a = isRec(v) && isRec(v.lastAction) ? v.lastAction : null;
+    return a && MANAGED_ACTION_STAGES.some(stage => stage === a.stage) && isStr(a.code) && MANAGED_ACTION_CODES.includes(a.code)
+      ? { stage: a.stage as NonNullable<SetupView['lastAction']>['stage'], code: a.code } : undefined;
+  } catch { return undefined; }
 }
 
 export interface EnvelopeView {
@@ -164,6 +329,8 @@ function parseSummary(v: unknown): PlanView {
     working: Array.isArray(v.working) ? v.working.filter(isStr) : [],
     document: parseDocumentRef(v.document),
     ...(v.cleanup === undefined ? {} : { cleanup: v.cleanup as PlanView['cleanup'] }),
+    // Optional overlay identity: an unreadable token never fails the list, it just matches nothing.
+    ...(v.delegationToken === undefined ? {} : { delegationToken: tokenText(v.delegationToken) ? v.delegationToken : null }),
   };
 }
 
@@ -299,9 +466,11 @@ export function parsePlanPage(body: string) {
   const v: unknown = JSON.parse(body);
   check(isRec(v), 'Plan reply is not an object.');
   const plan = parseSummary(v.plan);
+  const envelope = parseEnvelope(v);
   return {
-    envelope: parseEnvelope(v),
+    envelope,
     plan,
+    intent: v.delegationIntent === undefined ? undefined : parseIntent(v.delegationIntent, envelope, plan),
     items: page(v.items, (x) => parseItem(x, plan.id, plan.revision, plan.ownerSessionId), 'Plan items'),
     contributions: page(v.contributions, (x) => parseContribution(x, plan.id), 'Plan contributions'),
     links: (Array.isArray(v.links) ? v.links : []).map((l) => {
@@ -553,6 +722,12 @@ export function parseSetup(body: string): SetupView {
   const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)
     && isRec(d.review.targets) && isStr(d.review.targets.configRoot) && isStr(d.review.targets.dataRoot) && isStr(d.review.targets.storeRoot)
     && (d.review.storeId === null || isStr(d.review.storeId)) && (d.review.sourceId === null || isStr(d.review.sourceId)) ? d.review : null;
+  // Step migration is negotiated only by the literal capability. Its embedded progress is parsed
+  // strictly: present-but-unreadable or progress without the capability fails the whole read.
+  const steps = managed && d.managedMigrationSteps === 1;
+  const hasProgress = managed && Object.hasOwn(d, 'migrationProgress');
+  const progress = hasProgress ? parseManagedStepProgress(d.migrationProgress) : undefined;
+  check(!hasProgress || (steps && !!progress), 'Setup migration progress is unreadable.');
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -568,7 +743,8 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}) } as SetupView['delivery'] } : {}),
+    ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,

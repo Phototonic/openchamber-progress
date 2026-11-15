@@ -95,6 +95,8 @@ export interface CompanionUpdateRead {
   rootVersion: string | null;
 }
 export interface SetupRead {
+  /** Last failed migration action in this service process; not a recovery authority. */
+  lastAction?: { stage: ManagedActionStage; code: string };
   /** Missing/unknown revision means legacy/unsupported, never managed success. */
   delivery?: ManagedDelivery;
   reportingIdentity?: { storeId: string; sourceId: string; verified: boolean };
@@ -107,6 +109,18 @@ export interface SetupRead {
   suggestions?: SetupSuggestions;
   update?: CompanionUpdateRead;
 }
+export const MANAGED_ACTION_STAGES = ['managed-state-create','lock','expectation-publication','migration-record','legacy-removal','binding-publication','capture-enable'] as const;
+export type ManagedActionStage = typeof MANAGED_ACTION_STAGES[number];
+/** Public failure details only; shared with the guest parser. No exception messages. */
+export const MANAGED_ACTION_CODES: readonly string[] = [
+  'invalid','not-found','conflict','operation-reused','assignment','source-unverified','closed','unfinished','disabled','busy','storage','corrupt','schema','binding','stage-incomplete',
+  'managed-action-required','managed-service-required','managed-binding-invalid','managed-binding-modified','managed-path-unverified','managed-scope-unsupported',
+  'EACCES','EPERM','EIO','ENOSPC','EEXIST','EBUSY','ENOENT','ENOTDIR','EROFS','EMFILE','ENFILE',
+  'confirmation-required','managed-review-stale','managed-selection-conflict','managed-source-conflict','managed-configuration-busy',
+  'managed-migration-required','managed-migration-conflict','managed-migration-pending','store-permissions','path-unverified',
+  'ownership-invalid','modified-owned-files','foreign-files','staged-activation-retained','not-installed','collision',
+  'windows-security-unavailable','private-permissions','unsafe-parent','symlink-escape',
+];
 export type ManagedSetupAction = 'managed-inspect' | 'managed-configure' | 'managed-migrate' | 'managed-enable' | 'managed-disable';
 /** Fixed setup errors, independent of report-tool Code. Pending/conflict are reserved for migration. */
 export type ManagedSetupErrorCode = 'managed-action-required' | 'managed-service-required' |
@@ -121,6 +135,9 @@ export interface ManagedReview {
 }
 export interface ManagedDelivery {
   kind: 'managed'; revision: 1;
+  /** Advertised only by a complete bounded-step implementation. Absent means unsupported. */
+  managedMigrationSteps?: 1;
+  migrationProgress?: import('./managed-steps.ts').ManagedStepProgress;
   configuration: 'unconfigured' | 'configured' | 'invalid';
   migration: ManagedMigrationState;
   /** Local service cannot establish host grant, inventory or watched-file mode. */
@@ -182,7 +199,7 @@ export function parseReportRequest(value: unknown): Request|HandoffRequest {
   const r = value as Request;
   const fields: Record<Request['op'], string[]> = {
     start: ['title','items','source'], read: ['page'], change: ['changes','attributed'], revise: ['title','items','reopen'],
-    stage: ['upload','chunk','items','reopen'], commit: ['upload','chunks','title','reopen'], link: ['child','assign'], delegate: ['assign'], bind: ['source','confirm'], finish: ['outcome'],
+    stage: ['upload','chunk','items','reopen'], commit: ['upload','chunks','title','reopen'], link: ['child','assign'], delegate: ['assign'], bind: ['source','confirm'], finish: ['outcome','changes'],
   };
   validRequest(Object.hasOwn(fields, r.op), 'op');
   validRequest(identifier(r.plan), 'plan');
@@ -232,7 +249,7 @@ export const REPORT_SCHEMA = {
     op: { type: 'string', enum: ['start','read','change','revise','stage','commit','link','delegate','bind','finish','handoff'], description: 'Plan operations require plan; mutations require oid/rev. Handoff takes op, oid, summary, outcome done/partial/blocked and optional taskUpdate; no top-level plan/rev. Delegate persists next-dispatch intent, not assignment. Read accepts only op, plan and optional page. Always include op, including routine change calls; if the host rejects a call with op: Missing key, resend the same call with op added and the same oid.' },
     plan: { type: 'string', description: 'Plan operations only; omit for handoff. One stable identifier: 1-80 letters, digits, _, ., : or -, starting with a letter or digit. No wildcard/list syntax.' }, oid: { type: 'string', description: 'Required for every mutation; omit for read. Fresh identifier for each new mutation; reuse only to retry identical input.' }, rev: { type: 'integer', minimum: 0, description: 'Required for plan mutations; omit for read and handoff. New start uses 0. Read current revision before updating; use the returned rev.' },
     title: { type: 'string', description: 'Required for start: nonempty plan title, at most 256 characters.' }, items: { type: 'array', maxItems: 50, description: 'Required for start: complete structure with stable item IDs, titles and kinds. Large structures use stage/commit. Empty/all-skipped plans cannot finish successfully.', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, kind: { enum: ['task','group'] }, status: { enum: ['pending','working','blocked','done','skipped'] }, parentId: { type: 'string' }, dependencies: { type: 'array', items: { type: 'string' } }, blocker: BLOCKER_SCHEMA }, required: ['id','title','kind'], additionalProperties: false } },
-    changes: { type: 'array', maxItems: 50, items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] }, blocker: BLOCKER_SCHEMA }, required: ['id','status'], additionalProperties: false } },
+    changes: { type: 'array', minItems: 1, maxItems: 50, description: 'Required for change; optional for coordinator finish. Finish commits explicit task changes and outcome atomically at rev; any refusal applies neither. Use 1–50 unique existing task IDs.', items: { type: 'object', properties: { id: { type: 'string' }, status: { enum: ['pending','working','blocked','done','skipped'] }, blocker: BLOCKER_SCHEMA }, required: ['id','status'], additionalProperties: false } },
     taskUpdate: { type:'object', additionalProperties:false, required:['plan','rev','changes'], description:'Handoff only: optional explicit atomic assigned-task update. Fresh read required; outcome never selects task status. Identical full-input retries only.', properties:{plan:{type:'string'},rev:{type:'integer',minimum:0},changes:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,required:['id','status'],properties:{id:{type:'string'},status:{enum:['pending','working','blocked','done','skipped']},blocker:BLOCKER_SCHEMA}}}} },
     child: { type: 'string' }, assign: { type: 'array', items: { type: 'string' } }, attributed: { type: 'string' }, source: { type: 'string' }, confirm: { type: 'boolean' }, outcome: { enum: ['finished','cancelled','failed','done','partial','blocked'] }, summary:{type:'string',minLength:1,maxLength:200,description:'Handoff only: one safe nonblank line; no NUL/newlines. Literal rendering is not secret redaction.'}, reopen: { type: 'boolean' }, upload: { type: 'string' }, chunk: { type: 'integer' }, chunks: { type: 'integer' }, page: { type: 'integer' },
   },

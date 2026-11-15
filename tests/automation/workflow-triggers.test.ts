@@ -9,6 +9,20 @@ import { spawnSync } from 'node:child_process';
 // branch names, should reach the downstream expression comparison.
 const actionsStringEquals = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+test('native trace extraction tolerates TAP indentation and rejects a runner-only artifact',()=>{
+  const source=readFileSync(new URL('../../.github/workflows/ci.yml',import.meta.url),'utf8');
+  const pattern=source.match(/if \(\$_ -match '([^']+WINDOWS_MIGRATION_TRACE[^']+)'\)/)?.[1];
+  assert.ok(pattern);
+  const regex=new RegExp(pattern);
+  for(const prefix of ['', '# ', '    ', '  #   ']){
+    const line=prefix+'WINDOWS_MIGRATION_TRACE {"request":"prepare","spawns":6}';
+    assert.deepEqual(JSON.parse(regex.exec(line)![1]),{request:'prepare',spawns:6});
+  }
+  assert.equal(regex.test('unrelated output'),false);
+  assert.match(source,/Where-Object \{ \$_\.request -and \$_\.request -notin @\('runner-start','summary'\) \}/);
+  assert.match(source,/if \(\$requests\.Count -eq 0\) \{ throw 'Native Windows request trace is missing\.'/);
+});
+
 test('only duplicate same-repository main/dev PR check jobs are skipped', () => {
   const repository = 'example/project';
   for (const [workflow, jobs] of [
@@ -18,7 +32,8 @@ test('only duplicate same-repository main/dev PR check jobs are skipped', () => 
   ] as const) {
     const source = readFileSync(new URL(`../../.github/workflows/${workflow}.yml`, import.meta.url), 'utf8');
     assert.match(source, /push:\n    branches: \[main, dev\]/);
-    assert.match(source, /pull_request:\n    branches: \[main, dev\]/);
+    // Pull requests run whatever branch they target, so stacked PRs are checked too.
+    assert.match(source, /^  pull_request:\n  push:\n/m);
     const gate = source.split('\n  gate:\n')[1]?.split(/\n  [\w-]+:\n/)[0];
     assert.ok(gate);
     assert.match(gate, /run: \$\{\{ steps.decide.outputs.run \}\}/);

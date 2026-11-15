@@ -89,7 +89,9 @@ function controller(surface: 'panel' | 'page' | 'status' = 'panel') {
     require: (name: string) => {
       if (name === '@openchamber/sdk') return { connectHost: () => host };
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
+      if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return { ...source, readDetail: (...args: Parameters<typeof source.readDetail>) => { readStarts++; return source.readDetail(...args); } };
+      if (name === './setup.ts') return { retireSetupSteps() {} };
       if (name === './summary.ts') return summaries;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;

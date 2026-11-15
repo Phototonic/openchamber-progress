@@ -12,7 +12,7 @@ import { Store } from '../../shared/store.ts';
 import { readBinding } from '../../shared/binding.ts';
 import { captureDocument } from '../../plugin/document.ts';
 import { serviceBindingFile } from '../../service/state.ts';
-import { createManagedBindingDirectory, readManagedBinding } from '../../shared/managed-binding.ts';
+import { createManagedBindingDirectory, readManagedBinding, managedSourceRoots } from '../../shared/managed-binding.ts';
 import { SetupController } from '../../service/setup-controller.ts';
 import { setupSuggestions } from '../../service/suggestions.ts';
 import type { Actor } from '../../shared/progress.ts';
@@ -295,6 +295,12 @@ test('Windows managed discovery is read-only and state-independent; confirmed se
     const env={HOME:f.root,XDG_DATA_HOME:path.join(f.root,'shared-data'),XDG_CONFIG_HOME:path.join(f.root,'shared-config')};
     const configRoot=path.join(env.XDG_CONFIG_HOME,'opencode'),dataRoot=path.join(env.XDG_DATA_HOME,'opencode');
     privateDirectory(configRoot,true);privateDirectory(dataRoot,true);
+    const realSpawn=childProcess.spawnSync;let queries=0;
+    const batch=t.mock.method(childProcess,'spawnSync',((...args:Parameters<typeof childProcess.spawnSync>)=>{queries++;return(realSpawn as any)(...args);})as typeof childProcess.spawnSync);syncBuiltinESMExports();
+    try{
+      assert.deepEqual(managedSourceRoots(env),{configRoot,dataRoot});assert.equal(queries,1,'known config/data paths and ancestors share a single security query');
+      managedSourceRoots(env);assert.equal(queries,2,'a second operation does not inherit an ACL cache');
+    }finally{batch.mock.restore();syncBuiltinESMExports();}
     const selector=serviceBindingFile(env);
     assert.equal(fs.existsSync(path.dirname(selector)),false);assert.equal(readManagedBinding(env),undefined);
     assert.equal(serviceBindingFile({...env,XDG_STATE_HOME:path.join(f.root,'different-state')}),selector);
