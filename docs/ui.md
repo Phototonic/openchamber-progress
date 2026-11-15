@@ -904,8 +904,13 @@ though managed activation remains unknown. Store/binding adoption retires old
 setup replies and requests replacement status for the adopted context.
 
 Review explains full-user plugin/service privileges and conditional lifecycle.
-After acknowledgement, mutations echo only the reviewed store, opaque expected
-identity and `confirmed:true`. No executable bytes, arbitrary roots or global
+After acknowledgement, configuration and compatibility mutations echo only the
+reviewed store, opaque expected identity and `confirmed:true`. Negotiated capture
+controls instead keep this same review, acknowledgement and Confirm/Cancel copy
+but submit the bodyless capture enable/disable route, then reread status. They
+use the current selected binding under fresh server validation, not a review
+nonce; both fresh and migrated managed installations use this path. Older
+services retain the nonce-bound control flow. No executable bytes, arbitrary roots or global
 configuration edit is supplied. Pending controls retain native/logical focus with
 `aria-disabled`/busy semantics and guarded activation, not duplicate submissions.
 
@@ -971,10 +976,14 @@ unfinished, including after reopening. Completion does not prove a managed load.
 
 Pause waits for the in-flight step; Stop retains completed work and recovery
 state. Neither undoes work or turns capture back on. Continue, Resume and a fresh
-capture decision are explicit actions. Closing/changing the view stops queuing
-after the current request, without cancellation or rollback claims. A lost or
+capture decision are explicit actions. Closing/hiding/changing the view retires
+the attempt immediately, without cancellation or rollback claims. A hide/show
+round trip cannot revive a held reply; reopening reads status and needs explicit
+Continue or Resume before any further step. A lost or
 invalid reply offers status first, never automatic retry or polling. Newer durable
-status may replace a stale local result. Non-null reply errors override even a
+status may replace a stale local result; equal-sequence status also refreshes
+capture/recovery observations (including Resume changing to capture review),
+while an older sequence cannot replace newer progress. Non-null reply errors override even a
 replayed disposition: the failure's fixed stage/code and localized recovery text
 remain visible, and no next step is queued. Port contention asks the user to close
 the program using the coordination port and retry. Installation-change conflicts

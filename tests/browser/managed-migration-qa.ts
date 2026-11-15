@@ -59,13 +59,14 @@ const shell = `<!doctype html><html><head><meta charset="utf-8"><meta name="view
 let engine = stepEngine({ inspectPages: 2 });
 let capable = true;
 let fresh = false, freshConfigured = false;
+let captureControl: boolean | null = null;
 const log: { method: string; path: string; action?: string; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
   const p = engine.progress;
   const migration = fresh ? 'none' : !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
   return {
-    configured: freshConfigured, verified: freshConfigured, installed: false, captureEnabled: fresh ? freshConfigured : !p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null,
+    configured: freshConfigured, verified: freshConfigured, installed: false, captureEnabled: captureControl ?? (fresh ? freshConfigured : !p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
     targets: freshConfigured ? managedReview.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
     delivery: { kind: 'managed', revision: 1, configuration: freshConfigured ? 'configured' : 'unconfigured', migration, mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', ...(capable ? { managedMigrationSteps: 1 } : {}), ...(capable && p ? { migrationProgress: p } : {}) },
   };
@@ -83,6 +84,11 @@ const server = createServer(async (req, res) => {
       const json = (status: number, value: unknown) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status, body: JSON.stringify(value) })); };
       if (q.path === '/health') return json(200, health);
       if (q.path === '/v1/setup' && q.method === 'GET') return json(200, setupRead());
+      if (q.path === '/v1/capture/disable' || q.path === '/v1/capture/enable') {
+        if (q.method !== 'POST' || q.body !== undefined) return json(400, { error: 'body-not-allowed' });
+        captureControl = q.path.endsWith('/enable');
+        return json(200, { ok: true, captureEnabled: captureControl });
+      }
       if (fresh && q.path === '/v1/setup/managed-inspect') {
         const read = setupRead();
         return json(200, { ...read, delivery: { ...read.delivery, review: managedReview } });
@@ -150,7 +156,7 @@ try {
   const stepCalls = () => log.filter(l => l.path === '/v1/setup/managed-step').length;
   const idle = async (id: string) => { const steps = stepCalls(), setup = log.filter(l => l.path === '/v1/setup').length; await sleep(2500); check(id, stepCalls() === steps && log.filter(l => l.path === '/v1/setup').length === setup, { steps: stepCalls() - steps, setupReads: log.filter(l => l.path === '/v1/setup').length - setup }); };
   async function open(locale: 'en' | 'ru', mode: 'light' | 'dark', width: number, height: number, configure: (e: ReturnType<typeof stepEngine>) => void = () => {}, keep = false) {
-    if (!keep) { engine = stepEngine({ inspectPages: 2 }); configure(engine); log.length = 0; }
+    if (!keep) { captureControl = null; engine = stepEngine({ inspectPages: 2 }); configure(engine); log.length = 0; }
     await viewport(width, height);
     await evaluate(`(()=>{try{frame().contentWindow.__stale=true}catch{}return true})()`);
     await evaluate(`qa.load(${literal(locale)},${literal(mode)})`);
@@ -200,6 +206,19 @@ try {
   check('complete:all-steps-once', JSON.stringify(log.filter(l => l.action === 'advance').length) === String(engine.plan.length - 1));
   await shot('complete-en');
   await idle('complete:no-polling-or-continuation');
+
+  // A real visibility event must retire without relying on a hidden-frame paint.
+  await open('en','light',1280,900);
+  await startSwitch();const heldVisible=engine.hold(4);await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-step="expectation"]')`,'held expectation');
+  await guest(`Object.defineProperty(d,'visibilityState',{configurable:true,value:'hidden'});d.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(d,'visibilityState',{configurable:true,value:'visible'});d.dispatchEvent(new Event('visibilitychange'));return true`);
+  heldVisible();
+  await wait(`d.querySelector('[data-testid="setup-migration-continue"]')`,'reopened explicit Continue');
+  check('hide-show:held-reply-retired',engine.requests.filter(r=>r.action==='advance').length===1 && engine.progress?.capture.state==='on');
+  await shot('hide-show-continue');
+  await click('[data-testid="setup-migration-continue"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`,'explicit Continue completes');
+  check('hide-show:explicit-continue-finishes',engine.progress?.state==='complete');
 
   // 2. Failure at a middle step, RU phone light: fixed stage/code, actionable text, Resume focused.
   await open('ru', 'light', 390, 844, e => e.faults.fail.add('remove-discovery:2'));
@@ -377,6 +396,20 @@ try {
     check(`fresh-${locale}:configure-once-no-steps`, stepCalls() === 0 && log.filter(l => l.method === 'POST').map(l => l.path).join() === '/v1/setup/managed-inspect,/v1/setup/managed-configure' && freshConfigured);
     check(`fresh-${locale}:fits`, (await fits()).ok, await fits());
     await shot(`fresh-configured-${locale}`);
+    const controlAt=log.length;
+    await click('[data-testid="setup-disable"] button');
+    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-disable"]')`,'capture confirmation');
+    check(`capture-${locale}:review-is-local`,!log.slice(controlAt).some(l=>l.method==='POST'));
+    await click('[data-testid="setup-confirm"] button');
+    check(`capture-${locale}:ack-required`,!log.slice(controlAt).some(l=>l.path.startsWith('/v1/capture/')));
+    await shot(`capture-review-${locale}`);
+    await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-enable"]')`,'capture off observed');
+    await click('[data-testid="setup-enable"] button');
+    await wait(`d.querySelector('[data-testid="setup-review"][data-action="managed-enable"]')`,'enable confirmation');
+    await confirmByKeyboard();
+    await wait(`d.querySelector('[data-testid="setup-disable"]')`,'capture on observed');
+    check(`capture-${locale}:one-bodyless-route-per-confirmation`,log.slice(controlAt).filter(l=>l.method==='POST').map(l=>l.path).join()==='/v1/capture/disable,/v1/capture/enable'&&captureControl===true);
   }
   fresh = false; freshConfigured = false;
 

@@ -738,6 +738,13 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   const ownsFocus = (id:string) => document.hasFocus() && !!document.activeElement?.closest(`[data-testid="${id}"]`);
   const run = async (action: Extract<SetupAction, `managed-${string}`>, opener:string, review?: SetupView) => {
     if (driver && action === 'managed-migrate') return; // negotiated step flow: no old-route fallback
+    const captureControl = !!driver && (action === 'managed-enable' || action === 'managed-disable');
+    if (captureControl && !review) {
+      // Keep the existing acknowledgement/copy, but no legacy inspect nonce:
+      // the fenced bodyless route freshly validates the selected binding.
+      if (!s.busy && info.targets) { set({managedReview:{action,result:info,opener},ack:false,error:null,notice:null}); if (ownsFocus(opener)) vc.handoff({to:'setup-cancel'}); }
+      return;
+    }
     const request = ++managedRequestSerial;
     const reviewed = review?.delivery?.review;
     // Inspection follows the user's current input; mutations use only the inspected canonical store.
@@ -746,7 +753,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     const targets = store ? {configRoot:'',dataRoot:'',storeRoot:store} : null;
     let admitted=false;
     vc.updateUi(u=>{
-      if (u.setup.busy || (review && (!u.setup.ack || !reviewed || u.setup.managedReview?.result.delivery?.review?.expected !== reviewed.expected))) return {};
+      if (u.setup.busy || (review && (!u.setup.ack || (captureControl ? u.setup.managedReview?.result !== review : !reviewed || u.setup.managedReview?.result.delivery?.review?.expected !== reviewed.expected)))) return {};
       admitted=true;
       return {setup:{...u.setup,busy:true,error:null,notice:null,managedRequest:request}} as Partial<U & {setup:SetupUi}>;
     });
@@ -796,14 +803,15 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
   }
   const r = s.managedReview;
-  if (r?.result.delivery?.review) {
-    const reviewed = r.result.delivery.review;
+  const captureReview = !!driver && (r?.action === 'managed-enable' || r?.action === 'managed-disable');
+  const reviewed = r?.result.delivery?.review ?? (captureReview && r?.result.targets ? {targets:r.result.targets} : null);
+  if (r && reviewed) {
     const card = testid(el('div','ap-setup-card'),'setup-review'); card.dataset.action=r.action;
     const migration = r.action === 'managed-migrate';
     card.append(el('h3','ap-setup-title', migration ? text.migrate : r.action === 'managed-enable' ? text.enable : r.action === 'managed-disable' ? text.disable : text.configure));
     card.append(facts([[text.configRoot,reviewed.targets.configRoot],[text.dataRoot,reviewed.targets.dataRoot],[text.store,reviewed.targets.storeRoot]]));
     for (const body of [text.privilege,text.lifecycle,text.reach,migration ? text.switchEffect : r.action === 'managed-configure' ? text.choose : text.controlEffect]) card.append(el('p','ap-note',body));
-    if (r.result.delivery.migration === 'pending') card.append(el('p','ap-doc-warn',text.pending));
+    if (r.result.delivery?.migration === 'pending') card.append(el('p','ap-doc-warn',text.pending));
     const ack=testid(el('div'),'setup-ack');
     mountCheckbox(ack,{label:text.ack,checked:s.ack,onChange:checked=>{if(!s.busy)set({ack:checked});}}); card.append(ack);
     const row=el('div','ap-row');
@@ -868,6 +876,8 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
 
 let stepView: Host<unknown> | null = null;
 let stepDriver: StepDriver | null = null;
+/** Called on visibility loss/disposal even when no hidden-frame paint occurs. */
+export function retireSetupSteps() { stepDriver?.retire(); }
 /** Alert keys already announced in this frame, so a full repaint does not repeat them. */
 const announced = new Set<string>();
 /** Host account, surface, session and directory; null while hidden. A change retires the driver. */

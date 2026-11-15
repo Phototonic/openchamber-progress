@@ -140,6 +140,17 @@ migration hint retains its precise ownership/path refusal; step inspection
 diagnoses metadata behind a migration hint.
 Ordinary Setup reads are bounded and read-only; absent operation progress is
 omitted, not null. Ordinary capture enable/disable shares the writer fence.
+When `managedMigrationSteps: 1` is advertised, Setup uses authenticated, bodyless
+POST `/v1/capture/disable` and `/v1/capture/enable` for both fresh and migrated
+managed installations. The existing target/consequence review, acknowledgement
+and explicit confirmation gate the UI request; these routes do **not** accept or
+validate a nonce-bound review token. They freshly validate the currently selected
+binding, Store/source, schema and permissions under the writer fence. Enable
+refuses unfinished or conflicting migration; disable does not require legacy
+ownership. No legacy files or migration receipts are changed. Setup rereads the
+actual capture bit afterwards; a failed reply is not rollback or automatic retry.
+Precise refusals, including `managed-step-port-busy`, remain visible. Older
+services without the capability retain their nonce-bound inspect/control flow.
 Portable HTTP tests and launch counts are not native Windows latency certification.
 
 ### Confirmed step migration
@@ -182,7 +193,11 @@ It does not claim that the earlier effect completed; the engine can still refuse
 if fresh evidence cannot establish safe continuation.
 Do not repair/delete remaining files, restore a global loader or enable capture
 to force progress. Pause/abandon stops following requests; it is not rollback.
-Closing or restarting never continues the migration automatically.
+Closing, hiding or restarting never continues the migration automatically. A
+hide/show round trip permanently retires that local attempt, including any held
+reply; reopening reads status and requires an explicit Continue or Resume.
+At an unchanged journal sequence, a refreshed status observation can replace
+unknown capture and Resume with the actual capture bit and a required review.
 
 Step errors retain fixed platform codes such as `windows-security-unavailable`
 and `private-permissions`, alongside the actual requested step or journal/lock

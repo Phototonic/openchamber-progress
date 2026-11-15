@@ -149,11 +149,11 @@ export function newOperationId(fill: (b: Uint8Array) => Uint8Array = (b) => cryp
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-/** The durable progress to show: this frame's newer reply, else the Setup status read. */
+/** The durable progress to show: strictly newer local settlement, else the refreshed Setup observation. */
 export function currentProgress(local: ManagedStepProgress | null, read: ManagedStepProgress | undefined): ManagedStepProgress | null {
   if (!read) return local;
   if (!local || local.operationId !== read.operationId) return read;
-  return local.sequence >= read.sequence ? local : read;
+  return local.sequence > read.sequence ? local : read;
 }
 
 /** Plain next action for a stopped operation; the driver itself never chooses to start one. */
@@ -257,6 +257,9 @@ export class StepDriver {
   /** Context observed at paint. Any change retires an active attempt; another account starts clean. */
   observe(key: string | null, account: string) {
     const was = this.seen; this.seen = key === null ? was : key;
+    // Visibility loss is an event, not just the context at reply time. Latch it
+    // now so a hide/show round trip cannot revive a held reply's authority.
+    if (key === null) { this.retire(); return; }
     if (key !== null && was !== null && key !== was) {
       const accountChanged = JSON.parse(was)[0] !== account;
       queueMicrotask(() => {

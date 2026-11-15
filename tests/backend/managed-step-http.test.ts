@@ -15,8 +15,10 @@ import {createManagedBindingDirectory} from '../../shared/managed-binding.ts';
 import {writeMigration,readManagedStepJournal,migrationFile} from '../../setup/managed-migration.ts';
 import {Store} from '../../shared/store.ts';
 import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress} from '../../shared/managed-steps.ts';
-import {StepDriver,managedStepCall,nextAction} from '../../ui/shared/setup-steps.ts';
+import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/shared/setup-steps.ts';
 import {parseSetup} from '../../ui/shared/adapter.ts';
+import {setupCall} from '../../ui/shared/source.ts';
+import {acquireWriterSlots} from '../../service/writer-fence.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
 const operationId='11111111-1111-4111-8111-111111111111';
@@ -121,7 +123,11 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest'){
   const until=async(name:string)=>{let p=await status();while(p.step?.name!==name){const r=await advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;}return p;};
   const fault=(value:object)=>fs.writeFileSync(env.TEST_FAULT_FILE!,JSON.stringify(value),{mode:0o600});
   const capture=(value?:boolean)=>{const store=new Store(path.join(targets.storeRoot,'progress.sqlite'));try{if(value!==undefined)store.setEnabled(value);return store.list().captureEnabled;}finally{store.close();}};
-  return {root,env,setup,http,url,step,inspect,begin,status,advance,control,until,fault,capture,counts,targets,
+  const host={serviceRequest:async(q: {path:string;method?:string;body?:string})=>{
+    const r=await fetch(url+q.path,{method:q.method,body:q.body,headers:{authorization:'Bearer synthetic-http-fixture'},signal:AbortSignal.timeout(22000)});
+    return {status:r.status,body:await r.text()};
+  }};
+  return {root,env,setup,http,url,host,step,inspect,begin,status,advance,control,until,fault,capture,counts,targets,
     async close(){await new Promise<void>(r=>server.close(()=>r()));setup.close();fs.rmSync(root,{recursive:true,force:true});}};
 }
 
@@ -148,6 +154,79 @@ for(const kind of ['manifest','receipt','selector'] as const)test(`HTTP ${kind} 
     const events=fs.readFileSync(path.join(f.targets.storeRoot,'installation-history.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
     assert.equal(events.filter(e=>e.action==='remove-capture').length,1);
     t.diagnostic(JSON.stringify({kind,counts:f.counts}));
+  }finally{await f.close();}
+});
+
+for(const kind of ['receipt','empty'] as const)test(`Setup UI client capture controls after ${kind==='receipt'?'completed migration':'fresh managed setup'}`,async()=>{
+  const f=await fixture(kind);try{
+    if(kind==='receipt'){
+      let p=(await f.begin()).body.progress!;while(p.state!=='complete')p=(await f.advance(p)).body.progress!;
+    }else{
+      const review=(await f.http('/v1/setup/managed-inspect',{storeRoot:f.targets.storeRoot})).body.delivery.review;
+      assert.equal((await f.http('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:review.expected})).status,200);
+    }
+    const read=await setupCall(f.host,null);assert.ok(read.ok);
+    const capability=read.setup.delivery!.managedMigrationSteps;assert.equal(capability,1);
+    const requests:Array<{path:string;body?:string}>=[];
+    const host={serviceRequest:async(q:Parameters<typeof f.host.serviceRequest>[0])=>{requests.push(q);return f.host.serviceRequest(q);}};
+    for(const enabled of [false,true]){
+      const result=await setupCall(host,enabled?'managed-enable':'managed-disable',null,true,undefined,capability);
+      assert.ok(result.ok,JSON.stringify(result));assert.equal(result.setup.captureEnabled,enabled);assert.equal((await f.http('/v1/setup')).body.captureEnabled,enabled);
+    }
+    assert.deepEqual(requests.map(q=>q.path),['/v1/capture/disable','/v1/setup','/v1/capture/enable','/v1/setup']);
+    assert.ok(requests.every(q=>!Object.hasOwn(q,'body')),'capture routes reject even JSON consent bodies');
+    const count=requests.length;
+    assert.deepEqual(await setupCall(host,'managed-disable',null,false,undefined,capability),{ok:false,code:'confirmation-required'});
+    assert.equal(requests.length,count,'UI confirmation must gate the bodyless mutation');
+    const release=await acquireWriterSlots(f.setup.writerTargets());
+    try{
+      const result=await setupCall(host,'managed-disable',null,true,undefined,capability);
+      assert.deepEqual(result,{ok:false,code:'managed-step-port-busy'});
+    }finally{await release();}
+    assert.equal((await f.http('/v1/setup')).body.captureEnabled,true);
+    for(const code of ['private-permissions','windows-security-unavailable']){
+      f.fault({platformCode:code});
+      assert.deepEqual(await setupCall(host,'managed-disable',null,true,undefined,capability),{ok:false,code});
+    }
+    f.fault({});
+  }finally{await f.close();}
+});
+
+test('real HTTP UI hide/show drops a held step reply until explicit Continue',async()=>{
+  const f=await fixture();try{
+    let context:string|null='["account","page",null,null]';
+    let release!:()=>void,arrived!:()=>void;
+    const held=new Promise<void>(r=>{release=r;}),ready=new Promise<void>(r=>{arrived=r;});
+    const requests:ManagedStepRequest[]=[];
+    const driver=new StepDriver({context:()=>context,changed:()=>{},refresh:()=>{},operationId:()=>operationId,
+      send:async(r)=>{requests.push(r);const reply=await managedStepCall(f.host,r);if(r.action==='advance'&&r.step.name==='expectation'){arrived();await held;}return reply;}});
+    driver.observe(context,'account');await driver.inspect('begin');driver.setAck(true);
+    const running=driver.confirmBegin();await ready;
+    const key=context;context=null;driver.observe(null,'account');context=key;driver.observe(key,'account');
+    release();await running;
+    assert.equal(requests.at(-1)?.action,'advance');assert.equal(requests.filter(r=>r.action==='advance').length,1);
+    assert.equal(f.capture(),true,'no disable after returning to the view');
+    const read=await setupCall(f.host,null);assert.ok(read.ok);
+    const shown=currentProgress(driver.state.progress,read.setup.delivery!.migrationProgress)!;
+    assert.equal(shown.step?.name,'disable');assert.equal(nextAction(shown),'continue');
+    await driver.continueRun(shown);assert.equal(driver.state.progress?.state,'complete');
+  }finally{await f.close();}
+});
+
+for(const name of ['disable','enable'] as const)test(`real HTTP UI refreshes failed ${name} at the same sequence before capture review`,async()=>{
+  const f=await fixture();try{
+    await f.begin();const before=await f.until(name);f.fault({capture:'before'});
+    const driver=new StepDriver({context:()=> 'synthetic-context',changed:()=>{},refresh:()=>{},send:(r)=>managedStepCall(f.host,r)});
+    await driver.continueRun(before);f.fault({});
+    const failed=driver.state.progress!;
+    assert.equal(failed.state,'failed');assert.equal(failed.capture.state,'unknown');assert.equal(nextAction(failed),'resume');
+    const read=await setupCall(f.host,null);assert.ok(read.ok);
+    const observed=read.setup.delivery!.migrationProgress!;assert.equal(observed.sequence,failed.sequence);
+    const shown=currentProgress(failed,observed)!;
+    assert.equal(shown.capture.state,name==='disable'?'on':'off');assert.equal(nextAction(shown),'review');
+    await driver.inspect('capture',{progress:shown});assert.equal(driver.state.review?.kind,'capture');
+    await driver.confirmCapture();assert.equal(driver.state.progress!.sequence,failed.sequence,'no capture review submission without acknowledgement');
+    driver.setAck(true);await driver.confirmCapture();assert.equal(driver.state.progress?.state,'complete');assert.equal(f.capture(),true);
   }finally{await f.close();}
 });
 

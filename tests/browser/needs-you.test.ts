@@ -365,6 +365,7 @@ function controller(f: Fixture, hold: { when: (q: GuestRequest) => boolean; gate
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return source;
+      if (name === './setup.ts') return { retireSetupSteps() {} };
       if (name === './language.ts') return language;
       if (name === './session-context.ts') return sessionContext;
       if (name === './cleanup.ts') return cleanup;

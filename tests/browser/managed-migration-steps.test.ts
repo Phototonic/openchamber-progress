@@ -356,6 +356,31 @@ test('no advance without strictly newer settled progress; observed replays stop 
   assert.equal(driver.state.busy, null);
 });
 
+test('hide then show retires the attempt even when its held reply arrives after reopening', async () => {
+  const engine = stepEngine(), release = engine.hold(3);
+  const { driver, move, log } = driverFor(engine);
+  const key = '["account","page",null,null]';
+  driver.observe(key, 'account');
+  await driver.inspect('begin'); driver.setAck(true);
+  const running = driver.confirmBegin(); await settle();
+  move(null); driver.observe(null, 'account');
+  move(key); driver.observe(key, 'account');
+  release(); await running;
+  assert.deepEqual(actions(engine), ['inspect', 'begin', 'advance:expectation:0']);
+  assert.equal(driver.state.busy, null);
+  assert.equal(log.refresh, 1, 'retirement requests a status read, never a new step');
+  assert.equal(driver.state.outcome?.code, 'managed-step-retired');
+});
+
+test('same-sequence Setup observation refreshes recovery without accepting older progress', () => {
+  const failed = fx.replies.enableUnsettled.progress!;
+  const unknown = { ...failed, recovery: 'resume' as const, capture: { state: 'unknown' as const, observedAt: null } };
+  assert.equal(currentProgress(unknown, failed), failed);
+  assert.equal(nextAction(currentProgress(unknown, failed)), 'review');
+  assert.equal(currentProgress({ ...unknown, sequence: failed.sequence - 1 }, failed), failed, 'late older reply cannot override the read');
+  assert.equal(currentProgress(failed, { ...unknown, sequence: failed.sequence - 1 }), failed);
+});
+
 test('copy: EN/RU for every stage and code, short step text, no paths', () => {
   const en = managedStepCopy('en'), ru = managedStepCopy('ru');
   for (const stage of [...MANAGED_MIGRATION_STEPS, ...MANAGED_INSPECTION_STEPS, 'journal', 'lock']) {

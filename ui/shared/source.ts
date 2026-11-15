@@ -376,9 +376,18 @@ export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sour
 
 export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure; lastAction?: SetupView['lastAction'] };
 
-/** Managed requests send only storeRoot and reviewed consent; legacy roots remain compatibility-only. */
-export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string): Promise<SetupResult> {
+/** Negotiated capture is bodyless; other managed actions send only storeRoot and reviewed consent. */
+export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string, managedMigrationSteps?: 1): Promise<SetupResult> {
   try {
+    if (managedMigrationSteps === 1 && (action === 'managed-disable' || action === 'managed-enable')) {
+      // These authenticated routes select/revalidate the current binding under
+      // the writer fence. Consent is the UI confirmation, not an inspect nonce.
+      if (!confirmed) return { ok: false, code: 'confirmation-required' };
+      const enabled = action === 'managed-enable';
+      const reply = JSON.parse(await call(host, `/v1/capture/${enabled ? 'enable' : 'disable'}`, undefined, 'POST'));
+      if (!isRec(reply) || reply.ok !== true || reply.captureEnabled !== enabled) throw new ContractError('Invalid capture control reply.');
+      return { ok: true, setup: parseSetup(await call(host, ROUTES.setup)) };
+    }
     const request = action?.startsWith('managed-') ? JSON.stringify({ ...(targets?.storeRoot ? {storeRoot:targets.storeRoot} : {}), ...(action !== 'managed-inspect' ? {confirmed,expected} : {}) }) : setupBody(targets, confirmed);
     const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', request) : await call(host, ROUTES.setup);
     return { ok: true, setup: parseSetup(body) };
