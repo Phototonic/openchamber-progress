@@ -1294,6 +1294,10 @@ interface ManagedDelivery {
   mode: 'unknown';
   observation: 'unknown' | 'not-observed' | 'matching' | 'different';
   expectedVersion: string | null;
+  managedMigrationSteps?: 1;
+  managedFreshSteps?: 1;
+  migrationProgress?: ManagedStepProgress; // wire 1 only
+  freshProgress?: ManagedFreshStepProgress; // wire 2 only
   review?: {
     expected: string;
     targets: { configRoot: string; dataRoot: string; storeRoot: string };
@@ -1329,7 +1333,65 @@ directory, marker, binding or Store. Health stays reachable with
 `200/ready:false`; unavailable Store-backed reads keep fixed 503 errors. Valid
 retained descriptors keep their known targets while Store availability is lost.
 
-Authenticated POST `/v1/setup/managed-inspect` accepts only `{storeRoot?:string}`.
+### Negotiated setup steps
+
+Authenticated health (including starting) and managed Setup delivery advertise
+independent literal `managedMigrationSteps:1` and `managedFreshSteps:1` capabilities;
+delivery revision and base Store protocol/schema stay 1 and 2 respectively.
+`/v1/setup/managed-step` accepts strict wire 1 migration or wire 2 fresh requests.
+Unknown keys/versions and journal-family mismatches refuse without effects or
+sequence changes. Fresh mutation input carries no paths or replacement IDs.
+Inspection is read-only and paged; only its complete review is confirmable. Begin
+echoes the expected digest, client UUID and confirmation, executes prepare only,
+and settles sequence 1 with lastCompleted prepare. Advance performs one advertised
+step. Pause/abandon/resume retain intent and never imply undo or capture changes.
+Identical last-request replay reconciles durable evidence; changed/stale input
+refuses. Error overrides disposition, including replayed failure. All requests
+retain the six-launch, 17-second-work/18-second-response budgets and writer fence.
+
+Fresh review discloses `planKind:fresh`, store/source create/retain/reuse modes,
+capture policy, package version, canonical folders, identities and frozen plan.
+Capture is the freshly observed setting when available within budget, otherwise
+unknown. Proposed missing IDs are frozen once, never ordinary Store admission.
+The only fresh plans (batch 0 throughout) are:
+
+- New database/missing folder: prepare, store-directory, create-store, expectation,
+  register-source, publish-binding, enable, reconcile.
+- New database/reviewed folder: omit store-directory only.
+- Retained database/new source: prepare, expectation, register-source,
+  publish-binding, reconcile.
+- Retained database/reused verified source: omit register-source as well.
+
+Fresh journals use format 3 at the same private `migration.json`; migration stays
+wire 1/format 2, including format-1 upgrade. Format 3 hashes canonical
+`{binding,planKind,fresh,expectation}` as its immutable target; created native-object
+checkpoints are separate and may change only when settling their matching intent.
+No fabricated legacy identity, removal evidence or schema change is allowed.
+Exclusive creation initializes the frozen Store ID and capture off atomically.
+Expectation precedes source registration; retained data, IDs and capture survive
+unchanged. Ambiguous publication, partial databases, sidecars and uncheckpointed
+folders are retained/refused, never repaired/adopted. Rollback retains format 3;
+older readers refuse it, even complete records. Recover with a fresh-capable build.
+
+Setup exposes only optional `freshProgress` for format 3 and `migrationProgress`
+for format 2, never translating families. Before a fresh journal exists,
+`delivery.migration` is `none` and progress is absent. Durable fresh progress has
+non-null lastCompleted. Before storage exists, capture is unknown, not guessed off.
+Status/restart never continue work; uncertain capture needs the existing single-use
+reviewed-resume protocol and cannot override a later disable through replay.
+See [the detailed step contract](../setup/managed-steps.md) for digests, retries,
+budgets and recovery boundaries.
+
+### Compatibility controls
+
+On Windows old `managed-inspect` and `managed-configure` always return exactly
+409 `{"error":"managed-action-required"}` before body parsing, security queries,
+worker dispatch or writes. Old `managed-migrate` refuses that way on every OS.
+Linux/macOS retain old fresh inspect/configure only without legacy discovery or
+any journal, under their nonce-bound review and writer fence. A new UI without
+fresh capability offers update-together guidance, never an old-route fallback.
+
+Compatibility POST `/v1/setup/managed-inspect` accepts only `{storeRoot?:string}`.
 It resolves and validates the managed source roots and the explicit store (default
 the selected/pending store, a fully validated canonical legacy candidate, or
 `<dataRoot>/openchamber-progress`), without writes, and returns a review. `expected`
@@ -1343,8 +1405,8 @@ binds the managed descriptor/object, Store/source and control state, not legacy
 ownership. Only confirmed `managed-disable` accepts this review; enable,
 configuration and migration repeat full legacy validation and fail closed.
 
-Fixed mutation actions are `managed-configure`, `managed-enable`,
-`managed-disable`, and `managed-migrate`, at the same route prefix. They accept
+Compatibility mutation actions are `managed-configure`, `managed-enable` and
+`managed-disable`, at the same route prefix. They accept
 only `{storeRoot?:string, confirmed:true, expected:string}` and revalidate the
 review immediately before side effects. The UI must review private-store/source
 selection, code privileges and conditional lifecycle before confirmation; preserve
@@ -1366,14 +1428,12 @@ validated legacy candidate; `available` means a validated candidate requiring th
 explicit switch; `conflict` means unsafe ownership/identity; `unavailable` means
 an operational inspection failure, with its fixed storage/platform diagnostic
 retained separately (not ownership-conflict instructions); `pending` means a
-durable same-target interrupted switch with capture off; `complete` means removal
-and private selection persisted, **not** matching managed-load evidence.
-`managed-migrate` fully prevalidates legacy ownership, removable selectors and
-the actual Store/source before capture is disabled. One confirmed same-target
-sequence disables capture, persists a private `migration.json` selection beside
-the managed descriptor, invokes legacy `remove-capture`, persists removal and
-the expected fingerprint, publishes the managed descriptor, records completion,
-then enables capture. Store/source identity and history are retained; the managed
+durable same-target unfinished operation, not proof of capture off; `complete`
+means verified transition/selection completion, **not** matching managed-load evidence.
+Negotiated migration fully prevalidates legacy ownership, removable selectors and
+the actual Store/source. Separate confirmed steps prepare its journal, publish
+expectation, disable capture, remove discovery through the lifecycle owner,
+publish selection, enable and reconcile. Store/source identity and history are retained; the managed
 install identity is distinct from the legacy identity. Filesystem/SQLite changes
 are not one transaction. A completed same-target retry does not remove again or
 re-enable capture that was deliberately disabled later.

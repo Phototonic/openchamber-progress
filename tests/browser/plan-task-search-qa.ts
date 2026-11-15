@@ -26,6 +26,7 @@ import { LARGE_PLAN_ID, LARGE_PLAN_SEED, LARGE_PLAN_VERSION } from '../fixtures/
 import { mapItems } from '../fixtures/dependency-map.ts';
 import { productionMapQa } from './dependency-map-final-qa.ts';
 import { designRefactorQa } from './design-refactor-qa.ts';
+import { configureFreshSetup } from './fresh-setup-fixture.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -1928,7 +1929,7 @@ try {
           } else skip('K6', 'page', `${action}: no cancel control appeared (${confirm})`);
           if (confirm) {
             if (!(await guest<boolean>('page', `return !!d.querySelector('[data-testid="${confirm}"]')`))) { await tabTo('page', `[data-testid="${action}"] button, button[data-testid="${action}"]`); await key('Enter'); await frames2(); }
-            await tabTo('page','[data-testid="setup-ack"] [role="checkbox"]');await key('Space');
+            await tabTo('page','[data-testid="setup-ack"] [role="checkbox"]');await key(' ');
             await tabTo('page', `[data-testid="${confirm}"] button, button[data-testid="${confirm}"]`); await key('Enter');
             await wait('page', `qa.intercepted.filter(r=>r.method!=='GET'&&!r.path.endsWith('/managed-inspect')).length===${before + 1}`, 'one intercepted setup mutation');
             const sent = (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET' && !r.path.endsWith('/managed-inspect')).slice(before);
@@ -1946,6 +1947,18 @@ try {
         await tabTo('page', '[data-testid="details"] > summary'); await key('Enter');
         kcheck('K5', 'page', 'details:enter-opens', await guest<boolean>('page', `return d.querySelector('[data-testid="details"]').open`) && await focusedOn('page', '[data-testid="details"] > summary'));
         await key('Enter');
+      });
+      await scenario('K6-fresh-setup', ['K6'], async () => {
+        await evaluate(`qa.freshSetup=true;qa.unconfigured=true;qa.show(['page'],1100);true`);
+        try {
+          const seq=await evaluate(`qa.reload('page')`);
+          await wait('page',`qa.loaded.page===${seq}&&!!d.querySelector('[data-testid="setup-inspect"]')`,'fresh Setup ready',20000);
+          await configureFreshSetup({click:async selector=>{await tabTo('page',selector);await key(selector.includes('checkbox')?' ':'Enter');},
+            wait:(condition,label)=>wait('page',condition,label,20000)});
+          kcheck('K6','page','fresh:complete-through-version-two',fx.freshSetup.engine.progress?.state==='complete'&&fx.freshSetup.engine.requests.every(r=>r.version===2));
+          kcheck('K6','page','fresh:no-old-route',fx.freshSetup.requests.every(r=>r.path==='/v1/setup'||r.path==='/v1/setup/managed-step'));
+          await focusShot('page-focus-light-fresh-complete','page',60,100);
+        } finally { await evaluate(`qa.freshSetup=false;qa.unconfigured=false;true`); }
       });
       await scenario('K5-document', ['K5'], async () => {
         fx.recordDocument('P-0006', '# Example plan\nKeep this line\nOld action\n');
@@ -2010,25 +2023,27 @@ try {
       });
       await scenario('K6-rail-setup', ['K6'], async () => {
         await show(['panel'], 360);
-        await evaluate(`qa.unconfigured=true;true`);
-        const seq = await evaluate<number>(`qa.reload('panel')`);
-        await wait('panel', `qa.loaded.panel===${seq}&&d.querySelector('[data-testid="setup-panel"]')`, 'compact setup', 20_000);
-        const sw = await walk('rail-360-light-setup');
-        const sids = [...new Set(sw.list.map((x: any) => x.testid))];
-        inventory['rail-setup-hooks'] = sids;
-        kcheck('K6', 'panel', 'setup:walk-exits', sw.forward && sw.backward);
-        const fields = sw.list.filter((x: any) => x.tag === 'input');
-        kcheck('K6', 'panel', 'setup:labelled-fields-reachable', fields.length > 0 && fields.every((x: any) => x.label), undefined, fields);
-        if (fields.length) { await tabTo('panel', 'input'); await focusShot('rail-focus-light-setup-field', 'panel', 40, 60); }
-        const nonGet = async () => (await evaluate<any[]>('qa.intercepted')).filter((r) => r.method !== 'GET').length;
-        const before = await nonGet();
-        const inspect = sids.find((h) => h === 'setup-inspect' || h === 'setup-review');
-        if (inspect) {
-          await tabTo('panel', `[data-testid="${inspect}"] button, button[data-testid="${inspect}"]`);
-          kcheck('K6', 'panel', `${inspect}:reach-sends-nothing`, await nonGet() === before);
-          await focusShot('rail-focus-light-setup-action', 'panel', 60, 60);
-        } else skip('K6', 'panel', `no inspect/review action: ${JSON.stringify(sids)}`);
-        await evaluate(`qa.unconfigured=false;true`);
+        fx.freshSetup.engine.progress=null;
+        await evaluate(`qa.freshSetup=true;qa.unconfigured=true;true`);
+        try {
+          const seq = await evaluate<number>(`qa.reload('panel')`);
+          await wait('panel', `qa.loaded.panel===${seq}&&d.querySelector('[data-testid="setup-panel"]')`, 'compact setup', 20_000);
+          const sw = await walk('rail-360-light-setup');
+          const sids = [...new Set(sw.list.map((x: any) => x.testid))];
+          inventory['rail-setup-hooks'] = sids;
+          kcheck('K6', 'panel', 'setup:walk-exits', sw.forward && sw.backward);
+          const fields = sw.list.filter((x: any) => x.tag === 'input');
+          kcheck('K6', 'panel', 'setup:labelled-fields-reachable', fields.length > 0 && fields.every((x: any) => x.label), undefined, fields);
+          if (fields.length) { await tabTo('panel', 'input'); await focusShot('rail-focus-light-setup-field', 'panel', 40, 60); }
+          const nonGet = async () => fx.freshSetup.engine.requests.length;
+          const before = await nonGet();
+          const inspect = sids.find((h) => h === 'setup-inspect' || h === 'setup-review');
+          if (inspect) {
+            await tabTo('panel', `[data-testid="${inspect}"] button, button[data-testid="${inspect}"]`);
+            kcheck('K6', 'panel', `${inspect}:reach-sends-nothing`, await nonGet() === before);
+            await focusShot('rail-focus-light-setup-action', 'panel', 60, 60);
+          } else skip('K6', 'panel', `no inspect/review action: ${JSON.stringify(sids)}`);
+        } finally { await evaluate(`qa.freshSetup=false;qa.unconfigured=false;true`); }
         for (const f of ['panel', 'page', 'status']) await fresh(f);
       });
       // ---------------------------------------------------------------- K11 dark + narrow walks with screenshots

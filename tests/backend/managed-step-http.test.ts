@@ -11,10 +11,10 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
 import {nativeService} from '../fixtures/windows-service-driver.ts';
 import {lifecycle,migrationEvidence} from '../../setup/lifecycle.ts';
-import {createManagedBindingDirectory} from '../../shared/managed-binding.ts';
-import {writeMigration,readManagedStepJournal,migrationFile} from '../../setup/managed-migration.ts';
-import {Store} from '../../shared/store.ts';
-import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress} from '../../shared/managed-steps.ts';
+import {createManagedBindingDirectory,readManagedExpectation,writeManagedExpectation} from '../../shared/managed-binding.ts';
+import {writeMigration,readManagedStepJournal,readManagedFreshStepJournal,migrationFile} from '../../setup/managed-migration.ts';
+import {Store,digest} from '../../shared/store.ts';
+import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress,ManagedFreshStepRequest,ManagedFreshStepResponse,ManagedFreshStepProgress,ManagedSetupStepRequest} from '../../shared/managed-steps.ts';
 import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/shared/setup-steps.ts';
 import {parseSetup} from '../../ui/shared/adapter.ts';
 import {setupCall,readList} from '../../ui/shared/source.ts';
@@ -28,7 +28,7 @@ let legacySpawns=0;
 let legacySpawnDelay=0;
 let legacySpawnLaterDelay=0,legacySpawnTimeout=false;
 let legacySpawnEffect:(()=>void)|undefined;
-let Controller:typeof import('../../service/setup-controller.ts').SetupController,serverFactory:typeof import('../../service/server.ts').createProgressServer;
+let Controller:typeof import('../../service/setup-controller.ts').SetupController,serverFactory:typeof import('../../service/server.ts').createProgressServer,windowsServerFactory:typeof serverFactory;
 before(async()=>{
   // The compatibility routes remain in the controller on the main thread.
   // Count their actual process boundary too, without using native PowerShell.
@@ -54,17 +54,23 @@ before(async()=>{
   source=source.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+source.slice(end);fs.writeFileSync(platform,source);
   const engine=path.join(projection,'setup/managed-step-engine.ts');source=fs.readFileSync(engine,'utf8');
   const crash=(step:string,order:string)=>`if(process.env.TEST_CRASH_STEP===${step}&&process.env.TEST_CRASH_ORDER==='${order}')process.exit(17);`;
-  source=source.replace('    applyManagedStepEffect(env,payload,running,freshCapture);',
-    `${crash('m.step!.name','before')}\n    applyManagedStepEffect(env,payload,running,freshCapture);\n${crash('m.step!.name','after')}\nif(process.env.TEST_EFFECT_ERROR==='1')throw new Error('synthetic effect interruption');`);
+  assert.ok(source.includes('    const created=applyManagedStepEffect(env,payload,running,freshCapture);'));
+  source=source.replace('    const created=applyManagedStepEffect(env,payload,running,freshCapture);',
+    `${crash('m.step!.name','before')}\n    const created=applyManagedStepEffect(env,payload,running,freshCapture);\n${crash('m.step!.name','after')}\nif(process.env.TEST_EFFECT_ERROR==='1')throw new Error('synthetic effect interruption');`);
   source=source.replace('    createManagedBindingDirectory(env);',`${crash("'prepare'",'before')}\n    createManagedBindingDirectory(env);`);
-  source=source.replace("  return {disposition:'applied',progress:managedJournalProgress(next),journal:next};",`${crash("'prepare'",'after')}\n  return {disposition:'applied',progress:managedJournalProgress(next),journal:next};`);
+  source=source.replace("  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};",`${crash("'prepare'",'after')}\n  return {disposition:'applied',progress:managedSetupJournalProgress(next),journal:next};`);
   fs.writeFileSync(engine,source);
   Controller=(await import(pathToFileURL(path.join(projection,'service/setup-controller.ts')).href)).SetupController;
   serverFactory=(await import(pathToFileURL(path.join(projection,'service/server.ts')).href)).createProgressServer;
+  // Route retirement is a native-OS rule, independent of the substituted
+  // Windows security/path boundary used by the non-Windows compatibility cases.
+  const serverSource=fs.readFileSync(path.join(projection,'service/server.ts'),'utf8');assert.ok(serverSource.includes("process.platform==='win32'"));
+  fs.writeFileSync(path.join(projection,'service/server-windows.ts'),serverSource.replace("process.platform==='win32'",'true'));
+  windowsServerFactory=(await import(pathToFileURL(path.join(projection,'service/server-windows.ts')).href)).createProgressServer;
 });
 after(()=>{cp.spawnSync=spawnSync;syncBuiltinESMExports();if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(projection,{recursive:true,force:true});});
 
-async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest'){
+async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest',windowsRoutes=false){
   const root=fs.mkdtempSync('/tmp/opencode/managed-http-fixture-'),env=isolatedEnvironment(root);
   const targets={configRoot:path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot:path.join(env.XDG_DATA_HOME!,'opencode'),storeRoot:path.join(root,'store'),confirmed:true};
   for(const file of [targets.configRoot,targets.dataRoot])fs.mkdirSync(file,{mode:0o700});
@@ -81,7 +87,7 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest'){
   }
   Object.assign(env,{TEST_WINDOWS:'1',TEST_FAULT_FILE:path.join(root,'fault.json'),TEST_READY_FILE:path.join(root,'ready'),TEST_RELEASE_FILE:path.join(root,'release')});
   const worker=pathToFileURL(path.join(projection,'tests/backend/managed-http-worker.ts'));
-  const setup=new Controller({env},()=>payload,undefined,undefined,worker),server=serverFactory(undefined,'synthetic-http-fixture',undefined,setup);
+  const setup=new Controller({env},()=>payload,undefined,undefined,worker),server=(windowsRoutes?windowsServerFactory:serverFactory)(undefined,'synthetic-http-fixture',undefined,setup);
   server.listen(0,'127.0.0.1');await once(server,'listening');
   const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
   const http=async(route:string,body?:unknown)=>{
@@ -130,6 +136,311 @@ async function fixture(kind:'manifest'|'receipt'|'empty'|'selector'='manifest'){
   return {root,env,setup,http,url,host,step,inspect,begin,status,advance,control,until,fault,capture,counts,targets,
     async close(){await new Promise<void>(r=>server.close(()=>r()));setup.close();fs.rmSync(root,{recursive:true,force:true});}};
 }
+
+async function freshHttpFixture(kind:'default'|'custom'|'retained-new'|'retained-reuse'='custom',enabled=false){
+  const f=await fixture('empty',true);
+  if(kind==='default')f.targets.storeRoot=path.join(f.targets.dataRoot,'openchamber-progress');
+  const database=path.join(f.targets.storeRoot,'progress.sqlite');
+  if(kind.startsWith('retained')){
+    fs.mkdirSync(f.targets.storeRoot,{mode:0o700});const s=new Store(database,{create:true});try{
+      s.setEnabled(enabled);s.registerSource({id:'other-source',configRoot:path.join(f.root,'other-config'),dataRoot:path.join(f.root,'other-data'),verified:true});
+      if(kind==='retained-reuse')s.registerSource({id:'same-source',configRoot:f.targets.configRoot,dataRoot:f.targets.dataRoot,verified:true});
+    }finally{s.close();}
+  }
+  const step=async(request:ManagedFreshStepRequest)=>{
+    const r=await f.http('/v1/setup/managed-step',request),body=r.body as ManagedFreshStepResponse;
+    assert.equal(body.version,2);assert.ok(body.accounting.securitySpawns<=6);
+    assert.equal(body.error===null,r.status===200);if(body.progress)assert.equal(body.progress.planKind,'fresh');
+    f.counts.push({step:request.action==='advance'?request.step.name:request.action,spawns:body.accounting.securitySpawns});
+    return {...r,body};
+  };
+  const inspect=async()=>{
+    let cursor:string|undefined;
+    for(let i=0;i<5;i++){
+      const r=await step({version:2,action:'inspect',...(cursor?{cursor}:kind==='default'?{}:{storeRoot:f.targets.storeRoot})});
+      assert.equal(r.status,200,JSON.stringify(r.body.error));
+      if(r.body.inspection!.state==='complete')return r.body.inspection!.review;
+      cursor=r.body.inspection!.cursor!;
+    }
+    throw new Error('fresh inspection did not complete');
+  };
+  const begin=async()=>{const review=await inspect();return step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected});};
+  const status=async()=>{const r=await step({version:2,action:'status',operationId});assert.equal(r.status,200);return r.body.progress!;};
+  const advance=(p:ManagedFreshStepProgress)=>step({version:2,action:'advance',operationId,expectedSequence:p.sequence,step:p.step!});
+  const control=(action:'pause'|'resume'|'abandon',p:ManagedFreshStepProgress,review?:Extract<ManagedFreshStepRequest,{action:'resume'}>['review'])=>step({version:2,action,operationId,expectedSequence:p.sequence,...(review?{review}:{})});
+  const until=async(name:string)=>{let p=await status();while(p.step?.name!==name){const r=await advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;}return p;};
+  return {...f,database,step,inspect,begin,status,advance,control,until};
+}
+
+for(const kind of ['default','custom','retained-new','retained-reuse'] as const)test(`HTTP fresh ${kind} review, cancellation, lost reply, pause and completion`,async t=>{
+  const f=await freshHttpFixture(kind,true);try{
+    const before=fs.existsSync(f.database)?fs.readFileSync(f.database):null;
+    const review=await f.inspect();assert.equal(review.planKind,'fresh');assert.equal(review.storeMode,before?'retain':'create');
+    assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
+    const empty=await f.http('/v1/setup');assert.equal(empty.body.configured,false);assert.equal(empty.body.delivery.freshProgress,undefined);
+    assert.equal(empty.body.delivery.migration,'none');assert.equal(empty.body.delivery.migrationProgress,undefined);
+    assert.equal(review.capture.state,before?'on':'unknown');
+    assert.equal(review.capture.observedAt===null,!before);
+    if(before)assert.deepEqual(fs.readFileSync(f.database),before);else assert.equal(fs.existsSync(f.database),false);
+    // Abandon the read-only review, then explicitly inspect/confirm a new one.
+    let r=await f.begin();assert.equal(r.status,200,JSON.stringify(r.body.error));let p=r.body.progress!;
+    assert.equal(p.capture.state,'unknown');assert.deepEqual(p.lastCompleted,{name:'prepare',batch:0});
+    if(!before)assert.equal(fs.existsSync(f.database),false);
+    const replayBegin=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:readManagedFreshStepJournal(f.env)!.migration.consent.reviewDigest});
+    assert.equal(replayBegin.body.disposition,'replayed');
+    assert.equal((await f.http('/v1/setup/managed-step',{version:1,action:'inspect'})).status,200);
+    const afterOtherInspection=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:readManagedFreshStepJournal(f.env)!.migration.consent.reviewDigest});
+    assert.equal(afterOtherInspection.body.disposition,'replayed','an unrelated inspection cannot revoke a durable begin receipt');
+    r=await f.control('pause',p);assert.equal(r.status,200);p=r.body.progress!;
+    assert.equal((await f.advance(p)).status,409);assert.equal(fs.existsSync(f.database),!!before);
+    r=await f.control('resume',p);assert.equal(r.status,200);p=r.body.progress!;
+    while(p.state!=='complete'){
+      r=await f.advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));
+      const replay=await f.advance(p);assert.equal(replay.body.disposition,'replayed');
+      p=r.body.progress!;
+      const observed=await f.http('/v1/setup');assert.equal(observed.status,200);assert.equal(observed.body.delivery.migrationProgress,undefined);
+      assert.equal(observed.body.delivery.freshProgress.sequence,p.sequence);assert.deepEqual(observed.body.delivery.freshProgress.plan,review.plan);
+      if(!before&&p.lastCompleted!.name!=='enable'&&p.state!=='complete')assert.notEqual(observed.body.captureEnabled,true);
+    }
+    assert.equal(f.capture(),true);
+    const disabled=await f.http('/v1/capture/disable',{});assert.equal(disabled.status,200);assert.equal(f.capture(),false);
+    assert.equal((await f.control('resume',p)).status,409);assert.equal(f.capture(),false);
+    t.diagnostic(JSON.stringify({kind,requests:f.counts}));
+  }finally{await f.close();}
+});
+
+test('fresh retained-source reconnection replaces only its older same-install expectation',async()=>{
+  const f=await freshHttpFixture('retained-reuse',false);try{
+    const store=new Store(f.database),state=store.list();store.close();
+    const source=state.sources.find(s=>s.configRoot===f.targets.configRoot)!;
+    const binding={protocolVersion:2 as const,schemaVersion:2 as const,version:payload.version,database:f.database,storeId:state.storeId,source,
+      installId:`managed-${digest(JSON.stringify([state.storeId,source]))}`};
+    const old={format:1 as const,storeId:binding.storeId,sourceId:source.id,installId:binding.installId,version:'1.1.1',fingerprint:'a'.repeat(64)};
+    writeManagedExpectation(binding,old);
+    const review=await f.inspect();assert.equal(review.sourceMode,'reuse');assert.equal(review.packageVersion,payload.version);
+    assert.deepEqual(readManagedExpectation(binding),old,'inspection is read-only');
+    let r=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected});
+    assert.equal(r.status,200,JSON.stringify(r.body.error));let p=r.body.progress!;
+    assert.deepEqual(readManagedExpectation(binding),old,'begin does not replace the expectation');
+    while(p.state!=='complete'){
+      r=await f.advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;
+    }
+    const expected=readManagedExpectation(binding)!;assert.equal(expected.version,payload.version);assert.notEqual(expected.fingerprint,old.fingerprint);
+    const after=new Store(f.database);try{assert.deepEqual(after.list().sources,state.sources);assert.equal(after.list().storeId,state.storeId);assert.equal(after.list().captureEnabled,false);}finally{after.close();}
+    // Once checkpointed, even same-identity old bytes cannot be substituted.
+    const changed=await freshHttpFixture('retained-reuse',false);try{
+      let q=(await changed.begin()).body.progress!;q=(await changed.advance(q)).body.progress!;
+      const journal=readManagedFreshStepJournal(changed.env)!;
+      const bytes=fs.readFileSync(migrationFile(changed.env));
+      writeManagedExpectation(journal,{...readManagedExpectation(journal)!,version:old.version,fingerprint:old.fingerprint});
+      const refused=await changed.advance(q);assert.equal(refused.status,409);assert.equal(refused.body.error!.code,'managed-review-stale');
+      assert.deepEqual(fs.readFileSync(migrationFile(changed.env)),bytes);
+    }finally{await changed.close();}
+  }finally{await f.close();}
+});
+
+test('completed fresh creation remains verified after another source joins the shared Store',async()=>{
+  const f=await freshHttpFixture();try{
+    let p=(await f.begin()).body.progress!;
+    while(p.state!=='complete'){const r=await f.advance(p);assert.equal(r.status,200,JSON.stringify(r.body.error));p=r.body.progress!;}
+    const store=new Store(f.database);try{
+      store.registerSource({id:'second-source',configRoot:path.join(f.root,'second-config'),dataRoot:path.join(f.root,'second-data'),verified:true});
+    }finally{store.close();}
+    const read=await setupCall(f.host,null);assert.ok(read.ok);
+    assert.equal(read.setup.verified,true);assert.equal(read.setup.captureEnabled,true);
+    assert.equal(read.setup.delivery!.freshProgress!.state,'complete');assert.deepEqual(read.setup.diagnostics,[]);
+    for(const enabled of [false,true]){
+      const control=await setupCall(f.host,enabled?'managed-enable':'managed-disable',null,true,undefined,read.setup.delivery!.managedMigrationSteps);
+      assert.ok(control.ok,JSON.stringify(control));assert.equal(control.setup.verified,true);assert.equal(control.setup.captureEnabled,enabled);
+    }
+  }finally{await f.close();}
+});
+
+test('Windows old fresh routes refuse before body parsing, security, workers and writes',async()=>{
+  const f=await freshHttpFixture();try{
+    let workers=0;const dispatch=f.setup.request.bind(f.setup);f.setup.request=async(...args)=>{workers++;return dispatch(...args);};
+    const before=legacySpawns;
+    for(const action of ['managed-inspect','managed-configure']){
+      const r=await fetch(f.url+'/v1/setup/'+action,{method:'POST',headers:{authorization:'Bearer synthetic-http-fixture'},body:'not JSON',signal:AbortSignal.timeout(1500)});
+      assert.equal(r.status,409);assert.deepEqual(await r.json(),{error:'managed-action-required'});
+    }
+    assert.equal(workers,0);assert.equal(legacySpawns,before);assert.equal(fs.existsSync(f.database),false);
+    assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
+    const health=await f.http('/health');assert.equal(health.body.managedFreshSteps,1);assert.equal(health.body.managedMigrationSteps,1);assert.equal(health.body.state,'starting');
+    assert.equal(workers,0);assert.equal(legacySpawns,before);
+  }finally{await f.close();}
+});
+
+for(const order of ['before','after'])test(`fresh prepare worker crash ${order} publication recovers only by explicit begin`,async()=>{
+  const f=await freshHttpFixture();try{
+    const review=await f.inspect(),request={version:2 as const,action:'begin' as const,operationId,confirmed:true as const,expected:review.expected};
+    f.fault({crashStep:'prepare',order});assert.equal((await f.step(request)).status,503);f.fault({});
+    assert.equal(fs.existsSync(f.database),false);assert.equal(fs.existsSync(f.targets.storeRoot),false);
+    const observed=await f.http('/v1/setup');assert.equal(observed.status,200);assert.equal(observed.body.configured,false);
+    assert.equal(observed.body.delivery.migrationProgress,undefined);
+    assert.ok(!observed.body.delivery.freshProgress||observed.body.delivery.freshProgress.lastCompleted!==null);
+    if(order==='after'){
+      assert.equal(observed.body.delivery.freshProgress.sequence,1);
+      const worker=pathToFileURL(path.join(projection,'tests/backend/managed-http-worker.ts'));
+      const cold=new Controller({env:f.env},()=>payload,undefined,undefined,worker);
+      try{const r=await cold.request({action:'managed-step',body:request});assert.ok(r.ok);assert.equal((r.value as ManagedFreshStepResponse).disposition,'replayed');}
+      finally{cold.close();}
+    }else {assert.equal(observed.body.delivery.freshProgress,undefined);assert.equal((await f.begin()).status,200);}
+    assert.equal(fs.existsSync(f.database),false);
+  }finally{await f.close();}
+});
+
+test('fresh HTTP stale review, unsupported family and changed creation target refuse without writes',async()=>{
+  const f=await freshHttpFixture();try{
+    const review=await f.inspect();fs.mkdirSync(f.targets.storeRoot,{mode:0o700});
+    const stale=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected});
+    assert.equal(stale.status,409);assert.equal(fs.existsSync(f.database),false);assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
+    // Reviewed existing empty directory is a different consent, not adoption of
+    // the old absence claim. Explicitly review and confirm that new target.
+    const begun=await f.begin();assert.equal(begun.status,200);
+    const bytes=fs.readFileSync(migrationFile(f.env));
+    for(const body of [{version:1,action:'status',operationId},{version:1,action:'pause',operationId,expectedSequence:1},
+      {version:1,action:'advance',operationId,expectedSequence:1,step:{name:'expectation',batch:0}}]){
+      const r=await f.http('/v1/setup/managed-step',body);assert.equal(r.status,409);assert.equal(r.body.version,1);assert.equal(r.body.disposition,'refused');
+      assert.equal(r.body.progress,null);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+    }
+    const roots=await f.http('/v1/setup/managed-step',{version:1,action:'inspect'});assert.equal(roots.status,200);
+    const family=await f.http('/v1/setup/managed-step',{version:1,action:'inspect',cursor:roots.body.inspection.cursor});
+    assert.equal(family.status,409);assert.equal(family.body.error.code,'managed-journal-unsupported');assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+    fs.writeFileSync(f.database,'unproven partial database',{mode:0o600});const partial=fs.readFileSync(f.database);
+    const refused=await f.advance(begun.body.progress!);assert.notEqual(refused.status,200);
+    assert.deepEqual(fs.readFileSync(f.database),partial);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+  }finally{await f.close();}
+});
+
+test('fresh wire refuses a retained migration journal without translating or mutating it',async()=>{
+  const f=await fixture();try{
+    const p=(await f.begin()).body.progress!,bytes=fs.readFileSync(migrationFile(f.env));
+    for(const body of [{version:2,action:'status',operationId},{version:2,action:'pause',operationId,expectedSequence:p.sequence},
+      {version:2,action:'begin',operationId,confirmed:true,expected:'a'.repeat(64)}]){
+      const r=await f.http('/v1/setup/managed-step',body);assert.equal(r.status,409);assert.equal(r.body.version,2);assert.equal(r.body.progress,null);
+      assert.equal(r.body.error.code,'managed-journal-unsupported');assert.ok(r.body.accounting.securitySpawns<=6);assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+    }
+  }finally{await f.close();}
+});
+
+for(const order of ['before','after'])test(`fresh HTTP restart ${order} each effect requires explicit recovery`,async()=>{
+  for(const name of ['store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile']){
+    const f=await freshHttpFixture();try{
+      await f.begin();const p=await f.until(name),request={version:2 as const,action:'advance' as const,operationId,expectedSequence:p.sequence,step:p.step!};
+      f.fault({crashStep:name,order});assert.equal((await f.step(request)).status,503);f.fault({});
+      const retained=readManagedFreshStepJournal(f.env)!;assert.equal(retained.migration.state,'running');assert.equal(retained.migration.step!.name,name);
+      if(name==='store-directory'&&order==='after'){
+        const observed=await f.http('/v1/setup');
+        assert.equal(observed.status,200);assert.equal(observed.body.delivery.planKind,'fresh');
+        assert.equal(observed.body.delivery.migration,'unavailable');assert.equal(observed.body.delivery.freshProgress,undefined);
+        assert.deepEqual(observed.body.diagnostics,['managed-migration-conflict']);assert.equal(observed.body.captureEnabled,null);
+        const r=await f.control('resume',await f.status());assert.equal(r.status,409);assert.equal(fs.existsSync(f.database),false);continue;
+      }
+      // Another supervisor represents restart: only read observation first;
+      // replay/begin/control never runs a following effect automatically.
+      const worker=pathToFileURL(path.join(projection,'tests/backend/managed-http-worker.ts'));
+      const cold=new Controller({env:f.env},()=>payload,undefined,undefined,worker);
+      const observed=await cold.request({action:'status'});assert.equal(observed.ok,true);
+      if(observed.ok)assert.equal((observed.value as any).delivery.freshProgress.state,'running');
+      let review:Extract<ManagedFreshStepRequest,{action:'resume'}>['review'];
+      if(name==='enable'&&order==='before')review={confirmed:true,step:'enable',expected:(await f.inspect()).expected};
+      const resumed=await f.control('resume',await f.status(),review);assert.equal(resumed.status,200,JSON.stringify(resumed.body.error));
+      const recovered=await f.advance(resumed.body.progress!);assert.equal(recovered.status,200,JSON.stringify(recovered.body.error));
+      if(name==='reconcile')assert.equal(recovered.body.progress!.state,'complete');
+      cold.close();
+    }finally{await f.close();}
+  }
+});
+
+test('fresh custom Store fence covers reviewed begin across scopes and a busy worker',async()=>{
+  const f=await freshHttpFixture(),other=await freshHttpFixture();let holding:ReturnType<typeof f.advance>|undefined;
+  try{
+    other.targets.storeRoot=f.targets.storeRoot;const review=await other.inspect();
+    const p=(await f.begin()).body.progress!;f.fault({hold:true});holding=f.advance(p);
+    const deadline=Date.now()+5000;while(!fs.existsSync(f.env.TEST_READY_FILE!)&&Date.now()<deadline)await delay(10);assert.ok(fs.existsSync(f.env.TEST_READY_FILE!));
+    const health=await f.http('/health');assert.equal(health.status,200);assert.equal(health.body.ready,false);
+    const busy=await f.control('pause',p);assert.equal(busy.status,503);assert.equal(busy.body.error!.stage,'lock');assert.equal(busy.body.accounting.securitySpawns,0);
+    const shared=await other.step({version:2,action:'begin',operationId,confirmed:true,expected:review.expected});
+    assert.equal(shared.status,503);assert.equal(shared.body.error!.code,'managed-step-port-busy');assert.equal(shared.body.accounting.securitySpawns,0);
+    assert.equal(fs.existsSync(f.targets.storeRoot),false);assert.equal(fs.existsSync(path.dirname(migrationFile(other.env))),false);
+    fs.writeFileSync(f.env.TEST_RELEASE_FILE!,'release');f.fault({});assert.equal((await holding).status,200);holding=undefined;
+    assert.equal(fs.existsSync(f.database),false);assert.equal(fs.existsSync(f.targets.storeRoot),true);
+  }finally{if(holding){fs.writeFileSync(f.env.TEST_RELEASE_FILE!,'release');await holding;}await other.close();await f.close();}
+});
+
+test('fresh response deadline keeps its custom Store fenced until actual worker exit',async()=>{
+  const f=await freshHttpFixture();try{
+    const p=(await f.begin()).body.progress!,dispatch=f.setup.request.bind(f.setup);let first=true;
+    f.setup.request=(r,start)=>dispatch(r,first?(first=false,process.hrtime.bigint()-16_000_000_000n):start);
+    f.fault({hold:true});const waiting=f.advance(p);
+    const deadline=Date.now()+5000;while(!fs.existsSync(f.env.TEST_READY_FILE!)&&Date.now()<deadline)await delay(10);assert.ok(fs.existsSync(f.env.TEST_READY_FILE!));
+    const expired=await waiting;assert.equal(expired.status,503);assert.equal(expired.body.version,2);assert.equal(expired.body.error!.code,'managed-step-deadline');
+    assert.equal((await f.control('resume',p)).body.error!.code,'managed-step-unsettled');
+    await assert.rejects(acquireWriterSlots(f.setup.writerTargets({storeRoot:f.targets.storeRoot})),{code:'managed-step-port-busy'});
+    assert.equal((await f.http('/health')).status,200);assert.equal(fs.existsSync(f.targets.storeRoot),false);
+    fs.writeFileSync(f.env.TEST_RELEASE_FILE!,'release');f.fault({});
+    const until=Date.now()+5000;let settled=false;
+    while(Date.now()<until){const r=await f.step({version:2,action:'status',operationId});if(r.status===200){assert.equal(r.body.progress!.sequence,p.sequence);settled=true;break;}await delay(10);}
+    assert.ok(settled);assert.equal(fs.existsSync(f.targets.storeRoot),false);
+  }finally{await f.close();}
+});
+
+test('fresh StepDriver cancels, confirms, pauses, loses a creation reply and explicitly resumes to completion',async()=>{
+  const f=await freshHttpFixture();try{
+    const requests:ManagedSetupStepRequest[]=[];let pause=true,drop=true,inflight=0,maxInflight=0;
+    const driver=new StepDriver<ManagedSetupStepRequest>({context:()=> 'synthetic-fresh-context',changed:()=>{},refresh:()=>{},operationId:()=>operationId,
+      send:async(r)=>{requests.push(r);inflight++;maxInflight=Math.max(maxInflight,inflight);try{
+        const result=await managedStepCall(f.host,r);
+        if(r.action==='begin'&&pause){pause=false;driver.requestPause();await driver.confirmStop(null);}
+        if(r.action==='advance'&&r.step.name==='create-store'&&drop){drop=false;return {kind:'dropped'};}
+        return result;
+      }finally{inflight--;}}});
+    await driver.inspect('begin',{family:'fresh',storeRoot:f.targets.storeRoot});assert.equal(driver.state.review?.kind,'begin');
+    driver.cancelReview();assert.equal(driver.state.review,null);assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
+    await driver.inspect('begin',{family:'fresh',storeRoot:f.targets.storeRoot});await driver.confirmBegin();assert.equal(fs.existsSync(f.database),false,'acknowledgement is required');
+    driver.setAck(true);await driver.confirmBegin();assert.equal(driver.state.progress!.state,'paused');assert.equal(driver.state.progress!.capture.state,'unknown');assert.equal(fs.existsSync(f.targets.storeRoot),false);
+    await driver.resume(driver.state.progress);assert.equal(driver.state.outcome!.uncertain,true);assert.equal(driver.state.outcome!.code,'managed-step-no-reply');
+    assert.equal(fs.existsSync(f.database),true);assert.equal(f.capture(),false);
+    const sent=requests.length;await driver.status(driver.state.progress);assert.equal(requests.length,sent+1);assert.equal(driver.state.progress!.step!.name,'expectation');assert.equal(f.capture(),false);
+    const read=parseSetup(JSON.stringify((await f.http('/v1/setup')).body))!;assert.equal(read.delivery!.freshProgress!.capture.state,'off');assert.equal(read.delivery!.migrationProgress,undefined);
+    await driver.continueRun(driver.state.progress);assert.equal(driver.state.progress!.state,'complete');assert.equal(driver.state.outcome,null);assert.equal(f.capture(),true);
+    assert.equal(maxInflight,1);assert.ok(requests.every(r=>r.version===2));
+  }finally{await f.close();}
+});
+
+for(const kind of ['retained-new','retained-reuse'] as const)test(`fresh StepDriver ${kind} reconnects with capture off preserved`,async()=>{
+  const f=await freshHttpFixture(kind,false);try{
+    const requests:ManagedSetupStepRequest[]=[];
+    const driver=new StepDriver<ManagedSetupStepRequest>({context:()=> 'synthetic-fresh-context',changed:()=>{},refresh:()=>{},operationId:()=>operationId,
+      send:r=>{requests.push(r);return managedStepCall(f.host,r);}});
+    await driver.inspect('begin',{family:'fresh',storeRoot:f.targets.storeRoot});driver.setAck(true);await driver.confirmBegin();
+    assert.equal(driver.state.progress!.state,'complete',JSON.stringify(driver.state.outcome));assert.equal(f.capture(),false);
+    assert.ok(!requests.some(r=>r.action==='advance'&&['store-directory','create-store','enable'].includes(r.step.name)));
+    const status=parseSetup(JSON.stringify((await f.http('/v1/setup')).body))!;assert.equal(status.captureEnabled,false);assert.equal(status.delivery!.freshProgress!.state,'complete');
+  }finally{await f.close();}
+});
+
+for(const order of ['before','after'])test(`fresh StepDriver uncertain enable ${order} reconciles without overriding a later disable`,async()=>{
+  const f=await freshHttpFixture();try{
+    const requests:ManagedSetupStepRequest[]=[];
+    const driver=new StepDriver<ManagedSetupStepRequest>({context:()=> 'synthetic-fresh-context',changed:()=>{},refresh:()=>{},operationId:()=>operationId,
+      send:r=>{requests.push(r);return managedStepCall(f.host,r);}});
+    await driver.inspect('begin',{family:'fresh',storeRoot:f.targets.storeRoot});driver.setAck(true);f.fault({capture:order});await driver.confirmBegin();f.fault({});
+    assert.equal(driver.state.progress!.state,'failed');assert.equal(driver.state.progress!.step!.name,'enable');
+    const observed=parseSetup(JSON.stringify((await f.http('/v1/setup')).body))!.delivery!.freshProgress!;
+    assert.equal(f.capture(),order==='after');
+    if(order==='before'){
+      assert.equal(observed.recovery,'review');await driver.inspect('capture',{progress:observed});assert.equal(driver.state.review!.kind,'capture');
+      driver.setAck(true);await driver.confirmCapture();
+    }else await driver.resume(observed);
+    assert.equal(driver.state.progress!.state,'complete',JSON.stringify(driver.state.outcome));assert.equal(f.capture(),true);
+    assert.equal((await f.http('/v1/capture/disable',{})).status,200);assert.equal(f.capture(),false);
+    const enable=requests.findLast(r=>r.action==='advance'&&r.step.name==='enable')!;
+    const replay=await f.http('/v1/setup/managed-step',enable);assert.equal(replay.status,409);assert.equal(f.capture(),false);
+    assert.equal(requests.filter(r=>r.action==='resume'&&r.review).length,order==='before'?1:0);
+  }finally{await f.close();}
+});
 
 for(const kind of ['manifest','receipt','selector'] as const)test(`HTTP ${kind} journey, every step/retry/control is correlated and bounded`,async t=>{
   const f=await fixture(kind);try{
@@ -473,7 +784,7 @@ for(const recovery of ['interrupted','capture-review'] as const)test(`real HTTP 
 
 test('HTTP validation, unknown operation and stale step refusals preserve fixed envelopes and same-target progress',async()=>{
   const f=await fixture();try{
-    for(const body of [{version:2,action:'status'},{version:1,action:'status',secret:'not accepted'},{version:1,action:'advance',operationId,expectedSequence:-1,step:{name:'enable',batch:0}}]){
+    for(const body of [{version:3,action:'status'},{version:1,action:'status',secret:'not accepted'},{version:1,action:'advance',operationId,expectedSequence:-1,step:{name:'enable',batch:0}}]){
       const r=await f.http('/v1/setup/managed-step',body);assert.equal(r.status,400);assert.equal(r.body.error.code,'invalid');assert.equal(r.body.disposition,'refused');assert.equal(r.body.accounting.securitySpawns,0);
     }
     assert.equal((await f.step({version:1,action:'status',operationId})).status,404);

@@ -23,11 +23,25 @@ class PlatformError extends Error {
     this.reason = reason;
   }
 }
+function writerTarget(kind, value) {
+  let current = path.resolve(value);
+  const missing = [];
+  while (!lstatSync(current, { throwIfNoEntry: false })) {
+    const parent = path.dirname(current);
+    if (parent === current)
+      break;
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+  const canonical = path.join(realpathSync.native(current), ...missing);
+  return `${kind}:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
+}
 var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
 var cache = new Map;
 var reparseCache = new Map;
 var scope = 0;
 var requestBudget;
+var writerTargets;
 function platformSecurityScope(run) {
   const finish = beginPlatformSecurityScope();
   try {
@@ -48,6 +62,17 @@ function beginPlatformSecurityScope() {
       reparseCache.clear();
     }
   };
+}
+function requirePlatformWriteBoundary(spawns = 0, headroomMs = 0) {
+  if (scope)
+    throw new PlatformError("managed-step-conflict");
+  requestBudget?.require(spawns, headroomMs);
+}
+function requirePlatformStoreFence(database) {
+  requestBudget?.require();
+  const targets = requestBudget?.writerFence ? requestBudget.writerFence.targets ?? [] : writerTargets;
+  if (targets && !targets.includes(writerTarget("store", path.dirname(database))))
+    throw new PlatformError("managed-step-conflict");
 }
 var windowsPowerShellBootstrap = String.raw`
 $env:PSModulePath = $PSHOME + '\Modules'
@@ -111,6 +136,7 @@ try {
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
+      if ($request.exclusive -and [IO.Directory]::Exists($target)) { throw 'creation-conflict' }
       if (-not [IO.Directory]::Exists($target)) {
         $security = [Security.AccessControl.DirectorySecurity]::new()
         $security.SetOwner($user)
@@ -184,7 +210,7 @@ function reparsePaths(paths, parents) {
   return paths.some((p) => (fresh.get(p) ?? reparseCache.get(p)).reparse);
 }
 var securityQueryAttempted = false;
-function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
+function windowsSecurityQuery(paths, create = [], spawn = spawnSync, exclusive = false) {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot))
     throw new PlatformError("windows-security-unavailable");
@@ -194,7 +220,7 @@ function windowsSecurityQuery(paths, create = [], spawn = spawnSync) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
+  const input = JSON.stringify({ paths, create, ...exclusive ? { exclusive: true } : {}, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
   const firstQuery = !securityQueryAttempted;
   const run = () => {
     const timeout = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
@@ -328,7 +354,28 @@ function privatePaths(files) {
     return !s.isSymbolicLink() && s.uid === process.getuid?.() && (s.mode & 511) === (s.isDirectory() ? 448 : 384);
   });
 }
-function privateDirectory(file, recursive = false) {
+function privateDirectory(file, recursive = false, creation) {
+  if (creation) {
+    requirePlatformWriteBoundary();
+    if (recursive || creation.exclusive !== true || typeof creation.validate !== "function")
+      throw new PlatformError("managed-step-conflict");
+    const target = platformSecurityScope(() => {
+      creation.validate();
+      const target2 = windows ? windowsPath(file, true) : file, parent = path.dirname(target2);
+      if (!path.isAbsolute(target2) || path.resolve(target2) !== target2 || !lstatSync(parent).isDirectory() || !windows && realpathSync(parent) !== parent || lstatSync(target2, { throwIfNoEntry: false }))
+        throw new PlatformError("path-unverified");
+      return target2;
+    });
+    requirePlatformWriteBoundary(3, 8500);
+    if (windows) {
+      const [result] = windowsSecurityQuery([target], [target], undefined, true);
+      if (!result?.owned || !result.private || result.reparse || result.unsafeParent)
+        throw new PlatformError("private-permissions");
+    } else
+      mkdirSync(target, { mode: 448 });
+    syncDirectory(path.dirname(target));
+    return;
+  }
   if (!windows) {
     mkdirSync(file, { recursive, mode: 448 });
     return;
@@ -2687,7 +2734,7 @@ function captureComparison(db, binding, r, before, after) {
 
 // shared/store.ts
 import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync } from "node:fs";
+import { existsSync as existsSync3, lstatSync as lstatSync4, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync4, chmodSync, fstatSync, fsyncSync as fsyncSync2 } from "node:fs";
 import path4 from "node:path";
 
 // shared/plan-task-search.ts
@@ -3052,31 +3099,37 @@ CREATE TABLE chunks(source TEXT NOT NULL REFERENCES sources(id), plan TEXT NOT N
 CREATE TABLE captures(id INTEGER PRIMARY KEY, source TEXT NOT NULL, plan TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, text TEXT NOT NULL, captured_at TEXT NOT NULL, canonical_path TEXT NOT NULL);
 CREATE TABLE contributions(source TEXT NOT NULL, plan TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)), PRIMARY KEY(source,plan,revision), FOREIGN KEY(source,plan,revision) REFERENCES revisions(source,plan,revision));
 PRAGMA user_version=2;`;
+var freshStoreToken = Symbol("fresh-store-initialization");
+var storeObject = (s) => [s.dev, s.ino, s.birthtimeNs].join(":");
 
 class Store {
   db;
   file;
   readOnly;
   readBinding = { sourceId: null, verified: false };
-  constructor(file, options = {}) {
+  constructor(file, options = {}, fresh) {
     this.file = file;
     this.readOnly = options.readOnly ?? false;
-    const finish = beginPlatformSecurityScope();
+    const finish = fresh ? () => {} : beginPlatformSecurityScope();
     try {
-      if (windows) {
+      if (fresh) {
+        requirePlatformWriteBoundary();
+        requireProgress(fresh.token === freshStoreToken && storeObject(lstatSync4(file, { bigint: true })) === fresh.object, "binding");
+      }
+      if (windows && !fresh) {
         file = windowsPath(file, true);
         this.file = file;
       }
       requireProgress(path4.isAbsolute(file), "binding");
       const parent = lstatSync4(path4.dirname(file));
-      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? sameWindowsDirectory(windowsPath(path4.dirname(file)), path4.dirname(file)) : parent.uid === process.getuid?.() && realpathSync4(path4.dirname(file)) === path4.dirname(file) && (parent.mode & 511) === 448), "binding");
+      requireProgress(parent.isDirectory() && !parent.isSymbolicLink() && (windows ? !!fresh || sameWindowsDirectory(windowsPath(path4.dirname(file)), path4.dirname(file)) : parent.uid === process.getuid?.() && realpathSync4(path4.dirname(file)) === path4.dirname(file) && (parent.mode & 511) === 448), "binding");
       const existed = existsSync3(file);
       requireProgress(existed || options.create && !options.readOnly, "not-found");
-      if (windows) {
+      if (windows && !fresh) {
         const secured = [path4.dirname(file), file, ...["-journal", "-wal", "-shm"].map((s) => file + s)].filter(existsSync3);
         requireProgress(windowsPaths(secured).every((v, i) => sameWindowsObject(v, secured[i])) && privatePaths(secured), "binding");
       }
-      if (existed) {
+      if (existed && !fresh) {
         const stat = lstatSync4(file);
         requireProgress(stat.isFile() && !stat.isSymbolicLink() && (windows || stat.uid === process.getuid?.() && (stat.mode & 511) === 384), "binding");
         const fd = openSync3(file, "r");
@@ -3089,6 +3142,8 @@ class Store {
         requireProgress(head2.toString("binary") === "SQLite format 3\x00", "corrupt");
       }
       this.db = new DatabaseSync2(file, { readOnly: options.readOnly ?? false });
+      if (fresh)
+        requireProgress(storeObject(lstatSync4(file, { bigint: true })) === fresh.object, "binding");
       if (!existed) {
         if (windows)
           requireProgress(privatePaths([file]), "binding");
@@ -3097,11 +3152,11 @@ class Store {
       }
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
       const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
-      if (!existed) {
+      if (!existed || fresh) {
         this.db.exec("BEGIN IMMEDIATE");
         try {
           this.db.exec(SCHEMA);
-          this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
+          this.db.prepare("INSERT INTO meta VALUES(1,?,?,'openchamber-agent-progress')").run(fresh?.storeId ?? randomUUID3(), fresh ? 0 : 1);
           installReceiptIndex(this.db);
           this.db.exec("COMMIT");
         } catch (e) {
@@ -3120,6 +3175,47 @@ class Store {
       throw storageError(e);
     } finally {
       finish();
+    }
+  }
+  static createFresh(file, options) {
+    requirePlatformWriteBoundary();
+    requirePlatformStoreFence(file);
+    requireProgress(identifier(options.storeId) && typeof options.validate === "function", "binding");
+    const parent = path4.dirname(file), sidecars = ["-journal", "-wal", "-shm"].map((s) => file + s);
+    const directory = platformSecurityScope(() => {
+      options.validate();
+      requireProgress(path4.isAbsolute(file) && path4.resolve(file) === file && path4.basename(file) === "progress.sqlite", "binding");
+      if (windows)
+        requireProgress(windowsPaths([parent, file, ...sidecars], true).every((p, i) => p === [parent, file, ...sidecars][i]), "binding");
+      else
+        requireProgress(realpathSync4(parent) === parent, "binding");
+      const stat = lstatSync4(parent, { bigint: true });
+      requireProgress(stat.isDirectory() && !stat.isSymbolicLink() && privatePaths([parent]), "binding");
+      requireProgress(![file, ...sidecars].some((p) => lstatSync4(p, { throwIfNoEntry: false })), "binding");
+      return storeObject(stat);
+    });
+    requirePlatformWriteBoundary(3, 8500);
+    const fd = openSync3(file, "wx", 384);
+    try {
+      const reserved = storeObject(fstatSync(fd, { bigint: true }));
+      platformSecurityScope(() => {
+        if (windows)
+          windowsPaths([parent, file, ...sidecars], true);
+        const stat = lstatSync4(file, { bigint: true });
+        requireProgress(storeObject(lstatSync4(parent, { bigint: true })) === directory && storeObject(stat) === reserved && stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === 0n && privatePaths([parent, file]) && !sidecars.some((p) => lstatSync4(p, { throwIfNoEntry: false })), "binding");
+      });
+      requirePlatformWriteBoundary();
+      const store = new Store(file, {}, { token: freshStoreToken, storeId: options.storeId, object: reserved });
+      try {
+        fsyncSync2(fd);
+        syncDirectory(parent);
+        return store;
+      } catch (e) {
+        store.close();
+        throw e;
+      }
+    } finally {
+      closeSync3(fd);
     }
   }
   close() {

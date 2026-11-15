@@ -9,14 +9,15 @@ import { delegationRevision } from './delegation-validation.ts';
 import { captureIndex, captureComparison } from './document-captures.ts';
 import type { CaptureRequest } from './document-comparison.ts';
 import { randomUUID, createHash } from 'node:crypto';
-import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync } from 'node:fs';
+import { existsSync, lstatSync, openSync, readSync, closeSync, realpathSync, chmodSync, fstatSync, fsyncSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { cleanupInstalled, cleanupState, mutateCleanup, type CleanupAction } from './cleanup.ts';
 import { searchWindow, searchState } from './plan-task-search.ts';
 import { resumeSelection, type ResumeRequest } from './progress-resume.ts';
 import type { SearchOptions, SearchKey } from './progress.ts';
 import { DIGEST_LIMITS, aggregatePair, capDigest, emptyEvents, endpointCounts, validateDigestSnapshot, type ChangeDigest, type DigestReason, type DigestSnapshot } from './change-digest.ts';
-import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
+import { windows, windowsPath, windowsPaths, privatePaths, beginPlatformSecurityScope, platformSecurityScope, requirePlatformWriteBoundary,
+  requirePlatformStoreFence, syncDirectory, PlatformError, sameWindowsDirectory, sameWindowsObject } from './platform.ts';
 import { VERSION, LIMITS, ProgressError, requireProgress as need, validRequest, parseRequest, countItems, validBlockerAnnotation, validBlockerInput, type BlockerInput, type BlockerItemInput, type Actor, type Source, type Capture, type PlanState, type PlanSummary, type Receipt, type Item, type Envelope, type PlanRead, type DocumentRead, type Contribution } from './progress.ts';
 
 import { canonical } from './canonical.ts';
@@ -54,36 +55,44 @@ export interface MentionSearchRead {
   binding: {sourceId:string|null;verified:boolean}; candidates: MentionCandidate[]; limited: boolean;
   work: {planSlots:number;sessionSlots:number;inputBytes:number};
 }
+const freshStoreToken=Symbol('fresh-store-initialization');
+type FreshStoreInitialization={token:typeof freshStoreToken;storeId:string;object:string};
+const storeObject=(s:BigIntStats)=>[s.dev,s.ino,s.birthtimeNs].join(':');
 
 export class Store {
   readonly db!: DatabaseSync;
   readonly file: string;
   private readonly readOnly:boolean;
   private readBinding: {sourceId:string|null;verified:boolean}={sourceId:null,verified:false};
-  constructor(file: string, options: { create?: boolean; busyMs?: number; readOnly?: boolean } = {}) {
+  constructor(file: string, options: { create?: boolean; busyMs?: number; readOnly?: boolean } = {}, fresh?:FreshStoreInitialization) {
     this.file=file;
     this.readOnly=options.readOnly??false;
-    const finish=beginPlatformSecurityScope();
+    const finish=fresh?()=>{}:beginPlatformSecurityScope();
     try {
-      if(windows){file=windowsPath(file,true);this.file=file;}
+      if(fresh){
+        requirePlatformWriteBoundary();
+        need(fresh.token===freshStoreToken&&storeObject(lstatSync(file,{bigint:true}))===fresh.object,'binding');
+      }
+      if(windows&&!fresh){file=windowsPath(file,true);this.file=file;}
       need(path.isAbsolute(file), 'binding');
-      const parent = lstatSync(path.dirname(file)); need(parent.isDirectory() && !parent.isSymbolicLink() && (windows?sameWindowsDirectory(windowsPath(path.dirname(file)),path.dirname(file)):parent.uid===process.getuid?.() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 0o777) === 0o700), 'binding');
+      const parent = lstatSync(path.dirname(file)); need(parent.isDirectory() && !parent.isSymbolicLink() && (windows?!!fresh||sameWindowsDirectory(windowsPath(path.dirname(file)),path.dirname(file)):parent.uid===process.getuid?.() && realpathSync(path.dirname(file)) === path.dirname(file) && (parent.mode & 0o777) === 0o700), 'binding');
       const existed = existsSync(file);
       need(existed || (options.create && !options.readOnly), 'not-found');
-      if(windows){const secured=[path.dirname(file),file,...['-journal','-wal','-shm'].map(s=>file+s)].filter(existsSync);need(windowsPaths(secured).every((v,i)=>sameWindowsObject(v,secured[i]!))&&privatePaths(secured),'binding');}
-      if (existed) {
+      if(windows&&!fresh){const secured=[path.dirname(file),file,...['-journal','-wal','-shm'].map(s=>file+s)].filter(existsSync);need(windowsPaths(secured).every((v,i)=>sameWindowsObject(v,secured[i]!))&&privatePaths(secured),'binding');}
+      if (existed&&!fresh) {
         const stat = lstatSync(file); need(stat.isFile() && !stat.isSymbolicLink() && (windows||stat.uid===process.getuid?.() && (stat.mode & 0o777) === 0o600), 'binding');
         const fd = openSync(file,'r'); const head = Buffer.alloc(16);
         try { readSync(fd,head,0,16,0); } finally { closeSync(fd); }
         need(head.toString('binary') === 'SQLite format 3\0', 'corrupt');
       }
       this.db = new DatabaseSync(file, { readOnly: options.readOnly ?? false });
+      if(fresh)need(storeObject(lstatSync(file,{bigint:true}))===fresh.object,'binding');
       if (!existed) {if(windows)need(privatePaths([file]),'binding');else chmodSync(file, 0o600);}
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, options.busyMs ?? 1000))}; PRAGMA foreign_keys=ON;`);
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
-      if (!existed) {
+      if (!existed||fresh) {
         this.db.exec('BEGIN IMMEDIATE');
-        try { this.db.exec(SCHEMA); this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID()); installReceiptIndex(this.db); this.db.exec('COMMIT'); }
+        try { this.db.exec(SCHEMA); this.db.prepare("INSERT INTO meta VALUES(1,?,?,'openchamber-agent-progress')").run(fresh?.storeId??randomUUID(),fresh?0:1); installReceiptIndex(this.db); this.db.exec('COMMIT'); }
         catch (e) { this.db.exec('ROLLBACK'); throw e; }
       } else need(version === VERSION, 'schema');
       need(this.db.prepare('PRAGMA table_info(meta)').all().some(r=>r.name==='product'),'corrupt');
@@ -92,6 +101,40 @@ export class Store {
       this.transaction(false,()=>receiptIndexInstalled(this.db));
     } catch (e) { this.db!?.close(); if(e instanceof PlatformError)throw e;throw storageError(e); }
     finally{finish();}
+  }
+  /** Journaled fresh creation only: exclusive reservation followed by NEW object
+   * admission before the initial off/schema transaction. Partial files survive
+   * failure and are never initialized by an ordinary create/open retry. */
+  static createFresh(file:string,options:{storeId:string;validate:()=>void}):Store {
+    requirePlatformWriteBoundary();requirePlatformStoreFence(file);
+    need(identifier(options.storeId)&&typeof options.validate==='function','binding');
+    const parent=path.dirname(file),sidecars=['-journal','-wal','-shm'].map(s=>file+s);
+    const directory=platformSecurityScope(()=>{
+      options.validate();
+      need(path.isAbsolute(file)&&path.resolve(file)===file&&path.basename(file)==='progress.sqlite','binding');
+      if(windows)need(windowsPaths([parent,file,...sidecars],true).every((p,i)=>p===[parent,file,...sidecars][i]),'binding');
+      else need(realpathSync(parent)===parent,'binding');
+      const stat=lstatSync(parent,{bigint:true});need(stat.isDirectory()&&!stat.isSymbolicLink()&&privatePaths([parent]),'binding');
+      need(![file,...sidecars].some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
+      return storeObject(stat);
+    });
+    // The final preflight may have spent the earlier engine reservation. Leave
+    // room for new-object admission and the journal's validation/readback.
+    requirePlatformWriteBoundary(3,8_500);
+    const fd=openSync(file,'wx',0o600);
+    try{
+      const reserved=storeObject(fstatSync(fd,{bigint:true}));
+      platformSecurityScope(()=>{
+        // This is a new batch after reservation, never inherited pre-create ACLs.
+        if(windows)windowsPaths([parent,file,...sidecars],true);
+        const stat=lstatSync(file,{bigint:true});
+        need(storeObject(lstatSync(parent,{bigint:true}))===directory&&storeObject(stat)===reserved&&stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1n&&
+          stat.size===0n&&privatePaths([parent,file])&&!sidecars.some(p=>lstatSync(p,{throwIfNoEntry:false})),'binding');
+      });
+      requirePlatformWriteBoundary();
+      const store=new Store(file,{}, {token:freshStoreToken,storeId:options.storeId,object:reserved});
+      try{fsyncSync(fd);syncDirectory(parent);return store;}catch(e){store.close();throw e;}
+    }finally{closeSync(fd);}
   }
   close() { this.db.close(); }
   installSubagentRuns() { return this.transaction(true,()=>{ installReceiptIndex(this.db); runs.installRuns(this.db); }); }

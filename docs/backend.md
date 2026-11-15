@@ -326,16 +326,19 @@ that Store, set configured/verified, expose its reporting identity or make healt
 ready; failed validation/read leaves the bit unknown. Candidate preflight shares its ownership/fingerprint facts
 within the operation only; lock/removal/publication boundaries validate afresh.
 
-#### Bounded migration HTTP workers
+#### Bounded setup HTTP workers
 
 `service/request-worker.ts` provides a private, request-driven worker entry in the
 existing service bundle. Its entry guard cannot run ordinary service bootstrap.
 Authenticated health (including starting) and managed Setup delivery advertise
-`managedMigrationSteps: 1`. POST `/v1/setup/managed-step` validates the frozen
-request union and drives one read-only inspection batch, effect or control.
-Old `/v1/setup/managed-migrate` and unnegotiated `managed-inspect` refuse with
-HTTP 409 `{"error":"managed-action-required"}` before discovery or writes.
-They are not alternate paths to a monolithic migration.
+independent `managedMigrationSteps: 1` and `managedFreshSteps: 1` capabilities.
+POST `/v1/setup/managed-step` validates wire 1 migration or wire 2 fresh requests
+and drives one read-only inspection batch, effect or control. Family mismatch
+refuses without conversion or writes. The old migrate route always returns exactly
+HTTP 409 `{"error":"managed-action-required"}`. On Windows old inspect/configure
+also refuse before body parsing, worker/security work or writes. Linux/macOS retain
+only their no-legacy/no-journal fresh compatibility path under the existing fence;
+legacy/journal presence still refuses. There is no client fallback.
 
 Recognized step refusals retain the versioned response envelope, fixed stage/code
 and available same-target progress. Invalid input is 400, unknown operation 404,
@@ -360,14 +363,18 @@ treated as an uncertain effect, requiring bounded observation/reconciliation.
 Callers must reserve
 their remaining validation/checkpoint work before admitting each effect.
 
-The inspection foundation now splits roots, managed state, legacy path discovery,
+Migration inspection splits roots, managed state, legacy path discovery,
 retained releases, Store validation and review into six read-only requests. The
 lifecycle owner discovers fixed manifest/descriptor bytes before release paths;
 later stages reread that discovery before full ownership validation. No inspection
 creates managed metadata, changes capture or initializes a Store. The complete
 review binds package bytes, target/plan, native database identity and capture bit.
 For an interrupted operation it also binds the operation's sequence, full intent
-and capture decision. Mutation admission must revalidate the review afresh.
+and capture decision. Fresh inspection uses roots, managed state, legacy absence,
+store and review, without a release scan. It freezes proposed missing IDs once or
+reuses verified retained identities, object/absence claims and create/retain modes.
+Retained review capture is freshly read within the batch; unavailable observation
+is unknown, never a guessed off/on bit. Mutation admission revalidates all facts.
 
 Each short-lived worker receives discovery claims only from its supervisor, never
 from caller fields. The supervisor retains one private inspection session scoped
@@ -395,7 +402,10 @@ no legacy scan or Store admission. Ordinary GET Setup additionally reads the
 validated selected/pending Store read-only to observe capture and managed load;
 it does not publish an expectation or inspect the legacy release tree. It omits
 `delivery.migrationProgress` entirely when no format-2 operation exists (never
-null). Its discovery indicator is not a confirmable ownership review.
+null); format 3 appears only as optional `delivery.freshProgress`. Before a journal
+exists, fresh delivery migration is `none` and progress is omitted. A settled
+prepare has non-null lastCompleted; no speculative progress is projected.
+Its discovery indicator is not a confirmable ownership review.
 A requested different operation returns
 `not-found`, never the current operation's progress. Status does not consume an
 unfinished inspection review. Portable accounting measures six launches for new
@@ -498,7 +508,30 @@ actual canonical Store root with the held slots. Changed/missing routing evidenc
 refuses before effects rather than operating under another target's fence. The
 private routing keys and nonce never enter public responses.
 
-The format-2 journal foundation now provides bounded strict parsing, canonical
+Fresh execution extends those same owners with a format-3 journal at `migration.json`.
+Its separate reader validates planned absence before a Store directory exists;
+ordinary binding/source and companion admission never accept proposed identities.
+`Store.createFresh` reserves the absent database exclusively and initializes schema
+2, receipt index, the frozen Store ID and capture off in one transaction. Folder
+creation and source registration are separate effects; expectation precedes source
+registration. Retained plans never change capture or recreate data. Creation
+checkpoints record native object observations, not cached ACL authority; immutable
+fresh facts remain in the target digest. Uncheckpointed folders and partial files
+are retained/refused, never adopted or repaired. Exact initialized database results
+can reconcile read-only from their matching durable creation intent.
+
+Portable full-engine counters measure prepare/folder/database 6 launches, each
+later effect 5, settled replay 1 and normal controls 3; ordinary fresh Setup status
+uses 3 before selection/4 after. Failure settlement also stays within 6. These are
+substituted OS-spawn measurements, not native Windows timing. Native CI tests
+empty default/custom stores undelayed and the default store with 2.5-second helpers,
+retained matching sources with capture on/off, and a retained new source with capture
+off. Default fresh recovery tests prepare timeout, replay and restart/pause/resume;
+migration tests add late-worker and slower-helper refusal. Native requests assert
+six launches, eight seconds undelayed or below twenty seconds delayed, and concurrent
+zero-query health.
+
+The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber
 publication with compare-before-replacement. Reads reject unsupported state,
 foreign scope, hard links, retained publication stages and old configuration
@@ -506,8 +539,10 @@ locks. Writes refuse an enclosing security scope so post-write validation cannot
 reuse its ACL cache. These helpers do **not** admit a Store or authorize a saved
 claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
 Cold progress projection reports capture as unknown unless supplied a fresh
-observation. These helpers alone do not constitute HTTP integration, and the
-capability remains unadvertised until that integration is complete.
+observation. Both journal families are integrated through the same worker/fence;
+format 2 stays migration-only and neither parser accepts the other family. Older
+readers refuse format 3, even complete records. Rollback retains all state and
+requires a fresh-capable build for recovery, with no journal down-conversion.
 
 The lifecycle owner exposes a one-file removal foundation, using the frozen
 original manifest and native claims. Every request validates the remaining full
