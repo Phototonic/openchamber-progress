@@ -1097,7 +1097,7 @@ function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupSt
   const key = `failure:${p?.operationId ?? ''}:${p?.sequence ?? ''}:${diagnostic.stage ?? ''}:${diagnostic.code}`;
   if (!announced.has(key)) { box.setAttribute('role', 'alert'); announced.add(key); }
   const where = el('p', 'ap-migration-where', `${diagnostic.stage ? t.stoppedAt(stageLabel(diagnostic.stage, locale, family)) : t.stopped}`);
-  if(family!=='fresh')where.append(' · ',el('code', 'ap-migration-code', diagnostic.code));
+  where.append(' · ',el('code', 'ap-migration-code', diagnostic.code));
   box.append(where);
   // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
   box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale, family)));

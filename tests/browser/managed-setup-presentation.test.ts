@@ -43,6 +43,16 @@ function render(progress?:ManagedFreshStepProgress,locale='en',diagnostics:strin
 }
 
 const prepared=managedFreshStepFixtures().replies.prepared.progress!;
+for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: last-action stage and bounded code remain visible beside localized guidance`,()=>{
+  const code='managed-step-deadline',stage='create-store';
+  const p:ManagedFreshStepProgress={...prepared,state:'failed',sequence:2,step:{name:stage,batch:0},
+    lastCompleted:{name:'store-directory',batch:0},diagnostic:{stage,code},recovery:'resume'};
+  const shown=render(p,locale),text=copy.managedFamilyStepCopy('fresh',locale);
+  assert.ok(shown.text.includes(code),'support code must be visible, not only a data attribute');
+  assert.ok(shown.text.includes(text.stoppedAt(text.stages[stage]!)));
+  assert.ok(shown.text.includes(copy.managedErrorText(code,locale,'fresh')));
+});
+
 for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: partial-folder guidance is resource-based, not repeated by error copy`,()=>{
   const partial=copy.managedFreshCopy(locale).partial;
   for(const code of ['managed-migration-conflict','storage'] as const){
