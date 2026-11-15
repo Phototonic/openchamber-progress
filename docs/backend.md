@@ -523,8 +523,13 @@ can reconcile read-only from their matching durable creation intent.
 Portable full-engine counters measure prepare/folder/database 6 launches, each
 later effect 5, settled replay 1 and normal controls 3; ordinary fresh Setup status
 uses 3 before selection/4 after. Failure settlement also stays within 6. These are
-substituted OS-spawn measurements, not native Windows timing. Native default/custom
-empty setup, retained/recovery and 2.5-second-helper success remain CI gates.
+substituted OS-spawn measurements, not native Windows timing. Native CI tests
+empty default/custom stores undelayed and the default store with 2.5-second helpers,
+retained matching sources with capture on/off, and a retained new source with capture
+off. Default fresh recovery tests prepare timeout, replay and restart/pause/resume;
+migration tests add late-worker and slower-helper refusal. Native requests assert
+six launches, eight seconds undelayed or below twenty seconds delayed, and concurrent
+zero-query health.
 
 The format-2 migration journal provides bounded strict parsing, canonical
 target/request digests, consistency/transition validation and private no-clobber

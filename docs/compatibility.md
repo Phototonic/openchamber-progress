@@ -472,11 +472,15 @@ The former 1.4.0 fresh Windows 3/24-launch synchronous exception is replaced by
 portable measured prepare/folder/database requests at 6 launches each and later
 effects at 5. New databases initialize off; retained stores keep capture and IDs.
 These counters and rendered synthetic-shell checks do not certify native Windows
-latency/ACLs. The native driver now covers empty default/custom targets, retained
-reconnection, restart, dropped replies, pause/resume and slower-helper refusal.
-Successful 2.5-second-helper completion, per-request undelayed eight-second and
-six-launch gates and concurrent zero-query health remain pending CI for this
-revision. Timeout never undoes changes or permits cleanup/permission repair. See
+latency/ACLs. Native CI exercises empty default and custom stores undelayed, the
+default store with 2.5-second helpers, and retained stores with matching sources
+(capture on/off) or a new source (capture off). Fresh default recovery covers
+prepare timeout, lost-reply replay, restart and pause/resume before/after creation;
+the migration cases additionally cover slower-helper and late-worker refusal.
+Every native request is gated at six launches and eight seconds undelayed or
+below twenty seconds delayed, with concurrent zero-query health. These are the
+job's assertions, not portable certification. Timeout never undoes changes or
+permits cleanup/permission repair. See
 [Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 
 The `Windows setup, storage and capture` CI job retains the existing native

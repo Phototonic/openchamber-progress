@@ -75,8 +75,11 @@ prepare/store-directory/create-store 6 launches each, expectation/register-sourc
 publish-binding/enable/reconcile 5 each, settled replay 1 and normal controls 3.
 Fresh inspection pages measure 1 each (retained roots can take 2); ordinary Setup
 status measures 3 before selection/4 after. Injected failure settlement remains
-within 6. These substitute only the OS-spawn boundary; native timing, NTFS ACLs
-and successful 2.5-second-helper journeys remain separate pending CI gates.
+within 6. These substitute only the OS-spawn boundary, not native timing or NTFS
+ACLs. Native CI tests default/custom empty stores undelayed, the default store
+with 2.5-second helpers, retained reused sources with capture on/off, and a retained
+new source with capture off. Requests assert six launches, eight seconds undelayed
+or below twenty seconds delayed, and concurrent zero-query health.
 The six-launch gate includes all validation,
 actual attempts, creation, readback and failure settlement. Stop for a technical
 amendment if safe creation cannot fit. Format-3 observation before storage exists
@@ -86,8 +89,10 @@ Rollback retains journals/data and requires a fresh-capable build for recovery.
 The sections below retain the wire-1 / format-2 migration contract. Wire 2 and
 format 3 extend the same engine, worker and single Setup driver, not a parallel
 installer. Backend HTTP and rendered synthetic-shell journeys are integrated;
-portable query accounting is **not a native performance result**. Native acceptance
-and independent trust-boundary/error-path review remain delivery gates.
+portable query accounting is **not a native performance result**. Fresh default
+native recovery tests prepare timeout, replay and restart/pause/resume before and
+after creation; migration tests additionally exercise slower/late-worker refusal.
+Native acceptance and independent trust-boundary/error-path review remain delivery gates.
 
 ## Owners and invariants
 

@@ -28,15 +28,17 @@ const codes=new Set<string>([...MANAGED_STEP_CODES,...MANAGED_ACTION_CODES,'mana
 // EMPTY runs first: no released installer, selected binding, Store or journal may
 // accidentally supply authority to the new-store journey. Retained fixtures use
 // only the Store owner, never an install followed by test-owned discovery removal.
-for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as const)test(`Windows built fresh steps (${fixture})`,{skip:process.platform!=='win32',timeout:600000},async()=>{
+for(const fixture of ['empty','empty-custom','empty-delayed','retained-off','retained-on','retained-new'] as const)test(`Windows built fresh steps (${fixture})`,{skip:process.platform!=='win32',timeout:600000},async()=>{
   const root=path.join(path.parse(os.tmpdir()).root,`agent-progress-fresh-${randomUUID()}`);
-  const retained=fixture.startsWith('retained'),delayed=fixture==='empty-delayed',mode=delayed?'delayed':'undelayed',limitMs=delayed?19999:8000;
+  const retained=fixture.startsWith('retained'),newSource=fixture==='retained-new',custom=fixture==='empty-custom',
+    delayed=fixture==='empty-delayed',mode=delayed?'delayed':'undelayed',limitMs=delayed?19999:8000;
   let running:Awaited<ReturnType<typeof nativeService>>|undefined;
   let database='',managed='',storeRoot='',phase='fixture',failed=false;
   const freshStages=new Set<string>([...MANAGED_FRESH_INSPECTION_STEPS,...MANAGED_FRESH_STEPS,'journal','lock']);
   const readDatabase=<T,>(read:(db:DatabaseSync)=>T)=>{const db=new DatabaseSync(database,{readOnly:true});try{return read(db);}finally{db.close();}};
   const capture=()=>readDatabase(db=>{const enabled=db.prepare('SELECT enabled FROM meta WHERE singleton=1').get()?.enabled;assert.ok(enabled===0||enabled===1);return enabled===1;});
-  const historySnapshot=()=>readDatabase(db=>Object.fromEntries(['plans','revisions','contributions','receipts','sources'].map(t=>[t,db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()])));
+  const historySnapshot=(excludeSource?:string)=>readDatabase(db=>Object.fromEntries(['plans','revisions','contributions','receipts','sources'].map(t=>
+    [t,db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all().filter(row=>t!=='sources'||row.id!==excludeSource)])));
   function facts(){
     let enabled:boolean|null=null;try{if(database&&fs.existsSync(database))enabled=capture();}catch{/* Unknown is not off. */}
     return {marker:!!managed&&fs.existsSync(path.join(managed,'.ownership.json')),lock:!!managed&&fs.existsSync(path.join(managed,'.configuration-lock')),
@@ -67,14 +69,17 @@ for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as c
     for(const dir of [env.TEMP!,env.XDG_STATE_HOME!,env.XDG_CACHE_HOME!,env.XDG_RUNTIME_DIR!])privateDirectory(dir);
     const configRoot=path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot=path.join(env.XDG_DATA_HOME!,'opencode');
     for(const dir of [configRoot,dataRoot])privateDirectory(dir,true);
-    storeRoot=path.join(dataRoot,'openchamber-progress');managed=path.join(dataRoot,'agent-progress-managed');database=path.join(storeRoot,'progress.sqlite');
+    storeRoot=custom?path.join(root,'custom store ü'):path.join(dataRoot,'openchamber-progress');
+    managed=path.join(dataRoot,'agent-progress-managed');database=path.join(storeRoot,'progress.sqlite');
     const legacyRoot=path.join(configRoot,'plugins','agent-progress');
     let retainedStoreId:unknown,retainedSourceId:string|undefined,history:unknown;
     if(retained){
       privateDirectory(storeRoot);const store=new Store(database,{create:true});
       try{
         store.installSubagentRuns();retainedSourceId=randomUUID();
-        store.registerSource({id:retainedSourceId,configRoot:windowsPath(configRoot),dataRoot:windowsPath(dataRoot),verified:true});
+        const sourceRoots=newSource?{configRoot:path.join(home,'other-config'),dataRoot:path.join(home,'other-data')}:{configRoot,dataRoot};
+        if(newSource)for(const dir of Object.values(sourceRoots))privateDirectory(dir);
+        store.registerSource({id:retainedSourceId,configRoot:windowsPath(sourceRoots.configRoot),dataRoot:windowsPath(sourceRoots.dataRoot),verified:true});
         const actor={sourceId:retainedSourceId,sessionId:'native-fixture',agent:'build',directory:'/fixture/native',parentId:null,ancestry:[],verifiedSource:true};
         store.apply({op:'start',plan:'retained',oid:'start',rev:0,title:'Retained native history',items:[{id:'work',title:'Work',kind:'task',status:'pending'}]},actor);
         store.apply({op:'change',plan:'retained',oid:'work',rev:1,changes:[{id:'work',status:'working'}]},actor);
@@ -109,7 +114,7 @@ for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as c
     const inspect=async()=>{
       let cursor:string|undefined;
       for(const stage of MANAGED_FRESH_INSPECTION_STEPS){
-        const r=await step({version:2,action:'inspect',...(cursor?{cursor}:{})},`inspect-${stage}`);pristine();
+        const r=await step({version:2,action:'inspect',...(cursor?{cursor}:custom?{storeRoot}:{})},`inspect-${stage}`);pristine();
         assert.ok(r.counts.queries>0,'fresh inspection performs real security checks');assert.equal(r.value.inspection?.stage,stage);
         if(stage==='review'){assert.equal(r.value.inspection?.state,'complete');assert.ok(r.value.inspection?.review);return r.value.inspection.review;}
         assert.equal(r.value.inspection?.state,'incomplete');assert.equal(r.value.inspection?.review,undefined);assert.ok(r.value.inspection?.cursor);cursor=r.value.inspection.cursor;
@@ -117,11 +122,14 @@ for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as c
       throw new Error('native-fresh-inspection-incomplete');
     };
     let review=await inspect();
-    assert.equal(review.planKind,'fresh');assert.equal(review.storeMode,retained?'retain':'create');assert.equal(review.sourceMode,retained?'reuse':'create');
+    assert.equal(review.planKind,'fresh');assert.equal(review.storeMode,retained?'retain':'create');assert.equal(review.sourceMode,retained&&!newSource?'reuse':'create');
+    assert.equal(review.targets.storeRoot,storeRoot,'review must select the requested default or custom target');
     assert.equal(review.capturePolicy,retained?'preserve':'enable-new');assert.match(review.expected,/^[a-f0-9]{64}$/);
-    const expectedNames=retained?['prepare','expectation','publish-binding','reconcile']:[...MANAGED_FRESH_STEPS];
+    const expectedNames=retained?['prepare','expectation',...(newSource?['register-source']:[]),'publish-binding','reconcile']:[...MANAGED_FRESH_STEPS];
     assert.deepEqual(review.plan,expectedNames.map(name=>({name,batch:0})));
-    if(retained){assert.equal(review.storeId,retainedStoreId);assert.equal(review.sourceId,retainedSourceId);assert.equal(review.capture.state,initialCapture?'on':'off');}
+    if(retained){assert.equal(review.storeId,retainedStoreId);
+      if(newSource)assert.notEqual(review.sourceId,retainedSourceId);else assert.equal(review.sourceId,retainedSourceId);
+      assert.equal(review.capture.state,initialCapture?'on':'off');}
     const operationId=randomUUID();
     if(fixture==='empty'){
       await running.settings('timeout');
@@ -152,7 +160,7 @@ for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as c
       const body:ManagedFreshStepRequest={version:2,action:'advance',operationId,expectedSequence:p.sequence,step:current.step};
       p=(await step(body,current.step.name)).value.progress!;
       assert.equal(p.operationId,operationId);assert.equal(p.sequence,current.sequence+1);assert.deepEqual(p.lastCompleted,current.step);assert.deepEqual(p.plan,review.plan);completed.push(current.step.name);
-      if(retained){assert.equal(capture(),initialCapture);assert.deepEqual(historySnapshot(),history);}
+      if(retained){assert.equal(capture(),initialCapture);assert.deepEqual(historySnapshot(newSource?review.sourceId:undefined),history);}
       else if(fs.existsSync(database))assert.equal(capture(),['enable','reconcile'].includes(current.step.name),'new capture stays off until the explicit enable');
       if(fixture==='empty'&&current.step.name==='create-store'){
         assert.equal(capture(),false);assert.equal(p.capture.state,'off');
@@ -166,6 +174,8 @@ for(const fixture of ['empty','empty-delayed','retained-off','retained-on'] as c
     assert.equal(selected.storeId,review.storeId);assert.equal(selected.source.id,review.sourceId);
     assert.equal(readDatabase(db=>db.prepare('SELECT store_id FROM meta WHERE singleton=1').get()!.store_id),review.storeId);
     assert.equal(readDatabase(db=>db.prepare('SELECT COUNT(*) AS n FROM sources WHERE id=? AND verified=1').get(review.sourceId)!.n),1);
+    assert.equal(readDatabase(db=>db.prepare('SELECT COUNT(*) AS n FROM sources').get()!.n),newSource?2:1);
+    if(custom)assert.equal(fs.existsSync(path.join(dataRoot,'openchamber-progress')),false,'custom selection must not create default storage');
     const status=await request('/v1/setup',undefined,'fresh-complete-status',{concurrent:true,expectedStatus:200});
     assert.equal(status.value.delivery.managedFreshSteps,1);assert.equal(status.value.delivery.freshProgress.state,'complete');assert.equal(status.value.configured,true);
     assert.equal(status.value.captureEnabled,retained?initialCapture:true);assert.equal(status.value.reportingIdentity.storeId,review.storeId);assert.equal(status.value.reportingIdentity.sourceId,review.sourceId);
