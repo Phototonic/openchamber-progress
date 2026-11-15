@@ -139,7 +139,9 @@ presence checks, before offering a review or writing. Invalid metadata without a
 migration hint retains its precise ownership/path refusal; step inspection
 diagnoses metadata behind a migration hint.
 Ordinary Setup reads are bounded and read-only; absent operation progress is
-omitted, not null. Ordinary capture enable/disable shares the writer fence.
+omitted, not null. Concurrent identical Setup reads share one in-flight status run
+and its budget, never a completed result; a read during a mutation still refuses.
+Ordinary capture enable/disable shares the writer fence.
 When `managedMigrationSteps: 1` is advertised, Setup uses authenticated, bodyless
 POST `/v1/capture/disable` and `/v1/capture/enable` for both fresh and migrated
 managed installations. The existing target/consequence review, acknowledgement
@@ -366,6 +368,9 @@ inspection. A newly started managed service reports `starting`, `ready:false` an
 snapshot never authorizes a data access: each such operation still revalidates.
 The views explicitly read Setup then health once on `starting`/`refused`, so a
 restored store can recover without a restart. Health alone does not retry checks.
+Only a starting-phase Setup 503 `managed-step-unsettled` falls through to that
+single health reread (including an echo of the same transient code); other errors
+and refused health diagnostics remain failures, and unavailable data stays unread.
 Background composer actions use that same admission path and check capabilities
 on the ready reply. Refused security/binding states are failures, not “setup needed”.
 There is no timer, worker or background admission; synchronous Setup/data checks
