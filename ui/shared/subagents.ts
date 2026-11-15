@@ -7,7 +7,7 @@
 // - Running never decays with time: only a host terminal event or a different host activity changes it
 // - a finished run is not a finished task, and a claim is not acceptance
 import type { RunRow } from '../../shared/subagent-runs.ts';
-import { currentFor, observe, type Census, type ObservedRow, type PlanFacts } from './census.ts';
+import { currentFor, isComplete, observe, type Census, type ObservedRow, type PlanFacts } from './census.ts';
 import type { ItemStatus, PlanView } from './model.ts';
 import type { RunsPanel } from './runs.ts';
 import type { InterfaceLanguage } from './i18n.ts';
@@ -60,6 +60,8 @@ export type RanKind = 'active' | 'waiting' | 'idle' | 'finished' | 'failed' | 'i
 export interface Ran {
   kind: RanKind;
   label: string;
+  /** Present only for a recorded Running run absent from a complete current host census. */
+  notSeen?: boolean;
   /** Real host time this label refers to (ms), with how to say it; null when none is known. */
   time: { at: number; prefix: string } | null;
   /** Proven execution duration (start → end), or dispatch → end when only that is known. */
@@ -287,6 +289,7 @@ export function rosterFor(v: RosterInput, language: InterfaceLanguage = 'en'): R
     // "Again" needs an idle → active change seen after the terminal fact: a still-cached Running
     // snapshot of the same execution is not a resume and is not shown or counted.
     const { ran, now } = runActivity(r, h, baselines, seq, language);
+    if (r.ran.state === 'running' && sessionId && current && isComplete(v.census) && !listed.has(sessionId)) ran.notSeen = true;
     return {
       key: r.id, runId: r.id, sessionId, title: r.description || (sessionId ? titles.get(sessionId) : null) || r.agent || (sessionId ? c.session(shortId(sessionId)) : c.subagent),
       agent: r.agent, depth: (sessionId ? listed.get(sessionId)?.depth : undefined) ?? (nested ? 2 : 1), parentTitle: nested ? titles.get(r.parentSessionId) ?? c.session(shortId(r.parentSessionId)) : null,

@@ -30,6 +30,7 @@ const EN = {
   status: { pending: 'pending', working: 'working', blocked: 'blocked', done: 'done', skipped: 'skipped' },
   waiting: 'Waiting on you', after: (d: string) => ` · ${d} after dispatch`, took: (d: string) => ` · took ${d}`,
   nowTip: 'What OpenChamber lists for this session now. Its recorded run above is unchanged.',
+  notSeen: 'not seen in OpenChamber now',
   again: (label: string, compact: boolean) => `${label} again${compact ? '' : ' now'}`,
   accepted: (word: string, title: string | null, compact: boolean) => compact ? `task ${word}` : `Task reported ${word}${title ? `: ${title}` : ''}`,
   acceptedMany: (n: number, parts: string, omitted: number, compact: boolean) => compact ? `${n} tasks: ${parts}` : `${plural(n, 'task', 'tasks')} reported: ${parts}${omitted ? `, ${omitted} more` : ''}`,
@@ -62,6 +63,7 @@ const RU: typeof EN = {
   status: { pending: 'ожидает', working: 'в работе', blocked: 'заблокирована', done: 'выполнена', skipped: 'пропущена' },
   waiting: 'Ждёт вас', after: d => ` · ${d} после отправки`, took: d => ` · длительность ${d}`,
   nowTip: 'Что OpenChamber сейчас показывает для этой сессии. Записанный запуск выше не изменён.',
+  notSeen: 'сейчас не виден в OpenChamber',
   again: (label, compact) => `${label} снова${compact ? '' : ' сейчас'}`,
   accepted: (word, title, compact) => compact ? `задача: ${word}` : `По отчёту задача ${word}${title ? `: ${title}` : ''}`,
   acceptedMany: (n, parts, omitted, compact) => compact ? `Задачи (${n}): ${parts}` : `По отчётам задачи (${n}): ${parts}${omitted ? `, ещё ${omitted}` : ''}`,
@@ -94,6 +96,7 @@ const ZH: typeof EN = {
   status: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' },
   waiting: '等待你处理', after: d => ` · 派发后 ${d}`, took: d => ` · 耗时 ${d}`,
   nowTip: 'OpenChamber 当前为此会话列出的状态。上方的运行记录不变。',
+  notSeen: 'OpenChamber 当前未看到此会话',
   again: (label, compact) => `${label}（再次${compact ? '' : '，当前'}）`,
   accepted: (word, title, compact) => compact ? `任务${word}` : `任务已报告为${word}${title ? `：${title}` : ''}`,
   acceptedMany: (n, parts, omitted, compact) => compact ? `${n} 个任务：${parts}` : `${n} 个任务已报告：${parts}${omitted ? `，另有 ${omitted} 个` : ''}`,
@@ -132,6 +135,12 @@ function ranNode(r: Ran, env: Env, compact: boolean) {
   const mark = el('span', 'ap-obs-mark');
   mark.setAttribute('aria-hidden', 'true');
   n.append(mark, el('span', 'ap-obs-label', compact && r.kind === 'waiting' ? c.waiting : r.label));
+  if (r.notSeen) {
+    const qualifier = testid(el('span', 'ap-obs-last', ` · ${c.notSeen}`), 'subagent-not-seen');
+    qualifier.setAttribute('role', 'note');
+    qualifier.setAttribute('aria-label', c.notSeen);
+    n.append(qualifier);
+  }
   if (r.time) n.append(age(iso(r.time.at), env, compact ? ' · ' : ` · ${r.time.prefix}`));
   if (r.duration && !compact) {
     const d = elapsedText(r.duration.ms, language);
