@@ -1,6 +1,7 @@
 /** Joined release acceptance on an owned, isolated real host and tracked built entries. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { javascriptLiteral } from '../../shared/javascript-literal.ts';
 import type { reportingSessionsJourney } from './reporting-sessions-journey.ts';
 
 export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourney>[0]) {
@@ -42,7 +43,7 @@ export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourn
   if(await browser.guest('panel','!!document.querySelector("[data-testid=session-action-reset]")'))await guestClick('panel','[data-testid="session-action-reset"] button');
   await report({op:'delegate',plan,oid:'release-pending',rev:rev(),assign:['task-a']});
   await intent('waiting','delegation-pending');await browser.shot('release-intent-pending');
-  check('plan-and-task-hooks-source-revision',!!await browser.guest('panel',`(()=>{const p=document.querySelector('${planNode}'),t=p?.querySelector('[data-testid="item-task-a"]');return p?.dataset.source===${JSON.stringify(binding.source.id)}&&p.dataset.revision===${JSON.stringify(String(rev()))}&&!!t})()`));
+  check('plan-and-task-hooks-source-revision',!!await browser.guest('panel',`(()=>{const p=document.querySelector('${planNode}'),t=p?.querySelector('[data-testid="item-task-a"]');return p?.dataset.source===${javascriptLiteral(binding.source.id)}&&p.dataset.revision===${javascriptLiteral(String(rev()))}&&!!t})()`));
   check('pending-note-no-status-or-assignee',detail().items.data.every(i=>i.status==='pending'&&!i.assigneeSessionId));
   await report({op:'delegate',plan,oid:'release-cancel',rev:rev(),assign:[]});await intent('clear');
   check('cancelled-clears-note',!await browser.guest('panel',`!!document.querySelector('${planNode} [data-testid="delegation-pending"]')`));
@@ -91,7 +92,7 @@ export async function releaseJourneys(o:Parameters<typeof reportingSessionsJourn
   }
   await guestClick('panel','[data-testid="needs-you-row"] button');
   await wait(()=>browser.guest('panel','!!document.querySelector("[data-testid=needs-you-reading-heading]")'),Boolean,'inbox source-wide reading');
-  await wait(()=>browser.guest('panel',`document.querySelector('[data-testid="plan-release-decisions"]')?.dataset.source===${JSON.stringify(binding.source.id)}&&!!document.querySelector('[data-testid="item-review-one"][data-nav-target]')`),Boolean,'source-qualified canonical task reveal');
+  await wait(()=>browser.guest('panel',`document.querySelector('[data-testid="plan-release-decisions"]')?.dataset.source===${javascriptLiteral(binding.source.id)}&&!!document.querySelector('[data-testid="item-review-one"][data-nav-target]')`),Boolean,'source-qualified canonical task reveal');
   check('task-reveal-source-qualified',true);
   await browser.shot('release-task-reveal-zh-CN');
   await openBoard();
