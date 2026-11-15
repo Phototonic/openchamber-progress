@@ -178,10 +178,14 @@ for(const kind of ['default','custom','retained-new','retained-reuse'] as const)
     const review=await f.inspect();assert.equal(review.planKind,'fresh');assert.equal(review.storeMode,before?'retain':'create');
     assert.equal(fs.existsSync(path.dirname(migrationFile(f.env))),false);
     const empty=await f.http('/v1/setup');assert.equal(empty.body.configured,false);assert.equal(empty.body.delivery.freshProgress,undefined);
+    assert.equal(empty.body.delivery.migration,'none');assert.equal(empty.body.delivery.migrationProgress,undefined);
+    assert.equal(review.capture.state,before?'on':'unknown');
+    assert.equal(review.capture.observedAt===null,!before);
     if(before)assert.deepEqual(fs.readFileSync(f.database),before);else assert.equal(fs.existsSync(f.database),false);
     // Abandon the read-only review, then explicitly inspect/confirm a new one.
     let r=await f.begin();assert.equal(r.status,200,JSON.stringify(r.body.error));let p=r.body.progress!;
-    assert.equal(p.capture.state,'unknown');if(!before)assert.equal(fs.existsSync(f.database),false);
+    assert.equal(p.capture.state,'unknown');assert.deepEqual(p.lastCompleted,{name:'prepare',batch:0});
+    if(!before)assert.equal(fs.existsSync(f.database),false);
     const replayBegin=await f.step({version:2,action:'begin',operationId,confirmed:true,expected:readManagedFreshStepJournal(f.env)!.migration.consent.reviewDigest});
     assert.equal(replayBegin.body.disposition,'replayed');
     assert.equal((await f.http('/v1/setup/managed-step',{version:1,action:'inspect'})).status,200);
@@ -226,6 +230,8 @@ for(const order of ['before','after'])test(`fresh prepare worker crash ${order} 
     f.fault({crashStep:'prepare',order});assert.equal((await f.step(request)).status,503);f.fault({});
     assert.equal(fs.existsSync(f.database),false);assert.equal(fs.existsSync(f.targets.storeRoot),false);
     const observed=await f.http('/v1/setup');assert.equal(observed.status,200);assert.equal(observed.body.configured,false);
+    assert.equal(observed.body.delivery.migrationProgress,undefined);
+    assert.ok(!observed.body.delivery.freshProgress||observed.body.delivery.freshProgress.lastCompleted!==null);
     if(order==='after'){
       assert.equal(observed.body.delivery.freshProgress.sequence,1);
       const worker=pathToFileURL(path.join(projection,'tests/backend/managed-http-worker.ts'));

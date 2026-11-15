@@ -31,7 +31,7 @@ export function managedFreshStepFixtures(storeMode:'create'|'retain'='create',di
   const review:ManagedFreshReview={expected:journal.migration.consent.reviewDigest,planKind:'fresh',
     targets:{configRoot:source.configRoot,dataRoot:source.dataRoot,storeRoot:'/fixture/store'},storeId:journal.storeId,sourceId:source.id,
     storeMode,sourceMode,capturePolicy:journal.migration.fresh.capturePolicy,packageVersion:journal.migration.expectation.version,
-    capture:journal.migration.capture,plan};
+    capture:storeMode==='retain'?{state:'off',observedAt:'2026-01-01T00:00:00.000Z'}:journal.migration.capture,plan};
   const requests={inspect:{version:2,action:'inspect'},inspectNext:{version:2,action:'inspect',cursor:'fresh-page'},
     begin:{version:2,action:'begin',operationId,confirmed:true,expected:review.expected},
     advance:{version:2,action:'advance',operationId,expectedSequence:1,step:plan[1]!},

@@ -171,7 +171,7 @@ export function freshEngine(options: FreshOptions = {}) {
   let inflight = 0, maxInflight = 0;
   let gate: { at: number; release: () => void; promise: Promise<void> } | null = null;
   const index = (r: ManagedFreshStepRef | null) => r ? plan.findIndex(x => x.name === r.name) : -1;
-  const progress = (patch: Partial<ManagedFreshStepProgress>): ManagedFreshStepProgress => ({ ...structuredClone(first), operationId: options.operationId ?? first.operationId, capture: retained ?? unknown, ...p, ...patch });
+  const progress = (patch: Partial<ManagedFreshStepProgress>): ManagedFreshStepProgress => ({ ...structuredClone(first), operationId: options.operationId ?? first.operationId, ...p, ...patch });
   const reply = (status: number, body: Partial<ManagedFreshStepResponse>) => ({ status, body: JSON.stringify({ version: 2, disposition: 'applied', inspection: null, progress: p, error: null, accounting: { securitySpawns: 4, elapsedMs: 9.5 }, ...body }) });
   const refuse = (status: number, stage: string, code: string) => reply(status, { disposition: 'refused', error: { stage: stage as never, code } });
   // New stores start off once created and turn on only at enable; retained capture never moves.

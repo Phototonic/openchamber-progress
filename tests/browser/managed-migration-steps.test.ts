@@ -14,10 +14,45 @@ import { migrationStepText, migrationTitle, setupErrorText } from '../../ui/shar
 import { stepEngine, freshEngine, CAPTURE_REVIEW } from './managed-migration-engine.ts';
 import { setupRead } from './fixtures.ts';
 import { MANAGED_ACTION_CODES } from '../../shared/progress.ts';
+import { freshSetupFixture } from './fresh-setup-fixture.ts';
 
 const fx = managedStepFixtures();
 const host = (status: number, body: unknown, calls: unknown[] = []) => ({ serviceRequest: async (q: unknown) => { calls.push(q); return { status, body: typeof body === 'string' ? body : JSON.stringify(body) }; } });
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise<void>(r => setImmediate(r)); };
+
+test('fresh retained fixtures disclose observed review capture but prepare does not claim a fresh observation', async () => {
+  const fixture = managedFreshStepFixtures('retain', false, 'reuse');
+  assert.equal(fixture.review.capture.state, 'off');
+  assert.ok(fixture.review.capture.observedAt);
+  for (const retainedCapture of ['on', 'off'] as const) {
+    const engine = freshEngine({ storeMode: 'retain', retainedCapture });
+    assert.equal(engine.review.capture.state, retainedCapture);
+    const reply = await engine.request(JSON.stringify({ ...fixture.requests.begin, expected: engine.review.expected }));
+    assert.notEqual(reply, 'drop');
+    assert.equal(JSON.parse((reply as {body:string}).body).progress.capture.state, 'unknown');
+    assert.deepEqual(engine.progress?.lastCompleted, { name: 'prepare', batch: 0 });
+  }
+});
+
+test('rendered QA fresh responder negotiates real step shapes and refuses old configure', async () => {
+  const fixture = freshSetupFixture();
+  const read = async () => parseSetup((await fixture.reply({path:'/v1/setup'})).body)!;
+  const before = await read();
+  assert.equal(before.delivery?.migration, 'none');
+  assert.equal(before.delivery?.migrationProgress, undefined);
+  assert.equal(before.delivery?.freshProgress, undefined);
+  assert.equal((await fixture.reply({path:'/v1/setup/managed-configure',method:'POST',body:'{}'})).status,409);
+  const driver = new StepDriver<ManagedSetupStepRequest>({context:()=> 'qa',changed:()=>{},refresh:()=>{},
+    send:r=>managedStepCall({serviceRequest:fixture.reply},r)});
+  await driver.inspect('begin',{family:'fresh',storeRoot:'/fixture/custom-store'});
+  assert.equal(driver.state.review?.review.targets.storeRoot,'/fixture/custom-store');
+  assert.equal(fixture.engine.progress,null);
+  driver.setAck(true);await driver.confirmBegin();
+  const after = await read();
+  assert.equal(after.delivery?.freshProgress?.state,'complete');
+  assert.equal(after.delivery?.migrationProgress,undefined);
+  assert.ok(fixture.engine.requests.every(r=>r.version===2));
+});
 
 test('every shared contract reply parses exactly; errors override disposition', () => {
   for (const [name, reply] of Object.entries(fx.replies)) {
@@ -550,7 +585,8 @@ test('fresh: retained capture is never changed, and a new store is off from crea
     const seen = watchProgress(engine, p => p.capture.state);
     const { driver } = freshDriver(engine);
     await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
-    assert.ok(seen.length >= engine.plan.length && seen.every(s => s === capture), `${capture}: ${seen}`);
+    assert.equal(seen[0], 'unknown', 'prepare projects no fresh Store observation');
+    assert.ok(seen.length >= engine.plan.length && seen.slice(1).every(s => s === capture), `${capture}: ${seen}`);
     assert.ok(!engine.plan.some(s => s.name === 'enable'));
   }
   const engine = freshEngine();
