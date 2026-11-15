@@ -17,7 +17,7 @@ import {Store} from '../../shared/store.ts';
 import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress} from '../../shared/managed-steps.ts';
 import {StepDriver,managedStepCall,nextAction,currentProgress} from '../../ui/shared/setup-steps.ts';
 import {parseSetup} from '../../ui/shared/adapter.ts';
-import {setupCall} from '../../ui/shared/source.ts';
+import {setupCall,readList} from '../../ui/shared/source.ts';
 import {acquireWriterSlots} from '../../service/writer-fence.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
@@ -403,6 +403,20 @@ test('HTTP bounded reads and capture retain the service selection pin across wor
   }finally{await f.close();}
 });
 
+test('HTTP capture enable refuses an idle paused migration while disable remains available',async()=>{
+  const f=await fixture();try{
+    await f.begin();const p=await f.until('enable');
+    const paused=await f.control('pause',p);assert.equal(paused.status,200);assert.equal(paused.body.progress!.state,'paused');
+    assert.equal(readManagedStepJournal(f.env)!.migration.state,'paused');
+    assert.equal(f.capture(),false);
+    const enabled=await f.http('/v1/capture/enable',{});
+    assert.equal(enabled.status,409);assert.deepEqual(enabled.body,{error:'managed-migration-required'});assert.equal(f.capture(),false);
+    f.capture(true);
+    const disabled=await f.http('/v1/capture/disable',{});
+    assert.equal(disabled.status,200);assert.deepEqual(disabled.body,{ok:true,captureEnabled:false});assert.equal(f.capture(),false);
+  }finally{await f.close();}
+});
+
 test('HTTP capture routes preserve precise platform fault codes without changing capture',async()=>{
   const f=await fixture('receipt');try{
     let p=(await f.begin()).body.progress!;while(p.state!=='complete')p=(await f.advance(p)).body.progress!;
@@ -528,6 +542,8 @@ test('HTTP two-process writer fence refuses overlapping migration and ordinary c
     const deadline=Date.now()+5000;while(!fs.existsSync(f.env.TEST_READY_FILE!)&&Date.now()<deadline)await delay(10);assert.ok(fs.existsSync(f.env.TEST_READY_FILE!));
     const count=f.counts.length,health=await f.http('/health');assert.equal(health.status,200);assert.equal(health.body.state,'starting');assert.equal(health.body.managedMigrationSteps,1);assert.equal(f.counts.length,count,'health dispatches no security worker');
     for(const route of ['/v1/capture/disable','/v1/capture/enable']){const r=await f.http(route,{});assert.equal(r.status,503);assert.equal(r.body.error,'managed-step-unsettled');}
+    const list=await readList(f.host,{});assert.ok(list.ok&&list.read===null,'starting contention remains a no-data observation, including its echoed health refusal');
+    const setupRead=await f.http('/v1/setup');assert.equal(setupRead.status,503);assert.deepEqual(setupRead.body,{error:'managed-step-unsettled'},'status never joins an active mutation');
     const spawns=legacySpawns;
     const configure=await f.http('/v1/setup/managed-configure',{storeRoot:f.targets.storeRoot,confirmed:true,expected:'a'.repeat(64)});
     assert.equal(configure.status,503);assert.equal(configure.body.error,'managed-step-port-busy');assert.equal(legacySpawns,spawns,'busy refuses before controller admission');

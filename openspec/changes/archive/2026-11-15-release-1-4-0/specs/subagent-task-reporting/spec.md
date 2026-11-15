@@ -2,7 +2,7 @@
 
 ### Requirement: Deliberate delegation before assigned work
 
-Companion guidance SHALL direct coordinators to declare known plan/task assignments before supported child dispatches and provide reporting context. Declaration MUST require the current expected revision. Binding MAY tolerate intervening unrelated task reports only with complete bounded evidence that declared tasks, assignments, structure, lifecycle and authority remain valid. Declaration, dispatch and native activity MUST NOT set task status or grant child authority before verified binding. Explicit linking and honestly attributed relay SHALL remain available without relaxing host restrictions.
+Guidance SHALL direct coordinators to declare known assignments before supported dispatch and provide reporting context. Declaration MUST require the current revision. Binding MAY tolerate unrelated reports only with complete bounded proof that tasks, assignments, structure, lifecycle and authority remain valid. Declaration, dispatch and activity MUST NOT set status or grant authority before verified binding. Explicit linking and honestly attributed relay SHALL remain within host restrictions.
 
 #### Scenario: Declared task dispatch
 - **WHEN** a coordinator declares existing task IDs at the expected revision and supported dispatch yields verified matching child identity

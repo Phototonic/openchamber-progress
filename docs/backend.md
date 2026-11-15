@@ -304,6 +304,9 @@ The UI explicitly requests Setup admission then re-reads health on the new
 Managed step, ordinary Setup read and ordinary capture requests run in dedicated
 workers, leaving health responsive during their security work. Other synchronous
 data/configuration operations retain their existing event-loop limitations.
+Identical payload-free status requests in the same environment/descriptor context
+share only the in-flight run, deadline and spawn counter; mutations, inspection and
+other contexts retain overlap refusal, without sharing or refreshing consent.
 
 The legacy controller's error funnel preserves only allowlisted `PlatformError` codes. Migration
 retains one bounded in-memory `lastAction: {stage, code}` in both error replies and

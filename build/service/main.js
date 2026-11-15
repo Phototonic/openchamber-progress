@@ -6117,7 +6117,7 @@ function blockedTiming(store, detail, now = new Date, options = {}) {
 }
 
 // shared/release.ts
-var RELEASE = "1.3.0";
+var RELEASE = "1.4.0";
 
 // service/request-worker.ts
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -8724,6 +8724,7 @@ function runSetupRequestWorker() {
 
 class SetupRequestWorker {
   active = false;
+  statusRun;
   entry;
   inspection;
   journal;
@@ -8736,6 +8737,9 @@ class SetupRequestWorker {
   run(env, payload, request, startedAt = process.hrtime.bigint()) {
     const budget = new PlatformRequestBudget(startedAt);
     const refused = (code) => ({ ok: false, code, accounting: { securitySpawns: budget.securitySpawns, elapsedMs: budget.elapsedMs } });
+    const statusContext = payload === undefined && request.action === "status" ? digest(canonical({ env, request })) : undefined;
+    if (this.active && statusContext && this.statusRun?.context === statusContext)
+      return this.statusRun.promise;
     if (this.active)
       return Promise.resolve(refused("managed-step-unsettled"));
     try {
@@ -8758,13 +8762,14 @@ class SetupRequestWorker {
     if (this.inspection?.scope !== scope2 || payload !== undefined && this.inspection?.context !== context2 || consumesInspection)
       this.inspection = undefined;
     this.journal = undefined;
-    return new Promise((resolve) => {
+    const pending = new Promise((resolve) => {
       let settled = false, result2;
       let nextInspection;
       let nextJournal;
       const finish = (reply) => {
         if (!settled) {
           settled = true;
+          this.statusRun = undefined;
           clearTimeout(timer);
           resolve(reply);
         }
@@ -8881,6 +8886,9 @@ class SetupRequestWorker {
         finish(refused(diagnostic2(error)));
       });
     });
+    if (statusContext)
+      this.statusRun = { context: statusContext, promise: pending };
+    return pending;
   }
 }
 

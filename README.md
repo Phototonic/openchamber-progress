@@ -71,6 +71,10 @@ No build step or dependency install is needed. Prefer a download? Each version i
 
 ## Good to know
 
+- **Three interface languages.** Follow OpenChamber or choose English, Russian or Simplified Chinese. Progress summaries follow the choice; saved plan and task text is never translated.
+- **Phone views.** Open the rail or fullscreen board on a phone, with larger touch controls and a tap/pan/pinch dependency map. Physical-phone acceptance is deferred to the live release; current checks use browser emulation.
+- **Windows upgrades.** The service starts quickly and Setup migrates old installations in short, resumable steps. Fresh configuration still uses the older flow and can time out with very slow PowerShell; see the [known limit](docs/setup.md#install-review-confirm).
+
 - **Child reports are deliberate.** Assigned children with reporting permission receive their task brief only after verified binding, on a naturally occurring context. A first-turn-only child may finish without reporting. A bare final handoff records a claim only; an explicit combined handoff can atomically report assigned task changes too. Neither means the coordinator accepted the work. Optional host agent/resource labels are context, not task authority; Workflows navigation is not offered on the current SDK.
 
 - **Capture follows managed delivery.** Watched-file delivery retires capture after extension disable/removal; caller-owned configuration requires an explicit OpenCode restart. Mode may be unknown. Terminal, external/remote, isolated-space and VS Code runtimes are outside this managed path. A legacy plugin or explicit **Add to global config** entry can outlive the extension and needs deliberate separate removal. History is retained; a held-permission session may need interruption.

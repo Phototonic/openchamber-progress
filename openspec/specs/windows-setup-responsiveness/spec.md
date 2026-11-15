@@ -1,8 +1,15 @@
-## ADDED Requirements
+# windows-setup-responsiveness Specification
+
+## Purpose
+Keep Windows service health responsive and migrate legacy installations through bounded, freshly validated Setup requests with durable progress, explicit resume and honest capture/error reporting.
+
+The step engine and its request budgets cover legacy inspection/migration, not fresh configuration. Fresh configuration retains the synchronous review/confirm flow and can time out or delay health with slow PowerShell; moving that flow to the step engine is out of scope for 1.4.0. All ownership, privacy and mutation safeguards still apply to both paths.
+
+## Requirements
 
 ### Requirement: Cheap honest health and nonblocking admission
 
-Authenticated health SHALL return a cheap last-observed liveness/admission snapshot without security queries or legacy discovery. Starting or unverified state MUST NOT be presented as fresh Store authority. Setup and data access SHALL obtain required fresh admission on demand without synchronous security work blocking the health-serving event loop.
+Authenticated health SHALL return a cheap last-observed liveness/admission snapshot without security queries or legacy discovery. Starting or unverified state MUST NOT be presented as fresh Store authority. Migration and data access SHALL obtain required fresh admission on demand without synchronous security work blocking the health-serving event loop.
 
 #### Scenario: Cold legacy upgrade
 - **WHEN** the service starts with a released legacy installation and no managed selection
@@ -10,7 +17,7 @@ Authenticated health SHALL return a cheap last-observed liveness/admission snaps
 - **AND** Setup and background composer access can request admission rather than treating starting as permanently unavailable
 
 #### Scenario: Slow security work is active
-- **WHEN** a setup or admission request performs a cold, slow or failing security query
+- **WHEN** a migration or admission request performs a cold, slow or failing security query
 - **THEN** a concurrent authenticated health request remains responsive and honest
 - **AND** scheduling main-thread spawnSync through a timer or Promise is not treated as nonblocking
 
@@ -72,7 +79,7 @@ Before confirmation, cancelling inspection SHALL make no product changes. After 
 
 ### Requirement: Precise accessible progress and compatibility refusal
 
-Setup SHALL show actual step progress, pending/paused state, fixed last-action stage/code, capture observation and recovery actions in English/Russian at phone width with accessible focus/announcements. Old single-request migration input SHALL receive a fast non-mutating compatibility refusal; new UI SHALL negotiate step support rather than fall back to the unsafe long request.
+Setup SHALL show actual step progress, pending/paused state, fixed last-action stage/code, capture observation and recovery actions in English, Russian and Simplified Chinese at phone width with accessible focus/announcements. Old single-request migration input SHALL receive a fast non-mutating compatibility refusal; new UI SHALL negotiate step support rather than fall back to the unsafe long request.
 
 #### Scenario: Older UI or service
 - **WHEN** an older UI sends the old migration input to the new service

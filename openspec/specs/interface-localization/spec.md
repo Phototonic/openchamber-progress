@@ -8,7 +8,7 @@ Give users one language choice for the Agent Progress interface and its generate
 
 ### Requirement: Language choice and following the OpenChamber language
 
-The extension SHALL offer four modes: follow the OpenChamber language, English, Russian and Simplified Chinese. Without a saved choice, automatic mode SHALL be used. The Russian translation SHALL be selected for Russian and its regional variants in OpenChamber, the Simplified Chinese translation for Chinese locales including regional variants (one Chinese catalog is shipped), and English for English and all other unsupported or invalid language tags. An explicit choice SHALL take precedence over the OpenChamber language.
+The extension SHALL offer automatic, English, Russian and Simplified Chinese modes, defaulting to automatic without a saved choice. Automatic mode SHALL use Russian for Russian locales and regional variants, the single Simplified Chinese catalog for all Chinese locales and regional variants, and English for English, unsupported or invalid tags. An explicit choice SHALL override the OpenChamber language.
 
 #### Scenario: Automatic mode for a Chinese locale
 - **WHEN** the saved choice is absent or automatic and OpenChamber reports the language `zh-CN` or `zh-SG`

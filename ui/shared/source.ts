@@ -98,11 +98,21 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
   try {
     let health = parseHealth(await call(host, ROUTES.health));
     if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
+      let startingUnsettled = false;
       // New services separate host liveness from data admission. One explicit
       // Setup read validates/retries; polling health alone cannot do that work.
       // Old services omit state and retain their existing request sequence.
-      await call(host, ROUTES.setup);
+      try { await call(host, ROUTES.setup); }
+      catch (error) {
+        // Another surface or setup action can own startup admission. Observe
+        // health once, without hiding real refusals or retrying Setup here.
+        if (!(health.state === 'starting' && error instanceof HttpError && error.status === 503 && error.code === 'managed-step-unsettled')) throw error;
+        startingUnsettled = true;
+      }
       health = parseHealth(await call(host, ROUTES.health));
+      // Older services can echo that same transient refusal into their health
+      // snapshot. It still grants no data access; preserve any other diagnostic.
+      if (startingUnsettled && !health.ready && health.state === 'refused' && health.diagnostics.length === 1 && health.diagnostics[0] === 'managed-step-unsettled') return { ok: true, health, read: null };
     }
     if (!health.ready) {
       // A configured store that cannot open — or fails binding verification — reports its
