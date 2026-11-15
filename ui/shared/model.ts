@@ -262,6 +262,7 @@ export interface SetupView {
     /** Fresh setup steps (wire version 2), negotiated independently of migration steps. */
     managedFreshSteps?: 1;
     freshProgress?: import('../../shared/managed-steps.ts').ManagedFreshStepProgress;
+    planKind?: 'fresh';
     configuration: 'unconfigured' | 'configured' | 'invalid';
     migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
     observation: 'unknown' | 'not-observed' | 'matching' | 'different';

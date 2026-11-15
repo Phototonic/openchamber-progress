@@ -10,7 +10,7 @@ import { MANAGED_FRESH_INSPECTION_STEPS, MANAGED_FRESH_STEPS, MANAGED_INSPECTION
 import { StepDriver, currentProgress, managedStepCall, nextAction, newOperationId, parseManagedFreshStepProgress, parseManagedFreshStepResponse, parseManagedStepProgress, parseManagedStepResponse, replyAnswers, type StepIo } from '../../ui/shared/setup-steps.ts';
 import { parseSetup } from '../../ui/shared/adapter.ts';
 import { managedStepCopy, managedErrorText, managedFamilyStepCopy, managedFreshCopy } from '../../ui/shared/managed-copy.ts';
-import { migrationStepText, migrationTitle, setupErrorText } from '../../ui/shared/setup.ts';
+import { migrationStepText, migrationTitle, setupErrorText, setupDiagnosticText } from '../../ui/shared/setup.ts';
 import { stepEngine, freshEngine, CAPTURE_REVIEW } from './managed-migration-engine.ts';
 import { setupRead } from './fixtures.ts';
 import { MANAGED_ACTION_CODES } from '../../shared/progress.ts';
@@ -536,6 +536,8 @@ test('fresh negotiation: only the literal capability; strict freshProgress; fami
   assert.throws(() => read({ ...delivery, managedFreshSteps: 1, freshProgress: fx.replies.pausedOff.progress }), /fresh progress/, 'a version-1 projection is not fresh progress');
   assert.throws(() => read({ ...delivery, managedFreshSteps: 1, migrationProgress: freshProgress }), /migration progress/, 'fresh progress never hides in migrationProgress');
   assert.throws(() => read({ ...delivery, managedFreshSteps: 1, freshProgress, migrationProgress: fx.replies.pausedOff.progress }), /ambiguous/);
+  assert.equal(read({...delivery,planKind:'fresh',migration:'unavailable'}).delivery?.planKind,'fresh','refusal retains its presentation family without progress');
+  assert.equal(read({...delivery,planKind:'other'}).delivery?.planKind,undefined,'unknown presentation hints grant nothing');
 });
 
 function freshDriver(engine: ReturnType<typeof freshEngine>) {
@@ -550,6 +552,29 @@ function freshDriver(engine: ReturnType<typeof freshEngine>) {
 }
 const freshActions = (engine: ReturnType<typeof freshEngine>) => engine.requests.map(r => r.action === 'advance' ? `advance:${r.step.name}` : r.action === 'inspect' && 'cursor' in r && r.cursor ? 'inspect:next' : r.action);
 const sameKeys = (a: object, b: object) => assert.deepEqual(Object.keys(a).sort(), Object.keys(b).sort());
+
+for(const capture of ['on','off'] as const)test(`fresh status and restart never claim retained capture ${capture}`,async()=>{
+  const engine=freshEngine({storeMode:'retain',retainedCapture:capture}),{driver}=freshDriver(engine);
+  await driver.inspect('begin',{family:'fresh'});driver.setAck(true);await driver.confirmBegin();
+  assert.equal(driver.state.progress?.capture.state,capture);
+  await driver.status(driver.state.progress);
+  assert.deepEqual(driver.state.progress?.capture,{state:'unknown',observedAt:null});
+  engine.restart();assert.deepEqual(engine.progress?.capture,{state:'unknown',observedAt:null});
+});
+
+test('fresh refusals and diagnostics use localized recovery copy, never migration wording or raw codes',()=>{
+  for(const code of ['managed-migration-conflict','managed-binding-invalid','foreign-files','corrupt','schema','storage','managed-migration-required']){
+    const texts=['en','ru','zh-CN'].map(locale=>{
+      const error=managedErrorText(code,locale,'fresh');assert.ok(error,code);
+      assert.equal(setupDiagnosticText(code,locale,'fresh'),error);
+      assert.doesNotMatch(error,/switch|migrat|перенос|переход|切换|迁移|managed-|foreign-files/i);
+      return error;
+    });
+    assert.equal(new Set(texts).size,3);
+  }
+  assert.match(managedErrorText('managed-migration-required','en','fresh')!,/unfinished.*continue or resume/i);
+  assert.doesNotMatch(setupDiagnosticText('unknown-code','en','fresh'),/unknown-code/);
+});
 
 for (const [store, missing, source] of FRESH_CASES) test(`fresh ${store}/${missing ? 'missing' : 'existing'} folder/${source} source: consent, then each frozen step once`, async () => {
   const engine = freshEngine({ storeMode: store, directoryMissing: missing, sourceMode: source, inspectPages: 3, retainedCapture: 'off' });

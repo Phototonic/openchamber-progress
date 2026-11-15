@@ -284,6 +284,10 @@ for(const order of ['before','after'])test(`fresh HTTP restart ${order} each eff
       f.fault({crashStep:name,order});assert.equal((await f.step(request)).status,503);f.fault({});
       const retained=readManagedFreshStepJournal(f.env)!;assert.equal(retained.migration.state,'running');assert.equal(retained.migration.step!.name,name);
       if(name==='store-directory'&&order==='after'){
+        const observed=await f.http('/v1/setup');
+        assert.equal(observed.status,200);assert.equal(observed.body.delivery.planKind,'fresh');
+        assert.equal(observed.body.delivery.migration,'unavailable');assert.equal(observed.body.delivery.freshProgress,undefined);
+        assert.deepEqual(observed.body.diagnostics,['managed-migration-conflict']);assert.equal(observed.body.captureEnabled,null);
         const r=await f.control('resume',await f.status());assert.equal(r.status,409);assert.equal(fs.existsSync(f.database),false);continue;
       }
       // Another supervisor represents restart: only read observation first;

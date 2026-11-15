@@ -285,8 +285,18 @@ const freshEn = {
     'managed-step-conflict': 'Setup moved on elsewhere, for example in another window. Check the status before continuing.',
     'managed-step-limit': 'Setup found more files than it can check safely. Nothing was changed.',
     'managed-journal-unsupported': 'The setup record was made by a different version. Update the extension and service together. Nothing was changed.',
+    'managed-migration-required': 'Setup is unfinished, so continue or resume it before turning capture on.',
+    'managed-migration-conflict': 'The setup folders changed or contain conflicting files. Stop here and arrange manual diagnosis.',
+    'managed-binding-invalid': 'The partial setup record cannot be used safely. Stop here and arrange manual diagnosis.',
+    'foreign-files': 'The setup folder contains files Setup cannot safely use. Stop here and arrange manual diagnosis.',
+    corrupt: 'The partial progress store is damaged. Stop here and arrange manual diagnosis.',
+    schema: 'The progress store format is not supported by this build. Use a compatible extension and service.',
+    storage: 'Setup cannot read the progress store. Stop here and arrange manual diagnosis.',
   } as Record<string,string>,
-  partial: 'Setup keeps anything it already made in the store folder. It does not delete, reuse or repair it on its own.',
+  partial: 'Setup kept the partial folder. It will not delete, reuse or repair it on its own.',
+  invalid: 'The partial setup cannot be used safely.',
+  unavailable: 'Setup cannot safely continue from this partial folder. Stop here and arrange manual diagnosis.',
+  conflict: 'The setup folders contain conflicting state. Stop here and arrange manual diagnosis.',
   reviewTitle: { create: 'Set up a new progress store', retain: 'Reconnect your progress store' },
   effect: {
     create: 'Setup creates a new private progress store, registers this OpenCode source and connects them. The store starts with capture off; the last steps turn it on.',
@@ -330,8 +340,18 @@ const freshRu: typeof freshEn = {
     'managed-step-conflict': 'Настройка продвинулась в другом месте, например в другом окне. Проверьте состояние, прежде чем продолжать.',
     'managed-step-limit': 'Настройка нашла больше файлов, чем может безопасно проверить. Ничего не изменено.',
     'managed-journal-unsupported': 'Запись настройки создана другой версией. Обновите расширение и сервис вместе. Ничего не изменено.',
+    'managed-migration-required': 'Настройка не завершена. Продолжите или возобновите её, прежде чем включать запись.',
+    'managed-migration-conflict': 'Папки настройки изменились или содержат конфликтующие файлы. Остановитесь и организуйте ручную диагностику.',
+    'managed-binding-invalid': 'Запись частичной настройки нельзя безопасно использовать. Остановитесь и организуйте ручную диагностику.',
+    'foreign-files': 'В папке настройки есть файлы, которые нельзя безопасно использовать. Остановитесь и организуйте ручную диагностику.',
+    corrupt: 'Частично созданное хранилище прогресса повреждено. Остановитесь и организуйте ручную диагностику.',
+    schema: 'Эта сборка не поддерживает формат хранилища. Используйте совместимые версии расширения и сервиса.',
+    storage: 'Настройка не может прочитать хранилище прогресса. Остановитесь и организуйте ручную диагностику.',
   },
-  partial: 'Настройка сохраняет всё, что уже создала в папке хранилища. Она сама не удаляет, не использует повторно и не исправляет это.',
+  partial: 'Настройка сохранила частично созданную папку. Она не будет сама удалять, повторно использовать или исправлять её.',
+  invalid: 'Частичную настройку нельзя безопасно использовать.',
+  unavailable: 'Нельзя безопасно продолжить настройку из этой частично созданной папки. Остановитесь и организуйте ручную диагностику.',
+  conflict: 'В папках настройки обнаружено конфликтующее состояние. Остановитесь и организуйте ручную диагностику.',
   reviewTitle: { create: 'Создать новое хранилище прогресса', retain: 'Снова подключить ваше хранилище прогресса' },
   effect: {
     create: 'Настройка создаст новое приватное хранилище прогресса, зарегистрирует этот источник OpenCode и свяжет их. Хранилище создаётся с выключенной записью; последние шаги включают её.',
@@ -375,8 +395,18 @@ const freshZh: typeof freshEn = {
     'managed-step-conflict': '设置已在其他位置推进，例如另一个窗口。请先检查状态再继续。',
     'managed-step-limit': '设置发现的文件数量超出可安全检查的范围。未做任何更改。',
     'managed-journal-unsupported': '设置记录由不同版本创建。请同时更新扩展和服务。未做任何更改。',
+    'managed-migration-required': '设置尚未完成。请先继续或恢复设置，再开启采集。',
+    'managed-migration-conflict': '设置文件夹已更改或包含冲突文件。请在此停止并安排手动诊断。',
+    'managed-binding-invalid': '无法安全使用未完成的设置记录。请在此停止并安排手动诊断。',
+    'foreign-files': '设置文件夹包含无法安全使用的文件。请在此停止并安排手动诊断。',
+    corrupt: '未完成的进度存储已损坏。请在此停止并安排手动诊断。',
+    schema: '此版本不支持该进度存储格式。请使用兼容的扩展和服务。',
+    storage: '设置无法读取进度存储。请在此停止并安排手动诊断。',
   },
-  partial: '设置会保留已在存储文件夹中创建的内容，不会自行删除、复用或修复它们。',
+  partial: '设置已保留未完成的文件夹，不会自行删除、复用或修复它。',
+  invalid: '无法安全使用未完成的设置。',
+  unavailable: '无法从此未完成的文件夹安全地继续设置。请在此停止并安排手动诊断。',
+  conflict: '设置文件夹中存在冲突状态。请在此停止并安排手动诊断。',
   reviewTitle: { create: '设置新的进度存储', retain: '重新连接你的进度存储' },
   effect: {
     create: '设置将创建新的私有进度存储，注册此 OpenCode 来源并将二者连接。新存储创建时采集为关闭，最后的步骤会开启采集。',
@@ -416,7 +446,7 @@ export function managedFamilyStepCopy(family: 'migration' | 'fresh', locale = 'e
 
 export function managedErrorText(code:string, locale='en', family: 'migration' | 'fresh' = 'migration'): string | null {
   const steps=managedFamilyStepCopy(family,locale).errors;
-  if (Object.hasOwn(steps,code)) return steps[code];
+  if (Object.hasOwn(steps,code)) return steps[code]+(family==='fresh'&&['managed-migration-conflict','managed-binding-invalid','foreign-files','corrupt','schema','storage'].includes(code)?' '+managedFreshCopy(locale).partial:'');
   const text=managedCopy(locale);
   const errors: Record<string,string> = {
     'managed-action-required':text.unsupported,'managed-service-required':text.unsupported,

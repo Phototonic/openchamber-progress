@@ -6049,7 +6049,13 @@ function readManagedExpectationInner(binding) {
   managedPath(file);
   const stat = lstatSync6(file);
   need2(stat.isFile() && !stat.isSymbolicLink() && privatePaths([path6.dirname(file), file]));
-  const e = JSON.parse(readFileSync3(file, "utf8"));
+  const bytes = readFileSync3(file, "utf8");
+  let e;
+  try {
+    e = JSON.parse(bytes);
+  } catch {
+    throw new ManagedBindingError("managed-migration-conflict");
+  }
   need2(e.format === 1 && e.storeId === binding.storeId && e.sourceId === binding.source.id && e.installId === binding.installId && typeof e.version === "string" && /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(e.version) && /^[a-f0-9]{64}$/.test(e.fingerprint));
   return e;
 }
@@ -8286,7 +8292,7 @@ function observeManagedFreshStore(j) {
   }
   const initialized = expectedDb.kind === "absent";
   if (initialized)
-    need4(m.intent?.step.name === "create-store", "managed-migration-conflict");
+    need4(m.intent?.step.name === "create-store" && sidecars.every((c) => c.kind === "absent"), "managed-migration-conflict");
   else
     need4(canonical(db.object) === canonical(expectedDb.object), "managed-migration-conflict");
   const store = new Store(j.database, { readOnly: true });
@@ -8811,7 +8817,7 @@ function need6(value, code = "managed-step-conflict") {
     throw new SetupError(code);
 }
 function loadOperation(env, request, hint) {
-  if (!hint) {
+  if (!hint || hint.migration.format === 3 !== (request.version === 2)) {
     const current = observeManagedStep(env, request.operationId, request.version);
     need6(current, "not-found");
     return current;
@@ -9053,7 +9059,7 @@ function selected(env, expectedDescriptor) {
     throw new ManagedBindingError("managed-binding-modified");
   return { binding, descriptor };
 }
-function selection(env, expectedDescriptor) {
+function selection(env, expectedDescriptor, family) {
   const roots = managedSourceRoots(env), root = path15.join(roots.dataRoot, "agent-progress-managed");
   if (windows)
     windowsPaths([
@@ -9063,6 +9069,8 @@ function selection(env, expectedDescriptor) {
       path15.join(root, "migration.json"),
       path15.join(roots.configRoot, "plugins", "agent-progress")
     ], true);
+  const legacy = !!lstatSync13(path15.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
+  family?.(!legacy);
   const { binding, descriptor } = selected(env, expectedDescriptor), file = migrationFile(env), stat = lstatSync13(file, { throwIfNoEntry: false });
   let journal, prior;
   if (stat) {
@@ -9076,22 +9084,24 @@ function selection(env, expectedDescriptor) {
     } catch {
       throw new SetupError("managed-journal-unsupported");
     }
-    if (format === 2)
+    if (format === 2) {
+      family?.(false);
       journal = readManagedStepJournal(env);
-    else if (format === 3) {
+    } else if (format === 3) {
+      family?.(true);
       const claims2 = parseManagedFreshStepJournal(readFileSync8(file));
       if (windows)
         windowsPaths(managedJournalPaths(claims2), true);
       journal = readManagedFreshStepJournal(env);
-    } else if (format === 1)
+    } else if (format === 1) {
+      family?.(false);
       prior = readMigration(env);
-    else
+    } else
       throw new SetupError("managed-journal-unsupported");
   }
   const retained = journal ? managedJournalBinding(journal) : prior?.binding;
   if (binding && retained && canonical(binding) !== canonical(retained))
     throw new SetupError("managed-selection-conflict");
-  const legacy = !!lstatSync13(path15.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
   return { binding, descriptor, journal, prior, legacy };
 }
 function storePaths2(binding) {
@@ -9105,8 +9115,11 @@ function observationDiagnostic(error) {
   return managedDiagnostic(error);
 }
 function observeManagedSetup(env, expectedDescriptor) {
+  let fresh = false;
   try {
-    return readSetup(env, expectedDescriptor);
+    return readSetup(env, expectedDescriptor, (value) => {
+      fresh = value;
+    });
   } catch (error) {
     const status = {
       configured: false,
@@ -9119,14 +9132,14 @@ function observeManagedSetup(env, expectedDescriptor) {
       separateLifecycle: false,
       historyRetained: true,
       diagnostics: [observationDiagnostic(error)],
-      delivery: { kind: "managed", revision: 1, managedMigrationSteps: 1, managedFreshSteps: 1, configuration: "invalid", migration: "unavailable", mode: "unknown", observation: "unknown", expectedVersion: null }
+      delivery: { kind: "managed", revision: 1, managedMigrationSteps: 1, managedFreshSteps: 1, ...fresh ? { planKind: "fresh" } : {}, configuration: "invalid", migration: "unavailable", mode: "unknown", observation: "unknown", expectedVersion: null }
     };
     return { status, descriptor: undefined, journal: undefined, subagentRuns: false };
   }
 }
-function readSetup(env, expectedDescriptor) {
+function readSetup(env, expectedDescriptor, family) {
   return platformSecurityScope(() => {
-    const { binding: b, descriptor, journal, prior, legacy } = selection(env, expectedDescriptor);
+    const { binding: b, descriptor, journal, prior, legacy } = selection(env, expectedDescriptor, family);
     const retained = b ?? journal ?? prior?.binding;
     const base = {
       configured: !!b,
@@ -9146,6 +9159,7 @@ function readSetup(env, expectedDescriptor) {
         managedFreshSteps: 1,
         configuration: b ? "configured" : "unconfigured",
         migration: journal ? journal.migration.state === "complete" ? legacy ? "conflict" : "complete" : "pending" : prior ? prior.phase === "complete" ? legacy ? "conflict" : "complete" : "pending" : legacy ? "available" : "none",
+        ...(journal ? journal.migration.format === 3 : !prior && !legacy) ? { planKind: "fresh" } : {},
         mode: "unknown",
         observation: "unknown",
         expectedVersion: null
@@ -9200,6 +9214,10 @@ function readSetup(env, expectedDescriptor) {
       }
     } catch (error) {
       unavailable.diagnostics = [observationDiagnostic(error)];
+      if (journal?.migration.format === 3) {
+        unavailable.delivery.migration = "unavailable";
+        delete unavailable.delivery.freshProgress;
+      }
       return { status: unavailable, descriptor, journal, subagentRuns: false };
     }
   });

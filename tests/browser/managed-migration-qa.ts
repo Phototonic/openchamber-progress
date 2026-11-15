@@ -65,17 +65,21 @@ let fresh = false, freshCapable = true;
 let freshEng = freshEngine({ inspectPages: 2 });
 const oldRoutes: string[] = [];
 let captureControl: boolean | null = null;
+let freshRefusal: string | null = null;
 const log: { method: string; path: string; action?: string; version?: number; at: number }[] = [];
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
   if (fresh) {
     const p = freshEng.progress, done = p?.state === 'complete';
+    const published=!!p&&p.plan.findIndex(s=>s.name===p.lastCompleted?.name)>=p.plan.findIndex(s=>s.name==='publish-binding');
     // Coarse status stays conservative for older clients: a fresh journal reads pending/complete.
     return {
-      configured: done, verified: done, installed: false, captureEnabled: captureControl ?? (!p ? null : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
-      targets: done ? freshEng.review.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
-      delivery: { kind: 'managed', revision: 1, configuration: done ? 'configured' : 'unconfigured', migration: !p ? 'none' : done ? 'complete' : 'pending', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0',
+      configured: published, verified: published, installed: false, captureEnabled: captureControl ?? (!p ? null : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),
+      targets: published ? freshEng.review.targets : null, version: null, activation: 'unknown', separateLifecycle: false, historyRetained: true, diagnostics: [], recovery: null,
+      delivery: { kind: 'managed', revision: 1, planKind:'fresh', configuration: published ? 'configured' : 'unconfigured', migration: !p ? 'none' : done ? 'complete' : 'pending', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0',
         managedMigrationSteps: 1, ...(freshCapable ? { managedFreshSteps: 1 } : {}), ...(freshCapable && p ? { freshProgress: p } : {}) },
+      ...(freshRefusal?{diagnostics:[freshRefusal],captureEnabled:null,
+        delivery:{kind:'managed',revision:1,planKind:'fresh',configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null,managedMigrationSteps:1,managedFreshSteps:1}}:{}),
     };
   }
   const p = engine.progress;
@@ -409,7 +413,7 @@ try {
   let freshViolations = 0;
   const openFresh = async (locale: 'en' | 'ru' | 'zh-CN', mode: 'light' | 'dark', width: number, height: number, options: FreshOptions = {}, configure: (e: ReturnType<typeof freshEngine>) => void = () => {}) => {
     freshViolations += freshEng.violations.length;
-    captureControl = null; freshEng = freshEngine({ inspectPages: 2, ...options }); configure(freshEng); log.length = 0;
+    captureControl = null; freshRefusal=null; freshEng = freshEngine({ inspectPages: 2, ...options }); configure(freshEng); log.length = 0;
     await open(locale, mode, width, height, undefined, true);
   };
   const freshPosts = () => log.filter(l => l.method === 'POST');
@@ -422,9 +426,9 @@ try {
   const clipped = () => guest<{ ok: boolean; offenders: string[] }>(`const win=frame().contentWindow;const bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();if(r.width<=2||r.height<=2||!e.checkVisibility())return false;const cs=win.getComputedStyle(e);const text=[...e.childNodes].some(n=>n.nodeType===3&&n.textContent.trim());const cut=/(hidden|clip)/.test(cs.overflowX)||cs.textOverflow==='ellipsis';return (e.tagName==='BUTTON'||(text&&cut))&&e.scrollWidth>e.clientWidth+1}).slice(0,5).map(e=>e.closest('[data-testid]')?.dataset.testid||e.className||e.tagName);return {ok:!bad.length,offenders:bad}`);
   const fitsAll = async () => { const a = await fits(), b = await clipped(); return { ok: a.ok && b.ok, overflow: a.overflow, offenders: a.offenders, clipped: b.offenders }; };
   const FRESH = {
-    en: { step: 'Step 3 of 8: Creating the progress store', paused: 'Setup paused', complete: 'Setup finished', partial: 'Setup keeps anything it already made in the store folder.' },
-    ru: { step: 'Шаг 3 из 8: Создание хранилища прогресса', paused: 'Настройка приостановлена', complete: 'Настройка завершена', partial: 'Настройка сохраняет всё, что уже создала в папке хранилища.' },
-    'zh-CN': { step: '第 3 步，共 8 步：创建进度存储', paused: '设置已暂停', complete: '设置已完成', partial: '设置会保留已在存储文件夹中创建的内容' },
+    en: { step: 'Step 3 of 8: Creating the progress store', paused: 'Setup paused', complete: 'Setup finished', partial: 'Setup kept the partial folder.' },
+    ru: { step: 'Шаг 3 из 8: Создание хранилища прогресса', paused: 'Настройка приостановлена', complete: 'Настройка завершена', partial: 'Настройка сохранила частично созданную папку.' },
+    'zh-CN': { step: '第 3 步，共 8 步：创建进度存储', paused: '设置已暂停', complete: '设置已完成', partial: '设置已保留未完成的文件夹' },
   } as const;
   const pauseHeld = async (release: () => void) => {
     await click('[data-testid="setup-migration-pause"] button');
@@ -499,6 +503,21 @@ try {
     check(`fresh-${L}:paused-unknown-before-store`, await freshCard('data-capture') === 'unknown' && await guest(`const w=d.querySelector('[data-testid="setup-migration-capture-warning"]');return w.dataset.capture==='unknown'&&w.checkVisibility()`));
     check(`fresh-${L}:paused-unknown-fits-390`, (await fitsAll()).ok, await fitsAll());
     await shot(`fresh-paused-unknown-${L}`);
+    // A refusal from ordinary status overrides even this frame's cached Resume
+    // card. There is no inferred operation authority in the presentation hint.
+    freshRefusal='managed-migration-conflict';
+    freshEng.faults.portBusy=true;
+    await click('[data-testid="setup-migration-resume"] button');
+    await wait(`d.querySelector('[data-testid="setup-migration-unavailable"]')`,'refusal supersedes cached progress');
+    check(`fresh-${L}:refusal-overrides-cached-resume`,await guest(`return !d.querySelector('[data-testid="setup-migration-progress"],[data-testid="setup-migration-resume"]')`));
+    // Reopening also verifies a cold client has the same manual-diagnosis view.
+    await open(L,mode,390,844,undefined,true);
+    await wait(`d.querySelector('[data-testid="setup-migration-unavailable"]')`,'fresh refused partial status');
+    const refused=await guest(`const p=d.querySelector('[data-testid="setup-panel"]');return {text:p.textContent,partial:p.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??'',resume:!!p.querySelector('[data-testid="setup-migration-resume"],[data-testid="setup-migrate"],[data-testid="setup-enable"]')}`);
+    check(`fresh-${L}:refusal-keeps-folder-no-resume-or-codes`,!refused.resume&&refused.partial.includes(FRESH[L].partial)&&!/managed-|switch|migrat|перенос|переход|切换|迁移/i.test(refused.text),refused);
+    check(`fresh-${L}:refusal-fits-390`,(await fitsAll()).ok,await fitsAll());
+    await shot(`fresh-refused-partial-${L}`);
+    freshRefusal=null;
   }
 
   // Retained store reconnection keeps its own capture setting (off) and never enables it.
@@ -602,6 +621,7 @@ try {
   await startFresh(); await confirmByKeyboard();
   await wait(`d.querySelector('[data-testid="setup-migration-review-capture"]')`, 'fresh capture decision needed');
   check('fresh-review:needs-decision', await freshCard('data-recovery') === 'review' && await freshCard('data-capture') === 'off');
+  check('fresh-review:unfinished-has-no-ordinary-enable', await guest(`return d.querySelector('[data-testid="setup-panel"]').dataset.phase==='configured'&&!d.querySelector('[data-testid="setup-enable"]')`));
   await click('[data-testid="setup-migration-review-capture"] button');
   await wait(`d.querySelector('[data-testid="setup-migration-capture-review"][data-family="fresh"]')`, 'fresh capture review');
   check('fresh-review:focus-cancel', await focused() === 'setup-cancel', await focused());

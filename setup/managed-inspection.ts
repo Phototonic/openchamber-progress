@@ -274,7 +274,7 @@ export function observeManagedFreshStore(j:ManagedFreshStepJournal):ManagedCaptu
     return {state:'unknown',observedAt:null};
   }
   const initialized=expectedDb.kind==='absent';
-  if(initialized)need(m.intent?.step.name==='create-store','managed-migration-conflict');
+  if(initialized)need(m.intent?.step.name==='create-store'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
   else need(canonical(db.object)===canonical(expectedDb.object),'managed-migration-conflict');
   const store=new Store(j.database,{readOnly:true});
   try{

@@ -102,7 +102,9 @@ type MutationRequest=Extract<ManagedSetupStepRequest,{action:'advance'|'pause'|'
 const unknownCapture={state:'unknown',observedAt:null} as const;
 function need(value:unknown,code='managed-step-conflict'):asserts value {if(!value)throw new SetupError(code);}
 function loadOperation(env:NodeJS.ProcessEnv,request:MutationRequest,hint?:ManagedSetupStepJournal) {
-  if(!hint){const current=observeManagedStep(env,request.operationId,request.version);need(current,'not-found');return current;}
+  if(!hint||(hint.migration.format===3)!==(request.version===2)){
+    const current=observeManagedStep(env,request.operationId,request.version);need(current,'not-found');return current;
+  }
   // Only trusted supervisor transport may supply hints. Even there, parse and
   // compare against the private durable record before following the claims.
   const known=parseJournal(hint,request.version);

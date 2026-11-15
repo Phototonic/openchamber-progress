@@ -191,7 +191,7 @@ export const setupErrorText = (code: string, locale = 'en', family: StepFamily =
   if (managed) return managed;
   const l = resolveLanguage('auto',locale);
   const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
-  return Object.hasOwn(errors,code) ? errors[code] : textFor(locale).unknownError(diagnosticCode(code));
+  return Object.hasOwn(errors,code) ? errors[code] : family==='fresh' ? managedFreshCopy(locale).unavailable : textFor(locale).unknownError(diagnosticCode(code));
 };
 
 const DIAGNOSTIC_TEXT = {
@@ -215,11 +215,13 @@ const DIAGNOSTIC_ZH: typeof DIAGNOSTIC_TEXT = {
   'staged-payloads-present': '中断的设置留下了暂存文件。',
   'service-binding-collision': '无法使用此扩展的设置记录。',
 };
-export const setupDiagnosticText = (code: string, locale = 'en') => {
+export const setupDiagnosticText = (code: string, locale = 'en', family: StepFamily = 'migration') => {
+  const managed=managedErrorText(code,locale,family);
+  if(managed)return managed;
   const l = resolveLanguage('auto',locale);
   const diagnostics: Readonly<Record<string,string>> = l==='ru'?DIAGNOSTIC_RU:l==='zh-CN'?DIAGNOSTIC_ZH:DIAGNOSTIC_TEXT;
   const errors: Readonly<Record<string,string>> = l==='ru'?ERROR_RU:l==='zh-CN'?ERROR_ZH:ERROR_TEXT;
-  return Object.hasOwn(diagnostics,code) ? diagnostics[code] : Object.hasOwn(errors,code) ? errors[code] : diagnosticCode(code);
+  return Object.hasOwn(diagnostics,code) ? diagnostics[code] : Object.hasOwn(errors,code) ? errors[code] : family==='fresh' ? managedFreshCopy(locale).unavailable : managedCopy(locale).failed;
 };
 
 export const PRIVILEGE_TEXT = 'The progress service runs on this computer with your full user access. The companion records progress only when an agent reports it; it never reads conversations.';
@@ -844,10 +846,14 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   // single-request switch; fresh setup has no single-request fallback at all (update-together guidance).
   const migrationSteps = d.managedMigrationSteps === 1, freshSteps = d.managedFreshSteps === 1;
   const driver = migrationSteps || freshSteps ? stepsFor(vc) : null;
-  const progress = driver ? currentProgress(driver.state.progress, d.freshProgress ?? d.migrationProgress) : null;
+  // A refused fresh observation overrides this frame's cached resumable journal.
+  const freshRefused=d.planKind==='fresh'&&(d.migration==='unavailable'||d.migration==='conflict'||d.configuration==='invalid');
+  const progress = driver && !freshRefused ? currentProgress(driver.state.progress, d.freshProgress ?? d.migrationProgress) : null;
   const unfinished = !!progress && progress.state !== 'complete';
   // A fresh operation reuses the coarse pending/complete status; it is never described as a legacy switch.
-  const freshShown = isFreshProgress(progress) || !!d.freshProgress;
+  const freshShown = isFreshProgress(progress) || !!d.freshProgress || d.planKind==='fresh'&&d.migration!=='none';
+  const family:StepFamily=freshShown || driver?.state.family==='fresh'&&(!!driver.state.busy||!!driver.state.outcome)?'fresh':'migration';
+  const freshText=managedFreshCopy(vc.env.locale);
   if (driver) { wrap.dataset.steps = '1'; if (driver.state.busy) wrap.setAttribute('aria-busy','true'); }
   if (freshSteps) wrap.dataset.freshSteps = '1';
   const set = (patch: Partial<SetupUi>) => vc.updateUi(u => ({setup:{...u.setup,...patch}}) as Partial<U & {setup:SetupUi}>);
@@ -908,11 +914,11 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     });
   };
   if (s.error) {
-    const message = managedErrorText(s.error,vc.env.locale) ?? `${text.failed} ${setupErrorText(s.error,vc.env.locale)}`;
+    const message = managedErrorText(s.error,vc.env.locale,family) ?? `${text.failed} ${setupErrorText(s.error,vc.env.locale,family)}`;
     const alert = testid(el('p','ap-doc-warn',message),'setup-error'); alert.setAttribute('role','alert'); alert.dataset.code=diagnosticCode(s.error); wrap.append(alert);
   }
   if (s.notice) { const notice=testid(el('p','ap-note',text.done),'setup-notice'); notice.setAttribute('role','status'); wrap.append(notice); }
-  if (driver) {
+  if (driver && !freshRefused) {
     const review = stepReviewCard(vc, driver);
     if (review) { wrap.append(review); return wrap; }
     if (progress && (unfinished || driver.state.progress?.state === 'complete')) wrap.append(migrationCard(vc, driver, progress));
@@ -940,11 +946,13 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
     card.addEventListener('keydown',event=>{if(event.key==='Escape'&&!s.busy){event.preventDefault();cancel();}});
     wrap.append(card);return wrap;
   }
-  wrap.append(el('p','ap-note',d.configuration === 'invalid' ? text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
+  wrap.append(el('p','ap-note',d.configuration === 'invalid' ? freshShown ? freshText.invalid : text.invalid : d.configuration === 'configured' ? text.configured : text.unconfigured));
   if (d.configuration === 'configured' && !info.verified) wrap.append(el('p','ap-doc-warn',textFor(vc.env.locale).unverified));
   if (d.migration === 'pending' && !unfinished && !freshShown) wrap.append(testid(el('p','ap-doc-warn',text.pending),'setup-recovery'));
-  if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',text.conflict));
-  if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',text.unavailable),'setup-migration-unavailable'));
+  if (d.migration === 'pending' && !unfinished && freshShown) wrap.append(testid(el('p','ap-doc-warn',managedErrorText('managed-migration-required',vc.env.locale,'fresh')!),'setup-recovery'));
+  if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',freshShown ? freshText.conflict : text.conflict));
+  if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',freshShown ? freshText.unavailable : text.unavailable),'setup-migration-unavailable'));
+  if (freshRefused) wrap.append(testid(el('p','ap-doc-warn',freshText.partial),'setup-fresh-partial'));
   if (d.migration === 'complete') wrap.append(el('p','ap-note',freshShown ? managedFreshCopy(vc.env.locale).complete : text.complete));
   const unresolved = d.migration === 'available' || d.migration === 'pending' || d.migration === 'conflict' || d.migration === 'unavailable';
   const observation = {unknown:text.unknown,'not-observed':text.missing,matching:text.matching,different:text.different}[unresolved ? 'unknown' : d.observation];
@@ -955,7 +963,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   // While a switch is unfinished its card carries the actual capture observation; an older stored
   // reading here could contradict it mid-run.
   if (!unfinished) wrap.append(testid(el('p','ap-note',info.captureEnabled === true ? text.on : info.captureEnabled === false ? text.off : text.controlUnknown),'managed-capture-control'));
-  for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale)));
+  for (const diagnostic of info.diagnostics) wrap.append(el('p','ap-note',setupDiagnosticText(diagnostic,vc.env.locale,family)));
   // The store choice belongs to a fresh review that can actually run: not while one is unfinished or
   // when the service cannot negotiate fresh steps.
   if (d.configuration === 'unconfigured' && freshSteps && !unfinished && !freshShown && d.migration === 'none') {
@@ -998,7 +1006,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
         }
       } else if (d.migration === 'none') wrap.append(testid(el('p','ap-doc-warn',managedFreshCopy(vc.env.locale).unsupported),'setup-fresh-unsupported'));
     }
-    else if (info.captureEnabled === false) action('setup-enable',text.enable,'managed-enable');
+    else if (info.captureEnabled === false && !unfinished && (!freshShown || progress?.state==='complete')) action('setup-enable',text.enable,'managed-enable');
   }
   if (d.migration === 'unavailable') button(row,'setup-retry',text.retry,vc.requestSetup,'outline',s.busy);
   wrap.append(row);
@@ -1089,8 +1097,8 @@ function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupSt
   if (diagnostic.stage) box.dataset.stage = diagnostic.stage;
   const key = `failure:${p?.operationId ?? ''}:${p?.sequence ?? ''}:${diagnostic.stage ?? ''}:${diagnostic.code}`;
   if (!announced.has(key)) { box.setAttribute('role', 'alert'); announced.add(key); }
-  const where = el('p', 'ap-migration-where', `${diagnostic.stage ? t.stoppedAt(stageLabel(diagnostic.stage, locale, family)) : t.stopped} · `);
-  where.append(el('code', 'ap-migration-code', diagnostic.code));
+  const where = el('p', 'ap-migration-where', `${diagnostic.stage ? t.stoppedAt(stageLabel(diagnostic.stage, locale, family)) : t.stopped}`);
+  if(family!=='fresh')where.append(' · ',el('code', 'ap-migration-code', diagnostic.code));
   box.append(where);
   // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
   box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale, family)));

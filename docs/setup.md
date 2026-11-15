@@ -262,6 +262,17 @@ created without its completion checkpoint, an incomplete database, orphan sideca
 or ambiguous publication links remain refused and retained; privacy/emptiness alone
 never permits adoption or repair. A committed database can reconcile only against
 its exact creation intent, frozen identity, supported schema and initial off state.
+Creation reconciliation also requires absent sidecars, even when the database
+exists; this does not forbid normal WAL sidecars after its creation checkpoint.
+Ordinary status presents an uncheckpointed created folder as unavailable for manual
+diagnosis, without a Resume action. It retains the fresh-setup presentation family
+even when no usable progress can be shown. Setup keeps the partial folder and does
+not delete, reuse or repair it. A damaged expectation is a state conflict
+(`managed-migration-conflict`), not a storage outage.
+Fresh refusal banners and diagnostics use localized setup wording, not migration
+copy or raw error codes. The ordinary Turn on capture action is not offered during
+unfinished fresh setup; continue or resume that operation instead. It remains
+available after verified completion with capture off.
 Rollback must retain format 3, stores, bindings, expectations and history. Older
 journal readers refuse format 3, including complete records; use a fresh-capable
 build for recovery, never down-convert or restore a global loader.

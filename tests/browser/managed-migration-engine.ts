@@ -188,7 +188,7 @@ export function freshEngine(options: FreshOptions = {}) {
       if (page < pages) return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'incomplete', stage: MANAGED_FRESH_INSPECTION_STEPS[Math.min(page, 3)], cursor: `fresh-page-${page + 1}` } });
       return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'complete', stage: 'review', cursor: null, review } });
     }
-    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p }) : { status: 404, body: '{"error":"not-found"}' };
+    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown } : null }) : { status: 404, body: '{"error":"not-found"}' };
     if (r.action === 'begin') {
       if (p) return refuse(409, 'journal', 'managed-step-conflict');
       if (r.expected !== review.expected) return refuse(409, 'review', 'managed-review-stale');
@@ -255,8 +255,8 @@ export function freshEngine(options: FreshOptions = {}) {
     get progress() { return p; },
     set progress(value: ManagedFreshStepProgress | null) { p = value; },
     maxInflight: () => maxInflight,
-    /** Cold observation preserves intent/state; a store that is not proven yet reads unknown. */
-    restart() { if (p && !retained) p = { ...p, capture: unknown }; },
+    /** Cold observation preserves intent/state, never a historical capture bit. */
+    restart() { if (p) p = { ...p, capture: unknown }; },
     hold(at: number) { let release!: () => void; const promise = new Promise<void>(r => { release = r; }); gate = { at, release, promise }; return () => release(); },
     request,
     host: {

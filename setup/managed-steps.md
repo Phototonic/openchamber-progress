@@ -181,6 +181,15 @@ and may expire on restart. No caller paths occur on mutation/continuation inputs
   may report unknown capture, never a guessed off/on value. Explicit inspection
   refresh is read-only, not a second background migration driver.
 
+Ordinary Setup may include `delivery.planKind: fresh` as a presentation-only hint
+even when partial fresh setup has no usable progress. Absence retains the older
+migration presentation; the hint grants no admission or recovery authority.
+A refused fresh Store observation clears public fresh progress and reports
+unavailable for manual diagnosis, rather than offering Resume on journal evidence
+alone. Private journal state is retained. Trusted internal hints from the other
+journal family fall back to the request's cold reader; the durable journal must
+still match the wire version.
+
 All successful requests use HTTP 200 and `ManagedStepResponse`. A recognized
 request refusal uses the same envelope with `disposition: refused`, non-null
 `error` and available same-target progress. Validation errors are 400; stale
