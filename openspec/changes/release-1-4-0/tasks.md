@@ -39,7 +39,8 @@
 - [ ] 8.1 Integrate accepted source units; update companion skill, activation/tool guidance, affected shared guides and compatibility records. Semantically review guidance for old/new writer and restricted-child behavior.
 - [ ] 8.2 Prepare matching 1.4.0 versions, changelog and curated notes through existing release policy. Regenerate affected backend and all affected visible/background guests; run exact manifest, SDK, parity and package checks.
 - [ ] 8.3 Extend the disposable managed-host journey for joined inbox/intent/finish and context retirement. Verify exact built companion bytes after regeneration, real dispatch/direct attribution, recovery and both composer actions. Retain sanitized screenshots/results with actual versions.
-- [ ] 8.4 Supply a mobile-enabled disposable test package and owner checklist for physical phone app/browser authenticated routes. Record each surface and same-item session-action limitation; only then accept the corresponding release mobile flags and revalidate the final manifest/distribution.
+- [x] 8.4 Owner decided to ship the rail and board mobile opt-in for 1.4.0. This replaces the pre-release physical-phone gate, not evidence that physical acceptance passed; final manifest/distribution checks remain required.
+- [ ] 8.4a Run physical-phone acceptance on the live release, with a hotfix if needed. Record each surface and the same-item session-action limitation.
 - [ ] 8.5 Run fresh-clone portable CI, actual supported Git/folder/ZIP installation, below-floor refusal and lifecycle/rollback gates. Inspect the full public diff and evidence for private data. Obtain maintainer promotion approval; report outstanding acceptance honestly.
 
 ## 9. Windows startup and stepwise managed migration

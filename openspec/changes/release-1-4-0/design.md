@@ -18,7 +18,7 @@ Keep the shared views. At phone width, arrange board navigation and detail in a 
 
 Inventory Work Status, report tool rows, mentions, sidebar indicators and background actions without opt-in. Panel opt-in covers the phone workspace tab, plus-menu entry, chips and actions opening that panel. Page opt-in covers More and full-screen/back navigation. Record observed routes and versions, not a blanket “all mobile” claim. The existing same-item **Show current session** limitation remains: an identical retained action cannot re-pin the same frame after reset until a different target or reload (OpenChamber issue #6938). Verify its actual phone behavior; no visibility heuristic workaround.
 
-Use a disposable test-package projection with mobile flags for acceptance. Do not ship those flags until the corresponding physical-phone checks pass. If one surface fails, retain its omission and hold that release scope for owner disposition rather than silently declaring completion.
+Owner decision for 1.4.0: ship both mobile flags so the rail and board are offered on phones. Physical-phone acceptance runs on the live release, with a hotfix if needed. This replaces the pre-release physical-phone gate; parser, package and emulated-touch checks remain supporting evidence, not physical-phone acceptance.
 
 ### Conditional Work Status research
 
