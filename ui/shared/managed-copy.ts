@@ -295,7 +295,7 @@ const freshEn = {
   } as Record<string,string>,
   partial: 'Setup kept the partial folder. It will not delete, reuse or repair it on its own.',
   invalid: 'The partial setup cannot be used safely.',
-  unavailable: 'Setup cannot safely continue from this partial folder. Stop here and arrange manual diagnosis.',
+  unavailable: 'Setup cannot safely continue. Stop here and arrange manual diagnosis.',
   conflict: 'The setup folders contain conflicting state. Stop here and arrange manual diagnosis.',
   reviewTitle: { create: 'Set up a new progress store', retain: 'Reconnect your progress store' },
   effect: {
@@ -350,7 +350,7 @@ const freshRu: typeof freshEn = {
   },
   partial: 'Настройка сохранила частично созданную папку. Она не будет сама удалять, повторно использовать или исправлять её.',
   invalid: 'Частичную настройку нельзя безопасно использовать.',
-  unavailable: 'Нельзя безопасно продолжить настройку из этой частично созданной папки. Остановитесь и организуйте ручную диагностику.',
+  unavailable: 'Нельзя безопасно продолжить настройку. Остановитесь и организуйте ручную диагностику.',
   conflict: 'В папках настройки обнаружено конфликтующее состояние. Остановитесь и организуйте ручную диагностику.',
   reviewTitle: { create: 'Создать новое хранилище прогресса', retain: 'Снова подключить ваше хранилище прогресса' },
   effect: {
@@ -405,7 +405,7 @@ const freshZh: typeof freshEn = {
   },
   partial: '设置已保留未完成的文件夹，不会自行删除、复用或修复它。',
   invalid: '无法安全使用未完成的设置。',
-  unavailable: '无法从此未完成的文件夹安全地继续设置。请在此停止并安排手动诊断。',
+  unavailable: '无法安全地继续设置。请在此停止并安排手动诊断。',
   conflict: '设置文件夹中存在冲突状态。请在此停止并安排手动诊断。',
   reviewTitle: { create: '设置新的进度存储', retain: '重新连接你的进度存储' },
   effect: {
@@ -446,7 +446,7 @@ export function managedFamilyStepCopy(family: 'migration' | 'fresh', locale = 'e
 
 export function managedErrorText(code:string, locale='en', family: 'migration' | 'fresh' = 'migration'): string | null {
   const steps=managedFamilyStepCopy(family,locale).errors;
-  if (Object.hasOwn(steps,code)) return steps[code]+(family==='fresh'&&['managed-migration-conflict','managed-binding-invalid','foreign-files','corrupt','schema','storage'].includes(code)?' '+managedFreshCopy(locale).partial:'');
+  if (Object.hasOwn(steps,code)) return steps[code];
   const text=managedCopy(locale);
   const errors: Record<string,string> = {
     'managed-action-required':text.unsupported,'managed-service-required':text.unsupported,

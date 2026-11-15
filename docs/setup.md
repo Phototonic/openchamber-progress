@@ -273,7 +273,10 @@ be shown. Any partial folder is retained, never deleted, reused or repaired to f
 continuation. A damaged expectation is a state conflict
 (`managed-migration-conflict`), not a storage outage.
 Fresh refusal banners and diagnostics use localized setup wording, not migration
-copy or raw error codes. The ordinary Turn on capture action is not offered during
+copy or raw error codes. The kept-partial-folder note appears once, only when
+unfinished fresh progress includes a completed store-folder or database creation;
+a stage name, invalid bootstrap marker or presentation hint alone cannot claim a
+store folder exists. The ordinary Turn on capture action is not offered during
 unfinished fresh setup; continue or resume that operation instead. It remains
 available after verified completion with capture off.
 Rollback must retain format 3, stores, bindings, expectations and history. Older

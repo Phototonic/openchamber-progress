@@ -921,7 +921,7 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (driver && !freshRefused) {
     const review = stepReviewCard(vc, driver);
     if (review) { wrap.append(review); return wrap; }
-    if (progress && (unfinished || driver.state.progress?.state === 'complete')) wrap.append(migrationCard(vc, driver, progress));
+    if (progress) wrap.append(migrationCard(vc, driver, progress));
     else if (driver.state.busy === 'run' || driver.state.busy === 'control') wrap.append(startingCard(vc, driver));
     else stepOutcome(wrap, driver, null, vc.env.locale);
     if (driver.state.busy === 'inspect') wrap.append(inspectingLine(vc, driver));
@@ -952,7 +952,6 @@ function managedSetupBlock<U>(vc: Host<U>, _options: {compact?: boolean}) {
   if (d.migration === 'pending' && !unfinished && freshShown) wrap.append(testid(el('p','ap-doc-warn',managedErrorText('managed-migration-required',vc.env.locale,'fresh')!),'setup-recovery'));
   if (d.migration === 'conflict') wrap.append(el('p','ap-doc-warn',freshShown ? freshText.conflict : text.conflict));
   if (d.migration === 'unavailable') wrap.append(testid(el('p','ap-doc-warn',freshShown ? freshText.unavailable : text.unavailable),'setup-migration-unavailable'));
-  if (freshRefused) wrap.append(testid(el('p','ap-doc-warn',freshText.partial),'setup-fresh-partial'));
   if (d.migration === 'complete') wrap.append(el('p','ap-note',freshShown ? managedFreshCopy(vc.env.locale).complete : text.complete));
   const unresolved = d.migration === 'available' || d.migration === 'pending' || d.migration === 'conflict' || d.migration === 'unavailable';
   const observation = {unknown:text.unknown,'not-observed':text.missing,matching:text.matching,different:text.different}[unresolved ? 'unknown' : d.observation];
@@ -1102,8 +1101,9 @@ function stepOutcome(parent: Element, driver: SetupStepDriver, p: ManagedSetupSt
   box.append(where);
   // An unsettled capture step that needs a fresh decision points to that review, not to waiting.
   box.append(el('p', '', p?.recovery === 'review' && diagnostic.code === 'managed-step-unsettled' ? t.reviewNeeded : setupErrorText(diagnostic.code, locale, family)));
-  // A stop while creating storage keeps whatever was made; Setup never cleans it up to retry.
-  if (family === 'fresh' && (diagnostic.stage === 'store-directory' || diagnostic.stage === 'create-store')) {
+  // In every create plan, a checkpoint after prepare proves a folder or database
+  // was created. A stage/error (or a family hint) alone proves no such resource.
+  if (isFreshProgress(p) && p.state !== 'complete' && p.storeMode === 'create' && p.lastCompleted && p.lastCompleted.name !== 'prepare') {
     box.append(testid(el('p', '', managedFreshCopy(locale).partial), 'setup-fresh-partial'));
   }
   parent.append(box);
