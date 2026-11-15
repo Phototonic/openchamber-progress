@@ -8,6 +8,7 @@ This archive records shipped implementation, not blanket certification of every 
 - [x] Add bounded source-wide Needs you reads, explicit coverage and continuation, separate Also blocked classification, blocker timing and canonical task reveal without writes or a new polling loop (#102).
 - [x] Add the rail/board inbox and source/context retirement through existing controller owners, with source-built browser fixtures and documented evidence limits (#102).
 - [x] Implement phone layout/device hooks, safe-area and keyboard accommodation, coarse-pointer controls and a tap/pan/pinch dependency map; add browser touch/layout regressions (#104).
+- [x] Ship rail and board mobile opt-ins by owner decision (#112), replacing the pre-release physical-phone gate, not claiming physical acceptance; check physical phones on the live release, with a hotfix if needed.
 - [x] Preserve pending delegation across provably unrelated sibling reports, retaining declaration identity and refusing relevant, incomplete or legacy conflicts; explain identifiable refusals (#103).
 - [x] Expose independently refreshed waiting/refusal state without assignment or progress inference; show “Next sub-agent will take this” only for eligible pending intent (#107).
 - [x] Allow explicit final task changes with coordinator finish in one revision/transaction, preserving validation, authority and replay rules (#105).

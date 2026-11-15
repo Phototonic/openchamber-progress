@@ -8,7 +8,7 @@ import {fork} from 'node:child_process';
 import {createServer,Server} from 'node:net';
 import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {SetupRequestWorker,correlatedManagedReply} from '../../service/request-worker.ts';
+import {SetupRequestWorker,correlatedManagedReply,type SetupWorkerRequest} from '../../service/request-worker.ts';
 import {SetupController} from '../../service/setup-controller.ts';
 import {lifecycle} from '../../setup/lifecycle.ts';
 import type {ManagedStepResponse} from '../../shared/managed-steps.ts';
@@ -119,6 +119,57 @@ setTimeout(()=>parentPort.close(),50);\n`,{mode:0o600});
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
+test('payload-free status shares one run and spawn budget only in the identical context',async()=>{
+  const {root,env}=fixture();
+  try{
+    const entry=path.join(root,'counted-status.mjs');
+    writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
+Atomics.add(new Int32Array(workerData.counter),0,3);
+parentPort.postMessage({requestId:workerData.requestId,result:{ok:true,value:'synthetic',accounting:{securitySpawns:99,elapsedMs:99}}});
+parentPort.close();\n`,{mode:0o600});
+    const worker=new SetupRequestWorker(pathToFileURL(entry));
+    const first=worker.run(env,undefined,{action:'status'});
+    const shared=Array.from({length:4},()=>worker.run({...env},undefined,{action:'status'}));
+    for(const promise of shared)assert.equal(promise,first,'same run, not another worker or counter');
+    for(const [otherEnv,otherPayload,request] of [
+      [{...env,LANG:'synthetic'},undefined,{action:'status'}],
+      [env,undefined,{action:'status',descriptor:'changed'}],
+      [env,payload,{action:'status'}],
+      [env,undefined,{action:'health'}],
+      [env,undefined,{action:'capture',enabled:false}],
+      [env,payload,{action:'managed-step',body:{version:1,action:'status'}}],
+      [env,payload,{action:'managed-step',body:{version:1,action:'inspect'}}],
+      [env,payload,{action:'run',name:'managed-configure',body:{}}],
+    ] satisfies Array<[NodeJS.ProcessEnv,typeof payload|undefined,SetupWorkerRequest]>){
+      const refused=await worker.run(otherEnv,otherPayload,request);
+      assert.ok(!refused.ok);assert.equal(refused.code,'managed-step-unsettled');
+    }
+    const results=await Promise.all([first,...shared]);
+    for(const result of results){assert.equal(result,results[0]);assert.equal(result.accounting.securitySpawns,3);}
+    assert.equal(worker.busy,false);
+    const fresh=worker.run(env,undefined,{action:'status'});assert.notEqual(fresh,first,'no settled-result cache');
+    assert.equal((await fresh).accounting.securitySpawns,3);
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('status still refuses while a mutation or inspection owns the worker',async()=>{
+  const {root,env}=fixture();
+  try{
+    const entry=path.join(root,'exclusive-worker.mjs');
+    writeFileSync(entry,`import {parentPort,workerData} from 'node:worker_threads';
+parentPort.postMessage({requestId:workerData.requestId,result:{ok:false,code:'synthetic-refusal',accounting:{securitySpawns:0,elapsedMs:0}}});
+parentPort.close();\n`,{mode:0o600});
+    const worker=new SetupRequestWorker(pathToFileURL(entry));
+    for(const request of [{action:'capture',enabled:false},{action:'managed-step',body:{version:1,action:'inspect'}},
+      {action:'run',name:'managed-configure',body:{}}] satisfies SetupWorkerRequest[]){
+      const active=worker.run(env,payload,request);
+      const status=await worker.run(env,undefined,{action:'status'});
+      assert.ok(!status.ok);assert.equal(status.code,'managed-step-unsettled');
+      await active;assert.equal(worker.busy,false);
+    }
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
 test('a rejected writer release finishes with a fixed refusal and clears the active worker',{skip:process.platform==='win32',timeout:5000},async t=>{
   const {root,env}=fixture();
   const original=Server.prototype.close;
@@ -138,7 +189,7 @@ test('a rejected writer release finishes with a fixed refusal and clears the act
   }finally{close.mock.restore();rmSync(root,{recursive:true,force:true});}
 });
 
-test('response deadline does not clear busy or admit another request while the worker still runs',{skip:process.platform==='win32'},async()=>{
+for(const action of ['health','status'] as const)test(`${action} response deadline does not clear busy or admit another request while the worker still runs`,{skip:process.platform==='win32'},async()=>{
   const {root,env}=fixture();
   const gate=path.join(root,'release');
   const workerFile=path.join(root,'gated-worker.mjs');
@@ -149,10 +200,13 @@ const poll=setInterval(()=>{if(existsSync(workerData.env.GATE)){clearInterval(po
 setTimeout(()=>{clearInterval(poll);parentPort.close();},5000).unref();\n`,{mode:0o600});
   const worker=new SetupRequestWorker(pathToFileURL(workerFile));
   try {
-    const result=await worker.run({...env,GATE:gate},payload,{action:'health'},process.hrtime.bigint()-16_000_000_000n);
+    const context={...env,GATE:gate};
+    const first=worker.run(context,undefined,{action},process.hrtime.bigint()-16_000_000_000n);
+    if(action==='status')assert.equal(worker.run(context,undefined,{action}),first,'joining does not reset the deadline');
+    const result=await first;
     assert.equal(result.ok,false);if(!result.ok)assert.equal(result.code,'managed-step-deadline');
     assert.equal(worker.busy,true,'a reply/message is not worker exit');
-    const overlap=await worker.run(env,payload,{action:'health'});
+    const overlap=await worker.run(context,undefined,{action});
     assert.equal(overlap.ok,false);if(!overlap.ok)assert.equal(overlap.code,'managed-step-unsettled');
   } finally {
     writeFileSync(gate,'release',{mode:0o600});
@@ -255,7 +309,8 @@ for(const [name,entry] of [['source',new URL('../../service/main.ts',import.meta
       assert.equal(existsSync(path.join(dataRoot,'agent-progress-managed')),false,'read-only inspection never creates the managed container');
       const status=await worker.run(env,payload,{action:'managed-step',body:{version:1,action:'status'}});
       assert.ok(status.ok);assert.equal((status.value as ManagedStepResponse).progress,null);
-      assert.ok((await worker.run(env,undefined,{action:'status'})).ok,'payload-free Setup retains completed review');
+      const reads=await Promise.all(Array.from({length:3},()=>worker.run(env,undefined,{action:'status'})));
+      assert.ok(reads.every(r=>r.ok),'concurrent payload-free Setup retains completed review');
       const begin={version:1,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected};
       const prepared=await worker.run(env,payload,{action:'managed-step',body:begin});
       if(!prepared.ok)assert.fail(prepared.code);

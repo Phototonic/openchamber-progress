@@ -7,16 +7,17 @@ Make the rail, board and dependency map usable on phone-sized touch surfaces whi
 
 ### Requirement: Phone entry surfaces and explicit acceptance limits
 
-Panel and page mobile contributions SHALL expose the rail and board on supported authenticated host routes. For 1.4.0, the owner has authorized enabling both contributions with physical-phone acceptance deferred to the live release. Browser emulation MUST NOT be described as physical-device acceptance. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be documented separately from opted-in surfaces.
+Panel and page mobile contributions SHALL expose the rail and board on supported authenticated host routes for 1.4.0 by owner decision. Physical-phone acceptance SHALL run on the live release, with a hotfix if needed. This replaces the pre-release physical-phone gate. Browser emulation MUST NOT be described as physical-device acceptance. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be checked and documented separately from opted-in surfaces.
 
 #### Scenario: Phone user opens progress
 - **WHEN** the opted-in panel is opened through the phone workspace, plus menu, Work Status or supported session action
 - **THEN** a discoverable readable progress view opens without a surface-unavailable error
 - **AND** the opted-in page is available through More with the host's full-screen back navigation
 
-#### Scenario: Physical acceptance is deferred or fails
-- **WHEN** only narrow-width or touch-emulation evidence exists at release preparation
-- **THEN** documentation identifies physical-phone acceptance as deferred to the live release under the owner's explicit decision
+#### Scenario: Physical acceptance follows release
+- **WHEN** the owner ships the mobile-enabled rail and board for 1.4.0 with only desktop narrow-width or touch-emulation evidence
+- **THEN** that evidence remains supporting evidence, not physical-phone acceptance
+- **AND** documentation identifies physical-phone acceptance as pending on the live release, with a hotfix if needed for a failed configuration
 - **AND** a later physical-device failure is recorded honestly and the affected mobile contribution can be withdrawn through a matched manifest/distribution update
 
 ### Requirement: Usable phone layout and interaction

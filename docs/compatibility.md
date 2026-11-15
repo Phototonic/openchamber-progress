@@ -9,6 +9,12 @@ independent OpenCode 2.2.7 acceptance is described below, including the native G
 update journey. Installer, web UI and native results retain distinct scopes;
 no Windows/Electron certification is implied.
 
+The rail and board opt into OpenChamber's phone surfaces on **host 2.7.1+**.
+Older hosts ignore the mobile field, per SDK 2.7.1; the package's host floor
+remains >=2.7.1. The owner approved shipping the opt-in for 1.4.0, with
+physical-phone acceptance on the live release and a hotfix if needed. Parser,
+package and emulated-touch checks do not establish physical-phone acceptance.
+
 Normal setup approves **Add a plugin to OpenCode**, then explicitly selects a
 private Store. Watched-file delivery can retire after disable/removal without a
 restart; caller-owned `OPENCODE_CONFIG` fallback requires an explicit restart for

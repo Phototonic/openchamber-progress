@@ -6,7 +6,7 @@ Phone users need usable progress surfaces, and coordinators need a reliable view
 
 ## What Changes
 
-- Adapt panel, board, dependency map and controls for phone/touch use; enable panel and page mobile contributions under the owner's decision to perform physical-device acceptance on the live release, with that deferred acceptance explicit.
+- Adapt panel, board, dependency map and controls for phone/touch use; ship both mobile opt-ins for 1.4.0 by owner decision, with physical-phone acceptance on the live release and a hotfix if needed.
 - Add a read-only, source-wide Needs you inbox. Count decision/review blockers; show remaining reported blockers separately as Also blocked.
 - Show durable waiting delegation and refusal state without inventing assignment or progress. Preserve pending delegation across unrelated task reports, but refuse relevant changes and explain refusals to the coordinator.
 - Allow explicit task changes atomically with coordinator finish.

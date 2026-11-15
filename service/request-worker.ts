@@ -148,12 +148,14 @@ export function runSetupRequestWorker():void {
   parentPort.close();
 }
 
-/** One request at a time, no autonomous continuation and no terminate-on-timeout.
+/** One run at a time (identical payload-free status reads may share its reply),
+ * no autonomous continuation and no terminate-on-timeout.
  * A timeout settles the reply, NOT the worker: busy remains true until exit.
  * The TCP writer slot is retained over that whole interval. Windows security
  * children also cross the account-scoped mutex/nonce barrier in platform.ts. */
 export class SetupRequestWorker {
   private active=false;
+  private statusRun?:{context:string;promise:Promise<SetupWorkerResult>};
   private readonly entry:URL;
   private inspection?:{scope:string;context:string;session:ManagedInspectionSession};
   private journal?:{context:string;value:ManagedStepJournal};
@@ -162,6 +164,10 @@ export class SetupRequestWorker {
   run(env:NodeJS.ProcessEnv,payload:Payload|undefined,request:SetupWorkerRequest,startedAt=process.hrtime.bigint()):Promise<SetupWorkerResult> {
     const budget=new PlatformRequestBudget(startedAt);
     const refused=(code:string):SetupWorkerResult=>({ok:false,code,accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
+    // Share only this in-flight observation, including its original budget.
+    // Descriptor/environment changes, payloads and all other actions still refuse.
+    const statusContext=payload===undefined&&request.action==='status'?digest(canonical({env,request})):undefined;
+    if(this.active&&statusContext&&this.statusRun?.context===statusContext)return this.statusRun.promise;
     if(this.active)return Promise.resolve(refused('managed-step-unsettled'));
     try{budget.require();}catch(error){return Promise.resolve(refused(diagnostic(error)));}
     this.active=true;
@@ -181,11 +187,11 @@ export class SetupRequestWorker {
     // accepted hint is freshly validated by the engine. Payload-free Setup reads
     // neither discard inspection consent nor refresh its package-bound context.
     this.journal=undefined;
-    return new Promise(resolve=>{
+    const pending=new Promise<SetupWorkerResult>(resolve=>{
       let settled=false,result:SetupWorkerResult|undefined;
       let nextInspection:ManagedInspectionSession|undefined;
       let nextJournal:ManagedStepJournal|undefined;
-      const finish=(reply:SetupWorkerResult)=>{if(!settled){settled=true;clearTimeout(timer);resolve(reply);}};
+      const finish=(reply:SetupWorkerResult)=>{if(!settled){settled=true;this.statusRun=undefined;clearTimeout(timer);resolve(reply);}};
       const remaining=Math.max(0,MANAGED_STEP_LIMITS.responseMs-budget.elapsedMs);
       const timer=setTimeout(()=>finish(refused('managed-step-deadline')),remaining);
       // Separate scope and Store slots also fence distinct discovery roots
@@ -248,5 +254,7 @@ export class SetupRequestWorker {
         });
       },error=>{this.active=false;finish(refused(diagnostic(error)));});
     });
+    if(statusContext)this.statusRun={context:statusContext,promise:pending};
+    return pending;
   }
 }

@@ -12,9 +12,9 @@
       "tools": [
         { "match": "agent_progress_report", "name": "Agent progress report", "icon": "list-check-2", "output": "text" }
       ],
-      "panel": { "id": "agent-progress-probe", "name": "Agent progress", "icon": "checkbox-circle", "entry": "ui/panel/index.html" },
+      "panel": { "id": "agent-progress-probe", "name": "Agent progress", "icon": "checkbox-circle", "entry": "ui/panel/index.html", "mobile": true },
       "statusSection": { "entry": "ui/status/index.html", "title": "Agent progress", "height": 160 },
-      "page": { "entry": "ui/page/index.html", "title": "Agent progress" },
+      "page": { "entry": "ui/page/index.html", "title": "Agent progress", "mobile": true },
       "background": { "entry": "background/index.html" },
       "actions": [
         { "id": "open-progress", "label": "Open Agent Progress", "where": "session", "mode": "open" },
