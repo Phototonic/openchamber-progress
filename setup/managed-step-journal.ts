@@ -17,7 +17,8 @@ export interface ManagedPathClaim {
   kind: 'directory' | 'file' | 'absent';
   /** Native identity represented as strings, never lossy JS integer inode values. */
   object: { device: string; inode: string; birthNs: string } | null;
-  /** SHA-256 of file bytes; null for directories/absence. No ACL verdict is persisted. */
+  /** SHA-256 of publication bytes; null for directories/absence and fresh SQLite
+   * object-only claims. SQLite contents are validated by Store, never full-file hashing. */
   digest: string | null;
 }
 
@@ -160,7 +161,7 @@ function step(value:unknown,fresh=false):asserts value is ManagedStepRef {
 export function sameManagedStep(a:ManagedSetupStepRef|null,b:ManagedSetupStepRef|null) {
   return a===null||b===null?a===b:a.name===b.name&&a.batch===b.batch;
 }
-function claims(value:unknown,known:Set<string>,anticipated=false):asserts value is ManagedPathClaim[] {
+function claims(value:unknown,known:Set<string>,anticipated=false,objectOnly=false):asserts value is ManagedPathClaim[] {
   need(Array.isArray(value));
   if(value.length>MANAGED_STEP_LIMITS.claimPaths)throw new SetupError('managed-step-limit');
   const local=new Set<string>();
@@ -177,7 +178,7 @@ function claims(value:unknown,known:Set<string>,anticipated=false):asserts value
         keys(claim.object,['device','inode','birthNs']);
         for(const id of Object.values(claim.object))need(typeof id==='string'&&/^(0|[1-9]\d{0,39})$/.test(id));
       }
-      need(claim.kind==='file'?hash(claim.digest):claim.digest===null);
+      need(claim.kind==='file'&&!objectOnly?hash(claim.digest):claim.digest===null);
     }
   }
 }
@@ -185,7 +186,8 @@ function intent(value:unknown,known:Set<string>,fresh=false):asserts value is Ma
   keys(value,['requestDigest','expectedSequence','step','effect','before','after','captureBefore','captureReviewSequence']);
   need(hash(value.requestDigest)&&integer(value.expectedSequence));step(value.step,fresh);
   need(value.step.name!=='prepare'&&['intent','uncertain','committed'].includes(value.effect as string));
-  claims(value.before,known);claims(value.after,known,true);capture(value.captureBefore);
+  const objectOnly=fresh&&['create-store'].includes(value.step.name);
+  claims(value.before,known,false,objectOnly);claims(value.after,known,true,objectOnly);capture(value.captureBefore);
   need(value.captureReviewSequence===null||integer(value.captureReviewSequence)&&value.captureReviewSequence>0&&
     value.captureReviewSequence<=value.expectedSequence&&['enable','disable'].includes(value.step.name));
 }
@@ -234,7 +236,7 @@ export function parseManagedFreshStepJournal(bytes:string|Uint8Array):ManagedFre
   keys(f,['storeMode','sourceMode','capturePolicy','directory','database','sidecars','source','capture','selection','journal','legacy']);
   need(['create','retain'].includes(f.storeMode as string)&&['create','reuse'].includes(f.sourceMode as string));
   need(f.capturePolicy===(f.storeMode==='create'?'enable-new':'preserve'));
-  claims([f.directory,f.database,f.selection,f.journal,f.legacy],known);claims(f.sidecars,known);
+  claims([f.directory,f.selection,f.journal,f.legacy],known);claims([f.database],known,false,true);claims(f.sidecars,known,false,true);
   const facts=f as unknown as ManagedFreshFacts;
   need(facts.directory.path===root&&facts.database.path===raw.database&&facts.directory.kind!=='file');
   need(facts.sidecars.length===3&&facts.sidecars.every((c,i)=>c.path===raw.database+['-journal','-wal','-shm'][i]&&c.kind!=='directory'));
@@ -257,7 +259,7 @@ export function parseManagedFreshStepJournal(bytes:string|Uint8Array):ManagedFre
   for(const [key,name,kind] of [['directory','store-directory','directory'],['database','create-store','file']] as const){
     const checkpoint=m.created[key],index=plan.findIndex(s=>s.name===name),required=index>=0&&completed>=index;
     need((checkpoint!==null)===required);
-    if(checkpoint!==null){claims([checkpoint],known);const c=checkpoint as ManagedPathClaim;need(c.kind===kind&&c.path===(key==='directory'?root:raw.database));}
+    if(checkpoint!==null){claims([checkpoint],known,false,true);const c=checkpoint as ManagedPathClaim;need(c.kind===kind&&c.path===(key==='directory'?root:raw.database));}
   }
   if(m.intent!==null){intent(m.intent,known,true);need(m.intent.expectedSequence<=m.sequence&&sameManagedStep(m.intent.step,m.step as unknown as ManagedFreshStepRef));}
   need(m.state!=='running'||m.intent!==null);need(m.state==='running'||m.receipt!==null);
@@ -303,7 +305,7 @@ export function validateManagedFreshCreationChange(prior:ManagedFreshStepJournal
     if(a.created[key]!==null||b.created[key]===null||a.state!=='running'||a.intent?.step.name!==name||a.step?.name!==name||
       b.sequence!==a.sequence+1||b.intent!==null||b.lastCompleted?.name!==name||b.state!=='pending'||
       b.receipt?.outcome!=='applied'||b.receipt.expectedSequence!==a.sequence||b.receipt.sequence!==b.sequence||
-      b.receipt.requestDigest!==a.intent.requestDigest)fail();
+      a.intent.expectedSequence===a.sequence&&b.receipt.requestDigest!==a.intent.requestDigest)fail();
   }
 }
 

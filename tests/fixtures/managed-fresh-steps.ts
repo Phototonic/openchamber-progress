@@ -19,7 +19,7 @@ export function managedFreshStepFixtures(storeMode:'create'|'retain'='create',di
       expectation:{version:'1.4.0',fingerprint:'9'.repeat(64)},plan,
       fresh:{storeMode,sourceMode,capturePolicy:storeMode==='create'?'enable-new':'preserve',
         directory:directoryMissing?absentFreshClaim('/fixture/store'):observedFreshClaim('/fixture/store','directory'),
-        database:storeMode==='create'?absentFreshClaim('/fixture/store/progress.sqlite'):observedFreshClaim('/fixture/store/progress.sqlite','file'),
+        database:storeMode==='create'?absentFreshClaim('/fixture/store/progress.sqlite'):{...observedFreshClaim('/fixture/store/progress.sqlite','file'),digest:null},
         sidecars:['-journal','-wal','-shm'].map(s=>absentFreshClaim('/fixture/store/progress.sqlite'+s)),
         source:sourceMode==='reuse'?{...source}:null,capture:storeMode==='create'?'unknown':'off',
         selection:absentFreshClaim('/fixture/data/agent-progress-managed/progress-binding.json'),

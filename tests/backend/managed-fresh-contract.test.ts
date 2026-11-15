@@ -68,6 +68,10 @@ test('only completion of its durable creation intent may fill a checkpoint; targ
   n.created.directory=observedFreshClaim('/fixture/store','directory');
   n.receipt={requestDigest:m.intent.requestDigest,expectedSequence:1,sequence:2,step:m.step,outcome:'applied'};
   parse(next);validateManagedFreshCreationChange(prior,next);
+  const resumed=structuredClone(prior);resumed.migration.sequence=3;
+  const reconciled=structuredClone(next);reconciled.migration.sequence=4;
+  reconciled.migration.receipt={...n.receipt!,requestDigest:'9'.repeat(64),expectedSequence:3,sequence:4};
+  validateManagedFreshCreationChange(resumed,reconciled);
   for(const change of [(j:ManagedFreshStepJournal)=>{j.migration.fresh.directory=j.migration.created.directory!;},
     (j:ManagedFreshStepJournal)=>{j.migration.receipt!.requestDigest='8'.repeat(64);},
     (j:ManagedFreshStepJournal)=>{j.migration.sequence=1;},(j:ManagedFreshStepJournal)=>{j.migration.created.database=observedFreshClaim(j.database,'file');}]){

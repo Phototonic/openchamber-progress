@@ -30,8 +30,10 @@ Retained plans never change capture. Expectation always precedes source registra
 
 Format 3 retains immutable `fresh` review facts: store/source modes, capture policy,
 directory/database and fixed journal/wal/shm sidecar claims, matched source or null,
-reviewed capture state and absent selector/journal/canonical legacy claims. Its
-target digest is canonical `{binding, planKind, fresh, expectation}`. Plan and
+reviewed capture state and absent selector/journal/canonical legacy claims.
+SQLite file claims are native-object-only (`digest: null`), not unbounded hashes
+of the database/sidecar bytes; Store owns schema and identity validation.
+The target digest is canonical `{binding, planKind, fresh, expectation}`. Plan and
 full-request hashes retain the existing canonical owner. Separate `created`
 directory/database native-object checkpoints are observations, excluded from that
 target digest. Only settlement of the matching durable creation intent may fill
