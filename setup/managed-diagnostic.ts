@@ -2,15 +2,15 @@ import {MANAGED_ACTION_CODES} from '../shared/progress.ts';
 import {MANAGED_STEP_CODES} from '../shared/managed-steps.ts';
 import {platformErrorCode} from '../shared/platform.ts';
 import {storageError} from '../shared/store.ts';
-import type {ManagedStepDiagnostic} from '../shared/managed-steps.ts';
-import type {ManagedStepJournal} from './managed-step-journal.ts';
+import type {ManagedStepDiagnostic,ManagedFreshStepDiagnostic} from '../shared/managed-steps.ts';
+import type {ManagedSetupStepJournal} from './managed-step-journal.ts';
 
 /** Private worker-local failure context. Never serialize the exception itself. */
 export class ManagedStepFailure extends Error {
   readonly code:string;
-  readonly stage:ManagedStepDiagnostic['stage'];
-  readonly journal?:ManagedStepJournal;
-  constructor(error:unknown,stage:ManagedStepDiagnostic['stage'],journal?:ManagedStepJournal) {
+  readonly stage:ManagedStepDiagnostic['stage']|ManagedFreshStepDiagnostic['stage'];
+  readonly journal?:ManagedSetupStepJournal;
+  constructor(error:unknown,stage:ManagedStepDiagnostic['stage']|ManagedFreshStepDiagnostic['stage'],journal?:ManagedSetupStepJournal) {
     const code=managedDiagnostic(error);super(code);this.code=code;this.stage=stage;this.journal=journal;
   }
 }

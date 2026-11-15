@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
+import { configureFreshSetup } from './fresh-setup-fixture.ts';
 
 export async function managedBrowser(options:{chromium:string;root:string;artifacts:string;url:string}) {
   const {root,artifacts,url}=options,profile=`${root}/browser`;
@@ -97,10 +98,11 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>guest('page','!document.querySelector("[data-testid=state-loading],[data-testid=detail-loading]")&&!!document.querySelector("[data-testid=empty-state],[data-testid=plan-list-heading],[data-testid=plan-title]")'),Boolean,'board initial read settled');
     };
     const configure=async()=>{
-      await openRail();await guestClick('panel','[data-testid="setup-inspect"] button');
-      await wait(()=>guest('panel','!!document.querySelector("[data-testid=setup-review]")'),Boolean,'configuration consent');await shot('configuration-review');
-      await guestClick('panel','[data-testid="setup-ack"] [role="checkbox"]');await guestClick('panel','[data-testid="setup-confirm"] button');
-      await wait(()=>guest('panel','!!document.querySelector("[data-testid=setup-disable]")||(!document.querySelector("[data-testid=setup-needed]")&&!document.querySelector("[data-testid=setup-panel]"))'),Boolean,'configured');
+      await openRail();
+      await configureFreshSetup({click:selector=>guestClick('panel',selector),wait:async(condition,label)=>{
+        await wait(()=>guest('panel',`(()=>{const d=document;return ${condition}})()`),Boolean,label,180000);
+        if(label==='fresh review')await shot('configuration-review');
+      }});
       await openBoard();await guestClick('page','[data-testid="setup-section"] > summary');
       await wait(()=>guest('page','document.querySelector("[data-testid=setup-section]")?.open'),Boolean,'configured Setup disclosure open');
       await wait(()=>guest('page','!!document.querySelector("[data-testid=setup-disable]")'),Boolean,'configured Setup facts');await shot('configured');

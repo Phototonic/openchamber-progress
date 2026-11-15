@@ -283,6 +283,37 @@ function readOf(rows: RunRow[], counts: Partial<RunRead['counts']> = {}, extra: 
 const panel = (read: RunRead | null, more: RunRow[] = [], extra: Partial<RunsPanel> = {}): RunsPanel => ({ state: read ? 'ready' : 'unavailable', read, featured: read?.data ?? [], more, hasMore: false, paging: false, pageError: false, shown: 0, reconciling: false, failure: null, historyRequestFailed: false, continuation: false, baselines: new ExecutionBaselines(), showMore() {}, retryHistory() {}, dismissLoss() {}, lossDismissal: 'idle', lossDismissalFailure: null, ...extra });
 const input = (extra: Partial<RosterInput> = {}): RosterInput => ({ surface: 'panel', plan, facts: planFacts(plan, null, plan.sourceId), census: censusFor('A', alpha.directory, snap()), runs: null, verified: true, currentSession: 'A', ...extra });
 
+test('Running absent from a complete current census is qualified without changing facts or counts', () => {
+  const rows = ['running', 'succeeded', 'failed', 'interrupted', 'unknown'].map((state, i) =>
+    run(state as RunRow['ran']['state'], { id: `absent-${i}`, childSessionId: `absent-${i}` }));
+  const runs = panel(readOf(rows));
+  const complete = ready(censusFor('A', alpha.directory, snap([rec('A', null)])));
+  const project = (census: Census) => rosterFor(input({ census, runs }))!;
+  const entries = (r: ReturnType<typeof project>) => [...r.featured, ...r.earlier];
+  const absent = project(complete);
+  const running = entries(absent).find(e => e.runId === 'absent-0')!;
+  assert.equal(running.ran.notSeen, true);
+  assert.equal(running.ran.label, 'Running');
+  assert.deepEqual(running.ran.time, ranOf(rows[0], null).time);
+  assert.equal(running.ran.duration, null);
+  assert.ok(entries(absent).filter(e => e !== running).every(e => !e.ran.notSeen), 'terminal and unknown runs are never qualified');
+  const censuses: Census[] = [
+    { state: 'loading', rootId: 'A' },
+    { state: 'unavailable', rootId: 'A', reason: 'error' },
+    ...(['coverage', 'rows', 'records', 'depth', 'conflict', 'cycle'] as const).map(gap => ({ ...complete, gaps: [gap] })),
+  ];
+  for (const census of censuses) {
+    const roster = project(census);
+    assert.ok(entries(roster).every(e => !e.ran.notSeen), JSON.stringify(census));
+    assert.deepEqual(roster.summary, absent.summary, 'absence never changes counts');
+  }
+  const present = project(censusFor('A', alpha.directory, snap([rec('A', null), rec('absent-0', 'A', { activity: 'running' })])));
+  assert.equal(entries(present).find(e => e.runId === 'absent-0')!.ran.notSeen, undefined, 'reappearing clears qualifier');
+  assert.deepEqual(present.summary, absent.summary);
+  assert.deepEqual(project(complete).summary, absent.summary);
+  assert.deepEqual(runs.read?.data, markLatest(rows), 'recorded outcomes remain untouched');
+});
+
 test('defect A: no plan in scope means no roster at all, even with running children and run rows', () => {
   const read = readOf([run('running'), run('succeeded')]);
   // Two host children, one running (C1), plus recorded runs: still nothing without a plan.

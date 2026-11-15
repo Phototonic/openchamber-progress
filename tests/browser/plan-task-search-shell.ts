@@ -33,6 +33,7 @@ import { CORE_ITEMS, FINISHED_ITEMS, MANY_ITEMS } from './focus-controls-fixture
 import { seedMapAttribution } from '../fixtures/dependency-map-attribution.ts';
 import { seedDesignFixture } from '../fixtures/design-refactor.ts';
 import { isolatedEnvironment } from '../fixtures/managed.ts';
+import { freshSetupFixture } from './fresh-setup-fixture.ts';
 
 const LIGHT = { mode: 'light', tokens: { background: '#fafafa', elevated: '#ffffff', foreground: '#202124', muted: '#64676e', subtle: '#74777e', border: '#dedfe3', hover: '#f0f1f3', selection: '#e7eefb', focus: '#376bc4', primary: '#316ac3', mutedSurface: '#f3f4f6', elevatedForeground: '#202124', active: '#e7e9ed', selectionForeground: '#173964', primaryForeground: '#ffffff', primaryText: '#24579e', successText: '#237044', warningText: '#855900', errorText: '#ad3030', infoText: '#24579e', success: '#27824d', warning: '#a66c00', error: '#c23d3d', info: '#316ac3', font: 'system-ui, sans-serif', mono: 'monospace', radius: '6px' } };
 const DARK = { background: '#191b20', elevated: '#24272e', foreground: '#e6e8ee', muted: '#a4a9b4', subtle: '#9298a4', border: '#414650', hover: '#343944', selection: '#293d60', focus: '#90b8ff', primary: '#83aff7', mutedSurface: '#24272e', elevatedForeground: '#e6e8ee', active: '#3b4350', selectionForeground: '#e0ebff', primaryText: '#a6c7ff', successText: '#86dca3', warningText: '#e8c372', errorText: '#ff9e9e', infoText: '#a6c7ff', success: '#6fc58c', warning: '#d9b367', error: '#ee8989', info: '#83aff7' };
@@ -94,8 +95,8 @@ addEventListener('message',async e=>{
    if(failing.reject){fail(failing.code??'NO_SERVICE',failing.error??'Service entry is missing.');return}
    const r={status:failing.status??503,body:JSON.stringify({error:failing.code??'unavailable'})};record(f,q,r,0);result(r);return}
   if(failing)failing.skip--;
-  if(window.__keyboardFocus&&q.path.startsWith('/v1/setup')){const r=qa.setupReply(q);qa.intercepted.push({frame:f,method:q.method,path:q.path,status:r.status,at:t0});result(r);return}
-  const forward=async()=>{if(qa.managedSetupReply&&q.path.startsWith('/v1/setup'))return qa.managedSetupReply(q);const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
+  if(window.__keyboardFocus&&!qa.freshSetup&&q.path.startsWith('/v1/setup')){const r=qa.setupReply(q);qa.intercepted.push({frame:f,method:q.method,path:q.path,status:r.status,at:t0});result(r);return}
+  const forward=async()=>{if(qa.freshSetup&&q.path.startsWith('/v1/setup')){const r=await fetch('/fresh-setup',{method:'POST',body:JSON.stringify(q)});return r.json()}if(qa.managedSetupReply&&q.path.startsWith('/v1/setup'))return qa.managedSetupReply(q);const r=await fetch('/service',{method:'POST',body:JSON.stringify({request:q,store:qa.store})});if(!r.ok)throw new Error('proxy');const reply=await r.json();
    // Labelled legacy-detail seam: optional aggregate metadata is absent, so readDetail cannot
    // construct its authoritative snapshot/identity. Other wire identity validation stays intact.
     if(q.path==='/v1/plan'&&reply.status===200&&qa.stripDetailSnapshot===f){const b=JSON.parse(reply.body);delete b.plan.counts;reply.body=JSON.stringify(b)}
@@ -169,7 +170,13 @@ async function serve(f: Fixture, built: boolean) {
   const base = `http://127.0.0.1:${port}`;
   const call = (route: string, body?: unknown) => fetch(base + route, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: 'Bearer fixture-only', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(8000) });
   for (const end = Date.now() + 10_000; ;) {
-    try { const h = await (await call('/health')).json(); if (h.ready && h.planTaskSearch === 1) break; } catch {}
+    try {
+      const h = await (await call('/health')).json();
+      if (h.ready && h.planTaskSearch === 1) break;
+      // Health intentionally does not admit storage. Match the current client's
+      // explicit Setup admission before waiting for ready capabilities.
+      if (h.state === 'starting') await call('/v1/setup');
+    } catch {}
     if (Date.now() > end) throw new Error('search fixture service did not become ready with planTaskSearch:1');
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -236,6 +243,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     const r = await services[store === 1 ? 1 : 0].call(q.path + (query ? `?${query}` : ''), q.body ? JSON.parse(q.body) : undefined);
     return { status: r.status, body: await r.text() };
   };
+  const freshSetup = freshSetupFixture();
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
@@ -258,6 +266,10 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
         res.end('{}');
       }
       else if (/^\/ui\/(page|panel|status)\/(index\.html|main\.js)$/.test(url.pathname)) { res.setHeader('content-type', url.pathname.endsWith('.js') ? 'text/javascript' : 'text/html'); const isPreview = previewRoot && /^\/ui\/(page|panel)\/main.js$/.test(url.pathname); let body = (isPreview ? previewPrefix : '') + readFileSync(isPreview ? `${previewRoot}/main.js` : path.join(design.guestRoot ?? '.', url.pathname.slice(1)), 'utf8'); if (url.pathname.endsWith('.html')) body = body.replace('</body>', preferenceBarrier + '</body>'); res.end(body); }
+      else if (url.pathname === '/fresh-setup' && req.method === 'POST') {
+        let body = ''; for await (const part of req) body += part;
+        res.setHeader('content-type','application/json');res.end(JSON.stringify(await freshSetup.reply(JSON.parse(body))));
+      }
       else if (url.pathname === '/service' && req.method === 'POST') {
         let body = ''; for await (const part of req) body += part;
         const { request, store } = JSON.parse(body);
@@ -312,7 +324,7 @@ export async function startSearchShell(built = false, reportingSetup = false, mo
     if (!r.ok) throw new Error(`fixture ${action} failed (${r.status})`);
   }
   return {
-    port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
+    freshSetup, port: (server.address() as { port: number }).port, storeId: f.storeId, secondStoreId: second.storeId, source: f.alpha.id,
     previewHash: previewRoot ? createHash('sha256').update(previewPrefix).update(readFileSync(`${previewRoot}/main.js`)).digest('hex') : null,
     largePlan: replay, probeLargePlan, graphProbes,
     mapAttribution: attribution,

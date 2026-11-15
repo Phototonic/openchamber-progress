@@ -1,9 +1,98 @@
-# Bounded managed migration contract
+# Bounded managed setup contract
 
-This is the version-1 wire / format-2 journal contract for the step engine and
-Setup client. The backend endpoint and bounded HTTP workers are implemented;
-portable query accounting is **not a native performance result**. Client rendering
-and native acceptance remain separate release-integration gates.
+## Fresh consumer contract (wire 2 / journal 3)
+
+Fresh setup is a separate family on the same route: `ManagedFreshStepRequest`,
+`ManagedFreshStepResponse`, `ManagedFreshReview`, `ManagedFreshStepProgress` and
+`ManagedFreshStepJournal`. `managedFreshStepRequest` and
+`parseManagedFreshStepJournal` are strict fresh-only parsers; the existing
+`managedStepRequest` / `parseManagedStepJournal` remain migration-only. The
+transport dispatcher uses `managedSetupStepRequest`. Do not widen version-1
+shapes or translate a wrong-family journal. `managedFreshSteps: 1` is independent
+of `managedMigrationSteps: 1`; the integrated service advertises both on every OS.
+Setup projects format 3 only as optional `delivery.freshProgress`.
+Before a fresh journal exists, `delivery.migration` is `none` and both progress
+fields are omitted. Fresh progress is projected only after prepare settles, with
+non-null lastCompleted; it never appears in `migrationProgress`. Retained review
+capture is freshly observed when the review can do so within budget, otherwise
+unknown. Prepare/status projections without an observation remain unknown.
+
+The fresh review/progress disclose `planKind: fresh`, `storeMode` (`create` or
+`retain`), `sourceMode` (`create` or `reuse`), `capturePolicy` (`enable-new` or
+`preserve`) and the frozen plan. Review also discloses package version and capture.
+Missing identities are generated once per private inspection session, then frozen
+by consent; retained identities are verified and reused. Managed install ID uses
+the existing `managed-` + SHA-256 of JSON `[storeId, source]` derivation.
+No mutation accepts replacement paths or IDs. Proposed Binding fields never grant
+ordinary Store, selected-binding or companion admission.
+
+`managedFreshPlan` defines exactly four all-batch-zero grammars: new DB with missing
+directory uses prepare, store-directory, create-store, expectation, register-source,
+publish-binding, enable, reconcile; new DB in a reviewed directory omits only
+store-directory; retained DB/new source uses prepare, expectation, register-source,
+publish-binding, reconcile; retained DB/reused source omits register-source too.
+Retained plans never change capture. Expectation always precedes source registration.
+
+Format 3 retains immutable `fresh` review facts: store/source modes, capture policy,
+directory/database and fixed journal/wal/shm sidecar claims, matched source or null,
+reviewed capture state and absent selector/journal/canonical legacy claims.
+SQLite file claims are native-object-only (`digest: null`), not unbounded hashes
+of the database/sidecar bytes; Store owns schema and identity validation.
+The target digest is canonical `{binding, planKind, fresh, expectation}`. Plan and
+full-request hashes retain the existing canonical owner. Separate `created`
+directory/database native-object checkpoints are observations, excluded from that
+target digest. Only settlement of the matching durable creation intent may fill
+one; it cannot replace an earlier identity or change original consent/facts.
+Only pending/complete coarse phases exist, never fabricated removal evidence.
+
+### Frozen storage primitive agreement
+
+The storage lane implements `Store.createFresh(file, {storeId, validate})`, returning
+a normal Store handle. `storeId` is the frozen proposed ID; `validate` is mandatory
+full same-target/intent validation, called in the helper's read-only preflight
+scope. Creation is exclusive, uses mode 0600/private inherited Windows ACLs, checks
+all fixed sidecars absent, ends the preflight before reservation, and freshly checks
+the reserved file/object/ancestors before initialization. The initial schema
+transaction installs the frozen ID, capture **off**, schema 2 and receipt index.
+It registers no source. Ordinary constructor defaults/partial-file refusals stay
+unchanged. Failed/partial files are retained, never reopened for initialization.
+Immediately before either exclusive creation, after the final read-only preflight,
+the helper rechecks room for three launches and 8.5 seconds: creation/new-object
+admission plus checkpoint validation and readback, at 2.5 seconds each with one
+second headroom. Slow preflight can therefore refuse while the target is still
+absent and safely retryable; the earlier engine reservation alone is insufficient.
+
+The platform lane extends `privateDirectory(file, false, {exclusive: true,
+validate})`. Mandatory validation shares its read-only path preflight; that actual
+scope ends before the creation query. An existing/unexpected directory refuses,
+never becomes adopted authority. The caller checkpoints the resulting identity
+only through the corresponding durable intent. A crash before that checkpoint
+requires manual diagnosis, not automatic adoption. No raw security-backend bypass,
+claim file, repair, new schema or cached ACL authority is introduced.
+
+These interfaces are frozen for consumers. Portable full-engine measurements are
+prepare/store-directory/create-store 6 launches each, expectation/register-source/
+publish-binding/enable/reconcile 5 each, settled replay 1 and normal controls 3.
+Fresh inspection pages measure 1 each (retained roots can take 2); ordinary Setup
+status measures 3 before selection/4 after. Injected failure settlement remains
+within 6. These substitute only the OS-spawn boundary, not native timing or NTFS
+ACLs. Native CI tests default/custom empty stores undelayed, the default store
+with 2.5-second helpers, retained reused sources with capture on/off, and a retained
+new source with capture off. Requests assert six launches, eight seconds undelayed
+or below twenty seconds delayed, and concurrent zero-query health.
+The six-launch gate includes all validation,
+actual attempts, creation, readback and failure settlement. Stop for a technical
+amendment if safe creation cannot fit. Format-3 observation before storage exists
+requires the fresh journal reader, not `readBinding` on an absent directory.
+Rollback retains journals/data and requires a fresh-capable build for recovery.
+
+The sections below retain the wire-1 / format-2 migration contract. Wire 2 and
+format 3 extend the same engine, worker and single Setup driver, not a parallel
+installer. Backend HTTP and rendered synthetic-shell journeys are integrated;
+portable query accounting is **not a native performance result**. Fresh default
+native recovery tests prepare timeout, replay and restart/pause/resume before and
+after creation; migration tests additionally exercise slower/late-worker refusal.
+Native acceptance and independent trust-boundary/error-path review remain delivery gates.
 
 ## Owners and invariants
 
@@ -52,7 +141,7 @@ generated runtime integration belongs with the engine/client deliverable.
 Advertise literal `managedMigrationSteps: 1` in authenticated health (including
 starting) and `SetupRead.delivery`. This capability says the protocol exists,
 not that a source is admitted. POST `/v1/setup/managed-step` accepts only the
-`ManagedStepRequest` union. Unknown keys/versions/actions, non-safe-integer or
+`ManagedSetupStepRequest` union (wire 1 migration, wire 2 fresh). Unknown keys/versions/actions, non-safe-integer or
 negative sequences/batches, over-limit UTF-8 bodies/paths/cursors, NUL paths and
 invalid identities refuse before work. `operationId` is a client-generated
 lowercase UUID v4; review/request/target/plan digests are lowercase SHA-256 hex.
@@ -102,6 +191,20 @@ and may expire on restart. No caller paths occur on mutation/continuation inputs
   may report unknown capture, never a guessed off/on value. Explicit inspection
   refresh is read-only, not a second background migration driver.
 
+Ordinary Setup may include `delivery.planKind: fresh` as a presentation-only hint
+even when partial fresh setup has no usable progress. Absence retains the older
+migration presentation; the hint grants no admission or recovery authority.
+Legacy-folder absence supplies this hint only when no migration record exists.
+An existing record's format decides its family; an unreadable format has no hint.
+A refused fresh Store observation clears public fresh progress and reports
+unavailable for manual diagnosis only for an unfinished format-3 journal with
+`created.database === null`, rather than offering Resume on uncheckpointed creation
+evidence alone. Checkpointed and complete journals retain pending/complete progress,
+unknown capture and the read diagnostic. Private journal state is retained.
+Trusted internal hints from the other
+journal family fall back to the request's cold reader; the durable journal must
+still match the wire version.
+
 All successful requests use HTTP 200 and `ManagedStepResponse`. A recognized
 request refusal uses the same envelope with `disposition: refused`, non-null
 `error` and available same-target progress. Validation errors are 400; stale
@@ -121,7 +224,9 @@ crash is treated as effect uncertainty and requires explicit observation/recover
 Old-shaped `/v1/setup/managed-migrate` returns exactly HTTP 409
 `{"error":"managed-action-required"}` with **zero security spawns and migration
 writes**, before candidate discovery. It is never a partial-success 200.
-`managed-inspect` and `managed-configure` remain supported for fresh configuration
+On Windows `managed-inspect` and `managed-configure` also return exactly that 409
+object with zero workers, security launches or product writes before body parsing.
+On Linux/macOS they remain supported for fresh configuration
 with no canonical legacy installation or migration journal. They retain the
 existing controller's nonce-bound review, explicit confirmation and fresh locked
 revalidation. Presence of legacy discovery or any journal refuses these routes
@@ -142,25 +247,22 @@ Retain independently bounded capture-off control. No unnegotiated fallback from
 the migration client to the old route. Delivery revision stays 1; the new literal
 capability is independent.
 
-### Fresh-configuration compatibility limit
+### Non-Windows fresh-configuration compatibility
 
-Fresh inspection/configuration is an explicit exception to the step-request
-budget and worker boundary in this release. It keeps the synchronous 1.3.0
+The old Linux/macOS inspection/configuration routes remain outside the negotiated
+step-request budget and worker boundary. They keep the synchronous 1.3.0
 controller and security timeouts, holding the same target-derived scope **and**
 Store writer slots for the entire request, including publication and cleanup.
 A busy slot refuses before controller admission; fresh configuration cannot race
 a migration or capture worker. The fence releases on completion/failure, not on
 client disconnection. Partial bootstrap still has the existing recovery limits.
 
-Portable Windows-helper accounting measures 3 actual launches for empty-store
-inspection and 24 for successful fresh configuration, not a six-launch claim.
-At roughly 0.3 seconds per launch configuration may fit the 20-second host limit,
-but this is not a native latency guarantee. Slow PowerShell can exceed that limit
-and synchronous configuration can delay health. A timeout is not rollback:
-inspect state before explicitly retrying; never reset or repair it automatically.
-Linux/macOS do not launch PowerShell. The follow-up is a fresh plan variant on
-the step engine (`prepare`, `expectation`, `publish-binding`, `enable`, `reconcile`),
-not permission to weaken current authorization or silently split a confirmed call.
+Historical portable Windows-helper accounting measured 3/24 launches for these
+old routes. Windows now refuses them before work; the current UI uses negotiated
+fresh steps on all platforms. A compatibility timeout is not rollback: inspect
+state before explicitly retrying; never reset or repair it automatically.
+Linux/macOS do not launch PowerShell. No old-route fallback is allowed from the
+fresh client if its capability is absent.
 
 The five-second HTTP request/header timeouts limit receipt of bytes (HTTP 408),
 not handler execution after body parsing. They are not a five-second setup
@@ -169,7 +271,7 @@ launch and 350 ms subsequent launches: both fresh inspection and confirmation
 complete beyond five seconds but below the host limit. Real helper timeouts
 remain `windows-security-unavailable` outside step mode and
 `managed-step-deadline` inside it, not generic `storage` failures. This does not
-remove the slow-helper or synchronous-health limitation above.
+authorize old Windows routes or remove bounded refusals for persistently slow helpers.
 
 ## Request budgets and measured-stage split
 
