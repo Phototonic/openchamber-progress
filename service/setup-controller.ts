@@ -284,7 +284,7 @@ export class SetupController {
       targets:targets?{configRoot:targets.configRoot,dataRoot:targets.dataRoot,storeRoot:targets.storeRoot}:null,
       version:null,activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:this.managedDiagnostic?[this.managedDiagnostic]:[],
       ...(this.lastAction?{lastAction:{...this.lastAction}}:{}),
-      delivery:{kind:'managed',revision:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:migration.state,mode:'unknown',observation:'unknown',expectedVersion:null}};
+      delivery:{kind:'managed',revision:1,managedMigrationSteps:1,managedFreshSteps:1,configuration:this.managedDiagnostic?'invalid':b?'configured':'unconfigured',migration:migration.state,mode:'unknown',observation:'unknown',expectedVersion:null}};
     if(this.migrationDiagnostic&&!base.diagnostics.includes(this.migrationDiagnostic))base.diagnostics.push(this.migrationDiagnostic);
     if(this.store&&b) {
       base.reportingIdentity={storeId:b.storeId,sourceId:b.source.id,verified:b.source.verified};

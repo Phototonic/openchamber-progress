@@ -53,7 +53,9 @@ function replayBegin(env:NodeJS.ProcessEnv,request:Extract<ManagedSetupStepReque
 export function beginManagedStep(env:NodeJS.ProcessEnv,payload:Payload,request:Extract<ManagedSetupStepRequest,{action:'begin'}>,
   budget:PlatformRequestBudget,session?:InspectionSession):ManagedBeginResult {
   requirePlatformWriteBoundary();
-  if(session)need((request.version===2)===('family' in session),'managed-step-unsupported');
+  // An unrelated inspection cannot revoke an exact durable begin receipt. It
+  // grants no authority in this family; only the matching reader may replay it.
+  if(session&&(request.version===2)!==('family' in session))return replayBegin(env,request);
   if(!session?.review||session.review.expected!==request.expected)return replayBegin(env,request);
   let reviewed:ReturnType<typeof validateReview>;
   try{reviewed=validateReview(env,payload,session);}

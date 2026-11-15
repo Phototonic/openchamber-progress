@@ -4,7 +4,7 @@ import {type Socket} from 'node:net';
 import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {SetupController} from './setup-controller.ts';
 import {PlatformRequestBudget,withPlatformRequestBudget,writerTargetPort} from '../shared/platform.ts';
-import {MANAGED_STEP_LIMITS,managedSetupStepRequest,type ManagedStepAccounting,type ManagedSetupStepResponse,type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedInspection,type ManagedFreshInspection} from '../shared/managed-steps.ts';
+import {MANAGED_STEP_LIMITS,MANAGED_FRESH_INSPECTION_STEPS,managedSetupStepRequest,type ManagedStepAccounting,type ManagedSetupStepResponse,type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedInspection,type ManagedFreshInspection} from '../shared/managed-steps.ts';
 import {type ManagedSetupAction} from '../shared/progress.ts';
 import {canonical,digest} from '../shared/store.ts';
 import type {Payload,Action} from '../setup/lifecycle.ts';
@@ -120,8 +120,13 @@ export function runSetupRequestWorker():void {
           throw Object.assign(new Error('managed-inspection-expired'),{code:'managed-inspection-expired'});
         if(parsed.cursor&&input.inspection&&('family' in input.inspection)!==(parsed.version===2))
           throw Object.assign(new Error('family'),{code:'managed-inspection-expired'});
-        const inspected=parsed.version===2?inspectManagedFreshStep(input.env,payload(),parsed.cursor?input.inspection as ManagedFreshInspectionSession:undefined,parsed.storeRoot):
-          inspectManagedStep(input.env,payload(),parsed.cursor?input.inspection as ManagedInspectionSession:undefined,parsed.storeRoot);
+        let inspected;
+        try{inspected=parsed.version===2?inspectManagedFreshStep(input.env,payload(),parsed.cursor?input.inspection as ManagedFreshInspectionSession:undefined,parsed.storeRoot):
+          inspectManagedStep(input.env,payload(),parsed.cursor?input.inspection as ManagedInspectionSession:undefined,parsed.storeRoot);}
+        catch(error){
+          if(parsed.version!==2)throw error;
+          throw new ManagedStepFailure(error,MANAGED_FRESH_INSPECTION_STEPS[parsed.cursor?input.inspection!.stage:0]??'roots',input.inspection?.operation);
+        }
         inspection=inspected.session;
         journal=inspection.operation;
         return stepResponse(parsed.version,{disposition:'observed',inspection:inspected.inspection,progress:inspected.progress,error:null,
