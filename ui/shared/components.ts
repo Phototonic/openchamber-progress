@@ -16,7 +16,8 @@ import { placeOf } from './scope.ts';
 import type { ReadFailure } from './source.ts';
 import type { DeviceView } from './model.ts';
 
-/** P1 applies these to the document element from Env.device; CSS remains responsive without hints.
+/** `applyDeviceHooks` (phone-layout.ts) applies these to the document element from the host's ready
+ * device hints; CSS remains responsive without hints.
  * Content/map owners consume the same attributes/variables, never introduce another layout owner.
  */
 export const PHONE_LAYOUT_HOOKS = Object.freeze({
