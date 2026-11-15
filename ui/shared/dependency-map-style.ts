@@ -2,6 +2,8 @@
 // stylesheet so Work Status, which never mounts the map, ships no map code.
 // Colours come only from host tokens; the shared stylesheet's reduced-motion and hidden-frame rules
 // (!important, style.ts) still stop the one map animation, so it never sets !important itself.
+import { PHONE_LAYOUT_HOOKS } from './components.ts';
+const POINTER = PHONE_LAYOUT_HOOKS.pointer;
 export const MAP_CSS = `
 /* Dependency map (one renderer for board and rail). No transitions: viewport changes and anchoring
    apply instantly. The only motion is working-arrow beads, under the map region's own reported-work
@@ -67,8 +69,25 @@ export const MAP_CSS = `
 .ap-map[data-frame="rail"] .ap-map-viewport{max-height:clamp(260px,58vh,480px)}
 .ap-map-world{position:relative}
 /* Interactive canvas: a fixed-height clipped viewport; the world is transformed, never scrolled */
-.ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:pinch-zoom;user-select:none;-webkit-user-select:none;overscroll-behavior:contain}
+.ap-map-viewport[data-interactive]{height:clamp(280px,60vh,600px);max-height:none;overflow:hidden;overflow:clip;border-top-left-radius:0;border-top-right-radius:0;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;overscroll-behavior:contain}
 .ap-map[data-frame="rail"] .ap-map-viewport[data-interactive]{height:clamp(240px,54vh,460px)}
+/* Touch: the interactive canvas owns its gestures (touch-action:none): one finger pans, two pinch the
+   map's own zoom (dependency-map-interaction.ts MAP_TOUCH); mouse, pen, wheel and keys are unchanged.
+   The page scrolls from everything around the canvas, so on a coarse pointer the canvas is held to
+   about half the frame height, leaving the header, toolbar and inspector as scroll handles. */
+.ap-map[data-pointer="coarse"] .ap-map-viewport[data-interactive]{height:clamp(220px,50vh,440px)}
+/* Coarse pointer (the host's device hint, else the pointer media query; presentation only): every map
+   control is at least 44 x 44 CSS px. Cards are already larger than that at the readable zoom. */
+.ap-map[data-pointer="coarse"] .ap-map-tool{min-width:44px;height:auto;min-height:44px}
+.ap-map[data-pointer="coarse"] .ap-map-tool-set{gap:4px}
+.ap-map[data-pointer="coarse"] .ap-map-toolbar{gap:6px 8px}
+.ap-map[data-pointer="coarse"] .oc-sdk-btn{min-width:44px;min-height:44px}
+.ap-map[data-pointer="coarse"] .ap-map-select{height:44px;font-size:16px}
+.ap-map[data-pointer="coarse"] :is(.ap-map-help-trigger,.ap-map-groups>summary){box-sizing:border-box;min-height:44px;padding-block:12px}
+.ap-map[data-pointer="coarse"] .ap-map-rel-item{min-height:44px;align-items:center}
+.ap-map[data-pointer="coarse"] .ap-map-rel-item>.ap-map-mark{margin-top:0}
+:root[${POINTER}="coarse"] .ap-map-switch .oc-sdk-btn{min-width:44px;min-height:44px}
+@media (pointer:coarse){:root:not([${POINTER}="fine"]) .ap-map-switch .oc-sdk-btn{min-width:44px;min-height:44px}}
 .ap-map-viewport[data-dragging]{cursor:grabbing}
 .ap-map-viewport[data-interactive] .ap-map-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .ap-map-viewport[data-interactive]:focus-visible{outline:2px solid var(--oc-focus);outline-offset:-3px}

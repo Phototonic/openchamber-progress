@@ -7,7 +7,7 @@
 import { DependencyMap, mapReadingKey, type MapClaim, type MapSnapshot, type MapPicture } from './dependency-map.ts';
 import { DependencyMapLayout, type MapLayout } from './dependency-map-layout.ts';
 import type { DerivedTask } from './dependency-derivation.ts';
-import { DependencyMapInteraction, MAP_PANEL, MAP_ZOOM, mapPanelWidth, mapAnnouncementText, type MapAnnouncement, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
+import { DependencyMapInteraction, MAP_PANEL, MAP_TOUCH, MAP_ZOOM, mapPanelWidth, mapAnnouncementText, type MapAnnouncement, type MapInteractionCommand, type MapInteractionEvent, type MapInteractionState } from './dependency-map-interaction.ts';
 import { mapAttribution } from './dependency-map-attribution.ts';
 import { button, el, lifecycleBadge, recordedLabel, revealCurrentTask, testid } from './components.ts';
 import type { ViewContext } from './app.ts';
@@ -73,6 +73,25 @@ export interface DependencyMapViewInput extends MapSnapshot {
    * (`showsLiveness`). Absent or false: beads stay stationary. Read-only previews never pass it.
    */
   motion?: boolean;
+  /**
+   * Coarse primary pointer (`mapCoarsePointer`: the host's optional device hint, else the
+   * `(pointer: coarse)` media query). Presentation only: 44 px controls, touch help wording and the
+   * region's `data-pointer`. Touch gestures follow each event's own pointer type, never this flag.
+   */
+  coarse?: boolean;
+}
+/** The host's pointer hint when it is one the phone layout accepts ('coarse' or 'fine'), else null.
+ * Same rule as `applyDeviceHooks`, so the map and the root `data-device-pointer` hook always agree. */
+const pointerHint = (device: ViewContext<unknown>['device']): 'coarse' | 'fine' | null => {
+  const hint: unknown = device?.pointer;
+  return hint === 'coarse' || hint === 'fine' ? hint : null;
+};
+/** Coarse primary pointer: the host's optional `ready.device.pointer` hint wins; without a usable
+ * hint, the `(pointer: coarse)` media query. Never an identity or permission signal. */
+export function mapCoarsePointer(device: ViewContext<unknown>['device'], media: ((query: string) => { matches: boolean }) | undefined = globalThis.matchMedia?.bind(globalThis)): boolean {
+  const hint = pointerHint(device);
+  if (hint) return hint === 'coarse';
+  return !!media?.('(pointer: coarse)').matches;
 }
 export interface DependencyMapView {
   /** One paint into a (possibly new) host. State/geometry remain frame-owned, not DOM-owned. */
@@ -116,6 +135,7 @@ const EN = {
   planView: 'Plan view', list: 'List', map: 'Map', under: 'under 1%', viewList: 'View as list', retry: 'Try again', heading: 'Dependency map',
   closeDetails: 'Close task details', helpTitle: 'Map help and definitions', clearKey: ' clear selection · ',
   panHelp: '. Click the background to clear selection; drag it or scroll to pan. Tab leaves the map.',
+  touchHelp: 'Touch: tap a card to select it, tap the background to clear the selection, drag with one finger to move the map and pinch with two to zoom. The buttons above the map do the same without gestures.',
   panelHelp: 'Select a card to see its recorded prerequisites, dependents and reported details in a panel at the map’s right edge. Close the panel, press Escape or click the background to clear the selection.',
   arrowKey: 'Arrow key. Blue beads: the prerequisite is reported working and the task it points to is still waiting or blocked. Moving beads are a looping sign of reported work, not progress and not proof that the work is happening now; still beads mean the same (they stop when motion is reduced, on large or zoomed-out maps, and outside a selected task’s chain). A bar before the arrowhead: the prerequisite is explicitly blocked. Dashed: the prerequisite was skipped. Faint: the prerequisite is done. Beads and bars appear only on an active plan’s current picture.',
   blockedSelection: ' An explicitly blocked task is never shown as ready, whatever its prerequisites.',
@@ -179,6 +199,7 @@ const RU: typeof EN = {
   planView: 'Вид плана', list: 'Список', map: 'Карта', under: 'менее 1%', viewList: 'Показать списком', retry: 'Повторить', heading: 'Карта зависимостей',
   closeDetails: 'Закрыть сведения о задаче', helpTitle: 'Справка и определения карты', clearKey: ' снять выбор · ',
   panHelp: '. Нажмите на фон, чтобы снять выбор; перетаскивайте или прокручивайте для сдвига. Tab выводит с карты.',
+  touchHelp: 'Касание: коснитесь карточки, чтобы выбрать её, коснитесь фона, чтобы снять выбор, ведите одним пальцем, чтобы сдвинуть карту, и сводите или разводите два пальца для масштаба. Кнопки над картой делают то же без жестов.',
   panelHelp: 'Выберите карточку, чтобы увидеть записанные зависимости, зависимые задачи и сообщённые сведения в панели справа на карте. Закройте панель, нажмите Escape или на фон, чтобы снять выбор.',
   arrowKey: 'Обозначения стрелок. Синие точки: по отчёту зависимость в работе, а задача, на которую указывает стрелка, ещё ожидает или заблокирована. Движение точек — циклический знак сообщённой работы, а не прогресс или доказательство работы прямо сейчас; неподвижные точки означают то же самое (движение останавливается при уменьшении анимации, на больших или отдалённых картах и вне цепочки выбранной задачи). Черта перед наконечником: зависимость явно заблокирована. Пунктир: зависимость пропущена. Бледная стрелка: зависимость выполнена. Точки и черты появляются только на текущей картине активного плана.',
   blockedSelection: ' Явно заблокированная задача никогда не показывается готовой независимо от зависимостей.',
@@ -590,8 +611,19 @@ export function createDependencyMapView(): DependencyMapView {
     if (v.hasPointerCapture(pointerId)) { releasing = true; try { v.releasePointerCapture(pointerId); } finally { releasing = false; } }
   }
   // Frame-owned gesture listeners survive root replacement; capture is rebound to each new viewport.
-  const onMove = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } }); };
-  const onEnd = (e: PointerEvent) => { const b = binding(); if (b && b.state().dragging === e.pointerId) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' }); };
+  // A finger that started on the canvas: whether this touch gesture panned or pinched, so the card's
+  // native click after it is not also a selection. Keyboard clicks (detail 0) are never suppressed.
+  let touchGesture: { starts: Map<number, { x: number; y: number }>; panned: boolean } | null = null, suppressTap = false;
+  const gestureOf = (id: number) => { const b = binding()?.state(); return !!b && (b.dragging === id || b.pinching === id); };
+  const onMove = (e: PointerEvent) => {
+    const start = touchGesture?.starts.get(e.pointerId);
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) >= MAP_TOUCH.slop) touchGesture!.panned = true;
+    const b = binding(); if (b && gestureOf(e.pointerId)) b.dispatch({ type: 'pointer-move', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY } });
+  };
+  const onEnd = (e: PointerEvent) => {
+    if (touchGesture?.starts.delete(e.pointerId) && !touchGesture.starts.size) { suppressTap = touchGesture.panned; touchGesture = null; }
+    const b = binding(); if (b && gestureOf(e.pointerId)) b.dispatch({ type: 'pointer-end', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, cancelled: e.type !== 'pointerup' });
+  };
   const onFocusIn = (e: FocusEvent) => { const t = e.target as Element | null; if (t?.closest) { binding()?.focusOwner(!!t.closest('[data-testid="map-region"],[data-map-focus-owner]')); binding()?.dispatch({ type: 'canvas-focus', id: t.closest<HTMLElement>('[data-testid="map-viewport"] button[data-task]')?.dataset.task ?? null }); } };
   const onBlur = () => binding()?.focusOwner(false);
   function listen(doc: Document) {
@@ -636,6 +668,7 @@ export function createDependencyMapView(): DependencyMapView {
     region.dataset.revision = String(p?.graph.revision ?? '');
     region.dataset.tasks = String(layout?.order.length ?? 0); region.dataset.edges = String(layout?.edges.length ?? 0);
     if (b) region.dataset.interactive = '';
+    if (v.coarse) region.dataset.pointer = 'coarse';
 
     const listButton = (parent: Element) => button(parent, 'map-list', c.viewList, () => v.onList(v.selected), 'outline');
     const retryButton = (parent: Element) => button(parent, 'map-retry', c.retry, v.onRetry, 'outline');
@@ -908,17 +941,33 @@ export function createDependencyMapView(): DependencyMapView {
         if (dx || dy) { bb.dispatch({ type: 'pan', x: dx, y: dy }); applyViewport(); }
         revealInPage(card);
       });
-      // Background drag pans; cards are buttons and never start a drag.
+      // Mouse/pen: a background drag pans; cards are buttons and never start a drag. Touch: one finger
+      // pans from the background or a card (a tap still selects through the card's click), two pinch.
+      // Other controls inside the canvas (Show all tasks) keep their own touch behaviour.
       viewport.addEventListener('pointerdown', e => {
         const bb = binding(); if (!bb) return;
-        const background = !(e.target as Element).closest('button,a,select,input,textarea,summary');
-        bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background, primary: e.isPrimary && e.button === 0 && !e.ctrlKey && !e.metaKey });
+        const control = (e.target as Element).closest('button,a,select,input,textarea,summary');
+        const touch = e.pointerType === 'touch';
+        if (touch) {
+          if (control && !control.classList.contains('ap-map-card')) return;
+          if (!touchGesture) { touchGesture = { starts: new Map(), panned: false }; suppressTap = false; }
+          touchGesture.starts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          if (touchGesture.starts.size > 1) touchGesture.panned = true;
+          const box = viewport.getBoundingClientRect();
+          bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background: !control, primary: true, touch: true, origin: { x: box.left, y: box.top } });
+          return;
+        }
+        suppressTap = false;
+        bb.dispatch({ type: 'pointer-down', pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY }, background: !control, primary: e.isPrimary && e.button === 0 && !e.ctrlKey && !e.metaKey });
       });
       viewport.addEventListener('lostpointercapture', e => {
-        // Root replacement detaches this node: that loss is rebound, not a gesture end.
+        // Root replacement detaches this node: that loss is rebound, not a gesture end. Only the
+        // canvas's own capture counts: a card losing a finger's implicit capture to the canvas bubbles here.
         const bb = binding();
-        if (!releasing && viewport.isConnected && bb?.state().dragging === e.pointerId) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
+        if (e.target === viewport && !releasing && viewport.isConnected && bb && gestureOf(e.pointerId)) bb.dispatch({ type: 'pointer-end', pointerId: e.pointerId, cancelled: true });
       });
+      // A long press must never open the platform's callout or text selection over the canvas.
+      viewport.addEventListener('contextmenu', e => { if (touchGesture) e.preventDefault(); });
       // Wheel/trackpad pans inside the canvas only. Ctrl/Cmd (browser zoom, pinch) is left alone.
       viewport.addEventListener('wheel', e => {
         const bb = binding(); if (!bb || e.ctrlKey || e.metaKey) return;
@@ -1092,7 +1141,11 @@ export function createDependencyMapView(): DependencyMapView {
         card.setAttribute('aria-label', rel ? c.relative(name, rel === 'upstream' ? c.upstream : c.downstream) : name);
         // A click whose press moved focus onto this card has already had its name spoken.
         card.onpointerdown = () => { pointerFocused = document.activeElement === card ? null : id; };
-        card.onclick = () => { if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null; };
+        card.onclick = e => {
+          // The click a browser may still deliver after a finger panned or pinched is not a tap.
+          if (b && suppressTap && e.detail > 0) { suppressTap = false; pointerFocused = null; return; }
+          if (b) b.dispatch({ type: 'select', id }); else v.onSelect(id); pointerFocused = null;
+        };
         world.append(card);
         // Chain tag: a label on the card's top edge, outside its clipped content, so it never competes
         // with status words or chips. Decorative: the card's name carries the same words.
@@ -1275,6 +1328,7 @@ export function createDependencyMapView(): DependencyMapView {
       const nowrap = (...parts: (string | Node)[]) => { const n = el('span', 'ap-map-nowrap'); n.append(...parts); return n; };
       keys.append(el('strong', '', c.keys), k(c.arrowKeys), c.nearest, k('['), c.firstPrerequisite, k(']'), c.firstDependent, k('Escape'), c.clearKey, k('F'), c.fitKey, nowrap(k('+'), ' ', k('−'), c.zoomKey), c.panHelp);
       helpBody.append(keys);
+      if (v.coarse) helpBody.append(testid(el('p', '', c.touchHelp), 'map-touch-help'));
       if (panel) helpBody.append(el('p', '', c.panelHelp));
     }
     helpBody.append(el('p', '', c.arrows));
@@ -1341,10 +1395,11 @@ export function createDependencyMapView(): DependencyMapView {
         // A scrolled reader keeps the canvas where it was on screen when header text changes height.
         const page = viewport.ownerDocument.scrollingElement;
         if (before !== null && page && page.scrollTop > 0) { const delta = viewport.getBoundingClientRect().top - before; if (Math.abs(delta) >= 1) page.scrollTop += delta; }
-        // An active background drag continues on the replacement canvas.
-        const dragging = b.state().dragging;
-        if (dragging !== null && !viewport.hasPointerCapture(dragging)) {
-          try { viewport.setPointerCapture(dragging); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: dragging, cancelled: true }); }
+        // An active background drag (and a pinch's second finger) continues on the replacement canvas.
+        for (const pointer of [b.state().dragging, b.state().pinching]) {
+          if (pointer !== null && !viewport.hasPointerCapture(pointer)) {
+            try { viewport.setPointerCapture(pointer); viewport.dataset.dragging = ''; } catch { b.dispatch({ type: 'pointer-end', pointerId: pointer, cancelled: true }); }
+          }
         }
         tryFocus(true);
         return true;
@@ -1505,6 +1560,9 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
   });
   const forget = () => { cancelListTransition(); view.clearAnnouncements(); view.clearHelp(); map.reset(); geometry.clear(); interaction.reset(); lastLayout = lastGraph = null; packedWidth = 0; reveal = null; };
   addEventListener('resize', () => { if (shown) latest?.setUi({}); });
+  // Without a host device hint the coarse presentation follows the pointer media query; repaint when it
+  // changes (a hint change already repaints through the ready context).
+  globalThis.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => { if (shown && !pointerHint(latest?.device)) latest?.setUi({}); });
   // Hidden retirement leaves a ready picture but retires its pin and interaction.
   // Resume on the existing visible refresh cadence, then stop once active/current.
   // Unavailable pictures do not acquire a perpetual refresh-driven repaint.
@@ -1537,6 +1595,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
       const snapshot = map.value;
       const attribution = input.runs ? mapAttribution({ snapshot, request: input.runs.request, runs: input.runs.panel, census: input.census, liveSeq: vc.live.seq ?? 0 }) : new Map();
       const graph = snapshot.picture?.graph ?? null, width = canvasWidth || CARD_METRICS.width;
+      const coarse = mapCoarsePointer(vc.device);
       // Same graph: reuse the full-plan layout (edgeless packing only re-packs for a new canvas width).
       // Board selection panel: from the measured map and canvas widths, never from the selection.
       const panel = mapPanelWidth(frame, mapWidth, canvasWidth);
@@ -1554,6 +1613,8 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
             status: vc.reading?.status ?? 'all', viewport: { width: canvasWidth || CARD_METRICS.width, height: canvasHeight, cover: panel ? panel + MAP_PANEL.margin : 0 },
             // The board's large canvas never frames past 100%; the rail keeps its framing unchanged.
             ...(frame === 'board' ? { framingMax: MAP_ZOOM.fit } : {}),
+            // A coarse pointer frames at full size: 75% card text is too small at arm's length.
+            ...(coarse ? { readable: MAP_TOUCH.readable } : {}),
           });
         } finally { painting = false; }
       }
@@ -1564,7 +1625,7 @@ export function createMapFrame<U>(frame: 'board' | 'rail', showList: (vc: ViewCo
         facts: snapshot.picture?.facts ?? null, status: vc.reading?.status ?? 'all', group: state.group, selected: state.selected,
         onSelect: id => interaction.dispatch({ type: 'select', id }), onStatus: status => interaction.dispatch({ type: 'filters', status }),
         onGroup: group => interaction.dispatch({ type: 'filters', group }), onRetry: () => { map.pause(); vc.setUi({}); vc.retry(); }, onList: () => { view.clearHelp(); interaction.leave(true); },
-        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'),
+        motion: mapMotionPermitted(snapshot, vc.env.view, shown, document.visibilityState !== 'hidden'), coarse,
       });
     },
     afterPaint(root, vc, plan, listFocus) {
