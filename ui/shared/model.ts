@@ -120,7 +120,27 @@ export interface PlanView {
   document: DocumentRefView;
   /** Independent of agent progress revisions; absent on older services. */
   cleanup?: { state: 'visible' | 'archived'; revision: number };
+  /**
+   * Waiting-delegation token of this list row (shared/delegation-view.ts), independent of the
+   * progress revision. Absent: not requested or not supplied; null: supplied but unreadable.
+   * A detail overlay is painted only while its own token equals this one.
+   */
+  delegationToken?: string | null;
 }
+
+/** Display reason of a refused delegation; anything this version does not know is `other`. */
+export type IntentRefusal = 'changed' | 'structure' | 'closed' | 'assignment' | 'unverified' | 'other';
+/**
+ * Validated delegation overlay of one detail read (display only, never authority or activity).
+ * `waiting`: a current eligible pending/reserved declaration for `taskIds`; `refused`: its binding
+ * was refused; `clear`: none, bound, cancelled or invalidated; `unknown`: unavailable, legacy,
+ * unverifiable or unreadable evidence, which shows nothing rather than a guess.
+ */
+export type IntentView =
+  | { token: string; state: 'waiting'; taskIds: string[] }
+  | { token: string; state: 'refused'; taskIds: string[]; reason: IntentRefusal }
+  | { token: string; state: 'clear' }
+  | { token: string | null; state: 'unknown' };
 
 export interface PlanDetail {
   key: string;
@@ -140,6 +160,8 @@ export interface PlanDetail {
    * own entry has an unknown start, never zero.
    */
   blockedTiming?: Record<string, ElapsedAnchor>;
+  /** Delegation overlay of the first page, when requested and supplied (see IntentView). */
+  intent?: IntentView;
 }
 
 /**
@@ -167,7 +189,7 @@ export interface StoreRead {
   truncated: boolean;
 }
 
-export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1 }
+export interface HealthView { ready: boolean; sqlite: boolean; node?: string; diagnostics: string[]; planCleanup?: 1; planChangeDigests?: 1; planTaskSearch?: 1; documentCaptureComparison?: 1; subagentRuns?: 1; planGraph?: 1; needsYouInbox?: 1; delegationIntent?: 1 }
 /** Canonical revision-1 graph DTO, with no presentation or detail semantics. */
 export type { PlanGraphRead, PlanGraphRequest, PlanGraphItem } from '../../shared/progress.ts';
 

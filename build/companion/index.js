@@ -25390,6 +25390,29 @@ function settleIntent(db, i, receipt, reason) {
   intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
   db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
 }
+function delegationAssignmentRecovery(db, sourceId, plan, sessionId, a, budget) {
+  const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, budget), sourceId, plan);
+  const result3 = { bytes: Number(current?.bytes ?? 0), complete: true, recovered: false };
+  if (!current)
+    return result3;
+  if (typeof current.snapshot !== "string") {
+    result3.complete = false;
+    return result3;
+  }
+  try {
+    const p = JSON.parse(current.snapshot);
+    if (p.sourceId !== sourceId || p.id !== plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+      result3.complete = false;
+    else
+      result3.recovered = p.revision > a.declaredRevision && a.taskIds.length > 0 && a.taskIds.every((id2) => {
+        const item = p.items.find((i) => i?.id === id2);
+        return item?.kind === "task" && identifier2(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id2));
+      });
+  } catch {
+    result3.complete = false;
+  }
+  return result3;
+}
 function delegationRefusals(db, binding, sourceId, sessionId) {
   requireProgress(identifier2(sourceId) && identifier2(sessionId));
   const result3 = { sourceId, sessionId, complete: true, refusals: [] };
@@ -25441,25 +25464,12 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
       continue;
-    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes2), sourceId, r.plan);
-    if (current) {
-      bytes2 += Number(current.bytes);
-      if (typeof current.snapshot !== "string")
-        result3.complete = false;
-      else
-        try {
-          const p = JSON.parse(current.snapshot);
-          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
-            result3.complete = false;
-          else if (p.revision > a.declaredRevision && a.taskIds.every((id2) => {
-            const item = p.items.find((i) => i?.id === id2);
-            return item?.kind === "task" && identifier2(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id2));
-          }))
-            continue;
-        } catch {
-          result3.complete = false;
-        }
-    }
+    const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes2);
+    bytes2 += recovery.bytes;
+    if (!recovery.complete)
+      result3.complete = false;
+    if (recovery.recovered)
+      continue;
     if (result3.refusals.length === 3) {
       result3.complete = false;
       continue;
