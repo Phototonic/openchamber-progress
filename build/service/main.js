@@ -298,7 +298,7 @@ function parseReportRequest(value) {
     link: ["child", "assign"],
     delegate: ["assign"],
     bind: ["source", "confirm"],
-    finish: ["outcome"]
+    finish: ["outcome", "changes"]
   };
   validRequest(Object.hasOwn(fields, r.op), "op");
   validRequest(identifier(r.plan), "plan");
@@ -2461,6 +2461,29 @@ function settleIntent(db, i, receipt, reason) {
   intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
   db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
 }
+function delegationAssignmentRecovery(db, sourceId, plan, sessionId, a, budget) {
+  const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, budget), sourceId, plan);
+  const result = { bytes: Number(current?.bytes ?? 0), complete: true, recovered: false };
+  if (!current)
+    return result;
+  if (typeof current.snapshot !== "string") {
+    result.complete = false;
+    return result;
+  }
+  try {
+    const p = JSON.parse(current.snapshot);
+    if (p.sourceId !== sourceId || p.id !== plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+      result.complete = false;
+    else
+      result.recovered = p.revision > a.declaredRevision && a.taskIds.length > 0 && a.taskIds.every((id) => {
+        const item = p.items.find((i) => i?.id === id);
+        return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
+      });
+  } catch {
+    result.complete = false;
+  }
+  return result;
+}
 function delegationRefusals(db, binding, sourceId, sessionId) {
   requireProgress(identifier(sourceId) && identifier(sessionId));
   const result = { sourceId, sessionId, complete: true, refusals: [] };
@@ -2512,25 +2535,12 @@ function delegationRefusals(db, binding, sourceId, sessionId) {
       continue;
     if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
       continue;
-    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes), sourceId, r.plan);
-    if (current) {
-      bytes += Number(current.bytes);
-      if (typeof current.snapshot !== "string")
-        result.complete = false;
-      else
-        try {
-          const p = JSON.parse(current.snapshot);
-          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
-            result.complete = false;
-          else if (p.revision > a.declaredRevision && a.taskIds.every((id) => {
-            const item = p.items.find((i) => i?.id === id);
-            return item?.kind === "task" && identifier(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id));
-          }))
-            continue;
-        } catch {
-          result.complete = false;
-        }
-    }
+    const recovery = delegationAssignmentRecovery(db, sourceId, r.plan, sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes - bytes);
+    bytes += recovery.bytes;
+    if (!recovery.complete)
+      result.complete = false;
+    if (recovery.recovered)
+      continue;
     if (result.refusals.length === 3) {
       result.complete = false;
       continue;
@@ -3668,6 +3678,26 @@ import { timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 // shared/store.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
+// shared/receipt-index.ts
+var name = "receipts_source_oid";
+function receiptIndexInstalled(db) {
+  const objects = db.prepare("SELECT type,name,tbl_name FROM main.sqlite_master WHERE name=? COLLATE NOCASE").all(name);
+  if (!objects.length)
+    return false;
+  requireProgress(objects.length === 1 && objects[0].type === "index" && objects[0].name === name && objects[0].tbl_name === "receipts", "schema");
+  const index = db.prepare("PRAGMA main.index_list('receipts')").all().find((r) => r.name === name);
+  requireProgress(index?.unique === 0 && index.partial === 0 && index.origin === "c", "schema");
+  const keys = db.prepare("PRAGMA main.index_xinfo('receipts_source_oid')").all().filter((r) => r.key === 1);
+  requireProgress(keys.length === 2 && keys.every((key, i) => key.seqno === i && Number(key.cid) >= 0 && key.name === ["source", "oid"][i] && key.desc === 0 && key.coll === "BINARY"), "schema");
+  return true;
+}
+function installReceiptIndex(db) {
+  if (receiptIndexInstalled(db))
+    return;
+  db.exec("CREATE INDEX receipts_source_oid ON receipts(source, oid)");
+  receiptIndexInstalled(db);
+}
+
 // shared/assignment-binding.ts
 function currentBinding(value, plan, itemId) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -4014,6 +4044,7 @@ class Store {
         try {
           this.db.exec(SCHEMA);
           this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID3());
+          installReceiptIndex(this.db);
           this.db.exec("COMMIT");
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -4023,6 +4054,7 @@ class Store {
         requireProgress(version === VERSION, "schema");
       requireProgress(this.db.prepare("PRAGMA table_info(meta)").all().some((r) => r.name === "product"), "corrupt");
       requireProgress(this.db.prepare("SELECT product FROM meta WHERE singleton=1").get()?.product === "openchamber-agent-progress", "corrupt");
+      this.transaction(false, () => receiptIndexInstalled(this.db));
     } catch (e) {
       this.db?.close();
       if (e instanceof PlatformError)
@@ -4036,7 +4068,10 @@ class Store {
     this.db.close();
   }
   installSubagentRuns() {
-    return this.transaction(true, () => installRuns(this.db));
+    return this.transaction(true, () => {
+      installReceiptIndex(this.db);
+      installRuns(this.db);
+    });
   }
   subagentRunsAvailable() {
     return this.transaction(false, () => runsInstalled(this.db));
@@ -4758,7 +4793,7 @@ class Store {
         }
       }
       let changed;
-      if (r.op === "change") {
+      if (r.op === "change" || r.op === "finish" && r.changes) {
         const attributed = r.attributed ?? actor.sessionId;
         if (r.attributed)
           requireProgress(coordinator && r.attributed !== actor.sessionId, "assignment");
@@ -5041,15 +5076,15 @@ function atomic(file, content, stagingRoot) {
 }
 function writeFiles(root, files) {
   privateDirectory(root);
-  for (const [name, body] of Object.entries(files)) {
-    need(/^[A-Za-z0-9_.-]+$/.test(name), "payload-invalid");
-    writeFileSync(path5.join(root, name), body, { mode: 384, flag: "wx" });
-    syncFile(path5.join(root, name));
+  for (const [name2, body] of Object.entries(files)) {
+    need(/^[A-Za-z0-9_.-]+$/.test(name2), "payload-invalid");
+    writeFileSync(path5.join(root, name2), body, { mode: 384, flag: "wx" });
+    syncFile(path5.join(root, name2));
   }
   fsyncDir(root);
 }
 function hashes(files) {
-  return Object.fromEntries(Object.entries(files).map(([name, body]) => [name, digest(body)]));
+  return Object.fromEntries(Object.entries(files).map(([name2, body]) => [name2, digest(body)]));
 }
 function releasePayload(binding, payload) {
   const files = { "index.js": payload.plugin, "SKILL.md": payload.guidance, "progress-binding.json": JSON.stringify({ ...binding, version: payload.version }) };
@@ -5100,14 +5135,14 @@ function verifyFiles(root, expected, extras = []) {
   if (!windows)
     safe2(root);
   need(lstatSync5(root).isDirectory(), "collision");
-  need(readdirSync(root).every((name) => Object.hasOwn(expected, name) || extras.includes(name)), "foreign-files");
-  const files = Object.keys(expected).map((name) => path5.join(root, name));
+  need(readdirSync(root).every((name2) => Object.hasOwn(expected, name2) || extras.includes(name2)), "foreign-files");
+  const files = Object.keys(expected).map((name2) => path5.join(root, name2));
   if (windows) {
-    const extraFiles = extras.map((name) => path5.join(root, name)).filter(existsSync4), all = [root, ...files, ...extraFiles];
+    const extraFiles = extras.map((name2) => path5.join(root, name2)).filter(existsSync4), all = [root, ...files, ...extraFiles];
     need(windowsPaths(all).every((v, i) => sameWindowsObject(v, all[i])) && privatePaths(all) && extraFiles.every((p) => lstatSync5(p).isFile()), "modified-owned-files");
   }
-  for (const [name, hash3] of Object.entries(expected)) {
-    const file = path5.join(root, name);
+  for (const [name2, hash3] of Object.entries(expected)) {
+    const file = path5.join(root, name2);
     need(existsSync4(file), "modified-owned-files");
     if (!windows)
       safe2(file);
@@ -5180,8 +5215,8 @@ function owned(targets) {
   return { root: info.packageRoot, manifest: m, binding: b, staged };
 }
 function removableSelectors(o) {
-  return o.staged.map((name) => {
-    const file = path5.join(o.root, name);
+  return o.staged.map((name2) => {
+    const file = path5.join(o.root, name2);
     let m;
     try {
       m = JSON.parse(readFileSync2(file, "utf8"));
@@ -5235,12 +5270,12 @@ function migrationOwnedPaths(targets, m, selectors) {
     targets.storeRoot,
     root,
     payload,
-    ...Object.keys(m.files).sort().map((name) => path5.join(root, name)),
+    ...Object.keys(m.files).sort().map((name2) => path5.join(root, name2)),
     path5.join(root, ".ownership.json"),
     ...selectors,
     ...Object.entries(m.releases).sort(([a], [b]) => a.localeCompare(b)).flatMap(([id, r]) => [
       path5.join(payload, id),
-      ...Object.keys(r.files).sort().map((name) => path5.join(payload, id, name))
+      ...Object.keys(r.files).sort().map((name2) => path5.join(payload, id, name2))
     ])
   ])];
 }
@@ -5309,7 +5344,7 @@ function removalLayout(journal) {
   need(manifest.installId === m.legacyInstallId && digest(m.legacy.ownership) === m.legacy.ownershipDigest, "managed-migration-conflict");
   const selectors = m.legacy.claims.filter((c) => path5.dirname(c.path) === root && /^\.agent-progress-activation-[a-f0-9-]{36}$/.test(path5.basename(c.path))).map((c) => c.path).sort();
   need(windows || selectors.length === 0, "staged-activation-retained");
-  const discovery = [...Object.keys(manifest.files).sort().map((name) => path5.join(root, name)), path5.join(root, ".ownership.json")];
+  const discovery = [...Object.keys(manifest.files).sort().map((name2) => path5.join(root, name2)), path5.join(root, ".ownership.json")];
   const paths = migrationOwnedPaths(targets, manifest, selectors), claims = new Map(m.legacy.claims.map((c) => [c.path, c]));
   need(claims.size === m.legacy.claims.length && canonical(paths) === canonical(m.legacy.claims.map((c) => c.path)) && canonical(m.plan) === canonical(migrationRemovalPlan(selectors.length)), "managed-migration-conflict");
   if (paths.length > MANAGED_STEP_LIMITS.claimPaths)
@@ -5347,18 +5382,18 @@ function validateMigrationRemoval(journal) {
         need(digest(readFileSync2(claim.path)) === claim.digest && before === migrationSnapshot(claim.path), "modified-owned-files");
       }
     }
-    for (const [name, hash3] of Object.entries(manifest.files))
-      need(claims.get(path5.join(root, name))?.digest === hash3, "ownership-invalid");
+    for (const [name2, hash3] of Object.entries(manifest.files))
+      need(claims.get(path5.join(root, name2))?.digest === hash3, "ownership-invalid");
     need(claims.get(path5.join(root, ".ownership.json"))?.digest === m.legacy.ownershipDigest, "ownership-invalid");
     for (const [id, release] of Object.entries(manifest.releases)) {
       const releaseRoot = path5.join(targets.storeRoot, "payloads", id);
       need(canonical(readdirSync(releaseRoot).sort()) === canonical(Object.keys(release.files).sort()), "foreign-files");
-      for (const [name, hash3] of Object.entries(release.files))
-        need(claims.get(path5.join(releaseRoot, name))?.digest === hash3, "ownership-invalid");
+      for (const [name2, hash3] of Object.entries(release.files))
+        need(claims.get(path5.join(releaseRoot, name2))?.digest === hash3, "ownership-invalid");
     }
     if (lstatSync5(root, { throwIfNoEntry: false })) {
       const allowed = new Set([...layout.discovery, ...selectors].filter((p) => !removed.has(p) && lstatSync5(p, { throwIfNoEntry: false })).map((p) => path5.basename(p)));
-      need(readdirSync(root).every((name) => allowed.has(name)), "foreign-files");
+      need(readdirSync(root).every((name2) => allowed.has(name2)), "foreign-files");
     }
     const binding = readBinding(path5.join(targets.storeRoot, "payloads", manifest.active, "progress-binding.json"));
     need(binding.installId === m.legacyInstallId && binding.database === database && binding.storeId === journal.storeId && canonical(binding.source) === canonical(journal.source), "ownership-invalid");
@@ -5584,8 +5619,8 @@ function lifecycleInner(action, targets, payload, testBoundary) {
         const selectors = removableSelectors(o);
         for (const file2 of selectors)
           rmSync(file2);
-        for (const name of Object.keys(o.manifest.files))
-          rmSync(path5.join(o.root, name));
+        for (const name2 of Object.keys(o.manifest.files))
+          rmSync(path5.join(o.root, name2));
         rmSync(path5.join(o.root, ".ownership.json"));
         rmdirSync(o.root);
         fsyncDir(path5.dirname(o.root));
@@ -6014,7 +6049,7 @@ function record(value) {
 }
 function keys(value, names) {
   record(value);
-  need3(Object.keys(value).length === names.length && names.every((name) => Object.hasOwn(value, name)));
+  need3(Object.keys(value).length === names.length && names.every((name2) => Object.hasOwn(value, name2)));
 }
 var hash3 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 var integer3 = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -6172,8 +6207,8 @@ function parseManagedStepJournal(bytes) {
   m.plan.forEach(step);
   const plan2 = m.plan;
   let index = 0;
-  const take = (name) => {
-    need3(sameManagedStep(plan2[index++] ?? null, { name, batch: 0 }));
+  const take = (name2) => {
+    need3(sameManagedStep(plan2[index++] ?? null, { name: name2, batch: 0 }));
   };
   take("prepare");
   take("expectation");
@@ -6461,7 +6496,7 @@ function readManagedStepJournal(env) {
     const names = readdirSync2(root);
     if (names.includes(".configuration-lock"))
       throw new SetupError("managed-configuration-busy");
-    if (names.some((name) => name.startsWith("migration.json.stage-")))
+    if (names.some((name2) => name2.startsWith("migration.json.stage-")))
       throw new SetupError("managed-migration-conflict");
     const stat = lstatSync7(file, { throwIfNoEntry: false });
     if (!stat)
@@ -6564,7 +6599,7 @@ function upgradeManagedStepJournal(env, next, expected, validate) {
     const file2 = migrationFile(env), root = path8.dirname(file2), names = readdirSync2(root);
     if (names.includes(".configuration-lock"))
       throw new SetupError("managed-configuration-busy");
-    if (names.some((name) => name.startsWith("migration.json.stage-")))
+    if (names.some((name2) => name2.startsWith("migration.json.stage-")))
       throw new SetupError("managed-migration-conflict");
     if (![file2, path8.join(root, ".ownership.json")].every((p) => {
       const s = lstatSync7(p);
@@ -7749,7 +7784,7 @@ function inspectManagedStep(env, payload, prior, storeRoot) {
             claims: [{ path: path12.join(session.roots.configRoot, "plugins", "agent-progress"), kind: "absent", object: null, digest: null }],
             receipt
           };
-          const plan2 = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name) => ({ name, batch: 0 }));
+          const plan2 = evidence?.plan ?? ["prepare", "expectation", "publish-binding", "enable", "reconcile"].map((name2) => ({ name: name2, batch: 0 }));
           session.candidate = { ...binding, migration: {
             format: 2,
             product: "openchamber-agent-progress-managed",
@@ -7825,9 +7860,9 @@ function fileClaim(file) {
 function expectation2(journal) {
   return { format: 1, storeId: journal.storeId, sourceId: journal.source.id, installId: journal.installId, ...journal.migration.expectation };
 }
-function completed(journal, name) {
+function completed(journal, name2) {
   const m = journal.migration;
-  return m.plan.findIndex((s) => s.name === name) <= m.plan.findIndex((s) => canonical(s) === canonical(m.lastCompleted));
+  return m.plan.findIndex((s) => s.name === name2) <= m.plan.findIndex((s) => canonical(s) === canonical(m.lastCompleted));
 }
 function observeCapture(journal) {
   const store = new Store(journal.database, { readOnly: true });
@@ -8962,6 +8997,162 @@ function needsYou(store, request, now = new Date) {
   }
 }
 
+// service/delegation-view.ts
+import { createHash as createHash9 } from "node:crypto";
+var hash5 = (value) => createHash9("sha256").update(JSON.stringify(value)).digest("hex");
+var integer4 = (value, min = 0) => Number.isSafeInteger(value) && Number(value) >= min;
+var id = (value) => typeof value === "string" && value.length <= DELEGATION_VIEW_LIMITS.identifierCodeUnits && identifier(value);
+var refusalReasons = new Set(["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget"]);
+var refusalReason = (reason) => typeof reason === "string" && refusalReasons.has(reason) ? reason : reason === "busy" ? "budget" : reason === "not-found" ? "missing-proof" : "unverified";
+function declaration(value, oid, owner, revision) {
+  if (!value || value.oid !== oid || !id(value.oid) || value.coordinatorSessionId !== owner || !integer4(value.declaredRevision, 1) || value.declaredRevision > revision || !Array.isArray(value.taskIds) || value.taskIds.length > DELEGATION_VIEW_LIMITS.tasks || !value.taskIds.every(id) || new Set(value.taskIds).size !== value.taskIds.length || value.dispatch !== null && (!value.dispatch || !["subagent", "task"].includes(value.dispatch.tool) || !id(value.dispatch.messageId) || !id(value.dispatch.callId)))
+    return;
+  return {
+    oid,
+    coordinatorSessionId: owner,
+    declaredRevision: value.declaredRevision,
+    taskIds: [...value.taskIds],
+    dispatch: value.dispatch === null ? null : { tool: value.dispatch.tool, messageId: value.dispatch.messageId, callId: value.dispatch.callId }
+  };
+}
+function delegationView(store, envelope, plan2, now = new Date) {
+  const identity2 = [envelope.storeId, envelope.sourceBinding, plan2.sourceId, plan2.id, plan2.sessionId, plan2.revision, plan2.structuralRevision, plan2.cleanup ?? { state: "visible", revision: 0 }];
+  if (!envelope.sourceBinding.verified || envelope.sourceBinding.sourceId !== plan2.sourceId)
+    return { token: hash5([identity2, "unverified"]) };
+  const db = store.db;
+  db.exec("BEGIN");
+  try {
+    requireProgress(Number(db.prepare("PRAGMA user_version").get().user_version) === 2, "schema");
+    const meta = db.prepare("SELECT store_id,enabled FROM meta WHERE singleton=1").get();
+    requireProgress(meta.store_id === envelope.storeId && Boolean(meta.enabled) === envelope.captureEnabled && db.prepare("SELECT verified FROM sources WHERE id=?").get(plan2.sourceId)?.verified === 1, "conflict");
+    const live = db.prepare("SELECT revision,json_extract(snapshot,'$.structuralRevision') AS structural,json_extract(snapshot,'$.sessionId') AS owner FROM plans WHERE source=? AND id=?").get(plan2.sourceId, plan2.id);
+    const cleanup2 = cleanupInstalled(db) ? cleanupState(db, plan2.sourceId, plan2.id) : undefined;
+    requireProgress(live && live.revision === plan2.revision && live.structural === plan2.structuralRevision && live.owner === plan2.sessionId && (cleanup2?.state ?? "visible") === (plan2.cleanup?.state ?? "visible") && Number(cleanup2?.generation ?? 0) === (plan2.cleanup?.revision ?? 0), "conflict");
+    const storage = runStorageCompatibility(db);
+    const control2 = storage === "current" ? db.prepare("SELECT generation,loss,loss_sequence FROM runs_format WHERE singleton=1").get() : undefined;
+    const facts2 = [identity2, envelope.captureEnabled, storage, control2];
+    let result2 = { availability: "unavailable", complete: false, reason: "legacy" };
+    const unavailable = (reason) => {
+      result2 = { availability: "unavailable", complete: false, reason };
+    };
+    if (storage === "current") {
+      const intentRow = db.prepare("SELECT plan,oid,dispatch,length(CAST(payload AS BLOB)) AS bytes,CASE WHEN length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload FROM runs_intents WHERE source=? AND parent=?").get(plan2.sourceId, plan2.sessionId);
+      facts2.push(intentRow);
+      const rows = db.prepare("SELECT rowid,oid,length(CAST(receipt AS BLOB)) AS bytes,CASE WHEN length(CAST(receipt AS BLOB))<=16384 THEN receipt END AS receipt FROM receipts WHERE source=? AND plan=? ORDER BY rowid DESC LIMIT ?").all(plan2.sourceId, plan2.id, DELEGATION_VIEW_LIMITS.receipts + 1);
+      facts2.push(rows);
+      result2 = { availability: "ready", complete: true, disposition: { state: "none" } };
+      let found = false;
+      for (const row2 of rows.slice(0, DELEGATION_VIEW_LIMITS.receipts)) {
+        if (typeof row2.receipt !== "string") {
+          unavailable("budget");
+          found = true;
+          break;
+        }
+        let r;
+        try {
+          r = JSON.parse(row2.receipt);
+        } catch {
+          unavailable("invalid");
+          found = true;
+          break;
+        }
+        if (!r || typeof r !== "object" || Array.isArray(r)) {
+          unavailable("invalid");
+          found = true;
+          break;
+        }
+        const d = r?.delegation;
+        if (!d)
+          continue;
+        if (d.declaration?.coordinatorSessionId && d.declaration.coordinatorSessionId !== plan2.sessionId)
+          continue;
+        found = true;
+        const a = declaration(d.declaration, String(row2.oid), plan2.sessionId, plan2.revision);
+        if (!a) {
+          unavailable(d.declaration ? "invalid" : "legacy");
+          break;
+        }
+        if (d.sourceId !== plan2.sourceId || r.plan !== plan2.id || r.rev !== a.declaredRevision) {
+          unavailable("invalid");
+          break;
+        }
+        const ready = (disposition) => {
+          result2 = { availability: "ready", complete: true, disposition };
+        };
+        const refused = (reason) => {
+          const recovery = delegationAssignmentRecovery(db, plan2.sourceId, plan2.id, plan2.sessionId, a, DELEGATION_VIEW_LIMITS.inputBytes);
+          facts2.push(recovery);
+          ready(recovery.recovered ? { state: "none" } : { state: "refused", declaration: a, reason: refusalReason(reason), recovery: "redeclare-or-link" });
+        };
+        if (d.state === "pending" || d.state === "reserved") {
+          if (!a.taskIds.length || d.state === "pending" !== (a.dispatch === null) || intentRow?.plan !== plan2.id || intentRow.oid !== a.oid || typeof intentRow.payload !== "string") {
+            unavailable("invalid");
+            break;
+          }
+          try {
+            const intent2 = activeIntent(db, plan2.sourceId, plan2.sessionId);
+            requireProgress(intent2 && intent2.caller.sourceId === plan2.sourceId && intent2.caller.sessionId === plan2.sessionId && intent2.request.plan === plan2.id && intent2.request.oid === a.oid && intent2.request.rev === a.declaredRevision && JSON.stringify(intent2.request.assign) === JSON.stringify(a.taskIds) && intent2.dispatch === null === (a.dispatch === null) && intent2.dispatch === intentRow.dispatch, "conflict");
+            if (a.dispatch) {
+              requireProgress(d.dispatchId === intent2.dispatch, "binding");
+              const dispatch = db.prepare("SELECT message,call FROM runs_rows WHERE id=? AND source=? AND parent=?").get(intent2.dispatch, plan2.sourceId, plan2.sessionId);
+              requireProgress(dispatch?.message === a.dispatch.messageId && dispatch.call === a.dispatch.callId, "binding");
+            }
+            delegationRevision(db, envelope.sourceBinding, intent2);
+            ready({ state: d.state, eligible: true, declaration: a });
+          } catch (error) {
+            if (!(error instanceof ProgressError)) {
+              unavailable("invalid");
+              break;
+            }
+            if (error.code === "disabled")
+              ready({ state: "invalidated", declaration: a, reason: "capture-disabled" });
+            else
+              refused(error.code);
+          }
+        } else if (d.state === "retired") {
+          if (d.reason === "cancelled")
+            ready({ state: "cancelled", declaration: a, reason: "cancelled" });
+          else if (d.reason === "disabled" || d.reason === "capture-disabled")
+            ready({ state: "invalidated", declaration: a, reason: "capture-disabled" });
+          else if (a.taskIds.length)
+            refused(d.reason);
+          else
+            unavailable("invalid");
+        } else if (d.state === "bound" && a.taskIds.length && a.dispatch && id(d.childSessionId) && d.receipt?.plan === plan2.id && integer4(d.receipt.rev, a.declaredRevision) && d.receipt.rev <= plan2.revision) {
+          ready({ state: "bound", declaration: a, childSessionId: d.childSessionId, boundRevision: d.receipt.rev });
+        } else
+          unavailable("invalid");
+        break;
+      }
+      if (!found && (rows.length > DELEGATION_VIEW_LIMITS.receipts || intentRow?.plan === plan2.id))
+        unavailable("budget");
+      if (!meta.enabled)
+        unavailable("capture-unavailable");
+    }
+    const token = hash5([facts2, result2]);
+    const view = (plan2.cleanup?.state ?? "visible") === "visible" ? {
+      protocolVersion: 2,
+      schemaVersion: 2,
+      delegationIntent: 1,
+      storeId: envelope.storeId,
+      sourceBinding: { sourceId: plan2.sourceId, verified: true },
+      source: plan2.sourceId,
+      plan: plan2.id,
+      revision: plan2.revision,
+      structuralRevision: plan2.structuralRevision,
+      cleanup: { state: "visible", revision: plan2.cleanup?.revision ?? 0 },
+      token,
+      readAt: now.toISOString(),
+      result: result2
+    } : undefined;
+    db.exec("COMMIT");
+    return { token, ...view ? { view } : {} };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 // service/server.ts
 var SETUP_HTTP_STATUS = new Map([
   ...["invalid", "confirmation-required", "targets-unverified"].map((code) => [code, 400]),
@@ -9024,9 +9215,10 @@ function createProgressServer(store, token, unavailableCode, setup) {
     const admittedAt = process.hrtime.bigint();
     let stepRoute = false, stepStage = "journal";
     const stepRefusal = (code, accounting = { securitySpawns: 0, elapsedMs: Number(process.hrtime.bigint() - admittedAt) / 1e6 }) => answer(managedStepHttpStatus(code), { version: 1, disposition: "refused", inspection: null, progress: null, error: { stage: stepStage, code }, accounting });
-    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, inboxRoute = false;
+    let cleanupRoute = false, digestRoute = false, searchRoute = false, comparisonRoute = false, runsRoute = false, graphRoute = false, mentionRoute = false, inboxRoute = false, delegationRoute = false;
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      delegationRoute = url.searchParams.has("delegationIntent");
       mentionRoute = url.pathname === MENTIONS_SEARCH_PATH || url.pathname === MENTIONS_RESOLVE_PATH;
       if (mentionRoute) {
         if (url.origin !== "http://127.0.0.1")
@@ -9256,7 +9448,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
           ok: true,
           ...health,
           ...setup?.managed ? { managedMigrationSteps: 1 } : {},
-          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
+          ...health.ready ? { planComposerHandoff: 1, planGraph: 1, planCleanup: 1, planChangeDigests: 1, planTaskSearch: 1, needsYouInbox: 1, delegationIntent: 1, documentCaptureComparison: 1, ...subagentRuns ? { subagentRuns: 1 } : {} } : {},
           protocolVersion: VERSION,
           schemaVersion: VERSION,
           runtime: { node: process.versions.node, bun: process.versions.bun ?? null }
@@ -9290,8 +9482,9 @@ function createProgressServer(store, token, unavailableCode, setup) {
       const routes = { "/v1/search": ["q", "source", "session", "lifecycle", "status", "archived", "limit", "cursor"], "/v1/search-state": ["storeId", "keys"], "/v1/change-digest": ["storeId", "source", "plan", "to", "after", "cleanupRev"], "/v1/plans": ["cursor", "limit", "source", "session", "directory", "archived"], "/v1/plan": ["source", "plan", "cursor"], "/v1/document": ["source", "plan", "cursor", "capture"], "/v1/history": ["source", "plan", "cursor", "limit"] };
       routes["/v1/document-captures"] = ["storeId", "binding", "source", "plan", "cleanupRev", "cursor"];
       routes["/v1/needs-you"] = ["storeId", "binding", "source", "cursor", "limit", "timing"];
-      routes["/v1/plans"].push("needsYou", "needsYouTiming");
+      routes["/v1/plans"].push("needsYou", "needsYouTiming", "delegationIntent");
       routes["/v1/search-state"].push("needsYou", "needsYouTiming");
+      routes["/v1/plan"].push("delegationIntent");
       routes["/v1/plan-graph"] = ["storeId", "binding", "source", "plan", "revision", "cleanupRev"];
       routes["/v1/document-comparison"] = ["storeId", "binding", "source", "plan", "cleanupRev", "before", "after"];
       const allowed = routes[url.pathname];
@@ -9308,6 +9501,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (url.searchParams.has("needsYou") && url.searchParams.get("needsYou") !== "1")
         throw new ProgressError("invalid");
       if (url.searchParams.has("needsYouTiming") && (url.searchParams.get("needsYouTiming") !== "1" || !url.searchParams.has("needsYou")))
+        throw new ProgressError("invalid");
+      if (url.searchParams.has("delegationIntent") && url.searchParams.get("delegationIntent") !== "1")
         throw new ProgressError("invalid");
       const number = (key, fallback) => {
         const v = url.searchParams.get(key);
@@ -9370,7 +9565,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
         if (url.searchParams.has("needsYou") && cursor2 !== 0)
           throw new ProgressError("invalid");
         const list = currentStore.list({ cursor: cursor2, limit: number("limit", 20), source: text2("source"), session: text2("session"), directory: text2("directory"), archived });
-        return answer(200, { ...list, ...summary(list) });
+        const data = url.searchParams.has("delegationIntent") ? list.data.map((plan3) => ({ ...plan3, delegationToken: delegationView(currentStore, list, plan3).token })) : list.data;
+        return answer(200, { ...list, data, ...summary(list) });
       }
       const source = text2("source", true);
       const plan2 = text2("plan", true);
@@ -9384,14 +9580,14 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(200, currentStore.planGraph({ storeId: text2("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, revision: pin("revision", 1), cleanupRev: pin("cleanupRev", 0) }));
       }
       if (comparisonRoute) {
-        const integer4 = (key, min) => {
+        const integer5 = (key, min) => {
           const value = url.searchParams.get(key);
           if (value === null || !/^\d{1,16}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min)
             throw new ProgressError("invalid");
           return Number(value);
         };
-        const r = { storeId: text2("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, cleanupRev: integer4("cleanupRev", 0) };
-        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer4("before", 1), integer4("after", 1)));
+        const r = { storeId: text2("storeId", true), binding: parseCaptureBinding(url.searchParams.get("binding")), source, plan: plan2, cleanupRev: integer5("cleanupRev", 0) };
+        return answer(200, url.pathname === "/v1/document-captures" ? currentStore.documentCaptures(r, url.searchParams.get("cursor") ?? undefined) : currentStore.documentComparison(r, integer5("before", 1), integer5("after", 1)));
       }
       if (digestRoute) {
         const revision = (key, minimum) => {
@@ -9403,8 +9599,12 @@ function createProgressServer(store, token, unavailableCode, setup) {
         return answer(200, currentStore.changeDigest({ storeId: text2("storeId", true), source, plan: plan2, to: revision("to", 1), cleanupRev: revision("cleanupRev", 0), ...url.searchParams.has("after") ? { after: revision("after", 1) } : {} }));
       }
       if (url.pathname === "/v1/plan") {
-        const detail = currentStore.detail(source, plan2, number("cursor", 0));
-        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail) });
+        const cursor2 = number("cursor", 0);
+        if (url.searchParams.has("delegationIntent") && cursor2 !== 0)
+          throw new ProgressError("invalid");
+        const detail = currentStore.detail(source, plan2, cursor2);
+        const overlay = url.searchParams.has("delegationIntent") ? delegationView(currentStore, detail, detail.plan).view : undefined;
+        return answer(200, { ...detail, timing: taskTiming(currentStore, detail), blockedTiming: blockedTiming(currentStore, detail), ...overlay ? { delegationIntent: overlay } : {} });
       }
       if (url.pathname === "/v1/document")
         return answer(200, currentStore.document(source, plan2, number("cursor", 0), url.searchParams.has("capture") ? number("capture", 0) : undefined));
@@ -9421,7 +9621,7 @@ function createProgressServer(store, token, unavailableCode, setup) {
       if (e instanceof ManagedBindingError || e instanceof SetupError)
         return answer(SETUP_HTTP_STATUS.get(e.code) ?? 409, { error: e.code });
       const error = e instanceof ProgressError ? e : storageError(e);
-      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
+      if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute || delegationRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
         return answer(409, { error: error.code });
       return answer(error.code === "invalid" ? 400 : error.code === "not-found" ? 404 : 503, { error: error.code });
     }

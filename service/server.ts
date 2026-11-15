@@ -24,6 +24,7 @@ import {withSetupWriter} from './request-worker.ts';
 import {managedDiagnostic} from '../setup/managed-diagnostic.ts';
 import { needsYou } from './needs-you.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../shared/needs-you.ts';
+import { delegationView } from './delegation-view.ts';
 
 // Both step envelopes and compatibility routes retain the same setup refusals.
 // In particular the retained configuration lock is a conflict, not worker busy.
@@ -57,9 +58,10 @@ export function createProgressServer(store: Store | undefined, token: string, un
     let stepRoute=false,stepStage:ManagedStepDiagnostic['stage']='journal';
     const stepRefusal=(code:string,accounting={securitySpawns:0,elapsedMs:Number(process.hrtime.bigint()-admittedAt)/1_000_000})=>
       answer(managedStepHttpStatus(code),{version:1,disposition:'refused',inspection:null,progress:null,error:{stage:stepStage,code},accounting} satisfies ManagedStepResponse);
-    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false;
+    let cleanupRoute=false, digestRoute=false, searchRoute=false, comparisonRoute=false, runsRoute=false, graphRoute=false, mentionRoute=false, inboxRoute=false, delegationRoute=false;
     try {
       const url = new URL(req.url ?? '/','http://127.0.0.1');
+      delegationRoute=url.searchParams.has('delegationIntent');
       mentionRoute=url.pathname===MENTIONS_SEARCH_PATH||url.pathname===MENTIONS_RESOLVE_PATH;
       if(mentionRoute){
         if(url.origin!=='http://127.0.0.1')return answer(404,{error:'not-found'});
@@ -173,7 +175,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
         if(!setup&&(!store||standaloneError))return answer(503,{error:standaloneError??'storage'});
         const snapshot=setup?setup.health():{state:'ready',ready:true,sqlite:true,diagnostics:[],subagentRuns:standaloneRuns};
         const {subagentRuns,...health}=snapshot;
-        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
+        return answer(200,{ok:true,...health,...(setup?.managed?{managedMigrationSteps:1}:{}),...(health.ready?{planComposerHandoff:1,planGraph:1,planCleanup:1,planChangeDigests:1,planTaskSearch:1,needsYouInbox:1,delegationIntent:1,documentCaptureComparison:1,...(subagentRuns?{subagentRuns:1}:{})}:{}),
           protocolVersion:VERSION,schemaVersion:VERSION,runtime:{node:process.versions.node,bun:process.versions.bun??null}});
       }
       if (url.pathname === '/v1/capture/disable' || url.pathname === '/v1/capture/enable') {
@@ -196,8 +198,9 @@ export function createProgressServer(store: Store | undefined, token: string, un
       const routes: Record<string,string[]> = { '/v1/search':['q','source','session','lifecycle','status','archived','limit','cursor'], '/v1/search-state':['storeId','keys'], '/v1/change-digest':['storeId','source','plan','to','after','cleanupRev'], '/v1/plans':['cursor','limit','source','session','directory','archived'], '/v1/plan':['source','plan','cursor'], '/v1/document':['source','plan','cursor','capture'], '/v1/history':['source','plan','cursor','limit'] };
       routes['/v1/document-captures']=['storeId','binding','source','plan','cleanupRev','cursor'];
       routes['/v1/needs-you']=['storeId','binding','source','cursor','limit','timing'];
-      routes['/v1/plans'].push('needsYou','needsYouTiming');
+      routes['/v1/plans'].push('needsYou','needsYouTiming','delegationIntent');
       routes['/v1/search-state'].push('needsYou','needsYouTiming');
+      routes['/v1/plan'].push('delegationIntent');
       routes['/v1/plan-graph']=['storeId','binding','source','plan','revision','cleanupRev'];
       routes['/v1/document-comparison']=['storeId','binding','source','plan','cleanupRev','before','after'];
       const allowed = routes[url.pathname];
@@ -208,6 +211,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(inboxRoute && Buffer.byteLength(url.search)>NEEDS_YOU_LIMITS.queryBytes)throw new ProgressError('invalid');
       if(url.searchParams.has('needsYou') && url.searchParams.get('needsYou')!=='1')throw new ProgressError('invalid');
       if(url.searchParams.has('needsYouTiming') && (url.searchParams.get('needsYouTiming')!=='1' || !url.searchParams.has('needsYou')))throw new ProgressError('invalid');
+      if(url.searchParams.has('delegationIntent') && url.searchParams.get('delegationIntent')!=='1')throw new ProgressError('invalid');
       const number = (key: string, fallback: number) => { const v = url.searchParams.get(key); if (v === null) return fallback; if (!/^\d{1,9}$/.test(v)) throw new ProgressError('invalid'); return Number(v); };
       const text = (key: string, required = false) => { const v = url.searchParams.get(key) ?? undefined; if (required && !v || v !== undefined && (key === 'directory' ? v.length > 4096 || v.includes('\0') : !identifier(v))) throw new ProgressError('invalid'); return v; };
       if(!currentStore)return answer(503,{error:active.error??'storage'});
@@ -238,7 +242,8 @@ export function createProgressServer(store: Store | undefined, token: string, un
         const cursor=number('cursor',0);
         if(url.searchParams.has('needsYou')&&cursor!==0)throw new ProgressError('invalid');
         const list=currentStore.list({cursor,limit:number('limit',20),source:text('source'),session:text('session'),directory:text('directory'),archived});
-        return answer(200,{...list,...summary(list)});
+        const data=url.searchParams.has('delegationIntent')?list.data.map(plan=>({...plan,delegationToken:delegationView(currentStore,list,plan).token})):list.data;
+        return answer(200,{...list,data,...summary(list)});
       }
       const source = text('source',true)!; const plan = text('plan',true)!;
       if (graphRoute) {
@@ -255,8 +260,11 @@ export function createProgressServer(store: Store | undefined, token: string, un
         return answer(200,currentStore.changeDigest({storeId:text('storeId',true)!,source,plan,to:revision('to',1),cleanupRev:revision('cleanupRev',0),...(url.searchParams.has('after')?{after:revision('after',1)}:{})}));
       }
       if (url.pathname === '/v1/plan') {
-        const detail=currentStore.detail(source,plan,number('cursor',0));
-        return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail)});
+        const cursor=number('cursor',0);
+        if(url.searchParams.has('delegationIntent')&&cursor!==0)throw new ProgressError('invalid');
+        const detail=currentStore.detail(source,plan,cursor);
+        const overlay=url.searchParams.has('delegationIntent')?delegationView(currentStore,detail,detail.plan).view:undefined;
+        return answer(200,{...detail,timing:taskTiming(currentStore,detail),blockedTiming:blockedTiming(currentStore,detail),...(overlay?{delegationIntent:overlay}:{})});
       }
       if (url.pathname === '/v1/document') return answer(200,currentStore.document(source,plan,number('cursor',0),url.searchParams.has('capture')?number('capture',0):undefined));
       return answer(200,currentStore.history(source,plan,number('cursor',0),number('limit',20)));
@@ -268,7 +276,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(platformCode)return answer(503,{error:platformCode});
       if(e instanceof ManagedBindingError||e instanceof SetupError)return answer(SETUP_HTTP_STATUS.get(e.code)??409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
-      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
+      if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute||delegationRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});
     }
   });

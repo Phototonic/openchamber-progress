@@ -595,6 +595,31 @@ is claimed. Historical plugin/runtime tests used independent OpenCode2.1.4, no
 models. Current managed web/native-backend evidence uses independent 2.2.7; see
 the [compatibility scopes](compatibility.md#managed-companion-acceptance).
 
+## Receipt lookup index
+
+The ordinary, non-unique `receipts_source_oid ON receipts(source, oid)` index
+narrows the cross-plan handoff replay lookup to one source and operation ID before
+checking the child identity. It is a physical optimization: protocol/base schema
+remain **2**, with no changes to receipt bytes, replay hashes or report authority.
+
+Store creation installs the index in the creation transaction. Companion
+activation installs it idempotently in the same `BEGIN IMMEDIATE` transaction as
+the run extension; a failure rolls back both. Ordinary opens validate an existing
+index without DDL and accept its absence. Read-only opens, service reads and setup
+inspection do not install or repair it. Setup inspection of an existing store
+therefore leaves its index state unchanged.
+
+The owned name must identify an ordinary, non-partial index on exactly `source`
+then `oid`, ascending with BINARY collation. A conflicting object, case variant
+or incompatible index fails closed with `schema`, without repair. The exact
+`runs_*` and `cleanup_*` namespace checks are unchanged.
+
+Unmodified 1.3.0 readers and writers work with or without this index, including
+already-open writers, combined handoff replay and cleanup. SQLite maintains it
+for older writers; downgrade keeps the index rather than down-migrating or
+rewriting stored facts. Reactivation validates and reuses it. This compatibility
+claim concerns the index only, not unrelated run-format changes.
+
 ## Identity, attribution and finish
 
 Store UUID and source UUID are durable. Source is an explicit confirmed canonical
@@ -621,6 +646,18 @@ silently merge. Coordinate structure/delegation/finish only; late writes to clos
 plans refuse. Successful finish requires at least one non-skipped task and none
 remaining. Cancel/fail preserve unfinished work. Reopen is explicit; staged chunks
 on a closed plan require reopen on staging and commit but do not reopen alone.
+
+Coordinator `finish` may include 1–50 unique existing task `changes`, validated
+through the ordinary change path. The existing transaction applies those explicit
+statuses before validating the requested outcome, then saves the direct
+contribution, receipt and closure together in one ordinary revision (no structural
+revision increment). Any refusal rolls back both components. Receipt `changed`
+and contribution item IDs retain the changed tasks. Full-input idempotent replay
+returns the original receipt; altered reuse refuses and conflicts expose the
+current revision, never silently rebasing. Groups and unknown IDs keep the
+ordinary task-ID recovery hint. Omission retains ordinary finish behavior;
+children cannot finish or relay a finish. No schema, receipt format or protocol
+version changes. See [atomic coordinator finish](contracts.md#atomic-coordinator-finish).
 
 Moving a session preserves plan identity and contributions. Each report refreshes
 authoritative location metadata without changing the bound document path. If the
@@ -1312,6 +1349,37 @@ updates and make no comparison claim. Both ZIPs are extracted and every declared
 file is compared to its assembled folder. Local evidence:
 `evidence/upgrade-ux/package.txt`. The historical real0.2.3 update remains separate;
 these checks did not include a real0.2.4 install/reload or establish a new performance claim.
+## Waiting delegation read projection
+
+`service/delegation-view.ts` projects retained declaration receipts and active
+intent proof without writing. `service/server.ts` advertises `delegationIntent: 1`
+from ready snapshot health without querying the Store, and attaches opted-in list
+tokens and first-detail overlays; existing inbox and
+timing options compose with it. See [the wire contract](contracts.md#waiting-delegation-projection-additive-v2-read).
+
+Projection verifies the reply's store, binding, owner, revision, structural
+revision and cleanup generation within a read transaction; a changed snapshot
+refuses rather than mixing identities. It reads at most 128 receipts of at most
+16 KiB each and reuses the bounded revision/eligibility proof. Missing legacy
+storage is unavailable, never installed by reads. Partial, malformed or over-budget
+proof cannot establish waiting or absence. Source-unverified rows get tokens
+without reading foreign receipts; archived detail omits the overlay. Capture-off
+proof is unavailable. Tokens cover projection inputs independently of progress
+revision and are stable across unchanged reads.
+
+Before emitting a refusal, the projection reuses coordinator guidance's bounded
+current-assignment recovery check. A later explicit link or binding covering all
+declared tasks clears the note without rewriting the historical receipt; partial
+coverage keeps it, and unlinking restores it. Recovery changes the token so guests
+retire the old note. A newer declaration supersedes the historical refusal.
+
+`delegation-view-service.test.ts` covers HTTP admission, all dispositions,
+identity, refusal mapping, bounds and no-write behavior. The rendered
+`tests/browser/delegation-intent-qa.ts --real-service --artifacts <dir>` check
+relays the real guests' reads to `createProgressServer` with an isolated synthetic
+Store, exercising pending, reserved, refused, cancelled and bound handoffs,
+the board and narrow rail. This is not native-host certification.
+
 ## Declared delegation correlation
 
 `plugin/delegation.ts` owns one hook pair and event subscription, forwarding

@@ -101,15 +101,19 @@ test('managed constructor and authenticated health do no admission, even with un
       assert.equal((await get('/health',false)).status,401);
       const first=await (await get('/health')).json();
       assert.equal(first.state,'starting');assert.equal(first.ready,false);assert.equal(first.sqlite,false);
-      assert.equal(first.managedMigrationSteps,1);assert.equal(first.needsYouInbox,undefined);
+      assert.equal(first.managedMigrationSteps,1);assert.equal(first.needsYouInbox,undefined);assert.equal(first.delegationIntent,undefined);
       assert.equal(stat.mock.callCount(),0);
       stat.mock.restore();syncBuiltinESMExports();
       assert.equal((await get('/v1/plans')).status,200);
-      const ready=await(await get('/health')).json();assert.equal(ready.state,'ready');
-      assert.equal(ready.managedMigrationSteps,1);assert.equal(ready.needsYouInbox,1);
+      const runs=t.mock.method(Store.prototype,'subagentRunStorage',()=>{throw new Error('health-must-not-query');});
+      try{
+        const ready=await(await get('/health')).json();assert.equal(ready.state,'ready');
+        assert.equal(ready.managedMigrationSteps,1);assert.equal(ready.needsYouInbox,1);assert.equal(ready.delegationIntent,1);
+        assert.equal(runs.mock.callCount(),0,'advertising delegation does not query the Store');
+      }finally{runs.mock.restore();}
       fs.chmodSync(binding.database,0o644);
       assert.equal((await get('/v1/plans')).status,503,'snapshot never authorizes a store access');
-      const refused=await (await get('/health')).json();assert.equal(refused.ready,false);assert.equal(refused.state,'refused');
+      const refused=await (await get('/health')).json();assert.equal(refused.ready,false);assert.equal(refused.state,'refused');assert.equal(refused.delegationIntent,undefined);
       fs.chmodSync(binding.database,0o600);
       assert.equal((await (await get('/health')).json()).ready,false,'health does not retry admission');
       assert.equal((await get('/v1/plans')).status,200);

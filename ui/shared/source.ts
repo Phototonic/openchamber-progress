@@ -11,7 +11,7 @@ import {
   ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
-  NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow,
+  NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
 } from './adapter.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../../shared/needs-you.ts';
 import type { InboxWindowView } from './model.ts';
@@ -93,7 +93,8 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
 });
 
 /** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
-export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }): Promise<ListResult> {
+/** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
+export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
   try {
     let health = parseHealth(await call(host, ROUTES.health));
     if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
@@ -121,13 +122,14 @@ export async function readList(host: ServiceHost, scope: ListScope | null, maxPa
     const base = { limit: LIST_LIMIT, session: scope.session ?? null, directory: scope.session ? null : scope.directory ?? null, archived: health.planCleanup ? scope.archived ?? 'exclude' : null };
     // Older services ignore nothing silently: the extension is requested only when advertised.
     const askInbox = !!inbox && health.needsYouInbox === 1;
-    const firstBody = await call(host, ROUTES.plans, { ...query(base), ...(askInbox ? needsYouListQuery(inbox!.demand === 'rows') : {}) });
+    const intentQuery = delegationQuery(intent && health.delegationIntent === 1);
+    const firstBody = await call(host, ROUTES.plans, { ...query(base), ...intentQuery, ...(askInbox ? needsYouListQuery(inbox!.demand === 'rows') : {}) });
     const receivedAt = inbox?.mono() ?? 0;
     const first = parsePlansPage(firstBody);
     const plans = [...first.data];
     let cursor = first.nextCursor;
     for (let pages = 1; cursor && pages < maxPages; pages++) {
-      const next = parsePlansPage(await call(host, ROUTES.plans, query({ ...base, cursor })));
+      const next = parsePlansPage(await call(host, ROUTES.plans, { ...query({ ...base, cursor }), ...intentQuery }));
       if (next.envelope.storeId !== first.envelope.storeId) throw new ContractError('The progress store changed while reading pages.');
       if (next.envelope.binding.sourceId !== first.envelope.binding.sourceId || next.envelope.binding.verified !== first.envelope.binding.verified) throw new ContractError('The progress binding changed while reading pages.');
       const verification = (e: EnvelopeView) => JSON.stringify(e.sources.map(s => [s.id, s.verified]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
@@ -227,11 +229,12 @@ const cleanupOf = (plan: PlanView) => `${plan.cleanup?.state ?? 'visible'}:${pla
  * changes between pages, the read restarts rather than mixing revisions. A page from another
  * store, source binding or plan is refused, even at the same revision: never a joined detail.
  */
-export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now(), expected?: Pick<StoreRead, 'storeId' | 'binding'>): Promise<DetailResult> {
+export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, mono: () => number = () => performance.now(), expected?: Pick<StoreRead, 'storeId' | 'binding'>, intent = false): Promise<DetailResult> {
   let snapshot: DetailSnapshot | null = null;
   try {
     for (let restarts = 0; restarts <= MAX_DETAIL_RESTARTS; restarts++) {
-      const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+      // The delegation overlay rides on the first page only (asked only when advertised).
+      const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
       if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
       if (expected && (first.envelope.storeId !== expected.storeId || first.envelope.binding.sourceId !== expected.binding.sourceId || first.envelope.binding.verified !== expected.binding.verified
         || !first.envelope.sources.some(s => s.id === plan.sourceId && s.verified))) throw new ContractError('The selected store, binding or recorded source verification changed.');
@@ -261,7 +264,7 @@ export async function readDetail(host: ServiceHost, plan: Pick<PlanView, 'source
       const timing = first.timing && Object.fromEntries(Object.entries(first.timing.items).map(([id, t]) => [id, { ...t, receivedAt }]));
       // Same receipt anchor; a cached revisit keeps it, only a new reply supplies a new one.
       const blockedTiming = first.blockedTiming && Object.fromEntries([...first.blockedTiming].map(([id, t]) => [id, { ...t, receivedAt }]));
-      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}), ...(blockedTiming ? { blockedTiming } : {}) } };
+      return { ok: true, plan: first.plan, restarts, snapshot, detail: { key: first.plan.key, revision: first.plan.revision, items, contributions, links: first.links, ...(timing ? { timing } : {}), ...(blockedTiming ? { blockedTiming } : {}), ...(first.intent ? { intent: first.intent } : {}) } };
     }
     throw new DetailReadError('revision-restarts', 'The plan kept changing while it was read.');
   } catch (error) {
@@ -354,17 +357,18 @@ export async function readSearchState(host: ServiceHost, storeId: string, keys: 
   }
 }
 
-export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView } | { ok: false; failure: ReadFailure; status: number | null };
+export type PlanHeadResult = { ok: true; envelope: EnvelopeView; plan: PlanView; intent?: PlanDetail['intent'] } | { ok: false; failure: ReadFailure; status: number | null };
 
 /**
  * Review preflight: the FIRST page of /v1/plan only, validated envelope and plan metadata. Item and
  * contribution cursors are never followed: one bounded live read, not a detail or history download.
+ * Task-row readers may opt into the validated intent overlay and its token on this same head.
  */
-export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>): Promise<PlanHeadResult> {
+export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sourceId' | 'id'>, intent = false): Promise<PlanHeadResult> {
   try {
-    const first = parsePlanPage(await call(host, ROUTES.plan, query({ source: plan.sourceId, plan: plan.id })));
+    const first = parsePlanPage(await call(host, ROUTES.plan, { ...query({ source: plan.sourceId, plan: plan.id }), ...delegationQuery(intent) }));
     if (first.plan.sourceId !== plan.sourceId || first.plan.id !== plan.id) throw new ContractError('The progress service answered for another plan.');
-    return { ok: true, envelope: first.envelope, plan: first.plan };
+    return { ok: true, envelope: first.envelope, plan: intent ? { ...first.plan, delegationToken: first.intent?.token } : first.plan, ...(intent ? { intent: first.intent } : {}) };
   } catch (error) {
     return { ok: false, failure: classify(error), status: error instanceof HttpError ? error.status : null };
   }

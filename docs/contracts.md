@@ -1659,13 +1659,42 @@ or imply execution enforcement. This is guidance, not a new data contract.
 - link: child/assign item IDs; empty assign unlinks. Parent structure/finish only;
   children may change assigned tasks only. Relays explicitly name attributed child.
 - bind: source path/confirm?; source path stays bound across directory moves.
-- finish: outcome finished/cancelled/failed. Finished requires actionable work and
-  no unresolved tasks; all-skipped/empty cannot imply success. Late writes refuse;
+- finish: outcome finished/cancelled/failed, optional changes[{id,status,blocker?}].
+  Finished requires actionable work and no unresolved tasks after explicit changes;
+  all-skipped/empty cannot imply success. Late writes refuse;
   intentional continuation requires coordinator revise/commit with reopen=true.
 
 Same oid+same caller/session+same semantic input returns the ORIGINAL receipt;
 altered reuse refuses, stale rev returns current rev. Batches are all-or-none.
 Ancestry is authoritative or unknown, never guessed. History retained by default.
+
+### Atomic coordinator finish
+
+Coordinator `finish` optionally accepts `changes`: 1–50 unique existing task IDs,
+with the same status/blocker validation as `change`. It cannot alter structure,
+accept group IDs, create unknown tasks or relay an attributed child's finish.
+Group and unknown-ID refusals retain the safe task-ID recovery hint: read current
+task IDs rather than retrying a title, group or invented ID. Assigned children
+cannot finish a plan.
+
+At the expected revision, explicit task changes, their direct contribution,
+receipt and requested outcome commit together in the existing Store transaction.
+Success advances the ordinary revision once, not the structural revision; the
+receipt's `changed` and contribution item IDs identify the explicit changes.
+A refusal applies neither the task changes nor the outcome. `finished` requires
+nonzero actionable work and no unresolved tasks after applying the changes.
+Empty/all-skipped work cannot finish successfully. `cancelled` and `failed`
+preserve explicitly reported unfinished statuses under the existing close and
+blocker-history rules. No outcome infers a task status; omitting `changes`
+preserves ordinary finish behavior.
+
+Read fresh state and use a new operation ID for new input. An identical full-input
+retry with the same operation ID returns the original receipt without another
+write. Altered reuse, including changed or omitted `changes`, refuses. Revision
+conflicts expose the current revision: read and deliberately decide the next
+report, never silently rebase. Older tools reject combined finish input; inspect
+state before deliberately issuing separate reports, never silently remove the
+`changes` field. This adds no schema or protocol version change.
 
 ### Item identity and structural revisions
 
@@ -1691,6 +1720,42 @@ downgrade stored data. Old probe DBs are not migrated/reset into production.
 
 Backend builds produce service/companion/setup utility entries; package assembly
 joins these with the guest bundles to produce the installable extension ZIP.
+## Waiting delegation projection (additive v2 read)
+
+Ready snapshot health advertises `delegationIntent: 1` without data admission or
+Store queries. After starting/refused admission, clients use the fresh health
+capabilities, not the earlier snapshot. Only then may clients opt in with
+`delegationIntent=1` on existing GET `/v1/plans` and first-page `/v1/plan`
+reads. Other values and detail continuations with this option are refused.
+The option composes with `needsYou=1` and `needsYouTiming=1` on lists.
+Without opt-in, existing replies are unchanged.
+
+Each opted-in list row carries an opaque `delegationToken`. First-page detail
+may carry a `DelegationView` as `delegationIntent` (defined in
+`shared/delegation-view.ts`), pinned to that reply's store, verified source
+binding, source, plan, revision, structural revision and cleanup generation.
+Foreign/unverified bindings and archived plans omit the overlay. Clients must
+compare its token with the current list token before showing task notes.
+The token is independent of progress revision: declaration, reservation,
+cancellation, eligibility and capture changes can retire cached notes without
+a progress report. It grants no authority and is not a dispatch identity.
+
+Complete evidence has disposition `none`, `pending`, `reserved`, `bound`,
+`cancelled`, `invalidated` or `refused`. Eligible `pending` has `dispatch:null`;
+eligible `reserved` has a dispatch identity. Neither means work has started or
+a child is assigned. Refusal recovery is always `redeclare-or-link`; fixed
+reason codes are `relevant-change`, `conflict`, `structural-change`, `closed`,
+`assignment`, `source-unverified`, `unverified`, `incomplete-proof`,
+`missing-proof` and `budget`. Unknown internal refusal reasons map to
+`unverified`, busy to `budget`, and not-found to `missing-proof`.
+Incomplete evidence has no disposition and explicitly reports `budget`,
+`legacy`, `unverified`, `invalid` or `capture-unavailable`.
+
+This is read-only. Projection never settles or consumes an intent, dispatches,
+binds, installs storage, grants reporting permission, or changes task status,
+counts, assignment, revisions or report time. The dispatch and binding rules
+below remain authoritative.
+
 ## Declared delegation and assignment attribution (optional v2 metadata)
 
 `delegate` extends the existing report request with `plan`, fresh `oid`, expected
@@ -2002,6 +2067,16 @@ evidence and legacy summary-only claim hashes never reconstruct task changes.
 Private receipt bookkeeping reuses existing owners without changing schema 2,
 run format 2 or the public claim shape. Cleanup/older writers may remove evidence;
 ambiguity refuses, rather than guessing that the task component committed.
+
+The additive ordinary `receipts_source_oid ON receipts(source, oid)` index
+narrows this replay lookup without changing receipt data, hashes, authority or
+protocol/base schema **2**. Store creation and companion activation install it
+transactionally and idempotently. Ordinary opens only validate it if present;
+read-only access and setup inspection never install or repair it. An incompatible
+object using the owned name fails closed with `schema`. Unmodified 1.3.0 readers
+and writers remain compatible, and downgrade retains the index. The existing
+exact `runs_*` and `cleanup_*` namespace checks remain unchanged. See the
+[backend index contract](backend.md#receipt-lookup-index).
 
 Assignment guidance is delivered only on a naturally occurring eligible context
 after verified binding, under current source/ancestry/assignment checks. Its
