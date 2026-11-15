@@ -9070,10 +9070,12 @@ function selection(env, expectedDescriptor, family) {
       path15.join(roots.configRoot, "plugins", "agent-progress")
     ], true);
   const legacy = !!lstatSync13(path15.join(roots.configRoot, "plugins", "agent-progress"), { throwIfNoEntry: false });
-  family?.(!legacy);
-  const { binding, descriptor } = selected(env, expectedDescriptor), file = migrationFile(env), stat = lstatSync13(file, { throwIfNoEntry: false });
+  const file = path15.join(root, "migration.json"), stat = lstatSync13(file, { throwIfNoEntry: false });
+  if (!stat)
+    family?.(!legacy);
   let journal, prior;
   if (stat) {
+    migrationFile(env);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
       throw new SetupError("managed-binding-invalid");
     if (stat.size > MANAGED_STEP_LIMITS.journalBytes)
@@ -9099,6 +9101,7 @@ function selection(env, expectedDescriptor, family) {
     } else
       throw new SetupError("managed-journal-unsupported");
   }
+  const { binding, descriptor } = selected(env, expectedDescriptor);
   const retained = journal ? managedJournalBinding(journal) : prior?.binding;
   if (binding && retained && canonical(binding) !== canonical(retained))
     throw new SetupError("managed-selection-conflict");

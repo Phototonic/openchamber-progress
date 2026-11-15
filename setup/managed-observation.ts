@@ -24,12 +24,13 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
   if(windows)windowsPaths([root,path.join(root,'.ownership.json'),path.join(root,'progress-binding.json'),path.join(root,'migration.json'),
     path.join(roots.configRoot,'plugins','agent-progress')],true);
   const legacy=!!lstatSync(path.join(roots.configRoot,'plugins','agent-progress'),{throwIfNoEntry:false});
-  // Copy only: legacy absence identifies a fresh bootstrap even if its marker
-  // is invalid. This hint grants no admission or recovery authority.
-  family?.(!legacy);
-  const {binding,descriptor}=selected(env,expectedDescriptor),file=migrationFile(env),stat=lstatSync(file,{throwIfNoEntry:false});
+  const file=path.join(root,'migration.json'),stat=lstatSync(file,{throwIfNoEntry:false});
+  // Copy only: legacy absence hints at fresh bootstrap only without a record.
+  // Existing records decide their own family; unreadable formats have no hint.
+  if(!stat)family?.(!legacy);
   let journal:ManagedSetupStepJournal|undefined,prior:ReturnType<typeof readMigration>;
   if(stat){
+    migrationFile(env); // Validate the directory/marker before reading the record.
     if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new SetupError('managed-binding-invalid');
     if(stat.size>MANAGED_STEP_LIMITS.journalBytes)throw new SetupError('managed-step-limit');
     // The directory/marker has been validated by migrationFile. The strict owner
@@ -48,6 +49,7 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
     else if(format===1){family?.(false);prior=readMigration(env);}
     else throw new SetupError('managed-journal-unsupported');
   }
+  const {binding,descriptor}=selected(env,expectedDescriptor);
   const retained=journal?managedJournalBinding(journal):prior?.binding;
   if(binding&&retained&&canonical(binding)!==canonical(retained))throw new SetupError('managed-selection-conflict');
   return {binding,descriptor,journal,prior,legacy};

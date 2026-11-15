@@ -290,6 +290,30 @@ function fixture(receipt=false){
   return {root,env,targets,journal,review,request,advance,control,until,capture,cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
 }
 
+for(const unreadable of [false,true])test(`receipt migration with ${unreadable?'an unreadable journal and ':''}a corrupt selector is not labelled fresh`,()=>{
+  const f=fixture(true);try{
+    assert.equal(fs.existsSync(path.join(f.targets.configRoot,'plugins','agent-progress')),false);
+    const file=migrationFile(f.env);
+    if(unreadable)fs.writeFileSync(file,'invalid json');
+    fs.writeFileSync(managedBindingFile(f.env),'invalid selector',{mode:0o600});
+    const journal=fs.readFileSync(file),selector=fs.readFileSync(managedBindingFile(f.env));
+    const status=observeManagedSetup(f.env).status;
+    assert.equal(status.delivery!.configuration,'invalid');assert.equal(status.delivery!.migration,'unavailable');
+    assert.equal(status.delivery!.planKind,undefined);
+    assert.equal(status.delivery!.freshProgress,undefined);
+    assert.deepEqual(fs.readFileSync(file),journal);assert.deepEqual(fs.readFileSync(managedBindingFile(f.env)),selector);
+  }finally{f.cleanup();}
+});
+
+test('a fresh record keeps its own family when the selector is corrupt',()=>{
+  const f=freshFixture();try{
+    f.begin();f.until('enable');fs.writeFileSync(managedBindingFile(f.env),'invalid selector');
+    const status=observeManagedSetup(f.env).status;
+    assert.equal(status.delivery!.configuration,'invalid');assert.equal(status.delivery!.planKind,'fresh');
+    assert.equal(status.delivery!.freshProgress,undefined);
+  }finally{f.cleanup();}
+});
+
 for(const receipt of [false,true])test(`${receipt?'receipt':'manifest'} engine completes one effect per request, retains identity/history and replays terminal completion`,()=>{
   const f=fixture(receipt);try{
     const initial=f.journal(),history=path.join(f.targets.storeRoot,'installation-history.jsonl'),before=fs.readFileSync(history);

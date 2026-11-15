@@ -184,6 +184,8 @@ and may expire on restart. No caller paths occur on mutation/continuation inputs
 Ordinary Setup may include `delivery.planKind: fresh` as a presentation-only hint
 even when partial fresh setup has no usable progress. Absence retains the older
 migration presentation; the hint grants no admission or recovery authority.
+Legacy-folder absence supplies this hint only when no migration record exists.
+An existing record's format decides its family; an unreadable format has no hint.
 A refused fresh Store observation clears public fresh progress and reports
 unavailable for manual diagnosis only for an unfinished format-3 journal with
 `created.database === null`, rather than offering Resume on uncheckpointed creation
