@@ -8,14 +8,107 @@ import {pathToFileURL} from 'node:url';
 import {isolatedEnvironment} from '../fixtures/managed.ts';
 import {lifecycle,migrationEvidence,SetupError} from '../../setup/lifecycle.ts';
 import {createManagedBindingDirectory,managedBindingFile,managedExpectationFile} from '../../shared/managed-binding.ts';
-import {readManagedStepJournal,migrationFile,writeMigration} from '../../setup/managed-migration.ts';
-import {inspectManagedStep,type ManagedInspectionSession} from '../../setup/managed-inspection.ts';
+import {readManagedStepJournal,readManagedFreshStepJournal,migrationFile,writeMigration} from '../../setup/managed-migration.ts';
+import {inspectManagedStep,inspectManagedFreshStep,type ManagedInspectionSession,type ManagedFreshInspectionSession} from '../../setup/managed-inspection.ts';
 import {beginManagedStep,advanceManagedStep,controlManagedStep} from '../../setup/managed-step-engine.ts';
 import {PlatformRequestBudget,withPlatformRequestBudget} from '../../shared/platform.ts';
 import {Store} from '../../shared/store.ts';
-import type {ManagedStepRequest} from '../../shared/managed-steps.ts';
+import type {ManagedStepRequest,ManagedFreshStepRequest} from '../../shared/managed-steps.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
+function freshFixture(kind:'absent'|'directory'|'new-source'|'reuse'='absent',enabled=false){
+  const root=fs.mkdtempSync('/tmp/opencode/fresh-engine-'),env=isolatedEnvironment(root);
+  const roots={configRoot:path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot:path.join(env.XDG_DATA_HOME!,'opencode')};
+  for(const p of Object.values(roots))fs.mkdirSync(p,{mode:0o700});
+  const storeRoot=path.join(root,'custom store ü'),database=path.join(storeRoot,'progress.sqlite');
+  if(kind!=='absent')fs.mkdirSync(storeRoot,{mode:0o700});
+  if(kind==='new-source'||kind==='reuse'){
+    const store=new Store(database,{create:true});try{
+      store.setEnabled(enabled);store.registerSource({id:'retained-other',configRoot:path.join(root,'other-config'),dataRoot:path.join(root,'other-data'),verified:true});
+      if(kind==='reuse')store.registerSource({id:'retained-source',...roots,verified:true});
+    }finally{store.close();}
+  }
+  const review=()=>{let s:ManagedFreshInspectionSession|undefined;for(let i=0;i<5;i++)s=inspectManagedFreshStep(env,payload,s,s?undefined:storeRoot).session;return s!;};
+  const journal=()=>readManagedFreshStepJournal(env)!;
+  const begin=(session=review())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>beginManagedStep(env,payload,
+    {version:2,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},budget,session));};
+  const request=():Extract<ManagedFreshStepRequest,{action:'advance'}>=>{const m=journal().migration;return {version:2,action:'advance',operationId:m.operationId,expectedSequence:m.sequence,step:m.step!};};
+  const advance=(r=request())=>{const budget=new PlatformRequestBudget();return withPlatformRequestBudget(budget,()=>advanceManagedStep(env,payload,r,budget,journal()));};
+  const control=(action:'pause'|'resume'|'abandon',session?:ManagedFreshInspectionSession)=>{
+    const j=journal(),budget=new PlatformRequestBudget(),r:Extract<ManagedFreshStepRequest,{action:'pause'|'resume'|'abandon'}>={version:2,action,operationId:j.migration.operationId,expectedSequence:j.migration.sequence,
+      ...(session?{review:{confirmed:true,step:'enable',expected:session.review!.expected}}:{})};
+    return withPlatformRequestBudget(budget,()=>controlManagedStep(env,payload,r,budget,j,session));
+  };
+  const until=(name:string)=>{while(journal().migration.step?.name!==name){const r=advance();assert.equal(r.disposition,'applied',JSON.stringify(r.error));}};
+  const capture=(enabled?:boolean)=>{const s=new Store(database);try{if(enabled!==undefined)s.setEnabled(enabled);return s.list().captureEnabled;}finally{s.close();}};
+  return {root,env,roots,storeRoot,database,review,journal,begin,request,advance,control,until,capture,cleanup(){fs.rmSync(root,{recursive:true,force:true});}};
+}
+
+for(const kind of ['absent','directory','new-source','reuse'] as const)for(const enabled of [false,true])test(`fresh ${kind} completes its frozen plan and preserves retained capture ${enabled}`,()=>{
+  const f=freshFixture(kind,enabled);try{
+    const review=f.review(),initial=review.candidate!,old=fs.existsSync(f.database)?fs.readFileSync(f.database):null;
+    assert.equal(fs.existsSync(managedBindingFile(f.env)),false);assert.equal(fs.existsSync(migrationFile(f.env)),false);
+    if(old)assert.deepEqual(fs.readFileSync(f.database),old);else assert.equal(fs.existsSync(f.database),false);
+    f.begin(review);assert.equal(fs.existsSync(f.database),!!old);
+    let last:ReturnType<typeof f.request>|undefined;
+    while(f.journal().migration.state!=='complete'){
+      const r=f.request(),reply=f.advance(r);last=r;assert.equal(reply.disposition,'applied',JSON.stringify(reply.error));
+      assert.deepEqual(f.journal().migration.consent.targetDigest,initial.migration.consent.targetDigest);
+      assert.equal(f.journal().storeId,initial.storeId);assert.deepEqual(f.journal().source,initial.source);
+      const bytes=fs.readFileSync(migrationFile(f.env));assert.equal(f.advance(r).disposition,'replayed');assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+      if(!['new-source','reuse'].includes(kind)&&!['enable','reconcile'].includes(r.step.name)&&fs.existsSync(f.database))assert.equal(f.capture(),false);
+    }
+    assert.equal(f.capture(),kind==='new-source'||kind==='reuse'?enabled:true);
+    const s=new Store(f.database,{readOnly:true});try{assert.equal(s.list().sources.length,kind==='new-source'||kind==='reuse'?2:1);}finally{s.close();}
+    f.capture(false);assert.equal(f.advance(last!).disposition,'replayed');assert.equal(f.capture(),false);
+  }finally{f.cleanup();}
+});
+
+for(const boundary of ['intent','completion'] as const)for(const after of [false,true])test(`fresh every step ${boundary} interruption ${after?'after':'before'} journal publication`,t=>{
+  for(const name of ['store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile']){
+    const f=freshFixture();try{
+      f.begin();f.until(name);
+      const request=f.request(),file=migrationFile(f.env),rename=fs.renameSync;let tripped=false;
+      const mock=t.mock.method(fs,'renameSync',((from:any,to:any)=>{
+        if(String(to)===file&&!tripped){const n=JSON.parse(fs.readFileSync(from,'utf8')).migration;
+          if(boundary==='intent'?n.state==='running':n.lastCompleted?.name===request.step.name){tripped=true;if(after)rename(from,to);throw new Error('synthetic interruption');}}
+        return rename(from,to);
+      }) as typeof fs.renameSync);syncBuiltinESMExports();
+      try{assert.equal(f.advance(request).disposition,'refused');}finally{mock.mock.restore();syncBuiltinESMExports();}
+      assert.equal(tripped,true);
+      const m=f.journal().migration;
+      if(m.lastCompleted?.name===request.step.name){assert.equal(f.advance(request).disposition,'replayed');continue;}
+      if(boundary==='completion'&&!after&&request.step.name==='store-directory'){
+        assert.equal(fs.existsSync(f.storeRoot),true);assert.throws(()=>f.control('resume'),{code:'managed-migration-conflict'});
+        assert.equal(fs.existsSync(f.database),false);continue; // retained, manual-diagnosis boundary
+      }
+      if(m.intent){if(request.step.name==='enable'&&!f.capture())f.control('resume',f.review());else f.control('resume');}
+      assert.equal(f.advance().disposition,'applied');
+    }finally{f.cleanup();}
+  }
+});
+
+test('fresh paused pre-store operation remains unknown and requires explicit continuation; wrong family refuses',()=>{
+  const f=freshFixture();try{
+    f.begin();const before=f.journal(),bytes=fs.readFileSync(migrationFile(f.env));
+    const budget=new PlatformRequestBudget();assert.throws(()=>withPlatformRequestBudget(budget,()=>advanceManagedStep(f.env,payload,
+      {version:1,action:'advance',operationId:before.migration.operationId,expectedSequence:1,step:{name:'expectation',batch:0}},budget,before)),{code:'managed-journal-unsupported'});
+    assert.deepEqual(fs.readFileSync(migrationFile(f.env)),bytes);
+    assert.equal(f.control('pause').progress.capture.state,'unknown');assert.throws(()=>f.advance(),{code:'managed-step-conflict'});
+    assert.equal(fs.existsSync(f.storeRoot),false);f.control('resume');assert.equal(f.advance().disposition,'applied');
+  }finally{f.cleanup();}
+});
+
+for(const after of [false,true])test(`fresh uncertain enable ${after?'after':'before'} effect uses single-use capture review`,t=>{
+  const f=freshFixture();try{
+    f.begin();f.until('enable');const set=Store.prototype.setEnabled;
+    const mock=t.mock.method(Store.prototype,'setEnabled',function(this:Store,v:boolean){if(after)set.call(this,v);throw new Error('synthetic interruption');});
+    try{assert.equal(f.advance().disposition,'refused');}finally{mock.mock.restore();}
+    if(after)f.control('resume');else{assert.throws(()=>f.control('resume'),{code:'managed-step-unsettled'});f.control('resume',f.review());}
+    assert.equal(f.advance().disposition,'applied');assert.equal(f.capture(),true);
+    f.capture(false);assert.equal(f.advance().disposition,'applied');assert.equal(f.capture(),false);
+  }finally{f.cleanup();}
+});
 function fixture(receipt=false){
   const root=fs.mkdtempSync('/tmp/opencode/step-engine-'),env=isolatedEnvironment(root);
   const targets={configRoot:path.join(env.XDG_CONFIG_HOME!,'opencode'),dataRoot:path.join(env.XDG_DATA_HOME!,'opencode'),storeRoot:path.join(root,'store'),confirmed:true};
@@ -273,4 +366,57 @@ test('every integrated effect and control fits six launches with fresh superviso
       t.diagnostic(JSON.stringify({effects:counts}));
     }finally{mock.mock.restore();syncBuiltinESMExports();}
   }finally{if(originalSystemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=originalSystemRoot;f.cleanup();}
+});
+
+test('full fresh engine counts every creation, settlement, failure, replay and control launch',{skip:process.platform==='win32'},async t=>{
+  const sourceRoot=fs.mkdtempSync('/tmp/opencode/fresh-engine-counts-'),systemRoot=process.env.SystemRoot;
+  try{
+    const source=path.join(sourceRoot,'source');for(const dir of ['shared','setup'])fs.cpSync(path.resolve(dir),path.join(source,dir),{recursive:true});
+    const file=path.join(source,'shared/platform.ts');let text=fs.readFileSync(file,'utf8');
+    text=text.replace("export const windows = process.platform === 'win32';",'export const windows = true;');
+    const start=text.indexOf("  if (value.includes('\\0')",text.indexOf('function windowsPathsInner(')),end=text.indexOf('  let current = clean;',start);
+    assert.ok(start>0&&end>start);text=text.slice(0,start)+"  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new PlatformError('path-unverified');\n  const clean = value;\n"+text.slice(end);fs.writeFileSync(file,text);
+    let spawns=0,failAt=0;
+    const mock=t.mock.method(cp,'spawnSync',((_command:string,_args:string[],options:cp.SpawnSyncOptionsWithStringEncoding):cp.SpawnSyncReturns<string>=>{
+      spawns++;if(failAt===spawns)return {pid:1,output:[],stdout:'',stderr:'',status:1,signal:null};
+      const input=JSON.parse(String(options.input));for(const dir of input.create)fs.mkdirSync(dir,{mode:0o700});
+      return {pid:1,output:[],stdout:JSON.stringify(input.paths.map(()=>({owned:true,private:true,reparse:false,unsafeParent:false}))),stderr:'',status:0,signal:null};
+    }) as unknown as typeof cp.spawnSync);syncBuiltinESMExports();process.env.SystemRoot='C:\\Windows';
+    try{
+      const platform=await import(pathToFileURL(file).href) as typeof import('../../shared/platform.ts');
+      const engine=await import(pathToFileURL(path.join(source,'setup/managed-step-engine.ts')).href) as typeof import('../../setup/managed-step-engine.ts');
+      const counts:Record<string,number>={};
+      const run=<T>(name:string,fn:(budget:InstanceType<typeof platform.PlatformRequestBudget>)=>T)=>{
+        spawns=0;const budget=new platform.PlatformRequestBudget();try{return platform.withPlatformRequestBudget(budget,()=>fn(budget));}
+        finally{assert.equal(spawns,budget.securitySpawns,name);assert.ok(spawns<=6,`${name}: ${spawns}`);counts[name]=Math.max(counts[name]??0,spawns);}
+      };
+      const begin=(f:ReturnType<typeof freshFixture>)=>{const session=f.review();return run('prepare',b=>engine.beginManagedStep(f.env,payload,{version:2,action:'begin',operationId:'11111111-1111-4111-8111-111111111111',confirmed:true,expected:session.review!.expected},b,session));};
+      const advance=(f:ReturnType<typeof freshFixture>)=>run(f.request().step.name,b=>engine.advanceManagedStep(f.env,payload,f.request(),b,f.journal()));
+      for(const kind of ['absent','directory','new-source','reuse'] as const){const f=freshFixture(kind,true);try{
+        begin(f);
+        while(f.journal().migration.state!=='complete'){
+          const request=f.request();assert.equal(advance(f).disposition,'applied',request.step.name);
+          assert.equal(run('replay',b=>engine.advanceManagedStep(f.env,payload,request,b,f.journal())).disposition,'replayed');
+          if(f.journal().migration.state!=='complete')for(const action of ['pause','abandon','resume'] as const){
+            const j=f.journal();assert.equal(run(action,b=>engine.controlManagedStep(f.env,payload,{version:2,action,operationId:j.migration.operationId,expectedSequence:j.migration.sequence},b,j)).disposition,'applied');
+          }
+        }
+      }finally{f.cleanup();}}
+      assert.deepEqual(Object.fromEntries(['prepare','store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile','replay','pause','abandon','resume'].map(n=>[n,counts[n]])),
+        {prepare:6,'store-directory':6,'create-store':6,expectation:5,'register-source':5,'publish-binding':5,enable:5,reconcile:5,replay:1,pause:3,abandon:3,resume:3});
+      // Fail every charged boundary of each full effect, including completion
+      // and readback. Six-slot paths retain uncertain intent when settlement
+      // cannot fit; never borrow a seventh launch for diagnostics/cleanup.
+      for(const name of ['store-directory','create-store','expectation','register-source','publish-binding','enable','reconcile'])for(let attempt=1;attempt<=counts[name]!;attempt++){
+        const f=freshFixture();try{
+          begin(f);while(f.journal().migration.step?.name!==name)assert.equal(advance(f).disposition,'applied');
+          failAt=attempt;
+          try{const r=run('failed-'+name,b=>engine.advanceManagedStep(f.env,payload,f.request(),b,f.journal()));assert.equal(r.disposition,'refused');}
+          catch(e){assert.equal((e as {code:string}).code,'windows-security-unavailable');}
+          finally{failAt=0;}
+        }finally{f.cleanup();}
+      }
+      t.diagnostic(JSON.stringify({freshEngineSecuritySpawns:counts}));
+    }finally{mock.mock.restore();syncBuiltinESMExports();}
+  }finally{if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;fs.rmSync(sourceRoot,{recursive:true,force:true});}
 });

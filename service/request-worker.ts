@@ -1,15 +1,16 @@
 import {Worker,isMainThread,parentPort,workerData} from 'node:worker_threads';
+import path from 'node:path';
 import {type Socket} from 'node:net';
 import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {SetupController} from './setup-controller.ts';
 import {PlatformRequestBudget,withPlatformRequestBudget,writerTargetPort} from '../shared/platform.ts';
-import {MANAGED_STEP_LIMITS,managedStepRequest,type ManagedStepAccounting,type ManagedStepResponse,type ManagedStepRequest} from '../shared/managed-steps.ts';
+import {MANAGED_STEP_LIMITS,managedSetupStepRequest,type ManagedStepAccounting,type ManagedSetupStepResponse,type ManagedSetupStepRequest,type ManagedSetupStepProgress,type ManagedStepDiagnostic,type ManagedFreshStepDiagnostic,type ManagedInspection,type ManagedFreshInspection} from '../shared/managed-steps.ts';
 import {type ManagedSetupAction} from '../shared/progress.ts';
 import {canonical,digest} from '../shared/store.ts';
 import type {Payload,Action} from '../setup/lifecycle.ts';
-import {inspectManagedStep,type ManagedInspectionSession} from '../setup/managed-inspection.ts';
-import {beginManagedStep,observeManagedStep,advanceManagedStep,controlManagedStep} from '../setup/managed-step-engine.ts';
-import {managedJournalProgress,sameManagedStep,type ManagedStepJournal} from '../setup/managed-step-journal.ts';
+import {inspectManagedStep,inspectManagedFreshStep,type ManagedInspectionSession,type ManagedFreshInspectionSession} from '../setup/managed-inspection.ts';
+import {beginManagedStep,observeManagedStep,advanceManagedStep,controlManagedStep,managedSetupJournalProgress} from '../setup/managed-step-engine.ts';
+import {sameManagedStep,type ManagedSetupStepJournal} from '../setup/managed-step-journal.ts';
 import {managedDiagnostic,ManagedStepFailure} from '../setup/managed-diagnostic.ts';
 import {observeManagedSetup,controlManagedCapture} from '../setup/managed-observation.ts';
 import {setupWriterTargets,acquireWriterSlots} from './writer-fence.ts';
@@ -25,7 +26,8 @@ export type SetupWorkerRequest =
   | {action:'run';name:Action|ManagedSetupAction;body:unknown};
 export type SetupWorkerResult =
   | {ok:true;value:unknown;accounting:ManagedStepAccounting;health?:SetupWorkerHealth;descriptor?:string|null}
-  | {ok:false;code:string;accounting:ManagedStepAccounting;refusal?:ManagedStepResponse};
+  | {ok:false;code:string;accounting:ManagedStepAccounting;refusal?:ManagedSetupStepResponse};
+type InspectionSession=ManagedInspectionSession|ManagedFreshInspectionSession;
 export interface SetupWorkerHealth {state:string;ready:boolean;sqlite:boolean;diagnostics:string[];subagentRuns:boolean}
 interface SetupWorkerInput {
   kind:'agent-progress-setup-request';
@@ -36,11 +38,11 @@ interface SetupWorkerInput {
   startedAt:bigint;
   counter:SharedArrayBuffer;
   fence:{port:number;nonce:string;targets:string[]};
-  inspection?:ManagedInspectionSession;
-  journal?:ManagedStepJournal;
+  inspection?:InspectionSession;
+  journal?:ManagedSetupStepJournal;
 }
 /** Private fields travel only through workerData/parentPort, never HTTP. */
-type SetupWorkerMessage={requestId:string;result:SetupWorkerResult;inspection?:ManagedInspectionSession;journal?:ManagedStepJournal};
+type SetupWorkerMessage={requestId:string;result:SetupWorkerResult;inspection?:InspectionSession;journal?:ManagedSetupStepJournal};
 
 export function isSetupRequestWorker():boolean {
   return !isMainThread&&workerData?.kind==='agent-progress-setup-request';
@@ -49,10 +51,11 @@ const diagnostic=managedDiagnostic;
 
 /** Correlate a settled effect with the exact admitted operation/sequence/step.
  * Transport requestId alone cannot protect against a misrouted engine result. */
-export function correlatedManagedReply(request:ManagedStepRequest,value:ManagedStepResponse):boolean {
+export function correlatedManagedReply(request:ManagedSetupStepRequest,value:ManagedSetupStepResponse):boolean {
   try {
-  if(!value||value.version!==1||!['applied','replayed','observed','refused'].includes(value.disposition))return false;
+  if(!value||value.version!==request.version||!['applied','replayed','observed','refused'].includes(value.disposition))return false;
   const p=value.progress;
+  if(p&&('planKind' in p)!==(request.version===2))return false;
   if('operationId' in request&&request.operationId&&p&&p.operationId!==request.operationId)return false;
   if(value.disposition==='refused')return !!value.error;
   if(request.action==='inspect'||request.action==='status')return value.disposition==='observed'&&value.error===null&&
@@ -65,6 +68,14 @@ export function correlatedManagedReply(request:ManagedStepRequest,value:ManagedS
   }catch{return false;}
 }
 
+/** Only trusted worker output. The strict family reader/engine supplies the
+ * matching projection; keep v1 DTOs narrow rather than translating fresh state. */
+function stepResponse(version:1|2,fields:{disposition:ManagedSetupStepResponse['disposition'];progress:ManagedSetupStepProgress|null;
+  inspection:ManagedInspection|ManagedFreshInspection|null;error:ManagedStepDiagnostic|ManagedFreshStepDiagnostic|null;accounting:ManagedStepAccounting}):ManagedSetupStepResponse {
+  if(fields.progress&&('planKind' in fields.progress)!==(version===2))throw Object.assign(new Error('family'),{code:'managed-step-unsupported'});
+  return {version,...fields} as ManagedSetupStepResponse;
+}
+
 /** Called only by the guarded existing service entry, in a dedicated worker. */
 export function runSetupRequestWorker():void {
   if(!isSetupRequestWorker()||!parentPort)throw new Error('managed-step-unsupported');
@@ -72,9 +83,9 @@ export function runSetupRequestWorker():void {
   const budget=new PlatformRequestBudget(input.startedAt,input.counter,input.fence);
   let setup:SetupController|undefined;
   let value:unknown,code:string|undefined;
-  let inspection:ManagedInspectionSession|undefined;
-  let journal:ManagedStepJournal|undefined;
-  let refusal:ManagedStepResponse|undefined;
+  let inspection:InspectionSession|undefined;
+  let journal:ManagedSetupStepJournal|undefined;
+  let refusal:ManagedSetupStepResponse|undefined;
   let health:SetupWorkerHealth|undefined;
   let descriptor:string|null|undefined;
   const payload=()=>{if(!input.payload)throw Object.assign(new Error('invalid'),{code:'managed-step-unsupported'});return input.payload;};
@@ -83,35 +94,38 @@ export function runSetupRequestWorker():void {
       setup=new SetupController({env:input.env},payload);
       const request=input.request;
       if(request.action==='managed-step'){
-        const parsed=managedStepRequest(request.body);
+         const parsed=managedSetupStepRequest(request.body);
         if(!parsed)throw Object.assign(new Error('invalid'),{code:'invalid'});
         if(parsed.action==='begin'){
           const begun=beginManagedStep(input.env,payload(),parsed,budget,input.inspection);
           journal=begun.journal;
-          return {version:1,disposition:begun.disposition,progress:begun.progress,inspection:null,error:null,
-            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+          return stepResponse(parsed.version,{disposition:begun.disposition,progress:begun.progress,inspection:null,error:null,
+            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
         }
         if(parsed.action==='status'){
-          journal=observeManagedStep(input.env,parsed.operationId);
-          return {version:1,disposition:'observed',inspection:null,progress:journal?managedJournalProgress(journal):null,error:null,
-            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+          journal=observeManagedStep(input.env,parsed.operationId,parsed.version);
+          return stepResponse(parsed.version,{disposition:'observed',inspection:null,progress:journal?managedSetupJournalProgress(journal):null,error:null,
+            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
         }
         if(parsed.action==='advance'||parsed.action==='pause'||parsed.action==='abandon'||parsed.action==='resume'){
           const hint=input.journal??input.inspection?.operation;
           const changed=parsed.action==='advance'?advanceManagedStep(input.env,payload(),parsed,budget,hint):
             controlManagedStep(input.env,payload(),parsed,budget,hint,input.inspection);
           journal=changed.journal;
-          return {version:1,disposition:changed.disposition,progress:changed.progress,inspection:null,error:changed.error,
-            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+          return stepResponse(parsed.version,{disposition:changed.disposition,progress:changed.progress,inspection:null,error:changed.error,
+            accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
         }
         if(parsed.action!=='inspect')throw Object.assign(new Error('managed-step-unsupported'),{code:'managed-step-unsupported'});
         if(parsed.cursor&&(!input.inspection||input.inspection.cursor!==parsed.cursor))
           throw Object.assign(new Error('managed-inspection-expired'),{code:'managed-inspection-expired'});
-        const inspected=inspectManagedStep(input.env,payload(),parsed.cursor?input.inspection:undefined,parsed.storeRoot);
+        if(parsed.cursor&&input.inspection&&('family' in input.inspection)!==(parsed.version===2))
+          throw Object.assign(new Error('family'),{code:'managed-inspection-expired'});
+        const inspected=parsed.version===2?inspectManagedFreshStep(input.env,payload(),parsed.cursor?input.inspection as ManagedFreshInspectionSession:undefined,parsed.storeRoot):
+          inspectManagedStep(input.env,payload(),parsed.cursor?input.inspection as ManagedInspectionSession:undefined,parsed.storeRoot);
         inspection=inspected.session;
         journal=inspection.operation;
-        return {version:1,disposition:'observed',inspection:inspected.inspection,progress:inspected.progress,error:null,
-          accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}} satisfies ManagedStepResponse;
+        return stepResponse(parsed.version,{disposition:'observed',inspection:inspected.inspection,progress:inspected.progress,error:null,
+          accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
       }
       if(request.action==='health')return setup.health();
       if(request.action==='status'){
@@ -128,12 +142,12 @@ export function runSetupRequestWorker():void {
   } catch(error) {
     code=diagnostic(error);
     if(input.request.action==='managed-step'){
-      const parsed=managedStepRequest(input.request.body);
+      const parsed=managedSetupStepRequest(input.request.body);
       const current=error instanceof ManagedStepFailure?error.journal:journal;
-      const sameTarget=current&&parsed&&('operationId' in parsed?parsed.operationId===current.migration.operationId:parsed.action==='inspect'||parsed.action==='status');
+      const sameTarget=current&&parsed&&(current.migration.format===3)===(parsed.version===2)&&('operationId' in parsed?parsed.operationId===current.migration.operationId:parsed.action==='inspect'||parsed.action==='status');
       const stage=error instanceof ManagedStepFailure?error.stage:parsed?.action==='advance'?parsed.step.name:parsed?.action==='begin'?'prepare':parsed?.action==='inspect'?'roots':'journal';
-      refusal={version:1,disposition:'refused',inspection:null,progress:sameTarget?managedJournalProgress(current):null,
-        error:{stage,code},accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}};
+      refusal=stepResponse(parsed?.version??1,{disposition:'refused',inspection:null,progress:sameTarget?managedSetupJournalProgress(current):null,
+        error:{stage,code},accounting:{securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs}});
     }
   }
   finally {try{setup?.close();}catch(error){code??=diagnostic(error);}}
@@ -157,8 +171,8 @@ export class SetupRequestWorker {
   private active=false;
   private statusRun?:{context:string;promise:Promise<SetupWorkerResult>};
   private readonly entry:URL;
-  private inspection?:{scope:string;context:string;session:ManagedInspectionSession};
-  private journal?:{context:string;value:ManagedStepJournal};
+  private inspection?:{scope:string;context:string;session:InspectionSession};
+  private journal?:{context:string;value:ManagedSetupStepJournal};
   constructor(entry:URL) {this.entry=entry;}
   get busy(){return this.active;}
   run(env:NodeJS.ProcessEnv,payload:Payload|undefined,request:SetupWorkerRequest,startedAt=process.hrtime.bigint()):Promise<SetupWorkerResult> {
@@ -175,9 +189,9 @@ export class SetupRequestWorker {
     const saved=this.inspection?.context===context?this.inspection.session:undefined;
     const journal=this.journal?.context===scope?this.journal.value:undefined;
     let targets:string[];
-    try{targets=setupWriterTargets(env,journal?.database??saved?.candidate?.database);}
+    try{targets=setupWriterTargets(env,journal?.database??saved?.candidate?.database??(saved&&'family' in saved?path.join(saved.storeRoot,'progress.sqlite'):undefined));}
     catch(error){this.active=false;return Promise.resolve(refused(diagnostic(error)));}
-    const consumesInspection=request.action==='managed-step'&&managedStepRequest(request.body)?.action!=='status';
+    const consumesInspection=request.action==='managed-step'&&managedSetupStepRequest(request.body)?.action!=='status';
     // A continuation is single-use, including a failure/deadline. New inspection
     // replaces it. Unrelated requests do not refresh or export its authority.
     if(this.inspection?.scope!==scope||payload!==undefined&&this.inspection?.context!==context||consumesInspection)this.inspection=undefined;
@@ -189,8 +203,8 @@ export class SetupRequestWorker {
     this.journal=undefined;
     const pending=new Promise<SetupWorkerResult>(resolve=>{
       let settled=false,result:SetupWorkerResult|undefined;
-      let nextInspection:ManagedInspectionSession|undefined;
-      let nextJournal:ManagedStepJournal|undefined;
+      let nextInspection:InspectionSession|undefined;
+      let nextJournal:ManagedSetupStepJournal|undefined;
       const finish=(reply:SetupWorkerResult)=>{if(!settled){settled=true;this.statusRun=undefined;clearTimeout(timer);resolve(reply);}};
       const remaining=Math.max(0,MANAGED_STEP_LIMITS.responseMs-budget.elapsedMs);
       const timer=setTimeout(()=>finish(refused('managed-step-deadline')),remaining);
@@ -234,8 +248,8 @@ export class SetupRequestWorker {
           }
           result=message.result;nextInspection=message.inspection;nextJournal=message.journal;
           if(result.ok&&request.action==='managed-step'){
-            const parsed=managedStepRequest(request.body);
-            if(!parsed||!correlatedManagedReply(parsed,result.value as ManagedStepResponse)){
+            const parsed=managedSetupStepRequest(request.body);
+            if(!parsed||!correlatedManagedReply(parsed,result.value as ManagedSetupStepResponse)){
               result=refused('managed-step-unsettled');nextInspection=undefined;nextJournal=undefined;
             }
           }
@@ -248,7 +262,7 @@ export class SetupRequestWorker {
             if(!settled&&result.ok&&nextInspection&&request.action==='managed-step')this.inspection={scope,context,session:nextInspection};
             if(!settled&&result.ok&&nextJournal&&(request.action==='managed-step'||request.action==='status'))this.journal={context:scope,value:nextJournal};
             const accounting={securitySpawns:budget.securitySpawns,elapsedMs:budget.elapsedMs};
-            release({...result,...(result.ok&&request.action==='managed-step'?{value:{...result.value as ManagedStepResponse,accounting}}:{}),
+            release({...result,...(result.ok&&request.action==='managed-step'?{value:{...result.value as ManagedSetupStepResponse,accounting}}:{}),
               ...(!result.ok&&result.refusal?{refusal:{...result.refusal,accounting}}:{}),accounting});
           }
         });
