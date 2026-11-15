@@ -31,16 +31,19 @@ messages, reports, captures or history. The existing host floor is unchanged; se
 
 ## Interface language
 
-The rail and fullscreen page have a **Language / Язык** selector in their lower
-service area, alongside Setup and Details when those sections are present. It
+The rail and fullscreen page have a **Language / Язык / 语言** selector in their
+lower service area, alongside Setup and Details when those sections are present. It
 remains available without a selected session or plan, during loading, before
 setup, and after a failed progress read. Work Status uses the same preference
 without a separate selector or host-header control. The options are OpenChamber
-language, **English**, and **Русский**; there are no flags.
+language, **English**, **Русский**, and **简体中文**; there are no flags.
 
 The default is automatic: a valid Russian host locale, including `ru-RU`, uses
-Russian; English, unsupported and malformed host tags use English. An explicit
-choice overrides the host locale. All three guests use that effective language
+Russian, any Simplified Chinese host locale such as `zh-CN` or `zh-SG` uses
+Simplified Chinese, and English, unsupported and malformed host tags use English.
+The Simplified Chinese translation is also used for Traditional Chinese locales,
+because the extension ships one Chinese catalog. An explicit choice overrides the
+host locale. All three guests use that effective language
 for extension-owned text, accessible names, announcements, dates, relative time,
 durations, counts and plural forms. The guest document's `lang` follows the shown
 interface. Product names, host-owned chrome and host clipboard/toast buttons keep
@@ -48,7 +51,7 @@ their own language. User-authored titles, session names, blocker details, search
 queries, paths and document contents are not translated or written back.
 
 One SDK **device** preference, `interface-language.v1`, stores only
-`{v: 1, preference: 'auto' | 'en' | 'ru'}`. The host partitions it by browser
+`{v: 1, preference: 'auto' | 'en' | 'ru' | 'zh-CN'}`. The host partitions it by browser
 profile, runtime, extension and installation, not by plan, project, session,
 source, progress store or integration account. It is not authenticated-user
 isolation or cross-device sync. People sharing a profile/namespace share the
@@ -123,7 +126,7 @@ are unchanged for the same facts.
 Progress-update, handoff and explicitly historical summary-only Markdown use the
 effective language. English remains byte-compatible for the same input; section
 order, task order, privacy omissions, Markdown escaping, LF and absolute UTC ISO
-timestamps are unchanged in both languages. An open preview is reformatted from
+timestamps are unchanged in every language. An open preview is reformatted from
 the same validated held snapshot, without a new progress read. Changed text
 starts a new generation, clears selection/copy feedback, and cannot be confirmed
 by a late clipboard operation on older text. **Copy** copies exactly the shown
@@ -138,6 +141,13 @@ the current three guest bundles, with controlled storage and refreshes. It never
 uses a live host/profile or paid model. Its screenshots and keyboard/layout
 assertions are rendered-browser evidence, not native-host or screen-reader
 certification. Rebuild all three guest bundles after source changes.
+
+The Chinese catalog check (`interface-chinese.test.ts`) covers every typed
+language catalog and representative inbox, delegation and stepwise Setup copy.
+Rendered language QA exercises Chinese host tags and explicit preference changes.
+The inbox, delegation, managed-migration and phone-layout QA drivers also capture
+Simplified Chinese at 390 px; their synthetic fixtures do not certify a native
+Windows installation or a physical phone.
 
 `interface-language-reading-qa.ts` uses the same CLI with a disposable built
 service to check retained search drafts/results, filters, map selection/pan/zoom,
@@ -253,7 +263,7 @@ Entries `ui/{panel,status,page}/index.html` load `main.js`, the generated instal
 
 | Module | Role |
 | --- | --- |
-| `i18n.ts` / `language.ts` | Effective en/ru resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
+| `i18n.ts` / `language.ts` | Effective en/ru/zh-CN resolution and the shared device preference controller: feature-gated storage, confirmed values, safe failure states and stale-reply guards. Catalogs and text helpers remain pure; language never becomes a reading/cache identity. |
 | `adapter.ts` | **Only** module that knows the wire format. Validates and maps v2 replies: `/health`, `/v1/plans`, `/v1/plan` (with optional `timing`), `/v1/document`, `/v1/history`, `/v1/change-digest`, `/v1/search`, `/v1/search-state`, `/v1/setup`. Builds query and setup bodies. Protocol/schema ≠ 2 fails as incompatible. |
 | `model.ts` | View model and pure semantics. Plan summaries use server `counts`; detail subtrees use the shared `countItems` (same rule). Hierarchy, current work, participants, document-state copy, and the task-view projection (row membership, branch aggregates, jump order; see Task view). |
 | `dependency-derivation.ts` / `readiness.ts` | Pure shared dependency derivation and enriched readiness projection of an active plan's complete detail (see Task readiness). Never changes status, counts or assignments. |
@@ -409,7 +419,7 @@ closing and reopening the existing panel retains its previous action item.
 That does not deliver the ordinary no-item transition above: the panel remains
 pinned ([upstream issue #6938](https://github.com/openchamber/openchamber/issues/6938)).
 Do not assume closing it restored current-session scope. The pinned-scope row
-offers **Show current session** (**Показать текущую сессию** in Russian), including
+offers **Show current session** (**Показать текущую сессию** in Russian, **显示当前会话** in Chinese), including
 when the pinned target is unavailable. This explicit local reset returns this
 frame to the host's actual current session/directory, or the ordinary no-session
 state. It retires old pinned reads and selections without a host/store write,
@@ -437,7 +447,7 @@ qualification. These are bounded literal host context, not assignment, task
 authority, completion or workflow selection. Missing data is ordinary; malformed
 optional data is omitted without invalidating session identity. No URLs are
 fetched or made executable and no new polling/cache is introduced. Extension
-explanations and accessible names support English/Russian; native action labels
+explanations and accessible names support English/Russian/Chinese; native action labels
 are host-owned fixed text.
 
 There is no **Open Workflows** action: SDK 2.7.0 supplies no supported Workflows
@@ -930,7 +940,7 @@ instead show localized **inspection unavailable** copy, the fixed underlying
 diagnostic and **Retry inspection** (`setup-retry`), not ownership cleanup advice.
 This state uses `setup-migration-unavailable`; it does not claim a matching load.
 The Setup panel separately labels the last failed migration attempt with a fixed
-stage and code (`setup-last-action`), followed by actionable English/Russian copy.
+stage and code (`setup-last-action`), followed by actionable English/Russian/Simplified Chinese copy.
 Failed HTTP replies supply that detail immediately, even while the current status
 is being re-read. Current diagnostics do not repeat the historical failure; a
 later successful managed action clears it. Refused health states (including
@@ -940,7 +950,7 @@ Verified capture-off remains available here too; retry only rereads status.
 Cancel initially owns confirmation focus if the opener still owns focus. Space
 toggles acknowledgement; Enter confirms; Escape/Cancel returns to the opener.
 After a confirmed result, return to that opener or Setup heading if it disappeared;
-never reclaim focus the user moved. English/Russian labels, errors, disclosures
+never reclaim focus the user moved. Localized labels, errors, disclosures
 and accessible names share the existing localization owners and narrow layouts.
 
 Unknown mode copy distinguishes watched-file disposal from caller-owned
@@ -1464,7 +1474,7 @@ Both production frames bind interaction; the shared stylesheet carries no map co
 - **Host readiness.** Visibility, session and directory events may precede the SDK ready snapshot. They do not construct a consumer `ViewContext`, reconcile summaries, notify map/search hooks or start reads before host locale/account authority exists. The first ready snapshot is authoritative and starts the normal refresh; no fallback locale is fabricated.
 - **Reduced motion.** There are no transitions; pans, zooms, fits and anchoring apply instantly. The working beads are the only animation and reduced motion stops them, leaving them in place (see Arrows).
 - **Width.** One renderer for the 360 px and 600 px rails and the board: wrapped controls, a fixed-height canvas (board `clamp(280px, 60vh, 600px)`, rail `clamp(240px, 54vh, 460px)`) and a stacked rail inspector. On the board the canvas takes the whole map width at every size; from a 760 px map the inspector is the selection panel over it, below that it stacks under the canvas (so 200% and 400% browser zoom reflow as before). For example, a five-column, four-row plan fits at 100% on a 1920 px board (canvas 1478 × 598 px) and a seven-column one at 74%. No task or arrow is dropped at any width.
-- **Coarse pointer.** `mapCoarsePointer`: the host's `ready.device.pointer` hint wins when it is `coarse` or `fine`; without a usable hint (absent or unknown, the same rule as `applyDeviceHooks`, so the map and the root `data-device-pointer` hook agree), the `(pointer: coarse)` media query decides, and the frame repaints when that media changes. Presentation only, never identity or permission. A coarse frame sets `map-region[data-pointer="coarse"]`, makes every map control at least 44 × 44 CSS px (toolbar tools, inspector close, the Tasks pair, the group select at 16 px text, help and group-context summaries, inspector relationships), and adds the touch line `map-touch-help` to Map help (English and Russian). The rail's Plan view switch uses the root `data-device-pointer` hook (`PHONE_LAYOUT_HOOKS.pointer`), else the media query, for its 44 px buttons (see Phone layout).
+- **Coarse pointer.** `mapCoarsePointer`: the host's `ready.device.pointer` hint wins when it is `coarse` or `fine`; without a usable hint (absent or unknown, the same rule as `applyDeviceHooks`, so the map and the root `data-device-pointer` hook agree), the `(pointer: coarse)` media query decides, and the frame repaints when that media changes. Presentation only, never identity or permission. A coarse frame sets `map-region[data-pointer="coarse"]`, makes every map control at least 44 × 44 CSS px (toolbar tools, inspector close, the Tasks pair, the group select at 16 px text, help and group-context summaries, inspector relationships), and adds the touch line `map-touch-help` to Map help (English, Russian and Simplified Chinese). The rail's Plan view switch uses the root `data-device-pointer` hook (`PHONE_LAYOUT_HOOKS.pointer`), else the media query, for its 44 px buttons (see Phone layout).
 - **Verification.** `--only dependency-map-interaction` retains the test-only preview's detailed pointer/keyboard/gesture checks. Final acceptance uses `--only dependency-map-final` and `--only dependency-map-accessibility` on unchanged production entries, including both real entries, retirement, independent focus/speech and ordinary list alternatives. The final mode also checks the board at 1100 px (stacked inspector, no close control) and 1920 px (panel only with a selection, inside the canvas; the selected and the far-right card clear of it at unchanged zoom; unchanged canvas size; Fit all at most 100%; Tab from the card to the panel, then to the named close control; Close clears with one "Selection cleared." and returns focus to the card; no page overflow). Its arrow-state section (`dependency-map-arrows-qa.ts`, plans from `tests/fixtures/dependency-map-arrows.ts` seeded through the production write path, motion explicitly allowed) checks on board and rail: the state table on canonical paths with beads never doubling them; beads running only as `ap-map-flow` on the shared phase (start at the document timeline origin, 2,400 ms, linear, infinite, a changing dash offset), also after a status repaint; blocked arrows static with their bar; decorative, non-intercepting layers; the help key and the inspector sentences; selection (chain beads move, off-chain beads still and faded, geometry unchanged on clearing); reduced motion and forced colours with reduced motion (round system-colour beads, thicker blocked line with bar, dashes, `Highlight` chain); unchanged card names and no speech when motion stops; 200%/400% reflow; capture off (still cues) and on; a failed list read and a superseded picture (no cues); hidden (revoked), shown with revalidation held (still) and released (moving again); leaving Map; a cancelled plan with working and blocked tasks (plain arrows); and the cost bounds: 24 flows move and 25 all stand still with zero animations until a group filter or a selection brings them within the bound, 300 arrows move and 301 stand still even when filtered, zoom below 50% stops them and zooming back resumes without a read, and the 100-task, 180-arrow, 12-flow reference moves at 75% on board and rail. The large mode also checks that the 2,000-arrow plan's beads stay still, opened, fitted and filtered, with motion allowed. Captures: `motion-board1920-dark`, `motion-board1100-light-selected`, `motion-rail360-dark`, `motion-rail600-light-selected`, `motion-reduced`, `motion-forced-selected`, `motion-reflow` and one 2.4 s cycle in `motion-flow-frames/`. `dependency-map-panel.test.ts` covers the panel geometry in the controller: panel width and threshold, far-right and resize anchoring, Fit all and zoom beside the panel, the board's 100% framing limit with the rail's unchanged, and the close action. `--only dependency-map-large --measure` also uses production entries: three fresh variants (page 1100, rail 360, rail 600), one warm-up plus three samples per load/action, 2,000 ms load and 500 ms action median budgets, and S0–S8 replay with an 8,000 ms observation budget. Status-only coordinates and on-screen positions must not move; the selected card stays wholly within the canvas after S5; unchanged polls send no graph/detail requests, and held hidden reads neither continue nor paint. Timed actions use real keyboard input on native controls/cards, with a labelled native-select change for the group filter; no production controller probes are installed. CDP layout/style/script CPU is labelled separately from end-to-end settled-frame time and is not compositor time. Automated browser/AX evidence does not certify native-host behaviour or screen-reader speech. Touch: `tests/browser/dependency-map-touch.test.ts` covers the controller rules (tap versus pan slop, card pans without a clear, background tap clear, pinch anchor and clamps, hand-over, third finger, mouse and pen unchanged, readable coarse framing, hint versus media including an unknown hint). `tests/browser/phone-map-qa.ts --source --chromium <path> --artifacts <dir>` runs source-built guests in isolated Chromium with CDP touch emulation and a synthetic `ready.device` at 390 × 844 plus a 1200 px desktop: board and rail tap, pan, pinch and background tap, 44 px targets, no overflow, page scroll outside the canvas versus panning on it, help wording, reduced motion, dark, Russian, no-hint fine media, desktop mouse and keyboard, and that the guests' own host-ready path set (and, without a hint, removed) the root `data-device-pointer` hook in agreement with the map region (`results.json` reports `"deviceHooks": "host-ready"`). This is supporting evidence, not physical-phone acceptance.
 
 ### Attribution and session activity

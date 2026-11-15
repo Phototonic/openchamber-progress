@@ -302,6 +302,16 @@ try {
   await layout('page', 'board-ru-dark');
   await shot('board-ru-dark'); await shot('board-ru-dark-full', true);
 
+  // ============================================================ Simplified Chinese, 390 px
+  await evaluate(`qa.setLocale('zh-CN');true`);
+  await wait('page', `d.documentElement.lang==='zh-CN'`, 'Chinese board');
+  await layout('page', 'board-zh-CN-dark');
+  await shot('board-zh-CN-dark'); await shot('board-zh-CN-dark-full', true);
+  await show('panel'); await listPanel();
+  await wait('panel', `d.documentElement.lang==='zh-CN'`, 'Chinese rail');
+  await layout('panel', 'panel-zh-CN-dark');
+  await shot('panel-zh-CN-dark');
+
   // ============================================================ 200% / 400% reflow (no hints)
   for (const [w, label] of [[195, 'phone-200'], [320, 'desktop-400']] as const) {
     await viewport({ width: w, height: 640, touch: false, scale: 2 });

@@ -130,6 +130,9 @@ const MARK_TEXT: Record<InterfaceLanguage, Record<Mark, string>> = { en: {
 }, ru: {
   working: 'Сообщено: в работе', ready: 'Готова', waiting: 'Ожидает', 'waiting-skipped': 'Ожидает пропущенную задачу',
   blocked: 'Явно заблокирована', done: 'Выполнена', skipped: 'Пропущена', pending: 'Сообщено: ожидает',
+}, 'zh-CN': {
+  working: '报告为进行中', ready: '已就绪', waiting: '等待中', 'waiting-skipped': '等待已跳过的任务',
+  blocked: '明确报告为受阻', done: '已完成', skipped: '已跳过', pending: '报告为未开始',
 } };
 const EN = {
   planView: 'Plan view', list: 'List', map: 'Map', under: 'under 1%', viewList: 'View as list', retry: 'Try again', heading: 'Dependency map',
@@ -259,7 +262,71 @@ const RU: typeof EN = {
     hidden: ['связанная задача', 'связанные задачи', 'связанных задач', 'связанной задачи'], unfinished: ['незавершённая записанная зависимость', 'незавершённые записанные зависимости', 'незавершённых записанных зависимостей', 'незавершённой записанной зависимости'],
   },
 };
-const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU };
+const ZH: typeof EN = {
+  touchHelp: '触控：轻点卡片可选中任务，轻点背景可清除选择；单指拖动可平移，双指捏合可缩放。地图上方的按钮也可完成这些操作，无需手势。',
+  planView: '计划视图', list: '列表', map: '依赖图', under: '低于 1%', viewList: '查看列表', retry: '重试', heading: '依赖图',
+  closeDetails: '关闭任务详情', helpTitle: '依赖图帮助与定义', clearKey: ' 清除选择 · ',
+  panHelp: '。点击背景可清除选择；拖动背景或滚动可平移。Tab 离开依赖图。',
+  panelHelp: '选择卡片，可在依赖图右侧面板查看其已记录的前置任务、后续任务和报告详情。关闭面板、按 Escape 或点击背景可清除选择。',
+  arrowKey: '箭头图例。蓝色圆点：前置任务报告为进行中，而箭头指向的任务仍在等待或受阻。移动的圆点循环表示报告中的工作状态，不代表进度，也不能证明工作正在执行；静止圆点含义相同（减少动态效果、大型或缩小的依赖图上，以及所选任务关联链之外会停止移动）。箭头前的横杠：前置任务明确报告为受阻。虚线：前置任务已跳过。淡色：前置任务已完成。圆点和横杠仅显示在活动计划的当前依赖图上。',
+  blockedSelection: ' 明确报告为受阻的任务，无论前置任务如何，都不会显示为已就绪。',
+  verifiedActivity: '仅对已验证的分配显示会话活动。',
+  mapDescription: '使用方向键浏览卡片。打开依赖图帮助与定义可查看全部按键。',
+  prerequisiteState: (n, working) => `${n} 个${working ? '报告为进行中' : '明确报告为受阻'}`,
+  unfinishedStates: states => ` 其中未完成的已记录前置任务包括：${states}。`,
+  waitingStates: (n, states) => `等待 ${n}${states ? `：${states}` : ''}。`,
+  unavailable: '依赖图不可用', notFound: '此计划已无记录', error: '无法读取依赖图', updatingMap: '正在更新依赖图…', loading: '正在加载依赖图…',
+  inconsistent: '当前计划无法匹配一致的依赖图，因此不再显示之前的图。任务列表不受影响。',
+  unsupported: '进度服务无法提供此依赖图所需的已记录前置任务，因此不绘制任何内容。任务列表不受影响。',
+  missing: '进度存储中已没有此计划。请选择其他计划或返回列表。',
+  failed: '无法读取依赖图。为避免显示不完整的图，当前不显示任何内容。', updating: '正在更新…',
+  changed: ' 读取依赖图时计划发生了变化。正在等待一致的图，不会绘制不完整的内容。',
+  waitingPicture: '正在等待完整计划及其已记录的前置任务。两者一致之前不会绘制任何内容。',
+  revision: r => `修订 ${r}`, showing: r => `正在显示修订 ${r}。`,
+  latestFailed: r => `无法读取最新依赖图。当前显示上次报告的修订 ${r}；读取成功前隐藏“已就绪”和“接下来可解锁”。`,
+  retained: r => ` 当前显示上次报告的修订 ${r}。匹配较新报告前隐藏“已就绪”和“接下来可解锁”。`,
+  work: '当前工作', working: '报告为进行中', ready: '已就绪', blocked: '明确报告为受阻', unlocks: '接下来可解锁',
+  guidance: '仅依据已记录的前置任务；“已就绪”和“接下来可解锁”均不是开始工作的许可。',
+  closed: '此计划已关闭。卡片仅显示报告状态，不显示“已就绪”或“接下来可解锁”提示。',
+  groupsOnly: '没有任务卡片。此计划仅记录了分组；其背景信息列于下方。 ', noTasksYet: '没有任务卡片。此计划尚未记录任务。 ',
+  noPrerequisites: '此计划未记录前置任务', listOrder: '。卡片按列表顺序排列，没有箭头。',
+  noTaskPrerequisites: '未记录任务之间的前置任务', groupArrows: '。分组前置任务列为分组背景信息，不绘制为箭头。',
+  arrows: '箭头从已记录的前置任务指向依赖它的任务。这只是已记录的信息，不是日程，也不能证明工作已执行。',
+  filters: '依赖图筛选', showTasks: '显示任务', all: '显示全部', unfinished: '未完成', allGroups: '所有分组', noGroup: '未记录分组', groupGone: '所选分组已无记录', group: '分组',
+  filtered: (visible, tasks, hidden, arrows) => `显示 ${tasks} 中的 ${visible} · 被筛选条件隐藏 ${hidden}${arrows ? `、${arrows}` : ''}`,
+  allShown: (tasks, arrows) => `显示全部 ${tasks}${arrows ? ` 和 ${arrows}` : ''}`,
+  taskMap: '任务依赖图', mapView: '依赖图视图', zoom: z => `缩放 ${z}`, zoomOut: '缩小', zoomIn: '放大', fit: '全部适配', current: '聚焦当前工作',
+  moved: where => `视图已向${where}移动。`, left: '左', up: '上', down: '下', right: '右', panLeft: '向左平移', panUp: '向上平移', panDown: '向下平移', panRight: '向右平移',
+  sessionOnly: text => `${text}，仅表示会话活动`, groupPath: path => `分组：${path}`,
+  direct: (up, down) => `${up}，${down}`, hiddenRelated: n => `被筛选条件隐藏 ${n}`, unlocksFor: n => `接下来可解锁 ${n}`,
+  relative: (name, rel) => `${name}。所选任务的${rel}`, upstream: '上游', downstream: '下游',
+  noCards: '没有任务卡片', emptyMap: '任务依赖图：没有任务卡片', gone: '所选分组已无记录。', noMatches: '没有任务符合这些筛选条件。', showAll: '显示全部任务',
+  selected: '所选任务', select: '选择卡片以查看其已记录的前置任务、后续任务和报告详情。', noInspect: '没有可查看的任务卡片。', hidden: '被筛选条件隐藏',
+  reason: '原因', next: '下一步', assignmentActivity: '分配和活动', assignment: '分配', links: '关联', reports: '报告', noReports: '未记录报告', activity: '会话活动', hiddenSuffix: ' · 被筛选条件隐藏',
+  prerequisites: '已记录的前置任务', none: '未记录。', dependents: '后续任务', noDependents: '没有任务将此任务记录为前置任务。',
+  chain: (up, down) => `图中已突出显示：此任务直接或间接等待的 ${up}，以及等待此任务的 ${down}。`,
+  unlockHelp: titles => `若报告为已完成，将满足以下任务最后一个未完成的已记录前置任务：${titles}。这不是开始这些任务的许可。`,
+  groupContext: '分组背景', groupHelp: (title, deps) => `分组“${title}”记录了自身的前置任务：${deps}。这些属于分组，而非此任务。`,
+  hiddenHelp: n => `当前筛选条件隐藏了 ${n}。选择其中一个可重新显示。`,
+  keys: '依赖图中的按键：', arrowKeys: '方向键', nearest: ' 最近的卡片 · ', firstPrerequisite: ' 第一个前置任务 · ', firstDependent: ' 第一个后续任务 · ', fitKey: ' 全部适配 · ', zoomKey: ' 缩放', drag: '。拖动背景或滚动可平移；Tab 离开依赖图。',
+  selectionHelp: '选择卡片后，它等待的任务标为上游（实线边框），等待它的任务标为下游（双线边框）。',
+  readinessHelp: '已就绪：所有已记录的前置任务均报告为已完成。接下来可解锁：若某卡片报告为已完成，将满足另一任务最后一个未完成的已记录前置任务。',
+  attributionHelp: '已分配给：此修订中已验证的委派。未验证的受派人：已有记录，但没有已验证的委派。关联至：会话链接，不是分配。受派会话名称前的方块表示此视图的运行记录显示该会话当前活跃（实心）或等待输入（空心）。这不说明会话正在处理哪个任务。',
+  groupDeps: deps => `记录了自身的前置任务：${deps}`, noGroupDeps: '未记录分组前置任务', groupMetadata: '分组的前置任务是分组元数据。任务不会继承这些前置任务，它们也不会绘制为箭头。',
+  selectedMapTask: '所选依赖图任务', skippedHelp: '跳过的工作对后续任务而言不算已完成。', blockedHelp: '某个智能体明确报告此任务受阻。无论前置任务如何，均不会显示为已就绪。',
+  closedPending: '计划关闭时报告为未开始。', pendingHelp: '报告为未开始。匹配当前修订前，已就绪状态会被隐藏。',
+  readyDeps: '所有已记录的前置任务均报告为已完成。“已就绪”仅描述已记录的前置任务。', readyNoDeps: '未记录前置任务。“已就绪”仅描述已记录的前置任务。',
+  skippedDeps: titles => `等待中：已记录的前置任务被跳过（${titles}），跳过的工作不算已完成。`, waitingDeps: n => `等待 ${n}。`,
+  notReported: '未报告', invalid: '无法读取报告的详情',
+  counts: {
+    task: ['个任务', '个任务', '个任务', '个任务'], arrow: ['条箭头', '条箭头', '条箭头', '条箭头'],
+    prerequisite: ['个直接已记录的前置任务', '个直接已记录的前置任务', '个直接已记录的前置任务', '个直接已记录的前置任务'],
+    dependent: ['个直接后续任务', '个直接后续任务', '个直接后续任务', '个直接后续任务'], related: ['个关联任务', '个关联任务', '个关联任务', '个关联任务'],
+    upstream: ['个上游任务', '个上游任务', '个上游任务', '个上游任务'], downstream: ['个下游任务', '个下游任务', '个下游任务', '个下游任务'],
+    hidden: ['个关联任务', '个关联任务', '个关联任务', '个关联任务'], unfinished: ['个未完成的已记录前置任务', '个未完成的已记录前置任务', '个未完成的已记录前置任务', '个未完成的已记录前置任务'],
+  },
+};
+const COPY: Record<InterfaceLanguage, typeof EN> = { en: EN, ru: RU, 'zh-CN': ZH };
 function mapNoun(n: number, kind: keyof typeof EN.counts, language: InterfaceLanguage) {
   const category = new Intl.PluralRules(language).select(n);
   const index = ({ one: 0, few: 1, many: 2, other: 3 } as Record<string, number>)[category] ?? 3;
@@ -422,7 +489,7 @@ export function prerequisiteCounts(fact: Pick<DerivedTask, 'prerequisites'> | un
 /** "1 reported working, 1 explicitly blocked" (zero parts omitted); '' when both are zero. */
 export function prerequisiteStates(c: { working: number; blocked: number }, language: InterfaceLanguage = 'en'): string {
   const text = COPY[language];
-  return [c.working ? text.prerequisiteState(mapNumber(c.working, language), true) : '', c.blocked ? text.prerequisiteState(mapNumber(c.blocked, language), false) : ''].filter(Boolean).join(', ');
+  return [c.working ? text.prerequisiteState(mapNumber(c.working, language), true) : '', c.blocked ? text.prerequisiteState(mapNumber(c.blocked, language), false) : ''].filter(Boolean).join(language === 'zh-CN' ? '，' : ', ');
 }
 
 function mark(kind: Mark) {
@@ -650,6 +717,7 @@ export function createDependencyMapView(): DependencyMapView {
     restoring = true; queueMicrotask(() => { restoring = false; });
     const v = input, b = v.interaction ?? null;
     const language = v.language ?? 'en', c = COPY[language], marks = MARK_TEXT[language];
+    const sentenceEnd = language === 'zh-CN' ? '。' : '.';
     const count = (n: number, kind: keyof typeof EN.counts) => mapCount(n, kind, language);
     if (b) { listen(host.ownerDocument); announcer = mapAnnouncer(host.ownerDocument); }
     const st = b?.state() ?? null;
@@ -899,7 +967,7 @@ export function createDependencyMapView(): DependencyMapView {
         return t;
       };
       const size = () => ({ w: viewportNode?.clientWidth || 320, h: viewportNode?.clientHeight || 240 });
-      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`); };
+      const zoomBy = (factor: number) => { const bb = binding(); if (bb?.dispatch({ type: 'zoom', factor })) announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}${sentenceEnd}`); };
       const panBy = (dx: number, dy: number, where: string) => { const bb = binding(); if (bb?.dispatch({ type: 'pan', x: dx, y: dy })) announce(c.moved(where)); };
       const zoomSet = el('div', 'ap-map-tool-set');
       zoomNode = testid(el('span', 'ap-map-zoom', zoomText(t0.zoom, language)), 'map-zoom-level');
@@ -926,7 +994,7 @@ export function createDependencyMapView(): DependencyMapView {
         const modified = e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.key.startsWith('Arrow'));
         if (!bb.dispatch({ type: 'key', key: e.key, canvas, modified, editable: false })) return;
         e.preventDefault();
-        if (e.key === '+' || e.key === '-') announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}.`);
+        if (e.key === '+' || e.key === '-') announce(`${c.zoom(zoomText(bb.state().transform.zoom, language))}${sentenceEnd}`);
       });
       // Tab into an off-screen roving card: pan just enough to show it (no selection change). Passive
       // focus restoration after a repaint (e.g. an unchanged poll) never pans: the reader's pan stays.
@@ -1136,7 +1204,7 @@ export function createDependencyMapView(): DependencyMapView {
           c.direct(count(prereqs, 'prerequisite'), count(dependents, 'dependent')),
           hiddenRel ? c.hiddenRelated(count(hiddenRel, 'related')) : '',
           unlocks.length ? c.unlocksFor(count(unlocks.length, 'task')) : '',
-        ].filter(Boolean).join('. ');
+        ].filter(Boolean).join(language === 'zh-CN' ? '。' : '. ');
         baseNames.set(id, name);
         card.setAttribute('aria-label', rel ? c.relative(name, rel === 'upstream' ? c.upstream : c.downstream) : name);
         // A click whose press moved focus onto this card has already had its name spoken.
@@ -1735,7 +1803,22 @@ const ATTRIBUTION_RU: typeof ATTRIBUTION_EN = {
   historical: r => `Скрыто, пока карта показывает редакцию ${r} по последнему отчёту.`,
   assignmentOnly: 'Показано только при подтверждённом назначении.', runsUnavailable: 'Записи запусков этого представления недоступны.', latestUnproven: 'Записи запусков этого представления не подтверждают последний запуск назначенной сессии.', inactive: 'Последний записанный запуск назначенной сессии сейчас не активен.',
 };
-const ATTRIBUTION: Record<InterfaceLanguage, typeof ATTRIBUTION_EN> = { en: ATTRIBUTION_EN, ru: ATTRIBUTION_RU };
+const ATTRIBUTION_ZH: typeof ATTRIBUTION_EN = {
+  unavailable: '此视图中不可用', unavailableNote: '无法核验此依赖图的分配来源。这不表示任务未分配。',
+  notShown: '未显示', activityUnavailable: '此视图中无法获取会话活动。',
+  more: n => `，另有 ${n} 个`, assigned: name => `已分配给 ${name}`,
+  unverified: name => `未验证的受派人 · ${name}`, linkedCard: (name, more) => `关联至 ${name}${more} · 无已验证的委派`,
+  recorded: name => `已记录的受派人 ${name} · 委派来源不可用`, noAssignee: '未记录受派人',
+  verified: r => `已验证的委派，适用于修订 ${r}。`,
+  unverifiedNote: '此修订没有已记录的已验证委派，因此依赖图不称为已分配。这不表示任务未分配。',
+  linksNote: '只有会话链接提及此任务。链接不等于分配。', linked: name => `关联至 ${name}`, unverifiedLink: name => `关联至 ${name} · 无已验证的委派`,
+  relay: (reporter, attributed) => `${reporter} 代 ${attributed} 报告`, direct: reporter => `${reporter} 直接报告`,
+  reports: (text, n) => `${text} · ${n} 条报告`, lastReporter: name => `最近由 ${name} 报告 · 报告方式不可用`,
+  active: '受派会话当前活跃', waiting: '受派会话当前等待输入', hedge: '仅表示会话活动：此视图的运行记录显示受派会话活跃，但不能证明它正在处理此任务。',
+  historical: r => `依赖图显示上次报告的修订 ${r} 时隐藏。`,
+  assignmentOnly: '仅对已验证的分配显示。', runsUnavailable: '此视图的运行记录不可用。', latestUnproven: '此视图的运行记录未确认受派会话的最新运行。', inactive: '受派会话最近记录的运行当前并不活跃。',
+};
+const ATTRIBUTION: Record<InterfaceLanguage, typeof ATTRIBUTION_EN> = { en: ATTRIBUTION_EN, ru: ATTRIBUTION_RU, 'zh-CN': ATTRIBUTION_ZH };
 export function attributionCopy(a: MapTaskAttribution | undefined, current: boolean, revision: number, label: (id: string) => string, language: InterfaceLanguage = 'en'): MapAttributionCopy {
   const c = ATTRIBUTION[language];
   if (!a) return {

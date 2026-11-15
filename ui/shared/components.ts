@@ -145,8 +145,121 @@ const RUSSIAN = {
   'The coordinator can plan the handoff again for the current plan, or link the task to a session.': 'Координатор может снова запланировать передачу для текущего плана или связать задачу с сессией.',
 } as const;
 type CopyKey = keyof typeof RUSSIAN;
+const CHINESE: Record<CopyKey, string> = {
+  'time unknown': '时间未知', 'at least {time}': '至少 {time}',
+  'The progress service could not tell when this task was reported in progress.': '进度服务无法确定此任务何时被报告为进行中。',
+  'Reported in progress at {at}': '报告为进行中：{at}',
+  'Observed in progress by {at}; start unknown': '截至 {at} 观察到进行中；开始时间未知',
+  '{n} in progress': '{n} 项进行中', '{n} blocked': '{n} 项受阻',
+  ' done, {n} remaining': ' 已完成，剩余 {n}',
+  'from another OpenCode setup': '来自其他 OpenCode 配置', 'Open session': '打开会话',
+  'Updated ': '更新于 ', 'From another OpenCode setup': '来自其他 OpenCode 配置', 'Unverified OpenCode setup': '未经验证的 OpenCode 配置',
+  '{n} plans': '{n} 个计划', 'Plan {index} of {count}: {title}. Choose another plan': '第 {index} 个计划，共 {count} 个：{title}。选择其他计划',
+  '{index} of {count}': '{index} / {count}', 'Plan ': '计划 ',
+  'Assigned to this session': '已分配给此会话', 'Reported directly by this session': '由此会话直接报告',
+  'Direct report attributed to this session': '归属于此会话的直接报告', 'Reported for this session': '为此会话报告',
+  'Relayed by this session': '由此会话转述', 'Recorded reporter · report mode unavailable': '已记录报告者 · 报告模式不可用',
+  'Linked to this session · not an assignment': '关联到此会话 · 并非分配',
+  'No participant recorded': '未记录参与者', 'no participant recorded': '未记录参与者',
+  'All participants': '所有参与者', 'main session · ': '主会话 · ', 'no longer recorded': '已不再记录', 'Participant': '参与者',
+  'Jump to in progress': '跳转到进行中的任务', 'No tasks in progress': '没有进行中的任务', 'In progress': '进行中',
+  'Jump to reported in progress': '跳转到报告为进行中的任务', 'No tasks reported in progress': '没有报告为进行中的任务', 'Reported in progress': '报告为进行中',
+  'Jump to blocked': '跳转到受阻任务', 'No blocked tasks': '没有受阻任务', 'Blocked': '受阻',
+  'Jump to reported blocked': '跳转到报告为受阻的任务', 'No tasks reported blocked': '没有报告为受阻的任务', 'Reported blocked': '报告为受阻',
+  'Sessions': '会话', 'Main session': '主会话', 'Child session': '子会话', '{n} assigned': '已分配 {n} 项',
+  'reports relayed by the main session': '报告由主会话转述',
+  'Loading {what}': '正在加载{what}', '{what} could not be loaded. {failure}.': '无法加载{what}。{failure}。', 'Try again': '重试',
+  'Plan document': '计划文档', 'No earlier capture is available.': '没有可用的较早采集。', 'the document': '文档',
+  'The captured text is not available.': '已采集的文本不可用。',
+  'A newer capture was recorded while this loaded. This is the earlier capture.': '加载期间记录了较新的采集；此处显示的是较早的采集。',
+  'Captured ': '采集于 ', 'Last good capture ': '上次成功采集于 ',
+  'This is the last successful capture, not the current file.': '这是上次成功的采集，不是当前文件。',
+  'The task list was confirmed against this capture. The current file has not been rechecked since.': '任务列表已针对本次采集确认，此后尚未重新检查当前文件。',
+  'The current file has not been rechecked since this capture.': '本次采集后尚未重新检查当前文件。',
+  'That task is no longer shown in this plan.': '此计划中已不再显示该任务。',
+  'Showing all tasks so this task is visible.': '已显示全部任务，以便查看此任务。',
+  'Show prerequisite: {title}': '显示前置任务：{title}', 'A group, not a task: it can’t count as done': '这是分组而非任务，不能计为已完成',
+  'Prerequisite task unavailable': '前置任务不可用',
+  'Decision': '决策', 'Dependency': '依赖', 'Review': '审阅', 'External': '外部', 'Other': '其他',
+  'Wait category: ': '等待类别：', 'Category unknown': '类别未知', 'The report used a category this version doesn’t recognize.': '报告使用了此版本无法识别的类别。',
+  'Unknown': '未知', 'Unavailable': '不可用',
+  'The progress service couldn’t tell when this task was reported blocked.': '进度服务无法确定此任务何时被报告为受阻。',
+  'This progress service doesn’t report waiting times.': '此进度服务不报告等待时长。',
+  'Reported blocked at {at}. Counts reported status, not activity.': '报告为受阻：{at}。计入的是报告状态，而非活动。',
+  'Already reported blocked at {at}; the start is earlier and unknown.': '此前已报告为受阻：{at}；开始时间更早且未知。',
+  'No reported blockers.': '没有报告的阻塞。',
+  'No reported blockers in the last successful read. This may be out of date.': '上次成功读取时没有报告的阻塞，信息可能已过期。',
+  'No reported blockers were recorded. Capture is off, so newer reports aren’t recorded.': '没有记录报告的阻塞。采集已关闭，因此不会记录较新的报告。',
+  'two tasks share an ID': '两个任务共用一个 ID', 'a task lists itself as a prerequisite': '任务将自身列为前置任务', 'some tasks list each other as prerequisites': '部分任务互相列为前置任务',
+  'Now': '当前', 'Reported working': '报告为进行中', 'Up next': '接下来', 'Pending': '未开始', 'Done': '已完成', 'Skipped': '已跳过',
+  'in progress': '进行中', 'blocked': '受阻', 'ready': '就绪', 'waiting': '等待中', 'pending': '未开始', 'done': '已完成', 'skipped': '已跳过',
+  'Ready to start': '可以开始', 'Waiting on prerequisites': '等待前置任务',
+  'Filter tasks by state': '按状态筛选任务', 'About these counts': '关于这些计数',
+  'Counts cover every task in this plan, whatever filter is shown.': '无论显示何种筛选条件，计数均涵盖此计划中的所有任务。',
+  'Ready and waiting come from recorded prerequisites only. Other prerequisites may not be recorded, and “No prerequisites recorded” doesn’t mean there are none. Ready is not permission to start.': '就绪和等待仅依据已记录的前置任务。其他前置任务可能未记录，“未记录前置任务”不代表不存在。就绪并非开始许可。',
+  'Blocked lists every task reported as blocked. Each stays there until an agent reports otherwise; a wait can be for another session or person. Needs you shows only reported decision and review waits.': '“受阻”列出所有报告为受阻的任务，直到智能体另行报告；等待对象可能是其他会话或人员。“需要你处理”仅显示报告中等待决策和审阅的事项。',
+  'Counts cover every task in this plan, whatever filter is shown. They are the statuses last reported; a closed plan, or one whose recorded prerequisites can’t be read, gets no ready or waiting advice.': '无论显示何种筛选条件，计数均涵盖此计划中的所有任务。这些是上次报告的状态；已关闭的计划或无法读取已记录前置任务的计划不会获得就绪或等待建议。',
+  'Readiness is unavailable for this report: {reason}. The tasks are shown as reported.': '此报告的就绪状态不可用：{reason}。任务按报告内容显示。',
+  'Last reported readiness. It may be out of date and isn’t a current recommendation.': '这是上次报告的就绪状态，可能已过期，并非当前建议。',
+  'Capture is off: these are the last reported blockers, not current guidance.': '采集已关闭：这些是上次报告的阻塞，并非当前建议。',
+  'Some recorded prerequisites aren’t in this plan, so the tasks that need them can’t be shown as ready.': '部分已记录的前置任务不在此计划中，因此依赖它们的任务不能显示为就绪。',
+  ' (no tasks have this state now)': '（当前没有任务处于此状态）', 'Unfinished': '未完成', 'Participant {name}': '参与者 {name}',
+  '{filter}: {matching} of {tasks}': '{filter}：{matching} / {tasks}', '{tasks} kept in view': '保留显示：{tasks}', '{n} shown for context': '作为上下文显示 {n} 项',
+  'Clear filters': '清除筛选', 'Task filters cleared, so focus moved to Tasks.': '已清除任务筛选，焦点已移至任务。',
+  'No tasks match the filter. Blocked tasks stay listed below.': '没有任务符合筛选条件。受阻任务仍列在下方。', 'No tasks match the filter.': '没有任务符合筛选条件。',
+  'This plan no longer records {name} on any task.': '此计划已不再在任何任务中记录 {name}。',
+  'They are still in the plan, and the counts above cover every task.': '它们仍在计划中，上方计数涵盖所有任务。', 'Clear task filters': '清除任务筛选',
+  'Ready': '就绪', 'Waits on {n}': '等待 {n} 项前置任务', 'Reported details couldn’t be read': '无法读取报告的详情',
+  'Status': '状态', 'Details': '详情', 'Reason': '原因', 'Next step': '下一步', 'Reported wait': '报告的等待时长',
+  'Needs first': '前置需求', 'About prerequisites of {title}': '关于 {title} 的前置任务',
+  'Only prerequisites an agent recorded are listed. Others may not be recorded, so “No prerequisites recorded” doesn’t mean there are none.': '这里只列出智能体记录的前置任务。其他前置任务可能未记录，因此“未记录前置任务”不代表不存在。',
+  'A blocked task doesn’t mean anyone must act; it stays blocked until an agent reports otherwise.': '任务受阻不意味着必须有人采取行动；它会保持受阻，直到智能体另行报告。',
+  'No prerequisites recorded': '未记录前置任务', 'Prerequisites of {title}': '{title} 的前置任务', 'a group': '分组', 'unavailable': '不可用',
+  'A recorded prerequisite is unavailable, so this task can’t be shown as ready.': '已记录的前置任务不可用，因此此任务不能显示为就绪。',
+  'Tasks {title} would unlock': '{title} 将解锁的任务', 'Show task: {title}': '显示任务：{title}',
+  'Unlocks': '解锁', 'About what {title} unlocks': '关于 {title} 解锁的任务',
+  'If this task is reported done, each task listed would have every recorded prerequisite done. From recorded prerequisites only; not permission to start.': '如果此任务被报告为已完成，列出的每项任务的所有已记录前置任务都将完成。仅依据已记录的前置任务，并非开始许可。',
+  'Group': '分组', 'Parent group unavailable': '上级分组不可用', 'Assignee': '负责人', 'Not recorded': '未记录',
+  'Linked to ': '关联到 ', ' · {state} (no recorded assignment)': ' · {state}（未记录分配）',
+  '; linked to {names} (no recorded assignment)': '；关联到 {names}（未记录分配）',
+  'the selected session': '所选会话', 'The selected session': '所选会话',
+  'reported by {reporter} for {attributed}': '由 {reporter} 为 {attributed} 报告', 'reported directly by {reporter}': '由 {reporter} 直接报告',
+  'Details and task {report}': '详情与任务：{report}', 'Details {report}': '详情：{report}', 'Task {report}': '任务：{report}',
+  'Last reported by {name} · report mode unavailable': '上次报告者：{name} · 报告模式不可用', 'Reported': '报告',
+  'Copy details…': '复制详情…', 'Review before sharing: this is the recorded text exactly as shown.': '分享前请检查：这是与显示内容完全一致的记录文本。',
+  'Task details (read-only)': '任务详情（只读）', 'Copied.': '已复制。', 'Clipboard unavailable. Select and copy the text above.': '剪贴板不可用，请选择并复制上方文本。',
+  'Copy': '复制', 'Close': '关闭', 'kept in view': '保留显示', 'shown for context': '作为上下文显示',
+  'Last reported: ': '上次报告：', '{tasks} hidden by filters': '被筛选隐藏：{tasks}', '{tasks} shown for context': '作为上下文显示：{tasks}', '{tasks} folded': '已折叠：{tasks}',
+  'Tasks': '任务', 'This plan has no tasks yet.': '此计划尚无任务。', 'No task rows are recorded in this plan, only groups.': '此计划没有记录任务行，只有分组。',
+  'Tasks in {title}, in plan order': '{title} 中按计划顺序排列的任务',
+  'Task view': '任务视图', 'Show tasks': '显示任务', 'Show all': '显示全部', 'Order': '顺序', 'By attention': '按关注程度', 'Plan order': '计划顺序',
+  'Expand all': '全部展开', 'Collapse all': '全部折叠', 'Copy progress update…': '复制进度更新…', 'Copy handoff…': '复制交接内容…',
+  'Task view options…': '任务视图选项…', 'Show by attention': '按关注程度显示', 'Show in plan order': '按计划顺序显示', 'Expand all tasks': '展开所有任务', 'Collapse all tasks': '折叠所有任务',
+  'tasks': '任务', 'history': '历史记录', 'Plan summaries': '计划摘要', 'Progress update preview': '进度更新预览', 'Handoff preview': '交接内容预览',
+  'Review the Markdown, then copy it.': '请检查 Markdown 后再复制。', 'Markdown preview (read-only)': 'Markdown 预览（只读）',
+  'Copy Markdown': '复制 Markdown', 'Retry': '重试', 'Preview summary only': '仅预览摘要',
+  'Revisions': '修订记录', 'plan reported': '已报告计划', 'tasks revised': '任务已修订', 'outcome reported': '已报告结果', 'progress update': '进度更新',
+  'Revision {n}': '修订 {n}', 'Only the first {n} revisions are shown.': '仅显示前 {n} 个修订。',
+  'Capture is turned off; no new reports are recorded.': '采集已关闭；不会记录新报告。', 'Some recorded sources are not verified.': '部分已记录的来源未经验证。',
+  'This service is not bound to a verified OpenCode setup.': '此服务未绑定到经过验证的 OpenCode 配置。', 'Showing an earlier document capture.': '显示较早的文档采集。',
+  'Plan': '计划', 'Revision': '修订', '{revision} (structure {structure})': '{revision}（结构 {structure}）', 'Last reported location': '上次报告的位置',
+  'Plan source': '计划来源', 'Document source': '文档来源', 'Document state': '文档状态', ', task list confirmed': '，任务列表已确认',
+  'Document capture': '文档采集', 'Document checked': '文档检查时间', 'Store': '存储', 'Bound source': '绑定来源',
+  ' (verified)': '（已验证）', ' (not verified)': '（未经验证）', 'None': '无', 'Recorded source': '记录的来源', 'Capture': '采集', 'On': '开启', 'Off': '关闭', 'Coverage': '覆盖范围',
+  'Loading progress': '正在加载进度', 'Setup is needed': '需要设置', 'Progress loaded again': '进度已重新加载',
+  'Showing progress from {time}': '显示 {time} 的进度', '{failure}. This may be out of date.': '{failure}。信息可能已过期。', 'Last refresh error': '上次刷新错误',
+  'Next sub-agent will take this': '下一个子智能体将接手此任务', 'Sub-agent handoff refused': '子智能体交接被拒绝', 'Sub-agent handoff': '子智能体交接',
+  'Waiting for the next sub-agent the coordinator starts. No work has started, and no sub-agent is assigned yet.': '等待协调者启动下一个子智能体。工作尚未开始，也尚未分配子智能体。',
+  'Not applied: the plan changed after the handoff was planned.': '未生效：交接安排后计划发生了变化。',
+  'Not applied: the plan’s task structure changed.': '未生效：计划的任务结构发生了变化。',
+  'Not applied: the plan was closed.': '未生效：计划已关闭。',
+  'Not applied: the task’s assignment changed.': '未生效：任务分配发生了变化。',
+  'Not applied: the change couldn’t be checked.': '未生效：无法检查变更。',
+  'Not applied: the progress service refused it.': '未生效：进度服务拒绝了交接。',
+  'The coordinator can plan the handoff again for the current plan, or link the task to a session.': '协调者可以按当前计划重新安排交接，或将任务关联到会话。',
+};
 const COPY: Record<InterfaceLanguage, Record<CopyKey, string>> = {
-  en: Object.fromEntries(Object.keys(RUSSIAN).map(key => [key, key])) as Record<CopyKey, string>, ru: RUSSIAN,
+  en: Object.fromEntries(Object.keys(RUSSIAN).map(key => [key, key])) as Record<CopyKey, string>, ru: RUSSIAN, 'zh-CN': CHINESE,
 };
 function say(key: CopyKey, locale = 'en', values: Record<string, string | number> = {}) {
   const language = resolveLanguage('auto', locale);
@@ -156,6 +269,7 @@ const displayCount = (n: number, locale: InterfaceLanguage) => locale === 'en' ?
 const COUNT_WORDS: Record<InterfaceLanguage, Record<'task' | 'blocked' | 'more', [string, string, string]>> = {
   en: { task: ['task', 'tasks', 'tasks'], blocked: ['blocked task', 'blocked tasks', 'blocked tasks'], more: ['more session', 'more sessions', 'more sessions'] },
   ru: { task: ['задача', 'задачи', 'задач'], blocked: ['заблокированная задача', 'заблокированные задачи', 'заблокированных задач'], more: ['дополнительная сессия', 'дополнительные сессии', 'дополнительных сессий'] },
+  'zh-CN': { task: ['个任务', '个任务', '个任务'], blocked: ['个受阻任务', '个受阻任务', '个受阻任务'], more: ['个其他会话', '个其他会话', '个其他会话'] },
 };
 function countText(n: number, kind: keyof typeof COUNT_WORDS.en, locale: InterfaceLanguage) {
   const form = new Intl.PluralRules(locale).select(n);
@@ -195,9 +309,9 @@ export function languageBlock(language: ViewContext<unknown>['language'], locale
   const wrap = testid(el('div', 'ap-language'), 'interface-language');
   const select = el('div');
   mountSelect(select, { label: copy.label, value: language.preference,
-    options: [{ id: 'auto', label: copy.automatic }, { id: 'en', label: 'English' }, { id: 'ru', label: 'Русский' }],
+    options: [{ id: 'auto', label: copy.automatic }, { id: 'en', label: 'English' }, { id: 'ru', label: 'Русский' }, { id: 'zh-CN', label: '简体中文' }],
     disabled: !language.supported || language.pending,
-    onChange: (value) => { if (value === 'auto' || value === 'en' || value === 'ru') language.choose(value); },
+    onChange: (value) => { if (value === 'auto' || value === 'en' || value === 'ru' || value === 'zh-CN') language.choose(value); },
   });
   wrap.append(select);
   const message = !language.supported ? copy.unsupported : language.pending ? copy.saving
@@ -314,7 +428,10 @@ export function lifecycleBadge(plan: PlanView, locale: InterfaceLanguage = 'en')
 }
 
 /** The bar's spoken summary: done of total, remaining, skipped (never counted as done), then working and blocked. */
-const barLabel = (s: PlanSummary, locale: InterfaceLanguage) => `${summaryText(s, locale)}${s.working ? `, ${say('{n} in progress', locale, { n: s.working })}` : ''}${s.blocked ? `, ${say('{n} blocked', locale, { n: s.blocked })}` : ''}`;
+const barLabel = (s: PlanSummary, locale: InterfaceLanguage) => {
+  const sep = locale === 'zh-CN' ? ' · ' : ', ';
+  return `${summaryText(s, locale)}${s.working ? `${sep}${say('{n} in progress', locale, { n: s.working })}` : ''}${s.blocked ? `${sep}${say('{n} blocked', locale, { n: s.blocked })}` : ''}`;
+};
 
 /**
  * Every task done (a nonzero total, nothing remaining, none skipped: skipped is never done): the
@@ -544,6 +661,13 @@ function jump(control: HTMLElement, plan: PlanView, kind: JumpKind, targets: Ite
   revealTask(article, plan, next.item.id, locale => `${say(label, locale)}${targets.length > 1 ? ` ${say('{index} of {count}', locale, { index: next.index + 1, count: targets.length })}` : ''}: ${next.item.title}`);
 }
 
+/** Session facts the host reports, named in the interface language. */
+const HOST_LINK_LABELS: Record<InterfaceLanguage, { agent: string; issue: string; change: string; more: string }> = {
+  en: { agent: 'Host-reported agent', issue: 'Host-linked issue', change: 'Host-linked change', more: 'More links are available in the host.' },
+  ru: { agent: 'Агент по данным хоста', issue: 'Задача, связанная в хосте', change: 'Изменение, связанное в хосте', more: 'В хосте есть другие связи.' },
+  'zh-CN': { agent: '宿主报告的智能体', issue: '宿主关联的问题', change: '宿主关联的变更', more: '宿主中还有更多关联。' },
+};
+
 /**
  * Who is involved. `compact`: one footer row for the main session (live state and a verified Open),
  * and a count of the other sessions, whose full facts are in the Sessions panel (⋯ → Sessions).
@@ -564,9 +688,7 @@ export function peopleBlock(plan: PlanView, detail: PlanDetail | null, env: Env,
     row.append(el('span', 'ap-small ap-muted', facts.join(' · ')));
     if (!compact && trustedSource(plan, env) && cov.kind === 'live') {
       const host = cov.session;
-      const labels = env.locale === 'ru'
-        ? { agent: 'Агент по данным хоста', issue: 'Задача, связанная в хосте', change: 'Изменение, связанное в хосте', more: 'В хосте есть другие связи.' }
-        : { agent: 'Host-reported agent', issue: 'Host-linked issue', change: 'Host-linked change', more: 'More links are available in the host.' };
+      const labels = HOST_LINK_LABELS[env.locale];
       if (host.agent) row.append(testid(el('p', 'ap-small ap-muted', `${labels.agent}: ${host.agent}`), 'session-host-agent'));
       for (const link of host.links ?? []) row.append(testid(el('p', 'ap-small ap-muted', `${labels[link.kind]}: ${link.title}`), 'session-host-link'));
       if (host.moreLinks) row.append(el('p', 'ap-small ap-muted', labels.more));
@@ -1673,6 +1795,18 @@ const FAILURES: Record<InterfaceLanguage, typeof FAILURE_COPY> = {
     invalid: { title: 'Не удалось прочитать прогресс', body: 'Сервис прогресса прислал ответ, который это представление не смогло использовать.' },
     'not-found': { title: 'Этот план больше недоступен', body: 'Возможно, он относится к другому хранилищу.' },
     'setup-lost': { title: 'Сейчас не удаётся прочитать настройки прогресса', body: 'Расширение больше не может открыть хранилище прогресса. Проверьте настройку; ничего не изменено и не удалено.' },
+  },
+  'zh-CN': {
+    'not-approved': { title: '进度需要权限', body: '请在设置 → 扩展中允许此扩展，以显示智能体进度。' },
+    paused: { title: '进度已暂停', body: '此扩展已在设置 → 扩展中暂停。' },
+    disconnected: { title: '与 OpenChamber 的连接已断开', body: '连接恢复后进度会再次更新。' },
+    unavailable: { title: '进度服务未响应', body: '服务可能仍在启动，请稍后重试。' },
+    busy: { title: '进度存储忙碌', body: '另一个程序正在写入进度存储，此视图稍后会重试。' },
+    damaged: { title: '进度存储已损坏', body: '已保持原样。请参阅设置指南进行恢复；没有重置任何内容。' },
+    incompatible: { title: '进度数据需要更新', body: '进度存储使用的格式不受此视图支持，请更新扩展及其 companion。' },
+    invalid: { title: '无法读取进度', body: '进度服务返回了此视图无法使用的响应。' },
+    'not-found': { title: '该计划已不再可用', body: '该计划可能属于其他存储。' },
+    'setup-lost': { title: '暂时无法读取进度设置', body: '扩展无法再打开进度存储。请检查设置；没有更改或删除任何内容。' },
   },
 };
 export const failureCopy = (kind: ReadFailure['kind'], locale: InterfaceLanguage = 'en') => FAILURES[locale][kind];

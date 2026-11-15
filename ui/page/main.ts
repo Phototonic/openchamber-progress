@@ -49,8 +49,21 @@ const messages = {
     plansIn: (name: string) => `Планы проекта ${name}`, finishedIn: (name: string) => `Завершённые и отменённые планы проекта ${name}`, finished: (n: number) => `Завершённые · ${n}`, finishedHelp: (n: number) => `Загружено завершённых или отменённых планов: ${n}. Поиск также находит их.`,
     searchTask: (title: string) => `Результат поиска: ${title}`, historyTask: (title: string) => `Текущая задача из истории: ${title}`, opening: (title: string) => `Открываем текущую задачу «${title}»…`, taskFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Ничего не изменено.', taskHistoryFailed: 'Не удалось загрузить текущие задачи, поэтому показать задачу нельзя. Её записанные изменения остаются здесь.', taskMoved: (title: string, archived: boolean) => `Нельзя показать «${title}»: её план ${archived ? 'восстановлен из архива' : 'перемещён в архив'}.`, taskGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её нельзя. План остаётся открытым для чтения.`, historyGone: (title: string) => `Задачи «${title}» больше нет в текущем плане, поэтому показать её там нельзя. Её записанные изменения остаются здесь.`,
   },
+  'zh-CN': {
+    heading: '智能体进度', current: '当前计划', archived: '已归档计划', cleanupOff: '此服务版本不支持计划清理。', noArchived: '没有已归档计划', noPlans: '此处尚未记录计划', archivedHelp: '已结束并归档的计划会显示在这里，历史记录仍可查看。', plansHelp: '新的报告会显示在这里，已结束的工作可能位于已归档计划中。', clear: '清除搜索和筛选', detail: '计划详情', noMatch: '没有符合筛选条件的计划', chooseLocation: '请选择其他项目、工作树或会话。', truncated: '部分较早的计划尚未加载。', truncatedSearch: '此处尚未加载部分较早的计划，搜索会检查所有已记录的计划。',
+    missing: (n: number) => n === 1 ? '有 1 个计划的实时状态不可用：其会话不在当前工作区覆盖范围内，因此无法从此处打开。' : `有 ${n} 个计划的实时状态不可用：其会话不在当前工作区覆盖范围内，因此无法从此处打开。`,
+    otherSource: (n: number) => `${n} 个计划来自其他 OpenCode 配置，可以阅读，但无法从此处打开。`,
+    capped: (n: number) => `实时状态仅覆盖最前面的部分项目；有 ${n} 个项目未被观察。`,
+    regrouped: '计划已移到已结束分组，焦点已移到该项目的已结束折叠按钮。', emptyQuery: '请输入搜索词，或选择计划状态、任务状态。', removed: '已移除筛选条件', ended: '搜索已结束，看板显示符合剩余筛选条件的计划。', cleared: '已清除搜索', clearedAll: (archived: boolean) => `已清除搜索和筛选，正在显示所有${archived ? '已归档' : '当前'}计划。`, search: '搜索', filter: '筛选计划', updated: '已更新结果', resumed: '已恢复搜索', pick: '打开一条结果，在此查看', pickHelp: '打开计划或任务只会显示其当前计划，不会启动、分配或完成工作。', progress: '进度', document: '文档', history: '历史', map: '依赖图', project: '项目', worktree: '工作树', session: '会话', setup: '设置', loaded: '已加载计划', watched: '正在观察的实时会话', inProgress: '进行中', active: '活跃', unverified: '配置未经验证', other: '其他配置', fromOther: '来自其他 OpenCode 配置', plans: '计划', listEmpty: '没有匹配的计划。',
+    plansIn: (name: string) => `${name} 中的计划`, finishedIn: (name: string) => `${name} 中已结束和已取消的计划`, finished: (n: number) => `已结束 · ${n}`, finishedHelp: (n: number) => `此处已加载 ${n} 个已结束或已取消的计划，也可通过搜索找到。`,
+    searchTask: (title: string) => `搜索结果：${title}`, historyTask: (title: string) => `来自历史记录的当前任务：${title}`, opening: (title: string) => `正在打开当前任务“${title}”…`, taskFailed: '无法加载当前任务列表，因此无法显示任务，未进行任何更改。', taskHistoryFailed: '无法加载当前任务列表，因此无法显示任务；已记录的变更仍保留在此处。', taskMoved: (title: string, archived: boolean) => `无法在此显示“${title}”：其计划已${archived ? '移出已归档计划' : '移入已归档计划'}。`, taskGone: (title: string) => `“${title}”已不在当前计划中，无法显示；计划保持打开，仍可阅读。`, historyGone: (title: string) => `“${title}”已不在当前计划中，无法在那里显示；已记录的变更仍保留在此处。`,
+  },
 } satisfies Record<InterfaceLanguage, Record<string, string | ((...args: never[]) => string)>>;
 const copy = (locale: string) => messages[resolveLanguage('auto', locale)];
+/** A spoken one-off message in every interface language. */
+const said = (en: string, ru: string, zh: string) => ({ kind: 'message' as const, en, ru, 'zh-CN': zh });
+/** Noun a part's loading line is built from. */
+const PLAN_NOUN = { en: 'plan', ru: 'план', 'zh-CN': '计划' } as const;
 type Problem = { kind: 'query'; q: string } | { kind: 'empty' };
 /** A submitted search: `owner` is the account + store/binding it was submitted under. */
 type Submitted = { key: string; owner: string; criteria: SearchCriteria };
@@ -616,7 +629,7 @@ function searchBoard(root: HTMLElement, vc: ViewContext<Ui>, v: SearchViewState)
   if (plan) detailPane(detail, vc, plan, c.session !== ALL ? c.session : null);
   else if (request && request.key === ui.selected) {
     const d = vc.detail(request);
-    detail.append(partState('detail-loading', env.locale === 'ru' ? 'план' : 'plan', d?.state === 'error' ? d : null, vc.retry, env.locale));
+    detail.append(partState('detail-loading', PLAN_NOUN[resolveLanguage('auto', env.locale)], d?.state === 'error' ? d : null, vc.retry, env.locale));
   } else detail.append(emptyBlock('search-pick', copy(env.locale).pick, copy(env.locale).pickHelp));
   board.append(detail);
   root.append(board);
@@ -696,7 +709,7 @@ function detailPane(detail: HTMLElement, vc: ViewContext<Ui>, plan: PlanView, co
     article.append(planHeader(plan, env));
     // Full-page History only: the digest sits above the existing metadata Revisions.
     const panel = shownDigest = vc.digest(plan);
-    if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce({ kind: 'message', en: messages.en.opening(title), ru: messages.ru.opening(title) }); }));
+    if (panel) article.append(digestBlock(panel, env, (item, title) => { pendingTask = { key: plan.key, item, title, stage: 'detail', origin: 'history' }; panel.announce(said(messages.en.opening(title), messages.ru.opening(title), messages['zh-CN'].opening(title))); }));
     article.append(historyBlock(plan, vc.history(plan), env));
     detail.append(article);
   } else {
@@ -733,14 +746,14 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
     if (!v || v.run !== intent.run || vc.ui.selected !== intent.key || vc.ui.tab !== 'progress' || request?.key !== intent.key) { pendingTask = null; return; }
     const d = vc.detail(request);
     if (!d || d.state === 'loading') return;
-    if (d.state === 'error') { pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskFailed, ru: messages.ru.taskFailed }); return; }
+    if (d.state === 'error') { pendingTask = null; search.note(v.run, said(messages.en.taskFailed, messages.ru.taskFailed, messages['zh-CN'].taskFailed)); return; }
     const p = selectedPlan(vc);
     if (!p || d.value.revision !== p.revision) return; // wait for this revision's metadata
     if (p.sourceId !== request.sourceId || p.id !== request.id || (p.cleanup?.state === 'archived') !== vc.ui.archived) {
-      pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskMoved(intent.title, vc.ui.archived), ru: messages.ru.taskMoved(intent.title, vc.ui.archived) }); return;
+      pendingTask = null; search.note(v.run, said(messages.en.taskMoved(intent.title, vc.ui.archived), messages.ru.taskMoved(intent.title, vc.ui.archived), messages['zh-CN'].taskMoved(intent.title, vc.ui.archived))); return;
     }
     if (!d.value.items.some((i) => i.kind === 'task' && i.id === intent!.item)) {
-      pendingTask = null; search.note(v.run, { kind: 'message', en: messages.en.taskGone(intent.title), ru: messages.ru.taskGone(intent.title) }); return;
+      pendingTask = null; search.note(v.run, said(messages.en.taskGone(intent.title), messages.ru.taskGone(intent.title), messages['zh-CN'].taskGone(intent.title))); return;
     }
     intent = pendingTask = { ...intent, stage: 'reveal' };
   }
@@ -750,11 +763,11 @@ function currentTask(root: HTMLElement, vc: ViewContext<Ui>) {
     if (vc.ui.tab !== 'history') { pendingTask = null; return; }
     const d = vc.detail(plan);
     if (!d || d.state === 'loading') return;
-    if (d.state === 'error') { pendingTask = null; shownDigest?.announce({ kind: 'message', en: messages.en.taskHistoryFailed, ru: messages.ru.taskHistoryFailed }); return; }
+    if (d.state === 'error') { pendingTask = null; shownDigest?.announce(said(messages.en.taskHistoryFailed, messages.ru.taskHistoryFailed, messages['zh-CN'].taskHistoryFailed)); return; }
     if (d.value.revision !== plan.revision) return; // wait for the list to announce this revision
     if (!d.value.items.some((i) => i.kind === 'task' && i.id === intent.item)) {
       pendingTask = null;
-      shownDigest?.announce({ kind: 'message', en: messages.en.historyGone(intent.title), ru: messages.ru.historyGone(intent.title) });
+      shownDigest?.announce(said(messages.en.historyGone(intent.title), messages.ru.historyGone(intent.title), messages['zh-CN'].historyGone(intent.title)));
       return;
     }
     pendingTask = { ...intent, stage: 'reveal' };

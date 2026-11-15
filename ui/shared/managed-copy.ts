@@ -1,4 +1,4 @@
-import { resolveLanguage } from './i18n.ts';
+import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const en = {
   title: 'Extension-managed capture', unsupported: 'Managed setup is unsupported by this service. Update the extension and service together; no global plugin will be installed here.',
@@ -56,7 +56,36 @@ const ru: typeof en = {
   busy: 'Настройка уже выполняется или после прерывания сохранилась блокировка. Блокировки и файлы восстановления не удаляются автоматически.',
   stale: 'Проверенная настройка изменилась. Проверьте снова перед подтверждением.', path: 'Укажите абсолютный путь к приватному хранилищу или оставьте поле пустым для проверки стандартного пути.',
 };
-export const managedCopy = (locale = 'en') => resolveLanguage('auto',locale) === 'ru' ? ru : en;
+const zh: typeof en = {
+  title: '扩展受管采集', unsupported: '此服务不支持受管设置。请同时更新扩展和服务；此处不会安装全局插件。',
+  choose: '审阅受管的 OpenCode 来源和私有进度存储。打开设置不会更改任何内容。自定义存储是可选项；保留的历史永远不会被重置。',
+  store: '进度存储文件夹', helper: '可选：私有存储的绝对路径；留空以审阅默认位置',
+  review: '审阅配置', configure: '配置采集', migrate: '切换到扩展受管采集', resume: '审阅中断的切换', enable: '开启采集', disable: '关闭采集',
+  confirm: '确认', cancel: '取消', ack: '我已审阅此来源、存储及以下影响',
+  privilege: '插件代码和进度服务以你的完整账户权限运行。在 OpenChamber 中的批准与此存储确认相互独立。报告需显式发出；工具访问仍取决于宿主策略。',
+  lifecycle: '交付模式未知。使用被监视的受管文件时，禁用或移除扩展会停用其插件；使用调用方自有的 OPENCODE_CONFIG 时，需要显式重启 OpenCode。关闭此视图不会停止采集。绑定和历史会保留。挂起的权限请求可能失败，其会话仍可能需要中断。',
+  reach: '受管交付仅覆盖由 OpenChamber 管理的 OpenCode。终端、外部或远程服务器、隔离空间和 VS Code 不在覆盖范围内。独立的旧版安装或全局条目可能比扩展存续更久。',
+  switchEffect: '此切换会关闭采集，仅移除已验证的旧版安装全局发现文件，并在重新启用前选择相同的存储和来源。历史与保留的恢复文件会保留。缓存的旧版安装副本可能需要显式重新加载；如需结束独立的旧版安装进程，必须停止或重新加载它们。此处不会重启任何运行时。',
+  pending: '切换仍在等待或仅部分完成。采集可能保持关闭，恢复文件会保留。在显式重试前请检查同一目标；不要认为失败的响应已撤销更改。不会自动启用或恢复任何内容。',
+  conflict: '旧版安装所有权或存储/来源身份存在冲突。冲突解决前无法在此切换；不会授权接管或删除。',
+  unavailable: '无法检查旧版安装。请查看存储或平台诊断，解决故障后重试。这不能证明存在所有权冲突。已验证的受管存储仍可关闭。',
+  retry: '重试检查',
+  invalid: '受管绑定无效。现有文件保持不变。请查看诊断；不会选择其他存储。',
+  configured: '私有存储已配置', unconfigured: '私有存储未配置', complete: '已记录旧版安装切换；匹配的受管加载仍是一项单独的观察。',
+  unknown: 'companion 加载观察未知', missing: '未观察到受管 companion 加载', matching: '观察到匹配的受管 companion 加载',
+  different: '已加载的 companion 字节不同', warning: '已加载的版本或字节与预期包不同。此警告本身不会阻止报告。指纹是观察结果，不是发布者签名，也不能证明导入器实际执行了什么；字节匹配不能证明当前活动或工具可用性。',
+  observation: '加载观察不是心跳、宿主批准、每个会话的工具清单、最近的报告或任务完成。companion 字节随扩展一起提供；更新在 OpenChamber 的设置 → 扩展中管理。此处的交付模式未知：被监视的受管文件可能重新加载。使用调用方自有的 OPENCODE_CONFIG 时，添加、移除或切换扩展插件需要显式重启 OpenCode。已安装扩展的更新可能无需重启即可被采用；请在设置/报告健康状态中查看加载观察。仅更新扩展不能证明每个运行中的会话都加载了新字节。此处不会重启任何内容。',
+  control: '采集控制', on: '已存储的控制：开启', off: '已存储的控制：关闭', controlUnknown: '已存储的控制：未知',
+  controlEffect: '这会更改已验证存储的采集控制，而不会更改任务状态或已记录历史。它不会撤销独立安装的副本，也不能证明某个会话已加载受管插件。',
+  configRoot: '已审阅的 OpenCode 配置', dataRoot: '已审阅的 OpenCode 数据', done: '已收到配置响应。请分别查看当前控制与加载观察。',
+  failed: '请求未成功完成。其影响可能是部分的；重试前请检查同一目标。',
+  scope: '此 OpenCode 范围使用了不受支持的覆盖配置。不会推测实际生效的运行范围；请在此视图之外查看其配置。',
+  selection: '所选存储或来源与已验证的绑定冲突。请保留现有选择并检查同一目标；不会覆盖任何内容。',
+  busy: '另一项配置正在进行，或中断的配置保留了其锁。不会自动移除锁或恢复文件。',
+  stale: '已审阅的设置已更改。请在确认前重新检查。', path: '请使用私有存储的绝对路径，或留空以审阅默认位置。',
+};
+const managedCatalogs: Record<InterfaceLanguage, typeof en> = { en, ru, 'zh-CN': zh };
+export const managedCopy = (locale = 'en') => managedCatalogs[resolveLanguage('auto', locale)];
 
 /** Step-by-step switch copy. Plain wording, no paths; stage and code stay visible on failure. */
 const stepsEn = {
@@ -173,7 +202,65 @@ const stepsRu: typeof stepsEn = {
     'managed-step-retired': 'Экран был закрыт или изменён, поэтому настройка остановилась после текущего шага. Ничего не отменено.',
   },
 };
-export const managedStepCopy = (locale = 'en') => resolveLanguage('auto',locale) === 'ru' ? stepsRu : stepsEn;
+const stepsZh: typeof stepsEn = {
+  stages: {
+    prepare: '准备切换', expectation: '检查附带的 companion', disable: '关闭采集',
+    'remove-selector': '移除旧加载器条目', 'remove-discovery': '移除旧插件文件', 'record-removal': '记录移除结果',
+    'publish-binding': '连接进度存储', enable: '重新开启采集', reconcile: '最终检查',
+    roots: '查找 OpenCode 文件夹', 'managed-state': '读取设置记录', 'legacy-discovery': '查找旧版安装',
+    'legacy-releases': '检查旧版 companion', store: '检查进度存储', review: '准备审阅',
+    journal: '读取切换记录', lock: '等待其他设置操作',
+  },
+  step: (n, total, label, part) => `第 ${n} 步，共 ${total} 步：${label}${part ? `（第 ${part} 部分）` : ''}`,
+  last: '上次完成的步骤', none: '尚无', capture: '采集', on: '开启', off: '关闭', unknown: '未知',
+  part: (label, part) => part ? `${label}（第 ${part} 部分）` : label,
+  checking: (stage) => stage ? `正在检查旧版安装：${stage}…` : '正在检查旧版安装…',
+  titles: { running: '正在切换到扩展受管采集', pending: '切换尚未完成', paused: '切换已暂停', abandoned: '切换已停止', failed: '切换步骤失败', interrupted: '切换已中断', active: '步骤仍在运行', review: '需要决定采集设置', complete: '切换已完成' },
+  status: {
+    running: '正在逐步执行。关闭此视图后，设置将在当前步骤结束后停止，不会撤销任何更改。',
+    pausing: '将在当前步骤结束后暂停…',
+    pending: '尚未完成。请选择继续以执行下一步。',
+    paused: '已暂停，未撤销任何更改。恢复后将从此步骤继续。',
+    abandoned: '已停止，未撤销任何更改。你可以从此步骤恢复。',
+    failed: '此步骤未完成，未撤销任何更改。请恢复以检查并重试。',
+    interrupted: '已中断。设置无法确定此步骤是否完成。请恢复以先检查此步骤，再执行其他操作。',
+    active: '服务仍在执行此步骤。请稍后再次检查状态。',
+    review: '再次更改采集前，设置需要你作出决定。',
+    complete: '所有步骤均已完成。',
+    uncertain: '上次更改可能未完成。设置将先检查，再执行其他操作。',
+  },
+  warnOff: '采集已关闭', warnOffBody: '切换未完成期间，智能体不会记录进度。请完成切换以重新开启采集。',
+  warnUnknown: '采集可能已关闭', warnUnknownBody: '设置无法确认智能体是否正在记录进度。请完成切换以检查并重新开启采集。',
+  stoppedAt: (stage) => `停止于：${stage}`, stopped: '已停止',
+  continue: '继续切换', resume: '恢复切换', pause: '暂停切换', pausing: '正在暂停…', abandon: '停止切换', check: '检查状态', reviewCapture: '审阅采集决定', cancel: '取消',
+  pauseTitle: '暂停切换？', pauseBody: '设置将在完成当前步骤后停止，不会撤销任何更改。你可以稍后在设置中恢复。', keepGoing: '继续执行',
+  abandonTitle: '停止切换？', abandonBody: '设置将在此停止，不会撤销任何更改，已完成的步骤仍然保留。你可以稍后在设置中恢复。',
+  stays: { on: '采集将保持开启。', off: '采集将保持关闭，直到切换完成。', unknown: '采集可能保持关闭，直到切换完成。' },
+  stepwise: '切换按步骤执行。你可以在步骤之间暂停；暂停不会撤销已完成的步骤。',
+  captureTitle: '确认采集决定', reviewNeeded: '设置无法确认上次采集更改。请审阅决定后继续。',
+  captureEnable: (state) => `设置无法确认上一步是否已重新开启采集。采集当前为${state}。继续将开启采集。如果你在该步骤后主动关闭了采集，此操作会覆盖该决定。`,
+  captureDisable: (state) => `设置无法确认上一步是否已关闭采集。采集当前为${state}。继续将关闭采集，直到切换完成。如果你在该步骤后主动开启了采集，此操作会覆盖该决定。`,
+  ackEnable: '我希望设置现在开启采集', ackDisable: '我希望设置现在关闭采集', confirmCapture: '确认并继续',
+  stateWord: { on: '开启', off: '关闭', unknown: '未知' },
+  errors: {
+    'managed-step-deadline': '此步骤已超时，可能已部分完成。请恢复以检查，然后重试。',
+    'managed-step-budget': '此步骤已达到检查上限，未撤销任何更改。请恢复以检查并重试。如再次发生，请报告步骤和代码。',
+    'managed-step-port-busy': '其他程序正在使用协调端口。请关闭该程序后重试。',
+    'managed-step-conflict': '切换已在其他位置推进，例如另一个窗口。请先检查状态再继续。',
+    'managed-step-unsupported': '此服务无法执行该步骤。请同时更新扩展和服务。',
+    'managed-step-limit': '旧版安装的文件数量超出设置可安全检查的范围。未做任何更改。',
+    'managed-step-unsettled': '服务仍在完成某个步骤，或其结果尚不明确。请稍后检查状态。',
+    'managed-journal-unsupported': '切换记录由不同版本创建。请同时更新扩展和服务。未做任何更改。',
+    'managed-inspection-expired': '检查已过期，可能是因为重启。请重新开始检查。',
+    'managed-inspection-incomplete': '检查未完成，未做任何更改。请重试。',
+    'managed-step-no-reply': '服务未回复此步骤。步骤可能已完成，设置不会自行重复执行；请先检查状态。',
+    'managed-step-reply-invalid': '无法读取服务回复，步骤可能已完成。请先检查状态。',
+    'managed-step-request-invalid': '设置无法准备此请求，未发送任何内容。',
+    'managed-step-retired': '此视图已关闭或发生变化，设置已在当前步骤结束后停止。未撤销任何更改。',
+  },
+};
+const stepCatalogs: Record<InterfaceLanguage, typeof stepsEn> = { en: stepsEn, ru: stepsRu, 'zh-CN': stepsZh };
+export const managedStepCopy = (locale = 'en') => stepCatalogs[resolveLanguage('auto', locale)];
 
 export function managedErrorText(code:string, locale='en'): string | null {
   const steps=managedStepCopy(locale).errors;

@@ -125,6 +125,51 @@ export const INBOX_COPY = {
     failed: 'Не удалось загрузить текущий план, поэтому показать задачу нельзя. Ничего не изменено.',
     statuses: { pending: 'не начата', working: 'в работе', blocked: 'заблокирована', done: 'выполнена', skipped: 'пропущена' } as Record<ItemView['status'], string>,
   },
+  'zh-CN': {
+    heading: '需要你处理',
+    scope: '此 OpenCode 配置所有当前计划中报告的决策和审阅事项。',
+    tasks: (n: number) => `${num(n, 'zh-CN')} 个任务`,
+    atLeastTasks: (n: number) => `至少 ${num(n, 'zh-CN')} 个任务`,
+    summary: (n: number) => `${num(n, 'zh-CN')} 个任务需要你处理`,
+    summaryAtLeast: (n: number) => `至少 ${num(n, 'zh-CN')} 个任务需要你处理`,
+    none: '目前没有需要你处理的事项。', noneShort: '没有需要你处理的事项', noneYet: '尚未找到需要你处理的事项',
+    partial: '目前只检查了部分计划，可能还有其他事项需要你处理。',
+    partialNone: '尚未找到事项。并非所有计划都已检查。',
+    gapped: '部分计划无法读取，此列表可能不完整。',
+    capture: '采集已关闭，不会记录较新的报告。',
+    stale: (time: string) => `上次检查于 ${time}，信息可能已过期。`,
+    unsupported: '此进度服务版本不支持“需要你处理”。',
+    unverified: '“需要你处理”不可用：此服务未关联到经过验证的 OpenCode 配置。',
+    invalid: '无法从进度服务读取“需要你处理”。',
+    listLabel: '需要你处理的任务', alsoListLabel: '其他受阻任务',
+    more: '检查更多计划', moreLoading: '正在检查更多计划…', moreFailed: '暂时无法检查更多计划。', retry: '重试',
+    restarted: '加载期间列表发生变化，已从头开始读取。',
+    rechecking: '正在重新检查已加载的计划。后续行可能已过期；完成前计数仅涵盖首个已检查窗口。',
+    recheckWaiting: '等待下次刷新以重新检查已加载的计划。后续行可能已过期；计数仅涵盖首个已检查窗口。',
+    showMore: (n: number) => `再显示 ${num(n, 'zh-CN')} 项`, showFewer: '收起',
+    also: (n: number, exact: boolean) => `其他受阻任务 · ${num(n, 'zh-CN')}${exact ? '' : '+'}`,
+    alsoNote: '其他已报告的阻塞，包括前置任务、外部人员或机构，以及未说明的原因。',
+    open: (task: string, plan: string) => `打开“${plan}”中的“${task}”`,
+    plan: '计划：', reason: '原因', next: '下一步', unknown: '未知',
+    waiting: '等待中', waitUnknown: '等待时长未知', waitUnavailable: '等待时长不可用',
+    waitExact: (at: string) => `报告为受阻：${at}。计入的是报告状态，而非活动。`,
+    waitLower: (at: string) => `此前已报告为受阻：${at}；开始时间更早且未知。`,
+    waitUnknownHelp: '进度服务无法确定此任务何时被报告为受阻。',
+    category: '等待类别：',
+    categories: { decision: '决策', review: '审阅', dependency: '依赖', external: '外部', other: '其他' } as Record<BlockerCategory, string>,
+    unclassified: '类别未知', unclassifiedHelp: '报告使用了此版本无法识别的类别。',
+    absent: '未报告详情', invalidDetails: '无法读取报告的详情',
+    lineAria: (summary: string) => `${summary}，涵盖所有当前计划。打开进度`, lineScope: '所有计划',
+    readingLabel: '从“需要你处理”打开', readingNote: '这是当前计划。此处的操作不会更改任务。',
+    backPanel: '返回会话进度', backBoard: '返回计划',
+    revealNeeds: (task: string) => `需要你处理：${task}`, revealAlso: (task: string) => `其他受阻任务：${task}`,
+    gone: '此计划已不可用，无法显示任务。',
+    taskGone: (task: string) => `“${task}”已不在此计划中。计划仍保持打开，可继续阅读。`,
+    notBlocked: (task: string, status: string) => `“${task}”已不再受阻，当前状态为${status}。`,
+    inactive: '此计划已不再活跃。', archived: '此计划已归档。', otherSetup: '无法再从此 OpenCode 配置读取该计划。',
+    loading: '正在加载当前计划…', failed: '无法加载当前计划，因此无法显示任务。未做任何更改。',
+    statuses: { pending: '未开始', working: '进行中', blocked: '受阻', done: '已完成', skipped: '已跳过' } as Record<ItemView['status'], string>,
+  },
 } satisfies Record<InterfaceLanguage, Record<string, unknown>>;
 export const inboxCopy = (locale: string) => INBOX_COPY[resolveLanguage('auto', locale)];
 
@@ -195,7 +240,10 @@ function waitLabel(row: InboxRowView, m: InboxModel, env: Env) {
   const at = absoluteTime(a.since, env.locale);
   time.title = a.kind === 'exact' ? t.waitExact(at) : t.waitLower(at);
   const text = elapsedText(elapsedAt(a, env.mono), env.locale);
-  time.textContent = text === null ? t.unknown : a.kind === 'lower-bound' ? (resolveLanguage('auto', env.locale) === 'ru' ? `не менее ${text}` : `at least ${text}`) : text;
+  const lowerBound: Record<InterfaceLanguage, (value: string) => string> = {
+    en: value => `at least ${value}`, ru: value => `не менее ${value}`, 'zh-CN': value => `至少 ${value}`,
+  };
+  time.textContent = text === null ? t.unknown : a.kind === 'lower-bound' ? lowerBound[resolveLanguage('auto', env.locale)](text) : text;
   wrap.append(el('span', 'ap-muted', `${t.waiting} `), time);
   return wrap;
 }

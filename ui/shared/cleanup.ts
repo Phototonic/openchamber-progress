@@ -19,8 +19,17 @@ const ru: typeof en = {
   delete: 'Сохранённый план удалён. Исходный файл не изменён.',
 };
 export type CleanupMessage = { kind: CleanupAction } | { kind: 'error'; code: string };
+const zh: typeof en = {
+  changed: '此计划已发生变化或不再可用。正在刷新进度；请检查后再试。',
+  busy: '进度存储正忙，尚未确认任何操作。正在刷新，请稍后重试。',
+  uncertain: '无法确认操作结果，请求可能已到达服务。正在刷新进度；请检查计划后再试。',
+  archive: '计划已归档。可在全屏页面的“已归档计划”中查找。',
+  restore: '计划已恢复，仍保持已结束状态，历史记录不变。',
+  delete: '存储中的计划已删除，原始文件未被更改。',
+};
 export function cleanupFeedback(message: CleanupMessage, locale = 'en') {
-  return message.kind === 'error' ? cleanupError(message.code, locale) : (resolveLanguage('auto', locale) === 'ru' ? ru : en)[message.kind];
+  const language = resolveLanguage('auto', locale);
+  return message.kind === 'error' ? cleanupError(message.code, locale) : (language === 'ru' ? ru : language === 'zh-CN' ? zh : en)[message.kind];
 }
 
 export interface CleanupTarget {
@@ -43,7 +52,8 @@ export function cleanupEligible(action: CleanupAction, plan: PlanView) {
   return plan.lifecycle === 'completed' && (action === 'delete' || (action === 'restore') === (plan.cleanup?.state === 'archived'));
 }
 export function cleanupError(code: string, locale = 'en') {
-  const text = resolveLanguage('auto', locale) === 'ru' ? ru : en;
+  const language = resolveLanguage('auto', locale);
+  const text = language === 'ru' ? ru : language === 'zh-CN' ? zh : en;
   if (['conflict', 'closed', 'operation-reused', 'not-found'].includes(code)) return text.changed;
   if (code === 'busy') return text.busy;
   return text.uncertain;

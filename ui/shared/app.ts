@@ -58,7 +58,15 @@ const APP_RU: typeof APP_EN = {
   removedFocus: (tasks) => `Задача удалена, поэтому фокус перемещён ${tasks ? 'к задачам' : 'к её группе'}.`,
   focusSuffix: (notice, name) => `${notice}; фокус перемещён к разделу «${name}».`,
 };
-const APP_COPY = { en: APP_EN, ru: APP_RU };
+const APP_ZH: typeof APP_EN = {
+  loading: '正在加载完整计划…', copying: '正在复制…', copied: '已复制 Markdown。',
+  copyFailed: '剪贴板不可用，请选择并复制下方预览文本。',
+  sessionFailed: '无法在此处打开该会话。',
+  nearbyFocus: '原先所在行已不再显示，焦点已移到附近的行。',
+  removedFocus: (tasks) => `原来所在的任务已移除，焦点已移至${tasks ? '任务' : '其分组'}。`,
+  focusSuffix: (notice, name) => `${notice}，因此焦点已移至${name}。`,
+};
+const APP_COPY: Record<InterfaceLanguage, typeof APP_EN> = { en: APP_EN, ru: APP_RU, 'zh-CN': APP_ZH };
 
 export const REFRESH_MS = 3000;
 export const RETRY_MS = 8000;

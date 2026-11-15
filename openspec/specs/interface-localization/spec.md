@@ -8,7 +8,11 @@ Give users one language choice for the Agent Progress interface and its generate
 
 ### Requirement: Language choice and following the OpenChamber language
 
-The extension SHALL offer three modes: follow the OpenChamber language, English and Russian. Without a saved choice, automatic mode SHALL be used. The Russian translation SHALL be selected for Russian and its regional variants in OpenChamber, and English for English and all other unsupported or invalid language tags. An explicit choice SHALL take precedence over the OpenChamber language.
+The extension SHALL offer four modes: follow the OpenChamber language, English, Russian and Simplified Chinese. Without a saved choice, automatic mode SHALL be used. The Russian translation SHALL be selected for Russian and its regional variants in OpenChamber, the Simplified Chinese translation for Chinese locales including regional variants (one Chinese catalog is shipped), and English for English and all other unsupported or invalid language tags. An explicit choice SHALL take precedence over the OpenChamber language.
+
+#### Scenario: Automatic mode for a Chinese locale
+- **WHEN** the saved choice is absent or automatic and OpenChamber reports the language `zh-CN` or `zh-SG`
+- **THEN** the interface and generated summaries use Simplified Chinese
 
 #### Scenario: Automatic mode for a regional variant
 - **WHEN** the saved choice is absent or automatic and OpenChamber reports the language `ru-RU`
@@ -25,7 +29,7 @@ The extension SHALL offer three modes: follow the OpenChamber language, English 
 
 ### Requirement: Accessible switch outside plan content
 
-The side panel and full-screen page SHALL show a compact Language / "Язык" control in the lower utility area next to Setup and Details when those sections are present. The control SHALL remain available without a plan, before setup is complete and during loading errors. Work Status SHALL apply the shared choice without its own switch. The names English and "Русский" SHALL be displayed in their own languages, without flags.
+The side panel and full-screen page SHALL show a compact Language / "Язык" / "语言" control in the lower utility area next to Setup and Details when those sections are present. The control SHALL remain available without a plan, before setup is complete and during loading errors. Work Status SHALL apply the shared choice without its own switch. The names English, "Русский" and "简体中文" SHALL be displayed in their own languages, without flags.
 
 #### Scenario: Extension not yet set up
 - **WHEN** the user opens the side panel or page before setup is complete
@@ -102,7 +106,12 @@ Open views SHALL reconcile their language with the shared saved setting without 
 
 ### Requirement: Complete translation of extension-owned interface text
 
-For English and Russian, the extension SHALL translate its own visible labels, states, warnings, confirmations, hints, errors and action-result messages, as well as accessible names and announcements for assistive technology. The meaning of recorded-progress terminology SHALL be preserved: task readiness is not permission to start, and observed session work does not prove task completion.
+For English, Russian and Simplified Chinese, the extension SHALL translate its own visible labels, states, warnings, confirmations, hints, errors and action-result messages, as well as accessible names and announcements for assistive technology. The meaning of recorded-progress terminology SHALL be preserved: task readiness is not permission to start, and observed session work does not prove task completion.
+
+#### Scenario: Simplified Chinese interface in all views
+- **WHEN** Simplified Chinese is effective and the user views tasks, the map, search, history, a document, setup or diagnostics
+- **THEN** extension-owned labels, explanations and messages are displayed in Simplified Chinese, including accessible names and announcements
+- **AND** the Chinese wording preserves the distinctions between reported work, readiness, observed activity and blocked tasks
 
 #### Scenario: Russian interface in all views
 - **WHEN** Russian is effective and the user views tasks, the map, search, history, a document, setup or diagnostics

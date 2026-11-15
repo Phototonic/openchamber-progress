@@ -12,10 +12,15 @@ import { blockedText, breadcrumb, narrowed, queryProblem, searchStatusText, type
 import { resolveLanguage, type InterfaceLanguage } from './i18n.ts';
 
 const EN = {
-  searchPlans: 'Search plans and tasks', searchTitles: 'Search titles and IDs', searchHint: 'Search titles and IDs', filters: 'Filters', close: 'Close', planStatus: 'Plan status', anyPlan: 'Any plan status', taskStatus: 'Task status', anyTask: 'Any task status', source: 'Recorded source', allSources: 'All recorded sources', unverified: 'unverified', unavailable: 'not available here', search: 'Search', constraints: 'Search constraints', clear: 'Clear search and filters', results: 'Search results', retry: 'Retry', removeProject: 'Remove project filter', removeWorktree: 'Remove worktree filter', searching: 'Searching recorded plans', noMatch: 'No plans or tasks match', uncertain: 'No matches in the plans and locations that could be checked', tryOther: 'Try other words, or remove a constraint. Filters and Clear search stay above.', noneYet: 'No matches found yet; more recorded plans remain unchecked.', previous: 'Previous results', next: 'Next results', busy: 'Searching…', refresh: 'Refresh search', more: 'Load more results', continue: 'Continue searching', help: 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).', apply: 'Plan status, task status and source apply when you search. Location choices apply right away.', pending: 'Not searched yet: these results are for the previous search. Press Search to update them.', unavailableService: 'Search is unavailable with this service version. The board below still lists plans as before.', allPlans: 'all recorded plans in this store', archived: 'archived plans only', current: 'current plans (archived plans excluded)', location: 'in the chosen project or worktree', sessionScope: 'where the chosen session is the owner, linked or a recorded contributor', scopeNote: 'Ordinary board list pages are not the search scope.', words: 'Words', sourceChip: 'Source', project: 'Project', worktree: 'Worktree', session: 'Session', remove: 'Remove', continued: 'Continued from the previous results', planMatch: 'The plan’s own title or ID matches', changed: 'Changed since found', openPlan: 'Open plan', showTask: 'Show task', inside: 'In', setup: 'unverified setup', noTasks: 'no counted tasks', exhausted: 'Every recorded plan in this scope was checked, as searched; reports may change, so this is not a live census.', partial: 'More recorded plans remain unchecked. Counts so far are not totals.', checking: 'Checking that these earlier results are still current…',
+  searchHint: 'Search titles and IDs',
+  searchPlans: 'Search plans and tasks', searchTitles: 'Search titles and IDs', filters: 'Filters', close: 'Close', planStatus: 'Plan status', anyPlan: 'Any plan status', taskStatus: 'Task status', anyTask: 'Any task status', source: 'Recorded source', allSources: 'All recorded sources', unverified: 'unverified', unavailable: 'not available here', search: 'Search', constraints: 'Search constraints', clear: 'Clear search and filters', results: 'Search results', retry: 'Retry', removeProject: 'Remove project filter', removeWorktree: 'Remove worktree filter', searching: 'Searching recorded plans', noMatch: 'No plans or tasks match', uncertain: 'No matches in the plans and locations that could be checked', tryOther: 'Try other words, or remove a constraint. Filters and Clear search stay above.', noneYet: 'No matches found yet; more recorded plans remain unchecked.', previous: 'Previous results', next: 'Next results', busy: 'Searching…', refresh: 'Refresh search', more: 'Load more results', continue: 'Continue searching', help: 'Every word must appear in the same plan’s or task’s own title or ID, in any order. Capitalization is ignored; accents are not (café and cafe differ).', apply: 'Plan status, task status and source apply when you search. Location choices apply right away.', pending: 'Not searched yet: these results are for the previous search. Press Search to update them.', unavailableService: 'Search is unavailable with this service version. The board below still lists plans as before.', allPlans: 'all recorded plans in this store', archived: 'archived plans only', current: 'current plans (archived plans excluded)', location: 'in the chosen project or worktree', sessionScope: 'where the chosen session is the owner, linked or a recorded contributor', scopeNote: 'Ordinary board list pages are not the search scope.', words: 'Words', sourceChip: 'Source', project: 'Project', worktree: 'Worktree', session: 'Session', remove: 'Remove', continued: 'Continued from the previous results', planMatch: 'The plan’s own title or ID matches', changed: 'Changed since found', openPlan: 'Open plan', showTask: 'Show task', inside: 'In', setup: 'unverified setup', noTasks: 'no counted tasks', exhausted: 'Every recorded plan in this scope was checked, as searched; reports may change, so this is not a live census.', partial: 'More recorded plans remain unchecked. Counts so far are not totals.', checking: 'Checking that these earlier results are still current…',
 };
 const COPY = { en: EN, ru: {
-  searchPlans: 'Поиск планов и задач', searchTitles: 'Поиск по названиям и ID', searchHint: 'Поиск', filters: 'Фильтры', close: 'Закрыть', planStatus: 'Статус плана', anyPlan: 'Любой статус плана', taskStatus: 'Статус задачи', anyTask: 'Любой статус задачи', source: 'Записанный источник', allSources: 'Все записанные источники', unverified: 'не подтверждён', unavailable: 'недоступно здесь', search: 'Найти', constraints: 'Условия поиска', clear: 'Очистить поиск и фильтры', results: 'Результаты поиска', retry: 'Повторить', removeProject: 'Убрать фильтр проекта', removeWorktree: 'Убрать фильтр рабочего дерева', searching: 'Поиск записанных планов', noMatch: 'Нет подходящих планов или задач', uncertain: 'Нет совпадений среди проверенных планов и расположений', tryOther: 'Попробуйте другие слова или уберите условие. Фильтры и очистка поиска остаются выше.', noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.', previous: 'Предыдущие результаты', next: 'Следующие результаты', busy: 'Поиск…', refresh: 'Обновить поиск', more: 'Загрузить ещё результаты', continue: 'Продолжить поиск', help: 'Каждое слово должно присутствовать в собственном названии или ID одного плана или задачи, в любом порядке. Регистр не учитывается; диакритика учитывается (café и cafe различаются).', apply: 'Статусы плана, задачи и источник применяются при поиске. Расположения применяются сразу.', pending: 'Поиск ещё не выполнен: это результаты предыдущего поиска. Нажмите «Найти» для обновления.', unavailableService: 'Эта версия сервиса не поддерживает поиск. Список планов ниже работает как прежде.', allPlans: 'всех записанных планов в этом хранилище', archived: 'только архивные планы', current: 'текущие планы (без архивных)', location: 'в выбранном проекте или рабочем дереве', sessionScope: 'где выбранная сессия — владелец, связанная сессия или записанный участник', scopeNote: 'Обычные страницы списка планов не ограничивают область поиска.', words: 'Слова', sourceChip: 'Источник', project: 'Проект', worktree: 'Рабочее дерево', session: 'Сессия', remove: 'Убрать', continued: 'Продолжение предыдущих результатов', planMatch: 'Совпадает собственное название или ID плана', changed: 'Изменилось после поиска', openPlan: 'Открыть план', showTask: 'Показать задачу', inside: 'В', setup: 'настройка не подтверждена', noTasks: 'нет учитываемых задач', exhausted: 'Все записанные планы этой области проверены на момент поиска; отчёты могут меняться, это не живая перепись.', partial: 'Ещё не все записанные планы проверены. Промежуточные числа не являются итоговыми.', checking: 'Проверка актуальности предыдущих результатов…',
+  searchHint: 'Поиск',
+  searchPlans: 'Поиск планов и задач', searchTitles: 'Поиск по названиям и ID', filters: 'Фильтры', close: 'Закрыть', planStatus: 'Статус плана', anyPlan: 'Любой статус плана', taskStatus: 'Статус задачи', anyTask: 'Любой статус задачи', source: 'Записанный источник', allSources: 'Все записанные источники', unverified: 'не подтверждён', unavailable: 'недоступно здесь', search: 'Найти', constraints: 'Условия поиска', clear: 'Очистить поиск и фильтры', results: 'Результаты поиска', retry: 'Повторить', removeProject: 'Убрать фильтр проекта', removeWorktree: 'Убрать фильтр рабочего дерева', searching: 'Поиск записанных планов', noMatch: 'Нет подходящих планов или задач', uncertain: 'Нет совпадений среди проверенных планов и расположений', tryOther: 'Попробуйте другие слова или уберите условие. Фильтры и очистка поиска остаются выше.', noneYet: 'Совпадений пока нет; ещё не все записанные планы проверены.', previous: 'Предыдущие результаты', next: 'Следующие результаты', busy: 'Поиск…', refresh: 'Обновить поиск', more: 'Загрузить ещё результаты', continue: 'Продолжить поиск', help: 'Каждое слово должно присутствовать в собственном названии или ID одного плана или задачи, в любом порядке. Регистр не учитывается; диакритика учитывается (café и cafe различаются).', apply: 'Статусы плана, задачи и источник применяются при поиске. Расположения применяются сразу.', pending: 'Поиск ещё не выполнен: это результаты предыдущего поиска. Нажмите «Найти» для обновления.', unavailableService: 'Эта версия сервиса не поддерживает поиск. Список планов ниже работает как прежде.', allPlans: 'всех записанных планов в этом хранилище', archived: 'только архивные планы', current: 'текущие планы (без архивных)', location: 'в выбранном проекте или рабочем дереве', sessionScope: 'где выбранная сессия — владелец, связанная сессия или записанный участник', scopeNote: 'Обычные страницы списка планов не ограничивают область поиска.', words: 'Слова', sourceChip: 'Источник', project: 'Проект', worktree: 'Рабочее дерево', session: 'Сессия', remove: 'Убрать', continued: 'Продолжение предыдущих результатов', planMatch: 'Совпадает собственное название или ID плана', changed: 'Изменилось после поиска', openPlan: 'Открыть план', showTask: 'Показать задачу', inside: 'В', setup: 'настройка не подтверждена', noTasks: 'нет учитываемых задач', exhausted: 'Все записанные планы этой области проверены на момент поиска; отчёты могут меняться, это не живая перепись.', partial: 'Ещё не все записанные планы проверены. Промежуточные числа не являются итоговыми.', checking: 'Проверка актуальности предыдущих результатов…',
+}, 'zh-CN': {
+  searchHint: '搜索',
+  searchPlans: '搜索计划和任务', searchTitles: '搜索标题和 ID', filters: '筛选', close: '关闭', planStatus: '计划状态', anyPlan: '任意计划状态', taskStatus: '任务状态', anyTask: '任意任务状态', source: '记录来源', allSources: '所有记录来源', unverified: '未验证', unavailable: '此处不可用', search: '搜索', constraints: '搜索条件', clear: '清除搜索和筛选', results: '搜索结果', retry: '重试', removeProject: '移除项目筛选', removeWorktree: '移除工作树筛选', searching: '正在搜索已记录计划', noMatch: '没有匹配的计划或任务', uncertain: '在可检查的计划和位置中没有匹配项', tryOther: '请尝试其他词语或移除条件。筛选和清除搜索仍位于上方。', noneYet: '尚未找到匹配项；仍有记录的计划尚未检查。', previous: '上一页结果', next: '下一页结果', busy: '正在搜索…', refresh: '刷新搜索', more: '加载更多结果', continue: '继续搜索', help: '每个词都必须出现在同一计划或任务自身的标题或 ID 中，顺序不限。不区分大小写，但区分重音（café 和 cafe 不同）。', apply: '计划状态、任务状态和来源在搜索时生效。位置选择立即生效。', pending: '尚未搜索：这些结果属于上一次搜索。按“搜索”更新结果。', unavailableService: '此服务版本不支持搜索。下方看板仍按原方式列出计划。', allPlans: '此存储中的所有已记录计划', archived: '仅限已归档计划', current: '当前计划（不含已归档计划）', location: '位于所选项目或工作树中', sessionScope: '且所选会话是所有者、关联会话或已记录的贡献者', scopeNote: '普通看板列表页面不是搜索范围。', words: '词语', sourceChip: '来源', project: '项目', worktree: '工作树', session: '会话', remove: '移除', continued: '接续前面的结果', planMatch: '计划自身的标题或 ID 匹配', changed: '找到后已更改', openPlan: '打开计划', showTask: '显示任务', inside: '位于', setup: '设置未验证', noTasks: '没有计数任务', exhausted: '已按搜索条件检查此范围内所有记录的计划；报告可能变化，因此这不是实时统计。', partial: '仍有记录的计划尚未检查。目前的数量不是总数。', checking: '正在检查这些较早的结果是否仍然有效…',
 } } satisfies Record<InterfaceLanguage, typeof EN>;
 
 export interface SearchDraft { lifecycle: Lifecycle | typeof ALL; status: ItemStatus | typeof ALL; source: string }
@@ -120,8 +125,9 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
   trigger.setAttribute('aria-expanded', String(h.open));
   trigger.setAttribute('aria-controls', 'ap-board-filters');
    trigger.append(icon('filter'), el('span', '', copy.filters));
-  if (h.active) { const n = el('span', 'ap-filters-count', language === 'ru' ? formatCount(h.active, language) : String(h.active)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
-   trigger.setAttribute('aria-label', h.active ? (language === 'ru' ? `Фильтры, активно: ${formatCount(h.active, language)}` : `Filters, ${h.active} active`) : copy.filters);
+  if (h.active) { const n = el('span', 'ap-filters-count', language === 'en' ? String(h.active) : formatCount(h.active, language)); n.setAttribute('aria-hidden', 'true'); trigger.append(n); }
+   const activeLabel = language === 'ru' ? `Фильтры, активно: ${formatCount(h.active, language)}` : language === 'zh-CN' ? `筛选，${formatCount(h.active, language)} 项生效` : `Filters, ${h.active} active`;
+   trigger.setAttribute('aria-label', h.active ? activeLabel : copy.filters);
   trigger.addEventListener('click', () => {
     // Outside pointer dismissal can hide this owner without rebuilding it, so
     // the live expanded state, not this paint's captured `h.open`, is current.
@@ -152,7 +158,7 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
     pick('search-task-status', copy.taskStatus, s.draft.status, [{ id: ALL, label: copy.anyTask }, ...STATUSES.map((t) => ({ id: t, label: statusLabel(t, language) }))], (v) => s.setDraft({ status: v as SearchDraft['status'] }));
     if (s.sources.length > 1 || s.draft.source !== ALL) {
       const known = s.sources.some((x) => x.id === s.draft.source);
-      pick('search-source', copy.source, s.draft.source, [{ id: ALL, label: copy.allSources }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : `${x.id} (${copy.unverified})` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: `${s.draft.source} (${copy.unavailable})` }])], (v) => s.setDraft({ source: v }));
+      pick('search-source', copy.source, s.draft.source, [{ id: ALL, label: copy.allSources }, ...s.sources.map((x) => ({ id: x.id, label: x.verified ? x.id : language === 'zh-CN' ? `${x.id}（${copy.unverified}）` : `${x.id} (${copy.unverified})` })), ...(known || s.draft.source === ALL ? [] : [{ id: s.draft.source, label: language === 'zh-CN' ? `${s.draft.source}（${copy.unavailable}）` : `${s.draft.source} (${copy.unavailable})` }])], (v) => s.setDraft({ source: v }));
     }
   }
   if (h.locations) grid.append(h.locations);
@@ -200,32 +206,34 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
   return box;
 }
 
-const sourceText = (c: Pick<SearchCriteria, 'source'>, language: InterfaceLanguage) => (c.source === ALL ? COPY[language].allPlans : language === 'ru' ? `планов, записанных источником ${c.source}` : `plans recorded by source ${c.source}`);
+const sourceText = (c: Pick<SearchCriteria, 'source'>, language: InterfaceLanguage) => (c.source === ALL ? COPY[language].allPlans : language === 'ru' ? `планов, записанных источником ${c.source}` : language === 'zh-CN' ? `来源 ${c.source} 记录的计划` : `plans recorded by source ${c.source}`);
 /** What is searched, in words; stays visible with zero, failed or unavailable results. */
 export function scopeText(c: SearchCriteria, locale = 'en') {
   const language = resolveLanguage('auto', locale), copy = COPY[language];
-  const parts = [`${language === 'ru' ? 'Поиск' : 'Searching'} ${sourceText(c, language)}`, c.archived ? copy.archived : copy.current];
+  const searching = language === 'ru' ? 'Поиск' : language === 'zh-CN' ? '搜索' : 'Searching';
+  const parts = [`${searching}${language === 'zh-CN' ? '' : ' '}${sourceText(c, language)}`, c.archived ? copy.archived : copy.current];
   if (narrowed(c)) parts.push(copy.location);
   if (c.session !== ALL) parts.push(copy.sessionScope);
-  return `${parts.join(', ')}. ${copy.scopeNote}`;
+  return `${parts.join(language === 'zh-CN' ? '，' : ', ')}${language === 'zh-CN' ? '。' : '.'}${language === 'zh-CN' ? '' : ' '}${copy.scopeNote}`;
 }
 export function scopeLine(c: SearchCriteria | null, archived: boolean, locale = 'en') {
   const language = resolveLanguage('auto', locale);
   const p = testid(el('p', 'ap-note ap-search-scope'), 'search-scope');
-  p.textContent = c ? scopeText(c, language) : language === 'ru' ? `Поиск проверяет ${archived ? 'все архивные планы' : 'все текущие планы'}, записанные в хранилище, а не только перечисленные ниже.` : `Search checks ${archived ? 'every archived plan' : 'every current plan'} recorded in this store, not only the plans listed below.`;
+  p.textContent = c ? scopeText(c, language) : language === 'ru' ? `Поиск проверяет ${archived ? 'все архивные планы' : 'все текущие планы'}, записанные в хранилище, а не только перечисленные ниже.` : language === 'zh-CN' ? `搜索检查此存储中${archived ? '所有已归档计划' : '所有当前计划'}，不限于下方列出的计划。` : `Search checks ${archived ? 'every archived plan' : 'every current plan'} recorded in this store, not only the plans listed below.`;
   return p;
 }
 
 export interface ChipHooks { remove: (kind: ChipKind) => void; clearAll: () => void }
 export function chipLabel(kind: ChipKind, c: SearchCriteria, locale = 'en') {
   const language = resolveLanguage('auto', locale), copy = COPY[language];
-  if (kind === 'q') return `${copy.words}: ${c.q.trim()}`;
-  if (kind === 'source') return `${copy.sourceChip}: ${c.source}`;
-  if (kind === 'lifecycle') return `${copy.planStatus}: ${lifecycleLabel(c.lifecycle as Lifecycle, language)}`;
-  if (kind === 'status') return `${copy.taskStatus}: ${statusLabel(c.status as ItemStatus, language)}`;
-  if (kind === 'project') return `${copy.project}: ${c.labels.project ?? c.project}`;
-  if (kind === 'worktree') return `${copy.worktree}: ${c.worktree.startsWith('root:') ? (language === 'ru' ? 'Основная рабочая копия' : 'Main checkout') : c.labels.worktree ?? c.worktree}`;
-  return `${copy.session}: ${c.labels.sessionGenerated ? sessionLabel(c.session, EMPTY_LIVE, language) : c.labels.session ?? c.session}`;
+  const sep = language === 'zh-CN' ? '：' : ': ';
+  if (kind === 'q') return `${copy.words}${sep}${c.q.trim()}`;
+  if (kind === 'source') return `${copy.sourceChip}${sep}${c.source}`;
+  if (kind === 'lifecycle') return `${copy.planStatus}${sep}${lifecycleLabel(c.lifecycle as Lifecycle, language)}`;
+  if (kind === 'status') return `${copy.taskStatus}${sep}${statusLabel(c.status as ItemStatus, language)}`;
+  if (kind === 'project') return `${copy.project}${sep}${c.labels.project ?? c.project}`;
+  if (kind === 'worktree') return `${copy.worktree}${sep}${c.worktree.startsWith('root:') ? (language === 'ru' ? 'Основная рабочая копия' : language === 'zh-CN' ? '主检出目录' : 'Main checkout') : c.labels.worktree ?? c.worktree}`;
+  return `${copy.session}${sep}${c.labels.sessionGenerated ? sessionLabel(c.session, EMPTY_LIVE, language) : c.labels.session ?? c.session}`;
 }
 export const chipsOf = (c: SearchCriteria): ChipKind[] => (['q', 'source', 'lifecycle', 'status', 'project', 'worktree', 'session'] as ChipKind[]).filter((k) => (k === 'q' ? c.q.trim() !== '' : c[k] !== ALL));
 
@@ -244,8 +252,8 @@ export function chipsBlock(c: SearchCriteria, unavailable: ReadonlySet<ChipKind>
     const text = chipLabel(kind, c, language);
     const x = el('span', 'ap-chip-x', '×');
     x.setAttribute('aria-hidden', 'true');
-    b.append(el('span', '', unavailable.has(kind) ? `${text} (${copy.unavailable})` : text), x);
-    b.setAttribute('aria-label', `${copy.remove} ${text}`);
+    b.append(el('span', '', unavailable.has(kind) ? (language === 'zh-CN' ? `${text}（${copy.unavailable}）` : `${text} (${copy.unavailable})`) : text), x);
+    b.setAttribute('aria-label', language === 'zh-CN' ? `${copy.remove}${text}` : `${copy.remove} ${text}`);
     b.addEventListener('click', () => h.remove(kind));
     li.append(b);
     list.append(li);
@@ -286,30 +294,30 @@ export function countsBlock(v: SearchViewState, language: InterfaceLanguage = 'e
   const box = testid(el('div', 'ap-search-counts'), 'search-counts');
   const final = v.exhausted && v.countsCurrent && !v.coverage.gapped && !v.stop;
   Object.assign(box.dataset, { matchedPlans: String(v.counts.matchedPlans), matchingTasks: String(v.counts.matchingTasks), shown: String(v.page.hits.length), context: String(v.page.contextRows), final: String(final), current: String(v.countsCurrent) });
-  const found = language === 'ru' ? `Планов: ${formatCount(v.counts.matchedPlans, language)} · подходящих задач: ${formatCount(v.counts.matchingTasks, language)}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
-  const lead = language === 'ru' ? `${!v.countsCurrent ? 'Подсчитано до изменения результатов' : final ? 'Найдено' : v.exhausted ? 'Найдено в проверенных планах' : 'Пока найдено'}: ${found}` : !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
+  const found = language === 'ru' ? `Планов: ${formatCount(v.counts.matchedPlans, language)} · подходящих задач: ${formatCount(v.counts.matchingTasks, language)}` : language === 'zh-CN' ? `计划：${formatCount(v.counts.matchedPlans, language)} · 匹配任务：${formatCount(v.counts.matchingTasks, language)}` : `${plansText(v.counts.matchedPlans)} · ${tasksText(v.counts.matchingTasks)}`;
+  const lead = language === 'ru' ? `${!v.countsCurrent ? 'Подсчитано до изменения результатов' : final ? 'Найдено' : v.exhausted ? 'Найдено в проверенных планах' : 'Пока найдено'}: ${found}` : language === 'zh-CN' ? `${!v.countsCurrent ? '结果更改前统计' : final ? '已找到' : v.exhausted ? '在可检查的计划中找到' : '目前找到'}：${found}` : !v.countsCurrent ? `Counted before results changed: ${found}` : final ? `Found: ${found}` : v.exhausted ? `Found in the plans that could be checked: ${found}` : `Found so far: ${found}`;
   box.append(el('p', 'ap-search-found', lead));
   const shown = v.page.hits.length;
-  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${formatCount(shown, language)}, страница ${formatCount(v.page.number, language)}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${formatCount(v.page.contextRows, language)}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
+  box.append(el('p', 'ap-note', language === 'ru' ? `Показано результатов: ${formatCount(shown, language)}, страница ${formatCount(v.page.number, language)}${v.page.contextRows ? ` · строк групп или родителей для контекста: ${formatCount(v.page.contextRows, language)}` : ''}. Числа выполненных и всех задач ниже всегда относятся ко всему плану.` : language === 'zh-CN' ? `第 ${formatCount(v.page.number, language)} 页显示 ${formatCount(shown, language)} 条结果${v.page.contextRows ? ` · ${formatCount(v.page.contextRows, language)} 个分组或父级行用于提供上下文` : ''}。下方计划的完成数/总数始终涵盖整个计划。` : `Showing ${plural(shown, 'result', 'results')} on page ${v.page.number}${v.page.contextRows ? ` · ${plural(v.page.contextRows, 'group or parent row', 'group or parent rows')} for context` : ''}. Plan done/total counts below always cover the whole plan.`));
   return box;
 }
 
 /** Record-scan completeness, skipped records, location interpretation and change qualifiers, kept apart. */
 export function coverageBlock(v: SearchViewState, language: InterfaceLanguage = 'en') {
-  const copy = COPY[language], ru = language === 'ru';
+  const copy = COPY[language], ru = language === 'ru', zh = language === 'zh-CN';
   const box = testid(el('div', 'ap-note ap-search-coverage'), 'search-coverage');
   box.dataset.state = v.exhausted ? (v.coverage.gapped ? 'gapped' : 'exhausted') : 'partial';
   if (v.coverage.gapped) box.dataset.gapped = 'true';
   const lines: string[] = [];
   lines.push(v.exhausted ? copy.exhausted : copy.partial);
-  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${formatCount(v.coverage.skippedRecords, language)})` : ''}, поэтому поиск неполон.` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
+  if (v.coverage.gapped) lines.push(ru ? `Некоторые записанные планы не удалось прочитать (нечитаемы или слишком велики), и они пропущены${v.coverage.skippedRecords ? ` (пока: ${formatCount(v.coverage.skippedRecords, language)})` : ''}, поэтому поиск неполон.` : zh ? `部分记录的计划无法读取（不可读或过大）而被跳过${v.coverage.skippedRecords ? `（目前 ${formatCount(v.coverage.skippedRecords, language)} 个）` : ''}，因此搜索不完整。` : `Some recorded plans couldn’t be read (unreadable or too large) and were skipped${v.coverage.skippedRecords ? ` (${v.coverage.skippedRecords} so far)` : ''}, so this search is incomplete.`);
   if (narrowed(v.criteria)) {
     // "Searched all" only once the scan is exhausted; a partial scan qualifies locations alone.
     const lead = v.exhausted ? 'Searched all recorded plans; project' : 'Project';
-    lines.push(ru ? `${v.exhausted ? 'Проверены все записанные планы; принадлежность' : 'Принадлежность'} к проекту определяется только известными этому окну расположениями${v.discoveryIncomplete ? ', а некоторые здесь ещё неизвестны' : ''}.` : `${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
+    lines.push(ru ? `${v.exhausted ? 'Проверены все записанные планы; принадлежность' : 'Принадлежность'} к проекту определяется только известными этому окну расположениями${v.discoveryIncomplete ? ', а некоторые здесь ещё неизвестны' : ''}.` : zh ? `${v.exhausted ? '已搜索所有记录的计划；' : ''}项目归属仅限此窗口已知的位置${v.discoveryIncomplete ? '，且此处仍有部分位置未知' : ''}。` : `${lead} membership is limited to locations this window knows${v.discoveryIncomplete ? ', and some are still unknown here' : ''}.`);
   }
-  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(v.removed, language)}.` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
-  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${formatCount(v.changedKeys, language)}.` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
+  if (v.removed) lines.push(ru ? `Результатов удалено из выдачи из-за архивации, восстановления или удаления планов: ${formatCount(v.removed, language)}.` : zh ? `${formatCount(v.removed, language)} 条结果因所属计划已归档、恢复或删除而移除。` : `${plural(v.removed, 'result was', 'results were')} removed because ${v.removed === 1 ? 'its plan was' : 'their plans were'} archived, restored or deleted.`);
+  if (v.changedKeys) lines.push(ru ? `Планов изменилось после поиска: ${formatCount(v.changedKeys, language)}.` : zh ? `${formatCount(v.changedKeys, language)} 个计划在找到后发生了变化。` : `${plural(v.changedKeys, 'plan has', 'plans have')} changed since ${v.changedKeys === 1 ? 'it was' : 'they were'} found.`);
   if (!v.page.checked) lines.push(copy.checking);
   for (const line of lines) box.append(el('p', '', line));
   return box;
@@ -322,17 +330,18 @@ export interface ResultHooks {
 }
 
 const hitMeta = (plan: SearchPlanView, env: Env) => {
-  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru';
+  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru', zh = language === 'zh-CN';
   const parts = [plan.id, planLocation({ ...plan, working: [], document: { state: 'unavailable', checklistSynchronized: false, currentFile: 'not-rechecked' } }, env.live, env.boundSource, language)];
   if (plan.lifecycle !== 'active') parts.push(lifecycleLabel(plan.lifecycle, language));
-  if (env.boundSource === null || plan.sourceId !== env.boundSource) parts.push(`${ru ? 'источник' : 'source'} ${plan.sourceId}`);
+  if (env.boundSource === null || plan.sourceId !== env.boundSource) parts.push(`${ru ? 'источник' : zh ? '来源' : 'source'} ${plan.sourceId}`);
   if (!plan.sourceVerified) parts.push(copy.setup);
-  parts.push(plan.counts.total ? `${ru ? formatCount(plan.counts.done, language) : plan.counts.done}/${ru ? formatCount(plan.counts.total, language) : plan.counts.total} ${ru ? 'выполнено (весь план)' : 'done (whole plan)'}` : copy.noTasks);
+  const numbers = language === 'en' ? `${plan.counts.done}/${plan.counts.total}` : `${formatCount(plan.counts.done, language)}/${formatCount(plan.counts.total, language)}`;
+  parts.push(plan.counts.total ? `${numbers} ${ru ? 'выполнено (весь план)' : zh ? '已完成（整个计划）' : 'done (whole plan)'}` : copy.noTasks);
   return parts.join(' · ');
 };
 
 function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
-  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru';
+  const language = resolveLanguage('auto', env.locale), copy = COPY[language], ru = language === 'ru', zh = language === 'zh-CN';
   const section = testid(el('section', 'ap-hit-group'), `search-group-${g.plan.sourceId}/${g.plan.id}`);
   Object.assign(section.dataset, { source: g.plan.sourceId, plan: g.plan.id });
   if (g.changed) section.dataset.changed = 'true';
@@ -351,7 +360,7 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
   section.append(head);
   if (g.hits.length) {
     const list = el('ul', 'ap-hit-tasks');
-    list.setAttribute('aria-label', ru ? `Подходящие задачи в ${g.plan.title}` : `Matching tasks in ${g.plan.title}`);
+    list.setAttribute('aria-label', ru ? `Подходящие задачи в ${g.plan.title}` : zh ? `${g.plan.title} 中的匹配任务` : `Matching tasks in ${g.plan.title}`);
     for (const hit of g.hits) {
       const t = hit.task!;
       const li = el('li');
@@ -369,13 +378,13 @@ function groupBlock(g: SearchGroup, env: Env, h: ResultHooks) {
       if (crumb.head.length) {
         const c = testid(el('span', 'ap-hit-context'), 'search-context');
         c.dataset.omitted = String(crumb.omitted);
-        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [ru ? `… ещё: ${formatCount(crumb.omitted, language)}` : `… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
-        c.textContent = `${copy.inside}: ${parts.join(' › ')}`;
+        const parts = [...crumb.head.map((a) => a.title), ...(crumb.omitted ? [ru ? `… ещё: ${formatCount(crumb.omitted, language)}` : zh ? `… 另有 ${formatCount(crumb.omitted, language)} 项` : `… ${crumb.omitted} more`] : []), ...crumb.tail.map((a) => a.title)];
+        c.textContent = `${copy.inside}${zh ? '：' : ': '}${parts.join(' › ')}`;
         body.append(c);
       }
       line.append(g1, body);
       b.append(line);
-      b.setAttribute('aria-label', `${copy.showTask}: ${t.title}, ${statusLabel(t.status, language)}, ${ru ? 'в плане' : 'in plan'} ${g.plan.title}`);
+      b.setAttribute('aria-label', zh ? `${copy.showTask}：${t.title}，${statusLabel(t.status, language)}，位于计划 ${g.plan.title}` : `${copy.showTask}: ${t.title}, ${statusLabel(t.status, language)}, ${ru ? 'в плане' : 'in plan'} ${g.plan.title}`);
       b.addEventListener('click', () => h.openTask(hit));
       li.append(b);
       list.append(li);
@@ -443,7 +452,7 @@ export function resultsBlock(v: SearchViewState, env: Env, h: ResultHooks & Acti
     actions.append(slot);
   } else if (v.stop === 'failed') {
     const copy = failureCopy(v.failure?.kind ?? 'unavailable', language);
-    actions.append(testid(el('p', 'ap-doc-warn', language === 'ru' ? `Поиск остановлен: ${copy.title}. Найденные результаты показаны; ошибка не считалась отсутствием совпадений.` : `Searching stopped: ${copy.title}. Results so far are shown; nothing was treated as no match.`), 'search-failed'));
+    actions.append(testid(el('p', 'ap-doc-warn', language === 'ru' ? `Поиск остановлен: ${copy.title}. Найденные результаты показаны; ошибка не считалась отсутствием совпадений.` : language === 'zh-CN' ? `搜索已停止：${copy.title}。目前的结果仍然显示；没有将任何内容视为不匹配。` : `Searching stopped: ${copy.title}. Results so far are shown; nothing was treated as no match.`), 'search-failed'));
     button(actions, 'search-retry', COPY[language].retry, h.retry);
   } else if (v.stop === 'conflict' || v.stop === 'changed' || v.stop === 'membership' || v.stop === 'retired' || v.stop === 'identity') {
     button(actions, 'search-refresh', copy.refresh, h.refresh);

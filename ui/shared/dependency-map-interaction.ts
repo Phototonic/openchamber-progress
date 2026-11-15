@@ -37,6 +37,20 @@ const ANNOUNCEMENTS = {
     selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}. ${state}. Прямые записанные зависимости: ${m.up} ${up}; прямые зависимые задачи: ${m.down} ${down}.${m.hidden ? ` Фильтрами скрыто: ${m.hidden} ${hidden}.` : ''}`,
     tasks: ['задача', 'задачи', 'задач', 'задачи'], prerequisites: ['зависимость', 'зависимости', 'зависимостей', 'зависимости'], dependents: ['задача', 'задачи', 'задач', 'задачи'], relationships: ['связь', 'связи', 'связей', 'связи'],
   },
+  'zh-CN': {
+    'selected-removed': '所选任务已无记录。已移至下一个可用的依赖图目标。',
+    'focused-removed': '焦点所在任务已无记录。已移至下一个可用的依赖图目标。',
+    'list-removed': '列表中的该任务在此依赖图中已无记录。',
+    current: '已聚焦当前报告中的工作；当前筛选条件不变。',
+    cleared: '已清除选择。',
+    filters: (n: number, tasks: string) => `显示 ${formatCount(n, 'zh-CN')} ${tasks}。布局不变。`,
+    fit: (n: number, tasks: string) => `全部适配：${formatCount(n, 'zh-CN')} ${tasks}可见；当前筛选条件不变。`,
+    working: '报告为进行中', blocked: '明确报告为受阻', ready: '已就绪，仅依据已记录的前置任务',
+    skipped: '等待已跳过的已记录前置任务', waiting: '等待已记录的前置任务',
+    reported: { pending: '报告为未开始', working: '报告为进行中', blocked: '报告为受阻', done: '报告为已完成', skipped: '报告为已跳过' },
+    selection: (m: Extract<MapAnnouncement, { kind: 'selection' }>, state: string, up: string, down: string, hidden: string) => `${m.title}。${state}。${m.up} 个直接${up}；${m.down} 个直接${down}。${m.hidden ? ` ${m.hidden} 个${hidden}被筛选条件隐藏。` : ''}`,
+    tasks: ['个任务', '个任务', '个任务', '个任务'], prerequisites: ['前置任务', '前置任务', '前置任务', '前置任务'], dependents: ['后续任务', '后续任务', '后续任务', '后续任务'], relationships: ['关系', '关系', '关系', '关系'],
+  },
 } satisfies Record<InterfaceLanguage, AnnouncementCatalog>;
 // Explicit shape keeps both local catalogs complete without fixing their literal values.
 type AnnouncementCatalog = {

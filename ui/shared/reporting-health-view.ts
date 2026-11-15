@@ -64,8 +64,44 @@ const ru: typeof en = {
     unknown:'Неизвестно; у проверки нет подтверждающего наблюдения.',
   },
 };
+const zh: typeof en = {
+  close:'关闭报告健康状态', title:'报告健康状态', checked:'上次明确检查 · 仅记录观察结果', checking:'正在检查报告观察结果…',
+  meanings:'这些检查的含义', limits:'服务平台和会话工具的可用性未知。这些检查不能证明最近有报告或任务完成。',
+  serviceUnavailable:'无法检查报告服务。请检查宿主连接和设置诊断，然后重试。',
+  support:'支持摘要', preview:'支持摘要预览', copy:'复制支持摘要', refresh:'刷新观察结果',
+  labels:{service:'服务',installation:'交付设置',loaded:'加载观察',capture:'存储的采集控制',report:'所选报告',scope:'来源',viewer:'视图'},
+  short:{observed:'有响应',installed:'已安装','not-configured':'未配置','not-observed':'未确认','matching-observation':'观察到匹配','reload-required':'需要重新加载',on:'开启',off:'关闭','recorded-revision':'已记录','not-checked':'未检查','selected-source':'与所选内容匹配','source-mismatch':'来源不同','association-unknown':'未验证','selected-report':'修订匹配','revision-changed':'需要刷新',stale:'可能过期',unknown:'未知',unavailable:'不可用','context-changed':'需要重新检查',busy:'繁忙',damaged:'无法读取',incompatible:'不兼容','store-unavailable':'不可用','not-approved':'需要授权',paused:'已暂停'},
+  explain:{
+    observed:'服务响应了此次明确的设置检查。这不能证明最近有报告。',
+    busy:'进度存储正忙，请稍后重试。',
+    damaged:'报告显示存储受损，无法读取。请保留其文件并查看设置诊断。',
+    incompatible:'存储格式不兼容，请检查已安装的扩展版本。',
+    'store-unavailable':'无法打开配置的存储。请检查设置并恢复访问后重试。',
+    'not-approved':'尚未授予服务访问权限。请在宿主中检查扩展的服务权限。',
+    paused:'扩展已暂停，请先在宿主中恢复再检查。',
+    'association-unknown':'此设置观察结果无法关联到视图来源，未尝试验证报告。',
+    'source-mismatch':'所选计划与已配置的 companion 来源不同。请选择配置来源的计划以检查其报告。',
+    'selected-source':'所选报告属于已配置的来源，并包含在当前视图选择中。',
+    'not-configured':'未观察到已配置的安装。请打开设置检查文件夹。',
+    installed:'已观察到 companion 安装。',
+    'not-observed':'无法确认已安装的 companion，请检查设置诊断。',
+    'reload-required':'所选 companion 文件没有匹配的加载观察记录。方便时重启 OpenCode；此检查不会重启它。',
+    'matching-observation':'已记录匹配的 companion 加载。其他运行中的实例可能仍使用旧文件。',
+    on:'采集已开启，智能体仍需明确报告。',
+    off:'采集已关闭，现有历史仍可读取；请在设置中启用采集。',
+    'not-checked':'尚未检查所选报告。请选择计划，然后打开报告健康状态。',
+    'recorded-revision':'已读取所选计划的存储修订。这不能证明最近有报告或任务完成。',
+    unavailable:'无法读取所选报告。请刷新看板并检查服务诊断。',
+    'context-changed':'无法匹配设置与视图身份，请刷新看板后重新检查。',
+    stale:'视图刷新失败，显示的数据可能已过期。',
+    'selected-report':'所选报告修订与视图匹配。这不能证明用户已审阅。',
+    'revision-changed':'存储的修订与视图不同，请刷新看板。',
+    unknown:'未知；此检查没有支持该结果的观察记录。',
+  },
+};
 export function reportingHealthBlock(p:ReturnType<ReportingHealth['claim']>, locale='en'){
-  const text=resolveLanguage('auto',locale)==='ru'?ru:en;
+  const language=resolveLanguage('auto',locale);
+  const text=language==='ru'?ru:language==='zh-CN'?zh:en;
   const box=testid(el('section','ap-health'),'reporting-health');
   button(box,'reporting-health-toggle',p.open?text.close:text.title,p.toggle,'ghost');
   box.querySelector('button')?.setAttribute('aria-expanded',String(p.open));
