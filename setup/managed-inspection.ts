@@ -12,6 +12,10 @@ import {SetupError,discoverMigrationPaths,migrationEvidence,validateMigrationRem
 import {migrationFile,readMigration,readManagedStepJournal,readRemovalReceipt,managedJournalPaths,type MigrationRecord} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,managedTargetDigest,type ManagedStepJournal,type ManagedPathClaim} from './managed-step-journal.ts';
 import {ManagedStepFailure} from './managed-diagnostic.ts';
+import {MANAGED_FRESH_INSPECTION_STEPS,managedFreshPlan,type ManagedFreshInspection,type ManagedFreshStepProgress} from '../shared/managed-steps.ts';
+import type {ManagedFreshReview} from '../shared/progress.ts';
+import {readManagedFreshStepJournal} from './managed-migration.ts';
+import {managedFreshJournalProgress,type ManagedFreshStepJournal} from './managed-step-journal.ts';
 
 /** Private supervisor/worker state. NEVER accept this object from an HTTP body.
  * Paths and hashes are discovery claims only, not reusable security verdicts. */
@@ -215,4 +219,163 @@ export function inspectManagedStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:
     session.stage++;session.cursor=randomUUID();
     return {session,progress:session.operation?managedJournalProgress(session.operation):null,inspection:{state:'incomplete',stage,cursor:session.cursor}};
   });}catch(error){throw new ManagedStepFailure(error,stage,known);}
+}
+
+export interface ManagedFreshInspectionSession {
+  family:2;
+  nonce:string;
+  cursor:string;
+  stage:number;
+  storeRoot:string;
+  explicitStoreRoot?:true;
+  roots:{configRoot:string;dataRoot:string};
+  selection:ManagedPathClaim;
+  record:ManagedPathClaim;
+  operation?:ManagedFreshStepJournal;
+  candidate?:ManagedFreshStepJournal;
+  review?:ManagedFreshReview;
+}
+export interface ManagedFreshInspectionResult {
+  inspection:ManagedFreshInspection;
+  progress:ManagedFreshStepProgress|null;
+  session:ManagedFreshInspectionSession;
+}
+
+/** Bounded native-object observation, not a hash of an arbitrarily large DB. */
+export function managedFreshObjectClaim(file:string,directory=false):ManagedPathClaim {
+  managedPath(file,true);const s=lstatSync(file,{bigint:true,throwIfNoEntry:false});
+  if(!s)return {path:file,kind:'absent',object:null,digest:null};
+  need(!s.isSymbolicLink()&&(directory?s.isDirectory():s.isFile()&&s.nlink===1n)&&privatePaths([file]),'managed-migration-conflict');
+  return {path:file,kind:directory?'directory':'file',object:{device:String(s.dev),inode:String(s.ino),birthNs:String(s.birthtimeNs)},digest:null};
+}
+function freshPaths(s:ManagedFreshInspectionSession) {
+  return [...basePaths(s.roots),s.storeRoot,path.join(s.storeRoot,'progress.sqlite'),
+    ...['-journal','-wal','-shm'].map(x=>path.join(s.storeRoot,'progress.sqlite')+x),
+    path.join(s.roots.configRoot,'plugins','agent-progress'),...(s.candidate?managedJournalPaths(s.candidate):[])];
+}
+function freshDiscovery(env:NodeJS.ProcessEnv,s:ManagedFreshInspectionSession) {
+  need(canonical(managedSourceRoots(env))===canonical(s.roots));
+  for(const root of Object.values(s.roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');
+  need(canonical(claim(container(env)))===canonical(s.selection));
+  need(canonical(claim(migrationFile(env)))===canonical(s.record));
+  const legacy=managedPath(path.join(s.roots.configRoot,'plugins','agent-progress'),true);
+  need(!lstatSync(legacy,{throwIfNoEntry:false}),'managed-migration-required');
+}
+/** Fresh read-only Store observation; missing storage is allowed ONLY before its
+ * completion. Exact initialization can reconcile from the retained creation intent. */
+export function observeManagedFreshStore(j:ManagedFreshStepJournal):ManagedCaptureObservation {
+  const m=j.migration,f=m.fresh,dir=managedFreshObjectClaim(path.dirname(j.database),true),db=managedFreshObjectClaim(j.database);
+  const sidecars=f.sidecars.map(c=>managedFreshObjectClaim(c.path));
+  const expectedDir=m.created.directory??f.directory,expectedDb=m.created.database??f.database;
+  need(canonical(dir)===canonical(expectedDir),'managed-migration-conflict');
+  if(db.kind==='absent'){
+    need(expectedDb.kind==='absent'&&sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
+    if(dir.kind==='directory')need(readdirSync(dir.path).length===0,'foreign-files');
+    return {state:'unknown',observedAt:null};
+  }
+  const initialized=expectedDb.kind==='absent';
+  if(initialized)need(m.intent?.step.name==='create-store','managed-migration-conflict');
+  else need(canonical(db.object)===canonical(expectedDb.object),'managed-migration-conflict');
+  const store=new Store(j.database,{readOnly:true});
+  try{
+    store.subagentRunStorage();const e=store.list({limit:1});need(e.storeId===j.storeId,'managed-source-conflict');
+    const matching=e.sources.filter(s=>s.id===j.source.id||s.configRoot===j.source.configRoot&&s.dataRoot===j.source.dataRoot);
+    need(matching.length<=1&&matching.every(s=>canonical(s)===canonical(j.source)),'managed-source-conflict');
+    const completed=m.plan.findIndex(s=>s.name==='register-source'),last=m.plan.findIndex(s=>canonical(s)===canonical(m.lastCompleted));
+    const registered=f.sourceMode==='reuse'||completed>=0&&last>=completed;
+    if(registered)need(matching.length===1,'managed-source-conflict');
+    else if(matching.length)need(m.intent?.step.name==='register-source','managed-source-conflict');
+    if(f.storeMode==='create'){
+      need(e.sources.length===matching.length,'managed-source-conflict');
+      if(initialized)need(e.sources.length===0&&!e.captureEnabled,'managed-migration-conflict');
+    }
+    return {state:e.captureEnabled?'on':'off',observedAt:new Date().toISOString()};
+  }finally{store.close();}
+}
+function freshReview(s:ManagedFreshInspectionSession,observed:ManagedCaptureObservation):ManagedFreshReview {
+  const j=s.candidate!,m=j.migration,f=m.fresh;
+  const expected=digest(canonical({nonce:s.nonce,planKind:'fresh',targetDigest:managedTargetDigest(j),planDigest:m.consent.planDigest,
+    selection:s.selection,record:s.record,operation:s.operation??null,capture:observed.state}));
+  return {expected,planKind:'fresh',targets:{...s.roots,storeRoot:s.storeRoot},storeId:j.storeId,sourceId:j.source.id,
+    storeMode:f.storeMode,sourceMode:f.sourceMode,capturePolicy:f.capturePolicy,packageVersion:m.expectation.version,capture:observed,plan:structuredClone(m.plan)};
+}
+export function validateManagedFreshInspectionReview(env:NodeJS.ProcessEnv,payload:Payload,s:ManagedFreshInspectionSession) {
+  return platformSecurityScope(()=>{
+    need(s.family===2&&s.stage===MANAGED_FRESH_INSPECTION_STEPS.length&&s.review&&s.candidate,'managed-inspection-expired');
+    batch(freshPaths(s));freshDiscovery(env,s);
+    const j=s.candidate;
+    need(canonical(j.migration.expectation)===canonical(expectation(j,payload)));
+    if(s.operation)need(canonical(readManagedFreshStepJournal(env))===canonical(s.operation));
+    const observed=observeManagedFreshStore(j),review=freshReview(s,observed);
+    need(review.expected===s.review.expected);
+    return {candidate:structuredClone(j),operation:s.operation&&structuredClone(s.operation),capture:observed,review};
+  });
+}
+
+/** Fresh pages share the existing inspection owner, private cursor transport and
+ * review nonce rules. No filesystem/DB/source/binding write occurs here. */
+export function inspectManagedFreshStep(env:NodeJS.ProcessEnv,payload:Payload,prior?:ManagedFreshInspectionSession,storeRoot?:string):ManagedFreshInspectionResult {
+  return platformSecurityScope(()=>{
+    let s:ManagedFreshInspectionSession;
+    if(!prior){
+      const roots=managedSourceRoots(env),selected=storeRoot??path.join(roots.dataRoot,'openchamber-progress');
+      batch([...basePaths(roots),selected]);const target=managedPath(selected,true);
+      need(![roots.configRoot,roots.dataRoot,path.join(roots.dataRoot,'agent-progress-managed')].includes(target),'managed-selection-conflict');
+      for(const root of Object.values(roots))need(lstatSync(root).isDirectory()&&isOwned(root),'path-unverified');
+      s={family:2,nonce:randomUUID(),cursor:randomUUID(),stage:1,roots,storeRoot:target,...(storeRoot!==undefined?{explicitStoreRoot:true as const}:{}),selection:claim(container(env)),record:claim(migrationFile(env))};
+      return {session:s,progress:null,inspection:{state:'incomplete',stage:'roots',cursor:s.cursor}};
+    }
+    s=structuredClone(prior);need(s.family===2&&s.stage>0&&s.stage<MANAGED_FRESH_INSPECTION_STEPS.length,'managed-inspection-expired');
+    const stage=MANAGED_FRESH_INSPECTION_STEPS[s.stage]!;batch(freshPaths(s));
+    // Existing operations may have published a selector since the initial review;
+    // this inspection freezes the CURRENT descriptor/journal claims per session.
+    need(canonical(managedSourceRoots(env))===canonical(s.roots));
+    need(canonical(claim(container(env)))===canonical(s.selection)&&canonical(claim(migrationFile(env)))===canonical(s.record));
+    if(stage==='managed-state'){
+      if(s.record.kind==='file'){
+        s.operation=readManagedFreshStepJournal(env);need(s.operation,'managed-journal-unsupported');
+        if(s.explicitStoreRoot)need(s.storeRoot===path.dirname(s.operation.database),'managed-selection-conflict');
+        s.storeRoot=path.dirname(s.operation.database);s.candidate=structuredClone(s.operation);
+      }else need(s.selection.kind==='absent','managed-step-conflict');
+    }else if(stage==='legacy-discovery')freshDiscovery(env,s);
+    else if(stage==='store'){
+      if(!s.operation){
+        const database=path.join(s.storeRoot,'progress.sqlite'),directory=managedFreshObjectClaim(s.storeRoot,true),db=managedFreshObjectClaim(database);
+        const sidecars=['-journal','-wal','-shm'].map(x=>managedFreshObjectClaim(database+x));
+        let storeId:string=randomUUID(),source:Binding['source']={id:randomUUID(),...s.roots,verified:true},sourceMode:'create'|'reuse'='create',captureState:'unknown'|'on'|'off'='unknown';
+        if(db.kind==='absent'){
+          need(sidecars.every(c=>c.kind==='absent'),'managed-migration-conflict');
+          if(directory.kind==='directory')need(readdirSync(s.storeRoot).length===0,'foreign-files');
+          else need(lstatSync(path.dirname(s.storeRoot),{throwIfNoEntry:false})?.isDirectory(),'managed-path-unverified');
+        }else{
+          const store=new Store(database,{readOnly:true});try{
+            store.subagentRunStorage();const e=store.list({limit:1});storeId=e.storeId;captureState=e.captureEnabled?'on':'off';
+            const matches=e.sources.filter(x=>x.configRoot===s.roots.configRoot&&x.dataRoot===s.roots.dataRoot);
+            need(matches.length<=1&&matches.every(x=>x.verified),'managed-source-conflict');
+            if(matches[0]){source={...matches[0]};sourceMode='reuse';}
+            need(!e.sources.some(x=>x.id===source.id&&canonical(x)!==canonical(source)),'managed-source-conflict');
+          }finally{store.close();}
+        }
+        const storeMode=db.kind==='absent'?'create':'retain',plan=managedFreshPlan(storeMode,directory.kind==='absent',sourceMode);
+        const binding:Binding={protocolVersion:2,schemaVersion:2,installId:`managed-${digest(JSON.stringify([storeId,source]))}`,version:payload.version,database,storeId,source};
+        s.candidate={...binding,migration:{format:3,planKind:'fresh',product:'openchamber-agent-progress-managed',phase:'pending',
+          operationId:s.nonce,sequence:1,state:'pending',step:plan[1]!,lastCompleted:plan[0]!,
+          consent:{reviewDigest:'0'.repeat(64),targetDigest:'0'.repeat(64),planDigest:digest(canonical(plan))},expectation:expectation(binding,payload),plan,
+          fresh:{storeMode,sourceMode,capturePolicy:storeMode==='create'?'enable-new':'preserve',directory,database:db,sidecars,
+            source:sourceMode==='reuse'?source:null,capture:captureState,selection:s.selection,journal:s.record,
+            legacy:{path:path.join(s.roots.configRoot,'plugins','agent-progress'),kind:'absent',object:null,digest:null}},
+          created:{directory:null,database:null},intent:null,receipt:null,captureRenewals:[],capture:{state:'unknown',observedAt:null},diagnostic:null}};
+        s.candidate.migration.consent.targetDigest=managedTargetDigest(s.candidate);
+      }
+      observeManagedFreshStore(s.candidate!);
+    }else if(stage==='review'){
+      need(s.candidate,'managed-inspection-expired');freshDiscovery(env,s);
+      need(canonical(s.candidate.migration.expectation)===canonical(expectation(s.candidate,payload)));
+      const observed=observeManagedFreshStore(s.candidate);s.review=freshReview(s,observed);s.stage++;s.cursor=randomUUID();
+      return {session:s,inspection:{state:'complete',stage:'review',cursor:null,review:s.review},
+        progress:s.operation?managedFreshJournalProgress(s.operation,observed):null};
+    }
+    s.stage++;s.cursor=randomUUID();
+    return {session:s,inspection:{state:'incomplete',stage,cursor:s.cursor},progress:s.operation?managedFreshJournalProgress(s.operation):null};
+  });
 }
