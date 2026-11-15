@@ -1705,6 +1705,11 @@ reservation includes a dispatch ID, retirement a fixed reason, and binding an
 ordinary assignment `receipt`. There is no five-minute expiry. Identical retries
 never re-arm consumed intent. A second nonempty declaration conflicts without
 replacing the first; an empty assignment cancels before deliberate re-declaration.
+Only one delegation can be pending per coordinator. For parallel sub-agents,
+dispatch first, then explicitly link each verified returned child session to its
+tasks; or delegate one at a time and wait for binding before declaring the next.
+The second-nonempty-declaration conflict includes this fixed recipe in `hint`;
+ordinary revision conflicts do not.
 
 One intent per source/parent (128/store) reserves the first subsequently admitted
 supported `subagent` dispatch atomically in database order, not result-arrival
@@ -1716,11 +1721,45 @@ immediate parent, project/location and complete acyclic ancestry are required.
 Installed tools are trusted to identify the child they delegated to; hook caller
 agent, result text and unsupported `task` aliases are not child identity proof.
 At binding, capture generation, active/visible plan, original expected revision
-and still-available task IDs are revalidated. Revision drift yields durable
-conflict, never rebasing. The existing link mutation unions that child's current
+and still-available task IDs are revalidated. Revision drift refuses unless a
+bounded, complete retained history proves every intervening transition unrelated
+to the declared tasks: disjoint task reports or positively identified disjoint
+single-child links/binds. The proof is transaction-local, retains the original
+declaration/replay identity, and requires unchanged structure, lifecycle, source,
+capture generation and declared-task facts. Missing, malformed, over-budget or
+ambiguous history (including no-op relinks) refuses; equal endpoints alone are
+not proof. This is not general rebasing or permission to ignore stale revisions
+on ordinary writes. The existing link mutation unions that child's current
 assignment and commits assignment/provenance with the disposition atomically.
 Task statuses, reporters, counts and report time remain unchanged. Explicit
 `link` and restricted-child parent relay remain separate fallbacks.
+
+Declaration receipts retain the existing states and reasons, with additive
+`delegation.sourceId` and `delegation.declaration` metadata. The latter contains
+`oid`, `coordinatorSessionId`, `declaredRevision`, `taskIds` and
+`dispatch:{tool:'subagent',messageId,callId}|null`. Bound receipts also identify
+`childSessionId`; refusal settlements include `recovery:'redeclare-or-link'`.
+Existing close/capture retirement paths retain identity metadata without adding
+recovery; readers may derive recovery from the fixed retired reason. These fields
+change neither schema/protocol 2, request hashes nor original replay identity.
+
+The companion's advisory, read-only refusal projection admits at most 128 newest
+source receipts, at most 16 KiB each, and returns at most three current-per-plan
+refusals with a completeness flag. Legacy, malformed, oversized or omitted
+evidence is incomplete, never proof of success or absence. Newer pending, bound,
+cancelled or malformed declaration evidence suppresses older refusals. Current
+assignments also suppress a refusal when all its tasks are assigned to linked
+children at a later plan revision. This check shares the bounded input budget
+and never changes the durable receipt or grants authority. Disabled
+capture or unverified context exposes none; archived/deleted plans are omitted.
+The next eligible coordinator context can explain a refusal using only fixed
+reasons, declaration identity and task IDs, with deliberate re-declare/link
+recovery. This section is capped at 4 KiB and marks omitted task IDs or evidence;
+an empty incomplete result still emits the evidence-unavailable notice without
+claiming a refusal. Reused context arrays are refreshed while receipts remain
+durable. It never reports automatically, grants assignment/permission, changes task status or
+captures a document. Read current state before re-declaring for a new dispatch,
+or explicitly link the verified returned child; a refusal itself grants nothing.
 
 Current detail responses may include `items.data[].assignmentBinding`:
 
@@ -1753,6 +1792,13 @@ apply; list/history routes gain no discovery or authorization semantics.
 
 An explicit combined handoff's task component is an ordinary task mutation and
 advances the plan revision once; a bare handoff never does.
+Explicitly linked or bound children may submit ordinary reports and combined
+handoffs from other directories, worktrees or projects when verified native
+ancestry and current assignment establish authority. The combined path uses the
+same guarded native identity as ordinary reporting, not a second same-location
+lookup. Same-source, assignment scope, revision, capture/document permission,
+claim/replay and atomic rollback checks remain unchanged. This does not relax
+the stricter identity/location requirements for automatic dispatch binding.
 
 ## Native session reading reset
 

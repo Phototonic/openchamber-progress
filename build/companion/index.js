@@ -24854,6 +24854,17 @@ function graphItems(value3, wire = false) {
 // shared/subagent-runs.ts
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
+// shared/delegation-view.ts
+var DELEGATION_VIEW_LIMITS = Object.freeze({
+  receipts: 128,
+  tasks: 50,
+  identifierCodeUnits: 200,
+  reasonCodeUnits: BLOCKER_LIMITS.textCodeUnits,
+  inputBytes: SEARCH_LIMITS.inputBytes,
+  responseBytes: SEARCH_LIMITS.responseBytes,
+  tokenBytes: SEARCH_LIMITS.cursorBytes
+});
+
 // shared/cleanup.ts
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
@@ -25335,9 +25346,17 @@ function activeIntent(db, source, parent) {
   return { ...JSON.parse(r.payload), dispatch: r.dispatch };
 }
 function intentDisposition(db, i, state, reason, dispatch, receipt) {
-  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...receipt ? { receipt } : {} } };
+  const run3 = dispatch ? db.prepare("SELECT message,call,child FROM runs_rows WHERE id=? AND source=? AND parent=?").get(dispatch, i.caller.sourceId, i.caller.sessionId) : undefined;
+  const declaration = { oid: i.request.oid, coordinatorSessionId: i.caller.sessionId, declaredRevision: i.request.rev, taskIds: [...i.request.assign], dispatch: run3 ? { tool: "subagent", messageId: String(run3.message), callId: String(run3.call) } : null };
+  const reply = { plan: i.request.plan, rev: i.request.rev, delegation: { state, memoryOnly: false, lostOnRestart: false, requires: "supported-next-delegation", sourceId: i.caller.sourceId, declaration, ...dispatch ? { dispatchId: dispatch } : {}, ...reason ? { reason } : {}, ...state === "retired" && reason !== "cancelled" ? { recovery: "redeclare-or-link" } : {}, ...receipt ? { receipt, childSessionId: run3?.child } : {} } };
   db.prepare("UPDATE receipts SET receipt=? WHERE source=? AND plan=? AND oid=?").run(JSON.stringify(reply), i.caller.sourceId, i.request.plan, i.request.oid);
   return reply;
+}
+
+class PendingDelegationError extends ProgressError {
+  constructor() {
+    super("conflict");
+  }
 }
 function declareIntent(db, r, actor, validate3) {
   const c = runControl(db);
@@ -25350,8 +25369,8 @@ function declareIntent(db, r, actor, validate3) {
   }
   validate3();
   const current = activeIntent(db, actor.sourceId, actor.sessionId);
-  if (r.assign.length)
-    requireProgress(!current, "conflict");
+  if (r.assign.length && current)
+    throw new PendingDelegationError;
   else if (current) {
     intentDisposition(db, current, "retired", "cancelled", current.dispatch ?? undefined);
     db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=?").run(actor.sourceId, actor.sessionId);
@@ -25370,6 +25389,85 @@ function reservedIntent(db, k) {
 function settleIntent(db, i, receipt, reason) {
   intentDisposition(db, i, receipt ? "bound" : "retired", reason, i.dispatch ?? undefined, receipt);
   db.prepare("DELETE FROM runs_intents WHERE source=? AND parent=? AND dispatch=?").run(i.caller.sourceId, i.caller.sessionId, i.dispatch);
+}
+function delegationRefusals(db, binding, sourceId, sessionId) {
+  requireProgress(identifier2(sourceId) && identifier2(sessionId));
+  const result3 = { sourceId, sessionId, complete: true, refusals: [] };
+  if (!binding.verified || binding.sourceId !== sourceId || db.prepare("SELECT verified FROM sources WHERE id=?").get(sourceId)?.verified !== 1 || !runControl(db).enabled) {
+    result3.complete = false;
+    return result3;
+  }
+  const rows = db.prepare("SELECT plan,oid,length(CAST(receipt AS BLOB)) AS bytes,CASE WHEN length(CAST(receipt AS BLOB))<=16384 THEN receipt END AS receipt FROM receipts WHERE source=? ORDER BY rowid DESC LIMIT ?").all(sourceId, DELEGATION_VIEW_LIMITS.receipts + 1);
+  result3.complete = rows.length <= DELEGATION_VIEW_LIMITS.receipts;
+  let bytes2 = 0;
+  const seen = new Set;
+  for (const row2 of rows.slice(0, DELEGATION_VIEW_LIMITS.receipts)) {
+    bytes2 += Number(row2.bytes);
+    if (bytes2 > DELEGATION_VIEW_LIMITS.inputBytes) {
+      result3.complete = false;
+      break;
+    }
+    if (typeof row2.receipt !== "string") {
+      result3.complete = false;
+      seen.add(String(row2.plan));
+      continue;
+    }
+    let r;
+    try {
+      r = JSON.parse(row2.receipt);
+    } catch {
+      result3.complete = false;
+      seen.add(String(row2.plan));
+      continue;
+    }
+    const d = r?.delegation;
+    if (!d)
+      continue;
+    if (seen.has(String(row2.plan)))
+      continue;
+    seen.add(String(row2.plan));
+    const a = d.declaration;
+    if (!a) {
+      result3.complete = false;
+      continue;
+    }
+    if (d.sourceId !== sourceId || a.coordinatorSessionId !== sessionId)
+      continue;
+    if (!identifier2(row2.plan) || r.plan !== row2.plan || a.oid !== row2.oid || !identifier2(a.oid) || !Number.isSafeInteger(a.declaredRevision) || a.declaredRevision < 1 || r.rev !== a.declaredRevision || !Array.isArray(a.taskIds) || a.taskIds.length > DELEGATION_VIEW_LIMITS.tasks || !a.taskIds.every(identifier2) || new Set(a.taskIds).size !== a.taskIds.length || a.dispatch !== null && (!a.dispatch || a.dispatch.tool !== "subagent" || !identifier2(a.dispatch.messageId) || !identifier2(a.dispatch.callId))) {
+      result3.complete = false;
+      continue;
+    }
+    if (cleanupInstalled(db) && ["archived", "deleted"].includes(String(cleanupState(db, sourceId, r.plan)?.state ?? "")))
+      continue;
+    if (d.state !== "retired" || d.reason === "cancelled" || !a.taskIds.length)
+      continue;
+    const current = db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(Math.max(0, DELEGATION_VIEW_LIMITS.inputBytes - bytes2), sourceId, r.plan);
+    if (current) {
+      bytes2 += Number(current.bytes);
+      if (typeof current.snapshot !== "string")
+        result3.complete = false;
+      else
+        try {
+          const p = JSON.parse(current.snapshot);
+          if (p.sourceId !== sourceId || p.id !== r.plan || p.sessionId !== sessionId || !Number.isSafeInteger(p.revision) || !Array.isArray(p.items) || !Array.isArray(p.links))
+            result3.complete = false;
+          else if (p.revision > a.declaredRevision && a.taskIds.every((id2) => {
+            const item = p.items.find((i) => i?.id === id2);
+            return item?.kind === "task" && identifier2(item.assigneeSessionId) && item.assigneeSessionId !== sessionId && p.links.some((l) => l?.sessionId === item.assigneeSessionId && Array.isArray(l.itemIds) && l.itemIds.includes(id2));
+          }))
+            continue;
+        } catch {
+          result3.complete = false;
+        }
+    }
+    if (result3.refusals.length === 3) {
+      result3.complete = false;
+      continue;
+    }
+    const reasons = ["relevant-change", "conflict", "structural-change", "closed", "assignment", "source-unverified", "unverified", "incomplete-proof", "missing-proof", "budget", "dispatch-unconfirmed", "binding", "disabled", "capture-disabled", "not-found", "storage", "corrupt", "schema", "busy"];
+    result3.refusals.push({ plan: r.plan, declaration: { oid: a.oid, coordinatorSessionId: sessionId, declaredRevision: a.declaredRevision, taskIds: [...a.taskIds], dispatch: a.dispatch ? { tool: "subagent", messageId: a.dispatch.messageId, callId: a.dispatch.callId } : null }, reason: reasons.includes(d.reason) ? d.reason : "unverified", recovery: "redeclare-or-link" });
+  }
+  return result3;
 }
 function claimHash(r) {
   return hash2([r.outcome, r.summary]);
@@ -26239,6 +26337,302 @@ function currentBinding(value3, plan, itemId) {
   return Object.keys(b).every((k) => ["coordinatorSessionId", "childSessionId", "planId", "itemId", "tool", "messageId", "callId", "observedAt", "boundAt", "boundRevision", "validAtRevision"].includes(k)) && b.coordinatorSessionId === plan.sessionId && b.planId === plan.id && b.itemId === itemId && b.tool === "subagent" && identifier2(b.childSessionId) && identifier2(b.messageId) && identifier2(b.callId) && time(b.observedAt) && time(b.boundAt) && Number.isSafeInteger(b.boundRevision) && b.boundRevision > 0 && b.boundRevision <= plan.revision && b.validAtRevision === plan.revision && item?.kind === "task" && item.assigneeSessionId === b.childSessionId && plan.links.some((l) => l.sessionId === b.childSessionId && l.itemIds.includes(itemId));
 }
 
+// shared/delegation-validation.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// shared/change-digest.ts
+var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
+function emptyEvents() {
+  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
+}
+var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
+var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
+function compareTasks(before, after) {
+  const a = tasks(before), b = tasks(after), changes = [];
+  for (const id2 of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const old = a.get(id2), next = b.get(id2), facets = [];
+    if (!old) {
+      facets.push("added");
+      if (next.status === "blocked")
+        facets.push("blocked");
+    } else if (!next)
+      facets.push("removed");
+    else {
+      if (old.status !== "done" && next.status === "done")
+        facets.push("completed");
+      if (old.status === "done" && next.status !== "done")
+        facets.push("reopened");
+      if (old.status !== "blocked" && next.status === "blocked")
+        facets.push("blocked");
+      if (old.status === "blocked" && next.status !== "blocked")
+        facets.push("unblocked");
+      if (old.status !== "skipped" && next.status === "skipped")
+        facets.push("skipped");
+      if (old.status === "skipped" && next.status !== "skipped")
+        facets.push("unskipped");
+      const x = facts(old), y = facts(next);
+      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
+        facets.push("revised");
+    }
+    if (facets.length)
+      changes.push({ id: id2, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
+  }
+  return changes;
+}
+function endpointCounts(before, after) {
+  const scope4 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
+  const a = tasks(before), b = tasks(after);
+  for (const id2 of new Set([...a.keys(), ...b.keys()])) {
+    const old = a.get(id2), next = b.get(id2);
+    if (!old) {
+      if (next.status !== "skipped")
+        scope4.addedCounted++;
+      if (next.status === "done")
+        scope4.addedDone++;
+    } else if (!next) {
+      if (old.status !== "skipped")
+        scope4.removedCounted++;
+      if (old.status === "done")
+        scope4.removedDone++;
+    } else {
+      if (old.status !== "skipped" && next.status === "skipped")
+        scope4.skipped++;
+      if (old.status === "skipped" && next.status !== "skipped")
+        scope4.unskipped++;
+      if (old.status !== "done" && next.status === "done")
+        scope4.completed++;
+      if (old.status === "done" && next.status !== "done")
+        scope4.reopened++;
+    }
+  }
+  return { before: countItems(before.items), after: countItems(after.items), scope: scope4 };
+}
+function aggregatePair(result3, before, after, target) {
+  for (const { id: id2, reference } of compareTasks(before, after)) {
+    for (const facet of reference.facets)
+      result3.summary.events[facet]++;
+    let row2 = result3.tasks.find((t) => t.id === id2);
+    if (!row2 && result3.tasks.length >= DIGEST_LIMITS.tasks) {
+      result3.details.omittedTasks = true;
+      result3.details.omittedTaskCount = null;
+      result3.details.truncated = true;
+      continue;
+    }
+    if (!row2) {
+      const atTarget = target.items.find((i) => i.id === id2 && i.kind === "task");
+      const latest2 = atTarget ?? reference.after ?? reference.before;
+      row2 = { id: id2, title: latest2.title, status: latest2.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
+      result3.tasks.push(row2);
+    }
+    for (const facet of reference.facets)
+      row2.occurrences[facet]++;
+    if (row2.references.length < DIGEST_LIMITS.references)
+      row2.references.push(reference);
+    else {
+      row2.omittedReferences++;
+      result3.details.truncated = true;
+    }
+  }
+}
+function validateDigestSnapshot(value3, source, plan, revision) {
+  try {
+    const p = value3;
+    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
+      return null;
+    const byId = new Map;
+    for (const i of p.items) {
+      if (!i || !identifier2(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier2(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier2)))
+        return null;
+      byId.set(i.id, i);
+    }
+    for (const i of p.items) {
+      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id2) => id2 === i.id || byId.get(id2)?.kind !== "task"))
+        return null;
+      const seen = new Set([i.id]);
+      let parent = i.parentId;
+      while (parent) {
+        if (seen.has(parent))
+          return null;
+        seen.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+    }
+    const visiting = new Set, visited = new Set;
+    const visit = (id2) => {
+      if (visited.has(id2))
+        return true;
+      if (visiting.has(id2))
+        return false;
+      visiting.add(id2);
+      for (const dep of byId.get(id2)?.dependencies ?? [])
+        if (!visit(dep))
+          return false;
+      visiting.delete(id2);
+      visited.add(id2);
+      return true;
+    };
+    if (!p.items.every((i) => visit(i.id)))
+      return null;
+    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
+  } catch {
+    return null;
+  }
+}
+function capDigest(result3) {
+  while (Buffer.byteLength(JSON.stringify(result3)) > DIGEST_LIMITS.responseBytes && result3.tasks.length) {
+    result3.tasks.pop();
+    result3.details.truncated = true;
+    result3.details.omittedTasks = true;
+    if (result3.details.omittedTaskCount !== null)
+      result3.details.omittedTaskCount++;
+  }
+  return result3;
+}
+
+// shared/delegation-validation.ts
+var DELEGATION_PROOF_LIMITS = { snapshots: DIGEST_LIMITS.snapshots, bytes: DIGEST_LIMITS.bytes };
+function plan(value3, source, id2, revision, owner) {
+  const p = value3;
+  requireProgress(validateDigestSnapshot(p, source, id2, revision), "conflict");
+  requireProgress(p.sessionId === owner && typeof p.directory === "string" && p.directory.length <= 4096 && (p.projectId === undefined || typeof p.projectId === "string") && Array.isArray(p.links) && p.links.length <= 64, "conflict");
+  requireProgress(p.lifecycle === "active", "closed");
+  const sessions = new Set, assigned = new Map;
+  const items = new Map(p.items.map((i) => [i.id, i]));
+  for (const link2 of p.links) {
+    requireProgress(link2 && identifier2(link2.sessionId) && link2.sessionId !== owner && !sessions.has(link2.sessionId) && Array.isArray(link2.itemIds) && link2.itemIds.length > 0 && link2.itemIds.length <= 1000, "conflict");
+    sessions.add(link2.sessionId);
+    for (const id3 of link2.itemIds) {
+      requireProgress(identifier2(id3) && !assigned.has(id3) && items.get(id3)?.kind === "task" && items.get(id3)?.assigneeSessionId === link2.sessionId, "conflict");
+      assigned.set(id3, link2.sessionId);
+    }
+  }
+  for (const item of p.items)
+    if (item.assigneeSessionId !== undefined)
+      requireProgress(identifier2(item.assigneeSessionId) && assigned.get(item.id) === item.assigneeSessionId, "conflict");
+  return p;
+}
+function taskFacts(item, p) {
+  const copy3 = { ...item };
+  if (copy3.blocker !== undefined) {
+    requireProgress(item.kind === "task" && item.status === "blocked" && validBlockerAnnotation(copy3.blocker, p.revision), "conflict");
+    copy3.blocker = { ...copy3.blocker, validAtRevision: 0 };
+  }
+  if (copy3.assignmentBinding !== undefined) {
+    requireProgress(currentBinding(copy3.assignmentBinding, p, item.id), "conflict");
+    copy3.assignmentBinding = { ...copy3.assignmentBinding, validAtRevision: 0 };
+  }
+  return canonical(copy3);
+}
+function disjointLink(previous, next, c, assigned) {
+  requireProgress(c.mode === "direct" && c.reporterSessionId === previous.sessionId && c.attributedSessionId === previous.sessionId, "conflict");
+  const oldLinks = new Map(previous.links.map((l) => [l.sessionId, l]));
+  const newLinks = new Map(next.links.map((l) => [l.sessionId, l]));
+  const changed = [...new Set([...oldLinks.keys(), ...newLinks.keys()])].filter((id2) => canonical(oldLinks.get(id2) ?? null) !== canonical(newLinks.get(id2) ?? null));
+  requireProgress(changed.length === 1, "conflict");
+  const child = changed[0], oldLink = oldLinks.get(child), newLink = newLinks.get(child);
+  const { itemIds: _old, ...oldFacts } = oldLink ?? { sessionId: child, itemIds: [] };
+  const { itemIds: _new, ...newFacts } = newLink ?? { sessionId: child, itemIds: [] };
+  requireProgress(canonical(oldFacts) === canonical(newFacts), "conflict");
+  const scope4 = new Set([...oldLink?.itemIds ?? [], ...newLink?.itemIds ?? []]);
+  requireProgress(scope4.size > 0 && assigned.every((id2) => !scope4.has(id2)), "conflict");
+  requireProgress(canonical(next.links) === canonical([...previous.links.filter((l) => l.sessionId !== child), ...newLink ? [newLink] : []]), "conflict");
+  const bound = next.items.filter((i) => i.assignmentBinding?.boundRevision === next.revision);
+  if (bound.length) {
+    requireProgress(bound.length <= 50 && next.reportedAt === previous.reportedAt && canonical(next.document) === canonical(previous.document), "conflict");
+    const first = bound[0].assignmentBinding;
+    for (const item of bound) {
+      const b = item.assignmentBinding;
+      requireProgress(currentBinding(b, next, item.id) && b.childSessionId === child && b.boundAt === c.reportedAt && b.messageId === first.messageId && b.callId === first.callId && b.observedAt === first.observedAt && previous.items.find((i) => i.id === item.id)?.assigneeSessionId === undefined, "conflict");
+    }
+    requireProgress(newLink && newLink.itemIds.length === (oldLink?.itemIds.length ?? 0) + bound.length && (oldLink?.itemIds ?? []).every((id2, index2) => newLink.itemIds[index2] === id2) && bound.every((i) => newLink.itemIds.includes(i.id)), "conflict");
+  } else
+    requireProgress(c.reportedAt === next.reportedAt, "conflict");
+  for (let index2 = 0;index2 < previous.items.length; index2++) {
+    const a = previous.items[index2], b = next.items[index2];
+    taskFacts(a, previous);
+    const expected = structuredClone(a);
+    if (scope4.has(a.id)) {
+      if (newLink?.itemIds.includes(a.id))
+        expected.assigneeSessionId = child;
+      else
+        delete expected.assigneeSessionId;
+      if (!bound.length)
+        delete expected.assignmentBinding;
+      else if (bound.some((i) => i.id === a.id))
+        expected.assignmentBinding = b.assignmentBinding;
+    }
+    if (expected.blocker)
+      expected.blocker.validAtRevision = next.revision;
+    if (expected.assignmentBinding)
+      expected.assignmentBinding.validAtRevision = next.revision;
+    requireProgress(taskFacts(expected, next) === taskFacts(b, next), "conflict");
+  }
+}
+function delegationRevision(db, binding, intent) {
+  const r = parseRequest(intent.request), source = intent.caller.sourceId, owner = intent.caller.sessionId;
+  requireProgress(r.op === "delegate" && r.assign.length > 0 && identifier2(source) && identifier2(owner), "conflict");
+  const receipt = db.prepare("SELECT payload_hash FROM receipts WHERE source=? AND plan=? AND oid=?").get(source, r.plan, r.oid);
+  requireProgress(receipt?.payload_hash === createHash3("sha256").update(canonical([r, source, owner])).digest("hex"), "conflict");
+  requireProgress(binding.verified && binding.sourceId === source && db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified === 1, "source-unverified");
+  const control = runControl(db);
+  requireProgress(control.enabled && control.generation === intent.generation, "disabled");
+  const cleanup = cleanupInstalled(db) ? cleanupState(db, source, r.plan) : undefined;
+  requireProgress(cleanup?.state !== "deleted", "not-found");
+  requireProgress(cleanup?.state !== "archived", "closed");
+  let bytes2 = 0;
+  const admit = (text) => {
+    requireProgress(typeof text === "string", "conflict");
+    bytes2 += Buffer.byteLength(text);
+    requireProgress(bytes2 <= DELEGATION_PROOF_LIMITS.bytes, "conflict");
+    try {
+      return JSON.parse(text);
+    } catch {
+      requireProgress(false, "conflict");
+    }
+  };
+  const live = db.prepare("SELECT revision,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM plans WHERE source=? AND id=?").get(DELEGATION_PROOF_LIMITS.bytes, source, r.plan);
+  requireProgress(live, "not-found");
+  const revision = Number(live.revision);
+  const current = plan(admit(live.snapshot), source, r.plan, revision, owner);
+  requireProgress(r.assign.every((id2) => current.items.some((i) => i.id === id2 && i.kind === "task" && i.assigneeSessionId === undefined)), "assignment");
+  if (revision === r.rev)
+    return revision;
+  requireProgress(revision > r.rev && revision - r.rev < DELEGATION_PROOF_LIMITS.snapshots, "conflict");
+  const snapshot3 = db.prepare("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?");
+  const contribution = db.prepare("SELECT CASE WHEN length(CAST(payload AS BLOB))<=? THEN payload END AS payload FROM contributions WHERE source=? AND plan=? AND revision=?");
+  let previous;
+  for (let rev = r.rev;rev <= revision; rev++) {
+    const next = plan(admit(snapshot3.get(DELEGATION_PROOF_LIMITS.bytes - bytes2, source, r.plan, rev)?.snapshot), source, r.plan, rev, owner);
+    requireProgress(next.structuralRevision === current.structuralRevision, "conflict");
+    if (previous) {
+      const c = admit(contribution.get(DELEGATION_PROOF_LIMITS.bytes - bytes2, source, r.plan, rev)?.payload);
+      requireProgress(c && c.revision === rev && identifier2(c.reporterSessionId) && identifier2(c.attributedSessionId) && ["direct", "parent-relay"].includes(c.mode) && typeof c.reportedAt === "string" && Array.isArray(c.itemIds) && c.itemIds.length <= 50 && new Set(c.itemIds).size === c.itemIds.length && c.itemIds.every((id2) => identifier2(id2) && !r.assign.includes(id2) && next.items.some((i) => i.id === id2 && i.kind === "task")), "conflict");
+      requireProgress(c.mode === "direct" ? c.reporterSessionId === c.attributedSessionId : c.reporterSessionId === owner && c.attributedSessionId !== owner, "conflict");
+      if (c.attributedSessionId !== owner)
+        requireProgress(previous.links.some((l) => l.sessionId === c.attributedSessionId && c.itemIds.every((id2) => l.itemIds.includes(id2))), "conflict");
+      const { revision: _a, reportedAt: _b, items: _c, document: _d, links: _q, ...before } = previous;
+      const { revision: _e, reportedAt: _f, items: _g, document: _h, links: _r, ...after } = next;
+      requireProgress(canonical(before) === canonical(after) && previous.reportedAt <= next.reportedAt && previous.items.length === next.items.length, "conflict");
+      if (c.itemIds.length === 0)
+        disjointLink(previous, next, c, r.assign);
+      else {
+        requireProgress(c.reportedAt === next.reportedAt && canonical(previous.links) === canonical(next.links), "conflict");
+        for (let index2 = 0;index2 < previous.items.length; index2++) {
+          const a = previous.items[index2], b = next.items[index2];
+          const { status: _i, reporterSessionId: _j, blocker: _k, assignmentBinding: _l, ...aStructure } = a;
+          const { status: _m, reporterSessionId: _n, blocker: _o, assignmentBinding: _p, ...bStructure } = b;
+          requireProgress(canonical(aStructure) === canonical(bStructure), "conflict");
+          if (r.assign.includes(a.id))
+            requireProgress(taskFacts(a, previous) === taskFacts(b, next), "conflict");
+        }
+      }
+    }
+    previous = next;
+  }
+  requireProgress(canonical(previous) === canonical(current), "conflict");
+  return revision;
+}
+
 // shared/document-comparison.ts
 var CAPTURE_LIMITS = {
   rows: 128,
@@ -26493,163 +26887,12 @@ function captureComparison(db, binding, r, before, after) {
 }
 
 // shared/store.ts
-import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash5 } from "node:crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync5, openSync as openSync3, readSync, closeSync as closeSync3, realpathSync as realpathSync5, chmodSync } from "node:fs";
 import path5 from "node:path";
 
 // shared/plan-task-search.ts
-import { createHash as createHash3 } from "node:crypto";
-
-// shared/change-digest.ts
-var DIGEST_LIMITS = { snapshots: 128, bytes: 8 * 1024 * 1024, tasks: 50, references: 4, responseBytes: 256 * 1024 };
-function emptyEvents() {
-  return { added: 0, removed: 0, revised: 0, completed: 0, reopened: 0, blocked: 0, unblocked: 0, skipped: 0, unskipped: 0 };
-}
-var facts = (i) => ({ title: i.title, status: i.status, parentId: i.parentId ?? null, dependencies: [...new Set(i.dependencies ?? [])].sort() });
-var tasks = (p) => new Map(p.items.filter((i) => i.kind === "task").map((i) => [i.id, i]));
-function compareTasks(before, after) {
-  const a = tasks(before), b = tasks(after), changes = [];
-  for (const id2 of [...new Set([...a.keys(), ...b.keys()])].sort()) {
-    const old = a.get(id2), next = b.get(id2), facets = [];
-    if (!old) {
-      facets.push("added");
-      if (next.status === "blocked")
-        facets.push("blocked");
-    } else if (!next)
-      facets.push("removed");
-    else {
-      if (old.status !== "done" && next.status === "done")
-        facets.push("completed");
-      if (old.status === "done" && next.status !== "done")
-        facets.push("reopened");
-      if (old.status !== "blocked" && next.status === "blocked")
-        facets.push("blocked");
-      if (old.status === "blocked" && next.status !== "blocked")
-        facets.push("unblocked");
-      if (old.status !== "skipped" && next.status === "skipped")
-        facets.push("skipped");
-      if (old.status === "skipped" && next.status !== "skipped")
-        facets.push("unskipped");
-      const x = facts(old), y = facts(next);
-      if (x.title !== y.title || x.parentId !== y.parentId || JSON.stringify(x.dependencies) !== JSON.stringify(y.dependencies))
-        facets.push("revised");
-    }
-    if (facets.length)
-      changes.push({ id: id2, reference: { from: before.revision, to: after.revision, reportedAt: after.reportedAt, facets, before: old ? facts(old) : null, after: next ? facts(next) : null } });
-  }
-  return changes;
-}
-function endpointCounts(before, after) {
-  const scope4 = { addedCounted: 0, removedCounted: 0, skipped: 0, unskipped: 0, addedDone: 0, removedDone: 0, completed: 0, reopened: 0 };
-  const a = tasks(before), b = tasks(after);
-  for (const id2 of new Set([...a.keys(), ...b.keys()])) {
-    const old = a.get(id2), next = b.get(id2);
-    if (!old) {
-      if (next.status !== "skipped")
-        scope4.addedCounted++;
-      if (next.status === "done")
-        scope4.addedDone++;
-    } else if (!next) {
-      if (old.status !== "skipped")
-        scope4.removedCounted++;
-      if (old.status === "done")
-        scope4.removedDone++;
-    } else {
-      if (old.status !== "skipped" && next.status === "skipped")
-        scope4.skipped++;
-      if (old.status === "skipped" && next.status !== "skipped")
-        scope4.unskipped++;
-      if (old.status !== "done" && next.status === "done")
-        scope4.completed++;
-      if (old.status === "done" && next.status !== "done")
-        scope4.reopened++;
-    }
-  }
-  return { before: countItems(before.items), after: countItems(after.items), scope: scope4 };
-}
-function aggregatePair(result3, before, after, target) {
-  for (const { id: id2, reference } of compareTasks(before, after)) {
-    for (const facet of reference.facets)
-      result3.summary.events[facet]++;
-    let row2 = result3.tasks.find((t) => t.id === id2);
-    if (!row2 && result3.tasks.length >= DIGEST_LIMITS.tasks) {
-      result3.details.omittedTasks = true;
-      result3.details.omittedTaskCount = null;
-      result3.details.truncated = true;
-      continue;
-    }
-    if (!row2) {
-      const atTarget = target.items.find((i) => i.id === id2 && i.kind === "task");
-      const latest2 = atTarget ?? reference.after ?? reference.before;
-      row2 = { id: id2, title: latest2.title, status: latest2.status, presentAtTarget: !!atTarget, latestRevision: after.revision, occurrences: emptyEvents(), references: [], omittedReferences: 0 };
-      result3.tasks.push(row2);
-    }
-    for (const facet of reference.facets)
-      row2.occurrences[facet]++;
-    if (row2.references.length < DIGEST_LIMITS.references)
-      row2.references.push(reference);
-    else {
-      row2.omittedReferences++;
-      result3.details.truncated = true;
-    }
-  }
-}
-function validateDigestSnapshot(value3, source, plan, revision) {
-  try {
-    const p = value3;
-    if (!p || p.id !== plan || p.sourceId !== source || p.revision !== revision || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(p.structuralRevision) || p.structuralRevision < 1 || p.structuralRevision > revision || !["active", "finished", "cancelled", "failed"].includes(p.lifecycle) || typeof p.reportedAt !== "string" || !Number.isFinite(Date.parse(p.reportedAt)) || new Date(p.reportedAt).toISOString() !== p.reportedAt || !Array.isArray(p.items) || p.items.length > LIMITS.planItems)
-      return null;
-    const byId = new Map;
-    for (const i of p.items) {
-      if (!i || !identifier2(i.id) || byId.has(i.id) || typeof i.title !== "string" || !i.title.trim() || i.title.length > 512 || !["task", "group"].includes(i.kind) || !["pending", "working", "blocked", "done", "skipped"].includes(i.status) || i.parentId !== undefined && !identifier2(i.parentId) || i.dependencies !== undefined && (!Array.isArray(i.dependencies) || i.dependencies.length > 16 || !i.dependencies.every(identifier2)))
-        return null;
-      byId.set(i.id, i);
-    }
-    for (const i of p.items) {
-      if (i.parentId !== undefined && byId.get(i.parentId)?.kind !== "group" || (i.dependencies ?? []).some((id2) => id2 === i.id || byId.get(id2)?.kind !== "task"))
-        return null;
-      const seen = new Set([i.id]);
-      let parent = i.parentId;
-      while (parent) {
-        if (seen.has(parent))
-          return null;
-        seen.add(parent);
-        parent = byId.get(parent)?.parentId;
-      }
-    }
-    const visiting = new Set, visited = new Set;
-    const visit = (id2) => {
-      if (visited.has(id2))
-        return true;
-      if (visiting.has(id2))
-        return false;
-      visiting.add(id2);
-      for (const dep of byId.get(id2)?.dependencies ?? [])
-        if (!visit(dep))
-          return false;
-      visiting.delete(id2);
-      visited.add(id2);
-      return true;
-    };
-    if (!p.items.every((i) => visit(i.id)))
-      return null;
-    return { id: p.id, sourceId: p.sourceId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, items: p.items.map((i) => ({ id: i.id, title: i.title, kind: i.kind, status: i.status, ...i.parentId !== undefined ? { parentId: i.parentId } : {}, ...i.dependencies ? { dependencies: [...i.dependencies] } : {} })) };
-  } catch {
-    return null;
-  }
-}
-function capDigest(result3) {
-  while (Buffer.byteLength(JSON.stringify(result3)) > DIGEST_LIMITS.responseBytes && result3.tasks.length) {
-    result3.tasks.pop();
-    result3.details.truncated = true;
-    result3.details.omittedTasks = true;
-    if (result3.details.omittedTaskCount !== null)
-      result3.details.omittedTaskCount++;
-  }
-  return result3;
-}
-
-// shared/plan-task-search.ts
+import { createHash as createHash4 } from "node:crypto";
 var normalize3 = (s) => s.normalize("NFC").toLowerCase().normalize("NFC");
 function searchTokens(q) {
   requireProgress(typeof q === "string" && Array.from(q).length <= SEARCH_LIMITS.queryPoints && !q.includes("\x00"));
@@ -26663,7 +26906,7 @@ function searchMatches(tokens, title, id2) {
   return tokens.every((word) => t.includes(word) || key.includes(word));
 }
 var safe = (n, min6 = 0) => Number.isSafeInteger(n) && Number(n) >= min6;
-var hash3 = (v) => createHash3("sha256").update(JSON.stringify(v)).digest("hex");
+var hash3 = (v) => createHash4("sha256").update(JSON.stringify(v)).digest("hex");
 var fields = (v, keys4) => Object.keys(v).length === keys4.length && Object.keys(v).every((k) => keys4.includes(k));
 function parseCursor(text) {
   requireProgress(typeof text === "string" && Buffer.byteLength(text) <= SEARCH_LIMITS.cursorBytes && /^[A-Za-z0-9_-]+$/.test(text));
@@ -26683,8 +26926,8 @@ function parseCursor(text) {
 function searchIdentity(db, binding) {
   return { protocolVersion: 2, schemaVersion: 2, planTaskSearch: 1, storeId: String(db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id), sourceBinding: { ...binding } };
 }
-function cleanup(db, installed, source, plan) {
-  const c = installed ? cleanupState(db, source, plan) : undefined;
+function cleanup(db, installed, source, plan2) {
+  const c = installed ? cleanupState(db, source, plan2) : undefined;
   return { state: c?.state ?? "visible", revision: Number(c?.generation ?? 0) };
 }
 function validPlan(value3, source, id2, revision) {
@@ -26725,8 +26968,8 @@ function searchWindow(db, binding, options2 = {}) {
     if (!r.coverage.reasons.includes(reason))
       r.coverage.reasons.push(reason);
   };
-  const advance = (source, plan) => {
-    c.after = { source, plan };
+  const advance = (source, plan2) => {
+    c.after = { source, plan: plan2 };
     c.pending = null;
   };
   let hitBytes = 0;
@@ -26829,11 +27072,11 @@ function searchWindow(db, binding, options2 = {}) {
     }
     const tasks2 = matches.length ? matches : [null];
     const sourceVerified = Boolean(db.prepare("SELECT verified FROM sources WHERE id=?").get(source)?.verified);
-    const plan = { id: id2, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
+    const plan2 = { id: id2, sourceId: source, title: p.title, sessionId: p.sessionId, revision, structuralRevision: p.structuralRevision, lifecycle: p.lifecycle, reportedAt: p.reportedAt, directory: p.directory, ...p.projectId === undefined ? {} : { projectId: p.projectId }, counts: countItems(p.items), cleanup: state, sourceVerified };
     requireProgress(pos.offset < tasks2.length);
     while (pos.offset < tasks2.length && r.hits.length < limit) {
       const task = tasks2[pos.offset];
-      const hit = { plan, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context3(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
+      const hit = { plan: plan2, planMatched, task: task ? { id: task.id, title: task.title, status: task.status } : null, ...task ? context3(p, task) : { ancestors: [], omittedAncestors: 0 }, continued: pos.counted, classified: pos.counted ? null : { matchedPlans: 1, matchingTasks: matches.length } };
       const size6 = Buffer.byteLength(JSON.stringify(hit)) + 1;
       if (hitBytes + size6 > SEARCH_LIMITS.responseBytes - 16 * 1024)
         break;
@@ -26978,7 +27221,7 @@ function resumeSelection(db, binding, r, now3 = () => performance.now()) {
 
 // shared/store.ts
 function digest(value3) {
-  return createHash4("sha256").update(value3).digest("hex");
+  return createHash5("sha256").update(value3).digest("hex");
 }
 function directoryFilter(value3) {
   return windows ? value3?.replaceAll("\\", "/").replace(/^[a-z]:/i, (drive) => drive.toUpperCase()) : value3;
@@ -27127,7 +27370,8 @@ class Store {
         requireProgress(actor.sourceId === i.caller.sourceId && actor.sessionId === i.caller.sessionId, "binding");
         const at = this.db.prepare("SELECT json_extract(payload,'$.dispatch.at') AS at FROM runs_rows WHERE id=?").get(i.dispatch);
         requireProgress(Number.isSafeInteger(at?.at), "corrupt");
-        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev: i.request.rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
+        const rev = delegationRevision(this.db, this.readBinding, i);
+        const receipt = this.applyMutation({ op: "link", plan: i.request.plan, oid: i.bindOid, rev, child: child.sessionId, assign: i.request.assign }, actor, undefined, child, { generation: this.delegationControl().generation, messageId: key.message, callId: key.call, observedAt: new Date(Number(at.at)).toISOString() });
         this.db.exec("RELEASE run_binding");
         settleIntent(this.db, i, receipt);
       } catch (e) {
@@ -27144,6 +27388,9 @@ class Store {
     const r = parseRequest(value3);
     requireProgress(r.op === "delegate");
     return this.transaction(true, () => declareIntent(this.db, r, actor, () => this.validateDeclarationMutation(r, actor)));
+  }
+  delegationRefusals(sourceId, sessionId) {
+    return this.transaction(false, () => delegationRefusals(this.db, this.readBinding, sourceId, sessionId));
   }
   handoff(value3, actor, now3 = Date.now(), epoch, capture) {
     const r = parseReportRequest(value3);
@@ -27588,15 +27835,15 @@ class Store {
     });
   }
   changeDigest(request3) {
-    const { source, plan, to, after, cleanupRev } = request3;
+    const { source, plan: plan2, to, after, cleanupRev } = request3;
     requireProgress(Number.isSafeInteger(to) && to > 0 && (after === undefined || Number.isSafeInteger(after) && after > 0 && after <= to) && Number.isSafeInteger(cleanupRev) && cleanupRev >= 0);
     return this.transaction(false, () => {
       const storeId = String(this.db.prepare("SELECT store_id FROM meta WHERE singleton=1").get().store_id);
       requireProgress(storeId === request3.storeId, "conflict");
-      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan);
+      const live = this.db.prepare("SELECT revision,json_extract(snapshot,'$.lifecycle') AS lifecycle,json_extract(snapshot,'$.id') AS id,json_extract(snapshot,'$.sourceId') AS sourceId,json_extract(snapshot,'$.revision') AS snapshotRevision FROM plans WHERE source=? AND id=?").get(source, plan2);
       requireProgress(live, "not-found");
-      requireProgress(live.id === plan && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
-      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan) : undefined;
+      requireProgress(live.id === plan2 && live.sourceId === source && live.snapshotRevision === live.revision && Number.isSafeInteger(live.revision) && Number(live.revision) > 0 && ["active", "finished", "cancelled", "failed"].includes(String(live.lifecycle)), "corrupt");
+      const state = cleanupInstalled(this.db) ? cleanupState(this.db, source, plan2) : undefined;
       requireProgress(state?.state !== "deleted", "not-found");
       const cleanup2 = { state: state?.state ?? "visible", revision: Number(state?.generation ?? 0) };
       requireProgress(cleanup2.revision === cleanupRev, "conflict");
@@ -27607,7 +27854,7 @@ class Store {
         storeId,
         sourceBinding: { ...this.readBinding },
         source,
-        plan,
+        plan: plan2,
         cleanup: cleanup2,
         interval: { after: after ?? null, to, targetLifecycle: null, targetReportedAt: null, latestRevision: Number(live.revision), currentLifecycle: live.lifecycle, coverageStart: null, coverageEnd: null, coverageStartReportedAt: null, coverageEndReportedAt: null },
         availability: "target-unavailable",
@@ -27630,7 +27877,7 @@ class Store {
         else
           result3.work.intervalSnapshots++;
         const remaining = DIGEST_LIMITS.bytes - result3.work.inputBytes;
-        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan, revision);
+        const row2 = this.db.prepare("SELECT length(CAST(snapshot AS BLOB)) AS bytes,CASE WHEN length(CAST(snapshot AS BLOB))<=? THEN snapshot ELSE NULL END AS snapshot FROM revisions WHERE source=? AND plan=? AND revision=?").get(remaining, source, plan2, revision);
         if (!row2) {
           reason("missing-snapshot");
           return null;
@@ -27642,7 +27889,7 @@ class Store {
         result3.work.inputBytes += Number(row2.bytes);
         let p = null;
         try {
-          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan, revision);
+          p = validateDigestSnapshot(JSON.parse(String(row2.snapshot)), source, plan2, revision);
         } catch {}
         if (!p)
           reason("invalid-snapshot");
@@ -28101,427 +28348,6 @@ function activationFingerprint(binding, plugin, guidance) {
 
 // plugin/activation.ts
 import path7 from "node:path";
-var REPORT_TOOL = "agent_progress_report";
-var ACTIVATION_GUIDANCE = `# Agent progress (companion)
-Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
-Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
-For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
-For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
-Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
-For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
-var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
-var DISPATCH_OBSERVATION = "A dispatch ran.";
-var DISPATCH_HINT = "If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. Do not repeat reports or declarations that are already current.";
-var TRACKER_OBSERVATION = "A tracker update was observed.";
-var HINT_CONDITION = "If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.";
-var ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
-var PLAN = 1;
-var DISPATCH = 2;
-var TRACKER = 4;
-function hintText(reasons) {
-  return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
-}
-var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
-var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
-var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
-var iso = (value3) => typeof value3 === "string" && /^\d{4}-\d\d-\d\dT/.test(value3) && Number.isFinite(Date.parse(value3));
-var strings = (value3, fields2) => fields2.every((field) => typeof value3[field] === "string");
-var nullable = (value3, fields2, valid) => fields2.every((field) => value3[field] === undefined || value3[field] === null || valid(value3[field]));
-function failureMarker(value3) {
-  return record2(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
-}
-function proxyReason(event) {
-  if (event.status !== "completed" || !record2(event.input) || !record2(event.result) || !record2(event.result.output))
-    return 0;
-  const output = event.result.output;
-  if ([event, event.result, event.result.metadata, output].some(failureMarker))
-    return 0;
-  if (event.tool === "subagent") {
-    const input = event.input;
-    return strings(input, ["agent", "description", "prompt"]) && (input.sessionID === undefined || boundedID(input.sessionID)) && (input.model === undefined || typeof input.model === "string") && (input.background === undefined || typeof input.background === "boolean") && boundedID(output.sessionID) && (output.status === "running" || output.status === "completed") && typeof output.output === "string" ? DISPATCH : 0;
-  }
-  if (event.tool === "linear_save_issue") {
-    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record2(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record2(v)) ? TRACKER : 0;
-  }
-  if (event.tool === "linear_save_comment") {
-    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record2(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record2) ? TRACKER : 0;
-  }
-  return 0;
-}
-function possiblePath(value3) {
-  if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
-    return false;
-  const name = path7.basename(value3).toLowerCase();
-  if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
-    return false;
-  return /^plan\.(md|markdown)$/.test(name) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
-}
-function planPath(value3, directory) {
-  const relative = path7.relative(directory, path7.resolve(directory, value3));
-  if (!relative || relative === ".." || relative.startsWith(`..${path7.sep}`) || path7.isAbsolute(relative))
-    return false;
-  const parts2 = relative.split(path7.sep);
-  return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
-}
-function successfulPath(event) {
-  if (event.tool !== "write" && event.tool !== "edit")
-    return;
-  if (event.status !== "completed" || !record2(event.input) || !possiblePath(event.input.path))
-    return;
-  const result3 = event.result;
-  const output = result3.output;
-  if (!record2(output) || output.partial === true || result3.metadata?.partial === true)
-    return;
-  if (event.tool === "write") {
-    if (output.operation === "write" && typeof output.existed === "boolean" && typeof output.target === "string" && typeof output.resource === "string")
-      return event.input.path;
-  } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
-    return event.input.path;
-}
-function resumeText(selection, assignedOnly = false) {
-  let candidates = selection.candidates.slice(0, 3);
-  let omitted = selection.omitted || selection.candidates.length > 3;
-  while (candidates.length) {
-    const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
-    const text = [
-      assignedOnly ? "## Assigned task reporting — current recorded scope" : unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
-      "Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.",
-      ...assignedOnly ? ["Report actual working changes; report blocked with a safe reason and next action when known; report done only for your assigned work. Use fresh operation IDs and the revision from a fresh read. Never alter structure, siblings or plan lifecycle. An optional handoff taskUpdate explicitly commits final statuses with the claim; outcome alone changes no tasks. Repeated guidance needs no report."] : [],
-      ...unconfirmed ? ["Read and confirm a target before reporting."] : [],
-      ...selection.incomplete || omitted ? ["Additional eligible candidates may exist; discovery or output is incomplete."] : [],
-      "Progress source IDs below are namespace metadata, not the tool’s document-path source argument.",
-      ...candidates.map((p) => `- source ${p.sourceId}; plan ${p.plan}; title ${JSON.stringify(p.title)}; last-known revision ${p.revision}. Read: agent_progress_report ${JSON.stringify({ op: "read", plan: p.plan })}` + (p.scope === "assigned" ? `
-  Assigned-only scope: ${JSON.stringify(p.itemIds)}. Contribute only these assigned item IDs; no broader scope is implied.` : ""))
-    ].join(`
-`);
-    if (Buffer.byteLength(text, "utf8") <= 4096)
-      return text;
-    candidates = candidates.slice(0, -1);
-    omitted = true;
-  }
-  return "";
-}
-async function registerActivation(ctx, source, enabled, recovery, onContext) {
-  const pending = new Map;
-  const recent = new Set;
-  const owned = Symbol("agent-progress-section");
-  function section(hint, capsule = "") {
-    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
-
-${hintText(hint)}` : "") + (capsule ? `
-
-${capsule}` : "") };
-    Object.defineProperty(part, owned, { value: { hint } });
-    return part;
-  }
-  const registrations = [];
-  let disposed = false;
-  let disableEpoch = 0;
-  const compactions = new Map;
-  const replay = new Set;
-  let eventFloor = Date.now();
-  let binding = JSON.stringify([source.id, source.verified, recovery?.storeId]);
-  let recoveryAvailable = false, lookupBusy = false;
-  let stopRecovery;
-  let held;
-  function retireRecovery() {
-    eventFloor = Math.max(eventFloor, Date.now());
-    for (const attempt of compactions.values())
-      eventFloor = Math.max(eventFloor, attempt.fence);
-    compactions.clear();
-    held?.abort();
-  }
-  function control() {
-    const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
-    if (current !== binding) {
-      binding = current;
-      retireRecovery();
-      pending.clear();
-      disableEpoch++;
-    }
-    try {
-      if (enabled() === true)
-        return true;
-    } catch {}
-    pending.clear();
-    retireRecovery();
-    disableEpoch++;
-    return false;
-  }
-  function remember(set3, key2, cap) {
-    set3.add(key2);
-    if (set3.size > cap)
-      set3.delete(set3.values().next().value);
-  }
-  function flag(recipient, reason) {
-    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
-    if (pending.size > 128)
-      pending.delete(pending.keys().next().value);
-  }
-  const key = (sessionID) => JSON.stringify([source.id, sessionID]);
-  function retain(sessionKey, attempt, created) {
-    compactions.delete(sessionKey);
-    compactions.set(sessionKey, attempt);
-    if (compactions.size > 128) {
-      const oldest = compactions.keys().next().value;
-      eventFloor = Math.max(eventFloor, created, compactions.get(oldest).fence);
-      compactions.delete(oldest);
-    }
-  }
-  function clearWindow(attempt) {
-    delete attempt.start;
-    delete attempt.firstHook;
-    delete attempt.lastHook;
-    delete attempt.ambiguous;
-  }
-  async function session(sessionID) {
-    const value3 = await ctx.session.get({ sessionID });
-    return value3.id === sessionID && path7.isAbsolute(value3.location.directory) ? value3 : undefined;
-  }
-  async function dispose() {
-    disposed = true;
-    pending.clear();
-    recent.clear();
-    retireRecovery();
-    replay.clear();
-    await stopRecovery?.();
-    for (const registration of registrations.splice(0)) {
-      try {
-        await registration.dispose();
-      } catch {}
-    }
-  }
-  try {
-    registrations.push(await ctx.tool.hook("execute.after", async (event) => {
-      try {
-        if (disposed || !source.verified)
-          return;
-        const candidate2 = successfulPath(event);
-        const proxy = proxyReason(event);
-        if (!candidate2 && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
-          return;
-        const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
-        if (recent.has(call) || !control())
-          return;
-        const epoch = disableEpoch;
-        const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate2 && !planPath(candidate2, caller.location.directory) || recent.has(call))
-          return;
-        let parentID;
-        if (candidate2 && boundedID(caller.parentID) && caller.parentID !== caller.id) {
-          try {
-            const parent = await session(caller.parentID);
-            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path7.resolve(parent.location.directory) === path7.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
-              parentID = parent.id;
-          } catch {}
-        }
-        if (disposed || epoch !== disableEpoch || !control() || recent.has(call))
-          return;
-        remember(recent, call, 256);
-        flag(key(event.sessionID), candidate2 ? PLAN : proxy);
-        if (parentID)
-          flag(key(parentID), PLAN);
-      } catch {}
-    }));
-    const context4 = async (event) => {
-      const removeOwned = () => {
-        for (let i = event.system.length - 1;i >= 0; i--)
-          if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
-            event.system.splice(i, 1);
-      };
-      try {
-        for (let i = 0;i < event.system.length; i++)
-          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
-            event.system[i] = section(event.system[i][owned].hint);
-          }
-        if (disposed) {
-          removeOwned();
-          return;
-        }
-        if (!boundedID(event.sessionID))
-          return;
-        const sessionKey = key(event.sessionID);
-        const active = control();
-        const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
-        const armed = attempt?.pending === true;
-        attempt.pending = false;
-        clearWindow(attempt);
-        attempt.fence = Math.max(attempt.fence, Date.now());
-        if (recovery && active)
-          retain(sessionKey, attempt, attempt.fence);
-        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
-          pending.delete(sessionKey);
-          removeOwned();
-          return;
-        }
-        const epoch = disableEpoch;
-        const caller = await session(event.sessionID);
-        if (disposed || epoch !== disableEpoch) {
-          removeOwned();
-          return;
-        }
-        if (!caller || !control()) {
-          pending.delete(sessionKey);
-          removeOwned();
-          return;
-        }
-        let capsule = "";
-        const assignedOnly = !armed && !!caller.parentID;
-        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
-          const controller = new AbortController;
-          held = controller;
-          const now3 = recovery.now ?? (() => performance.now());
-          const deadline = now3() + 1000;
-          const alive = () => !controller.signal.aborted && !disposed && (assignedOnly || recoveryAvailable) && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
-          let timer;
-          lookupBusy = true;
-          const lookup2 = (async () => {
-            try {
-              if (!alive())
-                return null;
-              const identity4 = await recovery.identity(event.sessionID, alive, controller.signal);
-              return alive() ? identity4 : null;
-            } catch {
-              return null;
-            } finally {
-              lookupBusy = false;
-              if (held === controller)
-                held = undefined;
-            }
-          })();
-          try {
-            const identity4 = await Promise.race([lookup2, new Promise((resolve3) => {
-              timer = setTimeout(() => {
-                controller.abort();
-                resolve3(null);
-              }, 1000);
-            })]);
-            if (identity4 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity4.sourceId === source.id && identity4.sessionId === event.sessionID) {
-              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity4.sourceId, sessionId: identity4.sessionId, parentId: identity4.parentId, ancestry: identity4.ancestry });
-              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
-                capsule = resumeText(assignedOnly ? { ...selection, candidates: selection.candidates.filter((p) => p.scope === "assigned") } : selection, assignedOnly);
-            }
-          } catch {} finally {
-            if (timer !== undefined)
-              clearTimeout(timer);
-            controller.abort();
-          }
-        }
-        if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
-          removeOwned();
-          return;
-        }
-        const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
-        if (existing !== -1) {
-          if (capsule)
-            event.system[existing] = section(event.system[existing][owned].hint, capsule);
-          return;
-        }
-        const hint = pending.get(sessionKey) ?? 0;
-        event.system.push(section(hint, capsule));
-        pending.delete(sessionKey);
-      } catch {
-        pending.delete(key(event.sessionID));
-        try {
-          removeOwned();
-        } catch {}
-      }
-    };
-    registrations.push(await ctx.session.hook("context", context4));
-    onContext?.(context4);
-    if (recovery) {
-      const abort = new AbortController;
-      let registration;
-      let events;
-      stopRecovery = async () => {
-        abort.abort();
-        await events;
-      };
-      try {
-        const stream = ctx.event.subscribe({ signal: abort.signal });
-        if (!stream || typeof stream[Symbol.asyncIterator] !== "function")
-          throw new Error("unsupported");
-        registration = await ctx.session.hook("compaction", (event) => {
-          if (disposed || !control() || !source.verified || !boundedID(event.sessionID) || !identifier2(event.sessionID))
-            return;
-          const sessionKey = key(event.sessionID), observed = Date.now();
-          const attempt = { ...compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false } };
-          if (!Number.isFinite(observed) || observed <= Math.max(eventFloor, attempt.fence)) {
-            attempt.pending = false;
-            clearWindow(attempt);
-            retain(sessionKey, attempt, eventFloor);
-            return;
-          }
-          attempt.pending = false;
-          if (attempt.lastHook !== undefined && observed < attempt.lastHook)
-            attempt.ambiguous = true;
-          attempt.firstHook ??= observed;
-          attempt.lastHook = observed;
-          retain(sessionKey, attempt, observed);
-        });
-        recoveryAvailable = true;
-        events = (async () => {
-          try {
-            for await (const event of stream) {
-              if (disposed || !control() || !source.verified)
-                continue;
-              if (event.type !== "session.compaction.started" && event.type !== "session.compaction.ended" && event.type !== "session.compaction.failed")
-                continue;
-              const { sessionID, reason } = event.data;
-              if (!identifier2(sessionID) || !boundedID(event.id) || !Number.isSafeInteger(event.durable.seq) || event.durable.seq < 1 || event.durable.aggregateID !== sessionID || !Number.isFinite(event.created) || event.location?.directory !== ctx.location.directory || reason !== "auto" && reason !== "manual")
-                continue;
-              const sessionKey = key(sessionID);
-              if (event.created <= eventFloor) {
-                eventFloor = Math.max(eventFloor, compactions.get(sessionKey)?.fence ?? eventFloor);
-                compactions.delete(sessionKey);
-                continue;
-              }
-              const eventKey = JSON.stringify([sessionKey, event.id]);
-              const previous = compactions.get(sessionKey);
-              if (replay.has(eventKey) || previous && event.durable.seq <= previous.seq)
-                continue;
-              remember(replay, eventKey, 256);
-              const started = event.type === "session.compaction.started";
-              const ended = event.type === "session.compaction.ended";
-              const next = { ...previous ?? { seq: 0, fence: eventFloor, pending: false } };
-              next.seq = event.durable.seq;
-              next.pending = false;
-              if (event.created <= next.fence || event.created > Date.now()) {
-                clearWindow(next);
-              } else if (started) {
-                if (next.start)
-                  next.ambiguous = true;
-                next.start = { reason, created: event.created };
-              } else {
-                next.pending = ended && !next.ambiguous && next.start?.reason === reason && next.firstHook !== undefined && next.lastHook !== undefined && next.start.created < next.firstHook && next.firstHook <= next.lastHook && next.lastHook < event.created;
-                clearWindow(next);
-                next.fence = Math.max(next.fence, event.created);
-              }
-              retain(sessionKey, next, event.created);
-            }
-          } catch {} finally {
-            recoveryAvailable = false;
-            retireRecovery();
-            try {
-              await registration?.dispose();
-            } catch {}
-          }
-        })();
-      } catch {
-        abort.abort();
-        recoveryAvailable = false;
-        retireRecovery();
-        try {
-          await registration?.dispose();
-        } catch {}
-      }
-    }
-    return dispose;
-  } catch (error) {
-    await dispose();
-    throw error;
-  }
-}
 
 // plugin/subagent-runs.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -28815,6 +28641,7 @@ function createRunCapture(ctx, options2) {
 }
 
 // plugin/delegation.ts
+var PARALLEL_DELEGATION_HINT = "Only one delegation can be pending per coordinator. For parallel sub-agents, dispatch first, then link each returned child session to its tasks; or delegate one at a time and wait for binding before declaring the next.";
 async function registerDelegation(ctx, options2) {
   options2.store.installDelegationControl();
   const capture = createRunCapture(ctx, { store: options2.store, sourceId: options2.sourceId, identity: options2.identity, alive: options2.alive });
@@ -28864,6 +28691,486 @@ async function registerDelegation(ctx, options2) {
   } catch (e) {
     await dispose();
     throw e;
+  }
+}
+
+// plugin/activation.ts
+var REPORT_TOOL = "agent_progress_report";
+var ACTIVATION_GUIDANCE = `# Agent progress (companion)
+Keep your canonical planner. If not already reported, deliberately mirror actionable plans and meaningful changes with agent_progress_report; repeated guidance alone is not a reason to report again. Use stable plan/item IDs, batch changes, and read current state after compaction or a revision conflict.
+Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
+For document-backed plans, explicitly name the canonical source only when appropriate; report-time read permissions still apply. Structured or conversation-only plans need items but no source: never manufacture a file.
+For a plan you own, coordinate structure, delegation and explicit finish/cancel/fail; finish successfully only when actionable work is all resolved. For another session's plan, contribute only explicitly assigned items; parentage or an agent name grants no authority. Unlinked work stays independent. Never bypass restricted-child tool policies; a permitted parent may explicitly relay an assigned child's progress without impersonating it.
+Needs-input leaves actual work pending or blocked. A successful write is not readiness; Ready is not review or acceptance, and worker completion is not accepted handoff. Conditional hints about a dispatch or tracker update are observations, not reports or proof of work start, review, approval or completion. Never infer completion from activity or invent review work. Never manufacture a file or report automatically on each turn.
+For known assigned work, read the plan and declare op=delegate with task IDs before supported subagent dispatch; include plan/task IDs and the reporting expectation in the assignment. ${PARALLEL_DELEGATION_HINT} IDs alone grant no authority. Binding may follow the first execution: report only after verified binding on a naturally occurring context, with no automatic preparation or resume. A first-turn-only child may have no task reports. Assigned children report actual working, blocked (safe reason/next action when known), and final done/blocked changes only for their tasks, using fresh reads and operation IDs. Optional handoff taskUpdate commits explicit final task changes atomically with the claim; a bare handoff changes no tasks. Never alter siblings, structure or plan lifecycle.`;
+var PLAN_OBSERVATION = "A possible plan document was written or revised, possibly by a delegated child.";
+var DISPATCH_OBSERVATION = "A dispatch ran.";
+var DISPATCH_HINT = `If you coordinate planned or multi-step work and no Agent Progress plan mirrors it yet, start one now (op=start) with the complete real task structure before further dispatches. For planned work, declare op=delegate with assigned task IDs before the next dispatch so a permitted, verified assigned sub-agent can report its own tasks. ${PARALLEL_DELEGATION_HINT} Do not repeat reports or declarations that are already current.`;
+var TRACKER_OBSERVATION = "A tracker update was observed.";
+var HINT_CONDITION = "If this is tracked plan work and its canonical state is unreported, report only meaningful work you own or are authorized to coordinate; otherwise continue your workflow. This hint grants no assignment or authority and implies no work start, review, approval or completion.";
+var ACTIVATION_HINT = `${PLAN_OBSERVATION} ${HINT_CONDITION}`;
+var PLAN = 1;
+var DISPATCH = 2;
+var TRACKER = 4;
+function hintText(reasons) {
+  return [reasons & PLAN ? PLAN_OBSERVATION : "", reasons & DISPATCH ? `${DISPATCH_OBSERVATION} ${DISPATCH_HINT}` : "", reasons & TRACKER ? TRACKER_OBSERVATION : "", HINT_CONDITION].filter(Boolean).join(" ");
+}
+var record2 = (value3) => typeof value3 === "object" && value3 !== null && !Array.isArray(value3);
+var boundedID = (value3) => typeof value3 === "string" && value3.length > 0 && value3.length <= 512;
+var uuid = (value3) => typeof value3 === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value3);
+var iso = (value3) => typeof value3 === "string" && /^\d{4}-\d\d-\d\dT/.test(value3) && Number.isFinite(Date.parse(value3));
+var strings = (value3, fields2) => fields2.every((field) => typeof value3[field] === "string");
+var nullable = (value3, fields2, valid) => fields2.every((field) => value3[field] === undefined || value3[field] === null || valid(value3[field]));
+function failureMarker(value3) {
+  return record2(value3) && ["error", "isError", "partial"].some((field) => Object.hasOwn(value3, field) && value3[field] !== false && value3[field] !== undefined && value3[field] !== null);
+}
+function proxyReason(event) {
+  if (event.status !== "completed" || !record2(event.input) || !record2(event.result) || !record2(event.result.output))
+    return 0;
+  const output = event.result.output;
+  if ([event, event.result, event.result.metadata, output].some(failureMarker))
+    return 0;
+  if (event.tool === "subagent") {
+    const input = event.input;
+    return strings(input, ["agent", "description", "prompt"]) && (input.sessionID === undefined || boundedID(input.sessionID)) && (input.model === undefined || typeof input.model === "string") && (input.background === undefined || typeof input.background === "boolean") && boundedID(output.sessionID) && (output.status === "running" || output.status === "completed") && typeof output.output === "string" ? DISPATCH : 0;
+  }
+  if (event.tool === "linear_save_issue") {
+    return strings(output, ["id", "uuid", "title", "status", "statusType", "createdAt", "updatedAt", "team", "teamId", "url", "gitBranchName", "createdBy", "createdById"]) && /^[A-Z][A-Z0-9]*-\d+$/.test(output.id) && uuid(output.uuid) && iso(output.createdAt) && iso(output.updatedAt) && ["unstarted", "started", "completed", "canceled"].includes(output.statusType) && record2(output.priority) && Number.isInteger(output.priority.value) && output.priority.value >= 0 && output.priority.value <= 4 && typeof output.priority.name === "string" && Array.isArray(output.labels) && nullable(output, ["completedAt", "canceledAt", "archivedAt", "startedAt"], iso) && nullable(output, ["dueDate", "slaStartedAt", "slaMediumRiskAt", "slaHighRiskAt", "slaBreachesAt"], (v) => typeof v === "string") && nullable(output, ["assignee", "assigneeId", "project", "projectId", "parent"], (v) => typeof v === "string" || record2(v)) ? TRACKER : 0;
+  }
+  if (event.tool === "linear_save_comment") {
+    return uuid(output.id) && strings(output, ["body", "createdAt", "updatedAt"]) && iso(output.createdAt) && iso(output.updatedAt) && Array.isArray(output.attachments) && record2(output.author) && strings(output.author, ["id", "name"]) && nullable(output, ["parentId"], uuid) && nullable(output, ["resolvedAt", "quotedText"], (v) => typeof v === "string") && nullable(output, ["onBehalfOf"], record2) ? TRACKER : 0;
+  }
+  return 0;
+}
+function possiblePath(value3) {
+  if (typeof value3 !== "string" || !value3 || value3.length > 4096 || /[\x00-\x1f\x7f]/.test(value3))
+    return false;
+  const name = path7.basename(value3).toLowerCase();
+  if (!/\.(md|markdown)$/.test(name) || /^(readme|todo)\.(md|markdown)$/.test(name))
+    return false;
+  return /^plan\.(md|markdown)$/.test(name) || path7.normalize(value3).split(path7.sep).slice(0, -1).some((part) => part === "plans" || part === ".plans");
+}
+function planPath(value3, directory) {
+  const relative = path7.relative(directory, path7.resolve(directory, value3));
+  if (!relative || relative === ".." || relative.startsWith(`..${path7.sep}`) || path7.isAbsolute(relative))
+    return false;
+  const parts2 = relative.split(path7.sep);
+  return /^plan\.(md|markdown)$/i.test(parts2.at(-1)) || parts2.slice(0, -1).some((part) => part === "plans" || part === ".plans");
+}
+function successfulPath(event) {
+  if (event.tool !== "write" && event.tool !== "edit")
+    return;
+  if (event.status !== "completed" || !record2(event.input) || !possiblePath(event.input.path))
+    return;
+  const result3 = event.result;
+  const output = result3.output;
+  if (!record2(output) || output.partial === true || result3.metadata?.partial === true)
+    return;
+  if (event.tool === "write") {
+    if (output.operation === "write" && typeof output.existed === "boolean" && typeof output.target === "string" && typeof output.resource === "string")
+      return event.input.path;
+  } else if (Number.isSafeInteger(output.replacements) && output.replacements > 0 && Array.isArray(output.files) && output.files.length === 1 && typeof output.files[0]?.file === "string")
+    return event.input.path;
+}
+var REFUSAL_REASONS = {
+  "relevant-change": "the declared tasks changed",
+  conflict: "the plan changed and retained history could not prove those changes irrelevant to the declared tasks",
+  "structural-change": "the plan structure changed",
+  closed: "the plan was closed or archived",
+  assignment: "the tasks or native child no longer met assignment requirements",
+  "source-unverified": "the source could not be verified",
+  unverified: "the dispatch or child identity could not be verified",
+  binding: "the dispatch or child identity could not be verified",
+  "dispatch-unconfirmed": "the reserved dispatch did not return a verified child",
+  "incomplete-proof": "the retained proof was incomplete",
+  "missing-proof": "required retained proof was missing",
+  budget: "the proof exceeded its bounded lookup budget",
+  disabled: "capture was disabled or its generation changed",
+  "capture-disabled": "capture was disabled or its generation changed",
+  "not-found": "the plan or required evidence was unavailable"
+};
+function delegationRefusalText(selection) {
+  if (!selection.refusals.length)
+    return selection.complete ? "" : "Additional refusal evidence may be unavailable or omitted.";
+  const header = "## Delegation not applied";
+  const recovery = "Read current state. To recover, re-declare at the current revision before a new dispatch, or explicitly link the verified returned child session to its tasks. A refusal grants no assignment and changes no task status.";
+  const lines = [];
+  let omitted = !selection.complete;
+  for (const refusal of selection.refusals.slice(0, 3)) {
+    const d = refusal.declaration;
+    let tasks2 = d.taskIds.slice();
+    const prefix = `- Plan ${JSON.stringify(refusal.plan)}, declaration ${JSON.stringify(d.oid)} at revision ${d.declaredRevision}`;
+    let line = "";
+    do {
+      line = `${prefix}; tasks ${JSON.stringify(tasks2)}${tasks2.length < d.taskIds.length ? " (additional task IDs omitted)" : ""}: not applied because ${REFUSAL_REASONS[refusal.reason] ?? "binding could not be safely verified"}.`;
+      if (Buffer.byteLength([header, ...lines, line, recovery, "Additional refusal evidence may be unavailable or omitted."].join(`
+`)) <= 4096)
+        break;
+      tasks2 = tasks2.slice(0, -1);
+    } while (tasks2.length);
+    if (!tasks2.length) {
+      omitted = true;
+      break;
+    }
+    lines.push(line);
+  }
+  omitted ||= lines.length < selection.refusals.length;
+  return [header, ...lines, recovery, ...omitted ? ["Additional refusal evidence may be unavailable or omitted."] : []].join(`
+`);
+}
+function resumeText(selection, assignedOnly = false) {
+  let candidates = selection.candidates.slice(0, 3);
+  let omitted = selection.omitted || selection.candidates.length > 3;
+  while (candidates.length) {
+    const unconfirmed = selection.incomplete || omitted || candidates.length !== 1;
+    const text = [
+      assignedOnly ? "## Assigned task reporting — current recorded scope" : unconfirmed ? "## Progress resume — unconfirmed candidates" : "## Progress resume — recorded pointer",
+      "Read current state before any mutation, including after a conflict. This selects no action and grants no new permission.",
+      ...assignedOnly ? ["Report actual working changes; report blocked with a safe reason and next action when known; report done only for your assigned work. Use fresh operation IDs and the revision from a fresh read. Never alter structure, siblings or plan lifecycle. An optional handoff taskUpdate explicitly commits final statuses with the claim; outcome alone changes no tasks. Repeated guidance needs no report."] : [],
+      ...unconfirmed ? ["Read and confirm a target before reporting."] : [],
+      ...selection.incomplete || omitted ? ["Additional eligible candidates may exist; discovery or output is incomplete."] : [],
+      "Progress source IDs below are namespace metadata, not the tool’s document-path source argument.",
+      ...candidates.map((p) => `- source ${p.sourceId}; plan ${p.plan}; title ${JSON.stringify(p.title)}; last-known revision ${p.revision}. Read: agent_progress_report ${JSON.stringify({ op: "read", plan: p.plan })}` + (p.scope === "assigned" ? `
+  Assigned-only scope: ${JSON.stringify(p.itemIds)}. Contribute only these assigned item IDs; no broader scope is implied.` : ""))
+    ].join(`
+`);
+    if (Buffer.byteLength(text, "utf8") <= 4096)
+      return text;
+    candidates = candidates.slice(0, -1);
+    omitted = true;
+  }
+  return "";
+}
+async function registerActivation(ctx, source, enabled, recovery, onContext) {
+  const pending = new Map;
+  const recent = new Set;
+  const owned = Symbol("agent-progress-section");
+  function section(hint, capsule = "", refusal = "") {
+    const part = { type: "text", text: ACTIVATION_GUIDANCE + (hint ? `
+
+${hintText(hint)}` : "") + (capsule ? `
+
+${capsule}` : "") + (refusal ? `
+
+${refusal}` : "") };
+    Object.defineProperty(part, owned, { value: { hint } });
+    return part;
+  }
+  const registrations = [];
+  let disposed = false;
+  let disableEpoch = 0;
+  const compactions = new Map;
+  const replay = new Set;
+  let eventFloor = Date.now();
+  let binding = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+  let recoveryAvailable = false, lookupBusy = false;
+  let stopRecovery;
+  let held;
+  function retireRecovery() {
+    eventFloor = Math.max(eventFloor, Date.now());
+    for (const attempt of compactions.values())
+      eventFloor = Math.max(eventFloor, attempt.fence);
+    compactions.clear();
+    held?.abort();
+  }
+  function control() {
+    const current = JSON.stringify([source.id, source.verified, recovery?.storeId]);
+    if (current !== binding) {
+      binding = current;
+      retireRecovery();
+      pending.clear();
+      disableEpoch++;
+    }
+    try {
+      if (enabled() === true)
+        return true;
+    } catch {}
+    pending.clear();
+    retireRecovery();
+    disableEpoch++;
+    return false;
+  }
+  function remember(set3, key2, cap) {
+    set3.add(key2);
+    if (set3.size > cap)
+      set3.delete(set3.values().next().value);
+  }
+  function flag(recipient, reason) {
+    pending.set(recipient, (pending.get(recipient) ?? 0) | reason);
+    if (pending.size > 128)
+      pending.delete(pending.keys().next().value);
+  }
+  const key = (sessionID) => JSON.stringify([source.id, sessionID]);
+  function retain(sessionKey, attempt, created) {
+    compactions.delete(sessionKey);
+    compactions.set(sessionKey, attempt);
+    if (compactions.size > 128) {
+      const oldest = compactions.keys().next().value;
+      eventFloor = Math.max(eventFloor, created, compactions.get(oldest).fence);
+      compactions.delete(oldest);
+    }
+  }
+  function clearWindow(attempt) {
+    delete attempt.start;
+    delete attempt.firstHook;
+    delete attempt.lastHook;
+    delete attempt.ambiguous;
+  }
+  async function session(sessionID) {
+    const value3 = await ctx.session.get({ sessionID });
+    return value3.id === sessionID && path7.isAbsolute(value3.location.directory) ? value3 : undefined;
+  }
+  async function dispose() {
+    disposed = true;
+    pending.clear();
+    recent.clear();
+    retireRecovery();
+    replay.clear();
+    await stopRecovery?.();
+    for (const registration of registrations.splice(0)) {
+      try {
+        await registration.dispose();
+      } catch {}
+    }
+  }
+  try {
+    registrations.push(await ctx.tool.hook("execute.after", async (event) => {
+      try {
+        if (disposed || !source.verified)
+          return;
+        const candidate2 = successfulPath(event);
+        const proxy = proxyReason(event);
+        if (!candidate2 && !proxy || !boundedID(event.sessionID) || !boundedID(event.messageID) || !boundedID(event.id))
+          return;
+        const call = JSON.stringify([source.id, event.sessionID, event.messageID, event.id]);
+        if (recent.has(call) || !control())
+          return;
+        const epoch = disableEpoch;
+        const caller = await session(event.sessionID);
+        if (disposed || epoch !== disableEpoch || !control() || !caller || candidate2 && !planPath(candidate2, caller.location.directory) || recent.has(call))
+          return;
+        let parentID;
+        if (candidate2 && boundedID(caller.parentID) && caller.parentID !== caller.id) {
+          try {
+            const parent = await session(caller.parentID);
+            if (parent && boundedID(caller.projectID) && parent.projectID === caller.projectID && path7.resolve(parent.location.directory) === path7.resolve(caller.location.directory) && parent.parentID !== parent.id && parent.parentID !== caller.id)
+              parentID = parent.id;
+          } catch {}
+        }
+        if (disposed || epoch !== disableEpoch || !control() || recent.has(call))
+          return;
+        remember(recent, call, 256);
+        flag(key(event.sessionID), candidate2 ? PLAN : proxy);
+        if (parentID)
+          flag(key(parentID), PLAN);
+      } catch {}
+    }));
+    const context4 = async (event) => {
+      const removeOwned = () => {
+        for (let i = event.system.length - 1;i >= 0; i--)
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned))
+            event.system.splice(i, 1);
+      };
+      try {
+        for (let i = 0;i < event.system.length; i++)
+          if (Object.prototype.hasOwnProperty.call(event.system[i], owned)) {
+            event.system[i] = section(event.system[i][owned].hint);
+          }
+        if (disposed) {
+          removeOwned();
+          return;
+        }
+        if (!boundedID(event.sessionID))
+          return;
+        const sessionKey = key(event.sessionID);
+        const active = control();
+        const attempt = compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false };
+        const armed = attempt?.pending === true;
+        attempt.pending = false;
+        clearWindow(attempt);
+        attempt.fence = Math.max(attempt.fence, Date.now());
+        if (recovery && active)
+          retain(sessionKey, attempt, attempt.fence);
+        if (!source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) || !active) {
+          pending.delete(sessionKey);
+          removeOwned();
+          return;
+        }
+        const epoch = disableEpoch;
+        const caller = await session(event.sessionID);
+        if (disposed || epoch !== disableEpoch) {
+          removeOwned();
+          return;
+        }
+        if (!caller || !control()) {
+          pending.delete(sessionKey);
+          removeOwned();
+          return;
+        }
+        let capsule = "";
+        const assignedOnly = !armed && !!caller.parentID;
+        if ((armed && recoveryAvailable || assignedOnly) && recovery && !lookupBusy && compactions.get(sessionKey) === attempt) {
+          const controller = new AbortController;
+          held = controller;
+          const now3 = recovery.now ?? (() => performance.now());
+          const deadline = now3() + 1000;
+          const alive = () => !controller.signal.aborted && !disposed && (assignedOnly || recoveryAvailable) && control() && epoch === disableEpoch && source.verified && compactions.get(sessionKey) === attempt && now3() < deadline;
+          let timer;
+          lookupBusy = true;
+          const lookup2 = (async () => {
+            try {
+              if (!alive())
+                return null;
+              const identity4 = await recovery.identity(event.sessionID, alive, controller.signal);
+              return alive() ? identity4 : null;
+            } catch {
+              return null;
+            } finally {
+              lookupBusy = false;
+              if (held === controller)
+                held = undefined;
+            }
+          })();
+          try {
+            const identity4 = await Promise.race([lookup2, new Promise((resolve3) => {
+              timer = setTimeout(() => {
+                controller.abort();
+                resolve3(null);
+              }, 1000);
+            })]);
+            if (identity4 && alive() && Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL) && identity4.sourceId === source.id && identity4.sessionId === event.sessionID) {
+              const selection = recovery.read({ storeId: recovery.storeId, sourceId: identity4.sourceId, sessionId: identity4.sessionId, parentId: identity4.parentId, ancestry: identity4.ancestry });
+              if (selection && selection.storeId === recovery.storeId && selection.sourceId === source.id && selection.sessionId === event.sessionID)
+                capsule = resumeText(assignedOnly ? { ...selection, candidates: selection.candidates.filter((p) => p.scope === "assigned") } : selection, assignedOnly);
+            }
+          } catch {} finally {
+            if (timer !== undefined)
+              clearTimeout(timer);
+            controller.abort();
+          }
+        }
+        if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
+          removeOwned();
+          return;
+        }
+        let refusal = "";
+        try {
+          const selection = recovery?.refusals?.(event.sessionID);
+          if (selection?.sourceId === source.id && selection.sessionId === event.sessionID)
+            refusal = delegationRefusalText(selection);
+        } catch {}
+        if (disposed || !control() || epoch !== disableEpoch || !source.verified || !Object.prototype.hasOwnProperty.call(event.tools, REPORT_TOOL)) {
+          removeOwned();
+          return;
+        }
+        const existing = event.system.findIndex((part) => Object.prototype.hasOwnProperty.call(part, owned));
+        if (existing !== -1) {
+          event.system[existing] = section(event.system[existing][owned].hint, capsule, refusal);
+          return;
+        }
+        const hint = pending.get(sessionKey) ?? 0;
+        event.system.push(section(hint, capsule, refusal));
+        pending.delete(sessionKey);
+      } catch {
+        pending.delete(key(event.sessionID));
+        try {
+          removeOwned();
+        } catch {}
+      }
+    };
+    registrations.push(await ctx.session.hook("context", context4));
+    onContext?.(context4);
+    if (recovery) {
+      const abort = new AbortController;
+      let registration;
+      let events;
+      stopRecovery = async () => {
+        abort.abort();
+        await events;
+      };
+      try {
+        const stream = ctx.event.subscribe({ signal: abort.signal });
+        if (!stream || typeof stream[Symbol.asyncIterator] !== "function")
+          throw new Error("unsupported");
+        registration = await ctx.session.hook("compaction", (event) => {
+          if (disposed || !control() || !source.verified || !boundedID(event.sessionID) || !identifier2(event.sessionID))
+            return;
+          const sessionKey = key(event.sessionID), observed = Date.now();
+          const attempt = { ...compactions.get(sessionKey) ?? { seq: 0, fence: eventFloor, pending: false } };
+          if (!Number.isFinite(observed) || observed <= Math.max(eventFloor, attempt.fence)) {
+            attempt.pending = false;
+            clearWindow(attempt);
+            retain(sessionKey, attempt, eventFloor);
+            return;
+          }
+          attempt.pending = false;
+          if (attempt.lastHook !== undefined && observed < attempt.lastHook)
+            attempt.ambiguous = true;
+          attempt.firstHook ??= observed;
+          attempt.lastHook = observed;
+          retain(sessionKey, attempt, observed);
+        });
+        recoveryAvailable = true;
+        events = (async () => {
+          try {
+            for await (const event of stream) {
+              if (disposed || !control() || !source.verified)
+                continue;
+              if (event.type !== "session.compaction.started" && event.type !== "session.compaction.ended" && event.type !== "session.compaction.failed")
+                continue;
+              const { sessionID, reason } = event.data;
+              if (!identifier2(sessionID) || !boundedID(event.id) || !Number.isSafeInteger(event.durable.seq) || event.durable.seq < 1 || event.durable.aggregateID !== sessionID || !Number.isFinite(event.created) || event.location?.directory !== ctx.location.directory || reason !== "auto" && reason !== "manual")
+                continue;
+              const sessionKey = key(sessionID);
+              if (event.created <= eventFloor) {
+                eventFloor = Math.max(eventFloor, compactions.get(sessionKey)?.fence ?? eventFloor);
+                compactions.delete(sessionKey);
+                continue;
+              }
+              const eventKey = JSON.stringify([sessionKey, event.id]);
+              const previous = compactions.get(sessionKey);
+              if (replay.has(eventKey) || previous && event.durable.seq <= previous.seq)
+                continue;
+              remember(replay, eventKey, 256);
+              const started = event.type === "session.compaction.started";
+              const ended = event.type === "session.compaction.ended";
+              const next = { ...previous ?? { seq: 0, fence: eventFloor, pending: false } };
+              next.seq = event.durable.seq;
+              next.pending = false;
+              if (event.created <= next.fence || event.created > Date.now()) {
+                clearWindow(next);
+              } else if (started) {
+                if (next.start)
+                  next.ambiguous = true;
+                next.start = { reason, created: event.created };
+              } else {
+                next.pending = ended && !next.ambiguous && next.start?.reason === reason && next.firstHook !== undefined && next.lastHook !== undefined && next.start.created < next.firstHook && next.firstHook <= next.lastHook && next.lastHook < event.created;
+                clearWindow(next);
+                next.fence = Math.max(next.fence, event.created);
+              }
+              retain(sessionKey, next, event.created);
+            }
+          } catch {} finally {
+            recoveryAvailable = false;
+            retireRecovery();
+            try {
+              await registration?.dispose();
+            } catch {}
+          }
+        })();
+      } catch {
+        abort.abort();
+        recoveryAvailable = false;
+        retireRecovery();
+        try {
+          await registration?.dispose();
+        } catch {}
+      }
+    }
+    return dispose;
+  } catch (error) {
+    await dispose();
+    throw error;
   }
 }
 
@@ -29002,6 +29309,7 @@ async function setupCompanion(ctx, read, managed) {
         }, {
           storeId: b.storeId,
           read: (request3) => store.resumePlans(request3),
+          refusals: (sessionID) => store.delegationRefusals(b.source.id, sessionID),
           identity: (sessionID, alive2, signal) => identity4(sessionID, "unknown", { alive: alive2, signal })
         }, (callback3) => {
           firstContext = callback3;
@@ -29059,8 +29367,7 @@ async function setupCompanion(ctx, read, managed) {
             const actor = await identity4(caller.sessionID, caller.agent);
             guard();
             if (r.op === "handoff") {
-              const child2 = await sessionIdentity(ctx, b.source, caller.sessionID, caller.agent, { alive, signal: abort.signal, sameScope: true });
-              guard();
+              const child2 = actor;
               const previous2 = r.taskUpdate ? current.get(child2.sourceId, r.taskUpdate.plan) : undefined;
               const reference2 = previous2?.document.path;
               const capture2 = reference2 ? await captureDocument(reference2, child2.directory, (resource) => ctx.permission.assert({ sessionID: caller.sessionID, agent: caller.agent, source: { type: "tool", messageID: caller.messageID, id: caller.id }, action: "read", resources: [resource] }), { ...previous2.document, canonicalPath: previous2.boundCanonicalPath }) : undefined;
@@ -29093,7 +29400,7 @@ async function setupCompanion(ctx, read, managed) {
             return { content: JSON.stringify(receipt) };
           } catch (e) {
             const error = e instanceof ProgressError ? e : storageError(e);
-            return { content: JSON.stringify({ error: error.code, ...error.revision !== undefined ? { rev: error.revision } : {}, ...error.code === "invalid" && error.hint ? { hint: error.hint } : {} }) };
+            return { content: JSON.stringify({ error: error.code, ...error.revision !== undefined ? { rev: error.revision } : {}, ...error.code === "invalid" && error.hint ? { hint: error.hint } : {}, ...e instanceof PendingDelegationError ? { hint: PARALLEL_DELEGATION_HINT } : {} }) };
           }
         }
       });
@@ -29127,7 +29434,7 @@ Valid start with a prerequisite (replace synthetic IDs, title and items with the
 {"op":"start","plan":"synthetic-plan","title":"Synthetic report","oid":"start-1","rev":0,"items":[{"id":"task-1","title":"Prepare sample data","kind":"task","status":"working"},{"id":"task-2","title":"Summarize sample data","kind":"task","status":"pending","dependencies":["task-1"]}]}
 \`\`\`
 Read uses only op=read, one concrete plan identifier and optional 0-based page; no wildcard, oid or rev. Omit page for a compact summary without items; explicit page returns paged detail. Read the current revision before updating an existing plan. Source is optional; denied document access still commits valid checklist changes with diagnostics. Never manufacture a file or report automatically on each turn. Empty/all-skipped plans cannot finish successfully.
-For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required; an unconfirmed reserved call consumes intent instead of transferring it. Intervening plan changes produce a conflict, not rebasing. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
+For known assigned work, coordinators should read and declare op=delegate with plan, oid, expected rev and assign task IDs (max50) before supported dispatch. Include plan/task IDs and the reporting expectation in the assignment; IDs alone grant no authority. Durable intent reserves the first subsequently admitted supported subagent dispatch in database order; it survives restart without a five-minute expiry. Declaration is not assignment or dispatch. Identical retries never re-arm; a second nonempty declaration conflicts. ${PARALLEL_DELEGATION_HINT} Empty assign explicitly cancels before re-declaration. Verified immediate child/source/project/location and complete ancestry are required for automatic binding; an unconfirmed reserved call consumes intent instead of transferring it. Binding can tolerate intervening unrelated reports or assignments only with complete retained proof; relevant changes or incomplete proof refuse. Read a refusal before deliberately re-declaring or explicitly linking. Installed tools are trusted to report their structured child identity; task aliases and result text are not identity proof. Explicit link and assigned parent relay remain the fallback. Binding never changes task status, counts, report time or reporting permissions. Report after binding only, on naturally occurring contexts: no automatic preparation or resume; a first-turn-only child may have no task reports.
 A permitted child may optionally send one final op=handoff with fresh oid, safe single-line summary (max200 JavaScript code units, no NUL/newlines) and outcome done/partial/blocked. No top-level plan/rev, child, attributed identity or source is accepted. Optional taskUpdate:{plan,rev,changes} atomically commits explicit changes for 1–50 unique currently assigned tasks with the claim, returning taskReceipt. Read current state first; report actual working, blocked with safe reason/nextAction when known, and final done/blocked changes. Never change siblings, structure or plan lifecycle. Bare handoff is claim-only; outcome never selects task status or acceptance. Host completion is independent and absence is normal. Identical full-input retries use the same oid; altered reuse or another claim for that execution conflicts. Older tools reject taskUpdate; inspect state before deliberately using separate reports, never strip fields automatically. Never expose a tool hidden by host policy, relay a handoff for another session, copy prompts/results or include secrets. Bounds and literal rendering do not redact secrets. A run/claim marked done can still have explicitly blocked tasks; only explicit task reports change them.`;
 var GUIDANCE = `Keep using your canonical planner/task workflow. This tool mirrors it, never replaces it. If not already reported, report at meaningful start/change/delegation/finish boundaries, not on a timer. Repeated guidance alone is not a reason to report again. Activity/idle/age never means completion. Structured/conversation-only plans need no source; never manufacture a file. Document-backed plans may explicitly name their canonical source, subject to report-time read permissions. Authored/Ready is not reviewed/accepted; worker completion is not accepted handoff. Needs-input keeps actual work pending/blocked. Never invent review work or infer progress from file writes.
 Tracker updates are not Agent Progress reports. For tracked plan work, explicitly mirror meaningful unreported canonical state at PLAN_READY handoff, review approval, owner approval and work start; do not report again if already current. These are actual canonical states, not events the plugin detects. At PLAN_READY mirror the actionable structure, not implementation completion or approval. Review approval and owner approval are separate; reflect existing canonical gate/work items only, never invent review tasks to report. Work start means actual work, not a dispatch having run.
