@@ -513,8 +513,10 @@ try {
     // Reopening also verifies a cold client has the same manual-diagnosis view.
     await open(L,mode,390,844,undefined,true);
     await wait(`d.querySelector('[data-testid="setup-migration-unavailable"]')`,'fresh refused partial status');
-    const refused=await guest(`const p=d.querySelector('[data-testid="setup-panel"]');return {text:p.textContent,partial:p.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??'',resume:!!p.querySelector('[data-testid="setup-migration-resume"],[data-testid="setup-migrate"],[data-testid="setup-enable"]')}`);
-    check(`fresh-${L}:refusal-keeps-folder-no-resume-or-codes`,!refused.resume&&refused.partial.includes(FRESH[L].partial)&&!/managed-|switch|migrat|перенос|переход|切换|迁移/i.test(refused.text),refused);
+    const refused=await guest(`const p=d.querySelector('[data-testid="setup-panel"]');return {text:p.textContent,recovery:[...p.querySelectorAll('.ap-doc-warn')].map(n=>n.textContent).join(' '),partial:p.querySelector('[data-testid="setup-fresh-partial"]')?.textContent??'',resume:!!p.querySelector('[data-testid="setup-migration-resume"],[data-testid="setup-migrate"],[data-testid="setup-enable"]')}`);
+    // General delivery guidance can discuss toggling a plugin. Only recovery
+    // copy must not describe this fresh setup as a legacy switch.
+    check(`fresh-${L}:refusal-keeps-folder-no-resume-or-codes`,!refused.resume&&refused.partial.includes(FRESH[L].partial)&&!/managed-/.test(refused.text)&&!/switch|migrat|перенос|переход|切换|迁移/i.test(refused.recovery),refused);
     check(`fresh-${L}:refusal-fits-390`,(await fitsAll()).ok,await fitsAll());
     await shot(`fresh-refused-partial-${L}`);
     freshRefusal=null;
