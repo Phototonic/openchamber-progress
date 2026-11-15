@@ -1,4 +1,4 @@
-# Bounded managed migration contract
+# Bounded managed setup contract
 
 ## Fresh consumer contract (wire 2 / journal 3)
 
@@ -9,8 +9,13 @@ Fresh setup is a separate family on the same route: `ManagedFreshStepRequest`,
 `managedStepRequest` / `parseManagedStepJournal` remain migration-only. The
 transport dispatcher uses `managedSetupStepRequest`. Do not widen version-1
 shapes or translate a wrong-family journal. `managedFreshSteps: 1` is independent
-of `managedMigrationSteps: 1`; advertise fresh only after backend integration.
+of `managedMigrationSteps: 1`; the integrated service advertises both on every OS.
 Setup projects format 3 only as optional `delivery.freshProgress`.
+Before a fresh journal exists, `delivery.migration` is `none` and both progress
+fields are omitted. Fresh progress is projected only after prepare settles, with
+non-null lastCompleted; it never appears in `migrationProgress`. Retained review
+capture is freshly observed when the review can do so within budget, otherwise
+unknown. Prepare/status projections without an observation remain unknown.
 
 The fresh review/progress disclose `planKind: fresh`, `storeMode` (`create` or
 `retain`), `sourceMode` (`create` or `reuse`), `capturePolicy` (`enable-new` or
@@ -60,17 +65,24 @@ only through the corresponding durable intent. A crash before that checkpoint
 requires manual diagnosis, not automatic adoption. No raw security-backend bypass,
 claim file, repair, new schema or cached ACL authority is introduced.
 
-These interfaces are frozen for consumers; primitive/full-step launch allocations
-remain estimates until measured. The six-launch gate includes all validation,
+These interfaces are frozen for consumers. Portable full-engine measurements are
+prepare/store-directory/create-store 6 launches each, expectation/register-source/
+publish-binding/enable/reconcile 5 each, settled replay 1 and normal controls 3.
+Fresh inspection pages measure 1 each (retained roots can take 2); ordinary Setup
+status measures 3 before selection/4 after. Injected failure settlement remains
+within 6. These substitute only the OS-spawn boundary; native timing, NTFS ACLs
+and successful 2.5-second-helper journeys remain separate pending CI gates.
+The six-launch gate includes all validation,
 actual attempts, creation, readback and failure settlement. Stop for a technical
 amendment if safe creation cannot fit. Format-3 observation before storage exists
 requires the fresh journal reader, not `readBinding` on an absent directory.
 Rollback retains journals/data and requires a fresh-capable build for recovery.
 
-This is the version-1 wire / format-2 journal contract for the step engine and
-Setup client. The backend endpoint and bounded HTTP workers are implemented;
-portable query accounting is **not a native performance result**. Client rendering
-and native acceptance remain separate release-integration gates.
+The sections below retain the wire-1 / format-2 migration contract. Wire 2 and
+format 3 extend the same engine, worker and single Setup driver, not a parallel
+installer. Backend HTTP and rendered synthetic-shell journeys are integrated;
+portable query accounting is **not a native performance result**. Native acceptance
+and independent trust-boundary/error-path review remain delivery gates.
 
 ## Owners and invariants
 
@@ -119,7 +131,7 @@ generated runtime integration belongs with the engine/client deliverable.
 Advertise literal `managedMigrationSteps: 1` in authenticated health (including
 starting) and `SetupRead.delivery`. This capability says the protocol exists,
 not that a source is admitted. POST `/v1/setup/managed-step` accepts only the
-`ManagedStepRequest` union. Unknown keys/versions/actions, non-safe-integer or
+`ManagedSetupStepRequest` union (wire 1 migration, wire 2 fresh). Unknown keys/versions/actions, non-safe-integer or
 negative sequences/batches, over-limit UTF-8 bodies/paths/cursors, NUL paths and
 invalid identities refuse before work. `operationId` is a client-generated
 lowercase UUID v4; review/request/target/plan digests are lowercase SHA-256 hex.
@@ -188,7 +200,9 @@ crash is treated as effect uncertainty and requires explicit observation/recover
 Old-shaped `/v1/setup/managed-migrate` returns exactly HTTP 409
 `{"error":"managed-action-required"}` with **zero security spawns and migration
 writes**, before candidate discovery. It is never a partial-success 200.
-`managed-inspect` and `managed-configure` remain supported for fresh configuration
+On Windows `managed-inspect` and `managed-configure` also return exactly that 409
+object with zero workers, security launches or product writes before body parsing.
+On Linux/macOS they remain supported for fresh configuration
 with no canonical legacy installation or migration journal. They retain the
 existing controller's nonce-bound review, explicit confirmation and fresh locked
 revalidation. Presence of legacy discovery or any journal refuses these routes
@@ -209,25 +223,22 @@ Retain independently bounded capture-off control. No unnegotiated fallback from
 the migration client to the old route. Delivery revision stays 1; the new literal
 capability is independent.
 
-### Fresh-configuration compatibility limit
+### Non-Windows fresh-configuration compatibility
 
-Fresh inspection/configuration is an explicit exception to the step-request
-budget and worker boundary in this release. It keeps the synchronous 1.3.0
+The old Linux/macOS inspection/configuration routes remain outside the negotiated
+step-request budget and worker boundary. They keep the synchronous 1.3.0
 controller and security timeouts, holding the same target-derived scope **and**
 Store writer slots for the entire request, including publication and cleanup.
 A busy slot refuses before controller admission; fresh configuration cannot race
 a migration or capture worker. The fence releases on completion/failure, not on
 client disconnection. Partial bootstrap still has the existing recovery limits.
 
-Portable Windows-helper accounting measures 3 actual launches for empty-store
-inspection and 24 for successful fresh configuration, not a six-launch claim.
-At roughly 0.3 seconds per launch configuration may fit the 20-second host limit,
-but this is not a native latency guarantee. Slow PowerShell can exceed that limit
-and synchronous configuration can delay health. A timeout is not rollback:
-inspect state before explicitly retrying; never reset or repair it automatically.
-Linux/macOS do not launch PowerShell. The follow-up is a fresh plan variant on
-the step engine (`prepare`, `expectation`, `publish-binding`, `enable`, `reconcile`),
-not permission to weaken current authorization or silently split a confirmed call.
+Historical portable Windows-helper accounting measured 3/24 launches for these
+old routes. Windows now refuses them before work; the current UI uses negotiated
+fresh steps on all platforms. A compatibility timeout is not rollback: inspect
+state before explicitly retrying; never reset or repair it automatically.
+Linux/macOS do not launch PowerShell. No old-route fallback is allowed from the
+fresh client if its capability is absent.
 
 The five-second HTTP request/header timeouts limit receipt of bytes (HTTP 408),
 not handler execution after body parsing. They are not a five-second setup
@@ -236,7 +247,7 @@ launch and 350 ms subsequent launches: both fresh inspection and confirmation
 complete beyond five seconds but below the host limit. Real helper timeouts
 remain `windows-security-unavailable` outside step mode and
 `managed-step-deadline` inside it, not generic `storage` failures. This does not
-remove the slow-helper or synchronous-health limitation above.
+authorize old Windows routes or remove bounded refusals for persistently slow helpers.
 
 ## Request budgets and measured-stage split
 

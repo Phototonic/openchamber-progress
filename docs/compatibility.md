@@ -456,15 +456,28 @@ warnings, stops on failures (including failed replays), and offers explicit
 pause, resume, status and reviewed capture recovery. Portable fixtures and
 rendered synthetic-shell QA do not certify native Windows latency or ACLs.
 
-**Known fresh-configure limit:** no-legacy setup retains the existing nonce-bound
-inspect/configure flow under the same writer fences. Portable helper accounting
-measures 3 inspection launches and 24 configuration launches. The synchronous
-configuration path can still exceed the host limit with very slow PowerShell and
-delay health. Timeout does not undo partial changes: inspect before explicitly
-retrying, without deleting recovery records or changing permissions. Follow-up
-work is a separate fresh-configuration plan on the step engine, not a relaxation
-of validation or consent. See [Setup](setup.md#install-review-confirm) for recovery
-and scope; native Windows results for this revision remain pending CI.
+Fresh setup now uses the same bounded worker on every supported OS, negotiating
+`managedFreshSteps:1` independently from migration support. Wire 2 and journal
+format 3 are fresh-only; migration retains wire 1/format 2 and format-1 recovery.
+Setup exposes optional `freshProgress`, never fresh data in `migrationProgress`.
+New UI/old service shows update-together guidance with no old-route fallback.
+Old UI/new Windows service receives exactly 409 `managed-action-required` from
+old inspect/configure, before workers/security queries/writes. Linux/macOS keep
+those compatibility routes only without legacy discovery or any journal. Old
+migrate refuses on all platforms. Older journal readers refuse format 3 even when
+complete; rollback retains all data/journals and uses fresh-capable recovery, not
+down-conversion or global-loader restoration.
+
+The former 1.4.0 fresh Windows 3/24-launch synchronous exception is replaced by
+portable measured prepare/folder/database requests at 6 launches each and later
+effects at 5. New databases initialize off; retained stores keep capture and IDs.
+These counters and rendered synthetic-shell checks do not certify native Windows
+latency/ACLs. The native driver now covers empty default/custom targets, retained
+reconnection, restart, dropped replies, pause/resume and slower-helper refusal.
+Successful 2.5-second-helper completion, per-request undelayed eight-second and
+six-launch gates and concurrent zero-query health remain pending CI for this
+revision. Timeout never undoes changes or permits cleanup/permission repair. See
+[Setup](setup.md#install-review-confirm) for partial-creation refusal boundaries.
 
 The `Windows setup, storage and capture` CI job retains the existing native
 platform suite and adds `tests/backend/windows-service.test.ts`, in the same
