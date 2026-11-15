@@ -816,6 +816,13 @@ At-a-glance tracking of a plan's sub-agents that goes beyond a todo list, withou
 
 A finished run is not a finished task, and a claim is not acceptance: a child that finished and claims done while its task is blocked shows all three as they are.
 
+A recorded Running run whose child session is absent from a current, complete
+host census adds **not seen in OpenChamber now** beside Running and its existing
+start time, with an accessible name. This qualifier never changes the recorded
+outcome or counts and disappears when the session is listed again. Missing or
+stale census data, incomplete directory coverage, truncation, conflicts or cycles
+never prove absence and never show the qualifier. Terminal runs never show it.
+
 ![Rail with a plan in scope: summary counts, a child waiting for an answer, a running child with its tasks, and a finished child that claims done while its task is still blocked (synthetic example)](images/subagent-runs-rail.png)
 
 - **A plan in scope is required (defect A).** Rail: the plan shown for the selected session. Work Status: the featured plan. Page: the selected plan, rooted in its coordinator (`ownerSessionId`), verified-source plans only, independent of the host's selection; the History and Document tabs have none. Without a plan in scope — including "No plan reported for this session", a draft, a child session without a plan, or a page with no plan selected — there is no section, heading, count, root row, history control or prompt, however many children the host lists or runs. Such views start no sub-agent read or reconciliation, and a plan → no-plan change retires the visit so held replies paint nothing. With a plan in scope, the section is still absent when there is nothing useful (no running, waiting, task-linked or recorded child). This is display gating only: the companion keeps capturing dispatches and plan-free child handoffs.
