@@ -15,6 +15,7 @@ import {beginManagedStep,advanceManagedStep,controlManagedStep} from '../../setu
 import {PlatformRequestBudget,withPlatformRequestBudget} from '../../shared/platform.ts';
 import {Store} from '../../shared/store.ts';
 import {observeManagedSetup} from '../../setup/managed-observation.ts';
+import {nextAction} from '../../ui/shared/setup-steps.ts';
 import type {ManagedStepRequest,ManagedFreshStepRequest} from '../../shared/managed-steps.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
@@ -128,6 +129,27 @@ test('fresh checkpointed database permits legitimate live WAL sidecars during no
       assert.equal(observeManagedSetup(f.env).status.delivery!.freshProgress!.capture.state,'off');
       assert.equal(f.advance().disposition,'applied');
     }finally{live.close();}
+  }finally{f.cleanup();}
+});
+
+for(const complete of [false,true])test(`fresh ${complete?'complete':'checkpointed pending'} observation retains progress on a transient Store read failure`,t=>{
+  const f=freshFixture();try{
+    f.begin();f.until('expectation');
+    if(complete)while(f.journal().migration.state!=='complete')assert.equal(f.advance().disposition,'applied');
+    const journal=fs.readFileSync(migrationFile(f.env)),database=fs.readFileSync(f.database);
+    assert.ok(f.journal().migration.created.database);
+    const mock=t.mock.method(Store.prototype,'list',()=>{throw Object.assign(new Error('synthetic read failure'),{code:complete?'EACCES':'EBUSY'});});
+    let status:ReturnType<typeof observeManagedSetup>['status'];
+    try{status=observeManagedSetup(f.env).status;}finally{mock.mock.restore();}
+    assert.equal(mock.mock.callCount(),1);
+    assert.equal(status.delivery!.migration,complete?'complete':'pending');
+    assert.equal(status.delivery!.freshProgress!.state,complete?'complete':'pending');
+    assert.equal(nextAction(status.delivery!.freshProgress!),complete?null:'continue');
+    assert.equal(status.delivery!.freshProgress!.capture.state,'unknown');
+    assert.equal(status.captureEnabled,null);assert.equal(status.verified,false);
+    assert.deepEqual(status.diagnostics,[complete?'EACCES':'EBUSY']);
+    assert.deepEqual(fs.readFileSync(migrationFile(f.env)),journal);
+    assert.deepEqual(fs.readFileSync(f.database),database);
   }finally{f.cleanup();}
 });
 

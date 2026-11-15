@@ -264,10 +264,13 @@ never permits adoption or repair. A committed database can reconcile only agains
 its exact creation intent, frozen identity, supported schema and initial off state.
 Creation reconciliation also requires absent sidecars, even when the database
 exists; this does not forbid normal WAL sidecars after its creation checkpoint.
-Ordinary status presents an uncheckpointed created folder as unavailable for manual
-diagnosis, without a Resume action. It retains the fresh-setup presentation family
-even when no usable progress can be shown. Setup keeps the partial folder and does
-not delete, reuse or repair it. A damaged expectation is a state conflict
+If Store observation fails on an unfinished format-3 operation with no database
+creation checkpoint, ordinary status reports unavailable for manual diagnosis,
+without a Resume action. Checkpointed and complete operations instead retain their
+pending or complete progress with unknown capture and the read diagnostic attached.
+Status retains the fresh-setup presentation family even when no usable progress can
+be shown. Any partial folder is retained, never deleted, reused or repaired to force
+continuation. A damaged expectation is a state conflict
 (`managed-migration-conflict`), not a storage outage.
 Fresh refusal banners and diagnostics use localized setup wording, not migration
 copy or raw error codes. The ordinary Turn on capture action is not offered during

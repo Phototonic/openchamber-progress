@@ -122,9 +122,9 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null,family?
       }finally{store.close();}
     }catch(error){
       unavailable.diagnostics=[observationDiagnostic(error)];
-      if(journal?.migration.format===3){
-        // A journal alone cannot prove a refused creation resumable. Preserve
-        // it privately, but expose manual diagnosis rather than a Resume card.
+      if(journal?.migration.format===3&&journal.migration.created.database===null&&journal.migration.state!=='complete'){
+        // Only uncheckpointed creation lacks the evidence for a Resume card.
+        // Later read failures retain pending/complete progress with unknown capture.
         unavailable.delivery!.migration='unavailable';
         delete unavailable.delivery!.freshProgress;
       }

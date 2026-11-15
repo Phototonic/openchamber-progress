@@ -9214,7 +9214,7 @@ function readSetup(env, expectedDescriptor, family) {
       }
     } catch (error) {
       unavailable.diagnostics = [observationDiagnostic(error)];
-      if (journal?.migration.format === 3) {
+      if (journal?.migration.format === 3 && journal.migration.created.database === null && journal.migration.state !== "complete") {
         unavailable.delivery.migration = "unavailable";
         delete unavailable.delivery.freshProgress;
       }

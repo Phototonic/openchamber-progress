@@ -185,8 +185,11 @@ Ordinary Setup may include `delivery.planKind: fresh` as a presentation-only hin
 even when partial fresh setup has no usable progress. Absence retains the older
 migration presentation; the hint grants no admission or recovery authority.
 A refused fresh Store observation clears public fresh progress and reports
-unavailable for manual diagnosis, rather than offering Resume on journal evidence
-alone. Private journal state is retained. Trusted internal hints from the other
+unavailable for manual diagnosis only for an unfinished format-3 journal with
+`created.database === null`, rather than offering Resume on uncheckpointed creation
+evidence alone. Checkpointed and complete journals retain pending/complete progress,
+unknown capture and the read diagnostic. Private journal state is retained.
+Trusted internal hints from the other
 journal family fall back to the request's cold reader; the durable journal must
 still match the wire version.
 
