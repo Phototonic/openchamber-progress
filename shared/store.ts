@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { GRAPH_LIMITS, graphCheck, graphInteger, graphItems, graphRecord } from './plan-graph.ts';
 import { identifier, type PlanGraphRequest, type PlanGraphRead } from './progress.ts';
 import * as runs from './subagent-runs.ts';
+import { installReceiptIndex, receiptIndexInstalled } from './receipt-index.ts';
 import { parseReportRequest, type Request } from './progress.ts';
 import { currentBinding } from './assignment-binding.ts';
 import { delegationRevision } from './delegation-validation.ts';
@@ -82,16 +83,18 @@ export class Store {
       const version = Number(this.db.prepare('PRAGMA user_version').get()!.user_version);
       if (!existed) {
         this.db.exec('BEGIN IMMEDIATE');
-        try { this.db.exec(SCHEMA); this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID()); this.db.exec('COMMIT'); }
+        try { this.db.exec(SCHEMA); this.db.prepare("INSERT INTO meta VALUES(1,?,1,'openchamber-agent-progress')").run(randomUUID()); installReceiptIndex(this.db); this.db.exec('COMMIT'); }
         catch (e) { this.db.exec('ROLLBACK'); throw e; }
       } else need(version === VERSION, 'schema');
       need(this.db.prepare('PRAGMA table_info(meta)').all().some(r=>r.name==='product'),'corrupt');
       need(this.db.prepare('SELECT product FROM meta WHERE singleton=1').get()?.product==='openchamber-agent-progress', 'corrupt');
+      // Ordinary opens (including writable service handles) validate, never migrate.
+      this.transaction(false,()=>receiptIndexInstalled(this.db));
     } catch (e) { this.db!?.close(); if(e instanceof PlatformError)throw e;throw storageError(e); }
     finally{finish();}
   }
   close() { this.db.close(); }
-  installSubagentRuns() { return this.transaction(true,()=>runs.installRuns(this.db)); }
+  installSubagentRuns() { return this.transaction(true,()=>{ installReceiptIndex(this.db); runs.installRuns(this.db); }); }
   subagentRunsAvailable() { return this.transaction(false,()=>runs.runsInstalled(this.db)); }
   subagentRunStorage() { return this.transaction(false,()=>runs.runStorageCompatibility(this.db)); }
   runControl() { return this.transaction(false,()=>runs.runControl(this.db)); }

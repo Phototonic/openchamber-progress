@@ -1211,6 +1211,30 @@ reported unsupported result, not a text-parsed child or successful execution.
 Controlled faults and actual native events are distinguished in evidence. The
 default combined fixture still includes its independently owned UI checks.
 
+## Receipt lookup index mixed-version compatibility
+
+The additive ordinary `receipts_source_oid ON receipts(source, oid)` index is
+compatible with unmodified 1.3.0 readers and writers. Protocol/base schema stay
+**2**; no receipt, snapshot or replay format changes. New store creation installs
+it, and companion activation adds it transactionally to existing stores. Ordinary
+opens validate an existing index without DDL and accept an absent one; reads and
+setup inspection do not install it. Owned-name collisions fail closed rather
+than being repaired. Exact `runs_*` and `cleanup_*` checks are unchanged.
+
+Downgrade keeps the index. Older writers, including connections opened before
+activation, maintain it through SQLite; newer activation reuses it. The isolated
+compatibility fixture loads the unmodified `v1.3.0` Store and covers creation,
+already-open writes, combined handoff replay, a downgraded reopen, read-only
+access, archive/restore/delete and reactivation. This does not override the
+separate restrictions for incompatible run formats.
+
+At both 1,000 and 50,000 synthetic receipts, `EXPLAIN QUERY PLAN` selects both
+`source` and `oid` through the new index rather than just the source prefix.
+The repeated-operation fixture admits three candidates (zero for an absent
+operation); its residual child predicate examines no more than that range at
+either history size. Timings are diagnostic, not a latency guarantee. See the
+[backend index contract](backend.md#receipt-lookup-index).
+
 ## Assigned-child reporting and session entry compatibility
 
 The current report tool accepts an optional explicit `handoff.taskUpdate` and
