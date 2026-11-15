@@ -2,17 +2,17 @@
 
 ### Requirement: Accepted phone entry surfaces
 
-Panel and page mobile contributions SHALL be enabled only after their respective physical-phone acceptance on a supported authenticated host route. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be checked and documented separately from opted-in surfaces.
+Panel and page mobile contributions SHALL be enabled for 1.4.0 by owner decision. Physical-phone acceptance SHALL run on the live release through a supported authenticated host route, with a hotfix if needed. This replaces the pre-release physical-phone gate. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be checked and documented separately from opted-in surfaces.
 
 #### Scenario: Phone user opens progress
 - **WHEN** the accepted panel is opened through the phone workspace, plus menu, Work Status or supported session action
 - **THEN** a discoverable readable progress view opens without a surface-unavailable error
 - **AND** the accepted page is available through More with the host's full-screen back navigation
 
-#### Scenario: Surface has not passed physical acceptance
-- **WHEN** only desktop narrow-width or touch-emulation evidence exists, or physical acceptance fails
-- **THEN** that evidence remains supporting evidence and the surface is not shipped as mobile-enabled
-- **AND** documentation identifies the untested or failed configuration
+#### Scenario: Physical acceptance follows release
+- **WHEN** the owner ships the mobile-enabled rail and board for 1.4.0 with only desktop narrow-width or touch-emulation evidence
+- **THEN** that evidence remains supporting evidence, not physical-phone acceptance
+- **AND** documentation identifies physical-phone acceptance as pending on the live release, with a hotfix if needed for a failed configuration
 
 ### Requirement: Usable phone layout and interaction
 

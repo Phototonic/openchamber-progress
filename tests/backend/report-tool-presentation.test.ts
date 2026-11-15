@@ -12,6 +12,8 @@ test('candidate SDK parser retains exact neutral report identity and literal tex
   if(!parsed.ok)throw new Error('candidate manifest rejected');
   assert.deepEqual(candidate.openchamber.contributes.tools,[presentation]);
   assert.deepEqual(parsed.manifest.contributes.tools,[presentation]);
+  assert.deepEqual(parsed.manifest.contributes.panel,{id:'agent-progress-probe',name:'Agent progress',icon:'checkbox-circle',entry:'ui/panel/index.html',mobile:true});
+  assert.deepEqual(parsed.manifest.contributes.page,{entry:'ui/page/index.html',title:'Agent progress',mobile:true});
   assert.equal(candidate.openchamber.engines.openchamber,'>=2.7.1');
   assert.equal(candidate.dependencies['@openchamber/sdk'],'2.7.1');
   assert.equal(candidate.dependencies['@opencode/plugin'],'2.1.4');
@@ -32,19 +34,22 @@ test('distribution projection preserves the complete presentation through the ac
   assert.equal(parsed.ok,true);
   if(!parsed.ok)throw new Error('distribution manifest rejected');
   assert.deepEqual(parsed.manifest.contributes.tools,[presentation]);
+  assert.deepEqual(parsed.manifest.contributes.panel,{id:'agent-progress-probe',name:'Agent progress',icon:'checkbox-circle',entry:'ui/panel/index.html',mobile:true});
+  assert.deepEqual(parsed.manifest.contributes.page,{entry:'ui/page/index.html',title:'Agent progress',mobile:true});
 });
 
-test('installed SDK supports independent literal-true mobile opt-ins; shipped manifest retains omission',()=>{
+test('installed SDK retains shipped mobile opt-ins and supports independent literal-true opt-ins',()=>{
   const sdk=JSON.parse(readFileSync('node_modules/@openchamber/sdk/package.json','utf8'));
   assert.equal(sdk.version,'2.7.1');
-  assert.equal('mobile' in candidate.openchamber.contributes.panel,false);
-  assert.equal('mobile' in candidate.openchamber.contributes.page,false);
+  assert.equal(candidate.openchamber.contributes.panel.mobile,true);
+  assert.equal(candidate.openchamber.contributes.page.mobile,true);
   for(const surface of ['panel','page']) {
     const enabled=structuredClone(candidate);enabled.openchamber.contributes[surface].mobile=true;
+    const other=surface==='panel'?'page':'panel';
+    delete enabled.openchamber.contributes[other].mobile;
     const parsed=parseManifestJson(JSON.stringify(enabled));assert.equal(parsed.ok,true);
     if(!parsed.ok)throw new Error('mobile fixture rejected');
     assert.equal((parsed.manifest.contributes[surface as 'panel'|'page'] as {mobile?:true}).mobile,true);
-    const other=surface==='panel'?'page':'panel';
     assert.equal('mobile' in (parsed.manifest.contributes[other] as object),false);
     for(const invalid of [false,'true',1]) {
       enabled.openchamber.contributes[surface].mobile=invalid;

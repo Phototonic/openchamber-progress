@@ -3,11 +3,17 @@
 ## Current use and development
 
 The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
-**2.7.0** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
+**2.7.1** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
 historical and do not certify managed delivery. Isolated Linux web 2.7.1 /
 independent OpenCode 2.2.7 acceptance is described below, including the native Git
 update journey. Installer, web UI and native results retain distinct scopes;
 no Windows/Electron certification is implied.
+
+The rail and board opt into OpenChamber's phone surfaces on **host 2.7.1+**.
+Older hosts ignore the mobile field, per SDK 2.7.1; the package's host floor
+remains >=2.7.1. The owner approved shipping the opt-in for 1.4.0, with
+physical-phone acceptance on the live release and a hotfix if needed. Parser,
+package and emulated-touch checks do not establish physical-phone acceptance.
 
 Normal setup approves **Add a plugin to OpenCode**, then explicitly selects a
 private Store. Watched-file delivery can retire after disable/removal without a
