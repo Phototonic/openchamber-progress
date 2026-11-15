@@ -254,8 +254,11 @@ export type SetupSuggestions = Record<keyof SetupTargets, SetupSuggestion | null
  */
 export interface CompanionUpdateView { state: 'current' | 'available' | 'newer-installed'; candidateVersion: string; rootVersion: string | null }
 export interface SetupView {
+  lastAction?: import('../../shared/progress.ts').SetupRead['lastAction'];
   delivery?: {
     kind: 'managed'; revision: 1;
+    managedMigrationSteps?: 1;
+    migrationProgress?: import('../../shared/managed-steps.ts').ManagedStepProgress;
     configuration: 'unconfigured' | 'configured' | 'invalid';
     migration: 'none' | 'available' | 'conflict' | 'unavailable' | 'pending' | 'complete';
     observation: 'unknown' | 'not-observed' | 'matching' | 'different';

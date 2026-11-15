@@ -62,6 +62,7 @@ function controller(surface: 'panel' | 'status' = 'panel', capable = true, searc
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} };
       if (name === './source.ts') return source;
+      if (name === './setup.ts') return { retireSetupSteps() {} };
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;
       if (name === './path.ts') return path;

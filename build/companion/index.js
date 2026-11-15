@@ -24248,9 +24248,11 @@ class PlatformError2 extends Error {
     this.reason = reason;
   }
 }
+var writerPortDenylist = new Set([25565, 26000, ...Array.from({ length: 16 }, (_, i) => 27015 + i), 27036, 27037, 28015, 28016, 28017, 28960]);
 var cache2 = new Map;
 var reparseCache = new Map;
 var scope3 = 0;
+var requestBudget;
 function platformSecurityScope(run3) {
   const finish = beginPlatformSecurityScope();
   try {
@@ -24298,9 +24300,39 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ${windowsPowerShellBootstrap}
 ${windowsDaclValidationScript}
+$writerMutex = $null
+$writerOwned = $false
+$failureCode = 'windows-security-unavailable'
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  if ($request.fence) {
+    $failureCode = 'managed-step-unsettled'
+    # The main service holds the TCP writer slot until its Node worker exits.
+    # This account-scoped mutex additionally fences a security child that might
+    # outlive that service. Obtain it BEFORE checking the current slot nonce.
+    # Every new writer's first fresh query crosses this barrier before effects.
+    $writerMutex = [Threading.Mutex]::new($false, ('Global\OpenChamberAgentProgressWriterV1-' + $user.Value))
+    try { $writerOwned = $writerMutex.WaitOne(15000) }
+    catch [Threading.AbandonedMutexException] { $writerOwned = $true }
+    if (-not $writerOwned) { $failureCode = 'managed-step-unsettled'; throw 'writer-unsettled' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $client.SendTimeout = 1000; $client.ReceiveTimeout = 1000
+      $client.Connect('127.0.0.1', [int]$request.fence.port)
+      $stream = $client.GetStream()
+      $bytes = [Text.Encoding]::ASCII.GetBytes(([string]$request.fence.nonce + [char]10))
+      $stream.Write($bytes, 0, $bytes.Length)
+      $reply = [byte[]]::new(3); $offset = 0
+      while ($offset -lt 3) {
+        $count = $stream.Read($reply, $offset, 3 - $offset)
+        if ($count -le 0) { throw 'writer-unsettled' }
+        $offset += $count
+      }
+      if ([Text.Encoding]::ASCII.GetString($reply) -ne ('ok' + [char]10)) { throw 'writer-unsettled' }
+    } finally { $client.Dispose() }
+    $failureCode = 'windows-security-unavailable'
+  }
   $allowed = @($user.Value, 'S-1-5-18', 'S-1-5-32-544')
   if ($request.create) {
     foreach ($target in $request.create) {
@@ -24343,7 +24375,11 @@ try {
     $results += @{owned=$owned;private=$private;reparse=$reparse;unsafeParent=$unsafeParent}
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress))
-} catch { [Console]::Out.Write('{"error":"windows-security-unavailable"}'); exit 1 }
+} catch { [Console]::Out.Write(('{"error":"' + $failureCode + '"}')); exit 1 }
+finally {
+  if ($writerOwned) { $writerMutex.ReleaseMutex() }
+  if ($null -ne $writerMutex) { $writerMutex.Dispose() }
+}
 `;
 function snapshot2(file) {
   const s = lstatSync(file, { bigint: true });
@@ -24383,17 +24419,31 @@ function windowsSecurityQuery(paths, create2 = [], spawn = spawnSync) {
       env[key] = process.env[key];
   }
   env.PSModulePath = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
-  const input = JSON.stringify({ paths, create: create2 });
+  const input = JSON.stringify({ paths, create: create2, ...requestBudget?.writerFence ? { fence: requestBudget.writerFence } : {} });
   const firstQuery = !securityQueryAttempted;
-  const run3 = () => spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: firstQuery ? 30000 : 1e4, maxBuffer: 1024 * 1024 });
+  const run3 = () => {
+    const timeout3 = requestBudget ? requestBudget.launch() : firstQuery ? 30000 : 1e4;
+    try {
+      return spawn(path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", securityScript], { input, encoding: "utf8", env, windowsHide: true, shell: false, timeout: timeout3, maxBuffer: 1024 * 1024 });
+    } finally {
+      securityQueryAttempted = true;
+    }
+  };
   let child;
-  try {
+  child = run3();
+  if (!requestBudget && firstQuery && child.error?.code === "ETIMEDOUT")
     child = run3();
-  } finally {
-    securityQueryAttempted = true;
+  requestBudget?.require();
+  if (requestBudget && child.error?.code === "ETIMEDOUT")
+    throw new PlatformError2("managed-step-deadline", "timeout");
+  if (requestBudget?.writerFence && !child.error && child.status !== 0) {
+    let failure;
+    try {
+      failure = JSON.parse(child.stdout.replace(/^\uFEFF/, ""));
+    } catch {}
+    if (failure && typeof failure === "object" && Object.keys(failure).length === 1 && failure.error === "managed-step-unsettled")
+      throw new PlatformError2("managed-step-unsettled", "exit");
   }
-  if (firstQuery && child.error?.code === "ETIMEDOUT")
-    child = run3();
   if (child.error || child.status !== 0)
     throw new PlatformError2("windows-security-unavailable", child.error ? child.error.code === "ETIMEDOUT" ? "timeout" : "spawn" : "exit");
   let results2;
@@ -24749,6 +24799,13 @@ function managedPath(value3, missing2 = false) {
 function managedSourceRoots(env = process.env) {
   return platformSecurityScope(() => {
     need(!env.OPENCODE_DB && !env.OPENCODE_CONFIG_DIR, "managed-scope-unsupported");
+    if (windows) {
+      const home2 = env.HOME ?? homedir();
+      const config = env.XDG_CONFIG_HOME ?? path3.join(home2, ".config"), data = env.XDG_DATA_HOME ?? path3.join(home2, ".local/share");
+      const inputs = [...env.XDG_CONFIG_HOME === undefined || env.XDG_DATA_HOME === undefined ? [home2] : [], config, data];
+      const roots = windowsPaths([...inputs, path3.join(config, "opencode"), path3.join(data, "opencode")], true);
+      return { configRoot: roots[inputs.length], dataRoot: roots[inputs.length + 1] };
+    }
     const home = () => managedPath(env.HOME ?? homedir(), true);
     const base = (key, fallback) => managedPath(env[key] !== undefined ? env[key] : path3.join(home(), fallback), true);
     return {
@@ -24760,7 +24817,8 @@ function managedSourceRoots(env = process.env) {
 function managedBindingFile(env = process.env) {
   return platformSecurityScope(() => {
     const { dataRoot } = managedSourceRoots(env);
-    const root = managedPath(path3.join(dataRoot, "agent-progress-managed"), true);
+    const proposed = path3.join(dataRoot, "agent-progress-managed");
+    const root = windows ? windowsPaths([proposed, path3.join(proposed, ".ownership.json"), path3.join(proposed, "progress-binding.json")], true)[0] : managedPath(proposed, true);
     const stat = lstatSync3(root, { throwIfNoEntry: false });
     if (stat) {
       need(stat.isDirectory() && privatePaths([root]));

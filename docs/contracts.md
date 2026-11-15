@@ -1722,7 +1722,9 @@ Backend builds produce service/companion/setup utility entries; package assembly
 joins these with the guest bundles to produce the installable extension ZIP.
 ## Waiting delegation projection (additive v2 read)
 
-Health advertises `delegationIntent: 1`. Only then may clients opt in with
+Ready snapshot health advertises `delegationIntent: 1` without data admission or
+Store queries. After starting/refused admission, clients use the fresh health
+capabilities, not the earlier snapshot. Only then may clients opt in with
 `delegationIntent=1` on existing GET `/v1/plans` and first-page `/v1/plan`
 reads. Other values and detail continuations with this option are refused.
 The option composes with `needsYou=1` and `needsYouTiming=1` on lists.

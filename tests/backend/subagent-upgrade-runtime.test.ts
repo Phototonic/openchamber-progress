@@ -108,7 +108,7 @@ test('released built companion upgrades only on real isolated loader reload and 
         // Run the tracked packaged service, pointed only at this disposable binding.
         service=spawn(process.execPath,[path.resolve('build/service/main.js')],{cwd:`${dir}/project`,env:{...env,OPENCHAMBER_SERVICE_PORT:String(servicePort),OPENCHAMBER_SERVICE_TOKEN:'synthetic-service-only'},stdio:'ignore'});
         const serviceRead=async(route:string)=>{const response=await fetch(`http://127.0.0.1:${servicePort}${route}`,{headers:{authorization:'Bearer synthetic-service-only'},signal:AbortSignal.timeout(2000)});assert.equal(response.status,200);return response.json() as Promise<any>;};
-        await wait(()=>serviceRead('/health'),v=>v.ready===true,'packaged service not ready');
+        await wait(async()=>{const health=await serviceRead('/health');if(health.state==='starting')await serviceRead('/v1/plans');return health;},v=>v.ready===true,'packaged service not ready');
         const query=new URLSearchParams({storeId:r.storeId,binding:JSON.stringify(r.binding),source:r.source,root:r.root});
         const read=()=>serviceRead(`/v1/subagent-runs?${query}`);
         assert.equal((await read()).runFormat,1);assert.equal(format().version,1);

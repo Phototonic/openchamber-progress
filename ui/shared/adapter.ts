@@ -2,8 +2,9 @@
 // (shared/progress.ts, docs/contracts.md). It validates replies and maps them onto the
 // view model. Probe v1 is no longer accepted.
 import { CAPTURE_LIMITS } from '../../shared/document-comparison.ts';
-import { BLOCKER_LIMITS, LIMITS, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
+import { BLOCKER_LIMITS, LIMITS, MANAGED_ACTION_CODES, MANAGED_ACTION_STAGES, identifier, type PlanGraphRequest, type PlanGraphRead } from '../../shared/progress.ts';
 import { GRAPH_LIMITS, graphInteger, graphItems } from '../../shared/plan-graph.ts';
+import { parseManagedStepProgress } from './setup-steps.ts';
 import type { CaptureRequest, CaptureEntry, CaptureIndex, CaptureComparison, CaptureIdentity } from '../../shared/document-comparison.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest, RunRow } from '../../shared/subagent-runs.ts';
 import { NEEDS_YOU_LIMITS, supportsNeedsYou, type NeedsYouRequest } from '../../shared/needs-you.ts';
@@ -51,13 +52,14 @@ function versions(v: Rec) {
   }
 }
 
-export function parseHealth(body: string): HealthView & { planComposerHandoff?: 1 } {
+export function parseHealth(body: string): HealthView & { planComposerHandoff?: 1; state?: 'starting' | 'unconfigured' | 'ready' | 'refused' } {
   const v: unknown = JSON.parse(body);
   check(isRec(v) && v.ok === true && typeof v.ready === 'boolean', 'The progress service did not report its health.');
   versions(v);
   const runtime = isRec(v.runtime) ? v.runtime : {};
   const composer = v.planComposerHandoff === 1 ? { planComposerHandoff: 1 as const } : {};
-  return { ...composer, ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
+  const state = v.state === 'starting' || v.state === 'unconfigured' || v.state === 'ready' || v.state === 'refused' ? v.state : undefined;
+  return { ...composer, ...(state ? {state} : {}), ready: v.ready, sqlite: v.sqlite === true, node: optStr(runtime.node), diagnostics: Array.isArray(v.diagnostics) ? v.diagnostics.filter(isStr) : [], ...(v.planGraph === 1 ? { planGraph: 1 as const } : {}), ...(v.planCleanup === 1 ? { planCleanup: 1 as const } : {}), ...(v.planChangeDigests === 1 ? { planChangeDigests: 1 as const } : {}), ...(v.planTaskSearch === 1 ? { planTaskSearch: 1 as const } : {}), ...(v.documentCaptureComparison === 1 ? { documentCaptureComparison: 1 as const } : {}), ...(v.subagentRuns === 1 ? { subagentRuns: 1 as const } : {}), ...(supportsNeedsYou(v.needsYouInbox) ? { needsYouInbox: 1 as const } : {}), ...(supportsDelegationIntent(v.delegationIntent) ? { delegationIntent: 1 as const } : {}) };
 }
 
 /**
@@ -260,6 +262,16 @@ export function parseCaptureComparison(body: string, r: CaptureRequest, before: 
 /** Error body of a non-200 reply: `{error: fixed-code}`. */
 export function errorCode(body: string): string | null {
   try { const v: unknown = JSON.parse(body); return isRec(v) && isStr(v.error) ? v.error : null; } catch { return null; }
+}
+
+/** Optional diagnostics never carry raw exception text or paths into the UI. */
+export function parseLastAction(body: string): SetupView['lastAction'] {
+  try {
+    const v: unknown = JSON.parse(body);
+    const a = isRec(v) && isRec(v.lastAction) ? v.lastAction : null;
+    return a && MANAGED_ACTION_STAGES.some(stage => stage === a.stage) && isStr(a.code) && MANAGED_ACTION_CODES.includes(a.code)
+      ? { stage: a.stage as NonNullable<SetupView['lastAction']>['stage'], code: a.code } : undefined;
+  } catch { return undefined; }
 }
 
 export interface EnvelopeView {
@@ -710,6 +722,12 @@ export function parseSetup(body: string): SetupView {
   const review = managed && isRec(d.review) && isStr(d.review.expected) && /^[a-f0-9]{64}$/.test(d.review.expected)
     && isRec(d.review.targets) && isStr(d.review.targets.configRoot) && isStr(d.review.targets.dataRoot) && isStr(d.review.targets.storeRoot)
     && (d.review.storeId === null || isStr(d.review.storeId)) && (d.review.sourceId === null || isStr(d.review.sourceId)) ? d.review : null;
+  // Step migration is negotiated only by the literal capability. Its embedded progress is parsed
+  // strictly: present-but-unreadable or progress without the capability fails the whole read.
+  const steps = managed && d.managedMigrationSteps === 1;
+  const hasProgress = managed && Object.hasOwn(d, 'migrationProgress');
+  const progress = hasProgress ? parseManagedStepProgress(d.migrationProgress) : undefined;
+  check(!hasProgress || (steps && !!progress), 'Setup migration progress is unreadable.');
   const t = isRec(v.targets) && isStr(v.targets.configRoot) && isStr(v.targets.dataRoot) && isStr(v.targets.storeRoot)
     ? { configRoot: v.targets.configRoot, dataRoot: v.targets.dataRoot, storeRoot: v.targets.storeRoot } : null;
   const r = isRec(v.recovery) ? v.recovery : null;
@@ -725,7 +743,8 @@ export function parseSetup(body: string): SetupView {
     && (u.state === 'current' || u.state === 'available' || u.state === 'newer-installed') && semver(u.candidateVersion)
     ? { state: u.state, candidateVersion: u.candidateVersion, rootVersion: semver(u.rootVersion) ? u.rootVersion : null } as const : null;
   return {
-    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}) } as SetupView['delivery'] } : {}),
+    ...(managed ? { delivery: { kind:'managed', revision:1, configuration:d.configuration, migration:d.migration, observation:d.observation, mode:'unknown', expectedVersion:d.expectedVersion, ...(review ? {review} : {}), ...(steps ? {managedMigrationSteps:1} : {}), ...(progress ? {migrationProgress:progress} : {}) } as SetupView['delivery'] } : {}),
+    ...(parseLastAction(body) ? { lastAction: parseLastAction(body) } : {}),
     configured: v.configured, verified: v.verified === true, installed: v.installed,
     ...(isRec(v.reportingIdentity) && isStr(v.reportingIdentity.storeId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.storeId) && isStr(v.reportingIdentity.sourceId) && /^[A-Za-z0-9_.:-]{1,80}$/.test(v.reportingIdentity.sourceId) && typeof v.reportingIdentity.verified === 'boolean' ? { reportingIdentity: { storeId:v.reportingIdentity.storeId,sourceId:v.reportingIdentity.sourceId,verified:v.reportingIdentity.verified } } : {}),
     captureEnabled: typeof v.captureEnabled === 'boolean' ? v.captureEnabled : null,

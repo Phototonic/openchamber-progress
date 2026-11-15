@@ -87,8 +87,8 @@ export function registerSessionActions(host: ActionHost, mono: () => number = ()
           checkpoint();
           if (request.path === '/health' && reply.status === 200) {
             const health = parseHealth(reply.body);
-            if (!health.ready) throw new Refusal('unavailable');
-            if (health.planComposerHandoff !== 1) throw new Refusal('unsupported');
+            if (!health.ready && health.state !== 'starting' && health.state !== 'refused') throw new Refusal('unavailable');
+            if (health.ready && health.planComposerHandoff !== 1) throw new Refusal('unsupported');
           }
           return reply;
         }

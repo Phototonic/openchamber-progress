@@ -117,6 +117,7 @@ function frame(label: string, svc: Proxy, device: Device, options: { account?: s
       if (name === '@openchamber/sdk/ui') return { applyHostReady() {} };
       if (name === './phone-layout.ts') return { applyDeviceHooks() {} }; // presentation-only hook; phone-layout.test.ts covers the real module
       if (name === './source.ts') return source;
+      if (name === './setup.ts') return { retireSetupSteps() {} };
       if (name === './summary.ts') return summaries;
       if (name === './cleanup.ts') return cleanup;
       if (name === './refresh.ts') return refresh;

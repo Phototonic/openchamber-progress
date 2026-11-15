@@ -8,7 +8,7 @@ import type { CaptureRequest, CaptureIndex, CaptureComparison } from '../../shar
 import { CAPTURE_ROUTES, captureQuery, parseCaptureIndex, parseCaptureComparison, parseRunRead, reconcileBody, dismissLossBody, parseDismissLossReply, RUN_ROUTES, runQuery } from './adapter.ts';
 import type { DismissLossRequest, DismissLossReply, ReconcileRequest, RunRead, RunRequest } from '../../shared/subagent-runs.ts';
 import {
-  ContractError, errorCode, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
+  ContractError, errorCode, parseLastAction, parseDocumentPage, parseHealth, parseHistoryPage, parsePlanPage, parsePlansPage, parseSetup, query, ROUTES, setupBody,
   cleanupBody, parseCleanupReceipt, type CleanupAction, type CleanupRequest, type EnvelopeView, type SetupAction,
   digestQuery, parseChangeDigest, parseSearchState, parseSearchWindow, searchQuery, searchStateQuery,
   NEEDS_YOU_ROUTE, needsYouListQuery, needsYouQuery, parseNeedsYouWindow, delegationQuery,
@@ -36,9 +36,10 @@ export const LIST_LIMIT = 50;
 const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 
 class HttpError extends Error {
+  readonly lastAction?: SetupView['lastAction'];
   readonly code: string;
   readonly status: number;
-  constructor(status: number, code: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; }
+  constructor(status: number, code: string, body?: string) { super(`The progress service answered ${code} (HTTP ${status}).`); this.status = status; this.code = code; this.lastAction = body ? parseLastAction(body) : undefined; }
 }
 
 export function classify(error: unknown): ReadFailure {
@@ -65,7 +66,7 @@ export function classify(error: unknown): ReadFailure {
 
 async function call(host: ServiceHost, path: string, q?: Record<string, string>, method: 'GET' | 'POST' = 'GET', body?: string) {
   const result = await host.serviceRequest({ method, path, ...(q ? { query: q } : {}), ...(body !== undefined ? { body } : {}) });
-  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`);
+  if (result.status !== 200) throw new HttpError(result.status, errorCode(result.body) ?? `http-${result.status}`, result.body);
   return result.body;
 }
 
@@ -91,17 +92,25 @@ const toRead = (e: EnvelopeView, plans: PlanView[], truncated: boolean): StoreRe
   storeId: e.storeId, sources: e.sources, binding: e.binding, captureEnabled: e.captureEnabled, coverage: e.coverage, diagnostics: e.diagnostics, plans, truncated,
 });
 
-/** Null checks health only; {} deliberately reads the unfiltered history board. */
+/** Null checks availability without plans; {} deliberately reads the unfiltered history board. */
 /** `intent`: the surface paints task rows, so it asks for each plan's waiting-delegation token when advertised. */
 export async function readList(host: ServiceHost, scope: ListScope | null, maxPages = MAX_LIST_PAGES, inbox?: { demand: InboxDemand; mono: () => number }, intent = false): Promise<ListResult> {
   try {
-    const health = parseHealth(await call(host, ROUTES.health));
+    let health = parseHealth(await call(host, ROUTES.health));
+    if (!health.ready && (health.state === 'starting' || health.state === 'refused')) {
+      // New services separate host liveness from data admission. One explicit
+      // Setup read validates/retries; polling health alone cannot do that work.
+      // Old services omit state and retain their existing request sequence.
+      await call(host, ROUTES.setup);
+      health = parseHealth(await call(host, ROUTES.health));
+    }
     if (!health.ready) {
       // A configured store that cannot open — or fails binding verification — reports its
       // fixed failure code in health diagnostics. That is a classified failure on every
       // surface, never a setup or empty success; genuinely unconfigured services report
       // setup-flow codes ('targets-unverified' and friends) and keep the null-read path.
-      const failed = health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
+      const failed = health.state === 'refused' ? health.diagnostics[0] ?? 'storage'
+        : health.diagnostics.find(code => code === 'corrupt' || code === 'schema' || code === 'busy' || code === 'storage' || code === 'binding');
       if (failed) {
         const failure = classify(new HttpError(503, failed));
         return { ok: false, failure: { ...failure, message: failed === 'binding' ? 'The progress service reports its configured store does not match this installation.' : `The progress service reports its store as ${failed}.` } };
@@ -365,16 +374,25 @@ export async function readPlanHead(host: ServiceHost, plan: Pick<PlanView, 'sour
   }
 }
 
-export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure };
+export type SetupResult = { ok: true; setup: SetupView } | { ok: false; code: string; failure?: ReadFailure; lastAction?: SetupView['lastAction'] };
 
-/** Managed requests send only storeRoot and reviewed consent; legacy roots remain compatibility-only. */
-export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string): Promise<SetupResult> {
+/** Negotiated capture is bodyless; other managed actions send only storeRoot and reviewed consent. */
+export async function setupCall(host: ServiceHost, action: SetupAction | null, targets: SetupTargets | null = null, confirmed = false, expected?: string, managedMigrationSteps?: 1): Promise<SetupResult> {
   try {
+    if (managedMigrationSteps === 1 && (action === 'managed-disable' || action === 'managed-enable')) {
+      // These authenticated routes select/revalidate the current binding under
+      // the writer fence. Consent is the UI confirmation, not an inspect nonce.
+      if (!confirmed) return { ok: false, code: 'confirmation-required' };
+      const enabled = action === 'managed-enable';
+      const reply = JSON.parse(await call(host, `/v1/capture/${enabled ? 'enable' : 'disable'}`, undefined, 'POST'));
+      if (!isRec(reply) || reply.ok !== true || reply.captureEnabled !== enabled) throw new ContractError('Invalid capture control reply.');
+      return { ok: true, setup: parseSetup(await call(host, ROUTES.setup)) };
+    }
     const request = action?.startsWith('managed-') ? JSON.stringify({ ...(targets?.storeRoot ? {storeRoot:targets.storeRoot} : {}), ...(action !== 'managed-inspect' ? {confirmed,expected} : {}) }) : setupBody(targets, confirmed);
     const body = action ? await call(host, `${ROUTES.setup}/${action}`, undefined, 'POST', request) : await call(host, ROUTES.setup);
     return { ok: true, setup: parseSetup(body) };
   } catch (error) {
-    if (error instanceof HttpError) return { ok: false, code: error.code };
+    if (error instanceof HttpError) return { ok: false, code: error.code, ...(error.lastAction ? {lastAction:error.lastAction} : {}) };
     const failure = classify(error);
     return { ok: false, code: failure.code, failure };
   }

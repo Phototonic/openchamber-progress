@@ -46,6 +46,29 @@ test('expectation publication failure precedes source registration',t=>{
     const store=new Store(path.join(f.storeRoot,'progress.sqlite'));try{assert.equal(store.list().sources.length,0);}finally{store.close();}
   }finally{mock.mock.restore();syncBuiltinESMExports();f.clean();}
 });
+test('fresh selector publication failure recovers through fresh review without duplicating the registered source',t=>{
+  const f=fixture(),original=fs.linkSync;
+  const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+    if(path.basename(String(to))==='progress-binding.json')throw new Error('synthetic selector publication failure');
+    return original(from,to);
+  }) as typeof fs.linkSync);syncBuiltinESMExports();
+  let restarted:SetupController|undefined;
+  try{
+    assert.throws(()=>configure(f),/synthetic selector publication failure/);
+    assert.equal(readManagedBinding(f.env),undefined);
+    const store=new Store(path.join(f.storeRoot,'progress.sqlite'));
+    let prior:ReturnType<Store['list']>;
+    try{store.setEnabled(false);prior=store.list();assert.equal(prior.sources.length,1);}finally{store.close();}
+    assert.equal(existsSync(path.join(path.dirname(managedBindingFile(f.env)),'.configuration-lock')),false,'settled failure releases its lock; a process crash does not');
+    mock.mock.restore();syncBuiltinESMExports();
+    restarted=new SetupController({env:f.env},()=>payload);
+    const recovered=configure({...f,setup:restarted});
+    assert.equal(recovered.reportingIdentity!.storeId,prior!.storeId);assert.equal(recovered.reportingIdentity!.sourceId,prior!.sources[0].id);
+    assert.equal(recovered.captureEnabled,false,'recovery never re-enables retained capture');
+    const retained=new Store(path.join(f.storeRoot,'progress.sqlite'));
+    try{assert.deepEqual(retained.list().sources,prior!.sources);}finally{retained.close();}
+  }finally{mock.mock.restore();syncBuiltinESMExports();restarted?.close();f.clean();}
+});
 async function http(f:ReturnType<typeof fixture>,run:(request:(action:string,body?:unknown,authorized?:boolean)=>Promise<Response>)=>Promise<void>) {
   const server=createProgressServer(undefined,'fixture-only',undefined,f.setup);
   try {
@@ -93,8 +116,15 @@ test('authenticated reviewed configuration creates only private managed state an
     assert.equal((await request('managed-inspect',{},false)).status,401);
     assert.equal((await request('managed-configure',{})).status,400);assert.deepEqual(tree(f.root),before);
     assert.equal((await request('managed-configure',{confirmed:true,expected:'a'.repeat(64)})).status,409);assert.deepEqual(tree(f.root),before);
-    const inspected=await(await request('managed-inspect',{})).json() as SetupRead;
-    const expected=inspected.delivery!.review!.expected;
+    const inspected=await request('managed-inspect',{});assert.equal(inspected.status,200);
+    const expected=(await inspected.json()).delivery.review.expected;
+    assert.deepEqual(tree(f.root),before,'HTTP review is read-only');
+    const other=new SetupController({env:f.env},()=>payload);
+    try{await http({...f,setup:other},async second=>{
+      const stale=await second('managed-configure',{confirmed:true,expected});
+      assert.equal(stale.status,409);assert.deepEqual(await stale.json(),{error:'managed-review-stale'});
+      assert.deepEqual(tree(f.root),before,'another controller cannot reuse the review nonce');
+    });}finally{other.close();}
     const result=await request('managed-configure',{confirmed:true,expected});assert.equal(result.status,200);
     const status=await result.json();assert.equal(status.configured,true);assert.equal(status.installed,false);assert.equal(status.separateLifecycle,false);
     assert.equal(status.delivery.configuration,'configured');assert.equal(status.delivery.mode,'unknown');assert.equal(status.delivery.observation,'not-observed');
@@ -106,9 +136,9 @@ test('authenticated reviewed configuration creates only private managed state an
     assert.equal((await request('managed-configure',{confirmed:true,expected})).status,409,'duplicate old confirmation is stale');
     const store=new Store(b.database);
     try{store.apply({op:'start',plan:'P-managed',oid:'start',rev:0,title:'Retained report',items:[]},{sourceId:b.source.id,sessionId:'M',agent:'build',directory:'/fixture',parentId:null,ancestry:[],verifiedSource:true});}finally{store.close();}
-    let r=await(await request('managed-inspect',{})).json();
-    assert.equal((await request('managed-disable',{confirmed:true,expected:r.delivery.review.expected})).status,200);
-    r=await(await request('managed-inspect',{})).json();assert.equal((await request('managed-enable',{confirmed:true,expected:r.delivery.review.expected})).status,200);
+    let r=review(f);
+    assert.equal((await request('managed-disable',{confirmed:true,expected:r.expected})).status,200);
+    r=review(f);assert.equal((await request('managed-enable',{confirmed:true,expected:r.expected})).status,200);
     const plans=await(await request('/v1/plans')).json();assert.equal(plans.storeId,b.storeId);assert.equal(plans.data[0].revision,1);
     assert.equal(plans.data[0].sourceId,b.source.id);
     assert.equal((await request('install',f.targets)).status,409,'production managed controller does not install global capture');

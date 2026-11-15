@@ -904,8 +904,13 @@ though managed activation remains unknown. Store/binding adoption retires old
 setup replies and requests replacement status for the adopted context.
 
 Review explains full-user plugin/service privileges and conditional lifecycle.
-After acknowledgement, mutations echo only the reviewed store, opaque expected
-identity and `confirmed:true`. No executable bytes, arbitrary roots or global
+After acknowledgement, configuration and compatibility mutations echo only the
+reviewed store, opaque expected identity and `confirmed:true`. Negotiated capture
+controls instead keep this same review, acknowledgement and Confirm/Cancel copy
+but submit the bodyless capture enable/disable route, then reread status. They
+use the current selected binding under fresh server validation, not a review
+nonce; both fresh and migrated managed installations use this path. Older
+services retain the nonce-bound control flow. No executable bytes, arbitrary roots or global
 configuration edit is supplied. Pending controls retain native/logical focus with
 `aria-disabled`/busy semantics and guarded activation, not duplicate submissions.
 
@@ -924,6 +929,12 @@ files. Enable and migration remain unavailable. Operational inspection failures
 instead show localized **inspection unavailable** copy, the fixed underlying
 diagnostic and **Retry inspection** (`setup-retry`), not ownership cleanup advice.
 This state uses `setup-migration-unavailable`; it does not claim a matching load.
+The Setup panel separately labels the last failed migration attempt with a fixed
+stage and code (`setup-last-action`), followed by actionable English/Russian copy.
+Failed HTTP replies supply that detail immediately, even while the current status
+is being re-read. Current diagnostics do not repeat the historical failure; a
+later successful managed action clears it. Refused health states (including
+security and managed-binding failures) never render as a normal setup-needed state.
 Verified capture-off remains available here too; retry only rereads status.
 
 Cancel initially owns confirmation focus if the opener still owns focus. Space
@@ -947,6 +958,47 @@ and Russian. In the isolated caller-owned-config Git update test, the service's
 loaded-fingerprint observation went matching → different → matching after the next
 report turn without restart; this does not independently attest which cached
 importer executed. No automatic restart or all-session activation is implied.
+
+### Step-by-step managed switch
+
+Setup negotiates the literal `managedMigrationSteps: 1` capability before using
+the step route. Opening or reopening Setup only reads status. A fresh installation
+with no legacy files or journal keeps the existing inspect → review → explicit
+configure flow; the capability alone never starts migration. Older services keep
+their existing flow; a step client never falls back to the old migration route.
+
+An explicit reviewed confirmation starts a one-request-at-a-time run. The card
+shows the current stage out of nine, a part number for removal batches (not an
+invented file total or percentage), the last finished stage, and observed capture
+on/off/unknown. Pending, running, paused, stopped, failed, interrupted, capture
+review and complete are distinct. Capture off/unknown stays conspicuous while
+unfinished, including after reopening. Completion does not prove a managed load.
+
+Pause waits for the in-flight step; Stop retains completed work and recovery
+state. Neither undoes work or turns capture back on. Continue, Resume and a fresh
+capture decision are explicit actions. Closing/hiding/changing the view retires
+the attempt immediately, without cancellation or rollback claims. A hide/show
+round trip cannot revive a held reply; reopening reads status and needs explicit
+Continue or Resume before any further step. A lost or
+invalid reply offers status first, never automatic retry or polling. Newer durable
+status may replace a stale local result; equal-sequence status also refreshes
+capture/recovery observations (including Resume changing to capture review),
+while an older sequence cannot replace newer progress. Non-null reply errors override even a
+replayed disposition: the failure's fixed stage/code and localized recovery text
+remain visible, and no next step is queued. Port contention asks the user to close
+the program using the coordination port and retry. Installation-change conflicts
+ask for another folder check; they never authorize takeover or cleanup.
+
+Review opens with Cancel focused; Space acknowledges and Enter confirms. Running
+hands focus to Pause; a stopped run hands it to the relevant recovery control.
+Pause/Stop confirmation focuses Keep going/Cancel, Escape returns to its opener,
+and user-moved focus is never reclaimed. New capture warnings and failures are
+announced once, not on every repaint. EN/RU copy and controls wrap on narrow screens.
+
+The rendered synthetic-shell driver `tests/browser/managed-migration-qa.ts --source`
+checks these journeys, fresh configuration, failed replay and occupied-port copy.
+It proves presentation and interaction against synthetic replies, not Windows
+timing, filesystem authority or a live host installation.
 
 ### Historical legacy UI reference (not the managed path)
 
@@ -1236,6 +1288,8 @@ disposable; failures exit nonzero and retain measured evidence.
   - `setup-status` (heading `setup-status-heading`, also the unconfigured form's title), `setup-disable`, `setup-enable`, `setup-update`, `setup-remove`, `setup-reinstall`
   - `setup-confirm-disable`, `setup-confirm-enable`, `setup-confirm-remove-capture`
   - `setup-error` (`data-code`), `setup-notice`, `setup-reload`, `setup-recovery`, `setup-loading`
+  - managed steps: `setup-migration-progress` (`data-state`, `data-worker`, `data-effect`, `data-capture`, `data-recovery`, `data-sequence`, `data-driving`, `data-step`, `data-batch`); `setup-migration-heading`, `setup-migration-step`, `setup-migration-state`, `setup-migration-capture`, `setup-migration-capture-warning` (`data-capture`), `setup-migration-failure` (`data-stage`, `data-code`)
+  - step actions: `setup-migration-pause`, `setup-migration-continue`, `setup-migration-resume`, `setup-migration-review-capture`, `setup-migration-status`, `setup-migration-abandon`; `setup-migration-confirm`, `setup-migration-confirm-pause`, `setup-migration-confirm-abandon`, `setup-migration-cancel`; `setup-migration-capture-review`, `setup-migration-inspecting`, `setup-migration-cancel-inspect`
   - companion update: `update-notice` (`data-kind` = `upgrade` | `rebuild` | `downgrade`) with `update-notice-review`; `update-review-panel` (a review started from that notice); `setup-update-notice` (in the Setup card); `setup-review` (`data-action`, `data-kind`), `setup-review-versions`
 - **States:** the testids in the table above.
 

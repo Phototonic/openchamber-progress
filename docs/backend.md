@@ -271,7 +271,10 @@ captures; this does not guarantee graceful session completion.
 
 The service writes expected shipped bytes/version/binding fingerprints to owned
 private Store-directory metadata once per admitted package generation, not on each
-GET and not in a new SQLite schema. The companion's successful loaded observation
+GET and not in a new SQLite schema. Admission is lazy: the first successful
+Setup/data validation may establish that baseline, outside its read-only security
+scope, rather than delaying service construction/listening. A failed baseline is
+unknown, not authorization and not an automatic retry loop. The companion's successful loaded observation
 uses actual runtime release identity. Unknown, not observed, matching and different
 are separate; mismatch warns only. Fingerprints are observational, explicitly
 weaker than legacy private hash-attested payloads, not publisher signatures or
@@ -279,13 +282,276 @@ proof of cached execution. Host folders/ZIP umask and update gaps remain host tr
 boundaries. The service has no plugin inventory/RPC authority from its read-only
 OpenCode provider permission.
 
-Legacy migration reuses complete ownership/Store validation and `remove-capture`:
-expectation feasibility/persistence, disable, verified removal, durable same-target
+Legacy migration reuses complete ownership/Store validation and the lifecycle removal owner:
+expectation feasibility/persistence, pending record, disable, verified removal, durable same-target
 binding, then enable.
-Retained history/IDs and cleanup fences are not reset. Interrupted removal may
-leave incomplete ownership and a conflict needing separately authorized manual
-cleanup; crash-retained configuration locks stay busy until manual recovery.
+Retained history/IDs and cleanup fences are not reset. Format-2 intent evidence
+supports explicit partial-removal reconciliation. Foreign/ambiguous state still
+needs separately authorized recovery; crash-retained legacy configuration locks
+stay busy until manual recovery.
 See [Setup](setup.md) for mode-qualified lifecycle/reach, migration and rollback.
+
+`/health` authenticates as before but bypasses `current()` and `status()`. It
+returns an honest last-admission snapshot (`starting`, `unconfigured`, `ready`,
+`refused`), fixed diagnostics and capabilities captured during admission; no
+discovery, SQLite open or legacy inspection runs there. Unknown is never ready.
+All real Setup/store operations retain fresh fail-closed checks, descriptor
+pinning, private ACL/ancestor/hard-link and schema validation. Read-only managed
+validation shares a synchronous security scope and batches known paths, never a
+TTL or process-lifetime ACL cache. No admission work is scheduled in the background.
+The UI explicitly requests Setup admission then re-reads health on the new
+`starting`/`refused` snapshots; old services without the state field are unchanged.
+Managed step, ordinary Setup read and ordinary capture requests run in dedicated
+workers, leaving health responsive during their security work. Other synchronous
+data/configuration operations retain their existing event-loop limitations.
+
+The legacy controller's error funnel preserves only allowlisted `PlatformError` codes. Migration
+retains one bounded in-memory `lastAction: {stage, code}` in both error replies and
+Setup status, separate from current diagnostics; any subsequent successful managed
+action (including inspection) clears it. The stage is a fixed operation
+boundary, and codes are fixed product/platform or allowlisted filesystem codes,
+never raw messages. Primary migration/publication failures survive secondary
+cleanup errors, including managed configuration. Data/control/capture admission
+preserves fixed platform and managed-binding refusals rather than flattening them
+to storage. The pending record precedes capture disable, so record-publication
+failure does not silently turn legacy capture off. A crash in between can leave
+pending while capture is still on. Pending/conflict/lock state still requires
+fresh explicit same-target recovery; this diagnostic is not persisted and grants
+no recovery authority. Status observes a validated pending target's actual capture
+bit through a read-only Store even without a managed selector. It does not retain
+that Store, set configured/verified, expose its reporting identity or make health
+ready; failed validation/read leaves the bit unknown. Candidate preflight shares its ownership/fingerprint facts
+within the operation only; lock/removal/publication boundaries validate afresh.
+
+#### Bounded migration HTTP workers
+
+`service/request-worker.ts` provides a private, request-driven worker entry in the
+existing service bundle. Its entry guard cannot run ordinary service bootstrap.
+Authenticated health (including starting) and managed Setup delivery advertise
+`managedMigrationSteps: 1`. POST `/v1/setup/managed-step` validates the frozen
+request union and drives one read-only inspection batch, effect or control.
+Old `/v1/setup/managed-migrate` and unnegotiated `managed-inspect` refuse with
+HTTP 409 `{"error":"managed-action-required"}` before discovery or writes.
+They are not alternate paths to a monolithic migration.
+
+Recognized step refusals retain the versioned response envelope, fixed stage/code
+and available same-target progress. Invalid input is 400, unknown operation 404,
+stale/unsupported/ownership conflict 409, and busy/budget/deadline/unsettled or
+unavailable storage/security 503. A **non-null error overrides disposition**, even
+when a failed action's durable receipt is `replayed`; it is never a success 200.
+Successful mutation replies must match the operation, following sequence and
+named completed step. Unexpected owner exceptions before intent publication are
+storage failures; uncertainty after publication is not described as rollback.
+Changed-installation and invalid-payload failures map respectively to the frozen
+`managed-migration-conflict` and `managed-step-unsupported` codes. Failure to
+settle a journal due to a compare conflict is surfaced, not hidden by an earlier
+effect failure.
+
+The worker budget charges actual security-process launch attempts, including
+failed launches, through a shared counter. It refuses a seventh launch, suppresses
+the legacy cold retry, and bounds helper waits by the monotonic 17-second work
+deadline with one second of settlement headroom. The supervisor has an 18-second
+response deadline. A deadline reply never clears busy or terminates a worker as
+if its effects rolled back; settlement waits for worker exit. A worker crash is
+treated as an uncertain effect, requiring bounded observation/reconciliation.
+Callers must reserve
+their remaining validation/checkpoint work before admitting each effect.
+
+The inspection foundation now splits roots, managed state, legacy path discovery,
+retained releases, Store validation and review into six read-only requests. The
+lifecycle owner discovers fixed manifest/descriptor bytes before release paths;
+later stages reread that discovery before full ownership validation. No inspection
+creates managed metadata, changes capture or initializes a Store. The complete
+review binds package bytes, target/plan, native database identity and capture bit.
+For an interrupted operation it also binds the operation's sequence, full intent
+and capture decision. Mutation admission must revalidate the review afresh.
+
+Each short-lived worker receives discovery claims only from its supervisor, never
+from caller fields. The supervisor retains one private inspection session scoped
+to its environment and payload, consumes continuation cursors once, and accepts
+state only after a matching single reply and successful worker exit before the
+deadline. A fresh inspection replaces it; restart or a changed environment/package
+expires it. Private manifest/journal claims never enter the public result. The
+inspection review is not a durable action receipt or a substitute for fresh ACL
+checks.
+Portable launch accounting measures at most four queries per inspection stage
+for intact, format-1 and receipt-proven fixtures, and one for fresh complete-review
+admission. This is not native timing or the full slow-machine migration gate.
+
+The worker's confirmed `begin` path now consumes the supervisor review, freshly
+validates it, reserves the remaining spawn/time budget, and executes only prepare
+through the existing directory and journal owners. It assigns the client operation
+identity and full-request receipt before publication. Format-1 consent upgrades
+are wired into this same path. Lost-reply retries after restart compare the durable
+receipt instead of requiring an expired review; changed requests cannot replace
+the operation. A slow helper can leave a valid marker with no journal, requiring
+explicit retry, never automatic repair. Unmarked directories still refuse.
+
+Worker status is a bounded private-journal projection, with unknown capture and
+no legacy scan or Store admission. Ordinary GET Setup additionally reads the
+validated selected/pending Store read-only to observe capture and managed load;
+it does not publish an expectation or inspect the legacy release tree. It omits
+`delivery.migrationProgress` entirely when no format-2 operation exists (never
+null). Its discovery indicator is not a confirmable ownership review.
+A requested different operation returns
+`not-found`, never the current operation's progress. Status does not consume an
+unfinished inspection review. Portable accounting measures six launches for new
+prepare, five with an existing same-target managed selection, three for format-1
+prepare, and three for cold begin replay/status.
+
+The private worker now also dispatches sequenced advance, pause, abandon and
+resume. Each advance publishes a running intent before one effect, verifies that
+effect inside the completion checkpoint's fresh validation batch, and settles
+one sequence increment. Failures retain the intent and attempt a bounded private
+failure checkpoint; if settlement cannot be proven, the result remains uncertain.
+Publication errors are read back when budget permits, since rename may have
+succeeded before an error. No failure path rolls back capture or restores discovery.
+
+Expectation and binding publication use the existing private JSON publisher;
+binding publication never clobbers a different selection. Capture effects use
+fresh Store/source/schema checks, reviewed package bytes, and (for enable) proven
+removal, expectation and selection. Lifecycle removal stays with the existing
+owner, including exact record-removal completion proof and revalidation between
+directory removal and history append. Later steps also require the retained
+same-operation history event. Reconcile reads capture and verifies transition
+completion; it does not require capture to remain on after a later user disable.
+
+Controls retain unresolved intent and cannot perform effects. Reviewed resume
+binds the current operation and capture bit, appends its prior intent to immutable
+renewal history, and grants one subsequent capture intent. An uncertain renewed
+effect needs another review, not reuse of consumed consent. Exact receipt replay
+does not reapply capture and does not need an expired inspection token.
+After resume, a retained intent's evidence may be evaluated through a read-only
+running projection; this preserves its removal evidence without publishing a
+new state or authorizing an effect. Actual effects still require the exact
+published running intent to be read back under fresh validation.
+
+The supervisor privately carries the last journal as a discovery claim between
+workers. Admission reads the current private journal and revalidates
+all known paths and lifecycle facts; no ACL result crosses a request or write.
+An outdated hint is discarded as authority, not a conflict with an otherwise
+valid current request; operation identity is still checked.
+Status can restore those claims after restart. A cold mutation that cannot reserve
+its remaining batches refuses before publishing an intent; explicit bounded
+status/resume is the recovery path, not a hidden retry or a weakened check.
+Portable HTTP accounting measures five launches for expectation, capture,
+each selector/discovery file, binding publication and reconcile, six for prepare
+and record-removal, three for controls/cold journal status, and at most four for
+ordinary Setup reads. Exact settled replays with a supervisor hint use one.
+These are query-count measurements, not native Windows timing evidence.
+
+The supervisor acquires deterministic per-target loopback writer slots for
+each request: a discovery data-root slot and a separate Store-root slot. This
+covers different discovery scopes sharing a Store without unnecessarily fencing
+unrelated profiles/users. Multiple slots are sorted/deduplicated by port, acquired
+without waiting and released together; partial acquisition releases all slots.
+Contention or
+an unrelated listener is a refusal, not a takeover. Windows security children
+additionally acquire an account-scoped system mutex **before** checking the
+current writer slot's per-request nonce. A child surviving its parent therefore
+either finishes while holding that barrier, or refuses when the nonce no longer
+matches. A new writer's first fresh security query must cross the barrier before
+any effect. Neither the slot nor an abandoned mutex proves an effect committed:
+ordinary fresh validation and durable-intent reconciliation remain mandatory.
+No extra security process, native dependency, persisted lease or age-based cleanup
+is introduced. HTTP writers, including ordinary enable and disable, share this
+boundary; an in-process busy flag alone is not sufficient. Capture-off verifies
+the selected Store without requiring successful legacy removal inspection.
+Enable refuses unfinished migration. Native Windows late-child fencing remains
+a separate gate. The first ordinary data admission's existing expectation write
+also acquires the shared slot; subsequent read-only admissions cannot publish it.
+Worker status/capture preserve the controller's selected-descriptor pin without
+returning that private digest over HTTP. A successful bounded Setup read updates
+health's last-admission snapshot, not a reusable Store handle or ACL verdict.
+Ordinary Setup status and capture control do not load bundled migration payloads.
+Payload-free reads retain inspection consent without refreshing it; the next
+inspection/effect still compares its package-bound context. Journal hints bind
+the discovery environment and are freshly validated, never treated as consent.
+If selection validates but subsequent Store checks refuse, Setup retains the
+configured targets and descriptor pin, with verification false, capture unknown
+and a fixed diagnostic. It neither invents progress nor admits reporting identity.
+
+The stable key is UTF-8 `scope:<canonical data root>` or
+`store:<canonical Store root>`. Resolve the existing ancestor with native realpath,
+append missing path components, and lowercase on Windows. This canonicalization
+is for coordination only; it never permits an otherwise unsafe alias/reparse path.
+The initial port is 25000 plus the first four SHA-256 digest bytes interpreted
+unsigned big-endian, modulo 4000. Step forward deterministically, wrapping within
+25000–28999, past the fixed denylist: 25565, 26000, 27015–27030 (including
+27017–27019), 27036–27037, 28015–28017 and 28960. This stays below the default
+ephemeral client-port ranges on Linux, macOS and Windows, avoiding collisions with
+ordinary outgoing connections; custom OS ranges and other listeners can still
+collide. Slots bind only loopback. The mutex remains account-scoped
+as a conservative Windows late-child barrier, not a substitute for these slots.
+A bind/hash/denylist-remapping collision returns
+`managed-step-port-busy` without launching a worker or querying security. This
+does not identify the listener or authorize connecting to/stopping it. A Windows
+writer-mutex timeout instead returns `managed-step-unsettled`; neither failure
+is a successful effect or a rollback. The synchronous request-budget wrapper
+rejects thenable callbacks rather than silently ending accounting before work.
+Bounded fixed-file metadata reads and prior supervisor claims route Store slots;
+they grant no authority. After fresh target validation, every effect compares its
+actual canonical Store root with the held slots. Changed/missing routing evidence
+refuses before effects rather than operating under another target's fence. The
+private routing keys and nonce never enter public responses.
+
+The format-2 journal foundation now provides bounded strict parsing, canonical
+target/request digests, consistency/transition validation and private no-clobber
+publication with compare-before-replacement. Reads reject unsupported state,
+foreign scope, hard links, retained publication stages and old configuration
+locks. Writes refuse an enclosing security scope so post-write validation cannot
+reuse its ACL cache. These helpers do **not** admit a Store or authorize a saved
+claim: full fresh lifecycle/Store checks and writer fencing remain engine duties.
+Cold progress projection reports capture as unknown unless supplied a fresh
+observation. These helpers alone do not constitute HTTP integration, and the
+capability remains unadvertised until that integration is complete.
+
+The lifecycle owner exposes a one-file removal foundation, using the frozen
+original manifest and native claims. Every request validates the remaining full
+owned set, retained releases and actual Store/source. Missing files are accepted
+only at previously completed positions or for the exact current removal intent;
+a replacement object, foreign entry, changed release, alias or on capture bit
+refuses. The manifest is last, immutable payloads/history are not removed, and
+the owner changes neither capture nor the journal. After an unlink it returns
+unknown capture; completion publication must freshly validate the remaining set.
+Portable tests cover each of the six discovery files interrupted before/after
+unlink and the complete admission/intent/effect/checkpoint query accounting.
+The `record-removal` owner now covers empty-directory removal and idempotent
+history recording. Its intent retains the original directory object and the
+same-file history prefix/event digests. The event includes the operation identity
+and the intent's fixed observation time, never a new retry timestamp. After rmdir,
+another fresh full validation precedes append. Interrupted work accepts only the
+exact event in that same owned history file; later appends are allowed after that
+proven prefix, but replacement, duplicate events and partial lines refuse without
+repair. History reads are bounded by the journal byte limit before effects.
+
+For this two-subeffect unit, unsequenced intent publication has no separate
+post-publication scan: the effect admission batch reads back and compares the
+durable intent before rmdir. Settled checkpoint publication still verifies its
+write. This coalesces reads, not authority across writes. Portable accounting
+measures six launches for the complete record-removal request, including both
+journal writes and the fresh check between rmdir and append. The private step
+engine now uses these owners; the old monolithic route is not made resumable.
+
+The format-1 upgrade writer accepts only an explicitly reviewed initial prepare
+checkpoint for the same binding and legacy identity. It freshly validates either
+the complete intact legacy claims or the same-file retained removal receipt; a
+coarse removed phase alone is insufficient. Receipt-proven removal freezes the
+five-step prepare/expectation/publish-binding/enable/reconcile plan, with unknown
+capture, and repeats no disable, deletion or history append. Intact discovery
+retains the full plan even if the old coarse phase says removed. The only upgrade
+effect replaces the old journal atomically. Complete old records, different
+selectors, retained stages/locks and unsupported records refuse. The private
+worker supplies consent, fencing and lost-begin-reply handling; this writer never
+runs automatically on startup. Portable tests measure three security launches
+for admission plus upgrade/checkpoint, not native Windows latency.
+
+`readRemovalReceipt` returns the specific same-install history event and a freshly
+validated native file claim for format-1 recovery. It refuses remaining discovery,
+wrong Store/source identity, replacement, aliases and lost/changed receipt text.
+Later appends are accepted only in the same owned private history file with that
+exact event still present. It does not turn the earlier boolean `removalRecorded`
+observation into authority and performs no migration effect.
 
 ### Existing reporting and storage owners
 
@@ -977,9 +1243,11 @@ assembly were added:
 
 - SetupController retains a validated descriptor independently from store open
   failures. Descriptor collisions still fail closed; store failures no longer
-  masquerade as missing configuration. Each health/setup/read reopens and validates
-  once, with the existing SQLite busy bound; no retry loop or recovery mutation.
-- Health returns503 for a failed configured store. Setup retains configured=true,
+  masquerade as missing configuration. Setup/data reads reopen and validate
+  with the existing SQLite busy bound; no retry loop or recovery mutation. Current
+  health is the cheap snapshot described above, not the original recovery probe.
+- Current health stays HTTP 200 for a failed configured controller, with false
+  readiness and the last fixed diagnostic. Setup retains configured=true,
   resolved roots and the fixed store diagnostic, with captureEnabled=null.
 - Reload-required is conservatively recomputed from a verified installed payload
   after restart; no descriptor or frozen DTO shape changed. A service restart or
@@ -1085,7 +1353,8 @@ these checks did not include a real0.2.4 install/reload or establish a new perfo
 
 `service/delegation-view.ts` projects retained declaration receipts and active
 intent proof without writing. `service/server.ts` advertises `delegationIntent: 1`
-and attaches opted-in list tokens and first-detail overlays; existing inbox and
+from ready snapshot health without querying the Store, and attaches opted-in list
+tokens and first-detail overlays; existing inbox and
 timing options compose with it. See [the wire contract](contracts.md#waiting-delegation-projection-additive-v2-read).
 
 Projection verifies the reply's store, binding, owner, revision, structural

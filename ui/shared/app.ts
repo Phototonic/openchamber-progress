@@ -40,6 +40,7 @@ import { CSS } from './style.ts';
 import { directoryKey } from './path.ts';
 import { LanguageController, type LanguageSnapshot } from './language.ts';
 import type { InterfaceLanguage, LanguagePreference } from './i18n.ts';
+import { retireSetupSteps } from './setup.ts';
 
 const APP_EN = {
   loading: 'Loading complete plan…', copying: 'Copying…', copied: 'Markdown copied.',
@@ -1207,7 +1208,8 @@ export function startView<U>(spec: ViewSpec<U>) {
         ++setupSerial;
         const current = cleanupContext();
         const generation = contextGeneration;
-        const r = await setupCall(host, action, targets, confirmed, expected);
+        const capability = setup?.state === 'ready' ? setup.value.delivery?.managedMigrationSteps : undefined;
+        const r = await setupCall(host, action, targets, confirmed, expected, capability);
         if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
           if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }
           return {ok:false,code:'context-changed'};
@@ -1674,6 +1676,8 @@ export function startView<U>(spec: ViewSpec<U>) {
       retry();
       if (detailsDeferred) { detailsDeferred = false; bump(); }
     } else {
+      retireSetupSteps();
+      setupNeedsRefresh = true;
       language.hidden();
       html.dataset.apHidden = '';
       digests?.hidden();
@@ -1690,6 +1694,7 @@ export function startView<U>(spec: ViewSpec<U>) {
   window.addEventListener('pagehide', () => {
     popupInput.abort();
     disposed = true;
+    retireSetupSteps();
     language.dispose();
     digests?.dispose();
     runs?.retire();

@@ -57,7 +57,7 @@ test('creation and activation are atomic and idempotent; ordinary opens and setu
         if (!indexed) setupStore.db.exec(`DROP INDEX ${indexName}`);
         const snapshot = fs.readFileSync(file);
         assert.equal(lifecycle('inspect', targets).installed, true);
-        assert.equal(migrationBinding(targets).database, file);
+        assert.equal(migrationBinding(targets).binding.database, file);
         assert.deepEqual(fs.readFileSync(file), snapshot);
       }
     } finally { setupStore.close(); }
