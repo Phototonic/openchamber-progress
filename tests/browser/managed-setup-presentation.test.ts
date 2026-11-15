@@ -50,7 +50,8 @@ for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: last-action stage
   const shown=render(p,locale),text=copy.managedFamilyStepCopy('fresh',locale);
   assert.ok(shown.text.includes(code),'support code must be visible, not only a data attribute');
   assert.ok(shown.text.includes(text.stoppedAt(text.stages[stage]!)));
-  assert.ok(shown.text.includes(copy.managedErrorText(code,locale,'fresh')));
+  const guidance=copy.managedErrorText(code,locale,'fresh');assert.ok(guidance);
+  assert.ok(shown.text.includes(guidance));
 });
 
 for(const locale of ['en','ru','zh-CN'])test(`fresh ${locale}: partial-folder guidance is resource-based, not repeated by error copy`,()=>{

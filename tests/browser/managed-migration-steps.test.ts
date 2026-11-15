@@ -331,7 +331,7 @@ test('reviewed resume: fresh review of the exact uncertain decision, then one re
   assert.deepEqual(driver.state.outcome, { code: 'managed-step-unsettled', stage: 'enable', uncertain: false });
   const unobserved = driver.state.progress!;
   assert.equal(unobserved.capture.state, 'unknown');assert.equal(unobserved.recovery,'reconcile');
-  const p = currentProgress(unobserved,engine.observeSetup())!;
+  const p = currentProgress(unobserved,engine.observeSetup()??undefined)!;
   assert.equal(nextAction(p), 'review');
   await driver.resume(p);
   assert.equal(actions(engine).at(-1), 'advance:enable:0', 'ordinary resume is not offered for a capture review');
@@ -714,7 +714,7 @@ test('fresh: an uncertain enable needs a reviewed resume for exactly that enable
   await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
   const unobserved = driver.state.progress!;
   assert.equal(unobserved.capture.state, 'unknown');assert.equal(unobserved.recovery,'reconcile');
-  const p = currentProgress(unobserved,engine.observeSetup())!;
+  const p = currentProgress(unobserved,engine.observeSetup()??undefined)!;
   assert.equal(nextAction(p), 'review'); assert.equal(p.capture.state, 'off');
   await driver.inspect('capture', { progress: p });
   assert.equal(driver.state.review?.kind, 'capture');
