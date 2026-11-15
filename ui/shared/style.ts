@@ -1,4 +1,6 @@
 // Guest CSS. Colours come only from host tokens written by applyHostReady.
+import { PHONE_CSS } from './phone-layout.ts';
+
 export const CSS = `
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--oc-bg);color:var(--oc-fg);font-family:var(--oc-font);font-size:13px;line-height:1.45}
@@ -716,4 +718,4 @@ html[data-oc-surface="status"]{scrollbar-gutter:auto}
 @media(forced-colors:active){.ap-fold-toggle{border:1px solid CanvasText}}
 @media(min-width:820px){.ap-board{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}.ap-plan-list{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
-`;
+${PHONE_CSS}`;
