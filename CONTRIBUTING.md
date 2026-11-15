@@ -140,6 +140,19 @@ Assembly writes the extension and companion folders/ZIPs under `build/artifacts/
 
 The actual OpenChamber folder/ZIP installer check runs only when `AGENT_PROGRESS_HOST_MODULE` points to an isolated host's `server/lib/guests/install.js`. That module is not supplied by this repository and may come from a separate host checkout/extracted test environment. Without it, package verification reports the host check as not run; do not claim host installation was tested. The Git-distribution gate also needs this module and a disposable source-tree projection: see [distribution validation](docs/setup.md#git-distribution-validation-and-main-promotion). Neither gate authorizes installation into a real host.
 
+The release preparer runs the opt-in real-host journeys before promotion; ordinary
+CI does not run them. They require Linux isolation tools (`unshare -Urn`, `ip`),
+an isolated OpenChamber 2.7.1 host module, an independent OpenCode 2.2.7 binary,
+and Chromium. Never use a live profile: the fixture creates synthetic HOME/XDG
+directories and uses a credential-free scripted provider, not paid models.
+
+```sh
+timeout -k 10 900 node --experimental-strip-types tests/fixtures/managed-companion-host.ts \
+  --release-journeys --host-module "$ISOLATED_HOST_MODULE" \
+  --opencode-binary "$INDEPENDENT_OPENCODE_BINARY" --chromium "$CHROMIUM" \
+  --artifacts /tmp/opencode/release-journeys
+```
+
 ### Versioned main promotions and releases
 
 Maintainers must complete the supported native-host Git/folder/ZIP and companion lifecycle gates **before** promoting a runtime version from `dev`. Portable CI does not replace those gates. The approved tree must contain the matching package/RELEASE/compiled versions and accepted built entries.

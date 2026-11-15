@@ -18,8 +18,9 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
     ws=new WebSocket(targets.find(t=>t.type==='page').webSocketDebuggerUrl);
     await new Promise<void>((r,j)=>{ws!.onopen=()=>r();ws!.onerror=()=>j(new Error('browser connection'));});
     let next=0;const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>(),events:any[]=[];
+    let servicePause:((event:any)=>void)|undefined;
     const send=(method:string,params:object={},sessionId?:string)=>new Promise<any>((r,j)=>{const id=++next;pending.set(id,{resolve:r,reject:j});ws!.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});
-    ws.onmessage=e=>{const m=JSON.parse(String(e.data)),p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result);}else{events.push(m);if(m.method==='Target.attachedToTarget')void send('Runtime.enable',{},m.params.sessionId).catch(()=>{});}};
+    ws.onmessage=e=>{const m=JSON.parse(String(e.data)),p=pending.get(m.id);if(p){pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result);}else{events.push(m);if(m.method==='Fetch.requestPaused')servicePause?.(m);if(m.method==='Target.attachedToTarget')void send('Runtime.enable',{},m.params.sessionId).catch(()=>{});}};
     const evaluate=async<T=any>(expression:string,contextId?:number,sessionId?:string):Promise<T>=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true,...(contextId?{contextId}:{})},sessionId);if(r.exceptionDetails)throw new Error('browser evaluation failed');return r.result.value;};
     const screenshots:string[]=[];
     const shot=async(name:string)=>{const r=await send('Page.captureScreenshot',{format:'png'});writeFileSync(`${artifacts}/${name}.png`,Buffer.from(r.data,'base64'));screenshots.push(`${name}.png`);};
@@ -47,6 +48,22 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       }return null;
     };
     const guest=async<T=any>(surface:string,expression:string):Promise<T|null>=>{const context=await guestContext(surface);return context?evaluate<T>(expression,context.id,context.sessionId):null;};
+    // Hold an actual completed host response, without fabricating SDK data.
+    // Other requests keep flowing so a context switch is independently observable.
+    const holdNextServiceReply=async(route:string)=>{
+      assert.equal(servicePause,undefined,'only one response barrier at a time');
+      let held:any,released=false;const errors:Error[]=[];
+      const resume=(m:any)=>send('Fetch.continueResponse',{requestId:m.params.requestId},m.sessionId).catch(e=>errors.push(e));
+      servicePause=m=>{
+        let request:any;try{request=JSON.parse(m.params.request.postData??'{}');}catch{}
+        if(!held&&request?.path===route)held=m;else void resume(m);
+      };
+      await send('Fetch.enable',{patterns:[{urlPattern:'*/api/guests/agent-progress-probe/service/request',requestStage:'Response'}]});
+      return {
+        wait:()=>wait(async()=>!!held,Boolean,'real host service reply held'),
+        release:async()=>{if(released)return;released=true;if(held)await resume(held);await send('Fetch.disable');servicePause=undefined;assert.equal(errors.length,0,'response barrier transport');},
+      };
+    };
     const guestClick=async(surface:string,selector:string,beforeProbe?:()=>Promise<void>)=>{
       const found=await wait<any>(async()=>{if(beforeProbe)await beforeProbe();const context=await guestContext(surface);if(!context)return null;await evaluate(`document.querySelector(${literal(selector)})?.scrollIntoView({block:'nearest'})`,context.id,context.sessionId);await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');const local=await evaluate<any>(`(()=>{const e=document.querySelector(${literal(selector)});if(!e||!e.checkVisibility())return null;const r=e.getBoundingClientRect(),p={x:r.x+r.width/2,y:r.y+r.height/2},hit=document.elementFromPoint(p.x,p.y);return hit&&(hit===e||e.contains(hit))?p:null})()`,context.id,context.sessionId);return local?{context,local}:null;},Boolean,`visible actionable guest control: ${surface} ${selector}`);
       const {context,local}=found;
@@ -68,7 +85,9 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await wait(()=>evaluate('document.body.innerText'),v=>!v.includes('Allow and enable'),'approval accepted');await key('Escape');
     };
     const openRail=async()=>{
-      if(await guest('panel',`!!document.querySelector('[data-testid="setup-panel"],[data-testid="plan-title"]')`))return;
+      // An empty or grant-retired rail is still an open rail. Toggling it
+      // while its read is settling closes it instead of waiting for content.
+      if(await guestContext('panel'))return;
       await click(`document.querySelector('button[aria-label="Agent progress"]')??document.querySelector('button[title="Agent progress"]')`);
       await wait(()=>guest('panel','!!document.querySelector("[data-surface]")'),Boolean,'rail open');
     };
@@ -181,6 +200,6 @@ export async function managedBrowser(options:{chromium:string;root:string;artifa
       await send('Emulation.clearDeviceMetricsOverride');return {width:390,headerWidth:row.width,literalOutput:true,keyboardDisclosure:true};
     };
     return {install,configure,views,warning,setupShot,observedChatDirectories,selectSession,shot,stop,failure,guest,reportRow,rowShot,rowToggle,genericRow,reloadChat,narrow,screenshots:()=>screenshots,console:()=>({exceptions:events.filter(e=>e.method==='Runtime.exceptionThrown').length}),
-      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,events}};
+      nativeControls:{send,evaluate,click,text,wait,key,openRail,openBoard,guestContext,guestClick,holdNextServiceReply,events}};
   }catch(e){await stop();throw e;}
 }
