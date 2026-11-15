@@ -12,6 +12,28 @@ import {observeManagedSetup} from '../../setup/managed-observation.ts';
 import {Store} from '../../shared/store.ts';
 import {ProgressError} from '../../shared/progress.ts';
 import {SetupError} from '../../setup/lifecycle.ts';
+import {parseSetup} from '../../ui/shared/adapter.ts';
+
+test('concurrent starting Setup GETs all return a complete delivery observation',async t=>{
+  const root=fs.mkdtempSync('/tmp/opencode/concurrent-setup-'),{env}=createFixtureBinding(root);
+  const setup=new SetupController({env},payload),server=createProgressServer(undefined,'fixture-only',undefined,setup);
+  try{
+    server.listen(0,'127.0.0.1');await once(server,'listening');
+    const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+    const get=async(route:string)=>{
+      const response=await fetch(url+route,{headers:{authorization:'Bearer fixture-only'},signal:AbortSignal.timeout(5000)});
+      return {status:response.status,body:await response.text()};
+    };
+    assert.equal(JSON.parse((await get('/health')).body).state,'starting');
+    const replies=await Promise.all(Array.from({length:5},()=>get('/v1/setup')));
+    t.diagnostic(JSON.stringify(replies.map(r=>({status:r.status,...(r.status===200?{}:JSON.parse(r.body))}))));
+    assert.deepEqual(replies.map(r=>r.status),[200,200,200,200,200]);
+    for(const reply of replies){
+      const read=parseSetup(reply.body);assert.equal(read.configured,true);assert.equal(read.verified,true);
+      assert.equal(read.delivery?.managedMigrationSteps,1);
+    }
+  }finally{await new Promise<void>(r=>server.close(()=>r()));setup.close();fs.rmSync(root,{recursive:true,force:true});}
+});
 
 test('step and compatibility routes share managed configuration, path and scope conflict statuses',async t=>{
   const setup=new SetupController({env:{}},payload),server=createProgressServer(undefined,'fixture-only',undefined,setup);

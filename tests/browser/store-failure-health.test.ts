@@ -32,6 +32,52 @@ const failedHealth = (code: string) => ({ ...HEALTH, ready: false, sqlite: false
 // Drain microtasks/IO turns, not a timing assumption about network completion.
 async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r => setImmediate(r)); }
 
+test('concurrent starting readList calls tolerate only Setup worker contention and reread health',async()=>{
+  let setupCalls=0,healthCalls=0;
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  const host={serviceRequest:async(q:GuestRequest)=>{
+    if(q.path==='/health'){healthCalls++;return response({...HEALTH_UNCONFIGURED,state:'starting'});}
+    assert.equal(q.path,'/v1/setup');
+    if(++setupCalls===1){await held;return response(setupRead());}
+    if(setupCalls===3)release();
+    return response({error:'managed-step-unsettled'},503);
+  }};
+  const results=await Promise.all(Array.from({length:3},()=>source.readList(host,{})));
+  assert.ok(results.every(r=>r.ok&&r.read===null),JSON.stringify(results));
+  assert.equal(setupCalls,3);assert.equal(healthCalls,6,'one follow-up health read per surface, no retry loop');
+});
+
+test('startup contention fallback preserves every other error and the follow-up health verdict',async()=>{
+  for(const initial of ['starting','refused'])for(const [status,code] of [[503,'managed-step-unsettled'],[409,'managed-step-unsettled'],[503,'private-permissions']] as const){
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      return q.path==='/health'?response({...HEALTH_UNCONFIGURED,state:initial}):response({error:code},status);
+    }},{});
+    const tolerated=initial==='starting'&&status===503&&code==='managed-step-unsettled';
+    assert.equal(result.ok,tolerated);
+    assert.deepEqual(calls,tolerated?['/health','/v1/setup','/health']:['/health','/v1/setup']);
+    if(!result.ok)assert.equal(result.failure.code,code);
+  }
+  for(const next of ['starting','unconfigured','ready','refused','unsettled','mixed']){
+    let healthCalls=0;
+    const calls:string[]=[];
+    const result=await source.readList({serviceRequest:async q=>{
+      calls.push(q.path);
+      if(q.path==='/v1/setup')return response({error:'managed-step-unsettled'},503);
+      if(q.path==='/v1/plans')return response(plansPage([row]));
+      return response(++healthCalls===1?{...HEALTH_UNCONFIGURED,state:'starting'}:
+        next==='ready'?{...HEALTH,state:next}:next==='refused'?{...failedHealth('private-permissions'),state:next}:
+          next==='unsettled'||next==='mixed'?{...failedHealth('managed-step-unsettled'),state:'refused',...(next==='mixed'?{diagnostics:['managed-step-unsettled','private-permissions']}:{})}:{...HEALTH_UNCONFIGURED,state:next});
+    }},{});
+    assert.equal(result.ok,next!=='refused'&&next!=='mixed');
+    if(result.ok)assert.equal(result.read!==null,next==='ready');
+    else assert.equal(result.failure.code,next==='mixed'?'managed-step-unsettled':'private-permissions');
+    assert.deepEqual(calls,next==='ready'?['/health','/v1/setup','/health','/v1/plans']:['/health','/v1/setup','/health']);
+  }
+});
+
 test('snapshot starting/refused explicitly admits once before reading data, with fresh capabilities',async()=>{
   for(const state of ['starting','refused'])for(const intent of [false,true]){
     const calls:GuestRequest[]=[];let admitted=false;
