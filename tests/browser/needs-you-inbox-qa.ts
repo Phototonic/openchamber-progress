@@ -426,6 +426,16 @@ try {
   const boardPhone = await guest<{ pointer: string | null; small: string[] }>('page', `const sel='${INBOX} :is(button,summary,a[href])';return {pointer:d.documentElement.getAttribute('data-device-pointer'),small:[...d.querySelectorAll(sel)].filter(n=>{const r=n.getBoundingClientRect();return r.width&&r.height&&(r.width<43.5||r.height<43.5)}).map(n=>(n.closest('[data-testid]')?.dataset.testid??n.tagName)+' '+Math.round(n.getBoundingClientRect().width)+'x'+Math.round(n.getBoundingClientRect().height))}`);
   check('phone:board-device-hooks-and-44px-inbox-targets', boardPhone.pointer === 'coarse' && boardPhone.small.length === 0, boardPhone);
   await shot('page', 'board-phone-ru-dark', INBOX);
+  // Chinese uses the same live facts and touch layout, without translating reported titles.
+  await evaluate(`qa.lang('zh-CN');true`);
+  await wait('page', `d.querySelector('${INBOX} h2')?.textContent.startsWith('需要你处理')`, 'Chinese inbox');
+  check('I1:board-chinese-search-hint', await guest<boolean>('page', `return d.querySelector('#ap-search-q').placeholder==='搜索'`));
+  check('I1:board-chinese-no-overflow', (await noOverflow('page')).ok);
+  await shot('page', 'board-phone-zh-CN-dark', '[data-testid="progress-root"]');
+  await show(['panel'], 390);
+  await wait('panel', `d.querySelector('${INBOX} h2')?.textContent.startsWith('需要你处理')`, 'Chinese rail inbox');
+  check('I1:inbox-chinese-no-overflow', (await noOverflow('panel')).ok);
+  await shot('panel', 'inbox-phone-zh-CN-dark', INBOX);
   await c.send('Emulation.setEmitTouchEventsForMouse', { enabled: false });
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await evaluate(`qa.lang('en');qa.theme('light');qa.phone(false);true`);

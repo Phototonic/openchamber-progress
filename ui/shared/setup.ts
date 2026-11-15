@@ -130,6 +130,28 @@ const ERROR_RU: typeof ERROR_TEXT = {
   'staged-activation-retained': 'Остались файлы восстановления от предыдущего действия. Проверьте установку перед повтором; не удаляйте их вслепую.',
 };
 const ERROR_ZH: typeof ERROR_TEXT = {
+  'unsafe-parent': '其他账户可以更改上级文件夹。请使用受保护的位置，或请管理员检查其权限。',
+  EACCES: '访问被拒绝。请检查你的账户对文件夹的权限后重新审阅。',
+  EPERM: '系统拒绝了文件操作。请检查文件夹权限和安全软件后重新审阅。',
+  EBUSY: '文件正被占用。请关闭使用它的程序后重新审阅。',
+  EIO: '系统无法读写文件。请先检查磁盘再重试。',
+  ENOSPC: '磁盘已满。请释放空间后重新审阅。',
+  EEXIST: '设置文件已存在。请先检查设置状态再重试，不要盲目删除恢复文件。',
+  ENOENT: '所需文件已消失。请检查安装后重新审阅。',
+  ENOTDIR: '所需文件夹已变为文件。请检查安装后再重试。',
+  EROFS: '磁盘为只读。请恢复写入权限后重新审阅。',
+  EMFILE: '打开的文件过多。请关闭不使用的程序后重新审阅。',
+  ENFILE: '系统无法打开更多文件。请关闭不使用的程序后重新审阅。',
+  'not-found': '未找到请求的设置记录。请重新检查设置状态。',
+  conflict: '存储的状态已更改。请先检查设置状态再重试。',
+  'operation-reused': '此请求属于先前的操作。请先检查设置状态再重试。',
+  assignment: '所选进度数据不允许此操作。',
+  'source-unverified': '无法验证 OpenCode 来源。请重新检查文件夹。',
+  closed: '所选进度记录已关闭。请先检查设置状态再重试。',
+  unfinished: '先前的操作尚未完成。请先检查设置状态再继续。',
+  disabled: '采集已关闭。请先审阅当前状态再开启采集。',
+  'stage-incomplete': '当前步骤尚未完成。请先检查设置状态再继续。',
+  'staged-activation-retained': '先前操作的恢复文件仍保留。请先审阅安装再重试，不要盲目删除这些文件。',
   'missing-folders': '请将三个文件夹都填写为绝对路径。',
   'confirmation-required': '请先审阅这些文件夹并确认，之后才会进行更改。',
   'targets-unverified': '无法验证这些文件夹。请使用你拥有的现有文件夹的绝对路径，且不要包含符号链接。',
@@ -784,7 +806,8 @@ function legacyReloadNote<U>(vc: Host<U>) {
 let managedRequestSerial = 0;
 /** A past attempt is separate from current admission and migration diagnostics. */
 export function lastMigrationText(action: NonNullable<SetupView['lastAction']>, locale='en') {
-  const label=resolveLanguage('auto',locale)==='ru'?'Последняя попытка переноса не удалась':'Last migration attempt failed';
+  const language = resolveLanguage('auto', locale);
+  const label = { en: 'Last migration attempt failed', ru: 'Последняя попытка переноса не удалась', 'zh-CN': '上次切换尝试失败' }[language];
   return `${label}: ${action.stage} · ${action.code}. ${setupErrorText(action.code,locale)}`;
 }
 /** One inspect, then one explicit consent. No managed action is inferred from legacy booleans. */

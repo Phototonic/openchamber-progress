@@ -92,11 +92,13 @@ export function boardBar(h: BoardBarHooks, locale = 'en') {
   let pending = () => {};
   if (s) {
     const field = el('div', 'ap-search-field');
-    // Named for assistive technology; the field's placeholder carries the same words visibly.
+    // Named for assistive technology; the placeholder is a shorter visible hint that fits a phone-width field.
     const label = el('label', 'ap-search-label ap-sr', copy.searchTitles);
     label.htmlFor = 'ap-search-q';
     const holder = testid(el('div'), 'search-query');
-    mountSearchField(holder, { value: s.text(), label: copy.searchTitles, placeholder: copy.searchTitles, onChange: (q) => { s.setText(q); pending(); } });
+    // The kit field is controlled: echo each change back so its clear button shows while there is
+    // text, and its clear button and Escape empty the visible text, not only the draft.
+    const kit = mountSearchField(holder, { value: s.text(), label: copy.searchTitles, placeholder: copy.searchHint, onChange: (q) => { s.setText(q); kit.update({ value: q }); pending(); } });
     const input = holder.querySelector('input');
     if (input) {
       input.id = 'ap-search-q';

@@ -435,6 +435,14 @@ try {
   const ruRefused = await guest<string>('panel', `return d.querySelector('${ART} [data-testid="delegation-refused"]').textContent`);
   check('I2:phone-russian-refusal', ruRefused === 'Передача субагенту отклонена', ruRefused);
   await shot('panel', 'intent-conflict-phone-ru-dark', ART);
+  await evaluate(`qa.lang('zh-CN');true`);
+  await wait('panel', `d.querySelector('${ART} [data-testid="delegation-refused"]')?.textContent==='子智能体交接被拒绝'`, 'Chinese refusal');
+  check('I2:phone-chinese-refusal-no-overflow', (await noOverflow('panel')).ok);
+  await shot('panel', 'intent-conflict-phone-zh-CN-dark', ART);
+  mode = 'pending';
+  await wait('panel', `d.querySelector('${ART} [data-testid="delegation-pending"]')?.textContent==='下一个子智能体将接手此任务'`, 'Chinese pending note', 15_000);
+  check('I2:phone-chinese-note-no-overflow', (await noOverflow('panel')).ok);
+  await shot('panel', 'panel-phone-zh-CN-dark', ART);
   await c.send('Emulation.setEmitTouchEventsForMouse', { enabled: false });
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await evaluate(`qa.lang('en');qa.theme('light');qa.phone(false);true`);

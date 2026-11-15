@@ -144,7 +144,8 @@ real integration/OAuth setup.
   execution context changes. Rail/Work Status are checked on subsequent access,
   not asserted to stay mounted simultaneously. Counts match before/after and after
   the next report. New guests make no compatibility-route requests and show no
-  former notice/line; progress and English/Russian controls remain available.
+  former notice/line; progress and localized controls remain available (this
+  historical journey exercised English and Russian).
 - **Load observations.** Watched delivery shows matching after update. Unknown
   screenshots use an invalid synthetic expectation file, and differing-load
   screenshots use an appended fixture companion comment plus explicit owned
@@ -169,6 +170,13 @@ evidence records bundle hashes, operation counts, English/Russian screenshots an
 zero remaining owned processes/listeners after cleanup. GitHub's controlled GFM
 render strips custom-scheme Markdown links, so README offers a copyable Git URL,
 not an unverified install button.
+
+## Interface language
+
+The guest interface supports English, Russian and Simplified Chinese. Traditional
+Chinese host locales use the Simplified Chinese catalog too; this is not a
+separate Traditional Chinese translation. See [interface language](ui.md#interface-language)
+for preference scope, translation boundaries and isolated rendered-browser checks.
 
 ## Report tool presentation
 

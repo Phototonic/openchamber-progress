@@ -153,7 +153,7 @@ test('Simplified Chinese handoff keeps identity, safety notes, section names and
   assert.match(out, /## 当前工作\n- 记录中的任务标题/);
   assert.match(out, /## 明确受阻的工作\n- 受阻任务标题/);
   assert.doesNotMatch(out, /Reported progress|Current work|Explicitly blocked/);
-  // 用户标题保持原样，不被翻译。
+  // User-authored titles stay literal and are never translated.
   for (const item of items) if (item.kind === 'task') assert.ok(out.includes(item.title));
   const progress = formatComposerSummary(input, 'progress', 'zh-CN')!;
   assert.doesNotMatch(progress, /稍后任务标题|tasks omitted/);

@@ -128,7 +128,7 @@ try {
     await wait(inFrame(s, `!!d.querySelector('.oc-sdk-popup [role="listbox"]')`), 'SDK listbox opened');
     const order = ['auto', 'en', 'ru', 'zh-CN'] as const;
     const ids = await guest<string[]>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="listbox"] [role="option"]')].map(n=>n.id)`);
-    // 选项 ID 是 `<uid>-<id>`；zh-CN 自带连字符，不能按最后一个连字符截取。
+    // Option IDs are `<uid>-<id>`; zh-CN contains a hyphen, so do not split at the last one.
     const options = ids.map(id => order.find(o => id.endsWith(`-${o}`)) ?? id);
     check('selector:SDK-option-ids-auto-en-ru-zh', JSON.stringify(options) === JSON.stringify([...order]));
     check('selector:endonyms', await guest<boolean>(s, `return [...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='English')&&[...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='Русский')&&[...d.querySelectorAll('.oc-sdk-popup [role="option"]')].some(n=>n.textContent==='简体中文')`));
@@ -161,7 +161,7 @@ try {
     await selectStart(s, 'auto'); // already selected: must not create a preference or write.
   }
   check('same-auto:no-automatic-save', await count('set') === 0);
-  for (const [host, expected] of [['ru-RU', 'ru'], ['de-DE', 'en'], ['not_a_locale!', 'en'], ['en', 'en']]) {
+  for (const [host, expected] of [['ru-RU', 'ru'], ['zh-CN', 'zh-CN'], ['zh-Hant', 'zh-CN'], ['zh-TW', 'zh-CN'], ['zh-HK', 'zh-CN'], ['de-DE', 'en'], ['not_a_locale!', 'en'], ['en', 'en']]) {
     await unchanged(`auto:${host}`, async () => { await ready({ locale: host }); await lang(expected); });
   }
   await choose('page', 'ru');
@@ -256,16 +256,16 @@ try {
     let setupValues: string[] | null = null;
     if (mode === 'setup') {
       await show('panel');
-      await wait(inFrame('panel', `!!d.querySelector('[data-testid="setup-configRoot"] input')`), 'editable setup form');
-      await click('panel', '[data-testid="setup-configRoot"] input');
+      await wait(inFrame('panel', `!!d.querySelector('[data-testid="setup-storeRoot"] input')`), 'editable managed setup form');
+      await click('panel', '[data-testid="setup-storeRoot"] input');
       await c.send('Input.insertText', { text: '/fixture/Edited' });
       await frames();
-      setupValues = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="setup-form"] input')].map(n=>n.value)`);
+      setupValues = await guest<string[]>('panel', `return [...d.querySelectorAll('[data-testid="setup-storeRoot"] input')].map(n=>n.value)`);
     }
     for (const s of ['panel', 'page']) check(`${s}:${mode}:one-selector-outside-plan`, await guest<boolean>(s, `const n=d.querySelector(${literal(container)});return d.querySelectorAll(${literal(container)}).length===1&&!n.closest('article.ap-plan,form')`));
     check(`status:${mode}:no-selector`, await guest<boolean>('status', `return !d.querySelector(${literal(container)})`));
     await unchanged(`${mode}:language-change`, () => choose('page', 'ru'));
-    if (setupValues) check('setup:edited-fields-survive-language-change', JSON.stringify(setupValues) === JSON.stringify(await guest('panel', `return [...d.querySelectorAll('[data-testid="setup-form"] input')].map(n=>n.value)`)));
+    if (setupValues) check('setup:edited-fields-survive-language-change', JSON.stringify(setupValues) === JSON.stringify(await guest('panel', `return [...d.querySelectorAll('[data-testid="setup-storeRoot"] input')].map(n=>n.value)`)));
     await unchanged(`${mode}:language-return`, () => choose('page', 'en')); // works despite failed/held service.
     await evaluate(`qa.release('progress')`);
   }
@@ -278,10 +278,11 @@ try {
   await click('page', '[data-testid="setup-section"] > summary');
   await wait(inFrame('page', `!!d.querySelector('[data-testid="setup-disable"] button')`), 'setup capture control');
   await click('page', '[data-testid="setup-disable"] button');
-  await wait(inFrame('page', `!!d.querySelector('[data-testid="setup-confirm-disable"]')`), 'explicit setup confirmation');
-  const confirmationEnglish = await guest<string>('page', `return d.querySelector('[data-testid="setup-confirm-disable"]').textContent`);
+  const captureReview = '[data-testid="setup-review"][data-action="managed-disable"]';
+  await wait(inFrame('page', `!!d.querySelector(${literal(captureReview)})`), 'explicit managed setup confirmation');
+  const confirmationEnglish = await guest<string>('page', `return d.querySelector(${literal(captureReview)}).textContent`);
   await unchanged('setup-confirmation-language-only', () => choose('panel', 'ru'));
-  check('setup:confirmation-preserved-and-translated', await guest<boolean>('page', `const n=d.querySelector('[data-testid="setup-confirm-disable"]');return !!n&&n.textContent!==${literal(confirmationEnglish)}&&!!n.querySelector('[data-testid="setup-confirm"] button')`));
+  check('setup:confirmation-preserved-and-translated', await guest<boolean>('page', `const n=d.querySelector(${literal(captureReview)});return !!n&&n.textContent!==${literal(confirmationEnglish)}&&!!n.querySelector('[data-testid="setup-confirm"] button')`));
   await show('page'); await click('page', '[data-testid="setup-cancel"] button');
   await choose('panel', 'en');
 
@@ -374,6 +375,13 @@ try {
   check('held-copy:no-new-preview-success', statusBefore === await guest<string>('panel', `return d.querySelector('[data-testid="summary-status"]')?.textContent||''`));
   await guest('panel', `delete w.navigator.clipboard.writeText;return true`);
 
+  await unchanged('explicit-chinese-language-only', () => choose('panel', 'zh-CN'));
+  check('chinese:preference-confirmed', (await saved()).preference === 'zh-CN');
+  for (const [s, width] of [['status', 190], ['panel', 390], ['page', 390]] as const) {
+    await show(s, width);
+    check(`${s}:${width}:chinese-no-horizontal-overflow`, await guest<boolean>(s, `return d.documentElement.scrollWidth<=d.documentElement.clientWidth+1`));
+    await shot(`${s}-${width}-zh-CN`);
+  }
   for (const [s, width] of [['status', 190], ['panel', 280], ['page', 280]] as const) {
     await show(s, width); await choose('panel', 'ru'); await show(s, width);
     check(`${s}:${width}:no-horizontal-overflow`, await guest<boolean>(s, `return d.documentElement.scrollWidth<=d.documentElement.clientWidth+1`));

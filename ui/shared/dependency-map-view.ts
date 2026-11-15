@@ -263,6 +263,7 @@ const RU: typeof EN = {
   },
 };
 const ZH: typeof EN = {
+  touchHelp: '触控：轻点卡片可选中任务，轻点背景可清除选择；单指拖动可平移，双指捏合可缩放。地图上方的按钮也可完成这些操作，无需手势。',
   planView: '计划视图', list: '列表', map: '依赖图', under: '低于 1%', viewList: '查看列表', retry: '重试', heading: '依赖图',
   closeDetails: '关闭任务详情', helpTitle: '依赖图帮助与定义', clearKey: ' 清除选择 · ',
   panHelp: '。点击背景可清除选择；拖动背景或滚动可平移。Tab 离开依赖图。',

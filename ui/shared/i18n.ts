@@ -6,7 +6,7 @@ export function resolveLanguage(preference: LanguagePreference, hostLocale: stri
   try {
     const [locale] = Intl.getCanonicalLocales(hostLocale);
     const language = locale?.split('-')[0];
-    // 简体中文界面同时用于繁体区域：目前只提供简体译文。
+    // Traditional Chinese locales also use the single Simplified Chinese catalog.
     return language === 'ru' ? 'ru' : language === 'zh' ? 'zh-CN' : 'en';
   } catch { return 'en'; }
 }

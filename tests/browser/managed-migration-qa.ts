@@ -155,7 +155,7 @@ try {
   const fits = () => guest<{ ok: boolean; overflow: number; offenders: string[] }>(`const w=d.documentElement.clientWidth,bad=[...d.querySelectorAll('[data-testid="setup-panel"] *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.right>w+0.5||r.left<-0.5)}).slice(0,5).map(e=>e.dataset.testid||e.className||e.tagName);return {ok:d.scrollingElement.scrollWidth<=w&&!bad.length,overflow:d.scrollingElement.scrollWidth-w,offenders:bad}`);
   const stepCalls = () => log.filter(l => l.path === '/v1/setup/managed-step').length;
   const idle = async (id: string) => { const steps = stepCalls(), setup = log.filter(l => l.path === '/v1/setup').length; await sleep(2500); check(id, stepCalls() === steps && log.filter(l => l.path === '/v1/setup').length === setup, { steps: stepCalls() - steps, setupReads: log.filter(l => l.path === '/v1/setup').length - setup }); };
-  async function open(locale: 'en' | 'ru', mode: 'light' | 'dark', width: number, height: number, configure: (e: ReturnType<typeof stepEngine>) => void = () => {}, keep = false) {
+  async function open(locale: 'en' | 'ru' | 'zh-CN', mode: 'light' | 'dark', width: number, height: number, configure: (e: ReturnType<typeof stepEngine>) => void = () => {}, keep = false) {
     if (!keep) { captureControl = null; engine = stepEngine({ inspectPages: 2 }); configure(engine); log.length = 0; }
     await viewport(width, height);
     await evaluate(`(()=>{try{frame().contentWindow.__stale=true}catch{}return true})()`);
@@ -381,9 +381,17 @@ try {
   await shot('failed-replay-ru');
   await idle('failed-replay:no-automatic-retry');
 
+  // Chinese step diagnostics on the same synthetic Windows-setup protocol, at phone width.
+  await open('zh-CN', 'light', 390, 844, e => e.faults.fail.add('remove-discovery:2'));
+  await startSwitch(); await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-failure"]')`, 'Chinese step failure');
+  check('failure:chinese-diagnostic', await guest(`return d.querySelector('[data-testid="setup-migration-failure"]').textContent.includes('此步骤已超时，可能已部分完成。')`));
+  check('failure:chinese-fits-390', (await fits()).ok, await fits());
+  await shot('failure-zh-CN');
+
   // 8. Fresh setup still uses inspect → review → explicit configure, not migration steps.
   fresh = true;
-  for (const locale of ['en', 'ru'] as const) {
+  for (const locale of ['en', 'ru', 'zh-CN'] as const) {
     freshConfigured = false;
     await open(locale, locale === 'en' ? 'light' : 'dark', locale === 'en' ? 1280 : 390, locale === 'en' ? 900 : 844);
     check(`fresh-${locale}:opening-is-read-only`, !log.some(l => l.method === 'POST'));

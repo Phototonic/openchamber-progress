@@ -1,7 +1,10 @@
-// 简体中文界面：语言解析、共享偏好、模型状态、时间格式与各视图固定文案。
-// 只检查扩展自有文案；用户标题、会话名与机器字段不翻译。
+// Simplified Chinese: language resolution, shared preference, model labels and fixed UI copy.
+// Only extension-owned text is translated; user titles, session names and machine fields stay literal.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import ts from 'typescript';
 import { languageMessages, resolveLanguage } from '../../ui/shared/i18n.ts';
 import { LanguageController, type LanguageStorageValue } from '../../ui/shared/language.ts';
 import { documentStateText, lifecycleLabel, statusLabel, summaryText } from '../../ui/shared/model.ts';
@@ -9,7 +12,8 @@ import { elapsedText, formatCount, relativeAge } from '../../ui/shared/format.ts
 import { cleanupFeedback } from '../../ui/shared/cleanup.ts';
 import { digestStatusText } from '../../ui/shared/change-digest.ts';
 import { searchStatusText } from '../../ui/shared/search.ts';
-import { managedCopy, managedErrorText } from '../../ui/shared/managed-copy.ts';
+import { managedCopy, managedErrorText, managedStepCopy } from '../../ui/shared/managed-copy.ts';
+import { inboxCopy } from '../../ui/shared/inbox-view.ts';
 import { reportingCopyText } from '../../ui/shared/reporting-health.ts';
 import { referenceText } from '../../ui/shared/change-digest-view.ts';
 import type { DigestFacet } from '../../shared/change-digest.ts';
@@ -36,11 +40,11 @@ test('the shared device preference saves and reopens Simplified Chinese without 
   controller.choose('zh-CN'); await settle();
   assert.deepEqual(writes, [{ key: 'interface-language.v1', value: { v: 1, preference: 'zh-CN' }, scope: 'device' }]);
   assert.equal(controller.snapshot().language, 'zh-CN');
-  // 宿主语言随后切换为英文时，显式选择仍然生效。
+  // An explicit choice survives a later English host locale.
   controller.ready('en-US', true); await settle();
   assert.equal(controller.snapshot().language, 'zh-CN');
   controller.dispose();
-  // 重新打开视图：新的控制器从设备存储读回已保存的中文选择。
+  // A new frame reads the saved Chinese choice from device storage.
   const reopened = new LanguageController({ storage: {
     get: async () => value,
     set: async () => { throw new Error('read-only'); },
@@ -102,4 +106,41 @@ test('recorded transitions state the fact, not an inferred resolution', () => {
   assert.match(reopened, /不再标记为已完成/);
   assert.doesNotMatch(reopened, /重新打开/);
   assert.match(reference(['blocked'], facts('skipped'), facts('blocked')), /报告为受阻/);
+});
+
+test('every InterfaceLanguage-typed catalog includes Simplified Chinese', () => {
+  const roots = ['ui', 'shared', 'background'];
+  let catalogs = 0;
+  for (const root of roots) for (const entry of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+    if (!entry.endsWith('.ts')) continue;
+    const path = join(root, entry);
+    const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const init = node.initializer;
+        const type = node.type ?? (ts.isSatisfiesExpression(init) ? init.type : undefined);
+        const value = ts.isSatisfiesExpression(init) ? init.expression : init;
+        if (type && /Record<InterfaceLanguage\s*,/.test(type.getText(source)) && ts.isObjectLiteralExpression(value)) {
+          catalogs++;
+          assert.ok(value.properties.some(p => p.name && (ts.isStringLiteral(p.name) || ts.isIdentifier(p.name)) && p.name.text === 'zh-CN'), `${path}: ${node.name.getText(source)}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  assert.ok(catalogs > 0, 'the catalog scan must find the typed catalogs');
+});
+
+test('1.4.0 Chinese inbox, delegation and Setup copy preserves reported-state boundaries', () => {
+  assert.equal(inboxCopy('zh-CN').heading, '需要你处理');
+  assert.match(inboxCopy('zh-CN').alsoNote, /已报告/);
+  const components = readFileSync(new URL('../../ui/shared/components.ts', import.meta.url), 'utf8');
+  assert.ok(components.includes("'Next sub-agent will take this': '下一个子智能体将接手此任务'"));
+  assert.ok(components.includes('工作尚未开始，也尚未分配子智能体。'));
+  const zh = managedStepCopy('zh-CN'), en = managedStepCopy('en');
+  assert.deepEqual(Object.keys(zh.stages).sort(), Object.keys(en.stages).sort());
+  assert.deepEqual(Object.keys(zh.errors).sort(), Object.keys(en.errors).sort());
+  assert.equal(managedErrorText('managed-step-port-busy', 'zh-CN'), '其他程序正在使用协调端口。请关闭该程序后重试。');
+  assert.match(zh.errors['managed-step-deadline'], /可能已部分完成/);
 });
