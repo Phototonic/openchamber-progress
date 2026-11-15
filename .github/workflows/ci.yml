@@ -179,7 +179,7 @@ jobs:
             if ($created) { Remove-LocalUser -Name $name }
             Remove-Item -LiteralPath $output, $errors -Force -ErrorAction SilentlyContinue
           }
-          $requests = @(Get-Content -LiteralPath $trace | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.request -and $_.request -ne 'runner-start' })
+          $requests = @(Get-Content -LiteralPath $trace | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.request -and $_.request -notin @('runner-start','summary') })
           if ($requests.Count -eq 0) { throw 'Native Windows request trace is missing.' }
       - name: Upload sanitized Windows migration trace
         if: always()

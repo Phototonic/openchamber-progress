@@ -19,7 +19,7 @@ test('native trace extraction tolerates TAP indentation and rejects a runner-onl
     assert.deepEqual(JSON.parse(regex.exec(line)![1]),{request:'prepare',spawns:6});
   }
   assert.equal(regex.test('unrelated output'),false);
-  assert.match(source,/Where-Object \{ \$_\.request -and \$_\.request -ne 'runner-start' \}/);
+  assert.match(source,/Where-Object \{ \$_\.request -and \$_\.request -notin @\('runner-start','summary'\) \}/);
   assert.match(source,/if \(\$requests\.Count -eq 0\) \{ throw 'Native Windows request trace is missing\.'/);
 });
 
