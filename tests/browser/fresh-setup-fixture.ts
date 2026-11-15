@@ -14,7 +14,7 @@ export function freshSetupFixture() {
       return result;
     }
     if (q.path !== '/v1/setup') return {status:409,body:'{"error":"managed-action-required"}'};
-    const p = engine.progress, done = p?.state === 'complete';
+    const p = engine.observeSetup(), done = p?.state === 'complete';
     return {status:200,body:JSON.stringify({configured:done,verified:done,installed:false,
       captureEnabled:p?.capture.state === 'on' ? true : p?.capture.state === 'off' ? false : null,
       targets:done ? engine.review.targets : null,version:null,activation:'unknown',separateLifecycle:false,

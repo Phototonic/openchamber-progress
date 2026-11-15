@@ -70,7 +70,7 @@ const log: { method: string; path: string; action?: string; version?: number; at
 const health = { ok: true, ready: false, sqlite: false, protocolVersion: 2, schemaVersion: 2, runtime: { node: '24.22.0', bun: null }, diagnostics: ['targets-unverified'], state: 'unconfigured' };
 function setupRead() {
   if (fresh) {
-    const p = freshEng.progress, done = p?.state === 'complete';
+    const p = freshEng.observeSetup(), done = p?.state === 'complete';
     const published=!!p&&p.plan.findIndex(s=>s.name===p.lastCompleted?.name)>=p.plan.findIndex(s=>s.name==='publish-binding');
     // Coarse status stays conservative for older clients: a fresh journal reads pending/complete.
     return {
@@ -82,7 +82,7 @@ function setupRead() {
         delivery:{kind:'managed',revision:1,planKind:'fresh',configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null,managedMigrationSteps:1,managedFreshSteps:1}}:{}),
     };
   }
-  const p = engine.progress;
+  const p = engine.observeSetup();
   const migration = !p ? 'available' : p.state === 'complete' ? 'complete' : 'pending';
   return {
     configured: false, verified: false, installed: false, captureEnabled: captureControl ?? (!p ? true : p.capture.state === 'on' ? true : p.capture.state === 'off' ? false : null),

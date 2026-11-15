@@ -329,7 +329,9 @@ test('reviewed resume: fresh review of the exact uncertain decision, then one re
   const { driver } = driverFor(engine);
   await driver.inspect('begin'); driver.setAck(true); await driver.confirmBegin();
   assert.deepEqual(driver.state.outcome, { code: 'managed-step-unsettled', stage: 'enable', uncertain: false });
-  const p = driver.state.progress!;
+  const unobserved = driver.state.progress!;
+  assert.equal(unobserved.capture.state, 'unknown');assert.equal(unobserved.recovery,'reconcile');
+  const p = currentProgress(unobserved,engine.observeSetup())!;
   assert.equal(nextAction(p), 'review');
   await driver.resume(p);
   assert.equal(actions(engine).at(-1), 'advance:enable:0', 'ordinary resume is not offered for a capture review');
@@ -346,7 +348,7 @@ test('reviewed resume: fresh review of the exact uncertain decision, then one re
   const stale = stepEngine(); stale.faults.unsettledEnable = true;
   const d = driverFor(stale).driver;
   await d.inspect('begin'); d.setAck(true); await d.confirmBegin();
-  const shown = { ...d.state.progress!, sequence: d.state.progress!.sequence - 1 };
+  const shown = { ...stale.observeSetup()!, sequence: d.state.progress!.sequence - 1 };
   await d.inspect('capture', { progress: shown });
   assert.equal(d.state.review, null);
   assert.equal(d.state.outcome?.code, 'managed-review-stale');
@@ -710,7 +712,9 @@ test('fresh: an uncertain enable needs a reviewed resume for exactly that enable
   engine.faults.unsettledEnable = true;
   const { driver } = freshDriver(engine);
   await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
-  const p = driver.state.progress!;
+  const unobserved = driver.state.progress!;
+  assert.equal(unobserved.capture.state, 'unknown');assert.equal(unobserved.recovery,'reconcile');
+  const p = currentProgress(unobserved,engine.observeSetup())!;
   assert.equal(nextAction(p), 'review'); assert.equal(p.capture.state, 'off');
   await driver.inspect('capture', { progress: p });
   assert.equal(driver.state.review?.kind, 'capture');

@@ -37,6 +37,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
   const plan = options.plan ?? managedStepPlan;
   const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false, failedReplay: new Set(), crash: new Set(), settlement: new Set(), portBusy: false };
   let p: ManagedStepProgress | null = null;
+  let needsCaptureReview = false;
   let page = 0;
   const requests: ManagedStepRequest[] = [];
   let inflight = 0, maxInflight = 0;
@@ -46,10 +47,16 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
   const reply = (status: number, body: Partial<ManagedStepResponse>) => ({ status, body: JSON.stringify({ version: 1, disposition: 'applied', inspection: null, progress: p, error: null, accounting: { securitySpawns: 3, elapsedMs: 12.5 }, ...body }) });
   const refuse = (status: number, stage: string, code: string) => reply(status, { disposition: 'refused', error: { stage: stage as never, code } });
   const captureAfter = (done: ManagedStepRef, before: Capture): Capture => done.name === 'disable' ? off : done.name === 'enable' ? on : before;
+  /** Model GET /v1/setup's fresh capture observation, not the refusal's projection. */
+  const observeSetup = () => {
+    if (p && needsCaptureReview) p = { ...p, capture: off, recovery: 'review' };
+    return p;
+  };
 
   function handle(r: ManagedStepRequest): { status: number; body: string } | 'drop' {
     if (faults.portBusy) { faults.portBusy = false; return refuse(503, 'lock', 'managed-step-port-busy'); }
     if (r.action === 'inspect') {
+      observeSetup();
       if (p && p.recovery === 'review') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review: { ...managedReview, expected: CAPTURE_REVIEW } } });
       if (p && p.state !== 'complete') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review: managedReview } });
       const pages = options.inspectPages ?? 1;
@@ -58,7 +65,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
       if (page < pages) return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'incomplete', stage: page === 1 ? 'legacy-discovery' : 'legacy-releases', cursor: `inspection-page-${page + 1}` } });
       return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'complete', stage: 'review', cursor: null, review: managedReview } });
     }
-    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown } : null }) : { status: 404, body: '{"error":"not-found"}' };
+    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown, recovery: needsCaptureReview ? 'reconcile' : p.recovery } : null }) : { status: 404, body: '{"error":"not-found"}' };
     if (r.action === 'begin') {
       if (p) return refuse(409, 'journal', 'managed-step-conflict');
       if (r.expected !== managedReview.expected) return refuse(409, 'review', 'managed-review-stale');
@@ -76,9 +83,10 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
     }
     if (r.action === 'resume') {
       if (p.worker === 'active') return refuse(503, 'lock', 'managed-step-unsettled');
-      if (p.recovery === 'review' && !r.review) return refuse(503, p.step!.name, 'managed-step-unsettled');
+      if ((needsCaptureReview || p.recovery === 'review') && !r.review) return refuse(503, p.step!.name, 'managed-step-unsettled');
       if (r.review && (p.recovery !== 'review' || r.review.expected !== CAPTURE_REVIEW || r.review.step !== p.step?.name)) return refuse(409, p.step?.name ?? 'review', 'managed-review-stale');
       if (!['pending', 'paused', 'failed', 'abandoned', 'running'].includes(p.state)) return refuse(409, 'journal', 'managed-step-conflict');
+      if (r.review) needsCaptureReview = false;
       // Controls retain unresolved intent. Pending/continue means the NEXT advance
       // must reconcile it, not that the old effect is settled or the worker idle.
       p = progress({ sequence: p.sequence + 1, state: 'pending', diagnostic: null, recovery: 'continue' });
@@ -101,7 +109,8 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
     }
     if (step.name === 'enable' && faults.unsettledEnable) {
       faults.unsettledEnable = false;
-      p = progress({ state: 'running', worker: 'unsettled', effect: 'uncertain', capture: off, diagnostic: { stage: 'enable', code: 'managed-step-unsettled' }, recovery: 'review' });
+      needsCaptureReview = true;
+      p = progress({ state: 'running', worker: 'unsettled', effect: 'uncertain', capture: unknown, diagnostic: { stage: 'enable', code: 'managed-step-unsettled' }, recovery: 'reconcile' });
       return refuse(503, 'enable', 'managed-step-unsettled');
     }
     const next = plan[index(step) + 1] ?? null;
@@ -122,7 +131,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
   }
 
   return {
-    plan, faults, requests,
+    plan, faults, requests, observeSetup,
     get progress() { return p; },
     set progress(value: ManagedStepProgress | null) { p = value; },
     maxInflight: () => maxInflight,
@@ -165,6 +174,7 @@ export function freshEngine(options: FreshOptions = {}) {
   const first = fixture.replies.prepared.progress!;
   const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false, failedReplay: new Set(), crash: new Set(), settlement: new Set(), portBusy: false };
   let p: ManagedFreshStepProgress | null = null;
+  let needsCaptureReview = false;
   let page = 0;
   const requests: ManagedFreshStepRequest[] = [];
   const violations: unknown[] = [];
@@ -176,10 +186,15 @@ export function freshEngine(options: FreshOptions = {}) {
   const refuse = (status: number, stage: string, code: string) => reply(status, { disposition: 'refused', error: { stage: stage as never, code } });
   // New stores start off once created and turn on only at enable; retained capture never moves.
   const captureAfter = (done: ManagedFreshStepRef, before: Capture): Capture => retained ?? (done.name === 'create-store' ? off : done.name === 'enable' ? on : before);
+  const observeSetup = () => {
+    if (p && needsCaptureReview) p = { ...p, capture: off, recovery: 'review' };
+    return p;
+  };
 
   function handle(r: ManagedFreshStepRequest): { status: number; body: string } | 'drop' {
     if (faults.portBusy) { faults.portBusy = false; return refuse(503, 'lock', 'managed-step-port-busy'); }
     if (r.action === 'inspect') {
+      observeSetup();
       if (p && p.recovery === 'review') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review: { ...review, expected: CAPTURE_REVIEW, capture: p.capture } } });
       if (p && p.state !== 'complete') return reply(200, { disposition: 'observed', inspection: { state: 'complete', stage: 'review', cursor: null, review } });
       const pages = options.inspectPages ?? 1;
@@ -188,7 +203,7 @@ export function freshEngine(options: FreshOptions = {}) {
       if (page < pages) return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'incomplete', stage: MANAGED_FRESH_INSPECTION_STEPS[Math.min(page, 3)], cursor: `fresh-page-${page + 1}` } });
       return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'complete', stage: 'review', cursor: null, review } });
     }
-    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown } : null }) : { status: 404, body: '{"error":"not-found"}' };
+    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown, recovery: needsCaptureReview ? 'reconcile' : p.recovery } : null }) : { status: 404, body: '{"error":"not-found"}' };
     if (r.action === 'begin') {
       if (p) return refuse(409, 'journal', 'managed-step-conflict');
       if (r.expected !== review.expected) return refuse(409, 'review', 'managed-review-stale');
@@ -206,9 +221,10 @@ export function freshEngine(options: FreshOptions = {}) {
     }
     if (r.action === 'resume') {
       if (p.worker === 'active') return refuse(503, 'lock', 'managed-step-unsettled');
-      if (p.recovery === 'review' && !r.review) return refuse(503, p.step!.name, 'managed-step-unsettled');
+      if ((needsCaptureReview || p.recovery === 'review') && !r.review) return refuse(503, p.step!.name, 'managed-step-unsettled');
       if (r.review && (p.recovery !== 'review' || r.review.expected !== CAPTURE_REVIEW || r.review.step !== p.step?.name)) return refuse(409, p.step?.name ?? 'review', 'managed-review-stale');
       if (!['pending', 'paused', 'failed', 'abandoned', 'running'].includes(p.state)) return refuse(409, 'journal', 'managed-step-conflict');
+      if (r.review) needsCaptureReview = false;
       p = progress({ sequence: p.sequence + 1, state: 'pending', diagnostic: null, recovery: 'continue' });
       return reply(200, {});
     }
@@ -228,7 +244,8 @@ export function freshEngine(options: FreshOptions = {}) {
     }
     if (step.name === 'enable' && faults.unsettledEnable) {
       faults.unsettledEnable = false;
-      p = progress({ state: 'running', worker: 'unsettled', effect: 'uncertain', capture: off, diagnostic: { stage: 'enable', code: 'managed-step-unsettled' }, recovery: 'review' });
+      needsCaptureReview = true;
+      p = progress({ state: 'running', worker: 'unsettled', effect: 'uncertain', capture: unknown, diagnostic: { stage: 'enable', code: 'managed-step-unsettled' }, recovery: 'reconcile' });
       return refuse(503, 'enable', 'managed-step-unsettled');
     }
     const next = plan[index(step) + 1] ?? null;
@@ -251,7 +268,7 @@ export function freshEngine(options: FreshOptions = {}) {
   }
 
   return {
-    plan, review, faults, requests, violations, storeMode, sourceMode, retained,
+    plan, review, faults, requests, violations, storeMode, sourceMode, retained, observeSetup,
     get progress() { return p; },
     set progress(value: ManagedFreshStepProgress | null) { p = value; },
     maxInflight: () => maxInflight,
