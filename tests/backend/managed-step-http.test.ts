@@ -403,6 +403,20 @@ test('HTTP bounded reads and capture retain the service selection pin across wor
   }finally{await f.close();}
 });
 
+test('HTTP capture enable refuses an idle paused migration while disable remains available',async()=>{
+  const f=await fixture();try{
+    await f.begin();const p=await f.until('enable');
+    const paused=await f.control('pause',p);assert.equal(paused.status,200);assert.equal(paused.body.progress!.state,'paused');
+    assert.equal(readManagedStepJournal(f.env)!.migration.state,'paused');
+    assert.equal(f.capture(),false);
+    const enabled=await f.http('/v1/capture/enable',{});
+    assert.equal(enabled.status,409);assert.deepEqual(enabled.body,{error:'managed-migration-required'});assert.equal(f.capture(),false);
+    f.capture(true);
+    const disabled=await f.http('/v1/capture/disable',{});
+    assert.equal(disabled.status,200);assert.deepEqual(disabled.body,{ok:true,captureEnabled:false});assert.equal(f.capture(),false);
+  }finally{await f.close();}
+});
+
 test('HTTP capture routes preserve precise platform fault codes without changing capture',async()=>{
   const f=await fixture('receipt');try{
     let p=(await f.begin()).body.progress!;while(p.state!=='complete')p=(await f.advance(p)).body.progress!;
