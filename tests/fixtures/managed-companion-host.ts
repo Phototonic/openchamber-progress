@@ -15,6 +15,7 @@ import { lifecycle } from '../../setup/lifecycle.ts';
 import { managedBrowser } from '../browser/managed-companion-qa.ts';
 import { requireRuntimeVersion } from './runtime-version.ts';
 import { reportingSessionsJourney } from './reporting-sessions-journey.ts';
+import { release140Journey } from './release-140-journey.ts';
 
 const arg=(name:string)=>{const i=process.argv.indexOf(name);return i<0?undefined:process.argv[i+1];};
 const hostModule=arg('--host-module'),binary=arg('--opencode-binary'),chromium=arg('--chromium'),artifacts=arg('--artifacts');
@@ -47,12 +48,12 @@ if(arg('--server-worker')) {
     for(let dir=path.dirname(root);;dir=path.dirname(dir)){for(const name of ['opencode.json','opencode.jsonc','.opencode','AGENTS.md','CLAUDE.md'])assert.equal(fs.existsSync(path.join(dir,name)),false,'ancestor configuration disallows fixture');if(dir===path.dirname(dir))break;}
     for(const dir of ['project/docs/plans','config/opencode/plugins/managed-fixture','data/opencode','extension'])fs.mkdirSync(`${root}/${dir}`,{recursive:true,mode:0o700});
     const files=['package.json','build/service/main.js','build/setup/main.js',...['index.js','package.json','SKILL.md'].map(f=>`build/companion/${f}`),...['background',...['panel','status','page'].map(s=>`ui/${s}`)].flatMap(s=>[`${s}/index.html`,`${s}/main.js`])];
-    for(const file of files){fs.mkdirSync(path.dirname(`${root}/extension/${file}`),{recursive:true,mode:0o700});fs.copyFileSync(file,`${root}/extension/${file}`);}
+    for(const file of files){fs.mkdirSync(path.dirname(`${root}/extension/${file}`),{recursive:true,mode:0o700});fs.copyFileSync(file,`${root}/extension/${file}`);assert.ok(fs.readFileSync(file).equals(fs.readFileSync(`${root}/extension/${file}`)),'verbatim tracked package projection');}
     const observer=`${root}/config/opencode/plugins/managed-fixture`;
     const build=spawnSync('bun',['build','tests/fixtures/managed-companion-observer.ts','--target=node','--format=esm',`--outfile=${observer}/index.js`],{encoding:'utf8',timeout:30000});assert.equal(build.status,0,'fixture observer build');
     fs.writeFileSync(`${observer}/package.json`,JSON.stringify({name:'synthetic-managed-observer',type:'module',exports:{'.':'./index.js'}}));
     fs.writeFileSync(`${root}/sdk.mjs`,'export function createManagedFixture(){return {}}\n');fs.writeFileSync(`${root}/events.jsonl`,'');
-    if(process.argv.includes('--subagent-reporting-sessions')){
+    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-140')){
       fs.writeFileSync(`${root}/jobs.json`,'{}');
     }
     fs.writeFileSync(`${root}/project/docs/plans/synthetic.md`,'# Managed acceptance\nTwo synthetic tasks.\n');
@@ -75,9 +76,11 @@ if(arg('--server-worker')) {
     }
     const remaining=owned.filter(pid=>fs.existsSync(`/proc/${pid}`));
     const checks=fs.existsSync(`${root}/checks.json`)?JSON.parse(fs.readFileSync(`${root}/checks.json`,'utf8')):[];
-    write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false,zeroCredentials:checks.some((c:any)=>c.id==='no-credentials'&&c.pass),noRemoteProviderTransport:checks.some((c:any)=>c.id==='no-remote-provider-access'&&c.pass)});
+    const events=fs.existsSync(`${root}/events.jsonl`)?fs.readFileSync(`${root}/events.jsonl`,'utf8').trim().split('\n').filter(Boolean).map(s=>JSON.parse(s)):[];
+    write('cleanup',{ownedProcessGroupGone:!child?.pid||(()=>{try{process.kill(-child.pid,0);return false;}catch{return true;}})(),remainingOwnedProcesses:remaining.length,remainingOwnedListeners:remaining.length===0?0:'unknown',liveProfilesUsed:false,zeroCredentials:checks.some((c:any)=>c.id==='no-credentials'&&c.pass),noRemoteProviderTransport:events.length>0&&!events.some((e:any)=>e.type==='forbidden-http')});
     if(fs.existsSync(`${root}/journey-stage.json`))fs.copyFileSync(`${root}/journey-stage.json`,`${output}/journey-stage.json`);
     if(fs.existsSync(`${root}/journey-checks.json`))fs.copyFileSync(`${root}/journey-checks.json`,`${output}/journey-checks.json`);
+    if(fs.existsSync(`${root}/release-checks.json`))fs.copyFileSync(`${root}/release-checks.json`,`${output}/release-checks.json`);
     fs.rmSync(root,{recursive:true,force:true});assert.equal(remaining.length,0,'owned process cleanup incomplete');
   }
 }else {
@@ -98,7 +101,8 @@ if(arg('--server-worker')) {
     await wait(async()=>server.isReady(),Boolean,'actual web host ready',100000);
     const info=server.getOpenCodeProcessInfo();assert.equal(info.managed,true);remember(info.pid);
     const raw=Object.fromEntries(fs.readFileSync(`/proc/${info.pid}/environ`,'utf8').split('\0').filter(Boolean).map(v=>{const i=v.indexOf('=');return[v.slice(0,i),v.slice(i+1)];}));
-    assert.equal(raw.HOME,env.HOME);assert.equal(raw.XDG_DATA_HOME,env.XDG_DATA_HOME);assert.equal(raw.AGENT_PROGRESS_BINDING,undefined);
+    for(const name of ['HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME','XDG_RUNTIME_DIR','TMPDIR'])assert.equal(raw[name],env[name],`isolated ${name}`);
+    assert.equal(raw.AGENT_PROGRESS_BINDING,undefined);
     const headers={authorization:`Basic ${Buffer.from(`opencode:${raw.OPENCODE_PASSWORD||raw.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`};
     const client=OpenCode.make({baseUrl:`http://127.0.0.1:${info.port}`,headers}),location={directory:`${root}/project`},url=`http://127.0.0.1:${server.getPort()}`;
     const inventory=()=>client.plugin.list({location} as any,{signal:AbortSignal.timeout(3000)});
@@ -121,11 +125,15 @@ if(arg('--server-worker')) {
     await wait(inventory,v=>v.data.some(p=>p.id==='managed-fixture-observer'&&p.state.status==='active'),'scripted observer active');check('no-credentials',(await client.credential.list()).length===0);
     await session('Setup fixture');
     phase='real-ui-install-approval';browser=await managedBrowser({chromium,root,artifacts:output,url});await browser.install(extension);await active();
-    check('approval-before-configuration',(await service('/v1/setup')).body.delivery.configuration==='unconfigured'&&!fs.existsSync(managedBindingFile(env)));
+    const initialSetup=await service('/v1/setup');
+    write('initial-setup',{status:initialSetup.status,configuration:initialSetup.body.delivery?.configuration??null,error:initialSetup.body.error??null});
+    check('setup-status-available',initialSetup.status===200&&!!initialSetup.body.delivery);
+    check('approval-before-configuration',initialSetup.body.delivery.configuration==='unconfigured'&&!fs.existsSync(managedBindingFile(env)));
     phase='real-ui-configuration';await browser.configure();const b=readManagedBinding(env);assert.ok(b);store=new Store(b.database);
-    if(process.argv.includes('--subagent-reporting-sessions')) {
+    if(process.argv.includes('--subagent-reporting-sessions')||process.argv.includes('--release-140')) {
       phase='subagent-reporting-sessions';
       results.journey=await reportingSessionsJourney({root,binding:b,store,client,location,browser,api});
+      if(process.argv.includes('--release-140'))results.release140=await release140Journey({root,binding:b,store,client,location,browser,api});
       check('no-final-credentials',(await client.credential.list()).length===0);
       check('no-remote-provider-access',!records().some(e=>e.type==='forbidden-http'));
       check('no-browser-exceptions',browser.console().exceptions===0);
