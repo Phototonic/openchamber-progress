@@ -1216,7 +1216,9 @@ export function startView<U>(spec: ViewSpec<U>) {
         ++setupSerial;
         const current = cleanupContext();
         const generation = contextGeneration;
-        const capability = setup?.state === 'ready' ? setup.value.delivery?.managedMigrationSteps : undefined;
+        // Either negotiated step family also provides the bodyless, freshly validated capture controls.
+        const delivery = setup?.state === 'ready' ? setup.value.delivery : undefined;
+        const capability = delivery?.managedMigrationSteps === 1 || delivery?.managedFreshSteps === 1 ? 1 : undefined;
         const r = await setupCall(host, action, targets, confirmed, expected, capability);
         if (disposed || current !== cleanupContext() || generation !== contextGeneration || document.visibilityState === 'hidden') {
           if (!disposed) { setupNeedsRefresh=true; if(document.visibilityState !== 'hidden') loadSetup(); }

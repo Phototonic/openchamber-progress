@@ -1,15 +1,17 @@
-// Setup client for the bounded step protocol: strict parsing of the shared contract fixtures,
-// negotiation, one-request-at-a-time driving, explicit resume/review/pause/stop, and EN/RU copy.
+// Setup client for the bounded step protocol: strict parsing of the shared contract fixtures for both
+// wire families, negotiation, one-request-at-a-time driving, explicit resume/review/pause/stop, and copy.
 // Node-level only; rendered layout, focus and themes are covered by managed-migration-qa.ts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { managedStepFixtures, managedOperationId } from '../fixtures/managed-steps.ts';
-import { MANAGED_INSPECTION_STEPS, MANAGED_MIGRATION_STEPS, MANAGED_STEP_CODES, MANAGED_STEP_LIMITS, type ManagedStepProgress, type ManagedStepRequest } from '../../shared/managed-steps.ts';
-import { StepDriver, currentProgress, managedStepCall, nextAction, newOperationId, parseManagedStepProgress, parseManagedStepResponse, replyAnswers, type StepIo } from '../../ui/shared/setup-steps.ts';
+import { managedFreshStepFixtures } from '../fixtures/managed-fresh-steps.ts';
+import { MANAGED_FRESH_INSPECTION_STEPS, MANAGED_FRESH_STEPS, MANAGED_INSPECTION_STEPS, MANAGED_MIGRATION_STEPS, MANAGED_STEP_CODES, MANAGED_STEP_LIMITS, managedFreshPlan,
+  type ManagedFreshStepProgress, type ManagedSetupStepRequest, type ManagedStepProgress, type ManagedStepRequest } from '../../shared/managed-steps.ts';
+import { StepDriver, currentProgress, managedStepCall, nextAction, newOperationId, parseManagedFreshStepProgress, parseManagedFreshStepResponse, parseManagedStepProgress, parseManagedStepResponse, replyAnswers, type StepIo } from '../../ui/shared/setup-steps.ts';
 import { parseSetup } from '../../ui/shared/adapter.ts';
-import { managedStepCopy, managedErrorText } from '../../ui/shared/managed-copy.ts';
+import { managedStepCopy, managedErrorText, managedFamilyStepCopy, managedFreshCopy } from '../../ui/shared/managed-copy.ts';
 import { migrationStepText, migrationTitle, setupErrorText } from '../../ui/shared/setup.ts';
-import { stepEngine, CAPTURE_REVIEW } from './managed-migration-engine.ts';
+import { stepEngine, freshEngine, CAPTURE_REVIEW } from './managed-migration-engine.ts';
 import { setupRead } from './fixtures.ts';
 import { MANAGED_ACTION_CODES } from '../../shared/progress.ts';
 
@@ -410,4 +412,312 @@ test('copy: EN/RU for every stage and code, short step text, no paths', () => {
   const pr = (patch: Partial<ManagedStepProgress>) => ({ ...p, ...patch });
   assert.equal(currentProgress(pr({ sequence: 5 }), pr({ sequence: 4 }))?.sequence, 5);
   assert.equal(currentProgress(pr({ sequence: 4 }), pr({ sequence: 6 }))?.sequence, 6);
+});
+
+// ---- Fresh setup: separately negotiated wire version 2 (shared/managed-steps.ts, setup/managed-steps.md) ----
+
+const FRESH_CASES = [['create', true, 'create'], ['create', false, 'create'], ['retain', false, 'create'], ['retain', false, 'reuse']] as const;
+const ffx = managedFreshStepFixtures();
+const freshProgress = ffx.replies.prepared.progress!;
+
+test('fresh: every frozen fixture reply parses exactly in its own family only', () => {
+  for (const [store, missing, source] of FRESH_CASES) {
+    const f = managedFreshStepFixtures(store, missing, source);
+    for (const [name, reply] of Object.entries(f.replies)) {
+      assert.deepEqual(parseManagedFreshStepResponse(structuredClone(reply)), reply, `${store}/${missing}/${source}/${name}`);
+      assert.equal(parseManagedStepResponse(structuredClone(reply)), undefined, `version 1 never reads ${name}`);
+    }
+    assert.deepEqual(parseManagedFreshStepProgress(f.replies.prepared.progress), f.replies.prepared.progress);
+    assert.deepEqual(f.replies.prepared.progress!.plan, managedFreshPlan(store, missing, source));
+  }
+  for (const [name, reply] of Object.entries(fx.replies)) assert.equal(parseManagedFreshStepResponse(structuredClone(reply)), undefined, `version 2 never reads ${name}`);
+  assert.equal(parseManagedStepProgress(freshProgress), undefined, 'a fresh progress is not migration progress');
+  assert.equal(parseManagedFreshStepProgress(fx.replies.disabled.progress), undefined, 'a migration progress is not fresh progress');
+});
+
+test('fresh: progress, review and envelopes fail closed outside the frozen grammars', () => {
+  const p = freshProgress;
+  const retained = managedFreshStepFixtures('retain', false, 'reuse').replies.prepared.progress!;
+  const bad: Record<string, unknown> = {
+    extra: { ...p, extra: 1 }, noPlanKind: (({ planKind: _k, ...rest }) => rest)(p), otherPlanKind: { ...p, planKind: 'migration' },
+    reversedPlan: { ...p, plan: [...p.plan].reverse() }, shortPlan: { ...p, plan: p.plan.slice(0, -1) },
+    retainWithStoreDirectory: { ...retained, plan: managedFreshPlan('create', true, 'create') },
+    createReusingSource: { ...p, sourceMode: 'reuse' }, policyMismatch: { ...p, capturePolicy: 'preserve' }, retainEnabling: { ...retained, capturePolicy: 'enable-new' },
+    migrationStep: { ...p, step: { name: 'disable', batch: 0 } }, batchOne: { ...p, step: { name: 'store-directory', batch: 1 } },
+    skippedStep: { ...p, step: p.plan[3] }, noLastCompleted: { ...p, lastCompleted: null }, lastOutsidePlan: { ...retained, lastCompleted: { name: 'create-store', batch: 0 } },
+    completeEarly: { ...p, state: 'complete', step: null, recovery: 'none' },
+    migrationDiagnostic: { ...p, diagnostic: { stage: 'remove-discovery', code: 'managed-step-deadline' } },
+    rawDiagnostic: { ...p, diagnostic: { stage: 'create-store', code: 'EACCES: /private' } },
+    reviewOffEnable: { ...p, recovery: 'review' },
+  };
+  for (const [name, value] of Object.entries(bad)) assert.equal(parseManagedFreshStepProgress(value), undefined, name);
+  assert.ok(parseManagedFreshStepProgress({ ...p, diagnostic: { stage: 'create-store', code: 'managed-step-deadline' } }), 'fresh stages are fresh diagnostics');
+  const enableAt = p.plan.findIndex(s => s.name === 'enable');
+  assert.ok(parseManagedFreshStepProgress({ ...p, step: p.plan[enableAt], lastCompleted: p.plan[enableAt - 1], state: 'running', worker: 'unsettled', recovery: 'review' }));
+  const review = ffx.review;
+  const reviewed = ffx.replies.reviewed;
+  for (const [name, value] of Object.entries({
+    proposedIdMissing: { ...review, storeId: null }, sourceIdMissing: { ...review, sourceId: null }, extra: { ...review, path: '/x' },
+    badVersion: { ...review, packageVersion: '1.4.0 beta' }, otherPlan: { ...review, plan: managedFreshPlan('retain', false, 'reuse') },
+    migrationReview: fx.replies.reviewed.inspection!.review,
+  })) assert.equal(parseManagedFreshStepResponse({ ...reviewed, inspection: { ...reviewed.inspection, review: value } }), undefined, name);
+  assert.equal(parseManagedFreshStepResponse({ ...reviewed, inspection: { state: 'incomplete', stage: 'legacy-releases', cursor: 'x' } }), undefined, 'no legacy-release page in fresh inspection');
+  for (const stage of MANAGED_FRESH_INSPECTION_STEPS.filter(s => s !== 'review')) assert.ok(parseManagedFreshStepResponse({ ...reviewed, inspection: { state: 'incomplete', stage, cursor: 'x' } }), stage);
+  assert.equal(parseManagedFreshStepResponse({ ...ffx.replies.prepared, version: 1 }), undefined);
+  assert.equal(parseManagedFreshStepResponse({ ...ffx.replies.prepared, disposition: 'refused' }), undefined, 'refused needs an error');
+});
+
+test('fresh transport: version-2 request and reply only; the other family is a wrong answer, never a drop', async () => {
+  const calls: any[] = [];
+  const begin = ffx.requests.begin;
+  const ok = await managedStepCall(host(200, ffx.replies.prepared, calls), begin);
+  assert.equal(ok.kind, 'reply');
+  assert.deepEqual(calls.map(c => [c.method, c.path, JSON.parse(c.body)]), [['POST', '/v1/setup/managed-step', begin]]);
+  const asMigration = structuredClone(fx.replies.deadline); asMigration.progress = null;
+  assert.equal((await managedStepCall(host(503, asMigration), begin)).kind, 'invalid', 'a version-1 refusal does not answer a version-2 request');
+  assert.equal((await managedStepCall(host(200, ffx.replies.prepared), fx.requests.begin)).kind, 'invalid', 'a version-2 reply does not answer a version-1 request');
+  assert.equal(replyAnswers(begin, fx.replies.prepared), false);
+  assert.equal(replyAnswers(fx.requests.begin, ffx.replies.prepared), false);
+  const none: unknown[] = [];
+  for (const request of [{ ...ffx.requests.advance, step: { name: 'disable', batch: 0 } }, { ...ffx.requests.advance, step: { name: 'create-store', batch: 1 } },
+    { ...ffx.requests.reviewedResume, review: { ...ffx.requests.reviewedResume.review, step: 'disable' } }, { ...begin, storeRoot: '/fixture/other' }]) {
+    assert.equal((await managedStepCall(host(200, ffx.replies.prepared, none), request as ManagedSetupStepRequest)).kind, 'not-sent', JSON.stringify(request));
+  }
+  assert.equal(none.length, 0);
+  assert.deepEqual(await managedStepCall(host(409, { error: 'managed-action-required' }), begin), { kind: 'http', status: 409, code: 'managed-action-required' });
+});
+
+test('fresh negotiation: only the literal capability; strict freshProgress; families independent', () => {
+  const delivery = { kind: 'managed', revision: 1, configuration: 'unconfigured', migration: 'none', mode: 'unknown', observation: 'unknown', expectedVersion: '1.4.0', managedMigrationSteps: 1 };
+  const read = (d: unknown) => parseSetup(JSON.stringify(setupRead({ separateLifecycle: false, delivery: d })));
+  assert.equal(read(delivery).delivery?.managedFreshSteps, undefined, 'migration steps alone do not negotiate fresh steps');
+  for (const value of [true, '1', 2, 0]) assert.equal(read({ ...delivery, managedFreshSteps: value }).delivery?.managedFreshSteps, undefined, String(value));
+  const fresh = read({ ...delivery, managedFreshSteps: 1 });
+  assert.equal(fresh.delivery?.managedFreshSteps, 1); assert.equal(fresh.delivery?.managedMigrationSteps, 1);
+  assert.equal(read({ ...delivery, managedMigrationSteps: undefined, managedFreshSteps: 1 }).delivery?.managedMigrationSteps, undefined, 'independent capabilities');
+  assert.deepEqual(read({ ...delivery, managedFreshSteps: 1, freshProgress }).delivery?.freshProgress, freshProgress);
+  assert.throws(() => read({ ...delivery, freshProgress }), /fresh progress/, 'progress without the capability');
+  assert.throws(() => read({ ...delivery, managedFreshSteps: 1, freshProgress: { ...freshProgress, extra: true } }), /fresh progress/);
+  assert.throws(() => read({ ...delivery, managedFreshSteps: 1, freshProgress: fx.replies.pausedOff.progress }), /fresh progress/, 'a version-1 projection is not fresh progress');
+  assert.throws(() => read({ ...delivery, managedFreshSteps: 1, migrationProgress: freshProgress }), /migration progress/, 'fresh progress never hides in migrationProgress');
+  assert.throws(() => read({ ...delivery, managedFreshSteps: 1, freshProgress, migrationProgress: fx.replies.pausedOff.progress }), /ambiguous/);
+});
+
+function freshDriver(engine: ReturnType<typeof freshEngine>) {
+  const log = { refresh: 0, complete: 0, stops: [] as string[] };
+  let context: string | null = '["account","page",null,null]';
+  const driver = new StepDriver<ManagedSetupStepRequest>({
+    send: (request, current) => managedStepCall({ serviceRequest: (q) => current() ? engine.host.serviceRequest(q as never) : Promise.reject(new Error('Retired read')) }, request),
+    context: () => context, changed: (stop) => { if (stop) log.stops.push(stop.reason); },
+    refresh: (complete) => { log.refresh++; if (complete) log.complete++; }, operationId: () => ffx.requests.begin.operationId,
+  });
+  return { driver, log, move: (next: string | null) => { context = next; } };
+}
+const freshActions = (engine: ReturnType<typeof freshEngine>) => engine.requests.map(r => r.action === 'advance' ? `advance:${r.step.name}` : r.action === 'inspect' && 'cursor' in r && r.cursor ? 'inspect:next' : r.action);
+const sameKeys = (a: object, b: object) => assert.deepEqual(Object.keys(a).sort(), Object.keys(b).sort());
+
+for (const [store, missing, source] of FRESH_CASES) test(`fresh ${store}/${missing ? 'missing' : 'existing'} folder/${source} source: consent, then each frozen step once`, async () => {
+  const engine = freshEngine({ storeMode: store, directoryMissing: missing, sourceMode: source, inspectPages: 3, retainedCapture: 'off' });
+  const { driver, log } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh', storeRoot: '/fixture/store' });
+  assert.deepEqual(engine.requests[0], { version: 2, action: 'inspect', storeRoot: '/fixture/store' });
+  assert.equal(driver.state.review?.kind, 'begin'); assert.equal(driver.state.family, 'fresh');
+  await driver.confirmBegin();
+  assert.equal(engine.requests.length, 3, 'no begin without acknowledgement');
+  driver.setAck(true); await driver.confirmBegin();
+  assert.deepEqual(freshActions(engine), ['inspect', 'inspect:next', 'inspect:next', 'begin', ...engine.plan.slice(1).map(s => `advance:${s.name}`)]);
+  assert.ok(engine.requests.every(r => r.version === 2)); assert.deepEqual(engine.violations, []);
+  assert.equal(engine.maxInflight(), 1);
+  const p = driver.state.progress as ManagedFreshStepProgress;
+  assert.equal(p.state, 'complete'); sameKeys(p, freshProgress);
+  assert.equal(p.capture.state, store === 'create' ? 'on' : 'off', store === 'create' ? 'a new store is enabled only by its enable step' : 'a retained store keeps its setting');
+  assert.equal(log.complete, 1);
+  const before = engine.requests.length; await settle();
+  assert.equal(engine.requests.length, before, 'no continuation, polling or retry after completion');
+});
+
+/** Records the capture observation of every progress the engine sends back. */
+function watchProgress(engine: ReturnType<typeof freshEngine>, take: (p: ManagedFreshStepProgress) => string) {
+  const seen: string[] = [];
+  const origin = engine.host.serviceRequest;
+  engine.host.serviceRequest = async (q) => { const r = await origin(q); const body = JSON.parse(r.body); if (body.progress) seen.push(take(body.progress)); return r; };
+  return seen;
+}
+
+test('fresh: retained capture is never changed, and a new store is off from creation until enable', async () => {
+  for (const capture of ['on', 'off'] as const) {
+    const engine = freshEngine({ storeMode: 'retain', sourceMode: 'create', retainedCapture: capture });
+    const seen = watchProgress(engine, p => p.capture.state);
+    const { driver } = freshDriver(engine);
+    await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
+    assert.ok(seen.length >= engine.plan.length && seen.every(s => s === capture), `${capture}: ${seen}`);
+    assert.ok(!engine.plan.some(s => s.name === 'enable'));
+  }
+  const engine = freshEngine();
+  const states = watchProgress(engine, p => `${p.lastCompleted!.name}:${p.capture.state}`);
+  const { driver } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
+  assert.deepEqual(states, ['prepare:unknown', 'store-directory:unknown', 'create-store:off', 'expectation:off', 'register-source:off', 'publish-binding:off', 'enable:on', 'reconcile:on']);
+});
+
+test('fresh: failure at creation stops with its stage/code; explicit Resume reconciles with version-2 controls', async () => {
+  const engine = freshEngine();
+  engine.faults.fail.add('create-store:0');
+  const { driver } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
+  assert.equal(freshActions(engine).at(-1), 'advance:create-store');
+  assert.deepEqual(driver.state.outcome, { code: 'managed-step-deadline', stage: 'create-store', uncertain: false });
+  assert.equal(driver.state.progress?.state, 'failed'); assert.equal(driver.state.progress?.capture.state, 'unknown');
+  const count = engine.requests.length; await settle();
+  assert.equal(engine.requests.length, count, 'no automatic retry');
+  await driver.resume(driver.state.progress);
+  assert.deepEqual(freshActions(engine).slice(count, count + 2), ['resume', 'advance:create-store']);
+  assert.ok(engine.requests.every(r => r.version === 2));
+  assert.equal(driver.state.progress?.state, 'complete');
+});
+
+test('fresh: pause waits for the step in flight; capture off after creation stays visible; reopening needs Resume', async () => {
+  const engine = freshEngine();
+  const release = engine.hold(5); // inspect, begin, store-directory, create-store, then hold expectation's reply
+  const { driver } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true);
+  const running = driver.confirmBegin(); await settle();
+  driver.requestPause(); await driver.confirmStop(driver.state.progress);
+  release(); await running;
+  assert.deepEqual(freshActions(engine).slice(-2), ['advance:expectation', 'pause']);
+  assert.equal(driver.state.progress?.state, 'paused'); assert.equal(driver.state.progress?.capture.state, 'off');
+  assert.deepEqual(engine.requests.at(-1), { version: 2, action: 'pause', operationId: ffx.requests.begin.operationId, expectedSequence: 4 });
+  const reopened = freshDriver(engine);
+  const shown = currentProgress(reopened.driver.state.progress, engine.progress!);
+  assert.equal(nextAction(shown), 'resume');
+  const n = engine.requests.length; await settle(); assert.equal(engine.requests.length, n, 'reopening sends nothing');
+  await reopened.driver.resume(shown);
+  assert.equal(reopened.driver.state.progress?.state, 'complete');
+  // Paused before creation: no store yet, so capture is unknown rather than off.
+  const early = freshEngine(), r2 = early.hold(3);
+  const d2 = freshDriver(early).driver;
+  await d2.inspect('begin', { family: 'fresh' }); d2.setAck(true);
+  const run2 = d2.confirmBegin(); await settle();
+  d2.requestPause(); await d2.confirmStop(d2.state.progress); r2(); await run2;
+  assert.equal(d2.state.progress?.state, 'paused'); assert.equal(d2.state.progress?.capture.state, 'unknown');
+});
+
+test('fresh: a reopened inspection observes the unfinished operation instead of offering a second begin', async () => {
+  const engine = freshEngine();
+  engine.faults.crash.add('expectation:0');
+  const first = freshDriver(engine);
+  await first.driver.inspect('begin', { family: 'fresh' }); first.driver.setAck(true); await first.driver.confirmBegin();
+  assert.deepEqual(first.driver.state.outcome, { code: 'managed-step-no-reply', stage: null, uncertain: true });
+  engine.restart();
+  const again = freshDriver(engine);
+  await again.driver.inspect('begin', { family: 'fresh' });
+  assert.equal(again.driver.state.review, null, 'no second consent');
+  assert.equal(again.driver.state.progress?.recovery, 'reconcile');
+  assert.equal(engine.requests.filter(r => r.action === 'begin').length, 1);
+  await again.driver.resume(again.driver.state.progress);
+  assert.equal(again.driver.state.progress?.state, 'complete');
+});
+
+test('fresh: a dropped begin or step is checked by version-2 status only; nothing repeats on its own', async () => {
+  const engine = freshEngine();
+  engine.faults.drop.add('store-directory:0');
+  const { driver } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
+  assert.equal(driver.state.outcome?.uncertain, true);
+  await driver.status(driver.state.progress);
+  assert.deepEqual(engine.requests.at(-1), { version: 2, action: 'status', operationId: ffx.requests.begin.operationId });
+  assert.equal(driver.state.progress?.lastCompleted?.name, 'store-directory');
+  await driver.continueRun(driver.state.progress);
+  assert.equal(engine.requests.filter(r => r.action === 'advance' && r.step.name === 'store-directory').length, 1);
+  assert.equal(driver.state.progress?.state, 'complete');
+  // A begin whose reply never came: the frame still knows the family and asks in version 2.
+  const lost = freshEngine();
+  const d = freshDriver(lost).driver;
+  await d.inspect('begin', { family: 'fresh' }); d.setAck(true);
+  const origin = lost.host.serviceRequest; let dropBegin = true;
+  lost.host.serviceRequest = async (q) => { const r = await origin(q); if (dropBegin && JSON.parse(q.body ?? '{}').action === 'begin') { dropBegin = false; throw new Error('HOST_TIMEOUT'); } return r; };
+  await d.confirmBegin();
+  assert.equal(d.state.progress, null); assert.equal(d.state.family, 'fresh');
+  await d.status(null);
+  assert.deepEqual(lost.requests.at(-1), { version: 2, action: 'status', operationId: ffx.requests.begin.operationId });
+  const settled = (driver: typeof d) => driver.state.progress; // read afresh, after the assertions above narrowed it
+  assert.equal(settled(d)?.sequence, 1);
+});
+
+test('fresh: an uncertain enable needs a reviewed resume for exactly that enable', async () => {
+  const engine = freshEngine();
+  engine.faults.unsettledEnable = true;
+  const { driver } = freshDriver(engine);
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true); await driver.confirmBegin();
+  const p = driver.state.progress!;
+  assert.equal(nextAction(p), 'review'); assert.equal(p.capture.state, 'off');
+  await driver.inspect('capture', { progress: p });
+  assert.equal(driver.state.review?.kind, 'capture');
+  assert.deepEqual(engine.requests.at(-1), { version: 2, action: 'inspect' }, 'the capture review stays in the fresh family');
+  driver.setAck(true); await driver.confirmCapture();
+  const resumeAt = engine.requests.findLastIndex(r => r.action === 'resume');
+  assert.deepEqual(engine.requests[resumeAt], { version: 2, action: 'resume', operationId: p.operationId, expectedSequence: p.sequence, review: { confirmed: true, expected: CAPTURE_REVIEW, step: 'enable' } });
+  assert.deepEqual(freshActions(engine).slice(resumeAt + 1), ['advance:enable', 'advance:reconcile']);
+  assert.equal(driver.state.progress?.capture.state, 'on');
+});
+
+test('fresh: hide/show and context changes retire a held reply exactly as for migration', async () => {
+  const engine = freshEngine(), release = engine.hold(3);
+  const { driver, move, log } = freshDriver(engine);
+  const key = '["account","page",null,null]';
+  driver.observe(key, 'account');
+  await driver.inspect('begin', { family: 'fresh' }); driver.setAck(true);
+  const running = driver.confirmBegin(); await settle();
+  move(null); driver.observe(null, 'account');
+  move(key); driver.observe(key, 'account');
+  release(); await running; await settle();
+  assert.deepEqual(freshActions(engine), ['inspect', 'begin', 'advance:store-directory']);
+  assert.equal(driver.state.outcome?.code, 'managed-step-retired');
+  assert.equal(log.refresh, 1, 'one status re-read, never a new step');
+});
+
+test('fresh: same-sequence observation refreshes recovery; another family or older sequence never replaces it', () => {
+  const p = freshProgress;
+  const reviewed = { ...p, state: 'running' as const, worker: 'unsettled' as const, recovery: 'review' as const };
+  const resumable = { ...reviewed, recovery: 'resume' as const };
+  assert.equal(currentProgress(resumable, reviewed), reviewed);
+  assert.equal(currentProgress({ ...p, sequence: 5 }, { ...p, sequence: 4 })?.sequence, 5);
+  const migration = { ...fx.replies.pausedOff.progress!, operationId: p.operationId, sequence: 99 };
+  assert.equal(currentProgress(migration, p), p, 'a migration settlement with a higher sequence is not this fresh operation');
+  assert.equal(currentProgress(p, migration), migration);
+});
+
+test('fresh copy: EN/RU/zh-CN for every fresh stage and override; plan-relative step text; never called a switch', () => {
+  const locales = ['en', 'ru', 'zh-CN'] as const;
+  const copies = locales.map(l => managedFamilyStepCopy('fresh', l)), fresh = locales.map(l => managedFreshCopy(l));
+  for (const stage of [...MANAGED_FRESH_STEPS, ...MANAGED_FRESH_INSPECTION_STEPS, 'journal', 'lock']) {
+    const labels = copies.map(c => c.stages[stage]);
+    assert.ok(labels.every(Boolean) && new Set(labels).size === 3, stage);
+  }
+  for (const code of [...MANAGED_STEP_CODES, 'managed-step-no-reply', 'managed-step-reply-invalid', 'managed-step-retired', 'managed-inspection-incomplete']) {
+    const texts = locales.map(l => managedErrorText(code, l, 'fresh'));
+    assert.ok(texts.every(Boolean) && new Set(texts).size === 3, code);
+  }
+  assert.doesNotMatch(managedErrorText('managed-step-limit', 'en', 'fresh')!, /old installation/);
+  const strings = (o: unknown): string[] => typeof o === 'string' ? [o] : typeof o === 'function' ? [String((o as (...a: unknown[]) => string)('X'))] : o && typeof o === 'object' ? Object.values(o).flatMap(strings) : [];
+  for (const [i, f] of fresh.entries()) {
+    const all = [...strings(f), ...strings(copies[i].titles)];
+    for (const s of all) { assert.doesNotMatch(s, /[\\/]|[A-Za-z]:\\/, s); assert.doesNotMatch(s, /switch|migrat|переход|перенос|切换|迁移/i, s); }
+  }
+  for (const key of ['reviewTitle', 'effect', 'mode', 'storeValue', 'sourceValue', 'warn', 'stays', 'unsupported', 'partial', 'complete'] as const) {
+    assert.equal(new Set(fresh.map(f => JSON.stringify(strings(f[key])))).size, 3, key);
+  }
+  assert.match(fresh[2].warn.create.off.body, /智能体/); assert.match(fresh[2].warn.create.off.title, /采集/);
+  const p = freshProgress;
+  const at = (name: string) => ({ ...p, step: p.plan.find(s => s.name === name)!, lastCompleted: p.plan[p.plan.findIndex(s => s.name === name) - 1] });
+  assert.equal(migrationStepText(p), 'Step 2 of 8: Creating the store folder');
+  assert.equal(migrationStepText(at('create-store')), 'Step 3 of 8: Creating the progress store');
+  assert.equal(migrationStepText(at('register-source'), 'ru'), 'Шаг 5 из 8: Регистрация этого источника OpenCode');
+  assert.equal(migrationStepText(at('enable'), 'zh-CN'), '第 7 步，共 8 步：开启采集');
+  const reuse = managedFreshStepFixtures('retain', false, 'reuse').replies.prepared.progress!;
+  assert.equal(migrationStepText(reuse), 'Step 2 of 4: Checking the bundled companion');
+  assert.equal(migrationTitle(p, true), 'running');
+  assert.equal(managedFamilyStepCopy('fresh').titles.running, 'Setting up capture');
+  assert.equal(setupErrorText('managed-step-conflict', 'en', 'fresh'), managedErrorText('managed-step-conflict', 'en', 'fresh'));
+  assert.notEqual(setupErrorText('managed-step-conflict', 'en', 'fresh'), setupErrorText('managed-step-conflict', 'en'));
 });
