@@ -34,14 +34,16 @@ async function settle() { for (let i = 0; i < 8; i++) await new Promise<void>(r 
 
 test('snapshot starting/refused explicitly admits once before reading data, with fresh capabilities',async()=>{
   for(const state of ['starting','refused']){
-    const calls:string[]=[];let admitted=false;
+    const calls:GuestRequest[]=[];let admitted=false;
     const result=await source.readList({serviceRequest:async q=>{
-      calls.push(q.path);
+      calls.push(q);
       if(q.path==='/v1/setup'){admitted=true;return response(setupRead());}
-      if(q.path==='/health')return response(admitted?{...HEALTH,state:'ready'}:{...failedHealth('storage'),state});
+      if(q.path==='/health')return response(admitted?{...HEALTH,state:'ready',needsYouInbox:1}:{...failedHealth('storage'),state});
       return response(plansPage([row]));
-    }},{session:'A'});
-    assert.ok(result.ok&&result.read);assert.deepEqual(calls,['/health','/v1/setup','/health','/v1/plans']);
+    }},{session:'A'},10,{demand:'rows',mono:()=>123});
+    assert.ok(result.ok&&result.read);assert.deepEqual(calls.map(q=>q.path),['/health','/v1/setup','/health','/v1/plans']);
+    assert.equal(result.health.needsYouInbox,1);assert.equal(result.inbox?.state,'missing');
+    assert.equal(calls[3].query?.needsYou,'1');assert.equal(calls[3].query?.needsYouTiming,'1');
   }
 });
 

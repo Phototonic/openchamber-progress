@@ -25,14 +25,17 @@ import {managedDiagnostic} from '../setup/managed-diagnostic.ts';
 import { needsYou } from './needs-you.ts';
 import { NEEDS_YOU_LIMITS, type NeedsYouRequest } from '../shared/needs-you.ts';
 
-export function managedStepHttpStatus(code:string):number {
-  if(code==='invalid'||code==='confirmation-required'||code==='targets-unverified')return 400;
-  if(code==='not-found')return 404;
-  if(['managed-step-conflict','managed-step-unsupported','managed-step-limit','managed-journal-unsupported','managed-inspection-expired',
+// Both step envelopes and compatibility routes retain the same setup refusals.
+// In particular the retained configuration lock is a conflict, not worker busy.
+const SETUP_HTTP_STATUS=new Map<string,number>([
+  ...['invalid','confirmation-required','targets-unverified'].map(code=>[code,400] as const),
+  ['not-found',404],
+  ...['managed-step-conflict','managed-step-unsupported','managed-step-limit','managed-journal-unsupported','managed-inspection-expired',
     'managed-review-stale','managed-selection-conflict','managed-source-conflict','managed-migration-required','managed-migration-conflict','managed-migration-pending',
-    'managed-binding-invalid','managed-binding-modified','ownership-invalid','modified-owned-files','foreign-files','collision','schema','binding','source-unverified'].includes(code))return 409;
-  return 503;
-}
+    'managed-action-required','managed-service-required','managed-configuration-busy','managed-path-unverified','managed-scope-unsupported',
+    'managed-binding-invalid','managed-binding-modified','ownership-invalid','modified-owned-files','foreign-files','collision','schema','binding','source-unverified'].map(code=>[code,409] as const),
+]);
+export function managedStepHttpStatus(code:string):number {return SETUP_HTTP_STATUS.get(code)??503;}
 
 /** Only fixed read/control routes. No store path, token or SQL from request bodies. */
 export function createProgressServer(store: Store | undefined, token: string, unavailableCode?: Code, setup?: SetupController) {
@@ -263,8 +266,7 @@ export function createProgressServer(store: Store | undefined, token: string, un
       if(workerCode==='managed-step-port-busy'||workerCode==='managed-step-unsettled')return answer(503,{error:workerCode});
       const platformCode=platformErrorCode(e);
       if(platformCode)return answer(503,{error:platformCode});
-      if(e instanceof ManagedBindingError)return answer(409,{error:e.code});
-      if(e instanceof SetupError)return answer(e.code==='confirmation-required'||e.code==='targets-unverified'?400:409,{error:e.code});
+      if(e instanceof ManagedBindingError||e instanceof SetupError)return answer(SETUP_HTTP_STATUS.get(e.code)??409,{error:e.code});
       const error = e instanceof ProgressError ? e : storageError(e);
       if((cleanupRoute||digestRoute||searchRoute||comparisonRoute||runsRoute||graphRoute||mentionRoute||inboxRoute)&&['conflict','operation-reused','closed'].includes(error.code))return answer(409,{error:error.code});
       return answer(error.code === 'invalid' ? 400 : error.code === 'not-found' ? 404 : 503,{error:error.code});

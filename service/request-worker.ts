@@ -210,7 +210,10 @@ export class SetupRequestWorker {
       acquireWriterSlots(targets,connection,()=>{result=refused('managed-step-unsettled');finish(result);}).then(unlock=>{
         const release=(reply:SetupWorkerResult)=>{
           for(const socket of sockets)socket.destroy();
-          void unlock().then(()=>{this.active=false;finish(reply);});
+          void unlock().then(()=>{this.active=false;finish(reply);}).catch(()=>{
+            this.active=false;this.inspection=undefined;this.journal=undefined;
+            finish(refused('managed-step-unsettled'));
+          });
         };
         let worker:Worker;
         try {

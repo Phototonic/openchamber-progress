@@ -13,6 +13,11 @@ if(!isMainThread){
   const server=createServer(async(req,res)=>{
     if(req.headers.authorization!=='Bearer fixture-only'){res.writeHead(401);res.end('{}');return;}
     if(req.url==='/health'){res.end(JSON.stringify({state:'starting',ready:false,sqlite:false,managedMigrationSteps:1}));return;}
+    let body='';for await(const part of req)body+=part;
+    if(JSON.parse(body||'{}').mainThread){
+      spawnSync('/nonexistent-observer-fixture/powershell.exe',[],{input:'{"paths":[],"create":[]}',encoding:'utf8'});
+      res.end('{"ok":true}');return;
+    }
     const worker=new Worker(new URL(import.meta.url));await new Promise((resolve,reject)=>{worker.once('exit',resolve);worker.once('error',reject);});
     res.end('{"ok":true}');
   });

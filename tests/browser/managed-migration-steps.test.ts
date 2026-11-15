@@ -25,6 +25,14 @@ test('every shared contract reply parses exactly; errors override disposition', 
   for (const journey of fx.journeys.captureReview) assert.ok(parseManagedStepResponse(journey.reply));
 });
 
+test('real monotonic accounting accepts fractional durations but not invalid durations or fractional spawn counts',()=>{
+  const base=fx.replies.prepared;
+  const reply=(elapsedMs:unknown,securitySpawns:unknown=1)=>({...base,accounting:{elapsedMs,securitySpawns}});
+  for(const ms of [0,0.001,12.5,18000])assert.ok(parseManagedStepResponse(reply(ms)),String(ms));
+  for(const ms of [-1,NaN,Infinity,-Infinity,'12',null])assert.equal(parseManagedStepResponse(reply(ms)),undefined,String(ms));
+  assert.equal(parseManagedStepResponse(reply(12.5,1.5)),undefined);
+});
+
 test('progress and responses fail closed on unknown keys, values and inconsistent combinations', () => {
   const base = fx.replies.disabled.progress!;
   const bad: Record<string, unknown> = {
@@ -124,6 +132,51 @@ function driverFor(engine: ReturnType<typeof stepEngine>, extra: Partial<StepIo>
 }
 const actions = (engine: ReturnType<typeof stepEngine>) => engine.requests.map(r => r.action === 'advance' ? `advance:${r.step.name}:${r.step.batch}` : r.action === 'inspect' && 'cursor' in r && r.cursor ? 'inspect:next' : r.action);
 
+test('pending continue permits reconciliation regardless of the worker projection, without loosening other states', () => {
+  for (const name of ['resumedRunning', 'captureResumed', 'captureResumeReplay'] as const) {
+    const p = fx.replies[name].progress!;
+    assert.equal(p.worker, 'unsettled');
+    assert.equal(nextAction(p), 'continue', name);
+    assert.equal(nextAction({ ...p, state: 'running' }), 'status');
+    assert.equal(nextAction({ ...p, state: 'failed', recovery: 'reconcile' }), 'resume');
+    assert.equal(nextAction({ ...p, recovery: 'none' }), 'status');
+  }
+});
+
+for (const fault of ['crash', 'settlement', 'fail'] as const) test(`${fault}: explicit resume retains uncertainty and sends the reconciling advance`, async () => {
+  const engine = stepEngine();
+  engine.faults[fault].add('remove-discovery:0');
+  const { driver } = driverFor(engine);
+  await driver.inspect('begin'); driver.setAck(true); await driver.confirmBegin();
+  await driver.status(driver.state.progress);
+  const p = driver.state.progress!;
+  assert.equal(p.worker, 'unsettled');
+  assert.equal(p.state, fault === 'fail' ? 'failed' : 'running');
+  assert.equal(nextAction(p), 'resume');
+  const n = engine.requests.length;
+  await driver.resume(p);
+  assert.deepEqual(actions(engine).slice(n, n + 2), ['resume', 'advance:remove-discovery:0']);
+  assert.equal(driver.state.progress?.state, 'complete');
+  assert.equal(engine.maxInflight(), 1);
+});
+
+test('fenced pause and resume retain the unresolved effect; Continue can reopen the resumed journey', async () => {
+  const engine = stepEngine();
+  engine.progress = structuredClone(fx.replies.restarted.progress);
+  const { driver } = driverFor(engine);
+  const paused = await managedStepCall(engine.host, { version: 1, action: 'pause', operationId: managedOperationId, expectedSequence: engine.progress!.sequence });
+  assert.equal(paused.kind, 'reply');
+  assert.equal(engine.progress?.worker, 'unsettled');
+  assert.equal(nextAction(engine.progress), 'resume');
+  const resumed = await managedStepCall(engine.host, { version: 1, action: 'resume', operationId: managedOperationId, expectedSequence: engine.progress!.sequence });
+  assert.equal(resumed.kind, 'reply');
+  assert.equal(engine.progress?.worker, 'unsettled');
+  assert.equal(nextAction(engine.progress), 'continue');
+  await driver.continueRun(engine.progress);
+  assert.equal(actions(engine)[2], 'advance:remove-discovery:0');
+  assert.equal(driver.state.progress?.state, 'complete');
+});
+
 test('success: inspection pages, explicit consent, then one request at a time to verified completion', async () => {
   const engine = stepEngine({ inspectPages: 3 });
   const { driver, log } = driverFor(engine);
@@ -217,7 +270,7 @@ test('stop (abandon) after capture is off keeps the warning state; Resume is exp
 
 test('restart: a reopened frame shows retained progress and continues only after explicit Resume', async () => {
   const engine = stepEngine();
-  engine.faults.drop.add('disable:0');
+  engine.faults.crash.add('remove-discovery:0');
   const first = driverFor(engine);
   await first.driver.inspect('begin'); first.driver.setAck(true); await first.driver.confirmBegin();
   assert.deepEqual(first.driver.state.outcome, { code: 'managed-step-no-reply', stage: null, uncertain: true });
@@ -274,6 +327,11 @@ test('dropped reply: no repeat; status observes the durable result; retirement i
   assert.equal(actions(engine).at(-1), 'status');
   assert.equal(driver.state.outcome, null);
   assert.equal(driver.state.progress?.lastCompleted?.name, 'expectation');
+  assert.equal(nextAction(driver.state.progress), 'continue');
+  const recoveredAt = engine.requests.length;
+  await driver.continueRun(driver.state.progress);
+  assert.equal(actions(engine)[recoveredAt], 'advance:disable:0');
+  assert.equal(driver.state.progress?.state, 'complete');
   // Retirement: context moves while a reply is held; the late reply never queues another step.
   const late = stepEngine();
   const release = late.hold(3);

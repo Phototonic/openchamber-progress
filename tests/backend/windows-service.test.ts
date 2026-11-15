@@ -10,7 +10,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {privateDirectory,privatePaths} from '../../shared/platform.ts';
 import {MANAGED_INSPECTION_STEPS,MANAGED_MIGRATION_STEPS,MANAGED_STEP_CODES,type ManagedStepRequest,type ManagedStepResponse} from '../../shared/managed-steps.ts';
 import {MANAGED_ACTION_CODES} from '../../shared/progress.ts';
-import {nativeService,HEALTH_MS,type Observation} from '../fixtures/windows-service-driver.ts';
+import {nativeService,nativeHarnessCode,HEALTH_MS,type Observation} from '../fixtures/windows-service-driver.ts';
 
 /** Released emitted lifecycle AND Store, not a current-source reconstruction. */
 async function released(root:string){
@@ -90,7 +90,7 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     // not enter the observer's worker-only hold from the synchronous controller.
     for(const route of ['managed-migrate','managed-inspect']){
       const migrate=route==='managed-migrate';
-      const refused=await request(`/v1/setup/${route}`,migrate?{confirmed:true,expected:'a'.repeat(64)}:{},`old-${route}`,{limitMs:migrate?HEALTH_MS:8000,maxSpawns:0,concurrent:!migrate,expectedStatus:409});
+      const refused=await request(`/v1/setup/${route}`,migrate?{confirmed:true,expected:'a'.repeat(64)}:{},`old-${route}`,{limitMs:migrate?HEALTH_MS:8000,maxSpawns:0,expectedStatus:409});
       assert.deepEqual(refused.value,{error:'managed-action-required'});
       assert.equal(refused.counts.workers,0);assert.equal(refused.counts.legacyReads,0);
       untouched();assert.equal(fs.existsSync(managed),false);
@@ -181,10 +181,9 @@ for(const delayed of [false,true])test(`Windows built released 1.1.1 step migrat
     phase='complete';
   }catch(error){
     failed=true;
-    // Only fixed test-owned phase and error class; assertion values can contain
+    // Only fixed test-owned phase and harness code; assertion values can contain
     // private binding/history, so never propagate them into the public CI log.
-    const kind=error instanceof Error&&['AssertionError','TimeoutError'].includes(error.name)?error.name:'test-error';
-    throw new Error(`Windows native ${mode} failed at ${phase} (${kind}); inspect windows-migration-trace.`);
+    throw new Error(`Windows native ${mode} failed at ${phase} (${nativeHarnessCode(error)}); inspect windows-migration-trace.`);
   }finally{
     await running?.stop();console.log('WINDOWS_MIGRATION_TRACE '+JSON.stringify({mode,request:'summary',stage:phase,failed,serviceSha256:createHash('sha256').update(fs.readFileSync('build/service/main.js')).digest('hex'),...facts()}));
     if(fs.existsSync(root))fs.rmSync(root,{recursive:true,force:true});

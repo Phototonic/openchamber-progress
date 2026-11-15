@@ -38,6 +38,10 @@ if(fault.capture){
   const {Store}=await import('../../shared/store.ts');const set=Store.prototype.setEnabled;
   Store.prototype.setEnabled=function(enabled:boolean){if(fault.capture==='after')set.call(this,enabled);throw new Error('synthetic capture interruption');};
 }
+if(fault.platformCode){
+  const {PlatformError}=await import('../../shared/platform.ts');
+  Object.defineProperty(fs,'lstatSync',{value:()=>{throw new PlatformError(fault.platformCode);}});
+}
 syncBuiltinESMExports();
 const {runSetupRequestWorker}=await import('../../service/request-worker.ts');
 runSetupRequestWorker();

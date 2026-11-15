@@ -64,6 +64,7 @@ function installGuestScrollbarActivity(doc) {
 }
 var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
 // node_modules/@openchamber/sdk/dist/manifest.js
+var GUEST_PROVIDER_LOGO_BYTES_MAX = 1024 * 1024;
 var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
 var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
 // node_modules/@openchamber/sdk/dist/session-events.js
@@ -8071,6 +8072,12 @@ function storePaths2(binding) {
   if (windows)
     windowsPaths([path15.dirname(binding.database), binding.database, ...["-journal", "-wal", "-shm"].map((s) => binding.database + s), managedExpectationFile(binding)], true);
 }
+function observationDiagnostic(error) {
+  const filesystem = error instanceof Error && ["EACCES", "EPERM", "EIO", "ENOSPC", "EEXIST", "EBUSY", "ENOENT", "ENOTDIR", "EROFS", "EMFILE", "ENFILE"].includes(error.code ?? "");
+  if (!(error instanceof SetupError || error instanceof ManagedBindingError || error instanceof ProgressError || error instanceof PlatformError || error instanceof SyntaxError || filesystem))
+    throw error;
+  return managedDiagnostic(error);
+}
 function observeManagedSetup(env, expectedDescriptor) {
   try {
     return readSetup(env, expectedDescriptor);
@@ -8085,7 +8092,7 @@ function observeManagedSetup(env, expectedDescriptor) {
       activation: "unknown",
       separateLifecycle: false,
       historyRetained: true,
-      diagnostics: [managedDiagnostic(error)],
+      diagnostics: [observationDiagnostic(error)],
       delivery: { kind: "managed", revision: 1, managedMigrationSteps: 1, configuration: "invalid", migration: "unavailable", mode: "unknown", observation: "unknown", expectedVersion: null }
     };
     return { status, descriptor: undefined, journal: undefined, subagentRuns: false };
@@ -8147,7 +8154,7 @@ function readSetup(env, expectedDescriptor) {
         store.close();
       }
     } catch (error) {
-      unavailable.diagnostics = [managedDiagnostic(error)];
+      unavailable.diagnostics = [observationDiagnostic(error)];
       return { status: unavailable, descriptor, journal, subagentRuns: false };
     }
   });
@@ -8425,6 +8432,11 @@ class SetupRequestWorker {
           unlock().then(() => {
             this.active = false;
             finish(reply);
+          }).catch(() => {
+            this.active = false;
+            this.inspection = undefined;
+            this.journal = undefined;
+            finish(refused("managed-step-unsettled"));
           });
         };
         let worker;
@@ -8704,12 +8716,10 @@ function needsYou(store, request, now = new Date) {
 }
 
 // service/server.ts
-function managedStepHttpStatus(code) {
-  if (code === "invalid" || code === "confirmation-required" || code === "targets-unverified")
-    return 400;
-  if (code === "not-found")
-    return 404;
-  if ([
+var SETUP_HTTP_STATUS = new Map([
+  ...["invalid", "confirmation-required", "targets-unverified"].map((code) => [code, 400]),
+  ["not-found", 404],
+  ...[
     "managed-step-conflict",
     "managed-step-unsupported",
     "managed-step-limit",
@@ -8721,6 +8731,11 @@ function managedStepHttpStatus(code) {
     "managed-migration-required",
     "managed-migration-conflict",
     "managed-migration-pending",
+    "managed-action-required",
+    "managed-service-required",
+    "managed-configuration-busy",
+    "managed-path-unverified",
+    "managed-scope-unsupported",
     "managed-binding-invalid",
     "managed-binding-modified",
     "ownership-invalid",
@@ -8730,9 +8745,10 @@ function managedStepHttpStatus(code) {
     "schema",
     "binding",
     "source-unverified"
-  ].includes(code))
-    return 409;
-  return 503;
+  ].map((code) => [code, 409])
+]);
+function managedStepHttpStatus(code) {
+  return SETUP_HTTP_STATUS.get(code) ?? 503;
 }
 function createProgressServer(store, token, unavailableCode, setup) {
   if (!token)
@@ -9155,10 +9171,8 @@ function createProgressServer(store, token, unavailableCode, setup) {
       const platformCode = platformErrorCode(e);
       if (platformCode)
         return answer(503, { error: platformCode });
-      if (e instanceof ManagedBindingError)
-        return answer(409, { error: e.code });
-      if (e instanceof SetupError)
-        return answer(e.code === "confirmation-required" || e.code === "targets-unverified" ? 400 : 409, { error: e.code });
+      if (e instanceof ManagedBindingError || e instanceof SetupError)
+        return answer(SETUP_HTTP_STATUS.get(e.code) ?? 409, { error: e.code });
       const error = e instanceof ProgressError ? e : storageError(e);
       if ((cleanupRoute || digestRoute || searchRoute || comparisonRoute || runsRoute || graphRoute || mentionRoute || inboxRoute) && ["conflict", "operation-reused", "closed"].includes(error.code))
         return answer(409, { error: error.code });

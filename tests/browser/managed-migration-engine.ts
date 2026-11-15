@@ -22,13 +22,17 @@ export interface EngineFaults {
   unsettledEnable: boolean;
   /** Return a failed receipt rather than a new failure for these steps. */
   failedReplay: Set<string>;
+  /** A worker exits with its intent unresolved, before settling a receipt. */
+  crash: Set<string>;
+  /** The effect failed and its failure checkpoint could not be published. */
+  settlement: Set<string>;
   /** Refuse the next request because the cross-process coordination port is occupied. */
   portBusy: boolean;
 }
 
 export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: number; operationId?: string } = {}) {
   const plan = options.plan ?? managedStepPlan;
-  const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false, failedReplay: new Set(), portBusy: false };
+  const faults: EngineFaults = { fail: new Set(), drop: new Set(), lose: new Set(), unsettledEnable: false, failedReplay: new Set(), crash: new Set(), settlement: new Set(), portBusy: false };
   let p: ManagedStepProgress | null = null;
   let page = 0;
   const requests: ManagedStepRequest[] = [];
@@ -36,7 +40,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
   let gate: { at: number; release: () => void; promise: Promise<void> } | null = null;
   const index = (r: ManagedStepRef | null) => r ? plan.findIndex(x => x.name === r.name && x.batch === r.batch) : -1;
   const progress = (patch: Partial<ManagedStepProgress>): ManagedStepProgress => ({ operationId: options.operationId ?? managedOperationId, sequence: 0, state: 'pending', worker: 'idle', step: plan[1], lastCompleted: plan[0], effect: 'none', capture: on, diagnostic: null, recovery: 'continue', ...p, ...patch });
-  const reply = (status: number, body: Partial<ManagedStepResponse>) => ({ status, body: JSON.stringify({ version: 1, disposition: 'applied', inspection: null, progress: p, error: null, accounting: { securitySpawns: 3, elapsedMs: 12 }, ...body }) });
+  const reply = (status: number, body: Partial<ManagedStepResponse>) => ({ status, body: JSON.stringify({ version: 1, disposition: 'applied', inspection: null, progress: p, error: null, accounting: { securitySpawns: 3, elapsedMs: 12.5 }, ...body }) });
   const refuse = (status: number, stage: string, code: string) => reply(status, { disposition: 'refused', error: { stage: stage as never, code } });
   const captureAfter = (done: ManagedStepRef, before: Capture): Capture => done.name === 'disable' ? off : done.name === 'enable' ? on : before;
 
@@ -51,7 +55,7 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
       if (page < pages) return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'incomplete', stage: page === 1 ? 'legacy-discovery' : 'legacy-releases', cursor: `inspection-page-${page + 1}` } });
       return reply(200, { disposition: 'observed', progress: null, inspection: { state: 'complete', stage: 'review', cursor: null, review: managedReview } });
     }
-    if (r.action === 'status') return p && (!r.operationId || r.operationId === p.operationId) ? reply(200, { disposition: 'observed' }) : { status: 404, body: '{"error":"not-found"}' };
+    if (r.action === 'status') return !r.operationId || r.operationId === p?.operationId ? reply(200, { disposition: 'observed', progress: p ? { ...p, capture: unknown } : null }) : { status: 404, body: '{"error":"not-found"}' };
     if (r.action === 'begin') {
       if (p) return refuse(409, 'journal', 'managed-step-conflict');
       if (r.expected !== managedReview.expected) return refuse(409, 'review', 'managed-review-stale');
@@ -61,21 +65,32 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
     if (!p || r.operationId !== p.operationId) return { status: 404, body: '{"error":"not-found"}' };
     if (r.expectedSequence !== p.sequence) return refuse(409, 'journal', 'managed-step-conflict');
     if (r.action === 'pause' || r.action === 'abandon') {
-      if (p.state === 'complete' || p.worker === 'active' || (r.action === 'pause' && p.state === 'abandoned')) return refuse(409, 'journal', 'managed-step-conflict');
+      if (p.worker === 'active') return refuse(503, 'lock', 'managed-step-unsettled');
+      const allowed = r.action === 'pause' ? ['pending', 'failed', 'running'] : ['pending', 'failed', 'running', 'paused'];
+      if (!allowed.includes(p.state)) return refuse(409, 'journal', 'managed-step-conflict');
       p = progress({ sequence: p.sequence + 1, state: r.action === 'pause' ? 'paused' : 'abandoned', recovery: 'resume' });
       return reply(200, {});
     }
     if (r.action === 'resume') {
+      if (p.worker === 'active') return refuse(503, 'lock', 'managed-step-unsettled');
       if (p.recovery === 'review' && !r.review) return refuse(503, p.step!.name, 'managed-step-unsettled');
       if (r.review && (p.recovery !== 'review' || r.review.expected !== CAPTURE_REVIEW || r.review.step !== p.step?.name)) return refuse(409, p.step?.name ?? 'review', 'managed-review-stale');
       if (!['pending', 'paused', 'failed', 'abandoned', 'running'].includes(p.state)) return refuse(409, 'journal', 'managed-step-conflict');
-      p = progress({ sequence: p.sequence + 1, state: 'pending', worker: 'idle', diagnostic: null, recovery: 'continue' });
+      // Controls retain unresolved intent. Pending/continue means the NEXT advance
+      // must reconcile it, not that the old effect is settled or the worker idle.
+      p = progress({ sequence: p.sequence + 1, state: 'pending', diagnostic: null, recovery: 'continue' });
       return reply(200, {});
     }
     if (r.action !== 'advance') return refuse(400, 'journal', 'managed-step-conflict');
     if (p.state !== 'pending' || index(r.step) !== index(p.step)) return refuse(409, 'journal', 'managed-step-conflict');
     const step = p.step!, k = key(step);
     if (faults.lose.delete(k)) return 'drop';
+    const crash = faults.crash.delete(k), settlement = faults.settlement.delete(k);
+    if (crash || settlement) {
+      p = progress({ state: 'running', worker: 'unsettled', effect: 'uncertain', capture: unknown,
+        diagnostic: settlement ? { stage: step.name, code: 'managed-step-deadline' } : null, recovery: 'reconcile' });
+      return crash ? 'drop' : refuse(503, step.name, 'managed-step-deadline');
+    }
     const failedReplay = faults.failedReplay.delete(k);
     if (faults.fail.delete(k) || failedReplay) {
       p = progress({ sequence: p.sequence + 1, state: 'failed', worker: 'unsettled', effect: 'uncertain', capture: unknown, diagnostic: { stage: step.name, code: 'managed-step-deadline' }, recovery: 'reconcile' });
@@ -108,8 +123,8 @@ export function stepEngine(options: { plan?: ManagedStepRef[]; inspectPages?: nu
     get progress() { return p; },
     set progress(value: ManagedStepProgress | null) { p = value; },
     maxInflight: () => maxInflight,
-    /** Service restart during a step: retained intent, unsettled worker, capture unknown. */
-    restart() { if (p && p.state !== 'complete') p = { ...p, state: 'running', worker: 'unsettled', effect: 'uncertain', capture: unknown, diagnostic: null, recovery: 'reconcile' }; },
+    /** Cold observation preserves intent/state; a restart never invents an effect. */
+    restart() { if (p) p = { ...p, capture: unknown }; },
     /** Hold the reply of the n-th request (1-based) until released. */
     hold(at: number) { let release!: () => void; const promise = new Promise<void>(r => { release = r; }); gate = { at, release, promise }; return () => release(); },
     request,

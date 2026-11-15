@@ -13,7 +13,7 @@ import { once } from 'node:events';
 import { javascriptLiteral as literal } from '../../shared/javascript-literal.ts';
 import type { ManagedStepProgress } from '../../shared/managed-steps.ts';
 import { stepEngine } from './managed-migration-engine.ts';
-import { managedReview } from '../fixtures/managed-steps.ts';
+import { managedReview,managedStepFixtures } from '../fixtures/managed-steps.ts';
 
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const artifacts = arg('--artifacts');
@@ -214,6 +214,10 @@ try {
   const phone = await fits(); check('failure:fits-390', phone.ok, phone);
   await shot('failure-ru');
   await idle('failure:no-polling');
+  const failureResumeAt=engine.requests.length;
+  await click('[data-testid="setup-migration-resume"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'failure resumed to completion');
+  check('failure:resume-reconciles-unsettled-intent', engine.requests.slice(failureResumeAt,failureResumeAt+2).map(r=>r.action).join()==='resume,advance');
 
   // 3. Pause after capture off, EN phone dark: confirmation (Keep going focused, Escape returns), then paused.
   await open('en', 'dark', 390, 844);
@@ -243,10 +247,14 @@ try {
   check('paused:fits-390', (await fits()).ok, await fits());
   await shot('paused-off');
   await idle('paused:no-polling');
+  await click('[data-testid="setup-migration-resume"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'paused journey complete');
+  check('paused:resume-completes',engine.progress?.state==='complete');
 
   // 4. Close the view mid-step, then a service restart: retained progress, nothing sent until Resume.
   await open('en', 'dark', 390, 844);
   await startSwitch();
+  engine.faults.crash.add('remove-discovery:1');
   hold = engine.hold(7);
   await confirmByKeyboard();
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-driving="true"][data-batch="1"]')`, 'running before close');
@@ -279,6 +287,8 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'complete after review');
   const resumeBody = engine.requests.find(r => r.action === 'resume');
   check('review:reviewed-resume-payload', !!resumeBody && 'review' in resumeBody && resumeBody.review?.step === 'enable', resumeBody);
+  const reviewAt=engine.requests.findIndex(r=>r.action==='resume');
+  check('review:resume-then-reconciling-advance',engine.requests[reviewAt+1]?.action==='advance'&&engine.progress?.state==='complete');
 
   // 6. Stop (abandon) after a failure, EN phone light; then a dropped reply with Check status.
   await open('en', 'light', 390, 844, e => e.faults.fail.add('remove-discovery:0'));
@@ -291,6 +301,9 @@ try {
   await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="abandoned"]')`, 'abandoned');
   check('abandon:warning-kept', await card('data-capture') === 'unknown' && await guest(`return !!d.querySelector('[data-testid="setup-migration-capture-warning"]')&&!!d.querySelector('[data-testid="setup-migration-resume"]')`));
   await shot('abandoned');
+  await click('[data-testid="setup-migration-resume"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'abandoned journey complete');
+  check('abandon:explicit-resume-completes',engine.progress?.state==='complete');
   // Lost before reaching the service: effect unknown to Setup, so only Check status is offered.
   await open('en', 'light', 390, 844, e => e.faults.lose.add('disable:0'));
   await startSwitch(); await confirmByKeyboard();
@@ -302,12 +315,36 @@ try {
   await idle('dropped:no-polling');
   await click('[data-testid="setup-migration-status"] button');
   await wait(`d.querySelector('[data-testid="setup-migration-continue"] button')?.getAttribute('aria-disabled')==='false'`, 'status observed');
-  check('dropped:status-observed-same-step', await card('data-step') === 'disable' && await card('data-capture') === 'on' && log.filter(l => l.action === 'status').length === 1, { step: await card('data-step'), capture: await card('data-capture'), status: log.filter(l => l.action === 'status').length });
+  check('dropped:status-observed-same-step', await card('data-step') === 'disable' && log.filter(l => l.action === 'status').length === 1, { step: await card('data-step'), capture: await card('data-capture'), status: log.filter(l => l.action === 'status').length });
+  await click('[data-testid="setup-migration-continue"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'request lost before service recovered');
+  check('dropped:explicit-continue-completes',engine.progress?.state==='complete');
   // Lost after the effect: the one existing status re-read shows the durable step; nothing repeats.
   await open('en', 'light', 390, 844, e => e.faults.drop.add('disable:0'));
   await startSwitch(); await confirmByKeyboard();
   await wait(`d.querySelector('[data-testid="setup-migration-continue"]')&&d.querySelector('[data-testid="setup-migration-progress"][data-step="remove-discovery"]')`, 'durable step after lost reply');
   check('dropped-after-effect:refresh-shows-durable-step', await card('data-capture') === 'off' && log.filter(l => l.action === 'advance').length === 2 && !log.some(l => l.action === 'status'));
+  await click('[data-testid="setup-migration-continue"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`, 'lost effect reply recovered');
+  check('dropped-after-effect:no-second-disable',engine.requests.filter(r=>r.action==='advance'&&r.step.name==='disable').length===1);
+
+  // A failed settlement leaves running intent; a fenced pause retains that same
+  // uncertainty. Both must send the reconciling advance after explicit Resume.
+  await open('en','light',390,844,e=>e.faults.settlement.add('remove-discovery:0'));
+  await startSwitch();await confirmByKeyboard();
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="running"][data-driving="false"]')`,'failed settlement');
+  await shot('settlement-interrupted');
+  const settlementAt=engine.requests.length;
+  await click('[data-testid="setup-migration-resume"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`,'settlement resumed');
+  check('settlement:resume-then-advance',engine.requests.slice(settlementAt,settlementAt+2).map(r=>r.action).join()==='resume,advance');
+  await open('ru','dark',390,844,e=>{e.progress=managedStepFixtures().replies.pausedRunning.progress;});
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="paused"]')`,'fenced pause with intent');
+  check('fenced-pause:unsettled-retained',engine.progress?.worker==='unsettled');
+  await shot('fenced-paused-ru');
+  await click('[data-testid="setup-migration-resume"] button');
+  await wait(`d.querySelector('[data-testid="setup-migration-progress"][data-state="complete"]')`,'fenced pause resumed');
+  check('fenced-pause:resume-then-advance',engine.requests.slice(0,2).map(r=>r.action).join()==='resume,advance');
 
   // 7. Port contention and replayed failure retain fixed recovery copy, not success.
   await open('en', 'light', 1280, 900, e => { e.faults.portBusy = true; });

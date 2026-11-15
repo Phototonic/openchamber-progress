@@ -8,6 +8,18 @@ import {createServer} from 'node:net';
 export const HEALTH_MS=1250,START_MS=12000;
 export type Counts={queries:number;legacyReads:number;elapsedMs:number;workers:number};
 export type Observation={phase:string;counts:Counts;value:any;status:number;concurrent:boolean};
+type HarnessCode='native-service-exited'|'native-observer-timeout'|'native-worker-route-required'|'native-assertion-failed'|'native-request-timeout'|'native-harness-failed';
+export class NativeHarnessError extends Error {
+  readonly code:HarnessCode;
+  constructor(code:HarnessCode){super(code);this.code=code;}
+}
+/** Fixed test-owned diagnostics only, never an OS error's text, cause or path. */
+export function nativeHarnessCode(error:unknown):HarnessCode {
+  if(error instanceof NativeHarnessError)return error.code;
+  if(error instanceof Error&&error.name==='AssertionError')return 'native-assertion-failed';
+  if(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name))return 'native-request-timeout';
+  return 'native-harness-failed';
+}
 
 /** Authenticated real HTTP; independent preload IPC is correlated by request ID,
  * not response order. In particular a health reply cannot consume step counts. */
@@ -21,16 +33,20 @@ export async function nativeService(env:NodeJS.ProcessEnv,observe:(value:Observa
   const queued=new Map<string,Message>(),waiters=new Map<string,{resolve:(m:Message)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const key=(kind:string,id='')=>`${kind}:${id}`;
   child.on('message',(m:Message)=>{const k=key(m.kind,m.id),w=waiters.get(k);if(w){clearTimeout(w.timer);waiters.delete(k);w.resolve(m);}else queued.set(k,m);});
-  child.on('exit',()=>{for(const w of waiters.values()){clearTimeout(w.timer);w.reject(new Error('native-service-exited'));}waiters.clear();});
+  child.on('exit',()=>{for(const w of waiters.values()){clearTimeout(w.timer);w.reject(new NativeHarnessError('native-service-exited'));}waiters.clear();});
   function message(kind:string,id='',ms=25000){
     const k=key(kind,id),ready=queued.get(k);if(ready){queued.delete(k);return Promise.resolve(ready);}
-    return new Promise<Message>((resolve,reject)=>{const timer=setTimeout(()=>{waiters.delete(k);reject(new Error('native-observer-timeout'));},ms);waiters.set(k,{resolve,reject,timer});});
+    return new Promise<Message>((resolve,reject)=>{const timer=setTimeout(()=>{waiters.delete(k);reject(new NativeHarnessError('native-observer-timeout'));},ms);waiters.set(k,{resolve,reject,timer});});
   }
   function cancel(kind:string,id:string){const k=key(kind,id),w=waiters.get(k);if(w){clearTimeout(w.timer);waiters.delete(k);}}
   let sequence=0;
   async function request(route:string,body?:unknown,phase=route,options:{concurrent?:boolean;limitMs?:number;expectedStatus?:number;maxSpawns?:number}={}):Promise<{status:number;value:any;counts:Counts;id:string;waitForWorkerExit:()=>Promise<Message>}>{
+    // A synchronous compatibility route cannot answer health while its own
+    // thread is held. Never pretend that it is a worker concurrency check.
+    if(options.concurrent&&!['/v1/setup','/v1/setup/managed-step','/v1/capture/enable','/v1/capture/disable'].includes(route))throw new NativeHarnessError('native-worker-route-required');
     const id=String(++sequence),begin=performance.now(),limit=options.limitMs??8000;
     const observed=message('request',id);let settled=false,concurrent=false;
+    void observed.catch(()=>{}); // IPC may fail before the HTTP response arrives.
     const pending=(async()=>{
       const response=await fetch(`http://127.0.0.1:${port}${route}`,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer fixture-only','content-type':'application/json','x-native-request':id,...(options.concurrent?{'x-native-hold':'1'}:{})},
         ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(25000)});
@@ -68,7 +84,7 @@ export async function nativeService(env:NodeJS.ProcessEnv,observe:(value:Observa
       // Settle any pending promise before teardown; never leave an unhandled
       // HTTP/IPC failure obscuring the sanitized native trace.
       if(!settled){child.send({kind:'release',id});await pending.catch(()=>{});}
-      throw error;
+      throw new NativeHarnessError(nativeHarnessCode(error));
     }finally{cancel('held',id);cancel('request',id);}
   }
   async function stop(){
@@ -83,5 +99,5 @@ export async function nativeService(env:NodeJS.ProcessEnv,observe:(value:Observa
     assert.equal(health.value.managedMigrationSteps,1);assert.equal(health.counts.legacyReads,0);
     assert.ok(performance.now()-started<START_MS,'child handshake exceeded startup budget');
     return {request,stop,async settings(fault:null|'timeout'|'private'|'overrun'=null,latencyMs=0){child.send({kind:'settings',fault,latencyMs});await message('settings-set');}};
-  }catch(error){await stop();throw error;}
+  }catch(error){await stop();throw new NativeHarnessError(nativeHarnessCode(error));}
 }

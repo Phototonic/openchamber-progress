@@ -21,8 +21,8 @@ const spawn=cp.spawnSync;
 cp.spawnSync=function(command,args,options){
   if(path.basename(command).toLowerCase()!=='powershell.exe')return spawn(command,args,options);
   const c=context(),first=Atomics.add(counter(),0,1)===0;
-  if(first&&c?.hold){
-    c.port?.postMessage('held');
+  if(first&&!threads.isMainThread&&c?.hold&&c.port){
+    c.port.postMessage('held');
     // Bounded synchronization, not a timing sleep: the parent proves concurrent
     // health before releasing this request's first security launch.
     if(Atomics.wait(c.gate,0,0,5000)==='timed-out')throw new Error('observer-health-release-timeout');

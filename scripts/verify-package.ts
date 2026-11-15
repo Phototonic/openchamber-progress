@@ -49,6 +49,8 @@ async function verifyPackage() {
     const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=(reservation.address() as {port:number}).port;await new Promise<void>(r=>reservation.close(()=>r()));
     service=spawn(process.execPath,[path.join(folder,'build/service/main.js')],{env:{...fixtureEnv,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'package-fixture-only'},cwd:root,stdio:'ignore'});
     const request=async(route:string,body?:unknown,method:'GET'|'POST'=body===undefined?'GET':'POST')=>{
+      // Undelayed portable package smoke budget, not the host's 20s limit or
+      // native slow-PowerShell certification (covered by the Windows suite).
       const r=await fetch(`http://127.0.0.1:${port}${route}`,{method,headers:{authorization:'Bearer package-fixture-only','content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(8000)});
       lastHttpStatus=r.status;const value=await r.clone().json(),code=typeof value.error==='string'?value.error:value.error?.code;
       lastHttpCode=[...MANAGED_ACTION_CODES,...MANAGED_STEP_CODES,'managed-action-required','invalid','not-found','body-not-allowed'].includes(code)?code:code?'unrecognized-code':null;

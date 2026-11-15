@@ -88,6 +88,8 @@ and may expire on restart. No caller paths occur on mutation/continuation inputs
   Advances the control sequence and makes the current step pending; it performs
   no migration effect. An unresolved intent must be reconciled by the following
   `advance` before any new effect. Abandoned is resumable, not a deletion state.
+  Pending with recovery `continue` permits that advance even while worker is
+  `unsettled`; the client must not require idle to reconcile the retained intent.
   When recovery is `review`, ordinary resume refuses unsettled without a sequence
   change. Instead send `resume` with `review: {confirmed: true, expected, step}`;
   `step` is only `enable` or `disable`, and must name the current uncertain intent.
@@ -104,10 +106,14 @@ All successful requests use HTTP 200 and `ManagedStepResponse`. A recognized
 request refusal uses the same envelope with `disposition: refused`, non-null
 `error` and available same-target progress. Validation errors are 400; stale
 sequence/target/review, unsupported format/version and ownership conflicts are
-409; busy, deadline, budget, unavailable security/storage are 503. A response
+409, including `managed-configuration-busy`, `managed-path-unverified` and
+`managed-scope-unsupported`; worker/coordination busy, deadline, budget and
+unavailable security/storage are 503. A response
 failure is not rollback. Unknown operation status is 404, never another target's
 progress. Ordinary authentication/method/body-limit failures keep existing HTTP
 handling and do not require this envelope.
+Accounting uses an integer security-spawn count and finite nonnegative elapsed
+milliseconds; the monotonic duration may include a fractional millisecond.
 Non-null `error` overrides `disposition`, including a `replayed` failed receipt;
 clients must render that reply as failed, not continue the success path. A worker
 crash is treated as effect uncertainty and requires explicit observation/recovery.

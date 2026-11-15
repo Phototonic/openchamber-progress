@@ -172,13 +172,15 @@ jobs:
             # Never upload raw stdout/stderr, local principal names or paths.
             if (Test-Path $output) {
               $traces = @(Get-Content -LiteralPath $output | ForEach-Object {
-                if ($_ -match '^(?:# )?WINDOWS_MIGRATION_TRACE (.+)$') { $Matches[1] }
+                if ($_ -match '^\s*(?:#\s*)?WINDOWS_MIGRATION_TRACE (.+)$') { $Matches[1] }
               })
               if ($traces.Count -gt 0) { $traces | Add-Content -LiteralPath $trace -Encoding utf8 }
             }
             if ($created) { Remove-LocalUser -Name $name }
             Remove-Item -LiteralPath $output, $errors -Force -ErrorAction SilentlyContinue
           }
+          $requests = @(Get-Content -LiteralPath $trace | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.request -and $_.request -ne 'runner-start' })
+          if ($requests.Count -eq 0) { throw 'Native Windows request trace is missing.' }
       - name: Upload sanitized Windows migration trace
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

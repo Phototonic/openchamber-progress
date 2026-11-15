@@ -3,8 +3,8 @@ import path from 'node:path';
 import {readManagedBinding,managedBindingFile,ManagedBindingError,managedSourceRoots,managedExpectationFile,readManagedExpectation} from '../shared/managed-binding.ts';
 import {Store,canonical,digest} from '../shared/store.ts';
 import {verifyStore,type Binding} from '../shared/binding.ts';
-import {platformSecurityScope,requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths} from '../shared/platform.ts';
-import type {SetupRead} from '../shared/progress.ts';
+import {platformSecurityScope,requirePlatformWriteBoundary,requirePlatformStoreFence,windows,windowsPaths,PlatformError} from '../shared/platform.ts';
+import {ProgressError,type SetupRead} from '../shared/progress.ts';
 import {MANAGED_STEP_LIMITS} from '../shared/managed-steps.ts';
 import {readManagedStepJournal,readMigration,migrationFile} from './managed-migration.ts';
 import {managedJournalBinding,managedJournalProgress,type ManagedStepJournal} from './managed-step-journal.ts';
@@ -42,13 +42,21 @@ function selection(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null) {
 function storePaths(binding:Binding) {
   if(windows)windowsPaths([path.dirname(binding.database),binding.database,...['-journal','-wal','-shm'].map(s=>binding.database+s),managedExpectationFile(binding)],true);
 }
+/** Expected private-state/OS failures can become an unavailable observation.
+ * Programming errors must reach the worker's fixed refusal boundary instead of
+ * masquerading as a successful Setup read with a storage diagnostic. */
+function observationDiagnostic(error:unknown):string {
+  const filesystem=error instanceof Error&&['EACCES','EPERM','EIO','ENOSPC','EEXIST','EBUSY','ENOENT','ENOTDIR','EROFS','EMFILE','ENFILE'].includes((error as NodeJS.ErrnoException).code??'');
+  if(!(error instanceof SetupError||error instanceof ManagedBindingError||error instanceof ProgressError||error instanceof PlatformError||error instanceof SyntaxError||filesystem))throw error;
+  return managedDiagnostic(error);
+}
 export function observeManagedSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null) {
   try{return readSetup(env,expectedDescriptor);}
   catch(error){
     // Setup must still describe an invalid/unavailable selection. This is not
     // admission, and carries no guessed progress/capture or private file data.
     const status:SetupRead={configured:false,verified:false,installed:false,captureEnabled:null,targets:null,version:null,
-      activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[managedDiagnostic(error)],
+      activation:'unknown',separateLifecycle:false,historyRetained:true,diagnostics:[observationDiagnostic(error)],
       delivery:{kind:'managed',revision:1,managedMigrationSteps:1,configuration:'invalid',migration:'unavailable',mode:'unknown',observation:'unknown',expectedVersion:null}};
     return {status,descriptor:undefined,journal:undefined,subagentRuns:false};
   }
@@ -82,7 +90,7 @@ function readSetup(env:NodeJS.ProcessEnv,expectedDescriptor?:string|null) {
         return {status:base,descriptor,journal,subagentRuns:!!b&&['current','previous'].includes(runs)};
       }finally{store.close();}
     }catch(error){
-      unavailable.diagnostics=[managedDiagnostic(error)];
+      unavailable.diagnostics=[observationDiagnostic(error)];
       return {status:unavailable,descriptor,journal,subagentRuns:false};
     }
   });

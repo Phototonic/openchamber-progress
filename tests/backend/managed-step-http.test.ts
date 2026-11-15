@@ -15,6 +15,8 @@ import {createManagedBindingDirectory} from '../../shared/managed-binding.ts';
 import {writeMigration,readManagedStepJournal,migrationFile} from '../../setup/managed-migration.ts';
 import {Store} from '../../shared/store.ts';
 import type {ManagedStepResponse,ManagedStepRequest,ManagedStepProgress} from '../../shared/managed-steps.ts';
+import {StepDriver,managedStepCall,nextAction} from '../../ui/shared/setup-steps.ts';
+import {parseSetup} from '../../ui/shared/adapter.ts';
 
 const payload={plugin:'// synthetic managed',guidance:'synthetic guidance',removal:'// synthetic removal',version:'1.3.0'};
 const operationId='11111111-1111-4111-8111-111111111111';
@@ -240,7 +242,7 @@ test('HTTP legacy refusal with the native concurrent-health observer never enter
   const f=await fixture();let service:Awaited<ReturnType<typeof nativeService>>|undefined;
   try{
     service=await nativeService({...f.env,SystemRoot:'C:\\Windows'},o=>t.diagnostic(JSON.stringify({phase:o.phase,status:o.status,error:o.value.error,counts:o.counts})),path.join(projection,'service/main.ts'));
-    const r=await service.request('/v1/setup/managed-inspect',{},'legacy-inspect',{concurrent:true,expectedStatus:409,maxSpawns:0});
+    const r=await service.request('/v1/setup/managed-inspect',{},'legacy-inspect',{expectedStatus:409,maxSpawns:0});
     assert.deepEqual(r.value,{error:'managed-action-required'});
     assert.equal(r.counts.workers,0);assert.equal(r.counts.legacyReads,0);
     assert.equal(fs.existsSync(migrationFile(f.env)),false);
@@ -319,6 +321,60 @@ test('HTTP bounded reads and capture retain the service selection pin across wor
       else{assert.equal(r.status,409);assert.equal(r.body.error,'managed-binding-modified');}
     }
     assert.equal(f.capture(),true);assert.equal((await f.http('/health')).body.state,'refused');
+  }finally{await f.close();}
+});
+
+test('HTTP capture routes preserve precise platform fault codes without changing capture',async()=>{
+  const f=await fixture('receipt');try{
+    let p=(await f.begin()).body.progress!;while(p.state!=='complete')p=(await f.advance(p)).body.progress!;
+    for(const code of ['private-permissions','windows-security-unavailable']){
+      f.fault({platformCode:code});
+      for(const enabled of [false,true]){
+        const r=await f.http(`/v1/capture/${enabled?'enable':'disable'}`,{});
+        assert.equal(r.status,503);assert.deepEqual(r.body,{error:code});assert.equal(f.capture(),true);
+      }
+    }
+    f.fault({});assert.equal((await f.http('/v1/capture/disable',{})).status,200);assert.equal(f.capture(),false);
+  }finally{await f.close();}
+});
+
+for(const recovery of ['interrupted','capture-review'] as const)test(`real HTTP service and UI step driver complete ${recovery} resume with unsettled intent`,async()=>{
+  const f=await fixture();try{
+    await f.begin();let p=await f.until(recovery==='interrupted'?'remove-discovery':'enable');
+    f.fault(recovery==='interrupted'?{crashStep:p.step!.name,order:'before'}:{capture:'before'});
+    assert.equal((await f.advance(p)).status,503);f.fault({});
+    const setup=await f.http('/v1/setup');
+    p=parseSetup(JSON.stringify(setup.body)).delivery!.migrationProgress!;
+    assert.equal(p.worker,'unsettled');
+    assert.equal(nextAction(p),recovery==='interrupted'?'resume':'review');
+    const requests:ManagedStepRequest[]=[],replies:ManagedStepResponse[]=[];
+    let inflight=0,maxInflight=0;
+    const driver=new StepDriver({
+      context:()=> 'synthetic-context',changed:()=>{},refresh:()=>{},
+      send:async(request,current)=>{
+        assert.ok(current());requests.push(request);maxInflight=Math.max(maxInflight,++inflight);
+        try{
+          const result=await managedStepCall({serviceRequest:async q=>{
+            const r=await fetch(f.url+q.path,{method:q.method,body:q.body,headers:{authorization:'Bearer synthetic-http-fixture'},signal:AbortSignal.timeout(22000)});
+            return {status:r.status,body:await r.text()};
+          }},request);
+          if(result.kind==='reply')replies.push(result.response);
+          return result;
+        }finally{inflight--;}
+      },
+    });
+    if(recovery==='capture-review'){
+      await driver.inspect('capture',{progress:p});assert.equal(driver.state.review?.kind,'capture');
+      driver.setAck(true);await driver.confirmCapture();
+    }else await driver.resume(p);
+    const resumed=replies.find(r=>r.disposition==='applied'&&r.progress?.sequence===p.sequence+1)!;
+    assert.ok(resumed,'the UI must accept the real resume envelope before continuing');
+    assert.equal(resumed.progress?.state,'pending');assert.equal(resumed.progress?.worker,'unsettled');assert.equal(resumed.progress?.recovery,'continue');
+    const resumeAt=requests.findIndex(r=>r.action==='resume');
+    assert.deepEqual(requests[resumeAt+1],{version:1,action:'advance',operationId,expectedSequence:p.sequence+1,step:p.step});
+    assert.equal(driver.state.progress?.state,'complete');assert.equal(driver.state.outcome,null);
+    assert.equal(maxInflight,1);assert.equal(f.capture(),true);
+    assert.ok(replies.every(r=>r.accounting.securitySpawns<=6));
   }finally{await f.close();}
 });
 

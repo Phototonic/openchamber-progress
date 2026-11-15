@@ -176,6 +176,10 @@ The private format-2 journal retains intent before each effect and a receipt aft
 completion. Explicit same-target resume can reconcile interrupted discovery-file
 removal from that evidence; absence alone is not permission to delete or skip a
 file. Changed ownership/bytes, unsupported journals and ambiguous staging refuse.
+An accepted resume can remain pending with an unsettled worker observation: Setup
+offers Continue and submits the next advance to reconcile the retained intent.
+It does not claim that the earlier effect completed; the engine can still refuse
+if fresh evidence cannot establish safe continuation.
 Do not repair/delete remaining files, restore a global loader or enable capture
 to force progress. Pause/abandon stops following requests; it is not rollback.
 Closing or restarting never continues the migration automatically.

@@ -46,6 +46,29 @@ test('expectation publication failure precedes source registration',t=>{
     const store=new Store(path.join(f.storeRoot,'progress.sqlite'));try{assert.equal(store.list().sources.length,0);}finally{store.close();}
   }finally{mock.mock.restore();syncBuiltinESMExports();f.clean();}
 });
+test('fresh selector publication failure recovers through fresh review without duplicating the registered source',t=>{
+  const f=fixture(),original=fs.linkSync;
+  const mock=t.mock.method(fs,'linkSync',((from:any,to:any)=>{
+    if(path.basename(String(to))==='progress-binding.json')throw new Error('synthetic selector publication failure');
+    return original(from,to);
+  }) as typeof fs.linkSync);syncBuiltinESMExports();
+  let restarted:SetupController|undefined;
+  try{
+    assert.throws(()=>configure(f),/synthetic selector publication failure/);
+    assert.equal(readManagedBinding(f.env),undefined);
+    const store=new Store(path.join(f.storeRoot,'progress.sqlite'));
+    let prior:ReturnType<Store['list']>;
+    try{store.setEnabled(false);prior=store.list();assert.equal(prior.sources.length,1);}finally{store.close();}
+    assert.equal(existsSync(path.join(path.dirname(managedBindingFile(f.env)),'.configuration-lock')),false,'settled failure releases its lock; a process crash does not');
+    mock.mock.restore();syncBuiltinESMExports();
+    restarted=new SetupController({env:f.env},()=>payload);
+    const recovered=configure({...f,setup:restarted});
+    assert.equal(recovered.reportingIdentity!.storeId,prior!.storeId);assert.equal(recovered.reportingIdentity!.sourceId,prior!.sources[0].id);
+    assert.equal(recovered.captureEnabled,false,'recovery never re-enables retained capture');
+    const retained=new Store(path.join(f.storeRoot,'progress.sqlite'));
+    try{assert.deepEqual(retained.list().sources,prior!.sources);}finally{retained.close();}
+  }finally{mock.mock.restore();syncBuiltinESMExports();restarted?.close();f.clean();}
+});
 async function http(f:ReturnType<typeof fixture>,run:(request:(action:string,body?:unknown,authorized?:boolean)=>Promise<Response>)=>Promise<void>) {
   const server=createProgressServer(undefined,'fixture-only',undefined,f.setup);
   try {

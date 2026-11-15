@@ -5,7 +5,7 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {once} from 'node:events';
 import {fork} from 'node:child_process';
-import {createServer} from 'node:net';
+import {createServer,Server} from 'node:net';
 import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {SetupRequestWorker,correlatedManagedReply} from '../../service/request-worker.ts';
@@ -117,6 +117,25 @@ setTimeout(()=>parentPort.close(),50);\n`,{mode:0o600});
     const result=await first;assert.equal(result.ok,true);assert.equal(worker.busy,false);
     assert.equal(result.accounting.securitySpawns,0,'supervisor uses the shared attempt counter, not message accounting');
   }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('a rejected writer release finishes with a fixed refusal and clears the active worker',{skip:process.platform==='win32',timeout:5000},async t=>{
+  const {root,env}=fixture();
+  const original=Server.prototype.close;
+  let injected=false;
+  const close=t.mock.method(Server.prototype,'close',function(this:Server,...args:Parameters<Server['close']>){
+    const value=original.apply(this,args);
+    if(!injected){injected=true;throw new Error('synthetic private release failure');}
+    return value;
+  });
+  try{
+    const worker=new SetupRequestWorker(new URL('../../service/main.ts',import.meta.url));
+    const result=await worker.run(env,payload,{action:'health'});
+    assert.equal(result.ok,false);if(!result.ok)assert.equal(result.code,'managed-step-unsettled');
+    assert.equal(worker.busy,false);
+    close.mock.restore();
+    assert.equal((await worker.run(env,payload,{action:'health'})).ok,true,'a new request validates and acquires its own slots');
+  }finally{close.mock.restore();rmSync(root,{recursive:true,force:true});}
 });
 
 test('response deadline does not clear busy or admit another request while the worker still runs',{skip:process.platform==='win32'},async()=>{

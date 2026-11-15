@@ -87,7 +87,7 @@ export function parseManagedStepResponse(v: unknown): ManagedStepResponse | unde
   const i = inspection(v.inspection), p = v.progress === null ? null : parseManagedStepProgress(v.progress);
   const error = v.error === null ? null : diagnostic(v.error);
   const a = v.accounting;
-  if (i === undefined || p === undefined || error === undefined || !isRec(a) || !exact(a, ['securitySpawns', 'elapsedMs']) || !count(a.securitySpawns) || !count(a.elapsedMs)) return;
+  if (i === undefined || p === undefined || error === undefined || !isRec(a) || !exact(a, ['securitySpawns', 'elapsedMs']) || !count(a.securitySpawns) || typeof a.elapsedMs !== 'number' || !Number.isFinite(a.elapsedMs) || a.elapsedMs < 0) return;
   if (v.disposition === 'refused' && error === null) return;
   return { version: 1, disposition: v.disposition as ManagedStepResponse['disposition'], inspection: i, progress: p, error, accounting: { securitySpawns: a.securitySpawns, elapsedMs: a.elapsedMs } };
 }
@@ -160,7 +160,7 @@ export function currentProgress(local: ManagedStepProgress | null, read: Managed
 export type StepAction = 'continue' | 'resume' | 'review' | 'status' | null;
 export function nextAction(p: ManagedStepProgress | null): StepAction {
   if (!p || p.state === 'complete') return null;
-  if (p.recovery === 'continue') return p.state === 'pending' && p.worker === 'idle' ? 'continue' : 'status';
+  if (p.recovery === 'continue') return p.state === 'pending' ? 'continue' : 'status';
   if (p.recovery === 'resume' || p.recovery === 'reconcile') return 'resume';
   if (p.recovery === 'review') return 'review';
   return 'status';
@@ -202,9 +202,11 @@ export interface StepIo {
 
 const advance = (p: ManagedStepProgress): ManagedStepRequest => ({ version: 1, action: 'advance', operationId: p.operationId, expectedSequence: p.sequence, step: { name: p.step!.name, batch: p.step!.batch } });
 const control = (action: 'pause' | 'abandon' | 'resume', p: ManagedStepProgress): ManagedStepRequest => ({ version: 1, action, operationId: p.operationId, expectedSequence: p.sequence });
-/** Only a settled, clean, strictly newer pending step continues an explicitly started run. */
+/** A clean, strictly newer pending step continues an explicitly started run.
+ * An unsettled worker projection retains the old intent: the engine must reconcile
+ * it on the next advance. It is not a reason to strand an accepted resume. */
 function advanceable(previous: ManagedStepProgress | null, p: ManagedStepProgress) {
-  return p.state === 'pending' && p.recovery === 'continue' && p.worker === 'idle' && p.step !== null && p.diagnostic === null &&
+  return p.state === 'pending' && p.recovery === 'continue' && p.step !== null && p.diagnostic === null &&
     (!previous || (previous.operationId === p.operationId && p.sequence > previous.sequence));
 }
 
