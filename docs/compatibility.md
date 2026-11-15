@@ -3,7 +3,7 @@
 ## Current use and development
 
 The managed-delivery candidate requires **OpenChamber >=2.7.1** with build SDK
-**2.7.0** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
+**2.7.1** (plugin SDK 2.1.4 unchanged). Earlier global-companion runs below are
 historical and do not certify managed delivery. Isolated Linux web 2.7.1 /
 independent OpenCode 2.2.7 acceptance is described below, including the native Git
 update journey. Installer, web UI and native results retain distinct scopes;

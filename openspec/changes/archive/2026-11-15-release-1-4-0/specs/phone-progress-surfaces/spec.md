@@ -1,18 +1,18 @@
 ## ADDED Requirements
 
-### Requirement: Accepted phone entry surfaces
+### Requirement: Phone entry surfaces and explicit acceptance limits
 
-Panel and page mobile contributions SHALL be enabled only after their respective physical-phone acceptance on a supported authenticated host route. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be checked and documented separately from opted-in surfaces.
+Panel and page mobile contributions SHALL expose the rail and board on supported authenticated host routes. For 1.4.0, the owner has authorized enabling both contributions with physical-phone acceptance deferred to the live release. Browser emulation MUST NOT be described as physical-device acceptance. Existing Work Status, tool rows, mentions, sidebar marks and background actions SHALL be documented separately from opted-in surfaces.
 
 #### Scenario: Phone user opens progress
-- **WHEN** the accepted panel is opened through the phone workspace, plus menu, Work Status or supported session action
+- **WHEN** the opted-in panel is opened through the phone workspace, plus menu, Work Status or supported session action
 - **THEN** a discoverable readable progress view opens without a surface-unavailable error
-- **AND** the accepted page is available through More with the host's full-screen back navigation
+- **AND** the opted-in page is available through More with the host's full-screen back navigation
 
-#### Scenario: Surface has not passed physical acceptance
-- **WHEN** only desktop narrow-width or touch-emulation evidence exists, or physical acceptance fails
-- **THEN** that evidence remains supporting evidence and the surface is not shipped as mobile-enabled
-- **AND** documentation identifies the untested or failed configuration
+#### Scenario: Physical acceptance is deferred or fails
+- **WHEN** only narrow-width or touch-emulation evidence exists at release preparation
+- **THEN** documentation identifies physical-phone acceptance as deferred to the live release under the owner's explicit decision
+- **AND** a later physical-device failure is recorded honestly and the affected mobile contribution can be withdrawn through a matched manifest/distribution update
 
 ### Requirement: Usable phone layout and interaction
 
