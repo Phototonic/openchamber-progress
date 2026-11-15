@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-15
+
+Windows startup and stepwise legacy migration, a source-wide Needs you inbox, and phone-ready progress surfaces. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
+
+### Added
+
+- A bounded, read-only Needs you inbox across active plans in the verified source, with decision/review blockers, separate Also blocked entries, explicit coverage and task navigation (#102).
+- Simplified Chinese interface and progress summaries alongside English and Russian; recorded user text is not translated (#108).
+- Optional final task changes in `finish`, committed atomically with the plan outcome and normal revision/replay validation (#105).
+
+### Changed
+
+- Phone rail/board layouts, safe-area and keyboard accommodation, coarse-pointer controls and tap/pan/pinch dependency-map navigation (#104). Rail and board mobile contributions are enabled so they appear in OpenChamber on phones (#112); owner-operated physical-phone acceptance is deferred to the live release, not claimed from emulation.
+- Pending delegations survive unrelated task reports only with complete bounded evidence; relevant changes still refuse binding. Combined handoff reports support other worktrees (#103).
+- Waiting delegations show “Next sub-agent will take this”; identifiable refusal reasons are exposed without granting authority or changing task status (#107).
+- Handoff receipt lookups use a transactionally installed `(source, oid)` index without changing logical schema or replay semantics (#106).
+- CI runs on every pull request, retaining the existing duplicate-run gate for same-repository main/dev heads (#110).
+- Setup, reporting and compatibility documentation is refreshed (#100). A lifecycle regression covers capture-enable refusal during unfinished migration (#111).
+- The `release-1-4-0` OpenSpec change is archived into the capability specs, with deferred acceptance and follow-up work recorded separately.
+
+### Fixed
+
+- Windows cold service health avoids blocking security discovery; legacy migration runs through bounded, freshly validated Setup steps with durable pause/resume, honest capture state and precise diagnostics (#101, fixes #99). Fresh configuration remains on the older synchronous path; moving it to the step engine is follow-up work.
+- Concurrent identical Setup reads share one in-flight status run, deadline and spawn budget; starting-phase admission tolerates only the transient unsettled response before its single health reread, avoiding a startup 503 without weakening mutation overlap refusal (#113).
+
 ## [1.3.0] - 2026-11-14
 
 Progress reported by the sub-agents doing the work, and a direct way to open a session's progress. The minimum host remains OpenChamber 2.7.1. Protocol and schema stay at 2.
@@ -253,7 +278,8 @@ The first major release: a calmer, at-a-glance progress experience with an inter
 
 Baseline before automated releases; see the repository history.
 
-[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/Phototonic/openchamber-progress/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Phototonic/openchamber-progress/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Phototonic/openchamber-progress/compare/v1.0.0...v1.1.1

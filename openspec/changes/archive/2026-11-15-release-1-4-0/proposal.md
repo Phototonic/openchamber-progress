@@ -41,4 +41,6 @@ OUT: new model providers, notifications, inferred task state, additional polling
 
 The release MUST NOT bypass authentication, infer authority from an intent or phone device hint, claim mobile acceptance from a narrow desktop browser, use private host navigation, silently rebase a relevant conflict, erase receipts/history to accelerate lookup, or modify the owner's running host/profile. Host-drawn Work Status is conditional research only, not a build commitment. Publication remains a maintainer approval gate.
 
+Release disposition: the owner deferred physical-phone acceptance to the live release and authorized shipping the mobile flags. Fresh Windows configuration on the step engine remains out of scope; the existing fresh flow and its slow-PowerShell timeout limit are documented. Archiving the implementation does not certify deferred device checks or native promotion gates.
+
 Windows setup adds no permission relaxation, cross-request ACL cache, synchronous admission on the health-serving event loop or automatic restoration of global capture. Short requests must preserve the full legacy ownership/removal and same-store/source contract; splitting the work is not permission to trust earlier security observations.
