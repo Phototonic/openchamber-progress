@@ -57,14 +57,19 @@ assignment; those IDs alone grant no authority. Use `op=delegate` with
 Empty `assign` explicitly cancels the parent's pending declaration. This does not
 dispatch a child or assign tasks. Intent persists across restart without a
 five-minute expiry and atomically reserves the first subsequently admitted
-supported dispatch in database order. A second nonempty declaration conflicts;
-cancel before re-declaring. Identical retries do not re-arm consumed intent.
+supported dispatch in database order. Only one delegation can be pending per
+coordinator. For parallel sub-agents, dispatch first, then link each returned
+child session to its tasks; or delegate one at a time and wait for binding before
+declaring the next. A second nonempty declaration conflicts; cancel before
+re-declaring. Identical retries do not re-arm consumed intent.
 Verified immediate child/source/project/location and complete ancestry are
 required; installed `subagent` tools are trusted to report their structured child
 identity. No native message-wide one-call census is required. `task` aliases and
 result text do not prove child identity. An unconfirmed reserved dispatch consumes
-intent rather than passing it to the next call. Intervening plan changes produce
-a conflict, not silent rebasing. Use explicit `link` and assigned parent relay
+intent rather than passing it to the next call. Binding can tolerate intervening
+unrelated reports or assignments only with complete retained proof; relevant
+changes or incomplete proof refuse. Read a refusal before deliberately
+re-declaring or explicitly linking. Use explicit `link` and assigned parent relay
 when evidence is unavailable.
 Binding is attribution only, never progress, completion,
 reporting permission or accepted handoff. It never relaxes child restrictions.
@@ -84,6 +89,11 @@ handoff. Supply purpose-written safe prose, never prompts, outputs or secrets;
 bounds/literal rendering are not redaction. Absence is ordinary, host completion
 is independent, and a claimed done run can still have explicitly blocked tasks.
 Only deliberate task reporting changes task progress.
+
+Explicitly linked or bound children may report across directories, worktrees and
+projects when the host verifies their native ancestry and current assignment.
+This does not relax same-source checks, assignment scope, revision checks,
+document permissions or automatic-binding identity requirements.
 
 Reporting is after verified binding only, on naturally occurring eligible child
 contexts. Do not insert preparation turns, automatically resume a child or backfill
