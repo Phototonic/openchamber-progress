@@ -1,5 +1,70 @@
 # Bounded managed migration contract
 
+## Fresh consumer contract (wire 2 / journal 3)
+
+Fresh setup is a separate family on the same route: `ManagedFreshStepRequest`,
+`ManagedFreshStepResponse`, `ManagedFreshReview`, `ManagedFreshStepProgress` and
+`ManagedFreshStepJournal`. `managedFreshStepRequest` and
+`parseManagedFreshStepJournal` are strict fresh-only parsers; the existing
+`managedStepRequest` / `parseManagedStepJournal` remain migration-only. The
+transport dispatcher uses `managedSetupStepRequest`. Do not widen version-1
+shapes or translate a wrong-family journal. `managedFreshSteps: 1` is independent
+of `managedMigrationSteps: 1`; advertise fresh only after backend integration.
+Setup projects format 3 only as optional `delivery.freshProgress`.
+
+The fresh review/progress disclose `planKind: fresh`, `storeMode` (`create` or
+`retain`), `sourceMode` (`create` or `reuse`), `capturePolicy` (`enable-new` or
+`preserve`) and the frozen plan. Review also discloses package version and capture.
+Missing identities are generated once per private inspection session, then frozen
+by consent; retained identities are verified and reused. Managed install ID uses
+the existing `managed-` + SHA-256 of JSON `[storeId, source]` derivation.
+No mutation accepts replacement paths or IDs. Proposed Binding fields never grant
+ordinary Store, selected-binding or companion admission.
+
+`managedFreshPlan` defines exactly four all-batch-zero grammars: new DB with missing
+directory uses prepare, store-directory, create-store, expectation, register-source,
+publish-binding, enable, reconcile; new DB in a reviewed directory omits only
+store-directory; retained DB/new source uses prepare, expectation, register-source,
+publish-binding, reconcile; retained DB/reused source omits register-source too.
+Retained plans never change capture. Expectation always precedes source registration.
+
+Format 3 retains immutable `fresh` review facts: store/source modes, capture policy,
+directory/database and fixed journal/wal/shm sidecar claims, matched source or null,
+reviewed capture state and absent selector/journal/canonical legacy claims. Its
+target digest is canonical `{binding, planKind, fresh, expectation}`. Plan and
+full-request hashes retain the existing canonical owner. Separate `created`
+directory/database native-object checkpoints are observations, excluded from that
+target digest. Only settlement of the matching durable creation intent may fill
+one; it cannot replace an earlier identity or change original consent/facts.
+Only pending/complete coarse phases exist, never fabricated removal evidence.
+
+### Frozen storage primitive agreement
+
+The storage lane implements `Store.createFresh(file, {storeId, validate})`, returning
+a normal Store handle. `storeId` is the frozen proposed ID; `validate` is mandatory
+full same-target/intent validation, called in the helper's read-only preflight
+scope. Creation is exclusive, uses mode 0600/private inherited Windows ACLs, checks
+all fixed sidecars absent, ends the preflight before reservation, and freshly checks
+the reserved file/object/ancestors before initialization. The initial schema
+transaction installs the frozen ID, capture **off**, schema 2 and receipt index.
+It registers no source. Ordinary constructor defaults/partial-file refusals stay
+unchanged. Failed/partial files are retained, never reopened for initialization.
+
+The platform lane extends `privateDirectory(file, false, {exclusive: true,
+validate})`. Mandatory validation shares its read-only path preflight; that actual
+scope ends before the creation query. An existing/unexpected directory refuses,
+never becomes adopted authority. The caller checkpoints the resulting identity
+only through the corresponding durable intent. A crash before that checkpoint
+requires manual diagnosis, not automatic adoption. No raw security-backend bypass,
+claim file, repair, new schema or cached ACL authority is introduced.
+
+These interfaces are frozen for consumers; primitive/full-step launch allocations
+remain estimates until measured. The six-launch gate includes all validation,
+actual attempts, creation, readback and failure settlement. Stop for a technical
+amendment if safe creation cannot fit. Format-3 observation before storage exists
+requires the fresh journal reader, not `readBinding` on an absent directory.
+Rollback retains journals/data and requires a fresh-capable build for recovery.
+
 This is the version-1 wire / format-2 journal contract for the step engine and
 Setup client. The backend endpoint and bounded HTTP workers are implemented;
 portable query accounting is **not a native performance result**. Client rendering
