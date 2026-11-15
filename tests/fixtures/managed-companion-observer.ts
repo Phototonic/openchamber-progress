@@ -33,6 +33,15 @@ export default Plugin.define({id:'managed-fixture-observer',async setup(ctx){
         const jobs=JSON.parse(readFileSync(`${root}/jobs.json`,'utf8')),job=jobs[identity];
         const key=`${identity}:${job?.generation??'initial'}`;
         step=seen.has(key)?undefined:job?.step;seen.add(key);
+        // Release QA holds a real first child execution, not its dispatch receipt.
+        // This makes the durable reserved state observable without a timing sleep.
+        if(!job&&existsSync(`${root}/hold-children`)){
+          record({type:'child-barrier',session:identity});
+          for(const end=Date.now()+30000;existsSync(`${root}/hold-children`);){
+            if(Date.now()>=end)throw new Error('Synthetic child barrier deadline');
+            await new Promise(r=>setTimeout(r,25));
+          }
+        }
       }
       record({type:'outgoing',reportTool:options.tools?.some((t:any)=>t.name==='agent_progress_report')??false,guidance:system.split('# Agent progress (companion)').length-1});
       return {stream:new ReadableStream({start(c){
